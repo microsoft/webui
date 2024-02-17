@@ -7,8 +7,5 @@
   "type": "module",
   "scripts": {
     "build": "esbuild ./src/index.ts --bundle --outdir=./dist --sourcemap --format=esm --target=esnext"
-  },
-  "dependencies": {
-    "@internal/fast-btr-eval": "workspace:*"
   }
 }
