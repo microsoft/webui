@@ -145,9 +145,6 @@ export function hydrate(component: FASTElement) {
   const owner = component.shadowRoot || component
   const nodes = owner.querySelectorAll('*')
   nodes.forEach((node) => {
-    if (customElements.get(node.tagName.toLowerCase())) {
-      return
-    }
     SetupAttributes(component, node)
   })
 }
