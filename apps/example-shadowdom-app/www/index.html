@@ -1,2 +1,26 @@
+<style>
+:root {
+  --background-color: #ffffff;
+  --text-color: #000000;
+  --secondary-background-color: #f2f2f2;
+  --secondary-text-color: #333333;
+  --border-color: #cccccc;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background-color: #000000;
+    --text-color: #ffffff;
+    --secondary-background-color: #333333;
+    --secondary-text-color: #f2f2f2;
+    --border-color: #333333;
+  }
+}
+
+body {
+  background-color: var(--background-color);
+  color: var(--text-color);
+}
+</style>
 <app-shell></app-shell>
 <script type="module" src="./js/index.js"></script>

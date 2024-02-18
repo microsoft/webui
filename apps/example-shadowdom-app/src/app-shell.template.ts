@@ -8,8 +8,8 @@ export default html`
   <p class="toast" f-when="toast" f-signal="toast"></p>
   
   <div>
-    <button f-click="onClick">Add New</button>
-    <button f-click="onClear">Clear All</button>
+    <app-button f-click="onClick">Add New</app-button>
+    <app-button f-click="onClear">Clear All</app-button>
   </div>
   
   <div f-when="items.length > 5">You have more than 5 items!</div>
