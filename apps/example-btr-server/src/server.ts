@@ -12,7 +12,7 @@ export function HandleServe(appPath: string, port: number) {
 
   let db: Record<string, {}> = {
     items: [],
-    appTitle: 'Welcome SSR!',
+    appTitle: 'Welcome Build Time Rendering (BTR)!',
   }
   if (existsSync(dbPath)) {
     db = JSON.parse(readFileSync(dbPath, 'utf8'))

@@ -80,9 +80,9 @@ export function HandleBuild(appPath: string, port: number) {
     console.log('dumping stream')
     const htmlLines = await page.evaluate(extractHTML, 'html')
 
-    writeFile(join(appPath, 'index.ssr.html'), htmlLines.join('\n'), (err) => {
+    writeFile(join(appPath, 'index.debug.html'), htmlLines.join('\n'), (err) => {
       if (err) {
-        console.error('Error writing SSR file:', err)
+        console.error('Error writing debug file:', err)
       }
     })
 
