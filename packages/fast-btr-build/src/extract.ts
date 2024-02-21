@@ -5,6 +5,7 @@ declare global {
     readFile: (path: string) => Promise<string[]>
     writeStreamResponse: (type: string, value: string, extra?: string) => void
     writeTemplates: (value: string) => void
+    writePreload: (type: string, value: string[]) => void
   }
 
   interface HTMLElement {
@@ -12,12 +13,17 @@ declare global {
   }
 }
 
-export async function extractHTML(selector: string = 'html') {
+interface ExtractOptions {
+  useLinkCss?: boolean
+}
+
+export async function extractHTML(options: ExtractOptions = {}) {
   const lines: string[] = []
   let streamResponse: string[] = []
   const prefix = 'f-'
   const cssCache = new Map()
   const templateCache: BuildTimeRenderingStreamTemplateRecords = {}
+  const preloadCss = new Set()
 
   /**
    * Reads the contents of a CSS file from the file system. Caches the result.
@@ -90,10 +96,18 @@ export async function extractHTML(selector: string = 'html') {
           }
         }
 
-        let style = ''
+        let style = undefined
         if (repeatNode.internalCssModule) {
-          const cssContents = await readCSS(repeatNode.internalCssModule)
-          style = cssContents.join('\n')
+          if (options.useLinkCss) {
+            callback.addLine(
+              `<link rel="stylesheet" href="${repeatNode.internalCssModule}">`,
+              '  ',
+            )
+            preloadCss.add(repeatNode.internalCssModule)
+          } else {
+            const cssContents = await readCSS(repeatNode.internalCssModule)
+            style = cssContents.join('\n')
+          }
         } else {
           console.error('No CSS Module found for', tag)
         }
@@ -172,13 +186,21 @@ export async function extractHTML(selector: string = 'html') {
       if (node.shadowRoot) {
         callback.addLine('<template shadowrootmode="open">', indent + '  ')
         if (node.internalCssModule) {
-          // That is the best we can to eliminate flickering, by placing the contents of the CSS module in component.
-          let cssContents = await readCSS(node.internalCssModule)
-          if (cssContents && cssContents.length > 0) {
+          if (options.useLinkCss) {
             callback.addLine(
-              `<style>\n${cssContents.map((line: string) => indent + '    ' + line.trim()).join('\n')}</style>`,
+              `<link rel="stylesheet" href="${node.internalCssModule}">`,
               indent + '    ',
             )
+            preloadCss.add(node.internalCssModule)
+          } else {
+            let cssContents = await readCSS(node.internalCssModule)
+            if (cssContents && cssContents.length > 0) {
+              // That is the best we can to eliminate flickering, by placing the contents of the CSS module in component.
+              callback.addLine(
+                `<style>\n${cssContents.map((line: string) => indent + '    ' + line.trim()).join('\n')}</style>`,
+                indent + '    ',
+              )
+            }
           }
 
           // TODO: Doesn't work in Web Platform Yet.
@@ -223,7 +245,7 @@ export async function extractHTML(selector: string = 'html') {
     return lines
   }
 
-  const root = document.querySelector<HTMLElement>(selector)
+  const root = document.querySelector<HTMLElement>('html')
   if (root) {
     await visitNode(root, { addLine, flushPlainResponse, flushStreamResponse })
   }
@@ -232,5 +254,6 @@ export async function extractHTML(selector: string = 'html') {
 
   window.writeTemplates(JSON.stringify(templateCache, null, 2))
 
-  return lines
+  // Web Platform doesn't support CSS Modules for css in JS.
+  return window.writePreload('css', Array.from(preloadCss), lines)
 }

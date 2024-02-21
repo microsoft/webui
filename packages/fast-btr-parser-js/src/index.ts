@@ -18,15 +18,13 @@ export function handleBTR(protocol: BuildTimeRenderingProtocol, state: Object, s
         const value = findValueByDottedPath(stream.value, state)
         if (value) {
           value.forEach((item: any) => {
-            serverHandler.write(`<${stream.template}>
-                <template shadowrootmode="open">
-                    <style>
-                        ${protocol.templates[stream.template].style}
-                    </style>
-                    ${protocol.templates[stream.template].template}
-                </template>
-                ${item}
-            </${stream.template}>`)
+            serverHandler.write(`<${stream.template}><template shadowrootmode="open">`)
+            if (protocol.templates[stream.template].style) {
+              serverHandler.write(`<style>${protocol.templates[stream.template].style}</style>`)
+            }
+            serverHandler.write(
+              `${protocol.templates[stream.template].template}</template>${item}</${stream.template}>`,
+            )
           })
         }
         break

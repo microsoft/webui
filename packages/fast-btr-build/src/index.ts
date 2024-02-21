@@ -7,6 +7,7 @@ program
   .description('Build Time Rendering ')
   .version('0.0.1')
   .option('-p, --port <port>', 'Port to serve the app', (value) => parseInt(value, 10), 3000)
+  .option('--use-link-css', 'Use the css contents from external link tag', false)
   .arguments('<path>')
-  .action((path, options) => HandleBuild(path, options.port))
+  .action((path, options) => HandleBuild(path, options))
 program.parse(process.argv)
