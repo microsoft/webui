@@ -138,9 +138,6 @@ function SetupAttributes(component: FASTElement, node: Element) {
 }
 
 export function hydrate(component: FASTElement) {
-  // Handle the component itself.
-  SetupAttributes(component, component)
-
   // Handle the component's children.
   const owner = component.shadowRoot || component
   const nodes = owner.querySelectorAll('*')
