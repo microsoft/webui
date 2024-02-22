@@ -79,7 +79,6 @@ export function HandleBuild(appPath: string, options: BuildOptions) {
       }
 
       if (value.indexOf('</head>') !== -1) {
-        console.log('HEAd tag found at ' + streamResponses.length)
         headChunkIndex = streamResponses.length
       }
     })
@@ -89,7 +88,7 @@ export function HandleBuild(appPath: string, options: BuildOptions) {
         return lines
       }
 
-      const preloadCss = []
+      const preloadCss: string[] = []
       value.forEach((path) => preloadCss.push(`<link rel="preload" href="${path}" as="style">`))
 
       if (type === 'css') {
@@ -100,7 +99,8 @@ export function HandleBuild(appPath: string, options: BuildOptions) {
           return
         }
 
-        streamResponses[headChunkIndex - 1].value = headChunkValue.slice(0, headIndex) + preloadCss.join('\n') +
+        streamResponses[headChunkIndex - 1].value = headChunkValue.slice(0, headIndex) + preloadCss.join('\n  ') +
+          '\n' +
           headChunkValue.slice(headIndex)
       }
 
@@ -112,7 +112,7 @@ export function HandleBuild(appPath: string, options: BuildOptions) {
       if (lineIndex !== -1) {
         const line = lines[lineIndex]
         const headIndex = line.indexOf('</head>')
-        lines[lineIndex] = line.slice(0, headIndex) + preloadCss.join('\n') + line.slice(headIndex)
+        lines[lineIndex] = line.slice(0, headIndex) + preloadCss.join('\n  ') + '\n' + line.slice(headIndex)
       } else {
         console.error('Head tag not found which is a requirement for preload css')
       }

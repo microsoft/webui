@@ -14,7 +14,8 @@ export default html`
   
   <div f-when="items.length > 5">You have more than 5 items!</div>
   
-  <div class="items" f-repeat="items" w-component="app-item"></div>
+  <div class="items" f-repeat="items" w-component="app-item">
+  </div>
   
   <div f-when="!items.length">No items to show</div>
 `

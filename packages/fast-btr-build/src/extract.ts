@@ -5,7 +5,7 @@ declare global {
     readFile: (path: string) => Promise<string[]>
     writeStreamResponse: (type: string, value: string, extra?: string) => void
     writeTemplates: (value: string) => void
-    writePreload: (type: string, value: string[]) => void
+    writePreload: (type: string, value: string[], lines: string[]) => Promise<string[]>
   }
 
   interface HTMLElement {
@@ -17,13 +17,13 @@ interface ExtractOptions {
   useLinkCss?: boolean
 }
 
-export async function extractHTML(options: ExtractOptions = {}) {
+export async function extractHTML(options: ExtractOptions = {}): Promise<string[]> {
   const lines: string[] = []
   let streamResponse: string[] = []
   const prefix = 'f-'
   const cssCache = new Map()
   const templateCache: BuildTimeRenderingStreamTemplateRecords = {}
-  const preloadCss = new Set()
+  const preloadCss = new Set<string>()
 
   /**
    * Reads the contents of a CSS file from the file system. Caches the result.
@@ -79,13 +79,31 @@ export async function extractHTML(options: ExtractOptions = {}) {
 
         const lines = []
         const templateNode = repeatNode.shadowRoot ? repeatNode.shadowRoot : repeatNode
-        const callback = {
-          addLine: (line: string) => {
+        const callback: VisitCall = {
+          addLine: (line: string | undefined, _indent?: string) => {
             if (!line || !line.trim()) return
             lines.push(line)
           },
           flushPlainResponse: () => {},
           flushStreamResponse: () => {},
+        }
+
+        let style = undefined
+        if (repeatNode.internalCssModule) {
+          if (options.useLinkCss) {
+            // callback.addLine(
+            //   `<link rel="stylesheet" href="${repeatNode.internalCssModule}">`,
+            //   '  ',
+            // )
+            preloadCss.add(repeatNode.internalCssModule)
+          } else {
+            const cssContents = await readCSS(repeatNode.internalCssModule)
+            style = cssContents.join('\n')
+
+            removeLinkTagIfExists(repeatNode)
+          }
+        } else {
+          console.error('No CSS Module found for', tag)
         }
 
         for (const child of Array.from(templateNode.childNodes)) {
@@ -94,22 +112,6 @@ export async function extractHTML(options: ExtractOptions = {}) {
           } else {
             lines.push(child.textContent?.trim())
           }
-        }
-
-        let style = undefined
-        if (repeatNode.internalCssModule) {
-          if (options.useLinkCss) {
-            callback.addLine(
-              `<link rel="stylesheet" href="${repeatNode.internalCssModule}">`,
-              '  ',
-            )
-            preloadCss.add(repeatNode.internalCssModule)
-          } else {
-            const cssContents = await readCSS(repeatNode.internalCssModule)
-            style = cssContents.join('\n')
-          }
-        } else {
-          console.error('No CSS Module found for', tag)
         }
 
         templateCache[tag] = {
@@ -123,8 +125,18 @@ export async function extractHTML(options: ExtractOptions = {}) {
     return undefined
   }
 
+  function removeLinkTagIfExists(node: HTMLElement) {
+    const selectorNode = node.shadowRoot ? node.shadowRoot : node
+    const linkCssExists = selectorNode.querySelector(
+      `link[rel="stylesheet"][href="${node.internalCssModule}"]`,
+    )
+    if (linkCssExists) {
+      linkCssExists.remove()
+    }
+  }
+
   interface VisitCall {
-    addLine: (line: string | undefined, indent: string) => void
+    addLine: (line: string | undefined, indent?: string) => void
     flushPlainResponse: () => void
     flushStreamResponse: (type: string, value: string, defaultValue?: string) => void
   }
@@ -137,7 +149,8 @@ export async function extractHTML(options: ExtractOptions = {}) {
    * @returns
    */
   async function visitNode(node: HTMLElement, callback: VisitCall, indent = '') {
-    let tag = '<' + node.nodeName.toLowerCase()
+    const nodeName = node.nodeName.toLowerCase()
+    let tag = '<' + nodeName
 
     // Print attributes
     const attributeFastMap = new Map()
@@ -187,10 +200,10 @@ export async function extractHTML(options: ExtractOptions = {}) {
         callback.addLine('<template shadowrootmode="open">', indent + '  ')
         if (node.internalCssModule) {
           if (options.useLinkCss) {
-            callback.addLine(
-              `<link rel="stylesheet" href="${node.internalCssModule}">`,
-              indent + '    ',
-            )
+            // callback.addLine(
+            //   `<link rel="stylesheet" href="${node.internalCssModule}">`,
+            //   indent + '    ',
+            // )
             preloadCss.add(node.internalCssModule)
           } else {
             let cssContents = await readCSS(node.internalCssModule)
@@ -201,6 +214,9 @@ export async function extractHTML(options: ExtractOptions = {}) {
                 indent + '    ',
               )
             }
+
+            // <style> tags is used to eliminate flickering. We can remove the link tag if it exists.
+            removeLinkTagIfExists(node)
           }
 
           // TODO: Doesn't work in Web Platform Yet.
@@ -228,7 +244,7 @@ export async function extractHTML(options: ExtractOptions = {}) {
 
       // If the node is a <template>, recurse on its content. Web Components that have an open shadowroot will not
       // have a <template> tag, so we don't need to worry about that case.
-      if (node.nodeName.toLowerCase() === 'template') {
+      if (nodeName === 'template') {
         for (const child of Array.from((node as HTMLTemplateElement).content.childNodes)) {
           if (child.nodeType === Node.ELEMENT_NODE) {
             await visitNode(child as HTMLElement, callback, indent + '  ')
@@ -239,8 +255,10 @@ export async function extractHTML(options: ExtractOptions = {}) {
       }
     }
 
-    // Print closing tag
-    callback.addLine('</' + node.nodeName.toLowerCase() + '>', indent)
+    // Print closing tag if needed.
+    if (nodeName !== 'link' && nodeName !== 'meta' && nodeName !== 'input' && nodeName !== 'img') {
+      callback.addLine('</' + nodeName + '>', indent)
+    }
 
     return lines
   }
