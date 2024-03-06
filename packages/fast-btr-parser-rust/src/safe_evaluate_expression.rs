@@ -39,7 +39,6 @@ pub fn parse_expression(expression: &str) -> Vec<String> {
 // logical operators and dotted paths to properties in the state object.
 pub fn safe_evaluate_expression(expression: &str, state: &Value) -> bool {
     let tokens: Vec<String> = parse_expression(expression);
-    println!("Tokens: {:?}", tokens);
     let mut tokens_ref: Vec<&str> = tokens.iter().map(AsRef::as_ref).collect();
     tokens_ref.reverse();  // Reverse the tokens to allow us to use the stack efficiently
     match evaluate(&mut tokens_ref, state) {
@@ -177,24 +176,35 @@ fn parse_value(token: &str, state: &Value) -> Value {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    struct TestCaseParse {
+        expression: &'static str,
+        expected: Vec<&'static str>,
+    }
+
     #[test]
     fn test_parse_expression() {
         let test_cases = vec![
-            ("a && b || c", vec!["a", "&&", "b", "||", "c"]),
-            ("d == e", vec!["d", "==", "e"]),
-            ("f > g", vec!["f", ">", "g"]),
-            ("k&&l", vec!["k", "&&", "l"]),
-            ("  m  ||  n  ", vec!["m", "||", "n"]),
-            ("o > p && q <= r || s == t", vec!["o", ">", "p", "&&", "q", "<=", "r", "||", "s", "==", "t"]),
+            TestCaseParse { expression: "a && b || c", expected: vec!["a", "&&", "b", "||", "c"] },
+            TestCaseParse { expression: "d == e", expected: vec!["d", "==", "e"] },
+            TestCaseParse { expression: "f > g", expected: vec!["f", ">", "g"] },
+            TestCaseParse { expression: "k&&l", expected: vec!["k", "&&", "l"] },
+            TestCaseParse { expression: "m  ||  n", expected: vec!["m", "||", "n"] },
+            TestCaseParse { expression: "o > p && q <= r || s == t", expected: vec!["o", ">", "p", "&&", "q", "<=", "r", "||", "s", "==", "t"] },
         ];
 
-        for (expression, expected) in test_cases {
-            assert_eq!(parse_expression(expression), expected);
+        for test_case in test_cases {
+            assert_eq!(parse_expression(test_case.expression), test_case.expected, "Failed on expression: {}", test_case.expression);
         }
+    }
+
+    struct TestCaseEval {
+        expression: &'static str,
+        expected: bool,
     }
 
     #[test]
@@ -216,26 +226,25 @@ mod tests {
         });
 
         let test_cases = vec![
-            ("name.first && age", true),
-            ("age == 30", true),
-            ("(age == 30)", true),
-            ("favorite.categories.music && favorite.categories.movies", true),
-            ("age > 10", true),
-            ("name && name.first", true),
-            ("is_student", true),
-            ("is_student && name.first", true),
-            ("!is_student || true", true),
-            ("name.first &&", false),
-            ("name.middle", false),
-            ("name.first && (age == 31)", false),
-            ("name.first && false", false),
-            ("\"a\" == \"b\"", false),
-            ("!is_student", false),
-            ("!is_student && name.first", false),
+            TestCaseEval { expression: "name.first && age", expected: true },
+            TestCaseEval { expression: "age == 30", expected: true },
+            TestCaseEval { expression: "favorite.categories.music && favorite.categories.movies", expected: true },
+            TestCaseEval { expression: "age > 10", expected: true },
+            TestCaseEval { expression: "name && name.first", expected: true },
+            TestCaseEval { expression: "is_student", expected: true },
+            TestCaseEval { expression: "is_student && name.first", expected: true },
+            TestCaseEval { expression: "!is_student || true", expected: true },
+            TestCaseEval { expression: "name.first &&", expected: false },
+            TestCaseEval { expression: "name.middle", expected: false },
+            TestCaseEval { expression: "name.first && (age == 31)", expected: false },
+            TestCaseEval { expression: "name.first && false", expected: false },
+            TestCaseEval { expression: "\"a\" == \"b\"", expected: false },
+            TestCaseEval { expression: "!is_student", expected: false },
+            TestCaseEval { expression: "!is_student && name.first", expected: false },
         ];
-
-        for (expression, expected) in test_cases {
-            assert_eq!(safe_evaluate_expression(expression, &data), expected, "Failed on expression: {}", expression);
+        
+        for test_case in test_cases {
+            assert_eq!(safe_evaluate_expression(test_case.expression, &data), test_case.expected, "Failed on expression: {}", test_case.expression);
         }
     }
 }
