@@ -64,9 +64,7 @@ function SetupWhenAttribute(component: FASTElement, whenValue: string, node: Ele
     }
   })
 
-  console.log('parts', parts)
   function updateDisplay() {
-    console.log('updateDisplay', parts)
     const value = safeEvaluateExpression(parts, component)
     const element = node as HTMLElement
     element.style.display = value ? 'block' : 'none'
