@@ -142,11 +142,11 @@ function SetupAttributes(component: FASTElement, node: Element) {
         default: {
           if (key.startsWith('on')) {
             SetupEventAttribute(component, attr.value, node, key.substring(2).toLowerCase())
-            break;
+            break
           }
 
           console.warn(`Attribute ${key} not found`)
-          break;
+          break
         }
       }
     }

@@ -11,7 +11,7 @@ export class AppHeaderElement extends FASTElement {
   onChangeTitle() {
     this.appTitle = 'Demo time!'
     if (this.headerElement) {
-      this.headerElement.style.color = 'red';
+      this.headerElement.style.color = 'red'
     }
   }
 }
