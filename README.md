@@ -143,10 +143,10 @@ pnpm serve
 
 #### The BTR Build in TypeScript
 
-- **packages/fast-btr-build**: The BTR Build process, that converts a single page application into a build time rendered application. Produces the protocol json file.
-- **packages/fast-btr-eval**: The BTR Expression Evaluator and Object query.
+- **packages/fast-btr-build-js**: The BTR Build process, that converts a single page application into a build time rendered application. Produces the protocol json file.
+- **packages/fast-btr-eval-js**: The BTR Expression Evaluator and Object query.
 - **packages/fast-btr-parser-js**: The JavaScript Parser for the BTR protocol. Used when streaming a request. Useful for Node/Bun/JS/Service Workers.
-- **packages/fast-btr-protocol**: The TypeScript bindings for the protocol response.
+- **packages/fast-btr-protocol-js**: The TypeScript bindings for the protocol response.
 
 #### The BTR Parser in Rust
 

@@ -1,4 +1,4 @@
-import type { BuildTimeRenderingStreamTemplateRecords } from '@internal/fast-btr-protocol'
+import type { BuildTimeRenderingStreamTemplateRecords } from '@internal/fast-btr-protocol-js'
 
 declare global {
   interface Window {

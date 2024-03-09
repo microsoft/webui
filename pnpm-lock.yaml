@@ -27,10 +27,10 @@ importers:
         specifier: ^10.3.0
         version: 10.3.0
       typescript:
-        specifier: ^5.3.3
-        version: 5.3.3
+        specifier: ^5.4.2
+        version: 5.4.2
 
-  apps/example-btr-server:
+  apps/example-btr-server-js:
     dependencies:
       '@internal/fast-btr-parser-js':
         specifier: workspace:*
@@ -42,9 +42,9 @@ importers:
         specifier: ^4.18.2
         version: 4.18.2
     devDependencies:
-      '@internal/fast-btr-protocol':
+      '@internal/fast-btr-protocol-js':
         specifier: workspace:*
-        version: link:../../packages/fast-btr-protocol
+        version: link:../../packages/fast-btr-protocol-js
       '@types/express':
         specifier: ^4.17.21
         version: 4.17.21
@@ -64,7 +64,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/fast-element
 
-  packages/fast-btr-build:
+  packages/fast-btr-build-js:
     dependencies:
       commander:
         specifier: ^12.0.0
@@ -79,9 +79,9 @@ importers:
         specifier: ^1.41.2
         version: 1.41.2
     devDependencies:
-      '@internal/fast-btr-protocol':
+      '@internal/fast-btr-protocol-js':
         specifier: workspace:*
-        version: link:../fast-btr-protocol
+        version: link:../fast-btr-protocol-js
       '@types/express':
         specifier: ^4.17.21
         version: 4.17.21
@@ -89,26 +89,26 @@ importers:
         specifier: ^20.11.17
         version: 20.11.17
 
-  packages/fast-btr-eval: {}
+  packages/fast-btr-eval-js: {}
 
   packages/fast-btr-parser-js:
     devDependencies:
-      '@internal/fast-btr-eval':
+      '@internal/fast-btr-eval-js':
         specifier: workspace:*
-        version: link:../fast-btr-eval
-      '@internal/fast-btr-protocol':
+        version: link:../fast-btr-eval-js
+      '@internal/fast-btr-protocol-js':
         specifier: workspace:*
-        version: link:../fast-btr-protocol
+        version: link:../fast-btr-protocol-js
 
   packages/fast-btr-parser-rust: {}
 
-  packages/fast-btr-protocol: {}
+  packages/fast-btr-protocol-js: {}
 
   packages/fast-element:
     dependencies:
-      '@internal/fast-btr-eval':
+      '@internal/fast-btr-eval-js':
         specifier: workspace:*
-        version: link:../fast-btr-eval
+        version: link:../fast-btr-eval-js
 
 packages:
 
@@ -1534,8 +1534,8 @@ packages:
       mime-types: 2.1.35
     dev: false
 
-  /typescript@5.3.3:
-    resolution: {integrity: sha512-pXWcraxM0uxAS+tN0AG/BF2TyqmHO014Z070UsJ+pFvYuRSq8KH8DmWpnbXe0pEPDHXZV3FcAbJkijJ5oNEnWw==}
+  /typescript@5.4.2:
+    resolution: {integrity: sha512-+2/g0Fds1ERlP6JsakQQDXjZdZMM+rqpamFZJEKh4kwTIn3iDkgKtby0CeNd5ATNZ4Ry1ax15TMx0W2V+miizQ==}
     engines: {node: '>=14.17'}
     hasBin: true
     dev: true

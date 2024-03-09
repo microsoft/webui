@@ -1,5 +1,5 @@
 {
-  "name": "@internal/fast-btr-eval",
+  "name": "@internal/fast-btr-eval-js",
   "version": "1.0.0",
   "description": "Internal Safe Eval for BRT",
   "main": "./dist/index.js",

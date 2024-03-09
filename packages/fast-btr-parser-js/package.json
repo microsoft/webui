@@ -9,7 +9,7 @@
     "build": "esbuild ./src/index.ts --bundle --outdir=./dist --sourcemap --format=esm --target=esnext"
   },
   "devDependencies": {
-    "@internal/fast-btr-protocol": "workspace:*",
-    "@internal/fast-btr-eval": "workspace:*"
+    "@internal/fast-btr-protocol-js": "workspace:*",
+    "@internal/fast-btr-eval-js": "workspace:*"
   }
 }

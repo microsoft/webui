@@ -5,8 +5,8 @@
   "scripts": {
     "build": "pnpm --stream -r --parallel run build",
     "start": "pnpm --filter @example/shadowdom run start",
-    "serve": "pnpm --filter @example/btr run start ./apps/example-shadowdom-app/dist",
-    "btr": "pnpm --filter @internal/fast-btr-build run start ./apps/example-shadowdom-app/dist",
+    "serve": "pnpm --filter @example/btr-server-js run start ./apps/example-shadowdom-app/dist",
+    "btr": "pnpm --filter @internal/fast-btr-build-js run start ./apps/example-shadowdom-app/dist",
     "format": "dprint fmt --config dprint.json"
   },
   "devDependencies": {
@@ -16,6 +16,6 @@
     "esbuild-plugin-copy": "^2.1.1",
     "esbuild-register": "^3.5.0",
     "mocha": "^10.3.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.4.2"
   }
 }

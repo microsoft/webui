@@ -1,4 +1,4 @@
-import { OPERATORS, findValueByDottedPath, parseExpression, safeEvaluateExpression } from '@internal/fast-btr-eval'
+import { OPERATORS, findValueByDottedPath, parseExpression, safeEvaluateExpression } from '@internal/fast-btr-eval-js'
 import type { FASTElement } from './fast-element.js'
 export { observer } from './observer.js'
 

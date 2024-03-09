@@ -1,5 +1,5 @@
 import { handleBTR } from '@internal/fast-btr-parser-js'
-import type { BuildTimeRenderingProtocol } from '@internal/fast-btr-protocol'
+import type { BuildTimeRenderingProtocol } from '@internal/fast-btr-protocol-js'
 import express from 'express'
 import { existsSync, readFileSync, writeFile } from 'node:fs'
 import { join, resolve } from 'node:path'

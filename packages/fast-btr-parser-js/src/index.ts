@@ -1,6 +1,6 @@
-import { findValueByDottedPath, parseExpression, safeEvaluateExpression } from '@internal/fast-btr-eval'
+import { findValueByDottedPath, parseExpression, safeEvaluateExpression } from '@internal/fast-btr-eval-js'
 
-import type { BuildTimeRenderingProtocol } from '@internal/fast-btr-protocol'
+import type { BuildTimeRenderingProtocol } from '@internal/fast-btr-protocol-js'
 
 export interface ServerHandler {
   write: (value: string) => void
