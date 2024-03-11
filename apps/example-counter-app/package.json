@@ -1,0 +1,14 @@
+{
+  "name": "@example/counter-app",
+  "version": "1.0.0",
+  "description": "",
+  "main": "./dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "node build.js",
+    "start": "node start.js"
+  },
+  "dependencies": {
+    "@internal/fast-element": "workspace:*"
+  }
+}
