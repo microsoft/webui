@@ -135,6 +135,9 @@ pnpm build
 # Runs the BTR process on the @example/shadowdom-app
 pnpm btr
 
+# OR you can generate <link> instead of <style> transformations
+pnpm btr --use-link-css
+
 # Serves the website for @example/shadowdom-app
 pnpm serve
 ```
@@ -155,3 +158,8 @@ pnpm serve
 #### The BTR Hydration
 
 - **packages/fast-element**: We have developed a prototype for a compact web components framework. This framework hydrates the declarative bindings (`f-when`, `f-signal`, `f-repeat`) to its `@observable` within the Web Component. The entire framework is lightweight, with a total size of 3.4KB, which compresses down to just 1.7KB when gzipped.
+
+#### The BTR Example Application
+
+- **apps/example-shadowdom-app**: The TODO App using the FASTElement framework with BTR Hints.
+- **apps/example-btr-server-js**: The TODO App BTR Server that streams the BTR protocol
