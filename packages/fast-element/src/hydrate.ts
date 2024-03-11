@@ -34,19 +34,17 @@ function SetupSignalAttribute(component: FASTElement, signalValue: string, node:
   // This could be improved to support objects with slots.
   if (signalValueSplits.length === 1) {
     // Make sure emitting the contents of the node if any nodes exists, including text nodes.
-    if (owningNode.childNodes.length > 0) {
+    if (signal.value === undefined || (owningNode.nodeType === Node.ELEMENT_NODE && owningNode.childNodes.length > 0)) {
       signal.emit(owningNode.textContent?.trim())
-    } else {
+    } else if (signal.value !== undefined) {
       // Update display for the initial value of the signal.
-      updateDisplay()
+      owningNode.textContent = signal.value
     }
   }
 
-  function updateDisplay() {
+  signal.on((_value: string | number) => {
     owningNode.textContent = findValueByDottedPath(signalValue, component)
-  }
-
-  signal.on((_value: string | number) => updateDisplay())
+  })
 }
 
 function SetupEventAttribute(component: FASTElement, eventValue: string, node: Element, eventName: string) {
