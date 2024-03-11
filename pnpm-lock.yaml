@@ -52,12 +52,6 @@ importers:
         specifier: ^20.11.17
         version: 20.11.17
 
-  apps/example-lightdom-app:
-    dependencies:
-      '@internal/fast-element':
-        specifier: workspace:*
-        version: link:../../packages/fast-element
-
   apps/example-shadowdom-app:
     dependencies:
       '@internal/fast-element':
