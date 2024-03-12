@@ -1,5 +1,5 @@
 import esbuild from 'esbuild'
-import copy from 'esbuild-plugin-copy'
+import { AssetPair, copy } from 'esbuild-plugin-copy'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -22,7 +22,7 @@ function buildBaseOptions(entryPoint: string, out: string): esbuild.BuildOptions
 function buildWebOptions(entryPoint: string, out: string, www?: string): esbuild.BuildOptions {
   const config = buildBaseOptions(entryPoint, out)
   const entryPointDir = path.dirname(entryPoint)
-  const assets: copy.AssetPair[] = [
+  const assets: AssetPair[] = [
     {
       from: [`${entryPointDir}/**/*.html`, `${entryPointDir}/**/*.css`],
       to: [out],
