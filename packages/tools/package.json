@@ -1,14 +1,13 @@
 {
   "name": "@btjs/tools",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "BTJS Tools",
   "main": "./dist/index.js",
   "type": "module",
   "files": ["dist"],
   "scripts": {
     "build": "esbuild ./src/*.ts --outdir=./dist --sourcemap --format=esm --target=esnext --platform=node",
-    "start": "node ./dist/index.js",
-    "postinstall": "npm run build"
+    "start": "node ./dist/index.js"
   },
   "bin": {
     "btr": "./dist/index.js"
