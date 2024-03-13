@@ -16,7 +16,10 @@
   },
   "excludes": [
     "**/node_modules",
-    "**/*-lock.json"
+    "**/*-lock.json",
+    "**/dist",
+    "**/.history",
+    "**/.turbo"
   ],
   "plugins": [
     "https://plugins.dprint.dev/typescript-0.88.7.wasm",
