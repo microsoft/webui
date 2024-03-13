@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "build": "pnpm --stream -r --parallel run build",
-    "test": "pnpm --stream -r --parallel run test",
+    "clean": "pnpm --stream -r run clean",
+    "build": "pnpm --stream -r run build",
+    "test": "pnpm --stream -r run test",
     "start": "pnpm --filter @example/counter-app run start:dev",
     "serve": "pnpm --filter @example/counter-app run start:btr",
     "format": "dprint fmt --config dprint.json"
@@ -16,6 +17,7 @@
     "esbuild": "^0.20.1",
     "esbuild-register": "^3.5.0",
     "mocha": "^10.3.0",
+    "rimraf": "^5.0.5",
     "typescript": "^5.4.2"
   }
 }

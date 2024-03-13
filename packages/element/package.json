@@ -1,13 +1,16 @@
 {
   "name": "@btjs/element",
-  "version": "1.0.1",
-  "description": "The HTML Element for the BTJS Web Components Framework",
-  "main": "./src/index.ts",
+  "version": "1.0.2",
+  "description": "BTJS Element Library",
+  "main": "./dist/index.js",
+  "types": "./dist/dts/index.d.ts",
   "type": "module",
   "files": ["dist"],
   "scripts": {
-    "build": "esbuild ./src/index.ts --bundle --minify --outdir=./dist --sourcemap --format=esm --target=esnext",
-    "serve": "esbuild --serve index.ts --bundle --servedir=."
+    "clean": "rimraf -rf dist",
+    "build": "npm run clean && npm run typings && esbuild ./src/index.ts --bundle --minify --outdir=./dist --sourcemap --format=esm --target=esnext",
+    "serve": "esbuild --serve index.ts --bundle --servedir=.",
+    "typings": "tsc"
   },
   "dependencies": {
     "@btjs/eval-js": "workspace:*"

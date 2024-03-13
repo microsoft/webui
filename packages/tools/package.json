@@ -1,13 +1,16 @@
 {
   "name": "@btjs/tools",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "BTJS Tools",
   "main": "./dist/index.js",
+  "types": "./dist/dts/index.d.ts",
   "type": "module",
   "files": ["dist"],
   "scripts": {
-    "build": "esbuild ./src/*.ts --outdir=./dist --sourcemap --format=esm --target=esnext --platform=node",
-    "start": "node ./dist/index.js"
+    "clean": "rimraf -rf dist",
+    "build": "npm run clean && npm run typings && esbuild ./src/*.ts --outdir=./dist --sourcemap --format=esm --target=esnext --platform=node",
+    "start": "node ./dist/index.js",
+    "typings": "tsc"
   },
   "bin": {
     "btr": "./dist/index.js"

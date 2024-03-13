@@ -1,13 +1,15 @@
 {
   "name": "@btjs/parser-js",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Build time rendering parser",
   "main": "./dist/index.js",
-  "types": "./src/index.ts",
+  "types": "./dist/dts/index.d.ts",
   "type": "module",
   "files": ["dist"],
   "scripts": {
-    "build": "esbuild ./src/index.ts --bundle --outdir=./dist --sourcemap --format=esm --target=esnext"
+    "clean": "rimraf -rf dist",
+    "build": "npm run clean && npm run typings && esbuild ./src/index.ts --bundle --outdir=./dist --sourcemap --format=esm --target=esnext",
+    "typings": "tsc"
   },
   "devDependencies": {
     "@btjs/protocol-js": "workspace:*",

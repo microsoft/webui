@@ -1,13 +1,15 @@
 {
   "name": "@btjs/eval-js",
-  "version": "1.0.1",
-  "description": "Bindings for evalulating expressions",
+  "version": "1.0.2",
+  "description": "BTJS Safge Expression Evaluation",
   "main": "./dist/index.js",
-  "types": "./src/index.ts",
+  "types": "./dist/dts/index.d.ts",
   "type": "module",
   "files": ["dist"],
   "scripts": {
-    "build": "esbuild ./src/index.ts --bundle --outdir=./dist --sourcemap --format=esm --target=esnext",
-    "test": "mocha -r esbuild-register '**/*.spec.ts'"
+    "clean": "rimraf -rf dist",
+    "build": "npm run clean && npm run typings && esbuild ./src/index.ts --bundle --outdir=./dist --sourcemap --format=esm --target=esnext",
+    "test": "mocha -r esbuild-register '**/*.spec.ts'",
+    "typings": "tsc"
   }
 }

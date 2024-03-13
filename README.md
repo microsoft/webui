@@ -187,7 +187,6 @@ pnpm serve
 - **apps/example-todo-app**: The TODO App using the FASTElement framework with BTR Hints.
 - **apps/example-counter-app**: The Counter App using the FASTElement framework with BTR Hints.
 
-
 #### The BTR Server Implementations
 
 - **packages/server-express**: The BTR Server implemenation.

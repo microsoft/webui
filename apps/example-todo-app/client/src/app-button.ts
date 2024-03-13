@@ -6,7 +6,7 @@ export class AppButton extends FASTElement {
     return ['appearance']
   }
 
-  attributeChangedCallback(name: string, oldValue: string, newValue: string) {
+  attributeChangedCallback(name: string, _oldValue: string, newValue: string) {
     if (name === 'appearance') {
       this.updateStyle(newValue)
     }
