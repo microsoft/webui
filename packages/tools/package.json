@@ -1,6 +1,6 @@
 {
   "name": "@btjs/tools",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "BTJS Tools",
   "main": "./dist/index.js",
   "types": "./dist/dts/index.d.ts",
@@ -26,6 +26,11 @@
     "express": "^4.18.2",
     "glob": "^10.3.10",
     "playwright": "^1.41.2",
-    "playwright-core": "^1.41.2"
+    "playwright-core": "^1.41.2",
+    "rimraf": "^5.0.5"
+  },
+  "peerDependencies": {
+    "esbuild": "^0.20.1",
+    "typescript": "^5.4.2"
   }
 }
