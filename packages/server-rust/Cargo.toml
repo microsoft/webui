@@ -1,0 +1,13 @@
+[package]
+name = "btjs-server"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+serde_json = "1.0.114"
+btjs_parser = { path = "../parser-rust" }
+hyper = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["full"] }
+mime_guess = "2.0.4"

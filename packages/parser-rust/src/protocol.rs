@@ -3,8 +3,8 @@ use std::fs::File;
 use std::io::BufReader;
 use std::collections::HashMap;
 
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum BuildTimeRenderingStream {
     Raw(BuildTimeRenderingStreamRaw),
     Repeat(BuildTimeRenderingStreamRepeat),
@@ -12,30 +12,30 @@ pub enum BuildTimeRenderingStream {
     When(BuildTimeRenderingStreamWhen),
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BuildTimeRenderingStreamRaw {
     pub value: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BuildTimeRenderingStreamRepeat {
     pub value: String,
     pub template: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BuildTimeRenderingStreamSignal {
     pub value: String,
     #[serde(rename = "defaultValue")]
     pub default_value: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BuildTimeRenderingStreamWhen {
     pub value: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BuildTimeRenderingTemplate {
     pub style: Option<String>,
     pub template: String,
@@ -43,7 +43,7 @@ pub struct BuildTimeRenderingTemplate {
 
 pub type BuildTimeRenderingStreamTemplateRecords = HashMap<String, BuildTimeRenderingTemplate>;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BuildTimeRenderingProtocol {
     pub streams: Vec<BuildTimeRenderingStream>,
     pub templates: BuildTimeRenderingStreamTemplateRecords,

@@ -1,6 +1,6 @@
 [package]
-name = "btjs-parser"
-version = "0.1.0"
+name = "btjs_parser"
+version = "1.0.0"
 edition = "2021"
 
 [dependencies]
