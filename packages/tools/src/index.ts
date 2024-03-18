@@ -14,12 +14,14 @@ program
   .description('Start the development server')
   .option('-p, --port <port>', 'Port to serve the app', (value) => parseInt(value, 10), 3000)
   .option('--www <www>', 'Public directory to serve')
+  .option('--plugin <pluginPath>', 'Custom plugin to run post build')
   .action((entryPoint, options) => HandleServe(entryPoint, options))
 
 program
   .command('build-client <entryPoint>')
   .description('Build the app')
   .option('--www <www>', 'Public directory to serve')
+  .option('--plugin <pluginPath>', 'Custom plugin to run post build')
   .action((entryPoint, options) => HandleWebBuild(entryPoint, options))
 
 program

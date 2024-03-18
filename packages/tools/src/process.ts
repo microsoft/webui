@@ -40,8 +40,6 @@ export function HandleBuild(appPath: string, options: BuildOptions) {
     page.on('console', msg => {
       if (msg.type() === 'error') {
         console.log('ERROR:', msg.text())
-      } else {
-        console.log('LOG:', msg.text())
       }
     })
 

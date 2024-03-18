@@ -3,12 +3,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { CopyAsset, copyPlugin } from './copy-plugin.js'
 import { HandleBuild } from './process.js'
+import { BTRPlugin } from './plugin-interface.js'
+import { pathToFileURL } from 'node:url'
 
 interface Options {
   port: number
   out: string
   www?: string
   client?: string
+  plugin?: string
 }
 
 function buildBaseOptions(entryPoint: string, out: string): esbuild.BuildOptions {
@@ -18,34 +21,45 @@ function buildBaseOptions(entryPoint: string, out: string): esbuild.BuildOptions
     format: 'esm',
     target: 'esnext',
     outdir: out,
+    loader: {
+      '.png': 'dataurl'
+    }
   }
 }
 
-function buildWebOptions(entryPoint: string, out: string, www?: string): esbuild.BuildOptions {
-  const config = buildBaseOptions(entryPoint, out)
+async function buildWebOptions(entryPoint: string, options: Options): Promise<esbuild.BuildOptions> {
+  const config = buildBaseOptions(entryPoint, options.out)
   const entryPointDir = path.dirname(entryPoint)
   const assets: CopyAsset[] = [
     {
       from: [`${entryPointDir}/**/*.html`, `${entryPointDir}/**/*.css`],
-      to: [out],
+      to: [options.out],
       flatten: true,
     },
   ]
 
-  if (www) {
+  if (options.www) {
     assets.push({
-      from: [`${www}/**/*`],
-      to: [out],
+      from: [`${options.www}/**/*`],
+      to: [options.out],
       flatten: true,
     })
+  }
+
+  let customPlugin: BTRPlugin | undefined
+  if (options.plugin) {
+    const pluginPathAbsolute = path.resolve(process.env['INIT_CWD'] || process.cwd(), options.plugin);
+    const pluginPathURL = pathToFileURL(pluginPathAbsolute).href;
+    const plugin = await import(pluginPathURL);
+    customPlugin = plugin.default()
   }
 
   return {
     ...config,
     bundle: true,
-    outdir: out,
+    outdir: options.out,
     plugins: [
-      copyPlugin(assets),
+      copyPlugin(assets, customPlugin),
     ],
   }
 }
@@ -59,7 +73,7 @@ function buildNodeOptions(entryPoint: string, out: string): esbuild.BuildOptions
 }
 
 export async function HandleServe(entryPoint: string, options: Options) {
-  const config = buildWebOptions(entryPoint, options.out, options.www)
+  const config = await buildWebOptions(entryPoint, options)
   const context = await esbuild.context(config)
 
   await context.watch()
@@ -76,7 +90,7 @@ export async function HandleServe(entryPoint: string, options: Options) {
 }
 
 export async function HandleWebBuild(entryPoint: string, options: Options) {
-  const config = buildWebOptions(entryPoint, options.out, options.www)
+  const config = await buildWebOptions(entryPoint, options)
   config.minify = true
   config.metafile = true
 
@@ -99,7 +113,7 @@ export async function HandleWebBuild(entryPoint: string, options: Options) {
 export async function HandleNodeBuild(entryPoint: string, options: Options) {
   const config = buildNodeOptions(entryPoint, options.out)
   await esbuild.build(config).catch(() => process.exit(1))
-  HandleBuild(options.client!, { port: 3001, useLinkCss: false })
+  HandleBuild(options.client!, { port: 3001, useLinkCss: true })
 }
 
 function getFileSizeInBytes(path: string): number {

@@ -12,6 +12,16 @@ const po = new PerformanceObserver((entryList) => {
 
   for (const entry of entryList.getEntriesByName('first-contentful-paint')) {
     console.log(`FCP: ${entry.startTime.toFixed(2)}ms`)
+    const fcpWidget = document.createElement('div')
+    fcpWidget.style.position = 'fixed'
+    fcpWidget.style.bottom = '0'
+    fcpWidget.style.right = '0'
+    fcpWidget.style.backgroundColor = 'white'
+    fcpWidget.style.padding = '10px'
+    fcpWidget.style.border = '1px solid black'
+    fcpWidget.style.zIndex = '999'
+    fcpWidget.textContent = `FCP: ${entry.startTime.toFixed(2)}ms`
+    document.body.appendChild(fcpWidget)
   }
 
   for (const entry of entryList.getEntriesByType('largest-contentful-paint')) {
