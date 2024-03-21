@@ -176,6 +176,9 @@ function SetupAttributes(component: FASTElement, node: Element) {
     if (attr.name.startsWith(PREFIX)) {
       const key = attr.name.substring(PREFIX.length)
       switch (key) {
+        case 'template': {
+          break
+        }
         case 'signal': {
           SetupSignalAttribute(component, attr.value, node)
           break

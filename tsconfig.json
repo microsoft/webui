@@ -25,5 +25,6 @@
     "useUnknownInCatchVariables": true,
     "noPropertyAccessFromIndexSignature": true,
     "outDir": "dist"
-  }
+  },
+  "exclude": ["**/*.spec.ts"]
 }

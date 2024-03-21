@@ -64,7 +64,7 @@ export function HandleBuild(appPath: string, options: BuildOptions) {
       })
     })
 
-    await page.exposeFunction('writeStreamResponse', (type: string, value: string, extra: string, detail: string) => {
+    await page.exposeFunction('writeStreamResponse', (type: string, value: string, extra?: string, detail?: string) => {
       if (type === 'repeat') {
         streamResponses.push({ type, value, template: extra })
       } else if (type === 'signal') {
