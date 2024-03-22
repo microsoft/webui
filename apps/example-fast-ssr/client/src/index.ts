@@ -1,1 +1,1 @@
-import './counter-element.js'
+export * from './counter-element.js'

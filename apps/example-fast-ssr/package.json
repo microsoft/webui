@@ -7,7 +7,7 @@
     "build": "npm run clean && npm run build:client && npm run build:server",
     "build:client": "btr build-client ./client/src/index.ts --www ./client/www --out ./dist/client",
     "build:server": "btr build-server ./server/server.ts --out ./dist/server --client ./dist/client",
-    "start": "node ./dist/server/server.js"
+    "start": "node ./dist/server/server.js ./dist/client"
   },
   "dependencies": {
     "@microsoft/fast-element": "2.0.0-beta.26"
