@@ -10,6 +10,7 @@
     "clean": "rimraf -rf dist",
     "build": "npm run clean && npm run typings && esbuild ./src/index.ts --bundle --minify --outdir=./dist --sourcemap --format=esm --target=esnext",
     "serve": "esbuild --serve index.ts --bundle --servedir=.",
+    "test": "mocha -r esbuild-register '**/*.spec.ts'",
     "typings": "tsc"
   },
   "dependencies": {
