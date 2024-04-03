@@ -67,10 +67,11 @@ export function HandleServe(appPath: string, port: number) {
     state.flush()
   })
 
+  const renderInfo = templateRenderer.createRenderInfo()
   server.app.get('/', (_req, res) => {
     console.time('render')
     res.type('html')
-    const result = templateRenderer.render(fileContent, templateRenderer.createRenderInfo(), state.data)
+    const result = templateRenderer.render(fileContent, renderInfo, state.data)
     for (const value of result) {
       res.write(value.toString())
     }
