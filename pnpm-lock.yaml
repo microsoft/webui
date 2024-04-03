@@ -58,8 +58,8 @@ importers:
   apps/example-fast-ssr:
     dependencies:
       '@microsoft/fast-element':
-        specifier: 1.12.0
-        version: 1.12.0
+        specifier: 2.0.0-beta.26
+        version: 2.0.0-beta.26
     devDependencies:
       '@btjs/server-express':
         specifier: workspace:*
@@ -68,8 +68,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/tools
       '@microsoft/fast-ssr':
-        specifier: 1.0.0-beta.2
-        version: 1.0.0-beta.2(@microsoft/fast-element@1.12.0)
+        specifier: 1.0.0-beta.32
+        version: 1.0.0-beta.32(@microsoft/fast-element@2.0.0-beta.26)
 
   apps/example-todo-app:
     dependencies:
@@ -647,15 +647,15 @@ packages:
       wrap-ansi: 8.1.0
       wrap-ansi-cjs: /wrap-ansi@7.0.0
 
-  /@microsoft/fast-element@1.12.0:
-    resolution: {integrity: sha512-gQutuDHPKNxUEcQ4pypZT4Wmrbapus+P9s3bR/SEOLsMbNqNoXigGImITygI5zhb+aA5rzflM6O8YWkmRbGkPA==}
+  /@microsoft/fast-element@2.0.0-beta.26:
+    resolution: {integrity: sha512-t4x7mlNZdLHg5mTeNAiH9+lpTNFiZTpZZk/YsRGwNBKlw6mEBGT5zYRfQq5X3WhRbXafKmIa4V+etA1kP0ebWw==}
 
-  /@microsoft/fast-ssr@1.0.0-beta.2(@microsoft/fast-element@1.12.0):
-    resolution: {integrity: sha512-AdUp2WhfShY5hvlDkafV6M++M8fU8Yxu2cCgDDuBYxlVPGxIjGfORCfQHySwHj6zqM9D1RJXZyrgnGVE70by9A==}
+  /@microsoft/fast-ssr@1.0.0-beta.32(@microsoft/fast-element@2.0.0-beta.26):
+    resolution: {integrity: sha512-1F1Bphyt1Y5E37xce2FHd/JQ2f+wm0iGjy3BenqGSYYO6EOYfnz86BBz6J7PMq2K5Gmhni/d8Ya1SPzt/J4QrQ==}
     peerDependencies:
-      '@microsoft/fast-element': ^2.0.0-beta.1
+      '@microsoft/fast-element': ^2.0.0-beta.26
     dependencies:
-      '@microsoft/fast-element': 1.12.0
+      '@microsoft/fast-element': 2.0.0-beta.26
       parse5: 6.0.1
       tslib: 2.6.2
     dev: true
