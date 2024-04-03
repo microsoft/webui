@@ -3,11 +3,15 @@ import type { BuildTimeRenderingProtocol } from '@btjs/protocol-js'
 import express from 'express'
 import { existsSync, readFileSync } from 'node:fs'
 
+export interface ServeStaticOptions {
+  maxAge?: number | string
+}
+
 export class BTRServer {
   #app: express.Express
   #handlerMap = new Map<string, BuildTimeRenderingProtocol>()
 
-  constructor(public appPath: string, public port: number) {
+  constructor(public appPath: string, public port: number, public options?: ServeStaticOptions) {
     this.#app = express()
     this.#app.use(express.json())
   }
@@ -15,7 +19,7 @@ export class BTRServer {
   public async start() {
     // Default state should done at the end so the default endpoints are served first
     // for example when hitting `/` it should let BTR take control first instead of index.html.
-    this.#app.use(express.static(this.appPath))
+    this.#app.use(express.static(this.appPath, { maxAge: this.options?.maxAge || '1d' }))
     this.#app.listen(this.port, async () => {
       console.log(`BTR Server is listening on port http://localhost:${this.port}`)
     })
