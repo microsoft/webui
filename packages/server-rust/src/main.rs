@@ -111,25 +111,25 @@ impl BTRServer {
         let app_path = self.app_path.clone();
 
         loop {
-            let (stream, _) = listener.accept().await?;
-            let io = TokioIo::new(stream);
-            let http = http1::Builder::new();
+            let (stream, who) = listener.accept().await?;
             let handlers_clone = Arc::clone(&handlers);
             let app_path_clone = app_path.clone();
-            let serve_conn = http.serve_connection(
-                io,
-                service_fn(move |req| {
-                    Self::handle_request(Arc::clone(&handlers_clone), req, app_path_clone.clone())
-                }),
-            );
 
-            let handle = tokio::spawn(async {
-                if let Err(err) = serve_conn.await {
-                    eprintln!("server connection error: {}", err);
+            tokio::task::spawn(async move {
+                if let Err(err) = http1::Builder::new()
+                    .serve_connection(
+                        TokioIo::new(stream),
+                        service_fn(move |req| {
+                            let handlers_clone = handlers_clone.clone();
+                            let app_path_clone = app_path_clone.clone();
+                            BTRServer::handle_request(handlers_clone, req, app_path_clone)
+                        }),
+                    )
+                    .await
+                {
+                    eprintln!("Error serving connection from {who}: {err}");
                 }
             });
-
-            let _ = handle.await;
         }
     }
 }
