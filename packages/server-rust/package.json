@@ -6,6 +6,7 @@
   "private": true,
   "scripts": {
     "build": "cargo build --release",
-    "test": "cargo test"
+    "test": "cargo test",
+    "start": "cargo run"
   }
 }
