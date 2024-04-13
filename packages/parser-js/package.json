@@ -1,6 +1,6 @@
 {
   "name": "@btjs/parser-js",
-  "version": "1.0.4",
+  "version": "1.0.10",
   "description": "Build time rendering parser",
   "main": "./dist/index.js",
   "types": "./dist/dts/index.d.ts",

@@ -1,6 +1,6 @@
 {
   "name": "@btjs/server-express",
-  "version": "1.0.2",
+  "version": "1.0.10",
   "description": "Express server for BTJS",
   "main": "./dist/index.js",
   "types": "./dist/dts/index.d.ts",
