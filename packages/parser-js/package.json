@@ -8,7 +8,7 @@
   "files": ["dist"],
   "scripts": {
     "clean": "rimraf -rf dist",
-    "build": "npm run clean && npm run typings && esbuild ./src/index.ts --bundle --outdir=./dist --sourcemap --format=esm --target=esnext",
+    "build": "pnpm run clean && pnpm run typings && esbuild ./src/index.ts --bundle --outdir=./dist --sourcemap --format=esm --target=esnext",
     "typings": "tsc"
   },
   "devDependencies": {

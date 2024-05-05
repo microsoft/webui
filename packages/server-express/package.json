@@ -10,14 +10,14 @@
   ],
   "scripts": {
     "clean": "rimraf -rf dist",
-    "build": "npm run clean && npm run typings && esbuild ./src/*.ts --outdir=./dist --sourcemap --format=esm --target=esnext --platform=node",
+    "build": "pnpm run clean && pnpm run typings && esbuild ./src/*.ts --outdir=./dist --sourcemap --format=esm --target=esnext --platform=node",
     "typings": "tsc"
   },
   "dependencies": {
     "@btjs/parser-js": "workspace:*",
     "@btjs/protocol-js": "workspace:*",
     "@types/express": "^4.17.21",
-    "@types/node": "^20.12.3",
+    "@types/node": "^20.12.8",
     "express": "^4.19.2"
   }
 }
