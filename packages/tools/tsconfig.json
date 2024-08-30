@@ -4,7 +4,8 @@
     "outDir": "./dist",
     "emitDeclarationOnly": true,
     "declaration": true,
-    "declarationDir": "./dist/dts"
+    "declarationDir": "./dist/dts",
+    "isolatedModules": false
   },
   "exclude": ["**/*.spec.ts"]
 }

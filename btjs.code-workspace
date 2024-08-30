@@ -10,5 +10,10 @@
 			"path": "./packages/server-rust"
 		}
 	],
-	"settings": {}
+	"settings": {
+		"editor.tabSize": 2,
+		"editor.formatOnSave": true,
+		"dprint.enable": true,
+		"dprint.configPath": "./dprint.json"
+	}
 }

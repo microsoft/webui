@@ -4,9 +4,9 @@ export interface BuildTimeRenderingStreamRepeat {
   template: string
 }
 
-export interface BuildTimeRenderingStreamRaw {
+export interface BuildTimeRenderingStreamAttribute {
   type: 'attribute'
-  name: string
+  key: string
   value: string
 }
 
@@ -26,19 +26,21 @@ export interface BuildTimeRenderingStreamWhen {
   value: string
 }
 
+export interface BuildTimeRenderingStreamComponent {
+  type: 'component'
+  value: string
+  css?: string
+}
+
 export type BuildTimeRenderingStream =
   | BuildTimeRenderingStreamAttribute
   | BuildTimeRenderingStreamRaw
   | BuildTimeRenderingStreamRepeat
   | BuildTimeRenderingStreamSignal
   | BuildTimeRenderingStreamWhen
+  | BuildTimeRenderingStreamComponent
 
-export interface BuildTimeRenderingTemplate {
-  style: string
-  template: string
-}
-
-export type BuildTimeRenderingStreamTemplateRecords = Record<string, BuildTimeRenderingTemplate>
+export type BuildTimeRenderingStreamTemplateRecords = Record<string, Array<BuildTimeRenderingStream>>
 
 export interface BuildTimeRenderingProtocol {
   streams: BuildTimeRenderingStream[]

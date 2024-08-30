@@ -1,6 +1,6 @@
 import { findValueByDottedPath, parseExpression, safeEvaluateExpression } from '@btjs/eval-js'
 
-import type { BuildTimeRenderingProtocol } from '@btjs/protocol-js'
+import type { BuildTimeRenderingProtocol, BuildTimeRenderingStream } from '@btjs/protocol-js'
 
 export interface ServerHandler {
   write: (value: string) => void
@@ -8,40 +8,27 @@ export interface ServerHandler {
 }
 
 export function handleBTR(protocol: BuildTimeRenderingProtocol, state: Object, serverHandler: ServerHandler) {
-  protocol.streams.forEach(stream => {
+  const stack: { streamArray: BuildTimeRenderingStream[], index: number, state: Object }[] = []
+  serverHandler.write('<!DOCTYPE html><html>')
+  // Initialize the stack with the first call
+  stack.push({ streamArray: protocol.streams, index: 0, state })
+
+  while (stack.length > 0) {
+    const { streamArray, index, state } = stack.pop()!
+
+    if (index >= streamArray.length) continue
+
+    const stream = streamArray[index]
+
     switch (stream.type) {
-      case 'attribute': {
-        const value = findValueByDottedPath(stream.value, state)
-        if (value !== undefined) {
-          serverHandler.write(`${stream.name}="${value}"`)
-        } else if (stream.defaultValue !== undefined) {
-          serverHandler.write(`${stream.name}="${stream.defaultValue}"`)
-        }
-        break
-      }
       case 'raw': {
         serverHandler.write(stream.value)
         break
       }
-      case 'repeat': {
+      case 'attribute': {
         const value = findValueByDottedPath(stream.value, state)
-        if (value) {
-          value.forEach((item: any) => {
-            serverHandler.write(`<${stream.template}><template shadowrootmode="open">`)
-            if (protocol.templates[stream.template].style) {
-              serverHandler.write(`<style>${protocol.templates[stream.template].style}</style>`)
-            }
-            serverHandler.write(`${protocol.templates[stream.template].template}</template>`)
-            const itemType = typeof item
-            if (itemType === 'string' || itemType === 'number' || itemType === 'boolean' || Array.isArray(item)) {
-              serverHandler.write(String(item))
-            } else if (itemType === 'object') {
-              Object.keys(item).forEach((key) => {
-                serverHandler.write(`<span slot="${key}">${item[key]}</span>`)
-              })
-            }
-            serverHandler.write(`</${stream.template}>`)
-          })
+        if (value !== undefined) {
+          serverHandler.write(`${stream.key}="${value}"`)
         }
         break
       }
@@ -54,6 +41,19 @@ export function handleBTR(protocol: BuildTimeRenderingProtocol, state: Object, s
         }
         break
       }
+      case 'repeat': {
+        const value = findValueByDottedPath(stream.value, state)
+        const template = protocol.templates[stream.template]
+
+        // Push the remaining elements of the current array back onto the stack
+        stack.push({ streamArray, index: index + 1, state })
+
+        // Process the repeated items by pushing each one onto the stack
+        for (let i = value.length - 1; i >= 0; i--) {
+          stack.push({ streamArray: template, index: 0, state: value[i] })
+        }
+        continue
+      }
       case 'when': {
         const parts = parseExpression(stream.value)
         const value = safeEvaluateExpression(parts, state)
@@ -62,7 +62,26 @@ export function handleBTR(protocol: BuildTimeRenderingProtocol, state: Object, s
         }
         break
       }
+      case 'component': {
+        const template = protocol.templates[stream.value]
+        stack.push({ streamArray, index: index + 1, state })
+        stack.push({ streamArray: template, index: 0, state })
+        stack.push({
+          streamArray: [{
+            type: 'raw',
+            value: `<link rel="stylesheet" href="./${stream.css}">`,
+          }],
+          index: 0,
+          state,
+        })
+        continue
+      }
     }
-  })
+
+    // Push the next item of the current array onto the stack
+    stack.push({ streamArray, index: index + 1, state })
+  }
+
+  serverHandler.write('</html>')
   serverHandler.end()
 }
