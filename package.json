@@ -11,16 +11,17 @@
     "format": "dprint fmt --config dprint.json"
   },
   "devDependencies": {
-    "@types/mocha": "^10.0.7",
     "@types/node": "^22.5.1",
     "@types/sinon": "^17.0.3",
     "commander": "^12.1.0",
     "dprint": "^0.47.2",
     "esbuild": "^0.23.1",
     "esbuild-register": "^3.6.0",
-    "mocha": "^10.7.3",
     "rimraf": "^6.0.1",
     "sinon": "^18.0.0",
     "typescript": "^5.5.4"
+  },
+  "engines": {
+    "node": ">=22.0.0"
   }
 }

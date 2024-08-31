@@ -8,9 +8,12 @@
   "files": ["dist"],
   "scripts": {
     "clean": "rimraf -rf dist",
-    "build": "pnpm run clean && pnpm run typings && esbuild ./src/index.ts --bundle --minify --outdir=./dist --sourcemap --format=esm --target=esnext",
+    "build": "pnpm run clean && pnpm run typings && pnpm turbo",
+    "turbo": "esbuild ./src/index.ts --bundle --minify --outdir=./dist --sourcemap --format=esm --target=esnext",
     "serve": "esbuild --serve index.ts --bundle --servedir=.",
-    "test": "mocha -r esbuild-register '**/*.spec.ts'",
+    "build:test": "esbuild ./src/**/*.ts --outdir=./dist --sourcemap --format=esm --target=esnext --platform=node",
+    "test": "node --test ./dist/**/*.spec.js",
+    "test:debug": "node --inspect-brk --test --test-only dist/**/*.spec.js",
     "typings": "tsc"
   },
   "dependencies": {
@@ -21,5 +24,8 @@
       "types": "./dist/dts/index.d.ts",
       "default": "./dist/index.js"
     }
+  },
+  "engines": {
+    "node": ">=22.0.0"
   }
 }

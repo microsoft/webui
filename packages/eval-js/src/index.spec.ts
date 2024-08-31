@@ -1,5 +1,6 @@
-import assert from 'assert'
-import { parseExpression, safeEvaluateExpression } from './index'
+import assert from 'node:assert'
+import { describe, it } from 'node:test'
+import { parseExpression, safeEvaluateExpression } from './index.js'
 
 describe('safeEvaluateExpression', function() {
   it('should parse expressions correctly', function() {

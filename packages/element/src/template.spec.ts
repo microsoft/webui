@@ -1,5 +1,6 @@
-import assert from 'assert'
-import { processTemplate } from './template'
+import assert from 'node:assert'
+import { describe, it } from 'node:test'
+import { processTemplate } from './template.js'
 
 describe('processTemplate', () => {
   it('should return the same string when there are no replacements', async () => {
