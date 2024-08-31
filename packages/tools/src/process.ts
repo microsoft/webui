@@ -27,7 +27,7 @@ export async function HandleBuild(appPath: string, _: BuildOptions) {
   }
 }
 
-async function discoverWebComponents(appPath: string): Promise<Record<string, WebComponentDefinition>> {
+async function discoverWebComponents(appPath: string): Promise<ComponentStore> {
   const result: Record<string, WebComponentDefinition> = {}
   const files = await readdir(appPath)
 

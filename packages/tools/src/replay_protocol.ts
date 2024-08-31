@@ -78,18 +78,21 @@ function parse(node: SgNode, componentStore: ComponentStore): BuildTimeRendering
       return ParseResponse.Stop
     }
 
+    // MAke sure there are children elements.
+    const firstChild = element.child(1)
+    if (!firstChild || firstChild.kind() === 'end_tag') {
+      console.error('Repeat directive must have a child element')
+      return ParseResponse.Stop
+    }
+
+    // Queue the protocol message to be written after the tag is closed.
     queueProtocolAfterTag({
       type: 'repeat',
       value: value.text(),
       template: templateId,
     })
 
-    const firstChild = element.child(1)
-    if (!firstChild) {
-      console.error('Repeat directive must have a child element')
-      return ParseResponse.Stop
-    }
-
+    // Parse the children of the element and store the template.
     const parsedTemplate = parse(firstChild, componentStore)
     protocolTemplates[templateId] = parsedTemplate.streams
     if (parsedTemplate.templates) {
@@ -298,7 +301,7 @@ function parse(node: SgNode, componentStore: ComponentStore): BuildTimeRendering
 
 export function createBuildTimeProtocol(
   htmlContent: string,
-  componentStore: ComponentStore,
+  componentStore: ComponentStore = {},
 ): BuildTimeRenderingProtocol {
   const ast = html.parse(htmlContent)
   const root = ast.root()
