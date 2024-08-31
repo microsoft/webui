@@ -92,4 +92,82 @@ describe('createBuildTimeProtocol', () => {
       { type: 'raw', value: '></div>' },
     ])
   })
+
+  it('should process missing web components correctly', () => {
+    const htmlContent = '<custom-element></custom-element>'
+    const result = createBuildTimeProtocol(htmlContent)
+    assert.deepStrictEqual(result, {
+      streams: [
+        { type: 'raw', value: '<custom-element></custom-element>' },
+      ],
+      templates: {}
+    })
+  })
+
+  it('should process available web components', () => {
+    const htmlContent = '<custom-element></custom-element>'
+    const result = createBuildTimeProtocol(htmlContent, {
+      'custom-element': {
+        template: '<div>Custom Element</div>',
+      },
+    })
+    assert.deepStrictEqual(result, {
+      streams: [
+        { type: 'raw', value: '<custom-element><template shadowrootmode="open">' },
+        { type: 'component', value: 'custom-element', css: undefined },
+        { type: 'raw', value: '</template></custom-element>' },
+      ],
+      templates: {
+        'custom-element': [
+          { type: 'raw', value: '<div>Custom Element</div>' },
+        ]
+      }
+    })
+  })
+
+  it('should process available web components with slots', () => {
+    const htmlContent = '<custom-element>Hello World</custom-element>'
+    const result = createBuildTimeProtocol(htmlContent, {
+      'custom-element': {
+        template: '<slot></slot>',
+      },
+    })
+    assert.deepStrictEqual(result, {
+      streams: [
+        { type: 'raw', value: '<custom-element><template shadowrootmode="open">' },
+        { type: 'component', value: 'custom-element', css: undefined },
+        { type: 'raw', value: '</template>Hello World</custom-element>' },
+      ],
+      templates: {
+        'custom-element': [
+          { type: 'raw', value: '<slot></slot>' },
+        ]
+      }
+    })
+  })
+
+  it('should process available web components with multiple slots and attributes', () => {
+    const htmlContent = '<custom-element><span slot="first" f-signal="firstname">Hello</span><span f-signal="lastname">World</span></custom-element>'
+    const result = createBuildTimeProtocol(htmlContent, {
+      'custom-element': {
+        template: '<slot name="first"></slot><slot></slot>',
+      },
+    })
+    assert.deepStrictEqual(result, {
+      streams: [
+        { type: 'raw', value: '<custom-element><template shadowrootmode="open">' },
+        { type: 'component', value: 'custom-element', css: undefined },
+        { type: 'raw', value: '</template><span slot="first"  f-signal="firstname" >' },
+        { type: 'signal', value: 'firstname' },
+        { type: 'raw', value: '</span><span f-signal="lastname" >' },
+        { type: 'signal', value: 'lastname' },
+        { type: 'raw', value: '</span></custom-element>' },
+      ],
+      templates: {
+        'custom-element': [
+          { type: 'raw', value: '<slot name="first" ></slot><slot></slot>' },
+        ]
+      }
+    })
+  })
 })

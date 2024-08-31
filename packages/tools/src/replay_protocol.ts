@@ -216,7 +216,12 @@ function parse(node: SgNode, componentStore: ComponentStore): BuildTimeRendering
       value: tagNameText,
       css: component.styles,
     })
-    writeRaw(`</template></${tagNameText}>`)
+    writeRaw(`</template>`)
+
+    const children = node.children()
+    for (const child of children) {
+      parseNode(child)
+    }
 
     return ParseResponse.Stop
   }
@@ -240,6 +245,7 @@ function parse(node: SgNode, componentStore: ComponentStore): BuildTimeRendering
       // Write the opening tag name without the closing HTML since we are expecting
       // attributes to write.
       writeRaw(`<${tagNameText}`)
+
       // Parse the attributes, needs some special handling to determine when the parser
       // should stop parsing the elements children, delegating to the parser.
       const attributes = tagName.parent()?.findAll(kind(Lang.Html, 'attribute'))
@@ -251,8 +257,10 @@ function parse(node: SgNode, componentStore: ComponentStore): BuildTimeRendering
           }
         }
       }
+
       // Close the opening HTML since attributes are done parsing.
       writeRaw('>')
+
       // When parser decided to stop parsing, see if there is a protocol message
       // to write, then close the tag.
       if (!shouldContinueParsingElementChildren) {
