@@ -9,6 +9,7 @@
     "clean": "rimraf -rf dist",
     "tsc": "tsc --noEmit",
     "build": "pnpm run clean && pnpm run build:client && pnpm run build:server",
+    "turbo": "pnpm run build:server",
     "build:client": "btr build-client ./client/src/index.ts --www ./client/www --out ./dist/client",
     "build:server": "btr build-server ./server/server.ts --out ./dist/server --client ./dist/client",
     "start:dev": "btr dev-server ./client/src/index.ts - --out ./dist/dev --www ./client/www",

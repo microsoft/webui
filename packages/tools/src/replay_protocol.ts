@@ -203,7 +203,10 @@ function parse(node: SgNode, componentStore: ComponentStore): BuildTimeRendering
     const hasAttributes = tagName.next()?.kind() === 'attribute'
     if (hasAttributes) {
       writeRaw(`<${tagNameText}`)
-      parseAttributes(node)
+      const attributes = tagName.parent()?.findAll(kind(Lang.Html, 'attribute'))!
+      for (const attribute of attributes) {
+        parseAttributes(attribute)
+      }
       writeRaw('>')
     } else {
       writeRaw(`<${tagNameText}>`)
@@ -248,13 +251,11 @@ function parse(node: SgNode, componentStore: ComponentStore): BuildTimeRendering
 
       // Parse the attributes, needs some special handling to determine when the parser
       // should stop parsing the elements children, delegating to the parser.
-      const attributes = tagName.parent()?.findAll(kind(Lang.Html, 'attribute'))
+      const attributes = tagName.parent()?.findAll(kind(Lang.Html, 'attribute'))!
       let shouldContinueParsingElementChildren = ParseResponse.Continue
-      if (attributes) {
-        for (const attribute of attributes) {
-          if (parseAttributes(attribute) === ParseResponse.Stop) {
-            shouldContinueParsingElementChildren = ParseResponse.Stop
-          }
+      for (const attribute of attributes) {
+        if (parseAttributes(attribute) === ParseResponse.Stop) {
+          shouldContinueParsingElementChildren = ParseResponse.Stop
         }
       }
 

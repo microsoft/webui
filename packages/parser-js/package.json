@@ -10,7 +10,10 @@
     "clean": "rimraf -rf dist",
     "build": "pnpm run clean && pnpm run typings && pnpm run turbo",
     "turbo": "esbuild ./src/index.ts --bundle --outdir=./dist --sourcemap --format=esm --target=esnext",
-    "typings": "tsc"
+    "typings": "tsc",
+    "build:test": "esbuild ./src/**/*.ts --outdir=./dist --sourcemap --format=esm --target=esnext --platform=node",
+    "test": "node --test ./dist/**/*.spec.js",
+    "test:debug": "node --inspect-brk --test --test-only dist/**/*.spec.js"
   },
   "devDependencies": {
     "@btjs/protocol-js": "workspace:*",
