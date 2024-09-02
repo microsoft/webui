@@ -43,6 +43,10 @@ export function handleBTR(protocol: BuildTimeRenderingProtocol, state: Object, s
       }
       case 'repeat': {
         const value = findValueByDottedPath(stream.value, state)
+        if (value === undefined) {
+          console.error(`Repeat value not found: ${stream.value}`)
+          break
+        }
         const template = protocol.templates[stream.template]
 
         // Push the remaining elements of the current array back onto the stack
@@ -66,14 +70,16 @@ export function handleBTR(protocol: BuildTimeRenderingProtocol, state: Object, s
         const template = protocol.templates[stream.value]
         stack.push({ streamArray, index: index + 1, state })
         stack.push({ streamArray: template, index: 0, state })
-        stack.push({
-          streamArray: [{
-            type: 'raw',
-            value: `<link rel="stylesheet" href="./${stream.css}">`,
-          }],
-          index: 0,
-          state,
-        })
+        if (stream.css) {
+          stack.push({
+            streamArray: [{
+              type: 'raw',
+              value: `<link rel="stylesheet" href="./${stream.css}">`,
+            }],
+            index: 0,
+            state,
+          })
+        }
         continue
       }
     }
