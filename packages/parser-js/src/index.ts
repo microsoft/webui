@@ -7,6 +7,17 @@ export interface ServerHandler {
   end: () => void
 }
 
+function escapeHtml(text: string): string {
+  const map: { [key: string]: string } = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;',
+  }
+  return text.replace(/[&<>"']/g, (m) => map[m])
+}
+
 export function handleBTR(protocol: BuildTimeRenderingProtocol, state: Object, serverHandler: ServerHandler) {
   const stack: { streamArray: BuildTimeRenderingStream[], index: number, state: Object }[] = []
   serverHandler.write('<!DOCTYPE html><html>')
@@ -33,7 +44,10 @@ export function handleBTR(protocol: BuildTimeRenderingProtocol, state: Object, s
         break
       }
       case 'signal': {
-        const value = findValueByDottedPath(stream.value, state)
+        let value = findValueByDottedPath(stream.value, state)
+        if (!stream.raw) {
+          value = escapeHtml(value)
+        }
         if (value !== undefined) {
           serverHandler.write('' + value)
         } else if (stream.defaultValue !== undefined) {

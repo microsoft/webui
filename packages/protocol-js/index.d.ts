@@ -19,6 +19,7 @@ export interface BuildTimeRenderingStreamSignal {
   type: 'signal'
   value: string
   defaultValue?: string
+  raw?: boolean
 }
 
 export interface BuildTimeRenderingStreamWhen {

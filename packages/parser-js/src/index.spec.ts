@@ -195,4 +195,21 @@ describe('handleBTR', () => {
         '</html>',
     )
   })
+
+  it('should process raw signals and not escape them', () => {
+    const protocol: BuildTimeRenderingProtocol = {
+      streams: [
+        { type: 'signal', value: 'html' },
+        { type: 'signal', value: 'html', raw: true },
+      ],
+      templates: {},
+    }
+    const state = { html: '<strong>hi</strong>' }
+    const serverHandler = createMockServerHandler()
+    handleBTR(protocol, state, serverHandler)
+    assert.equal(
+      serverHandler.html,
+      '<!DOCTYPE html><html>&lt;strong&gt;hi&lt;/strong&gt;<strong>hi</strong></html>',
+    )
+  })
 })
