@@ -20,6 +20,19 @@ describe('createBuildTimeProtocol', () => {
     )
   })
 
+  it('should process complex raw text correctly', () => {
+    const htmlContent =
+      '<!DOCTYPE html><html><head><meta chartset="utf-8"><style>body {margin: 0;}</style></head><body><div>Hello World<span></span></div><script type="module" src="./hello.js"></script></body></html>'
+    const result = createBuildTimeProtocol(htmlContent)
+    assert.deepStrictEqual(result.streams, [
+      {
+        type: 'raw',
+        value:
+          '<!DOCTYPE html><html><head><meta chartset="utf-8" ><style>body {margin: 0;}</style></head><body><div>Hello World<span></span></div><script type="module"  src="./hello.js" ></script></body></html>',
+      },
+    ])
+  })
+
   it('should process signal attribute correctly', () => {
     const htmlContent = '<div f-signal="testSignal"></div>'
     const result = createBuildTimeProtocol(htmlContent)
