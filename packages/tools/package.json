@@ -34,8 +34,8 @@
     "rimraf": "^5.0.5"
   },
   "peerDependencies": {
-    "esbuild": "^0.20.1",
-    "typescript": "^5.4.2"
+    "esbuild": "^0.23.1",
+    "typescript": "^5.5.4"
   },
   "engines": {
     "node": ">=22.0.0"

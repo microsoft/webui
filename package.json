@@ -11,7 +11,7 @@
     "format": "dprint fmt --config dprint.json"
   },
   "devDependencies": {
-    "@types/node": "^22.5.1",
+    "@types/node": "^22.5.4",
     "@types/sinon": "^17.0.3",
     "commander": "^12.1.0",
     "dprint": "^0.47.2",
