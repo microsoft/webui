@@ -22,14 +22,28 @@ const ParseResponse = {
   Stop: false,
 }
 
+const defaultOptions: BuildTimeRenderingOptions = {
+  templateRepeatCount: 0,
+  preserveAttributes: true,
+}
+
 export interface WebComponentDefinition {
   template: string
   styles?: string
 }
 
+export interface BuildTimeRenderingOptions {
+  templateRepeatCount?: number
+  preserveAttributes?: boolean
+}
+
 export type ComponentStore = Record<string, WebComponentDefinition>
 
-function parse(node: SgNode, componentStore: ComponentStore): BuildTimeRenderingProtocol {
+function parse(
+  node: SgNode,
+  componentStore: ComponentStore,
+  options: Partial<BuildTimeRenderingOptions>,
+): BuildTimeRenderingProtocol {
   let raw: Array<string> = []
   const protocolMessages: Array<BuildTimeRenderingStream> = []
   let protocolTemplates: BuildTimeRenderingStreamTemplateRecords = {}
@@ -71,14 +85,16 @@ function parse(node: SgNode, componentStore: ComponentStore): BuildTimeRendering
   }
 
   function handleRepeat(value: SgNode) {
+    options.templateRepeatCount = (options.templateRepeatCount || 0) + 1
+
     const element = findClosestAncestor(value, 'element')
-    const templateId = crypto.randomUUID()
+    const templateId = `repeat-${options.templateRepeatCount}`
     if (!element) {
       console.error('Repeat directive must be inside an element')
       return ParseResponse.Stop
     }
 
-    // MAke sure there are children elements.
+    // Make sure there are children elements.
     const firstChild = element.child(1)
     if (!firstChild || firstChild.kind() === 'end_tag') {
       console.error('Repeat directive must have a child element')
@@ -93,7 +109,7 @@ function parse(node: SgNode, componentStore: ComponentStore): BuildTimeRendering
     })
 
     // Parse the children of the element and store the template.
-    const parsedTemplate = parse(firstChild, componentStore)
+    const parsedTemplate = parse(firstChild, componentStore, options)
     protocolTemplates[templateId] = parsedTemplate.streams
     if (parsedTemplate.templates) {
       protocolTemplates = { ...protocolTemplates, ...parsedTemplate.templates }
@@ -147,24 +163,31 @@ function parse(node: SgNode, componentStore: ComponentStore): BuildTimeRendering
     if (name && value) {
       const nameText = name.text()
       if (nameText.startsWith(Prefix)) {
-        writeRaw(` ${nameText}="${value.text()}" `)
+        if (options.preserveAttributes) {
+          writeRaw(` ${nameText}="${value.text()}" `)
+        }
+
         // Handle special attributes.
         switch (nameText) {
-          case AttributeName.Signal:
+          case AttributeName.Signal: {
             shouldContinueParsingElementChildren = handleSignal(value)
             break
-          case AttributeName.Repeat:
+          }
+          case AttributeName.Repeat: {
             shouldContinueParsingElementChildren = handleRepeat(value)
             break
-          case AttributeName.When:
+          }
+          case AttributeName.When: {
             shouldContinueParsingElementChildren = handleWhen(value)
             break
-          default:
+          }
+          default: {
             shouldContinueParsingElementChildren = handleAttribute(
               nameText.substring(PrefixLength),
               value,
             )
             break
+          }
         }
       } else {
         // Write the attribute as is.
@@ -186,7 +209,7 @@ function parse(node: SgNode, componentStore: ComponentStore): BuildTimeRendering
     // component multiple times.
     if (!protocolTemplates[tagNameText]) {
       // Parse the component and store the protocol messages.
-      const parsedTemplate = parse(html.parse(component.template).root(), componentStore)
+      const parsedTemplate = parse(html.parse(component.template).root(), componentStore, options)
       protocolTemplates[tagNameText] = parsedTemplate.streams
 
       // Merge the templates if any exists.
@@ -280,6 +303,8 @@ function parse(node: SgNode, componentStore: ComponentStore): BuildTimeRendering
 
   function parseNode(node: SgNode) {
     switch (node.kind()) {
+      case 'ERROR':
+        throw Error(`Invalid: ${node.text()}`)
       case 'style_element':
       case 'script_element':
       case 'element':
@@ -311,8 +336,10 @@ function parse(node: SgNode, componentStore: ComponentStore): BuildTimeRendering
 export function createBuildTimeProtocol(
   htmlContent: string,
   componentStore: ComponentStore = {},
+  options: Partial<BuildTimeRenderingOptions> = {},
 ): BuildTimeRenderingProtocol {
   const ast = html.parse(htmlContent)
   const root = ast.root()
-  return parse(root, componentStore)
+  options = { ...defaultOptions, ...options }
+  return parse(root, componentStore, options)
 }

@@ -24,13 +24,12 @@ describe('createBuildTimeProtocol', () => {
   it('should process repeat attribute correctly', () => {
     const htmlContent = '<div f-repeat="testRepeat"><span>Item</span></div>'
     const result = createBuildTimeProtocol(htmlContent)
-    const templateId = Object.keys(result.templates)[0]
     assert.deepStrictEqual(result.streams, [
       { type: 'raw', value: '<div f-repeat="testRepeat" >' },
-      { type: 'repeat', value: 'testRepeat', template: templateId },
+      { type: 'repeat', value: 'testRepeat', template: 'repeat-1' },
       { type: 'raw', value: '</div>' },
     ])
-    assert.deepStrictEqual(result.templates[templateId], [
+    assert.deepStrictEqual(result.templates['repeat-1'], [
       { type: 'raw', value: '<span>Item</span>' },
     ])
   })
@@ -38,7 +37,6 @@ describe('createBuildTimeProtocol', () => {
   it('should process nothing with empty repeat attribute', () => {
     const htmlContent = '<div f-repeat="testRepeat"></div>'
     const result = createBuildTimeProtocol(htmlContent)
-    const templateId = Object.keys(result.templates)[0]
     assert.deepStrictEqual(result.streams, [
       { type: 'raw', value: '<div f-repeat="testRepeat" ></div>' },
     ])
@@ -53,22 +51,20 @@ describe('createBuildTimeProtocol', () => {
       </div>
     `
     const result = createBuildTimeProtocol(htmlContent)
-    const outerTemplateId = Object.keys(result.templates)[0]
-    const innerTemplateId = Object.keys(result.templates)[1]
 
     assert.deepStrictEqual(result.streams, [
       { type: 'raw', value: '<div f-repeat="outerRepeat" >' },
-      { type: 'repeat', value: 'outerRepeat', template: outerTemplateId },
+      { type: 'repeat', value: 'outerRepeat', template: 'repeat-1' },
       { type: 'raw', value: '</div>' },
     ])
 
-    assert.deepStrictEqual(result.templates[outerTemplateId], [
+    assert.deepStrictEqual(result.templates['repeat-1'], [
       { type: 'raw', value: '<div f-repeat="innerRepeat" >' },
-      { type: 'repeat', value: 'innerRepeat', template: innerTemplateId },
+      { type: 'repeat', value: 'innerRepeat', template: 'repeat-2' },
       { type: 'raw', value: '</div>' },
     ])
 
-    assert.deepStrictEqual(result.templates[innerTemplateId], [
+    assert.deepStrictEqual(result.templates['repeat-2'], [
       { type: 'raw', value: '<span>Inner Item</span>' },
     ])
   })
@@ -185,11 +181,10 @@ describe('createBuildTimeProtocol', () => {
         template: '<h1>Hello World!</h1>',
       },
     })
-    const templateId = Object.keys(result.templates)[0]
     assert.deepStrictEqual(result, {
       streams: [
         { type: 'raw', value: '<div f-repeat="data" >' },
-        { type: 'repeat', value: 'data', template: templateId },
+        { type: 'repeat', value: 'data', template: 'repeat-1' },
         { type: 'raw', value: '</div>' },
       ],
       templates: {
@@ -204,7 +199,7 @@ describe('createBuildTimeProtocol', () => {
         'custom-child': [
           { type: 'raw', value: '<h1>Hello World!</h1>' },
         ],
-        [templateId]: [
+        'repeat-1': [
           { type: 'raw', value: '<custom-element><template shadowrootmode="open">' },
           { type: 'component', value: 'custom-element', css: undefined },
           { type: 'raw', value: '</template><custom-button><template shadowrootmode="open">' },
