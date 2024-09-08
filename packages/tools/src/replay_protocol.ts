@@ -4,7 +4,6 @@ import {
   BuildTimeRenderingStream,
   BuildTimeRenderingStreamTemplateRecords,
 } from '@btjs/protocol-js'
-import crypto from 'node:crypto'
 
 const Prefix = 'f-'
 const AttributeEvent = 'on'
@@ -25,6 +24,13 @@ const ParseResponse = {
 const defaultOptions: BuildTimeRenderingOptions = {
   templateRepeatCount: 0,
   preserveAttributes: true,
+}
+
+export class ParseError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ParseError'
+  }
 }
 
 export interface WebComponentDefinition {
@@ -304,7 +310,7 @@ function parse(
   function parseNode(node: SgNode) {
     switch (node.kind()) {
       case 'ERROR':
-        throw Error(`Invalid: ${node.text()}`)
+        throw new ParseError(`Invalid: ${node.text()}`)
       case 'style_element':
       case 'script_element':
       case 'element':

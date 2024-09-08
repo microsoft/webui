@@ -1,6 +1,6 @@
 import assert from 'node:assert'
 import { describe, it } from 'node:test'
-import { createBuildTimeProtocol } from './replay_protocol.js'
+import { ParseError, createBuildTimeProtocol } from './replay_protocol.js'
 
 describe('createBuildTimeProtocol', () => {
   it('should process raw text correctly', () => {
@@ -9,6 +9,15 @@ describe('createBuildTimeProtocol', () => {
     assert.deepStrictEqual(result.streams, [
       { type: 'raw', value: '<div>Hello World</div>' },
     ])
+  })
+
+  it('should fail with invalid markup', () => {
+    const htmlContent = '<div><span>Hello World'
+    assert.throws(
+      () => createBuildTimeProtocol(htmlContent),
+      ParseError,
+      'Invalid markup',
+    )
   })
 
   it('should process signal attribute correctly', () => {
