@@ -231,4 +231,18 @@ describe('createBuildTimeProtocol', () => {
       },
     })
   })
+
+  it('should process handlebars from text as signals', () => {
+    const htmlContent = '<div>{{first}} and {{last}} ({{{html}}})</div>'
+    const result = createBuildTimeProtocol(htmlContent)
+    assert.deepStrictEqual(result.streams, [
+      { type: 'raw', value: '<div>' },
+      { type: 'signal', value: 'first' },
+      { type: 'raw', value: ' and ' },
+      { type: 'signal', value: 'last' },
+      { type: 'raw', value: ' (' },
+      { type: 'signal', value: 'html', raw: true },
+      { type: 'raw', value: ')</div>' },
+    ])
+  })
 })

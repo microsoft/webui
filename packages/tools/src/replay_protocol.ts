@@ -2,6 +2,8 @@ import { Lang, SgNode, html, kind } from '@ast-grep/napi'
 import {
   BuildTimeRenderingProtocol,
   BuildTimeRenderingStream,
+  BuildTimeRenderingStreamRaw,
+  BuildTimeRenderingStreamSignal,
   BuildTimeRenderingStreamTemplateRecords,
 } from '@btjs/protocol-js'
 
@@ -203,8 +205,68 @@ function parse(
     return shouldContinueParsingElementChildren
   }
 
+  function parseHandlebars(text: string) {
+    const signals = []
+    let i = 0
+    let lastIndex = 0
+
+    while (i < text.length) {
+      if (text[i] === '{' && text[i + 1] === '{') {
+        let allowRawHtml = false
+        let start = i
+        let end = i + 2
+
+        if (text[i + 2] === '{') {
+          allowRawHtml = true
+          end++
+        }
+
+        while (
+          end < text.length &&
+          !(text[end] === '}' && text[end + 1] === '}' && (!allowRawHtml || (allowRawHtml && text[end + 2] === '}')))
+        ) {
+          end++
+        }
+
+        if (end < text.length) {
+          // Write raw text before the handlebars
+          if (start > lastIndex) {
+            const rawText = text.slice(lastIndex, start)
+            writeRaw(rawText)
+          }
+
+          const value = text.slice(start + (allowRawHtml ? 3 : 2), end).trim()
+          const signal: BuildTimeRenderingStreamSignal = {
+            type: 'signal',
+            value: value,
+          }
+
+          // Intentionlly after initializing signal to remove undefined.
+          if (allowRawHtml) {
+            signal.raw = true
+          }
+
+          writeProtocol(signal)
+
+          i = end + (allowRawHtml ? 3 : 2)
+          lastIndex = i
+        } else {
+          i++
+        }
+      } else {
+        i++
+      }
+    }
+
+    // Write any remaining raw text
+    if (lastIndex < text.length) {
+      const rawText = text.slice(lastIndex)
+      writeRaw(rawText)
+    }
+  }
+
   function parseText(node: SgNode) {
-    writeRaw(node.text())
+    parseHandlebars(node.text())
     return ParseResponse.Stop
   }
 
