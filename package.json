@@ -11,15 +11,15 @@
     "format": "dprint fmt --config dprint.json"
   },
   "devDependencies": {
-    "@types/node": "^22.5.4",
+    "@types/node": "^22.7.4",
     "@types/sinon": "^17.0.3",
     "commander": "^12.1.0",
     "dprint": "^0.47.2",
-    "esbuild": "^0.23.1",
+    "esbuild": "^0.24.0",
     "esbuild-register": "^3.6.0",
     "rimraf": "^6.0.1",
-    "sinon": "^18.0.0",
-    "typescript": "^5.5.4"
+    "sinon": "^19.0.2",
+    "typescript": "^5.6.2"
   },
   "engines": {
     "node": ">=22.0.0"
