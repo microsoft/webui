@@ -171,7 +171,7 @@ function parse(
       const nameText = name.text()
       if (nameText.startsWith(Prefix)) {
         if (options.preserveAttributes) {
-          writeRaw(` ${nameText}="${value.text()}" `)
+          writeRaw(` ${nameText}="${value.text()}"`)
         }
 
         // Handle special attributes.

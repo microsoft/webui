@@ -37,7 +37,7 @@ describe('createBuildTimeProtocol', () => {
     const htmlContent = '<div f-signal="testSignal"></div>'
     const result = createBuildTimeProtocol(htmlContent)
     assert.deepStrictEqual(result.streams, [
-      { type: 'raw', value: '<div f-signal="testSignal" >' },
+      { type: 'raw', value: '<div f-signal="testSignal">' },
       { type: 'signal', value: 'testSignal' },
       { type: 'raw', value: '</div>' },
     ])
@@ -47,7 +47,7 @@ describe('createBuildTimeProtocol', () => {
     const htmlContent = '<div f-repeat="testRepeat"><span>Item</span></div>'
     const result = createBuildTimeProtocol(htmlContent)
     assert.deepStrictEqual(result.streams, [
-      { type: 'raw', value: '<div f-repeat="testRepeat" >' },
+      { type: 'raw', value: '<div f-repeat="testRepeat">' },
       { type: 'repeat', value: 'testRepeat', template: 'repeat-1' },
       { type: 'raw', value: '</div>' },
     ])
@@ -60,7 +60,7 @@ describe('createBuildTimeProtocol', () => {
     const htmlContent = '<div f-repeat="testRepeat"></div>'
     const result = createBuildTimeProtocol(htmlContent)
     assert.deepStrictEqual(result.streams, [
-      { type: 'raw', value: '<div f-repeat="testRepeat" ></div>' },
+      { type: 'raw', value: '<div f-repeat="testRepeat"></div>' },
     ])
   })
 
@@ -75,13 +75,13 @@ describe('createBuildTimeProtocol', () => {
     const result = createBuildTimeProtocol(htmlContent)
 
     assert.deepStrictEqual(result.streams, [
-      { type: 'raw', value: '<div f-repeat="outerRepeat" >' },
+      { type: 'raw', value: '<div f-repeat="outerRepeat">' },
       { type: 'repeat', value: 'outerRepeat', template: 'repeat-1' },
       { type: 'raw', value: '</div>' },
     ])
 
     assert.deepStrictEqual(result.templates['repeat-1'], [
-      { type: 'raw', value: '<div f-repeat="innerRepeat" >' },
+      { type: 'raw', value: '<div f-repeat="innerRepeat">' },
       { type: 'repeat', value: 'innerRepeat', template: 'repeat-2' },
       { type: 'raw', value: '</div>' },
     ])
@@ -95,7 +95,7 @@ describe('createBuildTimeProtocol', () => {
     const htmlContent = '<div f-when="testWhen"></div>'
     const result = createBuildTimeProtocol(htmlContent)
     assert.deepStrictEqual(result.streams, [
-      { type: 'raw', value: '<div f-when="testWhen" ' },
+      { type: 'raw', value: '<div f-when="testWhen"' },
       { type: 'when', value: 'testWhen' },
       { type: 'raw', value: '></div>' },
     ])
@@ -105,7 +105,7 @@ describe('createBuildTimeProtocol', () => {
     const htmlContent = '<div f-custom="customValue"></div>'
     const result = createBuildTimeProtocol(htmlContent)
     assert.deepStrictEqual(result.streams, [
-      { type: 'raw', value: '<div f-custom="customValue" ' },
+      { type: 'raw', value: '<div f-custom="customValue"' },
       { type: 'attribute', key: 'custom', value: 'customValue' },
       { type: 'raw', value: '></div>' },
     ])
@@ -176,9 +176,9 @@ describe('createBuildTimeProtocol', () => {
       streams: [
         { type: 'raw', value: '<custom-element><template shadowrootmode="open">' },
         { type: 'component', value: 'custom-element', css: undefined },
-        { type: 'raw', value: '</template><span slot="first" f-signal="firstname" >' },
+        { type: 'raw', value: '</template><span slot="first" f-signal="firstname">' },
         { type: 'signal', value: 'firstname' },
-        { type: 'raw', value: '</span><span f-signal="lastname" >' },
+        { type: 'raw', value: '</span><span f-signal="lastname">' },
         { type: 'signal', value: 'lastname' },
         { type: 'raw', value: '</span></custom-element>' },
       ],
@@ -205,7 +205,7 @@ describe('createBuildTimeProtocol', () => {
     })
     assert.deepStrictEqual(result, {
       streams: [
-        { type: 'raw', value: '<div f-repeat="data" >' },
+        { type: 'raw', value: '<div f-repeat="data">' },
         { type: 'repeat', value: 'data', template: 'repeat-1' },
         { type: 'raw', value: '</div>' },
       ],
