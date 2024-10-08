@@ -1,4 +1,4 @@
-import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { access, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve } from 'node:path'
 import { ComponentStore, WebComponentDefinition, createBuildTimeProtocol } from './replay_protocol.js'
 
@@ -38,6 +38,15 @@ async function discoverWebComponents(appPath: string): Promise<ComponentStore> {
 
       const cssFile = `${fileNameWithoutExt}.css`
       const cssFilePath = join(appPath, cssFile)
+
+      try {
+        await Promise.all([
+          access(filePath),
+          access(cssFilePath),
+        ])
+      } catch (error) {
+        return
+      }
 
       const [template, styles] = await Promise.all([
         readFile(filePath, 'utf-8'),

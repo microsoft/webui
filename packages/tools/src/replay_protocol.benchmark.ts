@@ -1,6 +1,4 @@
-
-
-import { run, bench, boxplot } from 'mitata'
+import { bench, boxplot, run } from 'mitata'
 import { createBuildTimeProtocol } from './replay_protocol.js'
 
 const htmlContent = `
@@ -66,7 +64,6 @@ bench('warmup', () => createBuildTimeProtocol(htmlContent, templates))
 boxplot(() => {
   bench('create', () => createBuildTimeProtocol(htmlContent, templates))
 })
-
 
 await run({
   throw: false,
