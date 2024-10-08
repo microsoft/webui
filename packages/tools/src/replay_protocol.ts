@@ -2,7 +2,6 @@ import { Lang, SgNode, html, kind } from '@ast-grep/napi'
 import {
   BuildTimeRenderingProtocol,
   BuildTimeRenderingStream,
-  BuildTimeRenderingStreamRaw,
   BuildTimeRenderingStreamSignal,
   BuildTimeRenderingStreamTemplateRecords,
 } from '@btjs/protocol-js'
@@ -199,7 +198,7 @@ function parse(
         }
       } else {
         // Write the attribute as is.
-        writeRaw(` ${node.text()} `)
+        writeRaw(` ${node.text()}`)
       }
     }
     return shouldContinueParsingElementChildren

@@ -28,7 +28,7 @@ describe('createBuildTimeProtocol', () => {
       {
         type: 'raw',
         value:
-          '<!DOCTYPE html><html><head><meta chartset="utf-8" ><style>body {margin: 0;}</style></head><body><div>Hello World<span></span></div><script type="module"  src="./hello.js" ></script></body></html>',
+          '<!DOCTYPE html><html><head><meta chartset="utf-8"><style>body {margin: 0;}</style></head><body><div>Hello World<span></span></div><script type="module" src="./hello.js"></script></body></html>',
       },
     ])
   })
@@ -152,7 +152,7 @@ describe('createBuildTimeProtocol', () => {
     })
     assert.deepStrictEqual(result, {
       streams: [
-        { type: 'raw', value: '<custom-element appearance="subtle" ><template shadowrootmode="open">' },
+        { type: 'raw', value: '<custom-element appearance="subtle"><template shadowrootmode="open">' },
         { type: 'component', value: 'custom-element', css: undefined },
         { type: 'raw', value: '</template>Hello World</custom-element>' },
       ],
@@ -176,7 +176,7 @@ describe('createBuildTimeProtocol', () => {
       streams: [
         { type: 'raw', value: '<custom-element><template shadowrootmode="open">' },
         { type: 'component', value: 'custom-element', css: undefined },
-        { type: 'raw', value: '</template><span slot="first"  f-signal="firstname" >' },
+        { type: 'raw', value: '</template><span slot="first" f-signal="firstname" >' },
         { type: 'signal', value: 'firstname' },
         { type: 'raw', value: '</span><span f-signal="lastname" >' },
         { type: 'signal', value: 'lastname' },
@@ -184,7 +184,7 @@ describe('createBuildTimeProtocol', () => {
       ],
       templates: {
         'custom-element': [
-          { type: 'raw', value: '<slot name="first" ></slot><slot></slot>' },
+          { type: 'raw', value: '<slot name="first"></slot><slot></slot>' },
         ],
       },
     })
