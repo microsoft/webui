@@ -101,6 +101,22 @@ describe('createBuildTimeProtocol', () => {
     ])
   })
 
+  it('should preserve attributes correctly', () => {
+    const htmlContent = `
+      <div f-repeat="outerRepeat" foo="bar" is-visible f-when="hello">
+        <span>Item</span>
+      </div>
+    `;
+    const result = createBuildTimeProtocol(htmlContent, {}, { preserveAttributes: true });
+    assert.deepStrictEqual(result.streams, [
+      { type: 'raw', value: '<div f-repeat="outerRepeat" foo="bar" is-visible f-when="hello"' },
+      { type: 'when', value: 'hello' },
+      { type: 'raw', value: '>' },
+      { type: 'repeat', value: 'outerRepeat', template: 'repeat-1' },
+      { type: 'raw', value: '</div>' },
+    ]);
+  });
+  
   it('should process custom attributes correctly', () => {
     const htmlContent = '<div f-custom="customValue"></div>'
     const result = createBuildTimeProtocol(htmlContent)

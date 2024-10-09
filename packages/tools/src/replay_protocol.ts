@@ -167,38 +167,35 @@ function parse(
      * @type {ParseResponse}
      */
     let shouldContinueParsingElementChildren = ParseResponse.Continue
-    if (name && value) {
-      const nameText = name.text()
+    if (name) {
+      const nameText = name.text();
       if (nameText.startsWith(Prefix)) {
-        if (options.preserveAttributes) {
-          writeRaw(` ${nameText}="${value.text()}"`)
+        if (options.preserveAttributes && value) {
+          writeRaw(` ${nameText}="${value.text()}"`);
+        } else if (options.preserveAttributes) {
+          writeRaw(` ${nameText}`);
         }
 
         // Handle special attributes.
         switch (nameText) {
-          case AttributeName.Signal: {
-            shouldContinueParsingElementChildren = handleSignal(value)
-            break
-          }
-          case AttributeName.Repeat: {
-            shouldContinueParsingElementChildren = handleRepeat(value)
-            break
-          }
-          case AttributeName.When: {
-            shouldContinueParsingElementChildren = handleWhen(value)
-            break
-          }
-          default: {
-            shouldContinueParsingElementChildren = handleAttribute(
-              nameText.substring(PrefixLength),
-              value,
-            )
-            break
-          }
+          case AttributeName.Signal:
+            shouldContinueParsingElementChildren = value ? handleSignal(value) : true;
+            break;
+          case AttributeName.Repeat:
+            shouldContinueParsingElementChildren = value ? handleRepeat(value) : true;
+            break;
+          case AttributeName.When:
+            shouldContinueParsingElementChildren = value ? handleWhen(value) : true;
+            break;
+          default:
+            shouldContinueParsingElementChildren = value
+              ? handleAttribute(nameText.substring(PrefixLength), value)
+              : true;
+            break;
         }
       } else {
         // Write the attribute as is.
-        writeRaw(` ${node.text()}`)
+        writeRaw(` ${node.text()}`);
       }
     }
     return shouldContinueParsingElementChildren
