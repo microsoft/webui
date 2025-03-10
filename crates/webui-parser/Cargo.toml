@@ -1,0 +1,29 @@
+[package]
+name = "webui-parser"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "HTML/CSS parser for WebUI framework"
+
+[dependencies]
+webui-protocol = { path = "../webui-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tree-sitter = "0.25.3"
+tree-sitter-html = "0.23.2"
+tree-sitter-css = "0.23.2"
+tree-sitter-typescript = "0.23.2"
+walkdir = "2.5.0"
+lazy_static = "1.5.0"
+nom = "8.0.0"
+streaming-iterator = "0.1.9"
+
+
+[dev-dependencies]
+mockall = { workspace = true }
+tokio-test = "0.4.4"
+tempfile = "3.18.0"

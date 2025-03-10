@@ -1,0 +1,18 @@
+[package]
+name = "webui-handler"
+version = "0.1.0"
+edition = "2021"
+description = "WebUI handler for rendering WebUI protocols"
+license = "MIT"
+repository = "https://github.com/mohamedmansour/webui"
+
+[dependencies]
+webui-protocol = { path = "../../crates/webui-protocol" }
+webui-expressions = { path = "../../crates/webui-expressions" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+html-escape = "0.2.13"
+
+[dev-dependencies]
+tokio = { version = "1.44.0", features = ["full"] }
