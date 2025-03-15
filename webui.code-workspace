@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {},
+	"extensions": {
+		"recommendations": [
+			"rust-lang.rust-analyzer",
+			"fill-labs.dependi"
+		]
+	}
+}
