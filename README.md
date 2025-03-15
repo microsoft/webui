@@ -57,7 +57,7 @@ webui/
 
 ```bash
 # Clone the repository
-git clone https://github.com/mohamedmansour/webui.git
+git clone https://github.com/microsoft/webui.git
 cd webui
 
 # Build Rust components

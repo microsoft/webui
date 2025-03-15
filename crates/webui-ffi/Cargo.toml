@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "FFI bindings for WebUI framework"
 license = "MIT"
-repository = "https://github.com/mohamedmansour/webui"
+repository = "https://github.com/microsoft/webui"
 
 [lib]
 name = "webui_ffi"

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "WebUI handler for rendering WebUI protocols"
 license = "MIT"
-repository = "https://github.com/mohamedmansour/webui"
+repository = "https://github.com/microsoft/webui"
 
 [dependencies]
 webui-protocol = { path = "../../crates/webui-protocol" }

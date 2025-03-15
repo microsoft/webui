@@ -83,7 +83,7 @@ export default {
     
     // Social links
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/mohamedmansour/webui' }
+      { icon: 'github', link: 'https://github.com/microsoft/webui' }
     ],
     
     // Footer

@@ -13,7 +13,7 @@ hero:
       link: /guide/
     - theme: alt
       text: View on GitHub
-      link: https://github.com/mohamedmansour/webui
+      link: https://github.com/microsoft/webui
 
 features:
   - title: True Cross-Platform

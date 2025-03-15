@@ -152,9 +152,9 @@ import (
 	"io/ioutil"
 	"os"
 
-	"github.com/mohamedmansour/webui/go/parser"
-	"github.com/mohamedmansour/webui/go/handler"
-	"github.com/mohamedmansour/webui/go/protocol"
+	"github.com/microsoft/webui/go/parser"
+	"github.com/microsoft/webui/go/handler"
+	"github.com/microsoft/webui/go/protocol"
 )
 
 func main() {
