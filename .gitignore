@@ -3,6 +3,6 @@ dist/
 bin/
 obj/
 target/
-docs/.vitepress/.cache/
+docs/.vitepress/cache/
 .history/
 .turbo/

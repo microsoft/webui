@@ -1,0 +1,22 @@
+# WebUI Directives
+
+WebUI offers several powerful directives that allow you to create dynamic templates without JavaScript. These directives are processed during rendering to produce the final HTML output.
+
+## Available Directives
+
+WebUI provides the following core directives:
+
+- [**`<if>` Conditional Rendering**](./if) - Conditionally render content based on expressions
+- [**`<for>` Loop Iteration**](./for) - Iterate over collections to generate repeated content
+- [**<code v-pre>{{}}</code> Signal Binding**](./signals) - Insert dynamic values with automatic HTML escaping
+- [**<code v-pre>{{{}}}</code> Raw Signal Binding**](./signals#raw-signals) - Insert unescaped HTML content
+
+## How Directives Work
+
+WebUI directives are processed by the WebUI parser and transformed into a platform-agnostic protocol. This protocol is then rendered by a language-specific handler, allowing the same template to be rendered consistently across multiple platforms.
+
+```
+Template with directives → WebUI Protocol → Native HTML output
+```
+
+The WebUI protocol is a simple JSON structure that can be processed by any language with JSON support, making it ideal for cross-platform applications.
