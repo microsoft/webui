@@ -1,5 +1,8 @@
 node_modules/
 dist/
+bin/
+obj/
+target/
+docs/.vitepress/.cache/
 .history/
 .turbo/
-target/
