@@ -1,0 +1,19 @@
+{
+    "people": [
+        {
+            "name": "Ali"
+        },
+        {
+            "name": "Amanda"
+        },
+        {
+            "name": "John"
+        },
+        {
+            "name": "Sara"
+        }
+    ],
+    "raw_description": "<b>WebUI</b> is a modern, cross-platform web framework based on web components, built with <i>Rust</i>.",
+    "name": "Mohamed Mansour",
+    "contact": true
+}
