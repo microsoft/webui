@@ -8,6 +8,7 @@ description = "HTML/CSS parser for WebUI framework"
 
 [dependencies]
 webui-protocol = { path = "../webui-protocol" }
+webui-expressions = { path = "../webui-expressions" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

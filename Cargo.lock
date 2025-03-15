@@ -1201,6 +1201,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "webui-protocol",
+ "webui-state",
 ]
 
 [[package]]
@@ -1227,6 +1228,7 @@ dependencies = [
  "tokio",
  "webui-expressions",
  "webui-protocol",
+ "webui-state",
 ]
 
 [[package]]
@@ -1249,6 +1251,7 @@ dependencies = [
  "tree-sitter-html",
  "tree-sitter-typescript",
  "walkdir",
+ "webui-expressions",
  "webui-protocol",
 ]
 
@@ -1261,6 +1264,14 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "webui-state"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
