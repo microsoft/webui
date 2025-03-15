@@ -38,7 +38,7 @@ jobs:
 
       # Step 5: Build the Vitepress site
       - name: Build Site
-        run: cd docs && pnpm docs:build
+        run: cd docs && pnpm build
 
       # Step 6: Deploy to GitHub Pages
       - name: Deploy to GitHub Pages
