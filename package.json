@@ -14,7 +14,7 @@
     "@types/node": "^22.7.4",
     "@types/sinon": "^17.0.3",
     "commander": "^12.1.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.25.0",
     "esbuild-register": "^3.6.0",
     "mitata": "^1.0.10",
     "rimraf": "^6.0.1",
