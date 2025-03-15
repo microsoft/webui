@@ -17,9 +17,6 @@ importers:
       commander:
         specifier: ^12.1.0
         version: 12.1.0
-      dprint:
-        specifier: ^0.47.2
-        version: 0.47.2
       esbuild:
         specifier: ^0.24.0
         version: 0.24.0
@@ -39,7 +36,7 @@ importers:
         specifier: ^5.6.2
         version: 5.6.2
 
-  apps/example-counter-app:
+  examples/example-counter-app:
     dependencies:
       '@btjs/element':
         specifier: workspace:*
@@ -52,7 +49,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/tools
 
-  apps/example-fast-ssr:
+  examples/example-fast-ssr:
     dependencies:
       '@microsoft/fast-element':
         specifier: 2.0.0-beta.26
@@ -68,7 +65,7 @@ importers:
         specifier: 1.0.0-beta.32
         version: 1.0.0-beta.32(@microsoft/fast-element@2.0.0-beta.26)
 
-  apps/example-todo-app:
+  examples/example-todo-app:
     dependencies:
       '@btjs/element':
         specifier: workspace:*
@@ -223,46 +220,6 @@ packages:
   '@ast-grep/napi@0.26.3':
     resolution: {integrity: sha512-hosdT4fr/Xb7DPxgnBcl4Azbe2rGYoynH8tWxpkIk/I6KiKn22nA0Zww0j3RXBGVYTUwiUK7te7VkDn8eqs8HQ==}
     engines: {node: '>= 10'}
-
-  '@dprint/darwin-arm64@0.47.2':
-    resolution: {integrity: sha512-mVPFBJsXxGDKHHCAY8wbqOyS4028g1bN15H9tivCnPAjwaZhkUimZHXWejXADjhGn+Xm2SlakugY9PY/68pH3Q==}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@dprint/darwin-x64@0.47.2':
-    resolution: {integrity: sha512-T7wzlc+rBV+6BRRiBjoqoy5Hj4TR2Nv2p2s9+ycyPGs10Kj/JXOWD8dnEHeBgUr2r4qe/ZdcxmsFQ5Hf2n0WuA==}
-    cpu: [x64]
-    os: [darwin]
-
-  '@dprint/linux-arm64-glibc@0.47.2':
-    resolution: {integrity: sha512-B0m1vT5LdVtrNOVdkqpLPrSxuCD+l5bTIgRzPaDoIB1ChWQkler9IlX8C+RStpujjPj6SYvwo5vTzjQSvRdQkA==}
-    cpu: [arm64]
-    os: [linux]
-
-  '@dprint/linux-arm64-musl@0.47.2':
-    resolution: {integrity: sha512-zID6wZZqpg2/Q2Us+ERQkbhLwlW3p3xaeEr00MPf49bpydmEjMiPuSjWPkNv+slQSIyIsVovOxF4lbNZjsdtvw==}
-    cpu: [arm64]
-    os: [linux]
-
-  '@dprint/linux-x64-glibc@0.47.2':
-    resolution: {integrity: sha512-rB3WXMdINnRd33DItIp7mObS7dzHW90ZzeJSsoKJLPp+Z7wXjjb27UUowfqVI4baa/1pd7sdbX54DPohMtfu/A==}
-    cpu: [x64]
-    os: [linux]
-
-  '@dprint/linux-x64-musl@0.47.2':
-    resolution: {integrity: sha512-E0+TNbzYdTXJ/jCVjUctVxkda/faw++aDQLfyWGcmdMJnbM7NZz+W4fUpDXzMPsjy+zTWxXcPK7/q2DZz2gnbg==}
-    cpu: [x64]
-    os: [linux]
-
-  '@dprint/win32-arm64@0.47.2':
-    resolution: {integrity: sha512-K1EieTCFjfOCmyIhw9zFSduE6qVCNHEveupqZEfbSkVGw5T9MJQ1I9+n7MDb3RIDYEUk0enJ58/w82q8oDKCyA==}
-    cpu: [arm64]
-    os: [win32]
-
-  '@dprint/win32-x64@0.47.2':
-    resolution: {integrity: sha512-LhizWr8VrhHvq4ump8HwOERyFmdLiE8C6A42QSntGXzKdaa2nEOq20x/o56ZIiDcesiV+1TmosMKimPcOZHa+Q==}
-    cpu: [x64]
-    os: [win32]
 
   '@esbuild/aix-ppc64@0.23.1':
     resolution: {integrity: sha512-6VhYk1diRqrhBAqpJEdjASR/+WVRtfjpqKuNw11cLiaWpAT/Uu+nokB+UJnevzy/P9C/ty6AOe0dwueMrGh/iQ==}
@@ -735,10 +692,6 @@ packages:
     resolution: {integrity: sha512-PJWHUb1RFevKCwaFA9RlG5tCd+FO5iRh9A8HEtkmBH2Li03iJriB6m6JIN4rGz3K3JLawI7/veA1xzRKP6ISBw==}
     engines: {node: '>=0.3.1'}
 
-  dprint@0.47.2:
-    resolution: {integrity: sha512-geUcVIIrmLaY+YtuOl4gD7J/QCjsXZa5gUqre9sO6cgH0X/Fa9heBN3l/AWVII6rKPw45ATuCSDWz1pyO+HkPQ==}
-    hasBin: true
-
   eastasianwidth@0.2.0:
     resolution: {integrity: sha512-I88TYZWc9XiYHRQ4/3c5rjjfgkjhLyW2luGIheGERbNQ6OY7yTybanSpDXZa8y7VUP9YmDcYa+eyq4ca7iLqWA==}
 
@@ -1175,30 +1128,6 @@ snapshots:
       '@ast-grep/napi-win32-ia32-msvc': 0.26.3
       '@ast-grep/napi-win32-x64-msvc': 0.26.3
 
-  '@dprint/darwin-arm64@0.47.2':
-    optional: true
-
-  '@dprint/darwin-x64@0.47.2':
-    optional: true
-
-  '@dprint/linux-arm64-glibc@0.47.2':
-    optional: true
-
-  '@dprint/linux-arm64-musl@0.47.2':
-    optional: true
-
-  '@dprint/linux-x64-glibc@0.47.2':
-    optional: true
-
-  '@dprint/linux-x64-musl@0.47.2':
-    optional: true
-
-  '@dprint/win32-arm64@0.47.2':
-    optional: true
-
-  '@dprint/win32-x64@0.47.2':
-    optional: true
-
   '@esbuild/aix-ppc64@0.23.1':
     optional: true
 
@@ -1537,17 +1466,6 @@ snapshots:
   destroy@1.2.0: {}
 
   diff@7.0.0: {}
-
-  dprint@0.47.2:
-    optionalDependencies:
-      '@dprint/darwin-arm64': 0.47.2
-      '@dprint/darwin-x64': 0.47.2
-      '@dprint/linux-arm64-glibc': 0.47.2
-      '@dprint/linux-arm64-musl': 0.47.2
-      '@dprint/linux-x64-glibc': 0.47.2
-      '@dprint/linux-x64-musl': 0.47.2
-      '@dprint/win32-arm64': 0.47.2
-      '@dprint/win32-x64': 0.47.2
 
   eastasianwidth@0.2.0: {}
 

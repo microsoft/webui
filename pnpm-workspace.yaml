@@ -1,3 +1,5 @@
 packages:
-  - 'examples/*'
-  - 'packages/*'
+  - examples/*
+  - packages/*
+onlyBuiltDependencies:
+  - esbuild
