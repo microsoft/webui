@@ -9,6 +9,7 @@ repository = "https://github.com/mohamedmansour/webui"
 [dependencies]
 webui-protocol = { path = "../../crates/webui-protocol" }
 webui-expressions = { path = "../../crates/webui-expressions" }
+webui-state = { path = "../webui-state" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
