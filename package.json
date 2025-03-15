@@ -1,20 +1,19 @@
 {
-  "name": "build-time-js",
+  "name": "webui",
   "version": "1.0.0",
-  "main": "index.js",
+  "type": "module",
+  "private": true,
   "scripts": {
     "clean": "pnpm --stream -r run clean",
     "build": "pnpm --stream -r run build",
     "test": "pnpm --stream -r run test",
     "start": "pnpm --filter @example/counter-app run start:dev",
-    "serve": "pnpm --filter @example/counter-app run start:btr",
-    "format": "dprint fmt --config dprint.json"
+    "serve": "pnpm --filter @example/counter-app run start:btr"
   },
   "devDependencies": {
     "@types/node": "^22.7.4",
     "@types/sinon": "^17.0.3",
     "commander": "^12.1.0",
-    "dprint": "^0.47.2",
     "esbuild": "^0.24.0",
     "esbuild-register": "^3.6.0",
     "mitata": "^1.0.10",
