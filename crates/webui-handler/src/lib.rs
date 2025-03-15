@@ -54,6 +54,16 @@ pub struct WebUIHandler {
     // Configuration options could go here
 }
 
+/// Context object for processing WebUI streams
+struct WebUIProcessContext<'a> {
+    protocol: &'a WebUIProtocol,
+    state: &'a Value,
+    depth: usize,
+    writer: &'a mut dyn ResponseWriter,
+    // Add local variables map to store context-specific variables (like loop items)
+    local_vars: HashMap<String, Value>,
+}
+
 impl WebUIHandler {
     /// Create a new WebUI handler.
     pub fn new() -> Self {
@@ -77,7 +87,14 @@ impl WebUIHandler {
         }
         
         // Process the main stream with an empty initial context
-        self.process_stream_id(main_stream_id, protocol, state, &mut HashMap::new(), writer)?;
+        let mut context = WebUIProcessContext {
+            protocol,
+            state,
+            depth: 0,
+            writer,
+            local_vars: HashMap::new(),
+        };
+        self.process_stream_id(main_stream_id, &mut context)?;
         
         // Finalize the output
         writer.end()?;
@@ -92,16 +109,13 @@ impl WebUIHandler {
     fn process_stream_id(
         &self,
         stream_id: &str,
-        protocol: &WebUIProtocol,
-        state: &Value,
-        context: &mut HashMap<String, Value>,
-        writer: &mut dyn ResponseWriter,
+        context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        let stream = protocol.streams.get(stream_id).ok_or_else(|| {
-            HandlerError::MissingStream(stream_id.to_string())
-        })?;
-        
-        self.process_stream(stream, protocol, state, context, writer)
+        if let Some(stream) = context.protocol.streams.get(stream_id) {
+            self.process_stream(stream, context)
+        } else {
+            Err(HandlerError::MissingStream(stream_id.to_string()))
+        }
     }
     
     /// Process a vector of streams.
@@ -111,32 +125,28 @@ impl WebUIHandler {
     fn process_stream(
         &self,
         stream: &Vec<WebUIStream>,
-        protocol: &WebUIProtocol,
-        state: &Value,
-        context: &mut HashMap<String, Value>,
-        writer: &mut dyn ResponseWriter,
+        context: &mut WebUIProcessContext,
     ) -> Result<()> {
         for item in stream {
             match item {
                 WebUIStream::Raw(raw) => {
-                    writer.write(&raw.value)?;
-                },
+                    context.writer.write(&raw.value)?;
+                }
                 WebUIStream::Component(component) => {
-                    self.process_component(component, protocol, state, context, writer)?;
-                },
+                    self.process_component(component, context)?;
+                }
                 WebUIStream::For(for_loop) => {
-                    self.process_for_loop(for_loop, protocol, state, context, writer)?;
-                },
+                    self.process_for_loop(for_loop, context)?;
+                }
                 WebUIStream::Signal(signal) => {
-                    let content = self.process_signal(signal, state, context)?;
-                    writer.write(&content)?;
-                },
+                    let content = self.process_signal(signal, context)?;
+                    context.writer.write(&content)?;
+                }
                 WebUIStream::If(if_cond) => {
-                    self.process_if(if_cond, protocol, state, context, writer)?;
-                },
-            };
+                    self.process_if(if_cond, context)?;
+                }
+            }
         }
-        
         Ok(())
     }
     
@@ -144,14 +154,14 @@ impl WebUIHandler {
     fn process_component(
         &self,
         component: &webui_protocol::WebUIStreamComponent,
-        protocol: &WebUIProtocol,
-        state: &Value,
-        context: &mut HashMap<String, Value>,
-        writer: &mut dyn ResponseWriter,
+        context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        // In a real implementation, we would process the CSS here
-        // For now, we just process the referenced stream
-        self.process_stream_id(&component.stream_id, protocol, state, context, writer)
+        // Write CSS once per component at the first level
+        if context.depth == 0 {
+            context.writer.write(&format!("<style>{}</style>", component.css))?;
+        }
+        
+        self.process_stream_id(&component.stream_id, context)
     }
     
     /// Process a for loop stream.
@@ -162,25 +172,15 @@ impl WebUIHandler {
     fn process_for_loop(
         &self,
         for_loop: &webui_protocol::WebUIStreamFor,
-        protocol: &WebUIProtocol,
-        state: &Value,
-        parent_context: &mut HashMap<String, Value>,
-        writer: &mut dyn ResponseWriter,
+        context: &mut WebUIProcessContext,
     ) -> Result<()> {
         // Get the collection to iterate over
         let collection_name = &for_loop.collection;
         
-        // First check in context, then in global state
-        let collection = if let Some(val) = parent_context.get(collection_name) {
+        // First check in global state
+        let collection = if let Some(val) = find_value_by_dotted_path(collection_name, context.state) {
             match val {
-                Value::Array(arr) => arr.clone(),  // Clone to get owned type
-                _ => return Err(HandlerError::TypeError(format!(
-                    "Collection '{}' is not an array", collection_name
-                ))),
-            }
-        } else if let Some(val) = find_value_by_dotted_path(collection_name, state) {
-            match val {
-                Value::Array(arr) => arr,  // Already owned
+                Value::Array(arr) => arr,
                 _ => return Err(HandlerError::TypeError(format!(
                     "Collection '{}' is not an array", collection_name
                 ))),
@@ -193,12 +193,17 @@ impl WebUIHandler {
         
         // Process each item in the collection
         for item in collection {
-            // Create a new context for this iteration that inherits from the parent context
-            let mut item_context = parent_context.clone();
-            // Add the current item to the context with the specified name
-            item_context.insert(item_name.to_string(), item);  // item is already owned
+            // Save the current local vars
+            let saved_vars = context.local_vars.clone();
             
-            self.process_stream_id(&for_loop.stream_id, protocol, state, &mut item_context, writer)?;
+            // Add the current item to the context
+            context.local_vars.insert(item_name.clone(), item.clone());
+            
+            // Process the stream with the updated context
+            self.process_stream_id(&for_loop.stream_id, context)?;
+            
+            // Restore the original context
+            context.local_vars = saved_vars;
         }
         
         Ok(())
@@ -211,31 +216,29 @@ impl WebUIHandler {
     fn process_signal(
         &self,
         signal: &webui_protocol::WebUIStreamSignal,
-        state: &Value,
-        context: &mut HashMap<String, Value>,
+        context: &WebUIProcessContext,
     ) -> Result<String> {
         // Parse the path (could be nested like "person.name")
         let path = &signal.value;
         
-        // First check in context
+        // First check in local_vars
         if let Some(first_part) = path.split('.').next() {
-            if let Some(context_value) = context.get(first_part) {
-                // If this is a simple path (no dots), just return the context value
+            if let Some(local_value) = context.local_vars.get(first_part) {
+                // If this is a simple path (no dots), just return the value
                 if !path.contains('.') {
-                    return self.format_signal_value(context_value, signal.raw);
+                    return self.format_signal_value(local_value, signal.raw);
                 }
                 
-                // Otherwise, convert context value to Value and use find_value_by_dotted_path
-                // Starting from the second part of the path
+                // Otherwise, use find_value_by_dotted_path starting from the second part
                 let remaining_path = &path[first_part.len() + 1..]; // +1 for the dot
-                if let Some(nested_value) = find_value_by_dotted_path(remaining_path, context_value) {
+                if let Some(nested_value) = find_value_by_dotted_path(remaining_path, local_value) {
                     return self.format_signal_value(&nested_value, signal.raw);
                 }
             }
         }
         
-        // If not found in context, check in global state
-        if let Some(value) = find_value_by_dotted_path(path, state) {
+        // If not found in local vars, check in global state
+        if let Some(value) = find_value_by_dotted_path(path, context.state) {
             return self.format_signal_value(&value, signal.raw);
         }
         
@@ -264,21 +267,31 @@ impl WebUIHandler {
     fn process_if(
         &self,
         if_cond: &webui_protocol::WebUIStreamIf,
-        protocol: &WebUIProtocol,
-        state: &Value,
-        context: &mut HashMap<String, Value>,
-        writer: &mut dyn ResponseWriter,
+        context: &mut WebUIProcessContext,
     ) -> Result<()> {
         // Evaluate the condition
-        let condition_met = evaluate(&if_cond.condition, state)
+        let condition_met = evaluate(&if_cond.condition, context.state)
             .map_err(|e| HandlerError::Evaluation(e.to_string()))?;
         
         if condition_met {
             // Process the content if condition is true
-            self.process_stream_id(&if_cond.stream_id, protocol, state, context, writer)?;
+            self.process_stream_id(&if_cond.stream_id, context)?;
         }
         
         Ok(())
+    }
+
+    /// Render the UI based on the protocol and state
+    pub fn render(&self, protocol: &WebUIProtocol, state: &Value, writer: &mut dyn ResponseWriter) -> Result<()> {
+        let mut context = WebUIProcessContext {
+            protocol,
+            state,
+            depth: 0,
+            writer,
+            local_vars: HashMap::new(),
+        };
+        
+        self.process_stream_id("index.html", &mut context)
     }
 }
 
@@ -512,7 +525,7 @@ mod tests {
         handle(&protocol, &state, &mut writer).unwrap();
         
         // Check the output
-        assert_eq!(writer.get_content(), "Component: <div>Component Content</div>");
+        assert_eq!(writer.get_content(), "Component: <style>.component { color: red; }</style><div>Component Content</div>");
         assert!(writer.is_ended());
     }
     

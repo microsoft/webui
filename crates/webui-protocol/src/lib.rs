@@ -108,7 +108,7 @@ impl Serialize for ConditionExpr {
             ConditionExpr::Not(expr) => {
                 let mut map = serializer.serialize_map(Some(2))?;
                 map.serialize_entry("kind", "not")?;
-                map.serialize_entry("condition", &*expr)?;
+                map.serialize_entry("condition", expr)?;
                 map.end()
             },
             ConditionExpr::Compound { left, op, right } => {
