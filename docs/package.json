@@ -1,14 +1,15 @@
 {
-  "name": "webui-docs",
+  "name": "@webui/docs",
   "version": "0.1.0",
   "description": "WebUI Framework Documentation",
+  "type": "module",
   "scripts": {
-    "dev": "vitepress dev",
-    "build": "vitepress build",
-    "preview": "vitepress preview"
+    "docs:dev": "vitepress dev",
+    "docs:build": "vitepress build",
+    "docs:preview": "vitepress preview"
   },
   "devDependencies": {
-    "vitepress": "^1.0.0-rc.20"
+    "vitepress": "^1.6.3"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

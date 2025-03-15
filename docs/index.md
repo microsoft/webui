@@ -2,7 +2,7 @@
 layout: home
 hero:
   name: "WebUI Framework"
-  text: "Native Templates Everywhere"
+  text: "Native Runtime Everywhere"
   tagline: Write once, render natively across any platform without JavaScript
   image:
     src: /logo.svg

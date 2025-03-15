@@ -14,7 +14,7 @@ export default {
       { text: 'Guide', link: '/guide/tutorials/hello-world.md' },
       { text: 'Directives', link: '/directives/' },
       { text: 'Handlers', link: '/handlers/' },
-      { text: 'API', link: '/api/' },
+      { text: 'Playgound', link: '/playground/' },
     ],
     
     // Sidebar navigation
@@ -89,7 +89,7 @@ export default {
     // Footer
     footer: {
       message: 'Released under the MIT License',
-      copyright: 'Copyright © 2023-present WebUI Contributors'
+      copyright: 'Copyright © 2025-present Microsoft'
     },
     
     // Search
