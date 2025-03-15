@@ -100,14 +100,6 @@ fn create_simple_protocol() -> WebUIProtocol {
     WebUIProtocol { streams }
 }
 
-fn protocol_validation_benchmark(c: &mut Criterion) {
-    let protocol = create_test_protocol();
-    
-    c.bench_function("protocol_validation", |b| {
-        b.iter(|| black_box(&protocol).validate())
-    });
-}
-
 fn serialize_json_benchmark(c: &mut Criterion) {
     let protocol = create_simple_protocol();
     
@@ -139,7 +131,6 @@ fn complex_condition_benchmark(c: &mut Criterion) {
 
 criterion_group!(
     benches, 
-    protocol_validation_benchmark, 
     serialize_json_benchmark,
     complex_condition_benchmark
 );

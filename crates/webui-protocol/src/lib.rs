@@ -346,15 +346,6 @@ impl WebUIProtocol {
         Ok(protocol)
     }
     
-    // Keep the existing validate method for backward compatibility
-    // and direct validation of instances
-    pub fn validate(&self) -> Result<()> {
-        // Convert self to owned, validate, then discard the result
-        // This avoids duplicating the validation logic
-        Self::validate_protocol(self.clone())?;
-        Ok(())
-    }
-    
     /// Serialize protocol to JSON
     pub fn to_json(&self) -> Result<String> {
         Ok(serde_json::to_string(self)?)
@@ -415,8 +406,39 @@ mod tests {
         
         let protocol = WebUIProtocol::from_json(json).unwrap();
         assert_eq!(protocol.streams.len(), 2);
-        assert!(protocol.streams.contains_key("index.html"));
-        assert!(protocol.streams.contains_key("for-1"));
+        
+        let index_stream = &protocol.streams["index.html"];
+        assert_eq!(index_stream.len(), 2);
+        
+        let raw_stream = &index_stream[0];
+        assert!(matches!(raw_stream, WebUIStream::Raw(_)));
+        if let WebUIStream::Raw(raw) = raw_stream {
+            assert_eq!(raw.value, "Hello, WebUI!\n");
+        } else {
+            panic!("Expected raw stream");
+        }
+
+        let for_stream = &index_stream[1];
+        assert!(matches!(for_stream, WebUIStream::For(_)));
+        if let WebUIStream::For(for_loop) = for_stream {
+            assert_eq!(for_loop.item, "person");
+            assert_eq!(for_loop.collection, "people");
+            assert_eq!(for_loop.stream_id, "for-1");
+        } else {
+            panic!("Expected signal stream");
+        }
+
+        let for_stream = &protocol.streams["for-1"];
+        assert_eq!(for_stream.len(), 1);
+        let signal_stream = &for_stream[0];
+        assert!(matches!(signal_stream, WebUIStream::Signal(_)));
+        if let WebUIStream::Signal(signal) = signal_stream {
+            assert_eq!(signal.value, "person.name");
+            assert_eq!(signal.raw, false);
+        } else {
+            panic!("Expected signal stream");
+        }
+
     }
 
     #[test]
