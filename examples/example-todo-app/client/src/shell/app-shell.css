@@ -1,0 +1,28 @@
+.header {
+  margin: 0;
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+}
+
+button {
+  padding: 5px 12px;
+  margin-inline-end: 8px;
+}
+
+.items {
+  margin-top: 16px;
+}
+
+.toast {
+  position: fixed;
+  top: 5px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: var(--secondary-background-color);
+  color: var(--secondary-text-color);
+  margin: 0;
+  padding: 10px 20px;
+  border-radius: 5px;
+}

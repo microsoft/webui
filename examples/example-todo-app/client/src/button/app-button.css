@@ -1,0 +1,32 @@
+:host {
+  --background-color: #007bff;
+  --text-color: #ffffff;
+  --outline-color: transparent;
+}
+
+@media (prefers-color-scheme: dark) {
+  :host {
+    --background-color: #0066cc;
+    --text-color: #ffffff;
+    --outline-color: transparent;
+  }
+}
+
+:host([appearance="secondary"]) {
+  --background-color: transparent;
+  --outline-color: var(--text-color);
+}
+
+button {
+  background-color: var(--background-color);
+  color: var(--text-color);
+  border: none;
+  padding: 10px 20px;
+  text-align: center;
+  text-decoration: none;
+  display: inline-block;
+  font-size: 16px;
+  margin: 4px 2px;
+  cursor: pointer;
+  outline: 1px solid var(--outline-color);
+}
