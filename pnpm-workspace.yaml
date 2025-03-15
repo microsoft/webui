@@ -1,4 +1,6 @@
 packages:
+  - docs
   - examples/*
+  - '!**/test/**'
 onlyBuiltDependencies:
   - esbuild

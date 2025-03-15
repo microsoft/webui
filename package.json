@@ -4,24 +4,14 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "clean": "pnpm --stream -r run clean",
-    "build": "pnpm --stream -r run build",
-    "test": "pnpm --stream -r run test",
-    "start": "pnpm --filter @example/counter-app run start:dev",
-    "serve": "pnpm --filter @example/counter-app run start:btr"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "devDependencies": {
-    "@types/node": "^22.7.4",
-    "@types/sinon": "^17.0.3",
-    "commander": "^12.1.0",
-    "esbuild": "^0.24.0",
-    "esbuild-register": "^3.6.0",
-    "mitata": "^1.0.10",
-    "rimraf": "^6.0.1",
-    "sinon": "^19.0.2",
-    "typescript": "^5.6.2"
   },
   "engines": {
     "node": ">=22.0.0"
-  }
+  },
+  "author": "Microsoft Edge",
+  "license": "MIT",
+  "packageManager": "pnpm@10.6.3"
 }
