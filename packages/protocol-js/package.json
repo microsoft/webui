@@ -1,7 +1,0 @@
-{
-  "name": "@btjs/protocol-js",
-  "version": "1.0.10",
-  "description": "Protocol for the BTJS",
-  "type": "module",
-  "types": "index.d.ts"
-}
