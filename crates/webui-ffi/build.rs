@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 fn main() {
     let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let out_dir = PathBuf::from(crate_dir).join("include");
+    let out_dir = PathBuf::from(crate_dir.clone()).join("include");
 
     // Create include directory if it doesn't exist
     std::fs::create_dir_all(&out_dir).unwrap();

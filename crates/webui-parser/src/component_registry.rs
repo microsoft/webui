@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
-use walkdir::WalkDir; // added for recursive scanning
+use walkdir::WalkDir;
 use crate::{ParserError, Result};
 
 /// Represents a web component in the registry.
@@ -51,14 +51,14 @@ impl ComponentRegistry {
                     continue;
                 }
                 // Only process HTML files
-                if path.extension().map_or(false, |ext| ext == "html") {
+                if path.extension().is_some_and(|ext| ext == "html") {
                     // Check for a component name (must contain a hyphen)
                     if let Some(filename) = path.file_stem().and_then(|s| s.to_str()) {
                         if filename.contains('-') {
                             // Find associated CSS file
                             let css_path = path.with_extension("css");
                             // Register the component (key is the file name without extension)
-                            self.register_component_from_paths(&path, if css_path.exists() { Some(&css_path) } else { None })?;
+                            self.register_component_from_paths(path, if css_path.exists() { Some(&css_path) } else { None })?;
                         }
                     }
                 }
@@ -149,26 +149,20 @@ impl ComponentRegistry {
 mod tests {
     use super::*;
     use std::io::Write;
-    use tempfile::NamedTempFile;
     
-    fn create_test_file(content: &str, extension: &str) -> PathBuf {
-        // Create a temporary file
-        let file = NamedTempFile::new().unwrap();
-        let file_path = file.path().to_path_buf();
+    fn create_test_file(content: &str, filename: &str) -> PathBuf {
+        // Create a temporary directory to hold our files
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join(filename);
         
-        // Create the new path with the desired extension
-        let dir = file_path.parent().unwrap();
-        let file_name = format!("test-file.{}", extension);
-        let new_path = dir.join(file_name);
-        
-        // Persist  file to the new path
-        file.persist(&new_path).unwrap();
-        
-        // Write the content to the persisted file
-        let mut file = fs::File::create(&new_path).unwrap();
+        // Write the content to the file
+        let mut file = fs::File::create(&file_path).unwrap();
         file.write_all(content.as_bytes()).unwrap();
         
-        new_path
+        // Return the path, but keep temp_dir alive by leaking it
+        // (it will be cleaned up when the test exits)
+        std::mem::forget(temp_dir);
+        file_path
     }
     
     #[test]
@@ -176,20 +170,13 @@ mod tests {
         let html_content = "<template><p>Hello World</p></template>";
         let css_content = "p { color: red; }";
         
-        // Create temporary files
-        let html_path = create_test_file(html_content, "html");
-        let css_path = create_test_file(css_content, "css");
+        // Create temporary files with proper names directly
+        let html_path = create_test_file(html_content, "test-component.html");
+        let css_path = create_test_file(css_content, "test-component.css");
         
-        // Rename the files to have hyphens (valid component names)
-        let new_html_path = html_path.with_file_name("test-component.html");
-        fs::rename(&html_path, &new_html_path).unwrap();
-        
-        let new_css_path = css_path.with_file_name("test-component.css");
-        fs::rename(&css_path, &new_css_path).unwrap();
-        
-        // Register the component
+        // Register the component (no rename needed)
         let mut registry = ComponentRegistry::new();
-        let result = registry.register_component_from_paths(&new_html_path, Some(&new_css_path));
+        let result = registry.register_component_from_paths(&html_path, Some(&css_path));
         
         assert!(result.is_ok());
         assert!(registry.contains("test-component"));
@@ -197,10 +184,6 @@ mod tests {
         let component = registry.get("test-component").unwrap();
         assert_eq!(component.html_content, html_content);
         assert_eq!(component.css_content.as_deref(), Some(css_content));
-        
-        // Clean up the files
-        let _ = fs::remove_file(new_html_path);
-        let _ = fs::remove_file(new_css_path);
     }
     
     #[test]
@@ -208,19 +191,14 @@ mod tests {
         let html_content = "<p>Invalid</p>";
         
         // Create temporary file with invalid name (no hyphen)
-        let html_path = create_test_file(html_content, "html");
-        let new_html_path = html_path.with_file_name("invalid.html");
-        fs::rename(&html_path, &new_html_path).unwrap();
+        let html_path = create_test_file(html_content, "invalid.html");
         
         // Try to register the component
         let mut registry = ComponentRegistry::new();
-        let result = registry.register_component_from_paths(&new_html_path, None::<&str>);
+        let result = registry.register_component_from_paths(&html_path, None::<&str>);
         
         assert!(result.is_err());
         assert_eq!(registry.len(), 0);
-        
-        // Clean up
-        let _ = fs::remove_file(new_html_path);
     }
     
     #[test]
@@ -228,20 +206,15 @@ mod tests {
         let html_content = "<template><p>CSS Optional</p></template>";
         
         // Create temporary HTML file
-        let html_path = create_test_file(html_content, "html");
-        let new_html_path = html_path.with_file_name("test-component.html");
-        fs::rename(&html_path, &new_html_path).unwrap();
+        let html_path = create_test_file(html_content, "test-component");
         
         // Register with non-existent CSS file
         let mut registry = ComponentRegistry::new();
-        let result = registry.register_component_from_paths(&new_html_path, None::<&str>);
+        let result = registry.register_component_from_paths(&html_path, None::<&str>);
         
         assert!(result.is_ok());
         let component = registry.get("test-component").unwrap();
         assert_eq!(component.html_content, html_content);
         assert_eq!(component.css_content, None);
-        
-        // Clean up
-        let _ = fs::remove_file(new_html_path);
     }
 }

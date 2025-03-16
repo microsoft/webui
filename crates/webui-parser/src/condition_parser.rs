@@ -63,12 +63,17 @@ impl ConditionParser {
         }
         
         // First character must be a letter or underscore
-        let first_char = input.chars().next().unwrap();
+        let first_char = match input.chars().next() {
+            Some(c) => c,
+             // This shouldn't happen since we check isEmpty above
+            None => return false,
+        };
+        
         if !first_char.is_alphabetic() && first_char != '_' {
             return false;
         }
         
-        // Rest can be alphanumeric, underscore, or dot (for dot notation)
+        // Rest can be alphanumeric, underscore, or dot (for dot notation).
         input.chars().skip(1).all(|c| c.is_alphanumeric() || c == '_' || c == '.')
     }
     
@@ -77,8 +82,8 @@ impl ConditionParser {
         let input = input.trim();
         
         // Check if the input starts with a negation operator
-        if input.starts_with('!') {
-            let expr_str = input[1..].trim();
+        if let Some(expr_str) = input.strip_prefix('!') {
+            let expr_str = expr_str.trim();
             
             // Parse the negated expression
             let expr = self.parse(expr_str)?;
@@ -92,9 +97,18 @@ impl ConditionParser {
     fn parse_predicate(&self, input: &str) -> Result<ConditionExpr> {
         let input = input.trim();
         
-        // Check if the input contains a comparison operator
+        // Check if the input contains a comparison operator.
         for op_str in &[">=", "<=", "==", "!=", ">", "<"] {
             if let Some(pos) = input.find(op_str) {
+                // Verify this is a standalone operator by checking surrounding characters
+                // If it's part of another sequence like << or >>, it's not a valid operator
+                let is_standalone = (pos == 0 || !input[..pos].ends_with(&op_str[0..1])) && 
+                    (pos + op_str.len() == input.len() || !input[pos + op_str.len()..].starts_with(&op_str[0..1]));
+                
+                if !is_standalone {
+                    continue;
+                }
+                
                 // Split by operator
                 let left = input[..pos].trim();
                 let right = input[pos + op_str.len()..].trim();
@@ -104,7 +118,7 @@ impl ConditionParser {
                     continue;
                 }
                 
-                // Convert operator string to enum variant
+                // Convert operator string to enum variant.
                 let operator = match *op_str {
                     ">=" => ComparisonOperator::GreaterThanOrEqual,
                     "<=" => ComparisonOperator::LessThanOrEqual,
