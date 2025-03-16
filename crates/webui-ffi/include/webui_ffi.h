@@ -7,8 +7,6 @@
 extern "C" {
 
 /// Create a new WebUI handler instance.
-///
-/// Returns a pointer to the handler context or null on failure.
 void *webui_handler_create();
 
 /// Destroy a WebUI handler instance.

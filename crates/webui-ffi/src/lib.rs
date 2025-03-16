@@ -7,10 +7,9 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use serde_json::Value;
 use webui_handler::{WebUIHandler, ResponseWriter, Result};
+use webui_protocol::WebUIProtocol;
 
-#[cfg(target_os = "windows")]
-// use windows::core::PCSTR;
-
+// Common code for all platforms
 struct HandlerContext {
     handler: WebUIHandler,
 }
@@ -38,9 +37,8 @@ impl ResponseWriter for StringResponseWriter {
     }
 }
 
+
 /// Create a new WebUI handler instance.
-///
-/// Returns a pointer to the handler context or null on failure.
 #[no_mangle]
 pub extern "C" fn webui_handler_create() -> *mut c_void {
     let handler = WebUIHandler::new();
@@ -101,7 +99,7 @@ pub unsafe extern "C" fn webui_handler_render(
     };
     
     // Parse protocol and data from JSON
-    let protocol = match webui_protocol::WebUIProtocol::from_json(protocol_str) {
+    let protocol = match WebUIProtocol::from_json(protocol_str) {
         Ok(p) => p,
         Err(_) => return std::ptr::null_mut(),
     };
