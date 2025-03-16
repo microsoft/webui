@@ -1,0 +1,16 @@
+[advisories]
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "warn"
+notice = "warn"
+
+[licenses]
+unlicensed = "deny"
+allow = [
+    "MIT",
+    "Apache-2.0",
+]
+default = "deny"
+
+[bans]
+multiple-versions = "warn"

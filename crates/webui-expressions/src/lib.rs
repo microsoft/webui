@@ -118,7 +118,7 @@ fn evaluate_expr(condition: &ConditionExpr, state: &Value) -> Result<bool> {
                 match val {
                     Value::Bool(b) => Ok(b),
                     Value::Null => Ok(false),
-                    Value::Number(n) => Ok(!n.as_f64().map_or(false, |f| f == 0.0)),
+                    Value::Number(n) => Ok(!(n.as_f64() == Some(0.0))),
                     Value::String(s) => Ok(!s.is_empty()),
                     Value::Array(a) => Ok(!a.is_empty()),
                     Value::Object(o) => Ok(!o.is_empty()),
@@ -159,7 +159,7 @@ fn is_literal(s: &str) -> bool {
     // - It's a number (starts with a digit or negative sign followed by a digit)
     // - It's a boolean ("true" or "false")
     s.starts_with('"') || s.starts_with('\'') || 
-    s.starts_with(|c: char| c.is_ascii_digit() || (c == '-' && s.len() > 1 && s.chars().nth(1).map_or(false, |c| c.is_ascii_digit()))) ||
+    s.starts_with(|c: char| c.is_ascii_digit() || (c == '-' && s.len() > 1 && s.chars().nth(1).is_some_and(|c| c.is_ascii_digit()))) ||
     s == "true" || s == "false"
 }
 

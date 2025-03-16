@@ -3,23 +3,42 @@
 //! This crate provides C-compatible APIs for the WebUI handler to be used from languages
 //! like C#, Node.js, etc.
 
-use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use serde_json::Value;
-use webui_handler::WebUIHandler;
+use webui_handler::{WebUIHandler, ResponseWriter, Result};
 use webui_protocol::WebUIProtocol;
 
-#[cfg(target_os = "windows")]
-use windows::core::PCSTR;
-
+// Common code for all platforms
 struct HandlerContext {
     handler: WebUIHandler,
 }
 
+/// A simple string buffer for collecting rendered output
+struct StringResponseWriter {
+    content: String,
+}
+
+impl StringResponseWriter {
+    fn new() -> Self {
+        Self { content: String::new() }
+    }
+}
+
+impl ResponseWriter for StringResponseWriter {
+    fn write(&mut self, content: &str) -> Result<()> {
+        self.content.push_str(content);
+        Ok(())
+    }
+    
+    fn end(&mut self) -> Result<()> {
+        // Nothing to do for strings
+        Ok(())
+    }
+}
+
+
 /// Create a new WebUI handler instance.
-///
-/// Returns a pointer to the handler context or null on failure.
 #[no_mangle]
 pub extern "C" fn webui_handler_create() -> *mut c_void {
     let handler = WebUIHandler::new();
@@ -80,25 +99,29 @@ pub unsafe extern "C" fn webui_handler_render(
     };
     
     // Parse protocol and data from JSON
-    let protocol = match webui_protocol::WebUIProtocol::from_json(protocol_str) {
+    let protocol = match WebUIProtocol::from_json(protocol_str) {
         Ok(p) => p,
         Err(_) => return std::ptr::null_mut(),
     };
     
-    let data: HashMap<String, Value> = match serde_json::from_str(data_str) {
+    // Parse data JSON directly to Value instead of HashMap
+    let data: Value = match serde_json::from_str(data_str) {
         Ok(d) => d,
         Err(_) => return std::ptr::null_mut(),
     };
     
-    // Render the protocol with data
-    let result = match context.handler.render(&protocol, &data) {
-        Ok(r) => r,
-        Err(_) => return std::ptr::null_mut(),
-    };
+    // Create a string response writer
+    let mut writer = StringResponseWriter::new();
     
-    // Convert the result to a C string
-    match CString::new(result) {
-        Ok(s) => s.into_raw(),
+    // Render the protocol with data
+    match context.handler.render(&protocol, &data, &mut writer) {
+        Ok(_) => {
+            // Convert the result to a C string
+            match CString::new(writer.content) {
+                Ok(s) => s.into_raw(),
+                Err(_) => std::ptr::null_mut(),
+            }
+        },
         Err(_) => std::ptr::null_mut(),
     }
 }

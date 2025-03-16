@@ -1,0 +1,6 @@
+disallowed-methods = [
+  { path = "std::option::Option::unwrap", reason = "can panic; prefer handling the None case explicitly" },
+  { path = "std::result::Result::unwrap", reason = "can panic; prefer handling the Err case explicitly" },
+]
+cognitive-complexity-threshold = 20
+too-many-arguments-threshold = 5
