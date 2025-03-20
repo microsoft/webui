@@ -62,10 +62,6 @@ cd webui
 
 # Build Rust components
 cargo build --release
-
-# Build all handlers
-pnpm install
-pnpm build
 ```
 
 ## Contributing

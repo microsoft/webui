@@ -120,7 +120,7 @@ impl ResponseWriter for FileWriter {
 }
 
 fn main() -> Result<()> {
-    // Parse the template
+    // Parse the template at build step, then protocol will be only needed.
     let parser = WebUIParser::new();
     let protocol = parser.parse("src/templates/index.html", &["src/templates"])?;
     
