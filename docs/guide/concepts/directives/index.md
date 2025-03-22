@@ -1,10 +1,10 @@
 # WebUI Directives
 
-WebUI offers several powerful directives that allow you to create dynamic templates without JavaScript. These directives are processed during rendering to produce the final HTML output.
+WebUI Framework offers several directives that allow you to create dynamic templates without JavaScript. These directives are processed during rendering to produce the final HTML output.
 
 ## Available Directives
 
-WebUI provides the following core directives:
+WebUI Framework provides the following core directives:
 
 - [**`<if>` Conditional Rendering**](./if) - Conditionally render content based on expressions
 - [**`<for>` Loop Iteration**](./for) - Iterate over collections to generate repeated content

@@ -11,10 +11,22 @@ export default {
     // Navigation bar
     nav: [
       { text: 'Home', link: '/' },
-      { text: 'Guide', link: '/guide/tutorials/hello-world.md' },
-      { text: 'Directives', link: '/directives/' },
-      { text: 'Handlers', link: '/handlers/' },
-      { text: 'Playgound', link: '/playground/' },
+      { 
+        text: 'Guide',
+        link: '/guide/',
+        items: [
+          { text: 'Components', link: '/guide/components/' },
+          { text: 'Directives', link: '/guide/directives/' },
+          { text: 'Handlers', link: '/guide/handlers/' },
+        ]
+      },
+      { text: 'Tutorials',
+        items: [
+          { text: 'Hello World', link: '/tutorials/hello-world.md' },
+          { text: 'Todo App', link: '/tutorials/todo-app.md' },
+        ]
+       },
+      { text: 'Playground', link: '/playground/' },
     ],
     
     // Sidebar navigation
@@ -25,44 +37,57 @@ export default {
           items: [
             { text: 'Introduction', link: '/guide/' },
             { text: 'Installation', link: '/guide/installation' },
-            { text: 'Quick Start', link: '/guide/tutorials/hello-world' },
+            { text: 'Quick Start', link: '/tutorials/hello-world' },
           ]
         },
         {
           text: 'Core Concepts',
           items: [
-            { text: 'WebUI Protocol', link: '/guide/protocol' },
-            { text: 'State Management', link: '/guide/state-management' },
-            { text: 'Components', link: '/guide/components' },
+            { text: 'State Management', link: '/guide/concepts/state-management' },
+            { text: 'Components', link: '/guide/concepts/components' },
+            {
+              text: 'Template Directives',
+              items: [
+                { text: 'Overview', link: '/guide/concepts/directives/' },
+                { text: '<if> Conditional', link: '/guide/concepts/directives/if' },
+                { text: '<for> Loop', link: '/guide/concepts/directives/for' },
+                { text: '{{}} Signals', link: '/guide/concepts/directives/signals' },
+              ]
+            },
+            {
+              text: 'Platform Handlers',
+              items: [
+                { text: 'Overview', link: '/guide/concepts/handlers/' },
+                { text: 'Rust', link: '/guide/concepts/handlers/rust' }
+              ]
+            }
           ]
         },
         {
-          text: 'Tutorials',
+          text: 'Advanced Topics',
           items: [
-            { text: 'Hello World', link: '/guide/tutorials/hello-world' },
-            { text: 'Todo App', link: '/guide/tutorials/todo-app' },
+            { text: 'WebUI Protocol', link: '/guide/advanced/protocol' },
+            { text: 'Performance Optimization', link: '/guide/advanced/performance' },
           ]
         }
       ],
-      '/directives/': [
+      '/tutorials': [
         {
-          text: 'Template Directives',
+          text: 'Examples',
           items: [
-            { text: 'Overview', link: '/directives/' },
-            { text: '<if> Conditional', link: '/directives/if' },
-            { text: '<for> Loop', link: '/directives/for' },
-            { text: '{{}} Signals', link: '/directives/signals' },
+            { text: 'Hello World', link: '/tutorials/hello-world' },
+            { text: 'Todo App', link: '/tutorials/todo-app' },
           ]
         }
       ],
-      '/handlers/': [
+      '/framework/': [
         {
-          text: 'Platform Handlers',
+          text: 'Components',
           items: [
-            { text: 'Overview', link: '/handlers/' },
-            { text: 'Rust', link: '/handlers/rust' }
+            { text: 'Overview', link: '/framework/components/' },
           ]
-        }
+        },
+      
       ],
       '/api/': [
         {
@@ -73,6 +98,15 @@ export default {
             { text: 'Parser', link: '/api/parser' },
             { text: 'Handler', link: '/api/handler' },
             { text: 'Expressions', link: '/api/expressions' },
+          ]
+        }
+      ],
+      '/playground/': [
+        {
+          text: 'Playground',
+          items: [
+            { text: 'Interactive Demo', link: '/playground/' },
+            { text: 'Examples', link: '/playground/examples' },
           ]
         }
       ],
