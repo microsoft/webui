@@ -1,10 +1,11 @@
 [package]
 name = "webui-ffi"
-version = "0.1.0"
-edition = "2021"
-description = "FFI bindings for WebUI framework"
-license = "MIT"
-repository = "https://github.com/microsoft/webui"
+description = "Core FFI bindings for WebUI framework"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [lib]
 name = "webui_ffi"

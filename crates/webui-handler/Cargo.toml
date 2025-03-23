@@ -1,10 +1,11 @@
 [package]
 name = "webui-handler"
-version = "0.1.0"
-edition = "2021"
-description = "WebUI handler for rendering WebUI protocols"
-license = "MIT"
-repository = "https://github.com/microsoft/webui"
+description = "Core rust handler for WebUI framework"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 webui-protocol = { path = "../../crates/webui-protocol" }

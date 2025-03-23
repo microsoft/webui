@@ -1,10 +1,11 @@
 [package]
 name = "webui-expressions"
-version = "0.1.0"
-edition = "2021"
-description = "Expression evaluation for WebUI templates"
-license = "MIT"
-repository = "https://github.com/yourusername/webui"
+description = "Core expression evaluation for WebUI framework"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 webui-protocol = { path = "../webui-protocol" }

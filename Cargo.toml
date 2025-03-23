@@ -1,10 +1,10 @@
 [workspace]
 members = [
-    "crates/webui-protocol",
-    "crates/webui-parser",
     "crates/webui-expressions",
+    "crates/webui-ffi",
     "crates/webui-handler",
-    "crates/webui-ffi"
+    "crates/webui-parser",
+    "crates/webui-protocol",
 ]
 resolver = "2"
 

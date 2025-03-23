@@ -1,10 +1,11 @@
 [package]
 name = "webui-state"
-version = "0.1.0"
-edition = "2021"
-description = "WebUI State to manage and query data"
-license = "MIT"
-repository = "https://github.com/microsoft/webui"
+description = "Core state management for WebUI framework"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 serde = { workspace = true }

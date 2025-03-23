@@ -1,14 +1,15 @@
 [package]
 name = "webui-parser"
+description = "Core parser for WebUI framework"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "HTML/CSS parser for WebUI framework"
+repository.workspace = true
 
 [dependencies]
-webui-protocol = { path = "../webui-protocol" }
 webui-expressions = { path = "../webui-expressions" }
+webui-protocol = { path = "../webui-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

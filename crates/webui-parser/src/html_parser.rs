@@ -3,7 +3,7 @@
 //! This module handles parsing WebUI-specific directives like <for>, <if>, etc.
 
 use std::collections::HashMap;
-use tree_sitter::{Node, Parser, Query, QueryCursor};
+use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIteratorMut};
 use webui_protocol::{
     WebUIStream, WebUIStreamRaw, WebUIStreamFor, WebUIStreamIf,
     WebUIStreamRecords,
@@ -12,7 +12,6 @@ use crate::condition_parser::ConditionParser;
 use crate::{ParserError, Result, CssParser, HandlebarsParser};
 
 use tree_sitter_html::LANGUAGE;
-use streaming_iterator::StreamingIterator;
 
 /// Counter for generating unique stream IDs.
 struct StreamIdCounter {
@@ -114,7 +113,6 @@ impl HtmlParser {
     /// Add a for stream, flushing raw buffer first
     fn add_for_stream(&mut self, item: String, collection: String, stream_id: String, streams: &mut Vec<WebUIStream>) {
         self.flush_raw_buffer(streams);
-        println!("add_for_stream: item = {:?}, collection = {:?}, stream_id = {:?}", item, collection, stream_id);
         streams.push(WebUIStream::For(WebUIStreamFor {
             item,
             collection,
@@ -125,7 +123,6 @@ impl HtmlParser {
     /// Add an if stream, flushing raw buffer first
     fn add_if_stream(&mut self, condition: webui_protocol::ConditionExpr, stream_id: String, streams: &mut Vec<WebUIStream>) {
         self.flush_raw_buffer(streams);
-        println!("add_if_stream: condition = {:?}, stream_id = {:?}", condition, stream_id);
         streams.push(WebUIStream::If(WebUIStreamIf {
             condition,
             stream_id,
@@ -135,14 +132,12 @@ impl HtmlParser {
     /// Add a non-raw stream, flushing the raw buffer first if needed
     fn add_stream(&mut self, stream: WebUIStream, streams: &mut Vec<WebUIStream>) {
         self.flush_raw_buffer(streams);
-        println!("add_stream: stream = {:?}", stream);
         streams.push(stream);
     }
     
     /// Flush the raw buffer into streams if not empty
     fn flush_raw_buffer(&mut self, streams: &mut Vec<WebUIStream>) {
         if !self.raw_buffer.is_empty() {
-            println!("flush_raw_buffer: current raw_buffer = {:?}", self.raw_buffer);
             streams.push(WebUIStream::Raw(WebUIStreamRaw {
                 value: std::mem::take(&mut self.raw_buffer),
             }));
@@ -191,23 +186,43 @@ impl HtmlParser {
         source: &str,
         streams: &mut Vec<WebUIStream>
     ) -> Result<()> {
-        println!("process_child_nodes: {} ",node.kind());
-
         match node.kind() {
             "element" => {
-                // Try to get tag name - if it fails, treat as raw content
-                match self.get_element_tag_name(node, source) {
-                    Ok(tag_name) => {
-                        // Check if it's a WebUI directive
-                        match tag_name.as_str() {
-                            "for" => return self.process_for_directive(node, source, streams),
-                            "if" => return self.process_if_directive(node, source, streams),
-                            _ => return self.process_html_node(node, source, streams),
+                // Get the tag name
+                let tag_name = self.get_element_tag_name(node, source)?;
+                
+                // Handle WebUI directives
+                match tag_name.as_str() {
+                    "for" => return self.process_for_directive(node, source, streams),
+                    "if" => return self.process_if_directive(node, source, streams),
+                    _ => {
+                        // For regular HTML elements, extract the raw start/end tags
+                        let start_byte = node.start_byte();
+                        let end_byte = node.end_byte();
+                        let full_content = &source[start_byte..end_byte];
+                        
+                        // Find indices of opening and closing brackets to extract tags
+                        if let Some(close_bracket_pos) = full_content.find('>') {
+                            // Add opening tag as raw content
+                            let opening_tag = &full_content[0..=close_bracket_pos];
+                            self.add_raw_stream(opening_tag);
+                            
+                            // Process children
+                            for child in node.named_children(&mut node.walk()) {
+                                if child.kind() != "start_tag" && child.kind() != "end_tag" {
+                                    self.process_child_node(child, source, streams)?;
+                                }
+                            }
+                            
+                            // Find closing tag and add it
+                            if let Some(last_open_pos) = full_content.rfind('<') {
+                                let closing_tag = &full_content[last_open_pos..];
+                                self.add_raw_stream(closing_tag);
+                                self.flush_raw_buffer(streams);
+                            }
                         }
-                    },
-                    Err(error) => {
-                        println!("Error getting tag name: {:?}", error);
-                        return Err(error);
+                        
+                        return Ok(());
                     }
                 }
             },
@@ -287,7 +302,7 @@ impl HtmlParser {
         
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&query, node, source.as_bytes());
-        while let Some(m) = matches.next() {
+        while let Some(m) = matches.next_mut() {
             let mut found_name = false;
             let mut found_value: Option<String> = None;
 
@@ -323,6 +338,8 @@ impl HtmlParser {
         source: &str,
         streams: &mut Vec<WebUIStream>
     ) -> Result<()> {
+        self.flush_raw_buffer(streams);
+
         // Extract condition attribute
         let condition = self.get_element_attribute(node, "condition", source)?
             .ok_or_else(|| ParserError::Directive("Missing 'condition' attribute on <for>".to_string()))?;
@@ -347,14 +364,13 @@ impl HtmlParser {
         // Generate a unique stream ID for the for loop content
         let stream_id = self.id_counter.next_id("for");
         let mut for_stream: Vec<WebUIStream> = Vec::new();
-        
+
         // Process the for loop body
         for child in node.named_children(&mut node.walk()) {
             if child.kind() != "start_tag" && child.kind() != "end_tag" {
                 self.process_child_node(child, source, &mut for_stream)?;
             }
         }
-        self.flush_raw_buffer(&mut for_stream);
         
         // Store the record.
         self.stream_records.insert(stream_id.clone(), for_stream);
@@ -377,6 +393,8 @@ impl HtmlParser {
         source: &str,
         streams: &mut Vec<WebUIStream>
     ) -> Result<()> {
+        self.flush_raw_buffer(streams);
+
         // Extract condition attribute
         let condition_str = self.get_element_attribute(node, "condition", source)?
             .ok_or_else(|| ParserError::Directive("Missing 'condition' attribute on <if>".to_string()))?;
@@ -393,21 +411,20 @@ impl HtmlParser {
         // Generate a unique stream ID for the if content
         let stream_id = self.id_counter.next_id("if");
         let mut if_stream: Vec<WebUIStream> = Vec::new();
-        
+
         // Process the if body
         for child in node.named_children(&mut node.walk()) {
             if child.kind() != "start_tag" && child.kind() != "end_tag" {
                 self.process_child_node(child, source, &mut if_stream)?;
             }
         }
-        self.flush_raw_buffer(&mut if_stream);
         
         // Store the record.
         self.stream_records.insert(stream_id.clone(), if_stream);
-
+    
         // Add the if directive stream
         self.add_if_stream(condition, stream_id, streams);
-
+    
         Ok(())
     }
 }
@@ -511,9 +528,55 @@ mod tests {
         ));
         assert!(matches!(if_stream.get(2), Some(WebUIStream::Raw(raw)) if raw.value == "!</div>"));
     }
-    
+
     #[test]
     fn test_nested_directives() {
+        let mut parser = HtmlParser::new(WebUIStreamRecords::new());
+        let html = r#"<for condition="category in categories">
+            <if condition="category.hasItems">
+                <for condition="item in category.items">
+                   {{item.title}}
+                </for>
+            </if>
+        </for>"#;
+        
+        let result = parser.parse("test.html", html);
+        
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stream_records = parser.into_stream_records();
+        
+        let streams = stream_records.get("test.html").unwrap();
+        assert_eq!(streams.len(), 1);
+        assert!(matches!(streams.get(0), Some(WebUIStream::For(for_loop)) if 
+            for_loop.item == "category" &&
+            for_loop.collection == "categories" &&
+            for_loop.stream_id == "for-1"
+        ));
+        
+        let for_stream = stream_records.get("for-1").unwrap();
+        assert_eq!(for_stream.len(), 1);
+        assert!(matches!(for_stream.get(0), Some(WebUIStream::If(if_cond)) if 
+            matches!(&if_cond.condition, ConditionExpr::Identifier { value } if value == "category.hasItems") &&
+            if_cond.stream_id == "if-1"
+        ));
+
+        let if_stream = stream_records.get("if-1").unwrap();
+        assert_eq!(if_stream.len(), 1);
+        assert!(matches!(if_stream.get(0), Some(WebUIStream::For(for_loop)) if 
+            for_loop.item == "item" &&
+            for_loop.collection == "category.items" &&
+            for_loop.stream_id == "for-2"
+        ));
+
+        let nested_for_stream = stream_records.get("for-2").unwrap();
+        assert_eq!(nested_for_stream.len(), 1);
+        assert!(matches!(nested_for_stream.get(0), Some(WebUIStream::Signal(signal)) if 
+            signal.value == "item.title" && !signal.raw
+        ));
+    }
+
+    #[test]
+    fn test_complex_directives() {
         let mut parser = HtmlParser::new(WebUIStreamRecords::new());
         let html = r#"<for condition="category in categories">
             <div class="category">
@@ -526,13 +589,12 @@ mod tests {
                     </ul>
                 </if>
             </div>
-        </for> "#;
-        
+        </for>"#;
+
         let result = parser.parse("test.html", html);
         
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let stream_records = parser.into_stream_records();
-        println!("stream_records: {:?}", stream_records);
         let streams = stream_records.get("test.html").unwrap();
         assert_eq!(streams.len(), 1);
         
@@ -544,16 +606,17 @@ mod tests {
 
         // Verify for streams contains the category.name signal
         let for_streams: &Vec<WebUIStream> = stream_records.get("for-1").unwrap();
-        assert_eq!(for_streams.len(), 4);
+        assert_eq!(for_streams.len(), 5);
         assert!(matches!(for_streams.get(0), Some(WebUIStream::Raw(raw)) if raw.value == "<div class=\"category\"><h2>"));
         assert!(matches!(for_streams.get(1), Some(WebUIStream::Signal(signal)) if 
             signal.value == "category.name" && !signal.raw
         ));
-        assert!(matches!(for_streams.get(2), Some(WebUIStream::If(if_cond)) if 
+        assert!(matches!(for_streams.get(2), Some(WebUIStream::Raw(raw)) if raw.value == "</h2>"));
+        assert!(matches!(for_streams.get(3), Some(WebUIStream::If(if_cond)) if 
             matches!(&if_cond.condition, ConditionExpr::Identifier { value } if value == "category.hasItems") &&
             if_cond.stream_id == "if-1"
         ));
-        assert!(matches!(for_streams.get(3), Some(WebUIStream::Raw(raw)) if raw.value == "</div>"));
+        assert!(matches!(for_streams.get(4), Some(WebUIStream::Raw(raw)) if raw.value == "</div>"));
 
         // Verify nested if condition.
         let if_streams: &Vec<WebUIStream> = stream_records.get("if-1").unwrap();
