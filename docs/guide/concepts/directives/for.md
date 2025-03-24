@@ -5,7 +5,7 @@ The `<for>` directive allows you to iterate over arrays and generate repeated co
 ## Basic Usage
 
 ```html
-<for condition="item in items">
+<for each="item in items">
   <div class="item">
     <h3>{{item.title}}</h3>
     <p>{{item.description}}</p>
@@ -21,7 +21,7 @@ The loop variable (e.g., `item` in the example above) is available within the lo
 
 ```html
 <ul>
-  <for condition="person in people">
+  <for each="person in people">
     <li>{{person.name}} ({{person.age}} years old)</li>
   </for>
 </ul>
@@ -32,10 +32,10 @@ The loop variable (e.g., `item` in the example above) is available within the lo
 You can nest `<for>` directives to iterate over nested collections:
 
 ```html
-<for condition="category in categories">
+<for each="category in categories">
   <h2>{{category.name}}</h2>
   <ul>
-    <for condition="product in category.products">
+    <for each="product in category.products">
       <li>{{product.name}} - ${{product.price}}</li>
     </for>
   </ul>
@@ -44,7 +44,7 @@ You can nest `<for>` directives to iterate over nested collections:
 
 ## Condition Format
 
-The `condition` attribute must follow this format:
+The `each` attribute must follow this format:
 
 ```
 itemName in collectionName
@@ -63,15 +63,7 @@ Where:
 
 ## Protocol Output
 
-When the WebUI parser processes a `<for>` directive, it generates a protocol entry like this:
-
-```json
-{
-  "type": "for",
-  "item": "person",
-  "collection": "people",
-  "streamId": "for-1"
-}
-```
-
-The content inside the `<for>` directive is stored in a separate stream with the ID specified in `streamId`.
+When the parser processes a `<for>` directive, it generates a `WebUIStreamFor` in the protocol with the following properties:
+- `item`: The name of the loop variable
+- `collection`: The name of the array to iterate over
+- `streamId`: A reference to the content template for each iteration

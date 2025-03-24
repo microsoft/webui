@@ -53,7 +53,7 @@ Create a simple template in `src/templates/index.html`:
     
     <h2>Your Information:</h2>
     <ul>
-        <for condition="detail in details">
+        <for each="detail in details">
             <li><strong>{{detail.label}}:</strong> {{detail.value}}</li>
         </for>
     </ul>
