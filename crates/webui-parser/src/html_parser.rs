@@ -340,14 +340,14 @@ impl HtmlParser {
     ) -> Result<()> {
         self.flush_raw_buffer(streams);
 
-        // Extract condition attribute
-        let condition = self.get_element_attribute(node, "condition", source)?
-            .ok_or_else(|| ParserError::Directive("Missing 'condition' attribute on <for>".to_string()))?;
+        // Extract each attribute
+        let each = self.get_element_attribute(node, "each", source)?
+            .ok_or_else(|| ParserError::Directive("Missing 'each' attribute on <for>".to_string()))?;
         
-        // Split the condition by whitespace.
-        let parts: Vec<&str> = condition.split_whitespace().collect();
+        // Split the each by whitespace.
+        let parts: Vec<&str> = each.split_whitespace().collect();
         if parts.len() != 3 || parts[1] != "in" {
-            return Err(ParserError::Directive(format!("Invalid for condition: {}", condition)));
+            return Err(ParserError::Directive(format!("Invalid for each: {}", each)));
         }
 
         // Check that the first and third part contain only allowed characters.
@@ -355,7 +355,7 @@ impl HtmlParser {
             s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
         };
         if !allowed(parts[0]) || !allowed(parts[2]) {
-            return Err(ParserError::Directive(format!("Invalid identifier in for condition: {}", condition)));
+            return Err(ParserError::Directive(format!("Invalid identifier in for each: {}", each)));
         }
 
         let item = parts[0];
@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn test_parse_for_directive() {
         let mut parser = HtmlParser::new(WebUIStreamRecords::new());
-        let html = r#"<for condition="item in items"><div class="item">{{item.name}}</div></for>"#;
+        let html = r#"<for each="item in items"><div class="item">{{item.name}}</div></for>"#;
         
         let result = parser.parse("test.html", html);
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
@@ -532,9 +532,9 @@ mod tests {
     #[test]
     fn test_nested_directives() {
         let mut parser = HtmlParser::new(WebUIStreamRecords::new());
-        let html = r#"<for condition="category in categories">
+        let html = r#"<for each="category in categories">
             <if condition="category.hasItems">
-                <for condition="item in category.items">
+                <for each="item in category.items">
                    {{item.title}}
                 </for>
             </if>
@@ -578,12 +578,12 @@ mod tests {
     #[test]
     fn test_complex_directives() {
         let mut parser = HtmlParser::new(WebUIStreamRecords::new());
-        let html = r#"<for condition="category in categories">
+        let html = r#"<for each="category in categories">
             <div class="category">
                 <h2>{{category.name}}</h2>
                 <if condition="category.hasItems">
                     <ul>
-                        <for condition="item in category.items">
+                        <for each="item in category.items">
                             <li>{{item.title}}</li>
                         </for>
                     </ul>
@@ -629,7 +629,7 @@ mod tests {
         ));
         assert!(matches!(if_streams.get(2), Some(WebUIStream::Raw(raw)) if raw.value == "</ul>"));
 
-        // Verify nested for condition.
+        // Verify nested for each.
         let nested_for_streams: &Vec<WebUIStream> = stream_records.get("for-2").unwrap();
         assert_eq!(nested_for_streams.len(), 3);
         assert!(matches!(nested_for_streams.get(0), Some(WebUIStream::Raw(raw)) if raw.value == "<li>"));

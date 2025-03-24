@@ -93,7 +93,7 @@ mod tests {
     async fn test_parse_example() {
         let html = r#"
             Hello, WebUI!
-            <for condition="person in people">
+            <for each="person in people">
                 <p>{{person.name}}</p>
             </for>
             {{{raw_description}}}
