@@ -4,11 +4,21 @@
 			"path": "."
 		}
 	],
-	"settings": {},
+	"settings": {
+		"debug.allowBreakpointsEverywhere": true,
+		"rust-analyzer.check.command": "clippy"
+	},
 	"extensions": {
 		"recommendations": [
 			"rust-lang.rust-analyzer",
 			"fill-labs.dependi"
+		]
+	},
+	"launch": {
+		"version": "0.2.0",
+		"configurations": [
+
+
 		]
 	}
 }

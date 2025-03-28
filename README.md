@@ -17,32 +17,19 @@ The framework represents a paradigm shift in web development:
 
 WebUI enables you to write web-based UIs once and deploy them anywhere - from cloud servers to embedded devices - with consistent rendering and superior performance.
 
+## Core Architecture
+WebUI follows a modular architecture with four primary components:
+
+- **Protocol:** Defines the structural representation of UI components using a serializable format
+- **Parser:** Processes HTML/CSS templates into protocol structures at build time
+- **Expression Evaluation:** Handles conditional logic for dynamic rendering
+- **Handler:** Renders protocol with state data into final HTML output at runtime
+
 ## How It Works
-
-1. **Write Standard HTML/CSS**: Create templates using familiar HTML and CSS with WebUI-specific directives
-2. **Parse to WebUI Protocol**: Templates compile to a lightweight, platform-agnostic protocol
-3. **Native Rendering**: The platform-specific handler renders the protocol directly in your language of choice
-4. **No JavaScript Required**: Everything runs natively in your application environment
-
-## Project Structure
-
-```
-webui/
-├── crates/                      # Rust crates
-│   ├── webui-expressions/       # Expression evaluation engine
-│   ├── webui-ffi/               # Expression evaluation engine
-│   ├── webui-handler/           # Core protocol definitions
-│   ├── webui-parser/            # Core protocol definitions
-│   ├── webui-protocol/          # HTML/CSS/JS parser
-│   └── webui-state/             # Main library (re-exports)
-├── handlers/                    # Language-specific handlers
-│   ├── node/                    # Node.js implementation
-│   ├── go/                      # Go implementation
-│   └── csharp/                  # C# implementation
-├── examples/                    # Example applications
-├── tests/                       # Integration tests
-└── benchmarks/                  # Performance benchmarks
-```
+- **Write Standard HTML/CSS:**  Create templates with familiar syntax plus WebUI directives (`<for>`, `<if>`, `{{signals}}`)
+- **Parse to WebUIProtocol:**  Templates compile to a lightweight, language-agnostic protocol at build time
+- **Native Rendering:** The protocol is rendered with your data using a platform-specific handler in your language of choice
+- **Efficient Output:** The handler produces optimized HTML with Web Component support
 
 ## Getting Started
 

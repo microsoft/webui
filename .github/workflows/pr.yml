@@ -27,9 +27,9 @@ jobs:
       
       - name: Clippy
         run: cargo clippy -- -D warnings
-    # Disable tests for now until we can make them work.
-    #   - name: Run tests
-    #     run: cargo test
+
+      - name: Run tests
+        run: cargo test
 
   build:
     name: Build

@@ -24,8 +24,8 @@ lazy_static = "1.5.0"
 nom = "8.0.0"
 streaming-iterator = "0.1.9"
 
-
 [dev-dependencies]
 mockall = { workspace = true }
-tokio-test = "0.4.4"
-tempfile = "3.18.0"
+tokio-test = { workspace = true }
+tempfile = { workspace = true }
+webui-test-utils = { path = "../webui-test-utils" }

@@ -4,3 +4,4 @@ disallowed-methods = [
 ]
 cognitive-complexity-threshold = 20
 too-many-arguments-threshold = 5
+

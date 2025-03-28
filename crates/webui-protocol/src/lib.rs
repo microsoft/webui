@@ -2,9 +2,10 @@
 //!
 //! This crate defines the protocol used by the WebUI framework for cross-platform
 //! representation of UI components and templates.
-use serde_json::Value;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
+use std::fmt;
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::Path;
@@ -14,10 +15,10 @@ use thiserror::Error;
 pub enum ProtocolError {
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
-    
+
     #[error("JSON parsing error: {0}")]
     JsonParse(#[from] serde_json::Error),
-    
+
     #[error("Protocol validation error: {0}")]
     Validation(String),
 }
@@ -88,6 +89,51 @@ pub enum ConditionExpr {
     },
 }
 
+// Implement Display for ConditionExpr
+impl fmt::Display for ConditionExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConditionExpr::Identifier { value } => {
+                write!(f, "{}", value)
+            }
+            ConditionExpr::Predicate(pred) => {
+                write!(f, "{} {} {}", pred.left, pred.operator, pred.right)
+            }
+            ConditionExpr::Not(expr) => {
+                write!(f, "!({})", expr)
+            }
+            ConditionExpr::Compound { left, op, right } => {
+                // Use parentheses for compound expressions to maintain precedence
+                write!(f, "({} {} {})", left, op, right)
+            }
+        }
+    }
+}
+
+// Implement Display for ComparisonOperator
+impl fmt::Display for ComparisonOperator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ComparisonOperator::GreaterThan => write!(f, ">"),
+            ComparisonOperator::LessThan => write!(f, "<"),
+            ComparisonOperator::Equal => write!(f, "=="),
+            ComparisonOperator::NotEqual => write!(f, "!="),
+            ComparisonOperator::GreaterThanOrEqual => write!(f, ">="),
+            ComparisonOperator::LessThanOrEqual => write!(f, "<="),
+        }
+    }
+}
+
+// Implement Display for LogicalOperator
+impl fmt::Display for LogicalOperator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LogicalOperator::And => write!(f, "&&"),
+            LogicalOperator::Or => write!(f, "||"),
+        }
+    }
+}
+
 // Custom serialization implementation for ConditionExpr
 impl Serialize for ConditionExpr {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -104,13 +150,13 @@ impl Serialize for ConditionExpr {
                 map.serialize_entry("operator", &pred.operator)?;
                 map.serialize_entry("right", &pred.right)?;
                 map.end()
-            },
+            }
             ConditionExpr::Not(expr) => {
                 let mut map = serializer.serialize_map(Some(2))?;
                 map.serialize_entry("kind", "not")?;
                 map.serialize_entry("condition", expr)?;
                 map.end()
-            },
+            }
             ConditionExpr::Compound { left, op, right } => {
                 let mut map = serializer.serialize_map(Some(4))?;
                 map.serialize_entry("kind", "compound")?;
@@ -118,7 +164,7 @@ impl Serialize for ConditionExpr {
                 map.serialize_entry("op", op)?;
                 map.serialize_entry("right", &**right)?;
                 map.end()
-            },
+            }
             ConditionExpr::Identifier { value } => {
                 let mut map = serializer.serialize_map(Some(2))?;
                 map.serialize_entry("kind", "identifier")?;
@@ -154,12 +200,16 @@ impl<'de> Deserialize<'de> for ConditionExpr {
         }
 
         let helper = Helper::deserialize(deserializer)?;
-        
+
         match helper.kind.as_str() {
             "predicate" => {
                 // Expect left and right to be strings
-                let left_val = helper.left.ok_or_else(|| serde::de::Error::missing_field("left"))?;
-                let right_val = helper.right.ok_or_else(|| serde::de::Error::missing_field("right"))?;
+                let left_val = helper
+                    .left
+                    .ok_or_else(|| serde::de::Error::missing_field("left"))?;
+                let right_val = helper
+                    .right
+                    .ok_or_else(|| serde::de::Error::missing_field("right"))?;
                 let left = match left_val {
                     Value::String(s) => s,
                     _ => return Err(serde::de::Error::custom("predicate left must be a string")),
@@ -168,34 +218,56 @@ impl<'de> Deserialize<'de> for ConditionExpr {
                     Value::String(s) => s,
                     _ => return Err(serde::de::Error::custom("predicate right must be a string")),
                 };
-                let operator = helper.operator.ok_or_else(|| serde::de::Error::missing_field("operator"))?;
-                Ok(ConditionExpr::Predicate(Predicate { left, operator, right }))
-            },
+                let operator = helper
+                    .operator
+                    .ok_or_else(|| serde::de::Error::missing_field("operator"))?;
+                Ok(ConditionExpr::Predicate(Predicate {
+                    left,
+                    operator,
+                    right,
+                }))
+            }
             "not" => {
-                let condition = helper.condition.ok_or_else(|| serde::de::Error::missing_field("condition"))?;
+                let condition = helper
+                    .condition
+                    .ok_or_else(|| serde::de::Error::missing_field("condition"))?;
                 Ok(ConditionExpr::Not(condition))
-            },
+            }
             "compound" => {
                 // For compound, left and right may be either a shorthand string or a full ConditionExpr object.
-                let left_field = helper.left.ok_or_else(|| serde::de::Error::missing_field("left"))?;
+                let left_field = helper
+                    .left
+                    .ok_or_else(|| serde::de::Error::missing_field("left"))?;
                 let left: ConditionExpr = match left_field {
                     Value::String(s) => ConditionExpr::Identifier { value: s },
                     other => serde_json::from_value(other).map_err(serde::de::Error::custom)?,
                 };
-                let op = helper.op.ok_or_else(|| serde::de::Error::missing_field("op"))?;
-                let right_field = helper.right.ok_or_else(|| serde::de::Error::missing_field("right"))?;
+                let op = helper
+                    .op
+                    .ok_or_else(|| serde::de::Error::missing_field("op"))?;
+                let right_field = helper
+                    .right
+                    .ok_or_else(|| serde::de::Error::missing_field("right"))?;
                 let right: ConditionExpr = match right_field {
                     Value::String(s) => ConditionExpr::Identifier { value: s },
                     other => serde_json::from_value(other).map_err(serde::de::Error::custom)?,
                 };
-                Ok(ConditionExpr::Compound { left: Box::new(left), op, right: Box::new(right) })
-            },
+                Ok(ConditionExpr::Compound {
+                    left: Box::new(left),
+                    op,
+                    right: Box::new(right),
+                })
+            }
             "identifier" => {
-                let value = helper.value.ok_or_else(|| serde::de::Error::missing_field("value"))?;
+                let value = helper
+                    .value
+                    .ok_or_else(|| serde::de::Error::missing_field("value"))?;
                 Ok(ConditionExpr::Identifier { value })
-            },
-            _ => Err(serde::de::Error::unknown_variant(&helper.kind, 
-                &["predicate", "not", "compound", "identifier"]))
+            }
+            _ => Err(serde::de::Error::unknown_variant(
+                &helper.kind,
+                &["predicate", "not", "compound", "identifier"],
+            )),
         }
     }
 }
@@ -232,8 +304,6 @@ pub struct WebUIStreamRaw {
 /// A component stream which includes CSS styling and references a nested stream record.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct WebUIStreamComponent {
-    /// CSS styling for the component.
-    pub css: String,
     /// The identifier for the associated stream record.
     #[serde(rename = "streamId")]
     pub stream_id: String,
@@ -292,65 +362,65 @@ impl WebUIProtocol {
         let protocol = serde_json::from_str(json)?;
         Self::validate_protocol(protocol)
     }
-    
+
     /// Parse WebUIProtocol from a JSON file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         Self::from_reader(reader)
     }
-    
+
     /// Parse WebUIProtocol from a reader
     pub fn from_reader<R: Read>(reader: R) -> Result<Self> {
         let protocol = serde_json::from_reader(reader)?;
         Self::validate_protocol(protocol)
     }
-    
+
     // Helper method to validate and return the protocol
     fn validate_protocol(protocol: Self) -> Result<Self> {
         // Validation check
         let streams = &protocol.streams;
-        
+
         // Use an iterator-based approach to check for valid references
         // This avoids multiple hash lookups for each stream
         let invalid_ref = streams.iter().find_map(|(_, stream_vec)| {
-            stream_vec.iter().find_map(|stream| {
-                match stream {
-                    WebUIStream::Component(component) if !streams.contains_key(&component.stream_id) => {
-                        Some(ProtocolError::Validation(format!(
-                            "Component references non-existent stream ID: {}", 
-                            component.stream_id
-                        )))
-                    }
-                    WebUIStream::For(for_loop) if !streams.contains_key(&for_loop.stream_id) => {
-                        Some(ProtocolError::Validation(format!(
-                            "For loop references non-existent stream ID: {}", 
-                            for_loop.stream_id
-                        )))
-                    }
-                    WebUIStream::If(if_cond) if !streams.contains_key(&if_cond.stream_id) => {
-                        Some(ProtocolError::Validation(format!(
-                            "If condition references non-existent stream ID: {}", 
-                            if_cond.stream_id
-                        )))
-                    }
-                    _ => None,
+            stream_vec.iter().find_map(|stream| match stream {
+                WebUIStream::Component(component)
+                    if !streams.contains_key(&component.stream_id) =>
+                {
+                    Some(ProtocolError::Validation(format!(
+                        "Component references non-existent stream ID: {}",
+                        component.stream_id
+                    )))
                 }
+                WebUIStream::For(for_loop) if !streams.contains_key(&for_loop.stream_id) => {
+                    Some(ProtocolError::Validation(format!(
+                        "For loop references non-existent stream ID: {}",
+                        for_loop.stream_id
+                    )))
+                }
+                WebUIStream::If(if_cond) if !streams.contains_key(&if_cond.stream_id) => {
+                    Some(ProtocolError::Validation(format!(
+                        "If condition references non-existent stream ID: {}",
+                        if_cond.stream_id
+                    )))
+                }
+                _ => None,
             })
         });
-        
+
         if let Some(err) = invalid_ref {
             return Err(err);
         }
-        
+
         Ok(protocol)
     }
-    
+
     /// Serialize protocol to JSON
     pub fn to_json(&self) -> Result<String> {
         Ok(serde_json::to_string(self)?)
     }
-    
+
     /// Serialize protocol to pretty JSON
     pub fn to_json_pretty(&self) -> Result<String> {
         Ok(serde_json::to_string_pretty(self)?)
@@ -360,7 +430,7 @@ impl WebUIProtocol {
 // Implement TryFrom for more ergonomic conversions with built-in validation
 impl TryFrom<&str> for WebUIProtocol {
     type Error = ProtocolError;
-    
+
     fn try_from(json: &str) -> Result<Self> {
         Self::from_json(json)
     }
@@ -368,7 +438,7 @@ impl TryFrom<&str> for WebUIProtocol {
 
 impl TryFrom<serde_json::Value> for WebUIProtocol {
     type Error = ProtocolError;
-    
+
     fn try_from(value: serde_json::Value) -> Result<Self> {
         let protocol = serde_json::from_value(value)?;
         Self::validate_protocol(protocol)
@@ -403,13 +473,13 @@ mod tests {
                 ]
             }
         }"#;
-        
-        let protocol = WebUIProtocol::from_json(json).unwrap();
+
+        let protocol = WebUIProtocol::from_json(json).expect("Failed to parse valid protocol");
         assert_eq!(protocol.streams.len(), 2);
-        
+
         let index_stream = &protocol.streams["index.html"];
         assert_eq!(index_stream.len(), 2);
-        
+
         let raw_stream = &index_stream[0];
         assert!(matches!(raw_stream, WebUIStream::Raw(_)));
         if let WebUIStream::Raw(raw) = raw_stream {
@@ -434,11 +504,10 @@ mod tests {
         assert!(matches!(signal_stream, WebUIStream::Signal(_)));
         if let WebUIStream::Signal(signal) = signal_stream {
             assert_eq!(signal.value, "person.name");
-            assert_eq!(signal.raw, false);
+            assert!(!signal.raw);
         } else {
             panic!("Expected signal stream");
         }
-
     }
 
     #[test]
@@ -455,7 +524,7 @@ mod tests {
                 ]
             }
         }"#;
-        
+
         let result = WebUIProtocol::from_json(json);
         assert!(result.is_err());
     }
@@ -466,7 +535,7 @@ mod tests {
             "streams": {
                 "index.html": [
                     { "type": "raw", "value": "Raw Content" },
-                    { "type": "component", "css": ".my-style", "streamId": "component-1" },
+                    { "type": "component", "streamId": "component-1" },
                     { "type": "for", "item": "item", "collection": "items", "streamId": "for-1" },
                     { "type": "signal", "value": "user.name", "raw": true },
                     { "type": "if", "condition": {"kind": "identifier", "value": "isLoggedIn"}, "streamId": "if-1" }
@@ -476,42 +545,42 @@ mod tests {
                 "if-1": [{ "type": "raw", "value": "Conditional Content" }]
             }
         }"#;
-        
-        let protocol = WebUIProtocol::from_json(json).unwrap();
+
+        let protocol =
+            WebUIProtocol::from_json(json).expect("Failed to parse protocol with all stream types");
         let streams = &protocol.streams["index.html"];
-        
+
         assert_eq!(streams.len(), 5);
-        
+
         match &streams[0] {
             WebUIStream::Raw(raw) => assert_eq!(raw.value, "Raw Content"),
             _ => panic!("Expected raw stream"),
         }
-        
+
         match &streams[1] {
             WebUIStream::Component(component) => {
-                assert_eq!(component.css, ".my-style");
                 assert_eq!(component.stream_id, "component-1");
-            },
+            }
             _ => panic!("Expected component stream"),
         }
-        
+
         match &streams[2] {
             WebUIStream::For(for_loop) => {
                 assert_eq!(for_loop.item, "item");
                 assert_eq!(for_loop.collection, "items");
                 assert_eq!(for_loop.stream_id, "for-1");
-            },
+            }
             _ => panic!("Expected for stream"),
         }
-        
+
         match &streams[3] {
             WebUIStream::Signal(signal) => {
                 assert_eq!(signal.value, "user.name");
-                assert_eq!(signal.raw, true);
-            },
+                assert!(signal.raw);
+            }
             _ => panic!("Expected signal stream"),
         }
-        
+
         match &streams[4] {
             WebUIStream::If(if_cond) => {
                 match &if_cond.condition {
@@ -519,7 +588,7 @@ mod tests {
                     _ => panic!("Expected identifier condition"),
                 }
                 assert_eq!(if_cond.stream_id, "if-1");
-            },
+            }
             _ => panic!("Expected if stream"),
         }
     }
@@ -527,68 +596,75 @@ mod tests {
     #[test]
     fn test_condition_expressions() {
         // Create condition expressions programmatically
-        
+
         // Test Identifier condition
-        let identifier = ConditionExpr::Identifier { 
-            value: "isAdmin".to_string() 
+        let identifier = ConditionExpr::Identifier {
+            value: "isAdmin".to_string(),
         };
-        
+
         // Serialize and deserialize through Value
-        let json_value = serde_json::to_value(&identifier).unwrap();
-        let roundtrip: ConditionExpr = serde_json::from_value(json_value).unwrap();
-        
+        let json_value = serde_json::to_value(&identifier).expect("Failed to serialize identifier");
+        let roundtrip: ConditionExpr =
+            serde_json::from_value(json_value).expect("Failed to deserialize identifier");
+
         match &roundtrip {
             ConditionExpr::Identifier { value } => assert_eq!(value, "isAdmin"),
             _ => panic!("Expected identifier condition"),
         }
-        
+
         // Test Predicate condition
         let predicate = ConditionExpr::Predicate(Predicate {
             left: "user.age".to_string(),
             operator: ComparisonOperator::GreaterThan,
             right: "18".to_string(),
         });
-        
-        let json_value = serde_json::to_value(&predicate).unwrap();
-        let roundtrip: ConditionExpr = serde_json::from_value(json_value).unwrap();
-        
+
+        let json_value = serde_json::to_value(&predicate).expect("Failed to serialize predicate");
+        let roundtrip: ConditionExpr =
+            serde_json::from_value(json_value).expect("Failed to deserialize predicate");
+
         match &roundtrip {
             ConditionExpr::Predicate(pred) => {
                 assert_eq!(pred.left, "user.age");
                 assert_eq!(pred.operator, ComparisonOperator::GreaterThan);
                 assert_eq!(pred.right, "18");
-            },
+            }
             _ => panic!("Expected predicate condition"),
         }
-        
+
         // Test Not condition
         let not = ConditionExpr::Not(Box::new(ConditionExpr::Identifier {
             value: "isBlocked".to_string(),
         }));
-        
-        let json_value = serde_json::to_value(&not).unwrap();
-        let roundtrip: ConditionExpr = serde_json::from_value(json_value).unwrap();
-        
+
+        let json_value = serde_json::to_value(&not).expect("Failed to serialize NOT expression");
+        let roundtrip: ConditionExpr =
+            serde_json::from_value(json_value).expect("Failed to deserialize NOT expression");
+
         match &roundtrip {
-            ConditionExpr::Not(expr) => {
-                match &**expr {
-                    ConditionExpr::Identifier { value } => assert_eq!(value, "isBlocked"),
-                    _ => panic!("Expected identifier inside Not condition"),
-                }
+            ConditionExpr::Not(expr) => match &**expr {
+                ConditionExpr::Identifier { value } => assert_eq!(value, "isBlocked"),
+                _ => panic!("Expected identifier inside Not condition"),
             },
             _ => panic!("Expected Not condition"),
         }
-        
+
         // Test Compound condition
         let compound = ConditionExpr::Compound {
-            left: Box::new(ConditionExpr::Identifier { value: "isAdmin".to_string() }),
+            left: Box::new(ConditionExpr::Identifier {
+                value: "isAdmin".to_string(),
+            }),
             op: LogicalOperator::Or,
-            right: Box::new(ConditionExpr::Identifier { value: "isEditor".to_string() }),
+            right: Box::new(ConditionExpr::Identifier {
+                value: "isEditor".to_string(),
+            }),
         };
-        
-        let json_value = serde_json::to_value(&compound).unwrap();
-        let roundtrip: ConditionExpr = serde_json::from_value(json_value).unwrap();
-        
+
+        let json_value =
+            serde_json::to_value(&compound).expect("Failed to serialize compound expression");
+        let roundtrip: ConditionExpr =
+            serde_json::from_value(json_value).expect("Failed to deserialize compound expression");
+
         match &roundtrip {
             ConditionExpr::Compound { left, op, right } => {
                 match &**left {
@@ -600,11 +676,11 @@ mod tests {
                     ConditionExpr::Identifier { value } => assert_eq!(value, "isEditor"),
                     _ => panic!("Expected identifier for right condition"),
                 }
-            },
+            }
             _ => panic!("Expected Compound condition"),
         }
     }
-    
+
     #[test]
     fn test_nested_conditions() {
         // Create a complex nested condition
@@ -615,17 +691,21 @@ mod tests {
                 right: "admin".to_string(),
             })),
             op: LogicalOperator::And,
-            right: Box::new(ConditionExpr::Not(Box::new(ConditionExpr::Predicate(Predicate {
-                left: "user.disabled".to_string(),
-                operator: ComparisonOperator::Equal,
-                right: "true".to_string(),
-            })))),
+            right: Box::new(ConditionExpr::Not(Box::new(ConditionExpr::Predicate(
+                Predicate {
+                    left: "user.disabled".to_string(),
+                    operator: ComparisonOperator::Equal,
+                    right: "true".to_string(),
+                },
+            )))),
         };
-        
+
         // Reserialize and deserialize to test roundtrip
-        let serialized = serde_json::to_value(&nested).unwrap();
-        let deserialized: ConditionExpr = serde_json::from_value(serialized).unwrap();
-        
+        let serialized =
+            serde_json::to_value(&nested).expect("Failed to serialize nested condition");
+        let deserialized: ConditionExpr =
+            serde_json::from_value(serialized).expect("Failed to deserialize nested condition");
+
         assert_eq!(nested, deserialized);
     }
 
@@ -634,37 +714,47 @@ mod tests {
         let protocol = WebUIProtocol {
             streams: {
                 let mut map = HashMap::new();
-                map.insert("main".to_string(), vec![
-                    WebUIStream::Raw(WebUIStreamRaw { 
-                        value: "Hello".to_string() 
-                    }),
-                    WebUIStream::If(WebUIStreamIf {
-                        condition: ConditionExpr::Predicate(Predicate {
-                            left: "user.logged_in".to_string(),
-                            operator: ComparisonOperator::Equal,
-                            right: "true".to_string(),
+                map.insert(
+                    "main".to_string(),
+                    vec![
+                        WebUIStream::Raw(WebUIStreamRaw {
+                            value: "Hello".to_string(),
                         }),
-                        stream_id: "welcome".to_string(),
-                    }),
-                ]);
-                map.insert("welcome".to_string(), vec![
-                    WebUIStream::Signal(WebUIStreamSignal {
+                        WebUIStream::If(WebUIStreamIf {
+                            condition: ConditionExpr::Predicate(Predicate {
+                                left: "user.logged_in".to_string(),
+                                operator: ComparisonOperator::Equal,
+                                right: "true".to_string(),
+                            }),
+                            stream_id: "welcome".to_string(),
+                        }),
+                    ],
+                );
+                map.insert(
+                    "welcome".to_string(),
+                    vec![WebUIStream::Signal(WebUIStreamSignal {
                         value: "user.name".to_string(),
                         raw: false,
-                    }),
-                ]);
+                    })],
+                );
                 map
-            }
+            },
         };
-        
+
         // Test to_json and from_json roundtrip
-        let json = protocol.to_json().unwrap();
-        let decoded = WebUIProtocol::from_json(&json).unwrap();
+        let json = protocol
+            .to_json()
+            .expect("Failed to serialize protocol to JSON");
+        let decoded =
+            WebUIProtocol::from_json(&json).expect("Failed to deserialize protocol from JSON");
         assert_eq!(protocol, decoded);
-        
+
         // Test to_json_pretty and from_json roundtrip
-        let pretty_json = protocol.to_json_pretty().unwrap();
-        let decoded_pretty = WebUIProtocol::from_json(&pretty_json).unwrap();
+        let pretty_json = protocol
+            .to_json_pretty()
+            .expect("Failed to serialize protocol to pretty JSON");
+        let decoded_pretty = WebUIProtocol::from_json(&pretty_json)
+            .expect("Failed to deserialize protocol from pretty JSON");
         assert_eq!(protocol, decoded_pretty);
     }
 
@@ -676,22 +766,21 @@ mod tests {
                 "main": [
                     {
                         "type": "component",
-                        "css": ".my-component",
                         "streamId": "missing-component"
                     }
                 ]
             }
         }"#;
-        
+
         let result = WebUIProtocol::from_json(invalid_component);
         assert!(result.is_err());
-        
+
         if let Err(ProtocolError::Validation(msg)) = result {
             assert!(msg.contains("missing-component"));
         } else {
             panic!("Expected validation error");
         }
-        
+
         // Test missing stream reference in for loop
         let invalid_for = r#"{
             "streams": {
@@ -705,16 +794,16 @@ mod tests {
                 ]
             }
         }"#;
-        
+
         let result = WebUIProtocol::from_json(invalid_for);
         assert!(result.is_err());
-        
+
         if let Err(ProtocolError::Validation(msg)) = result {
             assert!(msg.contains("missing-for"));
         } else {
             panic!("Expected validation error");
         }
-        
+
         // Test missing stream reference in if condition
         let invalid_if = r#"{
             "streams": {
@@ -727,10 +816,10 @@ mod tests {
                 ]
             }
         }"#;
-        
+
         let result = WebUIProtocol::from_json(invalid_if);
         assert!(result.is_err());
-        
+
         if let Err(ProtocolError::Validation(msg)) = result {
             assert!(msg.contains("missing-if"));
         } else {

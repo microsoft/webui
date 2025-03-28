@@ -25,12 +25,12 @@ pub fn find_value_by_dotted_path(path: &str, state: &Value) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use webui_test_utils::test_json;
 
     #[test]
     fn test_find_value_by_dotted_path() {
         // Create a JSON object
-        let data = json!({
+        let data = test_json!({
             "name": {
                 "first": "John",
                 "last": "Doe"
@@ -83,8 +83,7 @@ mod tests {
         );
 
         // Get length of array.
-        let value =
-            find_value_by_dotted_path("favorite.categories.music.length", &data);
+        let value = find_value_by_dotted_path("favorite.categories.music.length", &data);
         assert_eq!(
             value,
             Some(Value::Number(serde_json::Number::from(2))),

@@ -3,10 +3,10 @@
 //! This crate provides C-compatible APIs for the WebUI handler to be used from languages
 //! like C#, Node.js, etc.
 
+use serde_json::Value;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
-use serde_json::Value;
-use webui_handler::{WebUIHandler, ResponseWriter, Result};
+use webui_handler::{ResponseWriter, Result, WebUIHandler};
 use webui_protocol::WebUIProtocol;
 
 // Common code for all platforms
@@ -21,7 +21,9 @@ struct StringResponseWriter {
 
 impl StringResponseWriter {
     fn new() -> Self {
-        Self { content: String::new() }
+        Self {
+            content: String::new(),
+        }
     }
 }
 
@@ -30,13 +32,12 @@ impl ResponseWriter for StringResponseWriter {
         self.content.push_str(content);
         Ok(())
     }
-    
+
     fn end(&mut self) -> Result<()> {
         // Nothing to do for strings
         Ok(())
     }
 }
-
 
 /// Create a new WebUI handler instance.
 #[no_mangle]
@@ -86,33 +87,33 @@ pub unsafe extern "C" fn webui_handler_render(
     }
 
     let context = &*(handler_ptr as *const HandlerContext);
-    
+
     // Convert C strings to Rust strings
     let protocol_str = match CStr::from_ptr(protocol_json).to_str() {
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
     };
-    
+
     let data_str = match CStr::from_ptr(data_json).to_str() {
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
     };
-    
+
     // Parse protocol and data from JSON
     let protocol = match WebUIProtocol::from_json(protocol_str) {
         Ok(p) => p,
         Err(_) => return std::ptr::null_mut(),
     };
-    
+
     // Parse data JSON directly to Value instead of HashMap
     let data: Value = match serde_json::from_str(data_str) {
         Ok(d) => d,
         Err(_) => return std::ptr::null_mut(),
     };
-    
+
     // Create a string response writer
     let mut writer = StringResponseWriter::new();
-    
+
     // Render the protocol with data
     match context.handler.render(&protocol, &data, &mut writer) {
         Ok(_) => {
@@ -121,7 +122,7 @@ pub unsafe extern "C" fn webui_handler_render(
                 Ok(s) => s.into_raw(),
                 Err(_) => std::ptr::null_mut(),
             }
-        },
+        }
         Err(_) => std::ptr::null_mut(),
     }
 }

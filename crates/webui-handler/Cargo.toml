@@ -17,4 +17,5 @@ thiserror = { workspace = true }
 html-escape = "0.2.13"
 
 [dev-dependencies]
+webui-test-utils = { path = "../webui-test-utils" }
 tokio = { version = "1.44.0", features = ["full"] }

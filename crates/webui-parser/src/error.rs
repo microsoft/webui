@@ -10,28 +10,28 @@ pub type Result<T> = std::result::Result<T, ParserError>;
 pub enum ParserError {
     /// Generic error.
     Generic(String),
-    
+
     /// I/O error.
     IO(String),
-    
+
     /// Parse error.
     Parse(String),
-    
+
     /// Component error.
     Component(String),
-    
+
     /// CSS error.
     Css(String),
-    
+
     /// HTML error.
     Html(String),
-    
+
     /// Directive error.
     Directive(String),
-    
+
     /// Entity not found error.
     NotFound(String),
-    
+
     /// TypeScript parse error.
     TsParseError(String),
 }

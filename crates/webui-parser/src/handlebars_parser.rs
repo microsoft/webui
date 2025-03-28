@@ -68,7 +68,9 @@ mod tests {
     #[test]
     fn test_parse_plain_text() {
         let parser = HandlebarsParser::new();
-        let result = parser.parse("Hello, World!").unwrap();
+        let result = parser
+            .parse("Hello, World!")
+            .expect("Failed to parse plain text");
 
         assert_eq!(result.len(), 1);
         match &result[0] {
@@ -80,7 +82,9 @@ mod tests {
     #[test]
     fn test_parse_double_brace() {
         let parser = HandlebarsParser::new();
-        let result = parser.parse("Hello, {{name}}!").unwrap();
+        let result = parser
+            .parse("Hello, {{name}}!")
+            .expect("Failed to parse double brace syntax");
 
         assert_eq!(result.len(), 3);
 
@@ -106,7 +110,9 @@ mod tests {
     #[test]
     fn test_parse_triple_brace() {
         let parser = HandlebarsParser::new();
-        let result = parser.parse("Content: {{{html_content}}}").unwrap();
+        let result = parser
+            .parse("Content: {{{html_content}}}")
+            .expect("Failed to parse triple brace syntax");
 
         assert_eq!(result.len(), 2);
 
@@ -127,7 +133,9 @@ mod tests {
     #[test]
     fn test_mixed_braces() {
         let parser = HandlebarsParser::new();
-        let result = parser.parse("Hello, {{name}}! {{{html_content}}}").unwrap();
+        let result = parser
+            .parse("Hello, {{name}}! {{{html_content}}}")
+            .expect("Failed to parse mixed brace syntax");
 
         assert_eq!(result.len(), 4);
 

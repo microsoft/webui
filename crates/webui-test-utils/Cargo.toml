@@ -1,6 +1,6 @@
 [package]
-name = "webui-state"
-description = "Core state management for WebUI framework"
+name = "webui-test-utils"
+description = "Test utilities for WebUI framework"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -8,8 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-serde = { workspace = true }
 serde_json = { workspace = true }
-
-[dev-dependencies]
-webui-test-utils = { path = "../webui-test-utils" }
+mockall = { workspace = true }
+tokio-test = { workspace = true }
+tempfile = { workspace = true }

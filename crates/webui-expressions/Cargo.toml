@@ -13,3 +13,6 @@ webui-state = { path = "../webui-state" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+webui-test-utils = { path = "../webui-test-utils" }
