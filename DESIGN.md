@@ -48,6 +48,8 @@ pub enum WebUIStream {
     Signal(WebUIStreamSignal),
     /// Renders content conditionally.
     If(WebUIStreamIf),
+    /// Represents a boolean attribute (e.g., disabled, checked).
+    BooleanAttribute(WebUIStreamBooleanAttribute),
 }
 ```
 ### Stream Types
@@ -96,6 +98,18 @@ pub struct WebUIStreamIf {
     /// The identifier for the stream record to render if true.
     #[serde(rename = "streamId")]
     pub stream_id: String,
+}
+```
+#### Boolean Attribute Stream
+```rust
+/// Represents a boolean attribute on an element.
+/// Boolean attributes must start with '?' (e.g., ?disabled).
+pub struct WebUIStreamBooleanAttribute {
+    /// The boolean attribute name (e.g., "disabled").
+    pub name: String,
+    /// The attribute value, if false, attribute is ignored.
+    #[serde(default)]
+    pub value: bool,
 }
 ```
 #### Condition Expressions
@@ -163,6 +177,7 @@ pub struct Predicate {
 - Validation of protocol structure during deserialization
 - Performance optimizations for large protocol structures
 - Support for stream reference validation
+- Attribute names starting with '?' are treated as boolean attributes using the `BooleanAttribute` stream type. The attribute is rendered only if the value/expression evaluates to true.
 
 ## State Management (webui-state)
 ### Path Resolution
@@ -225,6 +240,9 @@ pub trait Writer {
 - **Signal streams:**
   - Resolve value from state using `find_value_by_dotted_path`
   - Escape value if `raw` is false, otherwise write as-is
+- **Boolean attribute streams:**
+  - Evaluate the value; if true, render the attribute name.
+  - If false, omit the attribute.
 - **If streams:**
   - Evaluate condition using `evaluate`
   - If true, process referenced stream
@@ -369,19 +387,19 @@ impl CssParser {
 pub enum ParserError {
     #[error("HTML parsing error: {0}")]
     Html(String),
-    
+
     #[error("CSS parsing error: {0}")]
     Css(String),
-    
+
     #[error("Directive parsing error: {0}")]
     Directive(String),
-    
+
     #[error("Expression parsing error: {0}")]
     Parse(String),
-    
+
     #[error("Component error: {0}")]
     Component(String),
-    
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -425,7 +443,7 @@ HTML Template → HTML Parser → Protocol → Handler + State → Rendered HTML
 ```html
 Hello, WebUI!
 <for each="person in people">
-    <person-card>{{person.name}}</person-card>
+    <person-card ?disabled="{{person.isInactive}}">{{person.name}}</person-card>
 </for>
 {{{raw_description}}}
 <if condition="contact">
@@ -438,13 +456,13 @@ Hello, WebUI!
     "streams": {
         "index.html": [
             { "type": "raw", "value": "Hello, WebUI!\n" },
-            { 
+            {
                 "type": "for",
                 "item": "person",
                 "collection": "people",
                 "streamId": "for-1"
             },
-            { 
+            {
                 "type": "signal",
                 "value": "raw_description",
                 "raw": true
@@ -461,7 +479,16 @@ Hello, WebUI!
         "for-1": [
             {
                 "type": "raw",
-                "value": "<person-card>"
+                "value": "<person-card"
+            },
+            {
+                "type": "booleanAttribute",
+                "name": "disabled",
+                "value": "{{person.isInactive}}"
+            },
+            {
+                "type": "raw",
+                "value": ">"
             },
             {
                 "type": "component",
@@ -490,10 +517,8 @@ Hello, WebUI!
         ],
         "person-card": [
             {
-                {
-                    "type": "raw",
-                    "value": "<p><slot></slot></p>"
-                }
+                "type": "raw",
+                "value": "<p><slot></slot></p>"
             }
         ]
     }
@@ -505,9 +530,11 @@ Hello, WebUI!
     people: [
         {
             name: "Ali",
+            isInactive: true
         },
         {
             name: "Amanda",
+            isInactive: false
         }
     ],
     raw_description: "<b>YES!</b>",
@@ -518,7 +545,7 @@ Hello, WebUI!
 ### Handler Output
 ```html
 Hello, WebUI!
-<person-card>
+<person-card disabled>
     <template shadowrootmode="open">
         <p><slot></slot></p>
     </template>
