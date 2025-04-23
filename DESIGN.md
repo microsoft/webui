@@ -107,9 +107,8 @@ pub struct WebUIStreamIf {
 pub struct WebUIStreamBooleanAttribute {
     /// The boolean attribute name (e.g., "disabled").
     pub name: String,
-    /// The attribute value, if false, attribute is ignored.
-    #[serde(default)]
-    pub value: bool,
+    /// The attribute value to render, if false, attribute is ignored.
+    pub value: String,
 }
 ```
 #### Condition Expressions
@@ -443,7 +442,7 @@ HTML Template → HTML Parser → Protocol → Handler + State → Rendered HTML
 ```html
 Hello, WebUI!
 <for each="person in people">
-    <person-card ?disabled="{{person.isInactive}}">{{person.name}}</person-card>
+    <person-card ?disabled={{person.isInactive}}>{{person.name}}</person-card>
 </for>
 {{{raw_description}}}
 <if condition="contact">
@@ -484,7 +483,7 @@ Hello, WebUI!
             {
                 "type": "booleanAttribute",
                 "name": "disabled",
-                "value": "{{person.isInactive}}"
+                "value": "person.isInactive"
             },
             {
                 "type": "raw",
