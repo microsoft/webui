@@ -247,10 +247,26 @@ pub trait Writer {
   - Evaluate condition using `evaluate`
   - If true, process referenced stream
   - Track false conditions for template generation
+  - When the `If` streams are enclosed in one or more `For` streams it can access the states of those `For` streams'
+    current item thorugh their corresponding item monikers. It can also access global state.
+  - `If` stream conditions can have tokens from different state objects i.e. local states from enclosing `For` stream
+    items and/or the global state mixed in the condition expression.
 - **For streams:**
   - Iterate over collection from state
-  - Process referenced stream for each item with scoped state
-- **Component streams:** Process referenced stream directly
+  - Process referenced stream for each item with current item's state accessible thorugh a moniker and the global state
+    as a fallback.
+- **Component streams:** Process referenced stream directly. `Component` streams enclosed in a For stream has access to
+    the fields of the current item being looped over and the global state. The `Component` stream doesn't need to use
+    the `For` stream item moniker and can access the fields without the qualification. If the `Component` stream is
+    nested in multiple `For` streams only the closest enclosing `For` stream item's state is accessible to it.
+
+### State Management
+- Global state refers to the global application state that is available to all streams at all times.
+- Local state refers to the state corresponding to the current item being looped over in a `For` stream.
+- When nested `For` streams are present local state of the current item being looped over for any of the `For` stream in the
+  hierarchy can be accessed through the corresponding item moniker with an exception for `Component` streams.
+- For `Component` streams only the closest enclosing `For` stream's current item state is available and can be accessed
+  directly without the item moniker qualification. `Component` streams also have access to the global application state.
 
 ### Error Handling
 - Report missing stream references
