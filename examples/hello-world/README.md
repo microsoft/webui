@@ -24,14 +24,13 @@ This will:
 4. Render the protocol with the state using `webui-handler` and write the result to `dist/index.html`.
 5. Start an HTTP server on `http://127.0.0.1:8080/` that:
 	- Serves `dist/index.html` for `/` and `/index.html`.
-	- Serves `static/app.js` via the `/app.js` route.
-	- Serves `static/styles.css` via the `/styles.css` route.
+	- Serves files from `assets/` via `/assets/*` routes (e.g., `/assets/app.js`, `/assets/styles.css`).
 	- Exposes `/hmr` for hot module reloading.
-6. Watch all files in `src/templates/`, `src/data/`, and `static/` directories for changes; when any file changes, re-render `dist/index.html`.
+6. Watch all files in `src/templates/`, `src/data/`, and `assets/` directories for changes; when any file changes, re-render `dist/index.html`.
 
 The client-side script in `static/app.js` polls `/hmr` and automatically reloads the page when a new version is detected.
 
 ## Notes
 
 - This crate is **not** part of the main Rust workspace; it is a standalone Cargo project under `examples/hello-world`.
-- Always run `cargo run` from the `examples/hello-world` directory so the program can find the `static/` and `dist/` directories relative to the current working directory.
+- Always run `cargo run` from the `examples/hello-world` directory so the program can find the `assets/` and `dist/` directories relative to the current working directory.

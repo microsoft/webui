@@ -4,9 +4,8 @@ use tiny_http::Server;
 mod routes {
     pub mod index;
     pub mod not_found;
-    pub mod js;
     pub mod hmr;
-    pub mod css;
+    pub mod assets;
 }
 mod render;
 mod watcher;
@@ -33,11 +32,8 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             "/" | "/index.html" => {
                 routes::index::handle_index(request);
             }
-            "/app.js" => {
-                routes::js::handle_js(request);
-            }
-            "/styles.css" => {
-                routes::css::handle_css(request);
+            path if path.starts_with("/assets/") => {
+                routes::assets::handle_asset(request);
             }
             "/hmr" => {
                 routes::hmr::handle_hmr(request);
