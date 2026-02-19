@@ -1,4 +1,4 @@
-# WebUI Hello World Renderer
+# WebUI Tiny HTTP Integration Example
 
 This example combines the `src/templates/index.html` template and `src/data/state.json` state using the WebUI Rust crates,
 writes the result to `dist/index.html`, and serves it over HTTP at `http://127.0.0.1:8080/` with simple HMR.
@@ -12,7 +12,7 @@ writes the result to `dist/index.html`, and serves it over HTTP at `http://127.0
 From the repo root or this folder:
 
 ```bash
-cd examples/hello-world
+cd examples/integration/tiny_http
 cargo run
 ```
 
@@ -32,5 +32,5 @@ The client-side script in `/assets/app.js` polls `/hmr` and automatically reload
 
 ## Notes
 
-- This crate is **not** part of the main Rust workspace; it is a standalone Cargo project under `examples/hello-world`.
-- Always run `cargo run` from the `examples/hello-world` directory so the program can find the `assets/` and `dist/` directories relative to the current working directory.
+- This crate is **not** part of the main Rust workspace; it is a standalone Cargo project under `examples/integration/tiny_http`.
+- Always run `cargo run` from the `examples/integration/tiny_http` directory so the program can find the `assets/` and `dist/` directories relative to the current working directory.

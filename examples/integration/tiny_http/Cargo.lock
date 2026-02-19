@@ -525,17 +525,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "webui-hello-world-server"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tiny_http",
- "webui-handler",
- "webui-parser",
- "webui-protocol",
-]
-
-[[package]]
 name = "webui-parser"
 version = "0.1.0"
 dependencies = [
@@ -572,6 +561,17 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "webui-tiny-http-integration"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tiny_http",
+ "webui-handler",
+ "webui-parser",
+ "webui-protocol",
 ]
 
 [[package]]
