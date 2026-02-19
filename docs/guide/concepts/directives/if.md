@@ -78,8 +78,8 @@ When the WebUI parser processes an `<if>` directive, it generates a protocol ent
     "kind": "identifier",
     "value": "isLoggedIn"
   },
-  "streamId": "if-1"
+  "fragmentId": "if-1"
 }
 ```
 
-The content inside the `<if>` directive is stored in a separate stream with the ID specified in `streamId`.
+The content inside the `<if>` directive is stored in a separate fragment with the ID specified in `fragmentId`.

@@ -32,7 +32,7 @@ When WebUI discovers components:
    - The component's HTML is parsed and tokenized
    - Any directives (`<if>`, `<for>`, etc.) and signals (`{{}}`) are processed
    - The component's CSS is analyzed and included in the protocol
-   - A unique `streamId` is assigned to each component
+   - A unique `fragmentId` is assigned to each component
 
 2. **Runtime**:
    - The server-side handler renders components based on state

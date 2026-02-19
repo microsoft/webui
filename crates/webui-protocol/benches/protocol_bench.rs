@@ -2,96 +2,97 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::collections::HashMap;
 use std::hint::black_box;
 use webui_protocol::{
-    ComparisonOperator, ConditionExpr, LogicalOperator, Predicate, WebUIProtocol, WebUIStream,
-    WebUIStreamComponent, WebUIStreamFor, WebUIStreamIf, WebUIStreamRaw, WebUIStreamSignal,
+    ComparisonOperator, ConditionExpr, LogicalOperator, Predicate, WebUIFragment,
+    WebUIFragmentComponent, WebUIFragmentFor, WebUIFragmentIf, WebUIFragmentRaw,
+    WebUIFragmentSignal, WebUIProtocol,
 };
 
 #[allow(dead_code)]
 fn create_test_protocol() -> WebUIProtocol {
-    let mut streams = HashMap::new();
+    let mut fragments = HashMap::new();
 
     // Create the protocol structure directly in Rust
-    streams.insert(
+    fragments.insert(
         "index.html".to_string(),
         vec![
-            WebUIStream::Raw(WebUIStreamRaw {
+            WebUIFragment::Raw(WebUIFragmentRaw {
                 value: "Hello, WebUI!\n".to_string(),
             }),
-            WebUIStream::For(WebUIStreamFor {
+            WebUIFragment::For(WebUIFragmentFor {
                 item: "person".to_string(),
                 collection: "people".to_string(),
-                stream_id: "for-1".to_string(),
+                fragment_id: "for-1".to_string(),
             }),
-            WebUIStream::Signal(WebUIStreamSignal {
+            WebUIFragment::Signal(WebUIFragmentSignal {
                 value: "description".to_string(),
                 raw: true,
             }),
-            WebUIStream::If(WebUIStreamIf {
+            WebUIFragment::If(WebUIFragmentIf {
                 condition: ConditionExpr::Identifier {
                     value: "contact".to_string(),
                 },
-                stream_id: "if-1".to_string(),
+                fragment_id: "if-1".to_string(),
             }),
         ],
     );
 
-    streams.insert(
+    fragments.insert(
         "for-1".to_string(),
-        vec![WebUIStream::Signal(WebUIStreamSignal {
+        vec![WebUIFragment::Signal(WebUIFragmentSignal {
             value: "person.name".to_string(),
             raw: false,
         })],
     );
 
-    streams.insert(
+    fragments.insert(
         "if-1".to_string(),
-        vec![WebUIStream::Component(WebUIStreamComponent {
-            stream_id: "contact-card".to_string(),
+        vec![WebUIFragment::Component(WebUIFragmentComponent {
+            fragment_id: "contact-card".to_string(),
         })],
     );
 
-    streams.insert(
+    fragments.insert(
         "contact-card".to_string(),
         vec![
-            WebUIStream::Raw(WebUIStreamRaw {
+            WebUIFragment::Raw(WebUIFragmentRaw {
                 value: "Hello, ".to_string(),
             }),
-            WebUIStream::Signal(WebUIStreamSignal {
+            WebUIFragment::Signal(WebUIFragmentSignal {
                 value: "name".to_string(),
                 raw: false,
             }),
         ],
     );
 
-    WebUIProtocol { streams }
+    WebUIProtocol { fragments }
 }
 
 fn create_simple_protocol() -> WebUIProtocol {
-    let mut streams = HashMap::new();
+    let mut fragments = HashMap::new();
 
-    streams.insert(
+    fragments.insert(
         "index.html".to_string(),
         vec![
-            WebUIStream::Raw(WebUIStreamRaw {
+            WebUIFragment::Raw(WebUIFragmentRaw {
                 value: "Hello, WebUI!\n".to_string(),
             }),
-            WebUIStream::For(WebUIStreamFor {
+            WebUIFragment::For(WebUIFragmentFor {
                 item: "person".to_string(),
                 collection: "people".to_string(),
-                stream_id: "for-1".to_string(),
+                fragment_id: "for-1".to_string(),
             }),
         ],
     );
 
-    streams.insert(
+    fragments.insert(
         "for-1".to_string(),
-        vec![WebUIStream::Signal(WebUIStreamSignal {
+        vec![WebUIFragment::Signal(WebUIFragmentSignal {
             value: "person.name".to_string(),
             raw: false,
         })],
     );
 
-    WebUIProtocol { streams }
+    WebUIProtocol { fragments }
 }
 
 fn serialize_json_benchmark(c: &mut Criterion) {

@@ -62,7 +62,7 @@ pub struct Predicate {
     pub right: String,
 }
 
-/// Represents a condition expression that can be used in an `if` stream.
+/// Represents a condition expression that can be used in an `if` fragment.
 /// The condition can be:
 /// - A simple predicate,
 /// - A negated condition,
@@ -272,7 +272,7 @@ impl<'de> Deserialize<'de> for ConditionExpr {
     }
 }
 
-/// Defines the various types of streams in the WebUI protocol.
+/// Defines the various types of fragments in the WebUI protocol.
 /// Each variant specifies a different kind of UI operation:
 /// - Raw contents,
 /// - Components with additional styling,
@@ -281,50 +281,50 @@ impl<'de> Deserialize<'de> for ConditionExpr {
 /// - Conditional rendering.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
-pub enum WebUIStream {
+pub enum WebUIFragment {
     /// Outputs static content.
-    Raw(WebUIStreamRaw),
+    Raw(WebUIFragmentRaw),
     /// A reusable component with styling.
-    Component(WebUIStreamComponent),
+    Component(WebUIFragmentComponent),
     /// Iterates over a collection to generate repeated content.
-    For(WebUIStreamFor),
+    For(WebUIFragmentFor),
     /// Connects dynamic content via signals.
-    Signal(WebUIStreamSignal),
+    Signal(WebUIFragmentSignal),
     /// Renders content conditionally.
-    If(WebUIStreamIf),
+    If(WebUIFragmentIf),
 }
 
-/// A raw stream containing static text or HTML content.
+/// A raw fragment containing static text or HTML content.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct WebUIStreamRaw {
+pub struct WebUIFragmentRaw {
     /// The content to render.
     pub value: String,
 }
 
-/// A component stream which includes CSS styling and references a nested stream record.
+/// A component fragment which includes CSS styling and references a nested fragment record.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct WebUIStreamComponent {
-    /// The identifier for the associated stream record.
-    #[serde(rename = "streamId")]
-    pub stream_id: String,
+pub struct WebUIFragmentComponent {
+    /// The identifier for the associated fragment record.
+    #[serde(rename = "fragmentId")]
+    pub fragment_id: String,
 }
 
-/// A loop (or "for") stream that iterates over items in a collection.
+/// A loop (or "for") fragment that iterates over items in a collection.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct WebUIStreamFor {
+pub struct WebUIFragmentFor {
     /// The name representing a singular item (e.g., "person").
     pub item: String,
     /// The collection name (e.g., "people").
     pub collection: String,
-    /// The identifier for the stream to render for each item.
-    #[serde(rename = "streamId")]
-    pub stream_id: String,
+    /// The identifier for the fragment to render for each item.
+    #[serde(rename = "fragmentId")]
+    pub fragment_id: String,
 }
 
-/// A signal stream used for real-time or dynamic data binding.
+/// A signal fragment used for real-time or dynamic data binding.
 /// The `raw` property indicates whether the signal value is rendered directly.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct WebUIStreamSignal {
+pub struct WebUIFragmentSignal {
     /// The value or identifier of the signal.
     pub value: String,
     /// Determines if the value should be rendered as raw content.
@@ -333,27 +333,27 @@ pub struct WebUIStreamSignal {
     pub raw: bool,
 }
 
-/// A conditional stream that evaluates a condition before rendering its content.
-/// If the provided condition is met, the content identified by `streamId` is rendered.
+/// A conditional fragment that evaluates a condition before rendering its content.
+/// If the provided condition is met, the content identified by `fragmentId` is rendered.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct WebUIStreamIf {
+pub struct WebUIFragmentIf {
     /// The condition expression to evaluate.
     pub condition: ConditionExpr,
-    /// The identifier for the stream record to render if the condition evaluates to true.
-    #[serde(rename = "streamId")]
-    pub stream_id: String,
+    /// The identifier for the fragment record to render if the condition evaluates to true.
+    #[serde(rename = "fragmentId")]
+    pub fragment_id: String,
 }
 
-/// A mapping of unique stream identifiers to their corresponding stream vectors.
+/// A mapping of unique fragment identifiers to their corresponding fragment vectors.
 /// This facilitates organizing the different parts of a webpage.
-pub type WebUIStreamRecords = HashMap<String, Vec<WebUIStream>>;
+pub type WebUIFragmentRecords = HashMap<String, Vec<WebUIFragment>>;
 
 /// The root protocol structure that represents the complete configuration for a webpage.
-/// It contains all the stream records.
+/// It contains all the fragment records.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct WebUIProtocol {
-    /// A map linking stream identifiers to their associated streams.
-    pub streams: WebUIStreamRecords,
+    /// A map linking fragment identifiers to their associated fragments.
+    pub fragments: WebUIFragmentRecords,
 }
 
 impl WebUIProtocol {
@@ -379,30 +379,30 @@ impl WebUIProtocol {
     // Helper method to validate and return the protocol
     fn validate_protocol(protocol: Self) -> Result<Self> {
         // Validation check
-        let streams = &protocol.streams;
+        let fragments = &protocol.fragments;
 
         // Use an iterator-based approach to check for valid references
-        // This avoids multiple hash lookups for each stream
-        let invalid_ref = streams.iter().find_map(|(_, stream_vec)| {
-            stream_vec.iter().find_map(|stream| match stream {
-                WebUIStream::Component(component)
-                    if !streams.contains_key(&component.stream_id) =>
+        // This avoids multiple hash lookups for each fragment
+        let invalid_ref = fragments.iter().find_map(|(_, fragment_vec)| {
+            fragment_vec.iter().find_map(|fragment| match fragment {
+                WebUIFragment::Component(component)
+                    if !fragments.contains_key(&component.fragment_id) =>
                 {
                     Some(ProtocolError::Validation(format!(
-                        "Component references non-existent stream ID: {}",
-                        component.stream_id
+                        "Component references non-existent fragment ID: {}",
+                        component.fragment_id
                     )))
                 }
-                WebUIStream::For(for_loop) if !streams.contains_key(&for_loop.stream_id) => {
+                WebUIFragment::For(for_loop) if !fragments.contains_key(&for_loop.fragment_id) => {
                     Some(ProtocolError::Validation(format!(
-                        "For loop references non-existent stream ID: {}",
-                        for_loop.stream_id
+                        "For loop references non-existent fragment ID: {}",
+                        for_loop.fragment_id
                     )))
                 }
-                WebUIStream::If(if_cond) if !streams.contains_key(&if_cond.stream_id) => {
+                WebUIFragment::If(if_cond) if !fragments.contains_key(&if_cond.fragment_id) => {
                     Some(ProtocolError::Validation(format!(
-                        "If condition references non-existent stream ID: {}",
-                        if_cond.stream_id
+                        "If condition references non-existent fragment ID: {}",
+                        if_cond.fragment_id
                     )))
                 }
                 _ => None,
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn test_parse_valid_protocol() {
         let json = r#"{
-            "streams": {
+            "fragments": {
                 "index.html": [
                     {
                         "type": "raw",
@@ -462,7 +462,7 @@ mod tests {
                         "type": "for",
                         "item": "person",
                         "collection": "people",
-                        "streamId": "for-1"
+                        "fragmentId": "for-1"
                     }
                 ],
                 "for-1": [
@@ -475,51 +475,51 @@ mod tests {
         }"#;
 
         let protocol = WebUIProtocol::from_json(json).expect("Failed to parse valid protocol");
-        assert_eq!(protocol.streams.len(), 2);
+        assert_eq!(protocol.fragments.len(), 2);
 
-        let index_stream = &protocol.streams["index.html"];
-        assert_eq!(index_stream.len(), 2);
+        let index_fragment = &protocol.fragments["index.html"];
+        assert_eq!(index_fragment.len(), 2);
 
-        let raw_stream = &index_stream[0];
-        assert!(matches!(raw_stream, WebUIStream::Raw(_)));
-        if let WebUIStream::Raw(raw) = raw_stream {
+        let raw_fragment = &index_fragment[0];
+        assert!(matches!(raw_fragment, WebUIFragment::Raw(_)));
+        if let WebUIFragment::Raw(raw) = raw_fragment {
             assert_eq!(raw.value, "Hello, WebUI!\n");
         } else {
-            panic!("Expected raw stream");
+            panic!("Expected raw fragment");
         }
 
-        let for_stream = &index_stream[1];
-        assert!(matches!(for_stream, WebUIStream::For(_)));
-        if let WebUIStream::For(for_loop) = for_stream {
+        let for_fragment = &index_fragment[1];
+        assert!(matches!(for_fragment, WebUIFragment::For(_)));
+        if let WebUIFragment::For(for_loop) = for_fragment {
             assert_eq!(for_loop.item, "person");
             assert_eq!(for_loop.collection, "people");
-            assert_eq!(for_loop.stream_id, "for-1");
+            assert_eq!(for_loop.fragment_id, "for-1");
         } else {
-            panic!("Expected signal stream");
+            panic!("Expected signal fragment");
         }
 
-        let for_stream = &protocol.streams["for-1"];
-        assert_eq!(for_stream.len(), 1);
-        let signal_stream = &for_stream[0];
-        assert!(matches!(signal_stream, WebUIStream::Signal(_)));
-        if let WebUIStream::Signal(signal) = signal_stream {
+        let for_fragment = &protocol.fragments["for-1"];
+        assert_eq!(for_fragment.len(), 1);
+        let signal_fragment = &for_fragment[0];
+        assert!(matches!(signal_fragment, WebUIFragment::Signal(_)));
+        if let WebUIFragment::Signal(signal) = signal_fragment {
             assert_eq!(signal.value, "person.name");
             assert!(!signal.raw);
         } else {
-            panic!("Expected signal stream");
+            panic!("Expected signal fragment");
         }
     }
 
     #[test]
     fn test_invalid_reference() {
         let json = r#"{
-            "streams": {
+            "fragments": {
                 "index.html": [
                     {
                         "type": "for",
                         "item": "person",
                         "collection": "people",
-                        "streamId": "non-existent"
+                        "fragmentId": "non-existent"
                     }
                 ]
             }
@@ -530,15 +530,15 @@ mod tests {
     }
 
     #[test]
-    fn test_all_stream_types() {
+    fn test_all_fragment_types() {
         let json = r#"{
-            "streams": {
+            "fragments": {
                 "index.html": [
                     { "type": "raw", "value": "Raw Content" },
-                    { "type": "component", "streamId": "component-1" },
-                    { "type": "for", "item": "item", "collection": "items", "streamId": "for-1" },
+                    { "type": "component", "fragmentId": "component-1" },
+                    { "type": "for", "item": "item", "collection": "items", "fragmentId": "for-1" },
                     { "type": "signal", "value": "user.name", "raw": true },
-                    { "type": "if", "condition": {"kind": "identifier", "value": "isLoggedIn"}, "streamId": "if-1" }
+                    { "type": "if", "condition": {"kind": "identifier", "value": "isLoggedIn"}, "fragmentId": "if-1" }
                 ],
                 "component-1": [{ "type": "raw", "value": "Component Content" }],
                 "for-1": [{ "type": "raw", "value": "Item Content" }],
@@ -546,50 +546,50 @@ mod tests {
             }
         }"#;
 
-        let protocol =
-            WebUIProtocol::from_json(json).expect("Failed to parse protocol with all stream types");
-        let streams = &protocol.streams["index.html"];
+        let protocol = WebUIProtocol::from_json(json)
+            .expect("Failed to parse protocol with all fragment types");
+        let fragments = &protocol.fragments["index.html"];
 
-        assert_eq!(streams.len(), 5);
+        assert_eq!(fragments.len(), 5);
 
-        match &streams[0] {
-            WebUIStream::Raw(raw) => assert_eq!(raw.value, "Raw Content"),
-            _ => panic!("Expected raw stream"),
+        match &fragments[0] {
+            WebUIFragment::Raw(raw) => assert_eq!(raw.value, "Raw Content"),
+            _ => panic!("Expected raw fragment"),
         }
 
-        match &streams[1] {
-            WebUIStream::Component(component) => {
-                assert_eq!(component.stream_id, "component-1");
+        match &fragments[1] {
+            WebUIFragment::Component(component) => {
+                assert_eq!(component.fragment_id, "component-1");
             }
-            _ => panic!("Expected component stream"),
+            _ => panic!("Expected component fragment"),
         }
 
-        match &streams[2] {
-            WebUIStream::For(for_loop) => {
+        match &fragments[2] {
+            WebUIFragment::For(for_loop) => {
                 assert_eq!(for_loop.item, "item");
                 assert_eq!(for_loop.collection, "items");
-                assert_eq!(for_loop.stream_id, "for-1");
+                assert_eq!(for_loop.fragment_id, "for-1");
             }
-            _ => panic!("Expected for stream"),
+            _ => panic!("Expected for fragment"),
         }
 
-        match &streams[3] {
-            WebUIStream::Signal(signal) => {
+        match &fragments[3] {
+            WebUIFragment::Signal(signal) => {
                 assert_eq!(signal.value, "user.name");
                 assert!(signal.raw);
             }
-            _ => panic!("Expected signal stream"),
+            _ => panic!("Expected signal fragment"),
         }
 
-        match &streams[4] {
-            WebUIStream::If(if_cond) => {
+        match &fragments[4] {
+            WebUIFragment::If(if_cond) => {
                 match &if_cond.condition {
                     ConditionExpr::Identifier { value } => assert_eq!(value, "isLoggedIn"),
                     _ => panic!("Expected identifier condition"),
                 }
-                assert_eq!(if_cond.stream_id, "if-1");
+                assert_eq!(if_cond.fragment_id, "if-1");
             }
-            _ => panic!("Expected if stream"),
+            _ => panic!("Expected if fragment"),
         }
     }
 
@@ -712,27 +712,27 @@ mod tests {
     #[test]
     fn test_serialization_roundtrip() {
         let protocol = WebUIProtocol {
-            streams: {
+            fragments: {
                 let mut map = HashMap::new();
                 map.insert(
                     "main".to_string(),
                     vec![
-                        WebUIStream::Raw(WebUIStreamRaw {
+                        WebUIFragment::Raw(WebUIFragmentRaw {
                             value: "Hello".to_string(),
                         }),
-                        WebUIStream::If(WebUIStreamIf {
+                        WebUIFragment::If(WebUIFragmentIf {
                             condition: ConditionExpr::Predicate(Predicate {
                                 left: "user.logged_in".to_string(),
                                 operator: ComparisonOperator::Equal,
                                 right: "true".to_string(),
                             }),
-                            stream_id: "welcome".to_string(),
+                            fragment_id: "welcome".to_string(),
                         }),
                     ],
                 );
                 map.insert(
                     "welcome".to_string(),
-                    vec![WebUIStream::Signal(WebUIStreamSignal {
+                    vec![WebUIFragment::Signal(WebUIFragmentSignal {
                         value: "user.name".to_string(),
                         raw: false,
                     })],
@@ -760,13 +760,13 @@ mod tests {
 
     #[test]
     fn test_validation_errors() {
-        // Test missing stream reference in component
+        // Test missing fragment reference in component
         let invalid_component = r#"{
-            "streams": {
+            "fragments": {
                 "main": [
                     {
                         "type": "component",
-                        "streamId": "missing-component"
+                        "fragmentId": "missing-component"
                     }
                 ]
             }
@@ -781,15 +781,15 @@ mod tests {
             panic!("Expected validation error");
         }
 
-        // Test missing stream reference in for loop
+        // Test missing fragment reference in for loop
         let invalid_for = r#"{
-            "streams": {
+            "fragments": {
                 "main": [
                     {
                         "type": "for",
                         "item": "item",
                         "collection": "items",
-                        "streamId": "missing-for"
+                        "fragmentId": "missing-for"
                     }
                 ]
             }
@@ -804,14 +804,14 @@ mod tests {
             panic!("Expected validation error");
         }
 
-        // Test missing stream reference in if condition
+        // Test missing fragment reference in if condition
         let invalid_if = r#"{
-            "streams": {
+            "fragments": {
                 "main": [
                     {
                         "type": "if",
                         "condition": {"kind": "identifier", "value": "isLoggedIn"},
-                        "streamId": "missing-if"
+                        "fragmentId": "missing-if"
                     }
                 ]
             }

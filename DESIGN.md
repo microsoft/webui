@@ -27,62 +27,62 @@ The protocol defines the serializable structure representing UI templates.
 ```rust
 /// The root protocol structure representing a complete webpage configuration.
 pub struct WebUIProtocol {
-    /// Map of stream identifiers to their associated streams.
-    pub streams: WebUIStreamRecords,
+    /// Map of fragment identifiers to their associated fragments.
+    pub fragments: WebUIFragmentRecords,
 }
 
-/// A mapping of unique stream identifiers to their corresponding stream vectors.
-pub type WebUIStreamRecords = HashMap<String, Vec<WebUIStream>>;
+/// A mapping of unique fragment identifiers to their corresponding fragment vectors.
+pub type WebUIFragmentRecords = HashMap<String, Vec<WebUIFragment>>;
 
-/// Defines the various types of streams in the WebUI protocol.
+/// Defines the various types of fragments in the WebUI protocol.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
-pub enum WebUIStream {
+pub enum WebUIFragment {
     /// Outputs static content.
-    Raw(WebUIStreamRaw),
+    Raw(WebUIFragmentRaw),
     /// A reusable component with styling.
-    Component(WebUIStreamComponent),
+    Component(WebUIFragmentComponent),
     /// Iterates over a collection to generate repeated content.
-    For(WebUIStreamFor),
+    For(WebUIFragmentFor),
     /// Connects dynamic content via signals.
-    Signal(WebUIStreamSignal),
+    Signal(WebUIFragmentSignal),
     /// Renders content conditionally.
-    If(WebUIStreamIf),
+    If(WebUIFragmentIf),
     /// Represents a boolean attribute (e.g., disabled, checked).
-    BooleanAttribute(WebUIStreamBooleanAttribute),
+    BooleanAttribute(WebUIFragmentBooleanAttribute),
 }
 ```
-### Stream Types
-#### Raw Stream
+### Fragment Types
+#### Raw Fragment
 ```rust
-pub struct WebUIStreamRaw {
+pub struct WebUIFragmentRaw {
     /// The content to render.
     pub value: String,
 }
 ```
-#### Component Stream
+#### Component Fragment
 ```rust
-pub struct WebUIStreamComponent {
-    /// The identifier for the associated stream record.
-    #[serde(rename = "streamId")]
-    pub stream_id: String,
+pub struct WebUIFragmentComponent {
+    /// The identifier for the associated fragment record.
+    #[serde(rename = "fragmentId")]
+    pub fragment_id: String,
 }
 ```
-#### For Loop Stream
+#### For Loop Fragment
 ```rust
-pub struct WebUIStreamFor {
+pub struct WebUIFragmentFor {
     /// The name representing a singular item (e.g., "person").
     pub item: String,
     /// The collection name (e.g., "people").
     pub collection: String,
-    /// The identifier for the stream to render for each item.
-    #[serde(rename = "streamId")]
-    pub stream_id: String,
+    /// The identifier for the fragment to render for each item.
+    #[serde(rename = "fragmentId")]
+    pub fragment_id: String,
 }
 ```
-#### Signal Stream
+#### Signal Fragment
 ```rust
-pub struct WebUIStreamSignal {
+pub struct WebUIFragmentSignal {
     /// The value or identifier of the signal.
     pub value: String,
     /// Determines if the value should be rendered as raw content.
@@ -90,21 +90,21 @@ pub struct WebUIStreamSignal {
     pub raw: bool,
 }
 ```
-#### Conditional Stream
+#### Conditional Fragment
 ```rust
-pub struct WebUIStreamIf {
+pub struct WebUIFragmentIf {
     /// The condition expression to evaluate.
     pub condition: ConditionExpr,
-    /// The identifier for the stream record to render if true.
-    #[serde(rename = "streamId")]
-    pub stream_id: String,
+    /// The identifier for the fragment record to render if true.
+    #[serde(rename = "fragmentId")]
+    pub fragment_id: String,
 }
 ```
-#### Boolean Attribute Stream
+#### Boolean Attribute Fragment
 ```rust
 /// Represents a boolean attribute on an element.
 /// Boolean attributes must start with '?' (e.g., ?disabled).
-pub struct WebUIStreamBooleanAttribute {
+pub struct WebUIFragmentBooleanAttribute {
     /// The boolean attribute name (e.g., "disabled").
     pub name: String,
     /// The attribute value to render, if false, attribute is ignored.
@@ -175,8 +175,8 @@ pub struct Predicate {
 - Support for custom error types and propagation
 - Validation of protocol structure during deserialization
 - Performance optimizations for large protocol structures
-- Support for stream reference validation
-- Attribute names starting with '?' are treated as boolean attributes using the `BooleanAttribute` stream type. The attribute is rendered only if the value/expression evaluates to true.
+- Support for fragment reference validation
+- Attribute names starting with '?' are treated as boolean attributes using the `BooleanAttribute` fragment type. The attribute is rendered only if the value/expression evaluates to true.
 
 ## State Management (webui-state)
 ### Path Resolution
@@ -234,41 +234,41 @@ pub trait Writer {
     fn end(&mut self) -> Result<(), io::Error>;
 }
 ```
-### Stream Processing
-- **Raw streams:** Write value directly to output
-- **Signal streams:**
+### Fragment Processing
+- **Raw fragments:** Write value directly to output
+- **Signal fragments:**
   - Resolve value from state using `find_value_by_dotted_path`
   - Escape value if `raw` is false, otherwise write as-is
-- **Boolean attribute streams:**
+- **Boolean attribute fragments:**
   - Evaluate the value; if true, render the attribute name.
   - If false, omit the attribute.
-- **If streams:**
+- **If fragments:**
   - Evaluate condition using `evaluate`
-  - If true, process referenced stream
+  - If true, process referenced fragment
   - Track false conditions for template generation
-  - When the `If` streams are enclosed in one or more `For` streams it can access the states of those `For` streams'
+  - When the `If` fragments are enclosed in one or more `For` fragments it can access the states of those `For` fragments'
     current item thorugh their corresponding item monikers. It can also access global state.
-  - `If` stream conditions can have tokens from different state objects i.e. local states from enclosing `For` stream
+  - `If` fragment conditions can have tokens from different state objects i.e. local states from enclosing `For` fragment
     items and/or the global state mixed in the condition expression.
-- **For streams:**
+- **For fragments:**
   - Iterate over collection from state
-  - Process referenced stream for each item with current item's state accessible thorugh a moniker and the global state
+  - Process referenced fragment for each item with current item's state accessible thorugh a moniker and the global state
     as a fallback.
-- **Component streams:** Process referenced stream directly. `Component` streams enclosed in a For stream has access to
-    the fields of the current item being looped over and the global state. The `Component` stream doesn't need to use
-    the `For` stream item moniker and can access the fields without the qualification. If the `Component` stream is
-    nested in multiple `For` streams only the closest enclosing `For` stream item's state is accessible to it.
+- **Component fragments:** Process referenced fragment directly. `Component` fragments enclosed in a For fragment has access to
+    the fields of the current item being looped over and the global state. The `Component` fragment doesn't need to use
+    the `For` fragment item moniker and can access the fields without the qualification. If the `Component` fragment is
+    nested in multiple `For` fragments only the closest enclosing `For` fragment item's state is accessible to it.
 
 ### State Management
-- Global state refers to the global application state that is available to all streams at all times.
-- Local state refers to the state corresponding to the current item being looped over in a `For` stream.
-- When nested `For` streams are present local state of the current item being looped over for any of the `For` stream in the
-  hierarchy can be accessed through the corresponding item moniker with an exception for `Component` streams.
-- For `Component` streams only the closest enclosing `For` stream's current item state is available and can be accessed
-  directly without the item moniker qualification. `Component` streams also have access to the global application state.
+- Global state refers to the global application state that is available to all fragments at all times.
+- Local state refers to the state corresponding to the current item being looped over in a `For` fragment.
+- When nested `For` fragments are present local state of the current item being looped over for any of the `For` fragment in the
+  hierarchy can be accessed through the corresponding item moniker with an exception for `Component` fragments.
+- For `Component` fragments only the closest enclosing `For` fragment's current item state is available and can be accessed
+  directly without the item moniker qualification. `Component` fragments also have access to the global application state.
 
 ### Error Handling
-- Report missing stream references
+- Report missing fragment references
 - Handle state resolution failures
 - Propagate writer errors
 - Validate protocol before processing
@@ -314,8 +314,8 @@ pub struct HtmlParser {
 ```
 #### Primary Method
 ```rust
-pub fn parse(&mut self, stream_id: &str, html_content: &str) -> Result<(), ParserError>
-pub fn into_stream_records(self) -> WebUIStreamRecords
+pub fn parse(&mut self, fragment_id: &str, html_content: &str) -> Result<(), ParserError>
+pub fn into_fragment_records(self) -> WebUIFragmentRecords
 ```
 #### Content Processing
 
@@ -325,8 +325,8 @@ pub fn into_stream_records(self) -> WebUIStreamRecords
 - Flush buffer when transitioning to non-raw content
 
 ##### Directive Processing
-- **<for>:** Extract item/collection pair and process children into separate stream
-- **<if>:** Extract and parse condition, process children into separate stream
+- **<for>:** Extract item/collection pair and process children into separate fragment
+- **<if>:** Extract and parse condition, process children into separate fragment
 - **Components:** Check component registry, process as component if found
 
 ##### Element Processing
@@ -344,7 +344,7 @@ pub fn into_stream_records(self) -> WebUIStreamRecords
 pub struct HandlebarsParser;
 
 impl HandlebarsParser {
-    pub fn parse(&self, text: &str) -> Result<Vec<WebUIStream>, ParserError>
+    pub fn parse(&self, text: &str) -> Result<Vec<WebUIFragment>, ParserError>
 }
 ```
 #### Requirements
@@ -383,8 +383,8 @@ pub struct CssParser {
 }
 
 impl CssParser {
-    pub fn parse(&mut self, css_content: &str) -> Result<WebUIStreamRecords, ParserError>
-    pub fn process_css(&mut self, css_content: &str, streams: &mut WebUIStreamRecords) -> Result<(), ParserError>
+    pub fn parse(&mut self, css_content: &str) -> Result<WebUIFragmentRecords, ParserError>
+    pub fn process_css(&mut self, css_content: &str, fragments: &mut WebUIFragmentRecords) -> Result<(), ParserError>
     pub fn parse_inline_css(&mut self, style_content: &str) -> Result<String, ParserError>
 }
 ```
@@ -468,14 +468,14 @@ Hello, WebUI!
 ### Generated Protocol
 ```json
 {
-    "streams": {
+    "fragments": {
         "index.html": [
             { "type": "raw", "value": "Hello, WebUI!\n" },
             {
                 "type": "for",
                 "item": "person",
                 "collection": "people",
-                "streamId": "for-1"
+                "fragmentId": "for-1"
             },
             {
                 "type": "signal",
@@ -488,7 +488,7 @@ Hello, WebUI!
                     "kind": "identifier",
                     "value": "contact"
                 },
-                "streamId": "if-1"
+                "fragmentId": "if-1"
             }
         ],
         "for-1": [
@@ -507,7 +507,7 @@ Hello, WebUI!
             },
             {
                 "type": "component",
-                "streamId": "person_card",
+                "fragmentId": "person_card",
                 "raw": false
             },
             {

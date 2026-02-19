@@ -5,7 +5,7 @@
 
 use crate::{ParserError, Result};
 use tree_sitter::{Parser, Tree};
-use webui_protocol::WebUIStreamRecords;
+use webui_protocol::WebUIFragmentRecords;
 
 // Replace extern "C" block with proper import
 use tree_sitter_css::LANGUAGE;
@@ -27,26 +27,26 @@ impl CssParser {
         Self { parser }
     }
 
-    /// Parse CSS content and return streams.
-    pub fn parse(&mut self, css_content: &str) -> Result<WebUIStreamRecords> {
+    /// Parse CSS content and return fragments.
+    pub fn parse(&mut self, css_content: &str) -> Result<WebUIFragmentRecords> {
         // Parse CSS with tree-sitter
         let _tree = self
             .parser
             .parse(css_content, None)
             .ok_or_else(|| ParserError::Css("Failed to parse CSS".to_string()))?;
 
-        // Create empty streams for now
-        // In a real implementation, would convert CSS to streams
-        let streams = WebUIStreamRecords::new();
+        // Create empty fragments for now
+        // In a real implementation, would convert CSS to fragments
+        let fragments = WebUIFragmentRecords::new();
 
-        Ok(streams)
+        Ok(fragments)
     }
 
-    /// Process CSS content and merge it into streams.
+    /// Process CSS content and merge it into fragments.
     pub fn process_css(
         &mut self,
         css_content: &str,
-        streams: &mut WebUIStreamRecords,
+        fragments: &mut WebUIFragmentRecords,
     ) -> Result<()> {
         // Parse CSS with tree-sitter
         let tree = self
@@ -55,7 +55,7 @@ impl CssParser {
             .ok_or_else(|| ParserError::Css("Failed to parse CSS".to_string()))?;
 
         // Extract and process CSS rules
-        self.process_css_rules(tree, css_content, streams)?;
+        self.process_css_rules(tree, css_content, fragments)?;
 
         Ok(())
     }
@@ -65,13 +65,13 @@ impl CssParser {
         &self,
         _tree: Tree,
         _source: &str,
-        _streams: &mut WebUIStreamRecords,
+        _fragments: &mut WebUIFragmentRecords,
     ) -> Result<()> {
         // This is a placeholder for CSS processing logic
         // In a real implementation, you would:
         // 1. Extract selectors and rules from the CSS
         // 2. Associate styles with components
-        // 3. Update component streams with the appropriate styles
+        // 3. Update component fragments with the appropriate styles
 
         // For now, we'll just return Ok as a placeholder
         Ok(())
