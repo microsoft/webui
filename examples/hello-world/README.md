@@ -28,7 +28,7 @@ This will:
 	- Exposes `/hmr` for hot module reloading.
 6. Watch all files in `src/templates/`, `src/data/`, and `assets/` directories for changes; when any file changes, re-render `dist/index.html`.
 
-The client-side script in `static/app.js` polls `/hmr` and automatically reloads the page when a new version is detected.
+The client-side script in `/assets/app.js` polls `/hmr` and automatically reloads the page when a new version is detected.
 
 ## Notes
 
