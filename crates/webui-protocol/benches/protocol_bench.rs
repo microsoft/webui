@@ -1,10 +1,12 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use std::collections::HashMap;
+use std::hint::black_box;
 use webui_protocol::{
     ComparisonOperator, ConditionExpr, LogicalOperator, Predicate, WebUIProtocol, WebUIStream,
     WebUIStreamComponent, WebUIStreamFor, WebUIStreamIf, WebUIStreamRaw, WebUIStreamSignal,
 };
 
+#[allow(dead_code)]
 fn create_test_protocol() -> WebUIProtocol {
     let mut streams = HashMap::new();
 
