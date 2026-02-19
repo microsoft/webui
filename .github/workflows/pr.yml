@@ -17,6 +17,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.93
           components: clippy
       
       - name: Rust Cache
@@ -39,6 +40,8 @@ jobs:
       
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93
       
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
