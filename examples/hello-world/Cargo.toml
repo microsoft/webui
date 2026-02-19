@@ -1,0 +1,17 @@
+[package]
+name = "webui-hello-world-server"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "webui-hello-world-server"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1.0"
+webui-parser = { path = "../../crates/webui-parser" }
+webui-protocol = { path = "../../crates/webui-protocol" }
+webui-handler = { path = "../../crates/webui-handler" }
+tiny_http = "0.12"
+
+[workspace]
