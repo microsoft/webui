@@ -17,25 +17,25 @@ use std::collections::HashMap;
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIteratorMut};
 use tree_sitter_html::LANGUAGE;
 use webui_protocol::{
-    WebUIStream, WebUIStreamComponent, WebUIStreamFor, WebUIStreamIf, WebUIStreamRaw,
-    WebUIStreamRecords,
+    WebUIFragment, WebUIFragmentComponent, WebUIFragmentFor, WebUIFragmentIf, WebUIFragmentRaw,
+    WebUIFragmentRecords,
 };
 
-/// Counter for generating unique stream IDs.
-struct StreamIdCounter {
+/// Counter for generating unique fragment IDs.
+struct FragmentIdCounter {
     /// Map of counter types to their current values.
     counters: HashMap<String, usize>,
 }
 
-impl StreamIdCounter {
-    /// Create a new stream ID counter.
+impl FragmentIdCounter {
+    /// Create a new fragment ID counter.
     fn new() -> Self {
         Self {
             counters: HashMap::new(),
         }
     }
 
-    /// Generate a unique stream ID.
+    /// Generate a unique fragment ID.
     fn next_id(&mut self, prefix: &str) -> String {
         let count = self.counters.entry(prefix.to_string()).or_insert(0);
         *count += 1;
@@ -57,8 +57,8 @@ pub struct HtmlParser {
     /// Tree-sitter parser for HTML.
     parser: Parser,
 
-    /// Stream ID counter.
-    id_counter: StreamIdCounter,
+    /// Fragment ID counter.
+    id_counter: FragmentIdCounter,
 
     /// Condition parser for parsing conditions in directives.
     condition_parser: ConditionParser,
@@ -69,8 +69,8 @@ pub struct HtmlParser {
     /// Component registry for WebUI components.
     component_registry: ComponentRegistry,
 
-    /// Map of stream IDs to their streams
-    stream_records: WebUIStreamRecords,
+    /// Map of fragment IDs to their fragments
+    fragment_records: WebUIFragmentRecords,
 
     /// Buffer for accumulating raw content
     raw_buffer: String,
@@ -87,22 +87,22 @@ impl HtmlParser {
         Self {
             component_registry: ComponentRegistry::new(),
             css_parser: CssParser::new(),
-            id_counter: StreamIdCounter::new(),
+            id_counter: FragmentIdCounter::new(),
             condition_parser: ConditionParser::new(),
             handlebars_parser: HandlebarsParser::new(),
             raw_buffer: String::new(),
-            stream_records: WebUIStreamRecords::new(),
+            fragment_records: WebUIFragmentRecords::new(),
             parser,
         }
     }
 
-    pub fn into_stream_records(mut self) -> WebUIStreamRecords {
-        std::mem::take(&mut self.stream_records)
+    pub fn into_fragment_records(mut self) -> WebUIFragmentRecords {
+        std::mem::take(&mut self.fragment_records)
     }
 
-    /// Parse HTML content to generate WebUI streams.
-    pub fn parse(&mut self, stream_id: &str, html_content: &str) -> Result<()> {
-        // Reset sub-streams for new parse
+    /// Parse HTML content to generate WebUI fragments.
+    pub fn parse(&mut self, fragment_id: &str, html_content: &str) -> Result<()> {
+        // Reset sub-fragments for new parse
         self.raw_buffer.clear();
 
         // Parse HTML
@@ -111,91 +111,93 @@ impl HtmlParser {
             .parse(html_content, None)
             .ok_or_else(|| ParserError::Html("Failed to parse HTML".to_string()))?;
 
-        let mut entry_stream: Vec<WebUIStream> = Vec::new();
+        let mut entry_fragment: Vec<WebUIFragment> = Vec::new();
 
         // Start processing the HTML node.
-        self.process_html_node(tree.root_node(), html_content, &mut entry_stream)?;
+        self.process_html_node(tree.root_node(), html_content, &mut entry_fragment)?;
 
-        self.flush_raw_buffer(&mut entry_stream);
+        self.flush_raw_buffer(&mut entry_fragment);
 
         // Insert the entry record.
-        self.stream_records
-            .insert(stream_id.to_string(), entry_stream);
+        self.fragment_records
+            .insert(fragment_id.to_string(), entry_fragment);
 
-        // Return all streams including generated sub-streams
+        // Return all fragments including generated sub-fragments
         Ok(())
     }
 
     /// Add raw content to the buffer
-    fn add_raw_stream(&mut self, content: &str) {
+    fn add_raw_fragment(&mut self, content: &str) {
         if !content.is_empty() {
-            println!("Storing raw stream: {}", content);
+            println!("Storing raw fragment: {}", content);
             self.raw_buffer.push_str(content);
         }
     }
 
-    /// Add a for stream, flushing raw buffer first
-    fn add_for_stream(
+    /// Add a for fragment, flushing raw buffer first
+    fn add_for_fragment(
         &mut self,
         item: String,
         collection: String,
-        stream_id: String,
-        streams: &mut Vec<WebUIStream>,
+        fragment_id: String,
+        fragments: &mut Vec<WebUIFragment>,
     ) {
-        self.flush_raw_buffer(streams);
-        println!("Adding for stream: {} in {}", item, collection);
-        streams.push(WebUIStream::For(WebUIStreamFor {
+        self.flush_raw_buffer(fragments);
+        println!("Adding for fragment: {} in {}", item, collection);
+        fragments.push(WebUIFragment::For(WebUIFragmentFor {
             item,
             collection,
-            stream_id,
+            fragment_id,
         }));
     }
 
-    /// Add an if stream, flushing raw buffer first
-    fn add_if_stream(
+    /// Add an if fragment, flushing raw buffer first
+    fn add_if_fragment(
         &mut self,
         condition: webui_protocol::ConditionExpr,
-        stream_id: String,
-        streams: &mut Vec<WebUIStream>,
+        fragment_id: String,
+        fragments: &mut Vec<WebUIFragment>,
     ) {
-        self.flush_raw_buffer(streams);
-        println!("Adding if stream: {}", condition);
-        streams.push(WebUIStream::If(WebUIStreamIf {
+        self.flush_raw_buffer(fragments);
+        println!("Adding if fragment: {}", condition);
+        fragments.push(WebUIFragment::If(WebUIFragmentIf {
             condition,
-            stream_id,
+            fragment_id,
         }));
     }
 
-    /// Add a component stream, flushing raw buffer first
-    fn add_component_stream(&mut self, stream_id: String, streams: &mut Vec<WebUIStream>) {
-        self.flush_raw_buffer(streams);
-        println!("Adding component stream: {}", stream_id);
-        streams.push(WebUIStream::Component(WebUIStreamComponent { stream_id }));
+    /// Add a component fragment, flushing raw buffer first
+    fn add_component_fragment(&mut self, fragment_id: String, fragments: &mut Vec<WebUIFragment>) {
+        self.flush_raw_buffer(fragments);
+        println!("Adding component fragment: {}", fragment_id);
+        fragments.push(WebUIFragment::Component(WebUIFragmentComponent {
+            fragment_id,
+        }));
     }
 
-    /// Add a non-raw stream, flushing the raw buffer first if needed
-    fn add_stream(&mut self, stream: WebUIStream, streams: &mut Vec<WebUIStream>) {
-        self.flush_raw_buffer(streams);
-        println!("Adding stream: {:?}", stream);
-        streams.push(stream);
+    /// Add a non-raw fragment, flushing the raw buffer first if needed
+    fn add_fragment(&mut self, fragment: WebUIFragment, fragments: &mut Vec<WebUIFragment>) {
+        self.flush_raw_buffer(fragments);
+        println!("Adding fragment: {:?}", fragment);
+        fragments.push(fragment);
     }
 
-    /// Flush the raw buffer into streams if not empty
-    fn flush_raw_buffer(&mut self, streams: &mut Vec<WebUIStream>) {
+    /// Flush the raw buffer into fragments if not empty
+    fn flush_raw_buffer(&mut self, fragments: &mut Vec<WebUIFragment>) {
         if !self.raw_buffer.is_empty() {
             println!("Flushing raw buffer: {}", self.raw_buffer);
-            streams.push(WebUIStream::Raw(WebUIStreamRaw {
+            fragments.push(WebUIFragment::Raw(WebUIFragmentRaw {
                 value: std::mem::take(&mut self.raw_buffer),
             }));
         }
     }
 
-    /// Process an HTML node to generate WebUI streams.
+    /// Process an HTML node to generate WebUI fragments.
     fn process_html_node(
         &mut self,
         node: Node,
         source: &str,
-        streams: &mut Vec<WebUIStream>,
+        fragments: &mut Vec<WebUIFragment>,
     ) -> Result<()> {
         let mut cursor = node.walk();
 
@@ -206,7 +208,7 @@ impl HtmlParser {
                     let child = cursor.node();
 
                     // Process child node
-                    self.process_child_node(child, source, streams)?;
+                    self.process_child_node(child, source, fragments)?;
 
                     if !cursor.goto_next_sibling() {
                         break;
@@ -215,10 +217,10 @@ impl HtmlParser {
                 cursor.goto_parent();
             }
         } else {
-            // Add text content as raw stream
+            // Add text content as raw fragment
             let content = &source[node.start_byte()..node.end_byte()];
             if !content.trim().is_empty() {
-                self.add_raw_stream(content);
+                self.add_raw_fragment(content);
             }
         }
 
@@ -230,7 +232,7 @@ impl HtmlParser {
         &mut self,
         node: Node,
         source: &str,
-        streams: &mut Vec<WebUIStream>,
+        fragments: &mut Vec<WebUIFragment>,
     ) -> Result<()> {
         match node.kind() {
             "element" => {
@@ -239,14 +241,14 @@ impl HtmlParser {
 
                 // Handle WebUI directives
                 match tag_name.as_str() {
-                    "for" => return self.process_for_directive(node, source, streams),
-                    "if" => return self.process_if_directive(node, source, streams),
+                    "for" => return self.process_for_directive(node, source, fragments),
+                    "if" => return self.process_if_directive(node, source, fragments),
                     _ => {
                         if self.component_registry.contains(tag_name.as_str()) {
                             return self.process_component_directive(
                                 node,
                                 source,
-                                streams,
+                                fragments,
                                 tag_name.as_str(),
                             );
                         }
@@ -260,19 +262,19 @@ impl HtmlParser {
                         if let Some(close_bracket_pos) = full_content.find('>') {
                             // Add opening tag as raw content
                             let opening_tag = &full_content[0..=close_bracket_pos];
-                            self.add_raw_stream(opening_tag);
+                            self.add_raw_fragment(opening_tag);
 
                             // Process children
                             for child in node.named_children(&mut node.walk()) {
                                 if child.kind() != "start_tag" && child.kind() != "end_tag" {
-                                    self.process_child_node(child, source, streams)?;
+                                    self.process_child_node(child, source, fragments)?;
                                 }
                             }
 
                             // Find closing tag and add it
                             if let Some(last_open_pos) = full_content.rfind('<') {
                                 let closing_tag = &full_content[last_open_pos..];
-                                self.add_raw_stream(closing_tag);
+                                self.add_raw_fragment(closing_tag);
                             }
                         }
 
@@ -289,7 +291,7 @@ impl HtmlParser {
 
                         // Add the style tag with processed CSS
                         let style_tag = format!("<style>{}</style>", processed_css);
-                        self.add_raw_stream(&style_tag);
+                        self.add_raw_fragment(&style_tag);
                     }
                 }
             }
@@ -298,11 +300,11 @@ impl HtmlParser {
                 if !content.trim().is_empty() {
                     let handlebars_result = self.handlebars_parser.parse(content);
                     match handlebars_result {
-                        Ok(parsed_streams) => {
-                            for stream in parsed_streams {
-                                match stream {
-                                    WebUIStream::Raw(raw) => self.add_raw_stream(&raw.value),
-                                    _ => self.add_stream(stream, streams),
+                        Ok(parsed_fragments) => {
+                            for fragment in parsed_fragments {
+                                match fragment {
+                                    WebUIFragment::Raw(raw) => self.add_raw_fragment(&raw.value),
+                                    _ => self.add_fragment(fragment, fragments),
                                 }
                             }
                         }
@@ -312,7 +314,7 @@ impl HtmlParser {
             }
             // For other node types (like doctype, head, body), traverse their children
             _ => {
-                self.process_html_node(node, source, streams)?;
+                self.process_html_node(node, source, fragments)?;
             }
         }
 
@@ -397,7 +399,7 @@ impl HtmlParser {
         &mut self,
         node: Node,
         source: &str,
-        streams: &mut Vec<WebUIStream>,
+        fragments: &mut Vec<WebUIFragment>,
     ) -> Result<()> {
         // Extract each attribute
         let each = self
@@ -430,9 +432,9 @@ impl HtmlParser {
         let item = parts[0];
         let collection = parts[2];
 
-        // Generate a unique stream ID for the for loop content
-        let stream_id = self.id_counter.next_id("for");
-        let mut for_stream: Vec<WebUIStream> = Vec::new();
+        // Generate a unique fragment ID for the for loop content
+        let fragment_id = self.id_counter.next_id("for");
+        let mut for_fragment: Vec<WebUIFragment> = Vec::new();
 
         // Create a temporary buffer for for loop content
         let mut temp_buffer = String::new();
@@ -441,21 +443,27 @@ impl HtmlParser {
         // Process the for loop body
         for child in node.named_children(&mut node.walk()) {
             if child.kind() != "start_tag" && child.kind() != "end_tag" {
-                self.process_child_node(child, source, &mut for_stream)?;
+                self.process_child_node(child, source, &mut for_fragment)?;
             }
         }
 
-        // Ensure any remaining content is flushed to the for loop's stream
-        self.flush_raw_buffer(&mut for_stream);
+        // Ensure any remaining content is flushed to the for loop's fragment
+        self.flush_raw_buffer(&mut for_fragment);
 
         // Restore the original buffer
         std::mem::swap(&mut self.raw_buffer, &mut temp_buffer);
 
         // Store the record
-        self.stream_records.insert(stream_id.clone(), for_stream);
+        self.fragment_records
+            .insert(fragment_id.clone(), for_fragment);
 
-        // Add the for directive stream to the parent stream
-        self.add_for_stream(item.to_string(), collection.to_string(), stream_id, streams);
+        // Add the for directive fragment to the parent fragment
+        self.add_for_fragment(
+            item.to_string(),
+            collection.to_string(),
+            fragment_id,
+            fragments,
+        );
 
         Ok(())
     }
@@ -465,7 +473,7 @@ impl HtmlParser {
         &mut self,
         node: Node,
         source: &str,
-        streams: &mut Vec<WebUIStream>,
+        fragments: &mut Vec<WebUIFragment>,
     ) -> Result<()> {
         // Extract condition attribute
         let condition_str = self
@@ -486,14 +494,14 @@ impl HtmlParser {
             }
         };
 
-        // Generate a unique stream ID for the if content
-        let stream_id = self.id_counter.next_id("if");
+        // Generate a unique fragment ID for the if content
+        let fragment_id = self.id_counter.next_id("if");
 
-        // Flush any existing content in the parent stream before switching context
-        self.flush_raw_buffer(streams);
+        // Flush any existing content in the parent fragment before switching context
+        self.flush_raw_buffer(fragments);
 
-        // Create a separate stream for the if condition content
-        let mut if_stream: Vec<WebUIStream> = Vec::new();
+        // Create a separate fragment for the if condition content
+        let mut if_fragment: Vec<WebUIFragment> = Vec::new();
 
         // Save the current raw buffer and create a new one for the if condition
         let parent_buffer = std::mem::take(&mut self.raw_buffer);
@@ -501,21 +509,22 @@ impl HtmlParser {
         // Process the if body - capture all content including closing tags
         for child in node.named_children(&mut node.walk()) {
             if child.kind() != "start_tag" && child.kind() != "end_tag" {
-                self.process_child_node(child, source, &mut if_stream)?;
+                self.process_child_node(child, source, &mut if_fragment)?;
             }
         }
 
-        // Make sure all content in the if buffer is flushed to the if stream
-        self.flush_raw_buffer(&mut if_stream);
+        // Make sure all content in the if buffer is flushed to the if fragment
+        self.flush_raw_buffer(&mut if_fragment);
 
-        // Store the if stream in the records
-        self.stream_records.insert(stream_id.clone(), if_stream);
+        // Store the if fragment in the records
+        self.fragment_records
+            .insert(fragment_id.clone(), if_fragment);
 
         // Restore the parent buffer - only after we've processed all if content
         self.raw_buffer = parent_buffer;
 
-        // Add the if directive to the parent stream
-        self.add_if_stream(condition, stream_id, streams);
+        // Add the if directive to the parent fragment
+        self.add_if_fragment(condition, fragment_id, fragments);
 
         Ok(())
     }
@@ -525,7 +534,7 @@ impl HtmlParser {
         &mut self,
         node: Node,
         source: &str,
-        streams: &mut Vec<WebUIStream>,
+        fragments: &mut Vec<WebUIFragment>,
         tag_name: &str,
     ) -> Result<()> {
         // Build opening tag with attributes
@@ -540,10 +549,10 @@ impl HtmlParser {
 
         // Add shadow DOM template opening
         let start_content = format!("{}<template shadowrootmode=\"open\">", opening_tag);
-        self.add_raw_stream(&start_content);
+        self.add_raw_fragment(&start_content);
 
-        // Explicitly flush the buffer to create a Raw stream with the opening content
-        self.flush_raw_buffer(streams);
+        // Explicitly flush the buffer to create a Raw fragment with the opening content
+        self.flush_raw_buffer(fragments);
 
         // Get the component data we need
         let html_content;
@@ -555,16 +564,16 @@ impl HtmlParser {
         }
 
         // Check if we need to parse the component template
-        if !self.stream_records.contains_key(tag_name) {
-            // Parse component HTML content and add to stream records
+        if !self.fragment_records.contains_key(tag_name) {
+            // Parse component HTML content and add to fragment records
             let _ = self.parse(tag_name, &html_content);
         }
 
-        // Add component stream directly to output streams - buffer is already flushed
-        self.add_component_stream(tag_name.to_string(), streams);
+        // Add component fragment directly to output fragments - buffer is already flushed
+        self.add_component_fragment(tag_name.to_string(), fragments);
 
         // Start building the closing part with template end
-        self.add_raw_stream("</template>");
+        self.add_raw_fragment("</template>");
 
         // Process slot content
         for child in node.named_children(&mut node.walk()) {
@@ -572,16 +581,16 @@ impl HtmlParser {
                 if child.kind() == "element" {
                     // For element slots, extract the full source text
                     let slot_content = &source[child.start_byte()..child.end_byte()];
-                    self.add_raw_stream(slot_content);
+                    self.add_raw_fragment(slot_content);
                 } else {
                     // For text nodes and others, use normal processing
-                    self.process_child_node(child, source, streams)?;
+                    self.process_child_node(child, source, fragments)?;
                 }
             }
         }
 
         // Add closing component tag
-        self.add_raw_stream(&format!("</{}>", tag_name));
+        self.add_raw_fragment(&format!("</{}>", tag_name));
 
         // Don't flush here to let it combine with any subsequent raw content
 
@@ -602,20 +611,22 @@ mod tests {
         let result = parser.parse("test.html", html);
 
         assert!(result.is_ok());
-        let stream_records = parser.into_stream_records();
-        let streams = stream_records
+        let fragment_records = parser.into_fragment_records();
+        let fragments = fragment_records
             .get("test.html")
-            .expect("Failed to get test.html stream");
-        assert_eq!(streams.len(), 3);
+            .expect("Failed to get test.html fragment");
+        assert_eq!(fragments.len(), 3);
 
-        // Verify each stream
-        assert!(matches!(streams.first(), Some(WebUIStream::Raw(raw)) if raw.value == "Hello, "));
+        // Verify each fragment
         assert!(
-            matches!(streams.get(1), Some(WebUIStream::Signal(signal)) if
+            matches!(fragments.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "Hello, ")
+        );
+        assert!(
+            matches!(fragments.get(1), Some(WebUIFragment::Signal(signal)) if
                 signal.value == "name" && !signal.raw
             )
         );
-        assert!(matches!(streams.get(2), Some(WebUIStream::Raw(raw)) if raw.value == "!"));
+        assert!(matches!(fragments.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "!"));
     }
 
     #[test]
@@ -625,20 +636,22 @@ mod tests {
         let result = parser.parse("test.html", html);
 
         assert!(result.is_ok());
-        let stream_records = parser.into_stream_records();
-        let streams = stream_records
+        let fragment_records = parser.into_fragment_records();
+        let fragments = fragment_records
             .get("test.html")
-            .expect("Failed to get test.html stream");
-        assert_eq!(streams.len(), 3);
+            .expect("Failed to get test.html fragment");
+        assert_eq!(fragments.len(), 3);
 
-        // Verify each stream
-        assert!(matches!(streams.first(), Some(WebUIStream::Raw(raw)) if raw.value == "Hello, "));
+        // Verify each fragment
         assert!(
-            matches!(streams.get(1), Some(WebUIStream::Signal(signal)) if
+            matches!(fragments.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "Hello, ")
+        );
+        assert!(
+            matches!(fragments.get(1), Some(WebUIFragment::Signal(signal)) if
                 signal.value == "html_content" && signal.raw
             )
         );
-        assert!(matches!(streams.get(2), Some(WebUIStream::Raw(raw)) if raw.value == "!"));
+        assert!(matches!(fragments.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "!"));
     }
 
     #[test]
@@ -648,37 +661,39 @@ mod tests {
 
         let result = parser.parse("test.html", html);
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let stream_records = parser.into_stream_records();
-        println!("Stream records: {:#?}", stream_records);
-        let streams = stream_records
+        let fragment_records = parser.into_fragment_records();
+        println!("Fragment records: {:#?}", fragment_records);
+        let fragments = fragment_records
             .get("test.html")
-            .expect("Failed to get test.html stream");
+            .expect("Failed to get test.html fragment");
 
-        // Verify each stream
-        assert_eq!(streams.len(), 1);
+        // Verify each fragment
+        assert_eq!(fragments.len(), 1);
 
         assert!(
-            matches!(streams.first(), Some(WebUIStream::For(for_loop)) if
+            matches!(fragments.first(), Some(WebUIFragment::For(for_loop)) if
                 for_loop.item == "item" &&
                 for_loop.collection == "items" &&
-                for_loop.stream_id == "for-1"
+                for_loop.fragment_id == "for-1"
             )
         );
 
-        // Verify the sub-stream contains our item content
-        let for_stream = stream_records
+        // Verify the sub-fragment contains our item content
+        let for_fragment = fragment_records
             .get("for-1")
-            .expect("Failed to get for-1 stream");
-        assert_eq!(for_stream.len(), 3);
+            .expect("Failed to get for-1 fragment");
+        assert_eq!(for_fragment.len(), 3);
         assert!(
-            matches!(for_stream.first(), Some(WebUIStream::Raw(raw)) if raw.value == "<div class=\"item\">")
+            matches!(for_fragment.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "<div class=\"item\">")
         );
         assert!(
-            matches!(for_stream.get(1), Some(WebUIStream::Signal(signal)) if
+            matches!(for_fragment.get(1), Some(WebUIFragment::Signal(signal)) if
                 signal.value == "item.name" && !signal.raw
             )
         );
-        assert!(matches!(for_stream.get(2), Some(WebUIStream::Raw(raw)) if raw.value == "</div>"));
+        assert!(
+            matches!(for_fragment.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "</div>")
+        );
     }
 
     #[test]
@@ -689,32 +704,36 @@ mod tests {
         let result = parser.parse("test.html", html);
 
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let stream_records = parser.into_stream_records();
-        println!("Stream records: {:#?}", stream_records);
-        let streams = stream_records
+        let fragment_records = parser.into_fragment_records();
+        println!("Fragment records: {:#?}", fragment_records);
+        let fragments = fragment_records
             .get("test.html")
-            .expect("Failed to get test.html stream");
-        assert_eq!(streams.len(), 1);
+            .expect("Failed to get test.html fragment");
+        assert_eq!(fragments.len(), 1);
 
-        assert!(matches!(streams.first(), Some(WebUIStream::If(if_cond)) if
-            matches!(&if_cond.condition, ConditionExpr::Identifier { value } if value == "isLoggedIn") &&
-            if_cond.stream_id == "if-1"
-        ));
-
-        // Verify the sub-stream contains our content
-        let if_stream = stream_records
-            .get("if-1")
-            .expect("Failed to get if-1 stream");
-        assert_eq!(if_stream.len(), 3);
         assert!(
-            matches!(if_stream.first(), Some(WebUIStream::Raw(raw)) if raw.value == "<div>Welcome back, ")
+            matches!(fragments.first(), Some(WebUIFragment::If(if_cond)) if
+                matches!(&if_cond.condition, ConditionExpr::Identifier { value } if value == "isLoggedIn") &&
+                if_cond.fragment_id == "if-1"
+            )
+        );
+
+        // Verify the sub-fragment contains our content
+        let if_fragment = fragment_records
+            .get("if-1")
+            .expect("Failed to get if-1 fragment");
+        assert_eq!(if_fragment.len(), 3);
+        assert!(
+            matches!(if_fragment.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "<div>Welcome back, ")
         );
         assert!(
-            matches!(if_stream.get(1), Some(WebUIStream::Signal(signal)) if
+            matches!(if_fragment.get(1), Some(WebUIFragment::Signal(signal)) if
                 signal.value == "username" && !signal.raw
             )
         );
-        assert!(matches!(if_stream.get(2), Some(WebUIStream::Raw(raw)) if raw.value == "!</div>"));
+        assert!(
+            matches!(if_fragment.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "!</div>")
+        );
     }
 
     #[test]
@@ -738,32 +757,32 @@ mod tests {
         let result = parser.parse("test.html", html);
 
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let stream_records = parser.into_stream_records();
-        println!("Stream records: {:#?}", stream_records);
-        let streams = stream_records
+        let fragment_records = parser.into_fragment_records();
+        println!("Fragment records: {:#?}", fragment_records);
+        let fragments = fragment_records
             .get("test.html")
-            .expect("Failed to get test.html stream");
-        assert_eq!(streams.len(), 3);
+            .expect("Failed to get test.html fragment");
+        assert_eq!(fragments.len(), 3);
 
         assert!(
-            matches!(streams.first(), Some(WebUIStream::Raw(raw)) if raw.value == "<my-component><template shadowrootmode=\"open\">")
+            matches!(fragments.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "<my-component><template shadowrootmode=\"open\">")
         );
         assert!(
-            matches!(streams.get(1), Some(WebUIStream::Component(component)) if
-                component.stream_id == "my-component"
+            matches!(fragments.get(1), Some(WebUIFragment::Component(component)) if
+                component.fragment_id == "my-component"
             )
         );
         assert!(
-            matches!(streams.get(2), Some(WebUIStream::Raw(raw)) if raw.value == "</template></my-component>")
+            matches!(fragments.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "</template></my-component>")
         );
 
-        // Verify the sub-stream contains our component content
-        let component_stream = stream_records
+        // Verify the sub-fragment contains our component content
+        let component_fragment = fragment_records
             .get("my-component")
-            .expect("Failed to get my-component stream");
-        assert_eq!(component_stream.len(), 1);
+            .expect("Failed to get my-component fragment");
+        assert_eq!(component_fragment.len(), 1);
         assert!(
-            matches!(component_stream.first(), Some(WebUIStream::Raw(raw)) if
+            matches!(component_fragment.first(), Some(WebUIFragment::Raw(raw)) if
                 raw.value == "<div>My Component</div>"
             )
         );
@@ -790,32 +809,32 @@ mod tests {
         let result = parser.parse("test.html", html);
 
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let stream_records = parser.into_stream_records();
-        println!("Stream records: {:#?}", stream_records);
-        let streams = stream_records
+        let fragment_records = parser.into_fragment_records();
+        println!("Fragment records: {:#?}", fragment_records);
+        let fragments = fragment_records
             .get("test.html")
-            .expect("Failed to get test.html stream");
-        assert_eq!(streams.len(), 3);
+            .expect("Failed to get test.html fragment");
+        assert_eq!(fragments.len(), 3);
 
         assert!(
-            matches!(streams.first(), Some(WebUIStream::Raw(raw)) if raw.value == "Hello<my-component><template shadowrootmode=\"open\">")
+            matches!(fragments.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "Hello<my-component><template shadowrootmode=\"open\">")
         );
         assert!(
-            matches!(streams.get(1), Some(WebUIStream::Component(component)) if
-                component.stream_id == "my-component"
+            matches!(fragments.get(1), Some(WebUIFragment::Component(component)) if
+                component.fragment_id == "my-component"
             )
         );
         assert!(
-            matches!(streams.get(2), Some(WebUIStream::Raw(raw)) if raw.value == "</template><p>World</p></my-component>")
+            matches!(fragments.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "</template><p>World</p></my-component>")
         );
 
-        // Verify the sub-stream contains our component content
-        let component_stream = stream_records
+        // Verify the sub-fragment contains our component content
+        let component_fragment = fragment_records
             .get("my-component")
-            .expect("Failed to get my-component stream");
-        assert_eq!(component_stream.len(), 1);
+            .expect("Failed to get my-component fragment");
+        assert_eq!(component_fragment.len(), 1);
         assert!(
-            matches!(component_stream.first(), Some(WebUIStream::Raw(raw)) if
+            matches!(component_fragment.first(), Some(WebUIFragment::Raw(raw)) if
                 raw.value == "<div>My Component</div>"
             )
         );
@@ -835,49 +854,49 @@ mod tests {
         let result = parser.parse("test.html", html);
 
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let stream_records = parser.into_stream_records();
+        let fragment_records = parser.into_fragment_records();
 
-        let streams = stream_records
+        let fragments = fragment_records
             .get("test.html")
-            .expect("Failed to get test.html stream");
-        assert_eq!(streams.len(), 1);
+            .expect("Failed to get test.html fragment");
+        assert_eq!(fragments.len(), 1);
         assert!(
-            matches!(streams.first(), Some(WebUIStream::For(for_loop)) if
+            matches!(fragments.first(), Some(WebUIFragment::For(for_loop)) if
                 for_loop.item == "category" &&
                 for_loop.collection == "categories" &&
-                for_loop.stream_id == "for-1"
+                for_loop.fragment_id == "for-1"
             )
         );
 
-        let for_stream = stream_records
+        let for_fragment = fragment_records
             .get("for-1")
-            .expect("Failed to get for-1 stream");
-        assert_eq!(for_stream.len(), 1);
+            .expect("Failed to get for-1 fragment");
+        assert_eq!(for_fragment.len(), 1);
         assert!(
-            matches!(for_stream.first(), Some(WebUIStream::If(if_cond)) if
+            matches!(for_fragment.first(), Some(WebUIFragment::If(if_cond)) if
                 matches!(&if_cond.condition, ConditionExpr::Identifier { value } if value == "category.hasItems") &&
-                if_cond.stream_id == "if-1"
+                if_cond.fragment_id == "if-1"
             )
         );
 
-        let if_stream = stream_records
+        let if_fragment = fragment_records
             .get("if-1")
-            .expect("Failed to get if-1 stream");
-        assert_eq!(if_stream.len(), 1);
+            .expect("Failed to get if-1 fragment");
+        assert_eq!(if_fragment.len(), 1);
         assert!(
-            matches!(if_stream.first(), Some(WebUIStream::For(for_loop)) if
+            matches!(if_fragment.first(), Some(WebUIFragment::For(for_loop)) if
                 for_loop.item == "item" &&
                 for_loop.collection == "category.items" &&
-                for_loop.stream_id == "for-2"
+                for_loop.fragment_id == "for-2"
             )
         );
 
-        let nested_for_stream = stream_records
+        let nested_for_fragment = fragment_records
             .get("for-2")
-            .expect("Failed to get for-2 stream");
-        assert_eq!(nested_for_stream.len(), 1);
+            .expect("Failed to get for-2 fragment");
+        assert_eq!(nested_for_fragment.len(), 1);
         assert!(
-            matches!(nested_for_stream.first(), Some(WebUIStream::Signal(signal)) if
+            matches!(nested_for_fragment.first(), Some(WebUIFragment::Signal(signal)) if
                 signal.value == "item.title" && !signal.raw
             )
         );
@@ -902,72 +921,80 @@ mod tests {
         let result = parser.parse("test.html", html);
 
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let stream_records = parser.into_stream_records();
-        let streams = stream_records
+        let fragment_records = parser.into_fragment_records();
+        let fragments = fragment_records
             .get("test.html")
-            .expect("Failed to get test.html stream");
-        assert_eq!(streams.len(), 1);
+            .expect("Failed to get test.html fragment");
+        assert_eq!(fragments.len(), 1);
 
         assert!(
-            matches!(streams.first(), Some(WebUIStream::For(for_loop)) if
+            matches!(fragments.first(), Some(WebUIFragment::For(for_loop)) if
                 for_loop.item == "category" &&
                 for_loop.collection == "categories" &&
-                for_loop.stream_id == "for-1"
+                for_loop.fragment_id == "for-1"
             )
         );
 
-        // Verify for streams contains the category.name signal
-        let for_streams: &Vec<WebUIStream> = stream_records
+        // Verify for fragments contains the category.name signal
+        let for_fragments: &Vec<WebUIFragment> = fragment_records
             .get("for-1")
-            .expect("Failed to get for-1 stream");
-        assert_eq!(for_streams.len(), 5);
+            .expect("Failed to get for-1 fragment");
+        assert_eq!(for_fragments.len(), 5);
         assert!(
-            matches!(for_streams.first(), Some(WebUIStream::Raw(raw)) if raw.value == "<div class=\"category\"><h2>")
+            matches!(for_fragments.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "<div class=\"category\"><h2>")
         );
         assert!(
-            matches!(for_streams.get(1), Some(WebUIStream::Signal(signal)) if
+            matches!(for_fragments.get(1), Some(WebUIFragment::Signal(signal)) if
                 signal.value == "category.name" && !signal.raw
             )
         );
-        assert!(matches!(for_streams.get(2), Some(WebUIStream::Raw(raw)) if raw.value == "</h2>"));
         assert!(
-            matches!(for_streams.get(3), Some(WebUIStream::If(if_cond)) if
+            matches!(for_fragments.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "</h2>")
+        );
+        assert!(
+            matches!(for_fragments.get(3), Some(WebUIFragment::If(if_cond)) if
                 matches!(&if_cond.condition, ConditionExpr::Identifier { value } if value == "category.hasItems") &&
-                if_cond.stream_id == "if-1"
+                if_cond.fragment_id == "if-1"
             )
         );
-        assert!(matches!(for_streams.get(4), Some(WebUIStream::Raw(raw)) if raw.value == "</div>"));
+        assert!(
+            matches!(for_fragments.get(4), Some(WebUIFragment::Raw(raw)) if raw.value == "</div>")
+        );
 
         // Verify nested if condition.
-        let if_streams: &Vec<WebUIStream> = stream_records
+        let if_fragments: &Vec<WebUIFragment> = fragment_records
             .get("if-1")
-            .expect("Failed to get if-1 stream");
-        assert_eq!(if_streams.len(), 3);
-        assert!(matches!(if_streams.first(), Some(WebUIStream::Raw(raw)) if raw.value == "<ul>"));
+            .expect("Failed to get if-1 fragment");
+        assert_eq!(if_fragments.len(), 3);
         assert!(
-            matches!(if_streams.get(1), Some(WebUIStream::For(for_loop)) if
+            matches!(if_fragments.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "<ul>")
+        );
+        assert!(
+            matches!(if_fragments.get(1), Some(WebUIFragment::For(for_loop)) if
                 for_loop.item == "item" &&
                 for_loop.collection == "category.items" &&
-                for_loop.stream_id == "for-2"
+                for_loop.fragment_id == "for-2"
             )
         );
-        assert!(matches!(if_streams.get(2), Some(WebUIStream::Raw(raw)) if raw.value == "</ul>"));
+        assert!(
+            matches!(if_fragments.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "</ul>")
+        );
 
         // Verify nested for each.
-        let nested_for_streams: &Vec<WebUIStream> = stream_records
+        let nested_for_fragments: &Vec<WebUIFragment> = fragment_records
             .get("for-2")
-            .expect("Failed to get for-2 stream");
-        assert_eq!(nested_for_streams.len(), 3);
+            .expect("Failed to get for-2 fragment");
+        assert_eq!(nested_for_fragments.len(), 3);
         assert!(
-            matches!(nested_for_streams.first(), Some(WebUIStream::Raw(raw)) if raw.value == "<li>")
+            matches!(nested_for_fragments.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "<li>")
         );
         assert!(
-            matches!(nested_for_streams.get(1), Some(WebUIStream::Signal(signal)) if
+            matches!(nested_for_fragments.get(1), Some(WebUIFragment::Signal(signal)) if
                 signal.value == "item.title" && !signal.raw
             )
         );
         assert!(
-            matches!(nested_for_streams.get(2), Some(WebUIStream::Raw(raw)) if raw.value == "</li>")
+            matches!(nested_for_fragments.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "</li>")
         );
     }
 }

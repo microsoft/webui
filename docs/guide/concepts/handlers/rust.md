@@ -143,7 +143,7 @@ The WebUI handler provides detailed error types through the `HandlerError` enum:
 ```rust
 pub enum HandlerError {
     Rendering(String),
-    MissingStream(String),
+    MissingFragment(String),
     MissingData(String),
     TypeError(String),
     Protocol(webui_protocol::ProtocolError),

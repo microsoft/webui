@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use thiserror::Error;
 use webui_expressions::evaluate;
-use webui_protocol::{WebUIProtocol, WebUIStream};
+use webui_protocol::{WebUIFragment, WebUIProtocol};
 use webui_state::find_value_by_dotted_path;
 
 /// Error types for the WebUI handler.
@@ -16,8 +16,8 @@ pub enum HandlerError {
     #[error("Rendering error: {0}")]
     Rendering(String),
 
-    #[error("Missing stream: {0}")]
-    MissingStream(String),
+    #[error("Missing fragment: {0}")]
+    MissingFragment(String),
 
     #[error("Missing data field: {0}")]
     MissingData(String),
@@ -54,7 +54,7 @@ pub struct WebUIHandler {
     // Configuration options could go here
 }
 
-/// Context object for processing WebUI streams
+/// Context object for processing WebUI fragments
 struct WebUIProcessContext<'a> {
     protocol: &'a WebUIProtocol,
     state: &'a Value,
@@ -80,13 +80,13 @@ impl WebUIHandler {
         state: &Value,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        // Start with the main stream (typically "index.html")
-        let main_stream_id = "index.html";
-        if !protocol.streams.contains_key(main_stream_id) {
-            return Err(HandlerError::MissingStream(main_stream_id.to_string()));
+        // Start with the main fragment (typically "index.html")
+        let main_fragment_id = "index.html";
+        if !protocol.fragments.contains_key(main_fragment_id) {
+            return Err(HandlerError::MissingFragment(main_fragment_id.to_string()));
         }
 
-        // Process the main stream with an empty initial context
+        // Process the main fragment with an empty initial context
         let mut context = WebUIProcessContext {
             protocol,
             state,
@@ -94,7 +94,7 @@ impl WebUIHandler {
             writer,
             local_vars: HashMap::new(),
         };
-        self.process_stream_id(main_stream_id, &mut context)?;
+        self.process_fragment_id(main_fragment_id, &mut context)?;
 
         // Finalize the output
         writer.end()?;
@@ -102,43 +102,47 @@ impl WebUIHandler {
         Ok(())
     }
 
-    /// Process a stream by its ID.
+    /// Process a fragment by its ID.
     ///
     /// The `context` parameter contains scope-local variables that are accessible during rendering,
     /// such as loop iteration variables. This is separate from the global `state`.
-    fn process_stream_id(&self, stream_id: &str, context: &mut WebUIProcessContext) -> Result<()> {
-        if let Some(stream) = context.protocol.streams.get(stream_id) {
-            self.process_stream(stream, context)
+    fn process_fragment_id(
+        &self,
+        fragment_id: &str,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        if let Some(fragment) = context.protocol.fragments.get(fragment_id) {
+            self.process_fragment(fragment, context)
         } else {
-            Err(HandlerError::MissingStream(stream_id.to_string()))
+            Err(HandlerError::MissingFragment(fragment_id.to_string()))
         }
     }
 
-    /// Process a vector of streams.
+    /// Process a vector of fragments.
     ///
-    /// The `context` maintains scope-specific variables that can be accessed by streams
+    /// The `context` maintains scope-specific variables that can be accessed by fragments
     /// during rendering, while `state` contains the global application state.
-    fn process_stream(
+    fn process_fragment(
         &self,
-        stream: &Vec<WebUIStream>,
+        fragment: &Vec<WebUIFragment>,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        for item in stream {
+        for item in fragment {
             match item {
-                WebUIStream::Raw(raw) => {
+                WebUIFragment::Raw(raw) => {
                     context.writer.write(&raw.value)?;
                 }
-                WebUIStream::Component(component) => {
+                WebUIFragment::Component(component) => {
                     self.process_component(component, context)?;
                 }
-                WebUIStream::For(for_loop) => {
+                WebUIFragment::For(for_loop) => {
                     self.process_for_loop(for_loop, context)?;
                 }
-                WebUIStream::Signal(signal) => {
+                WebUIFragment::Signal(signal) => {
                     let content = self.process_signal(signal, context)?;
                     context.writer.write(&content)?;
                 }
-                WebUIStream::If(if_cond) => {
+                WebUIFragment::If(if_cond) => {
                     self.process_if(if_cond, context)?;
                 }
             }
@@ -146,31 +150,31 @@ impl WebUIHandler {
         Ok(())
     }
 
-    /// Process a component stream.
+    /// Process a component fragment.
     fn process_component(
         &self,
-        component: &webui_protocol::WebUIStreamComponent,
+        component: &webui_protocol::WebUIFragmentComponent,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         // Write CSS once per component at the first level
         if context.depth == 0 {
             context.writer.write(&format!(
                 "<link rel=\"stylesheet\" href=\"./{}.css\">",
-                component.stream_id
+                component.fragment_id
             ))?;
         }
 
-        self.process_stream_id(&component.stream_id, context)
+        self.process_fragment_id(&component.fragment_id, context)
     }
 
-    /// Process a for loop stream.
+    /// Process a for loop fragment.
     ///
     /// Creates a new context for each iteration that includes the current loop item.
     /// This allows nested templates to access both the loop variable and any parent context.
     /// Example: `for item in items` makes "item" available in the loop body.
     fn process_for_loop(
         &self,
-        for_loop: &webui_protocol::WebUIStreamFor,
+        for_loop: &webui_protocol::WebUIFragmentFor,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         // Get the collection to iterate over
@@ -202,8 +206,8 @@ impl WebUIHandler {
             // Add the current item to the context
             context.local_vars.insert(item_name.clone(), item.clone());
 
-            // Process the stream with the updated context
-            self.process_stream_id(&for_loop.stream_id, context)?;
+            // Process the fragment with the updated context
+            self.process_fragment_id(&for_loop.fragment_id, context)?;
 
             // Restore the original context
             context.local_vars = saved_vars;
@@ -212,13 +216,13 @@ impl WebUIHandler {
         Ok(())
     }
 
-    /// Process a signal stream.
+    /// Process a signal fragment.
     ///
     /// Looks up the value in the context first (for local variables), then in the global state.
     /// This prioritization allows local variables (like loop items) to override global state.
     fn process_signal(
         &self,
-        signal: &webui_protocol::WebUIStreamSignal,
+        signal: &webui_protocol::WebUIFragmentSignal,
         context: &WebUIProcessContext,
     ) -> Result<String> {
         // Parse the path (could be nested like "person.name")
@@ -266,10 +270,10 @@ impl WebUIHandler {
         Ok(result)
     }
 
-    /// Process an if condition stream.
+    /// Process an if condition fragment.
     fn process_if(
         &self,
-        if_cond: &webui_protocol::WebUIStreamIf,
+        if_cond: &webui_protocol::WebUIFragmentIf,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         // Evaluate the condition
@@ -278,7 +282,7 @@ impl WebUIHandler {
 
         if condition_met {
             // Process the content if condition is true
-            self.process_stream_id(&if_cond.stream_id, context)?;
+            self.process_fragment_id(&if_cond.fragment_id, context)?;
         }
 
         Ok(())
@@ -299,7 +303,7 @@ impl WebUIHandler {
             local_vars: HashMap::new(),
         };
 
-        self.process_stream_id("index.html", &mut context)
+        self.process_fragment_id("index.html", &mut context)
     }
 }
 
@@ -364,15 +368,15 @@ mod tests {
     #[test]
     fn test_handle_raw() {
         // Create a simple protocol
-        let mut streams = HashMap::new();
-        streams.insert(
+        let mut fragments = HashMap::new();
+        fragments.insert(
             "index.html".to_string(),
-            vec![WebUIStream::Raw(webui_protocol::WebUIStreamRaw {
+            vec![WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
                 value: "Hello, WebUI!".to_string(),
             })],
         );
 
-        let protocol = WebUIProtocol { streams };
+        let protocol = WebUIProtocol { fragments };
         let state = test_json!({});
 
         // Create a test writer
@@ -392,24 +396,24 @@ mod tests {
     #[test]
     fn test_handle_signal() {
         // Create a protocol with a signal
-        let mut streams = HashMap::new();
-        streams.insert(
+        let mut fragments = HashMap::new();
+        fragments.insert(
             "index.html".to_string(),
             vec![
-                WebUIStream::Raw(webui_protocol::WebUIStreamRaw {
+                WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
                     value: "Hello, ".to_string(),
                 }),
-                WebUIStream::Signal(webui_protocol::WebUIStreamSignal {
+                WebUIFragment::Signal(webui_protocol::WebUIFragmentSignal {
                     value: "name".to_string(),
                     raw: false,
                 }),
-                WebUIStream::Raw(webui_protocol::WebUIStreamRaw {
+                WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
                     value: "!".to_string(),
                 }),
             ],
         );
 
-        let protocol = WebUIProtocol { streams };
+        let protocol = WebUIProtocol { fragments };
         let state = test_json!({"name": "WebUI"});
 
         // Create a test writer
@@ -429,35 +433,35 @@ mod tests {
     #[test]
     fn test_handle_for_loop() {
         // Create a protocol with a for loop
-        let mut streams = HashMap::new();
-        streams.insert(
+        let mut fragments = HashMap::new();
+        fragments.insert(
             "index.html".to_string(),
             vec![
-                WebUIStream::Raw(webui_protocol::WebUIStreamRaw {
+                WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
                     value: "People: ".to_string(),
                 }),
-                WebUIStream::For(webui_protocol::WebUIStreamFor {
+                WebUIFragment::For(webui_protocol::WebUIFragmentFor {
                     item: "person".to_string(),
                     collection: "people".to_string(),
-                    stream_id: "person-item".to_string(),
+                    fragment_id: "person-item".to_string(),
                 }),
             ],
         );
 
-        streams.insert(
+        fragments.insert(
             "person-item".to_string(),
             vec![
-                WebUIStream::Signal(webui_protocol::WebUIStreamSignal {
+                WebUIFragment::Signal(webui_protocol::WebUIFragmentSignal {
                     value: "person.name".to_string(),
                     raw: false,
                 }),
-                WebUIStream::Raw(webui_protocol::WebUIStreamRaw {
+                WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
                     value: ", ".to_string(),
                 }),
             ],
         );
 
-        let protocol = WebUIProtocol { streams };
+        let protocol = WebUIProtocol { fragments };
         let state = test_json!({
             "people": [
                 {"name": "Alice"},
@@ -483,33 +487,33 @@ mod tests {
     #[test]
     fn test_handle_if_condition() {
         // Create a protocol with an if condition
-        let mut streams = HashMap::new();
-        streams.insert(
+        let mut fragments = HashMap::new();
+        fragments.insert(
             "index.html".to_string(),
             vec![
-                WebUIStream::Raw(webui_protocol::WebUIStreamRaw {
+                WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
                     value: "Status: ".to_string(),
                 }),
-                WebUIStream::If(webui_protocol::WebUIStreamIf {
+                WebUIFragment::If(webui_protocol::WebUIFragmentIf {
                     condition: webui_protocol::ConditionExpr::Identifier {
                         value: "isActive".to_string(),
                     },
-                    stream_id: "active-content".to_string(),
+                    fragment_id: "active-content".to_string(),
                 }),
-                WebUIStream::Raw(webui_protocol::WebUIStreamRaw {
+                WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
                     value: "End".to_string(),
                 }),
             ],
         );
 
-        streams.insert(
+        fragments.insert(
             "active-content".to_string(),
-            vec![WebUIStream::Raw(webui_protocol::WebUIStreamRaw {
+            vec![WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
                 value: "Active".to_string(),
             })],
         );
 
-        let protocol = WebUIProtocol { streams };
+        let protocol = WebUIProtocol { fragments };
 
         // Test with isActive = true
         let state_true = test_json!({"isActive": true});
@@ -535,27 +539,27 @@ mod tests {
     #[test]
     fn test_handle_component() {
         // Create a protocol with a component
-        let mut streams = HashMap::new();
-        streams.insert(
+        let mut fragments = HashMap::new();
+        fragments.insert(
             "index.html".to_string(),
             vec![
-                WebUIStream::Raw(webui_protocol::WebUIStreamRaw {
+                WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
                     value: "Component: ".to_string(),
                 }),
-                WebUIStream::Component(webui_protocol::WebUIStreamComponent {
-                    stream_id: "my-component".to_string(),
+                WebUIFragment::Component(webui_protocol::WebUIFragmentComponent {
+                    fragment_id: "my-component".to_string(),
                 }),
             ],
         );
 
-        streams.insert(
+        fragments.insert(
             "my-component".to_string(),
-            vec![WebUIStream::Raw(webui_protocol::WebUIStreamRaw {
+            vec![WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
                 value: "<div>Component Content</div>".to_string(),
             })],
         );
 
-        let protocol = WebUIProtocol { streams };
+        let protocol = WebUIProtocol { fragments };
         let state = test_json!({});
 
         // Create a test writer
@@ -576,19 +580,19 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_stream() {
-        // Create a protocol with a missing stream reference
-        let mut streams = HashMap::new();
-        streams.insert(
+    fn test_missing_fragment() {
+        // Create a protocol with a missing fragment reference
+        let mut fragments = HashMap::new();
+        fragments.insert(
             "index.html".to_string(),
-            vec![WebUIStream::Component(
-                webui_protocol::WebUIStreamComponent {
-                    stream_id: "missing-component".to_string(),
+            vec![WebUIFragment::Component(
+                webui_protocol::WebUIFragmentComponent {
+                    fragment_id: "missing-component".to_string(),
                 },
             )],
         );
 
-        let protocol = WebUIProtocol { streams };
+        let protocol = WebUIProtocol { fragments };
         let state = test_json!({});
 
         // Create a test writer
@@ -599,10 +603,10 @@ mod tests {
 
         // Expect an error
         assert!(result.is_err());
-        if let Err(HandlerError::MissingStream(stream_id)) = result {
-            assert_eq!(stream_id, "missing-component");
+        if let Err(HandlerError::MissingFragment(fragment_id)) = result {
+            assert_eq!(fragment_id, "missing-component");
         } else {
-            panic!("Expected MissingStream error");
+            panic!("Expected MissingFragment error");
         }
     }
 }

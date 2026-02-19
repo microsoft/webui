@@ -63,7 +63,7 @@ Where:
 
 ## Protocol Output
 
-When the parser processes a `<for>` directive, it generates a `WebUIStreamFor` in the protocol with the following properties:
+When the parser processes a `<for>` directive, it generates a `WebUIFragmentFor` in the protocol with the following properties:
 - `item`: The name of the loop variable
 - `collection`: The name of the array to iterate over
-- `streamId`: A reference to the content template for each iteration
+- `fragmentId`: A reference to the content template for each iteration
