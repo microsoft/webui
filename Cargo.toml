@@ -16,20 +16,20 @@ license = "MIT"
 repository = "https://github.com/microsoft/webui"
 
 [workspace.dependencies]
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "2.0.12"
-anyhow = "1.0"
-log = "0.4.27"
-env_logger = "0.11.6"
-async-trait = "0.1"
-tokio = { version = "1.44.2", features = ["full"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+anyhow = "1.0.101"
+log = "0.4.29"
+env_logger = "0.11.9"
+async-trait = "0.1.89"
+tokio = { version = "1.49.0", features = ["full"] }
 
 # Test dependencies
-criterion = "0.5.1"
-mockall = "0.13.1"
-tempfile = "3.19.1"
-tokio-test = "0.4.4"
+criterion = "0.8.2"
+mockall = "0.14.0"
+tempfile = "3.25.0"
+tokio-test = "0.4.5"
 
 [profile.release]
 lto = true

@@ -16,15 +16,15 @@ webui-handler = { path = "../webui-handler" }
 webui-protocol = { path = "../webui-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-libc = "0.2.170"
+libc = "0.2.182"
 
 # Platform-specific dependencies
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.60.0", features = [
+windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
     "Win32_System_Console",
 ] }
 
 [build-dependencies]
-cbindgen = "0.28.0"
+cbindgen = "0.29.2"
