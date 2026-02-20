@@ -474,6 +474,16 @@ webui build [APP] --out <OUT> [--entry <FILE>]
 - `--out <OUT>` — Output folder for protocol and assets (required)
 - `--entry <FILE>` — Entry HTML file name (defaults to `index.html`)
 
+#### `webui inspect`
+Inspects a `protocol.bin` file by converting it to JSON and printing to stdout. Useful for debugging and piping to `jq`.
+
+```bash
+webui inspect <FILE>
+```
+
+**Arguments:**
+- `FILE` — Path to a `protocol.bin` file
+
 ### Build Pipeline
 1. Resolve and validate the app folder path
 2. Create the output directory

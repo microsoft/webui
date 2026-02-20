@@ -45,6 +45,33 @@ webui build ./my-app --out ./dist
 webui build ./my-app --out ./dist --entry home.html
 ```
 
+### `webui inspect`
+
+Inspect a `protocol.bin` file by converting it to JSON and printing to stdout. Useful for debugging and piping to tools like `jq`.
+
+```bash
+webui inspect <FILE>
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `FILE` | Path to a `protocol.bin` file |
+
+**Examples:**
+
+```bash
+# Inspect a protocol file
+webui inspect dist/protocol.bin
+
+# Pretty-print a specific fragment with jq
+webui inspect dist/protocol.bin | jq '.fragments["index.html"]'
+
+# Count total fragments
+webui inspect dist/protocol.bin | jq '.fragments | keys | length'
+```
+
 ## App Folder Structure
 
 The CLI expects your app folder to contain an entry HTML file and optionally web component files:
