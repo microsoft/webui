@@ -6,6 +6,7 @@ members = [
     "crates/webui-handler",
     "crates/webui-parser",
     "crates/webui-protocol",
+    "xtask",
 ]
 resolver = "2"
 

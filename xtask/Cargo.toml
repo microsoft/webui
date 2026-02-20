@@ -1,0 +1,8 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# xtask is intentionally kept dependency-free.
+# It shells out to cargo subcommands rather than pulling in libraries.

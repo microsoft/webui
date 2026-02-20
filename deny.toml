@@ -1,16 +1,20 @@
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "warn"
-notice = "warn"
+ignore = [
+    { id = "RUSTSEC-2026-0007", reason = "transitive dep via tokio; awaiting upstream bytes fix" },
+]
 
 [licenses]
-unlicensed = "deny"
 allow = [
     "MIT",
     "Apache-2.0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
 ]
-default = "deny"
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
 
 [bans]
 multiple-versions = "warn"

@@ -71,9 +71,7 @@ mod tests {
         let path = dir.path().join("bad.bin");
         fs::write(&path, b"not a protobuf").unwrap();
 
-        let result = execute(&InspectArgs {
-            file: path,
-        });
+        let result = execute(&InspectArgs { file: path });
         assert!(result.is_err());
     }
 }
