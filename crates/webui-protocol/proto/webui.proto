@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+package webui;
+
+// Root protocol containing all fragment records.
+message WebUIProtocol {
+  map<string, FragmentList> fragments = 1;
+}
+
+// A list of fragments (needed because protobuf maps cannot have repeated values directly).
+message FragmentList {
+  repeated WebUIFragment fragments = 1;
+}
+
+// A single fragment — one of several types.
+message WebUIFragment {
+  oneof fragment {
+    WebUIFragmentRaw raw = 1;
+    WebUIFragmentComponent component = 2;
+    WebUIFragmentFor for_loop = 3;
+    WebUIFragmentSignal signal = 4;
+    WebUIFragmentIf if_cond = 5;
+  }
+}
+
+// Static text or HTML content.
+message WebUIFragmentRaw {
+  string value = 1;
+}
+
+// Reference to a reusable component fragment.
+message WebUIFragmentComponent {
+  string fragment_id = 1;
+}
+
+// Loop directive iterating over a collection.
+message WebUIFragmentFor {
+  string item = 1;
+  string collection = 2;
+  string fragment_id = 3;
+}
+
+// Dynamic data binding via signal.
+message WebUIFragmentSignal {
+  string value = 1;
+  bool raw = 2;
+}
+
+// Conditional rendering fragment.
+message WebUIFragmentIf {
+  ConditionExpr condition = 1;
+  string fragment_id = 2;
+}
+
+// A condition expression tree.
+message ConditionExpr {
+  oneof expr {
+    Predicate predicate = 1;
+    NotCondition not = 2;
+    CompoundCondition compound = 3;
+    IdentifierCondition identifier = 4;
+  }
+}
+
+// Simple comparison predicate.
+message Predicate {
+  string left = 1;
+  ComparisonOperator operator = 2;
+  string right = 3;
+}
+
+// Negation wrapper.
+message NotCondition {
+  ConditionExpr condition = 1;
+}
+
+// Two conditions joined by a logical operator.
+message CompoundCondition {
+  ConditionExpr left = 1;
+  LogicalOperator op = 2;
+  ConditionExpr right = 3;
+}
+
+// Single identifier (variable name).
+message IdentifierCondition {
+  string value = 1;
+}
+
+enum LogicalOperator {
+  LOGICAL_OPERATOR_UNSPECIFIED = 0;
+  AND = 1;
+  OR = 2;
+}
+
+enum ComparisonOperator {
+  COMPARISON_OPERATOR_UNSPECIFIED = 0;
+  GREATER_THAN = 1;
+  LESS_THAN = 2;
+  EQUAL = 3;
+  NOT_EQUAL = 4;
+  GREATER_THAN_OR_EQUAL = 5;
+  LESS_THAN_OR_EQUAL = 6;
+}

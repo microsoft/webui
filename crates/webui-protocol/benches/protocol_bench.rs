@@ -103,6 +103,23 @@ fn serialize_json_benchmark(c: &mut Criterion) {
     });
 }
 
+fn serialize_protobuf_benchmark(c: &mut Criterion) {
+    let protocol = create_simple_protocol();
+
+    c.bench_function("serialize_protobuf", |b| {
+        b.iter(|| black_box(&protocol).to_protobuf())
+    });
+}
+
+fn deserialize_protobuf_benchmark(c: &mut Criterion) {
+    let protocol = create_simple_protocol();
+    let bytes = protocol.to_protobuf().expect("encode failed");
+
+    c.bench_function("deserialize_protobuf", |b| {
+        b.iter(|| WebUIProtocol::from_protobuf(black_box(&bytes)))
+    });
+}
+
 fn complex_condition_benchmark(c: &mut Criterion) {
     // Create a complex nested condition
     let nested = ConditionExpr::Compound {
@@ -129,6 +146,8 @@ fn complex_condition_benchmark(c: &mut Criterion) {
 criterion_group!(
     benches,
     serialize_json_benchmark,
+    serialize_protobuf_benchmark,
+    deserialize_protobuf_benchmark,
     complex_condition_benchmark
 );
 criterion_main!(benches);

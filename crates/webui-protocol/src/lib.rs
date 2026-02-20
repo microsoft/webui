@@ -11,6 +11,8 @@ use std::io::{self, BufReader, Read};
 use std::path::Path;
 use thiserror::Error;
 
+pub mod protobuf;
+
 #[derive(Debug, Error)]
 pub enum ProtocolError {
     #[error("IO error: {0}")]

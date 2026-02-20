@@ -21,4 +21,3 @@ console = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 webui-protocol = { path = "../webui-protocol" }
-serde_json = { workspace = true }

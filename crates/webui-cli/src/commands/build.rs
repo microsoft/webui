@@ -106,14 +106,14 @@ fn run(args: &BuildArgs) -> Result<()> {
         if fragment_count == 1 { "" } else { "s" }
     ));
 
-    // Write protocol JSON
-    let json = protocol
-        .to_json_pretty()
+    // Write protocol as optimized protobuf binary
+    let bytes = protocol
+        .to_protobuf()
         .context("Failed to serialize protocol")?;
-    let protocol_path = args.out.join("protocol.json");
-    fs::write(&protocol_path, &json)
+    let protocol_path = args.out.join("protocol.bin");
+    fs::write(&protocol_path, &bytes)
         .with_context(|| format!("Failed to write {}", protocol_path.display()))?;
-    printer.success(&format!("Wrote {}", printer.bold.apply_to("protocol.json")));
+    printer.success(&format!("Wrote {}", printer.bold.apply_to("protocol.bin")));
 
     let mut files_written: usize = 1;
 
@@ -174,11 +174,11 @@ mod tests {
 
         build(app_dir.path(), out_dir.path(), "index.html").unwrap();
 
-        let protocol_path = out_dir.path().join("protocol.json");
+        let protocol_path = out_dir.path().join("protocol.bin");
         assert!(protocol_path.exists());
 
-        let json = fs::read_to_string(&protocol_path).unwrap();
-        let protocol = WebUIProtocol::from_json(&json).unwrap();
+        let bytes = fs::read(&protocol_path).unwrap();
+        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
         assert!(protocol.fragments.contains_key("index.html"));
     }
 
@@ -196,8 +196,8 @@ mod tests {
 
         build(app_dir.path(), out_dir.path(), "index.html").unwrap();
 
-        let json = fs::read_to_string(out_dir.path().join("protocol.json")).unwrap();
-        let protocol = WebUIProtocol::from_json(&json).unwrap();
+        let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
+        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
 
         let index = &protocol.fragments["index.html"];
         assert!(index.iter().any(|f| matches!(f, WebUIFragment::For(_))));
@@ -215,7 +215,7 @@ mod tests {
 
         build(app_dir.path(), out_dir.path(), "index.html").unwrap();
 
-        assert!(out_dir.path().join("protocol.json").exists());
+        assert!(out_dir.path().join("protocol.bin").exists());
         let css_path = out_dir.path().join("my-card.css");
         assert!(css_path.exists());
         let css = fs::read_to_string(&css_path).unwrap();
@@ -247,19 +247,19 @@ mod tests {
 
         build(app_dir.path(), &nested_out, "index.html").unwrap();
 
-        assert!(nested_out.join("protocol.json").exists());
+        assert!(nested_out.join("protocol.bin").exists());
     }
 
     #[test]
-    fn test_build_protocol_is_valid_json() {
+    fn test_build_protocol_is_valid_protobuf() {
         let app_dir = create_app_dir(&[("index.html", "<h1>{{title}}</h1>")]);
         let out_dir = TempDir::new().unwrap();
 
         build(app_dir.path(), out_dir.path(), "index.html").unwrap();
 
-        let json = fs::read_to_string(out_dir.path().join("protocol.json")).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert!(value.get("fragments").is_some());
+        let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
+        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
+        assert!(protocol.fragments.contains_key("index.html"));
     }
 
     #[test]
@@ -270,8 +270,8 @@ mod tests {
 
         build(&app_dir, out_dir.path(), "index.html").unwrap();
 
-        let json = fs::read_to_string(out_dir.path().join("protocol.json")).unwrap();
-        let protocol = WebUIProtocol::from_json(&json).unwrap();
+        let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
+        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
         let index = &protocol.fragments["index.html"];
 
         assert!(index
@@ -290,8 +290,8 @@ mod tests {
 
         build(app_dir.path(), out_dir.path(), "page.html").unwrap();
 
-        let json = fs::read_to_string(out_dir.path().join("protocol.json")).unwrap();
-        let protocol = WebUIProtocol::from_json(&json).unwrap();
+        let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
+        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
         assert!(protocol.fragments.contains_key("page.html"));
         assert!(!protocol.fragments.contains_key("index.html"));
     }

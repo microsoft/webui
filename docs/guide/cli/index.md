@@ -100,31 +100,40 @@ The `--out` folder will contain:
 
 ```
 dist/
-├── protocol.json       # The WebUI protocol (JSON)
+├── protocol.bin        # The WebUI protocol (protobuf binary)
 ├── my-card.css         # Component CSS (copied)
 └── nav-bar.css         # Component CSS (copied)
 ```
 
-### protocol.json
+### protocol.bin
 
-The protocol file contains a serialized `WebUIProtocol` structure with all parsed fragments. This file is consumed by a [platform handler](/guide/concepts/handlers/) at runtime to render HTML with your application state.
+The protocol file contains a serialized `WebUIProtocol` structure (protobuf binary) with all parsed fragments. This file is consumed by a [platform handler](/guide/concepts/handlers/) at runtime to render HTML with your application state.
 
-```json
-{
-  "fragments": {
-    "index.html": [
-      { "type": "raw", "value": "<h1>Hello, " },
-      { "type": "signal", "value": "name", "raw": false },
-      { "type": "raw", "value": "!</h1>" },
-      { "type": "for", "item": "item", "collection": "items", "fragmentId": "for-1" }
-    ],
-    "for-1": [
-      { "type": "component", "fragmentId": "my-card" },
-      { "type": "signal", "value": "item.title", "raw": false }
+The binary format is not human-readable. The equivalent proto schema structure looks like:
+
+```protobuf
+// WebUIProtocol
+fragments {
+  key: "index.html"
+  value: FragmentList {
+    fragments: [
+      Raw { value: "<h1>Hello, " },
+      Signal { value: "name", raw: false },
+      Raw { value: "!</h1>" },
+      For { item: "item", collection: "items", fragment_id: "for-1" }
+    ]
+  }
+  key: "for-1"
+  value: FragmentList {
+    fragments: [
+      Component { fragment_id: "my-card" },
+      Signal { value: "item.title", raw: false }
     ]
   }
 }
 ```
+
+See [Protocol](/guide/advanced/protocol/) for the full schema reference.
 
 ## Error Messages
 

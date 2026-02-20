@@ -16,12 +16,13 @@ The framework consists of four primary modules:
 - No recursion (all algorithms must be iterative)
 - No regular expressions
 - Minimal runtime computation
+- Protocol Buffers for compact binary serialization
 - Buffer consolidation for reduced allocations
 - Strict context isolation during processing
 - Proactive error handling with actionable messages
 
 ## Protocol Specification (webui-protocol)
-The protocol defines the serializable structure representing UI templates.
+The protocol defines the serializable structure representing UI templates. At runtime, the protocol uses protobuf for efficient binary serialization.
 
 ### Data Types
 ```rust
@@ -171,7 +172,8 @@ pub struct Predicate {
 }
 ```
 #### Serialization Requirements
-- JSON serialization/deserialization with proper error handling
+- Protobuf binary serialization/deserialization as the primary format, using `prost` for zero-copy decoding
+- JSON serialization/deserialization supported for backward compatibility
 - Support for custom error types and propagation
 - Validation of protocol structure during deserialization
 - Performance optimizations for large protocol structures
@@ -478,8 +480,8 @@ webui build [APP] --out <OUT> [--entry <FILE>]
 3. Initialize `HtmlParser` and register components from the app folder via `ComponentRegistry::register_from_paths()`
 4. Read the entry HTML file (default `index.html`) from the app folder
 5. Parse HTML into `WebUIFragmentRecords` via `HtmlParser::parse()`
-6. Wrap fragments in `WebUIProtocol` and serialize to pretty JSON
-7. Write `protocol.json` to the output folder
+6. Wrap fragments in `WebUIProtocol` and serialize to protobuf binary
+7. Write `protocol.bin` to the output folder
 8. Copy each discovered component's CSS file (e.g., `my-card.css`) to the output folder
 
 ### Dependencies
@@ -510,7 +512,7 @@ my-app/
 ### Output Structure
 ```
 out/
-├── protocol.json       # Serialized WebUIProtocol
+├── protocol.bin        # Serialized WebUIProtocol (protobuf binary)
 ├── my-card.css         # Copied component CSS
 └── nav-bar.css         # Copied component CSS (if exists)
 ```
@@ -538,6 +540,7 @@ Hello, WebUI!
 </if>
 ```
 ### Generated Protocol
+> Note: Shown as JSON for readability; the actual output is stored as protobuf binary.
 ```json
 {
     "fragments": {
