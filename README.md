@@ -51,6 +51,27 @@ cd webui
 cargo build --release
 ```
 
+### Using the CLI
+
+The `webui` CLI builds your app folder into the WebUI protocol format:
+
+```bash
+# Build an app (outputs protocol.json and component CSS to the out folder)
+cargo run -p webui-cli -- build ./my-app --out ./dist
+
+# Specify a custom entry file
+cargo run -p webui-cli -- build ./my-app --out ./dist --entry page.html
+
+# Build the hello-world example
+cargo run -p webui-cli -- build examples/hello-world --out ./dist
+```
+
+After building with `--release`, use the binary directly:
+
+```bash
+webui build ./my-app --out ./dist
+```
+
 ## Contributing
 
 This project welcomes contributions and suggestions.  Most contributions require you to agree to a

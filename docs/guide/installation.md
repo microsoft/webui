@@ -37,6 +37,28 @@ This allows you to run the development server with `npm start` and build for pro
 
 ## Rust Installation
 
+### Build the CLI from Source
+
+```bash
+git clone https://github.com/microsoft/webui.git
+cd webui
+cargo build --release
+```
+
+The `webui` binary will be at `target/release/webui`. You can copy it to a directory on your `PATH`:
+
+```bash
+cp target/release/webui ~/.cargo/bin/
+```
+
+Then build your app:
+
+```bash
+webui build ./my-app --out ./dist
+```
+
+See the [CLI Reference](/guide/cli/) for full usage details.
+
 ### Add WebUI to your Cargo.toml
 
 ```toml
