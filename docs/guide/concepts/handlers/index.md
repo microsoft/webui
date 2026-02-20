@@ -12,7 +12,7 @@ WebUI provides official handlers for several popular programming languages (othe
 
 All WebUI handlers follow the same pattern:
 
-1. They accept a WebUI protocol object (usually parsed from JSON)
+1. They accept a WebUI protocol object (parsed from protobuf binary)
 2. They process the protocol with the provided state data
 3. They render the final HTML output by evaluating directives and inserting dynamic content
 

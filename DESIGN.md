@@ -173,7 +173,7 @@ pub struct Predicate {
 ```
 #### Serialization Requirements
 - Protobuf binary serialization/deserialization as the primary format, using `prost` for zero-copy decoding
-- JSON serialization/deserialization supported for backward compatibility
+- JSON output supported via `webui inspect` for debugging only
 - Support for custom error types and propagation
 - Validation of protocol structure during deserialization
 - Performance optimizations for large protocol structures

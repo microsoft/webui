@@ -204,7 +204,7 @@ fn main() {
     let current_state = get_state(&store);
     
     // 2. Load the protocol
-    let protocol = load_protocol("path/to/compiled/protocol.json");
+    let protocol = load_protobuf("path/to/compiled/protocol.bin");
     
     // 3. Handle the request and write to response
     handler(protocol, current_state, |chunk| {

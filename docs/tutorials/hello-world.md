@@ -87,7 +87,7 @@ Let's create a Rust application to render this template:
 ```rust
 use std::fs;
 use serde_json::Value;
-use webui_parser::{WebUIParser, Result};
+use webui_protocol::{WebUIProtocol, Result};
 use webui_handler::{handle, ResponseWriter};
 
 struct FileWriter {
@@ -120,9 +120,8 @@ impl ResponseWriter for FileWriter {
 }
 
 fn main() -> Result<()> {
-    // Parse the template at build step, then protocol will be only needed.
-    let parser = WebUIParser::new();
-    let protocol = parser.parse("src/templates/index.html", &["src/templates"])?;
+    // Load the protocol from protobuf binary
+    let protocol = WebUIProtocol::from_protobuf_file("protocol.bin")?;
     
     // Load the state
     let state_json = fs::read_to_string("state.json")?;

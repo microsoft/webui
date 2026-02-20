@@ -43,6 +43,6 @@ The `If` fragment uses a `Condition` oneof to express its predicate:
 | `Compound` | Logical AND/OR of two nested conditions |
 | `Identifier` | Direct reference to a state identifier |
 
-## JSON Compatibility
+## Debugging
 
-JSON serialization is still supported for backward compatibility and debugging. Use the JSON representation when inspecting protocol output manually or integrating with tools that do not support protobuf.
+Use `webui inspect` to convert protocol.bin to JSON for debugging purposes.

@@ -17,7 +17,7 @@ webui-state = "0.1.0"
 ## Basic Usage
 
 ```rust
-use std::fs::File;
+use webui_protocol::WebUIProtocol;
 use serde_json::{json, Value};
 use webui_handler::{handle, ResponseWriter, Result};
 use webui_protocol::WebUIProtocol;
@@ -47,8 +47,7 @@ impl ResponseWriter for StringWriter {
 
 fn main() -> Result<()> {
     // Load protocol from file
-    let protocol_file = File::open("template.json")?;
-    let protocol = WebUIProtocol::from_reader(protocol_file)?;
+    let protocol = WebUIProtocol::from_protobuf_file("template.bin")?;
     
     // Create state data
     let state = json!({

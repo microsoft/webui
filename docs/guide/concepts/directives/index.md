@@ -19,4 +19,4 @@ WebUI directives are processed by the WebUI parser and transformed into a platfo
 Template with directives → WebUI Protocol → Native HTML output
 ```
 
-The WebUI protocol is a simple JSON structure that can be processed by any language with JSON support, making it ideal for cross-platform applications.
+The WebUI protocol is a protobuf binary structure defined by a cross-language .proto schema, making it ideal for cross-platform applications.
