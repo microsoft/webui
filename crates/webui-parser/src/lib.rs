@@ -96,6 +96,11 @@ impl HtmlParser {
         }
     }
 
+    /// Get a mutable reference to the component registry.
+    pub fn component_registry_mut(&mut self) -> &mut ComponentRegistry {
+        &mut self.component_registry
+    }
+
     pub fn into_fragment_records(mut self) -> WebUIFragmentRecords {
         std::mem::take(&mut self.fragment_records)
     }

@@ -430,7 +430,9 @@ pub enum ParserError {
 ```
 webui/
 ├── crates/
+│   ├── webui-cli/            # CLI build tool (binary: "webui")
 │   ├── webui-expressions/    # Expression evaluation engine
+│   ├── webui-ffi/            # C-compatible FFI bindings
 │   ├── webui-handler/        # Protocol handler implementation
 │   ├── webui-parser/         # HTML/CSS/template parser
 │   ├── webui-protocol/       # Protocol definition
@@ -448,6 +450,76 @@ webui/
 - Performance considerations
 - Error handling guidelines
 - Examples for all major features
+
+## CLI Tool (webui-cli)
+
+The `webui` CLI provides the developer-facing build toolchain for WebUI applications.
+
+### Binary Name
+`webui` (configured via `[[bin]]` in `crates/webui-cli/Cargo.toml`)
+
+### Subcommands
+
+#### `webui build`
+Builds a WebUI application from an app folder into the protocol format.
+
+```bash
+webui build [APP] --out <OUT> [--entry <FILE>]
+```
+
+**Arguments:**
+- `APP` — Path to the app folder (defaults to current directory `.`)
+- `--out <OUT>` — Output folder for protocol and assets (required)
+- `--entry <FILE>` — Entry HTML file name (defaults to `index.html`)
+
+### Build Pipeline
+1. Resolve and validate the app folder path
+2. Create the output directory
+3. Initialize `HtmlParser` and register components from the app folder via `ComponentRegistry::register_from_paths()`
+4. Read the entry HTML file (default `index.html`) from the app folder
+5. Parse HTML into `WebUIFragmentRecords` via `HtmlParser::parse()`
+6. Wrap fragments in `WebUIProtocol` and serialize to pretty JSON
+7. Write `protocol.json` to the output folder
+8. Copy each discovered component's CSS file (e.g., `my-card.css`) to the output folder
+
+### Dependencies
+- `webui-parser` — For `HtmlParser` and `ComponentRegistry`
+- `webui-protocol` — For `WebUIProtocol` serialization
+- `clap` — CLI argument parsing (derive mode)
+- `console` — Colored terminal output
+- `anyhow` — Error handling with context
+
+### Component Discovery
+The CLI uses `ComponentRegistry::register_from_paths()` which:
+- Recursively walks the app directory using `walkdir`
+- Identifies component files as `.html` files whose name contains a hyphen (e.g., `my-card.html`)
+- Automatically pairs with optional `.css` files of the same name (e.g., `my-card.css`)
+- Registers components by tag name (the file stem, e.g., `my-card`)
+
+### App Folder Convention
+```
+my-app/
+├── index.html          # Entry template (configurable via --entry)
+├── my-card.html        # Component: <my-card>
+├── my-card.css         # Component styles (auto-discovered)
+├── nav-bar.html        # Component: <nav-bar>
+├── styles.css          # Global styles (not auto-processed)
+└── data.json           # Sample data (not used by CLI)
+```
+
+### Output Structure
+```
+out/
+├── protocol.json       # Serialized WebUIProtocol
+├── my-card.css         # Copied component CSS
+└── nav-bar.css         # Copied component CSS (if exists)
+```
+
+### Error Handling
+- Missing app folder → actionable error with path shown
+- Missing entry file → error with hint to use `--entry` flag
+- Parse failures → propagated with context from `webui-parser`
+- Write failures → propagated with file path context
 
 ## Example Workflow
 ```

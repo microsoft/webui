@@ -1,0 +1,24 @@
+[package]
+name = "webui-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI tool for building WebUI applications"
+
+[[bin]]
+name = "webui"
+path = "src/main.rs"
+
+[dependencies]
+webui-parser = { path = "../webui-parser" }
+webui-protocol = { path = "../webui-protocol" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+console = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+webui-protocol = { path = "../webui-protocol" }
+serde_json = { workspace = true }

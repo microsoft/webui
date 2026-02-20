@@ -18,6 +18,7 @@ export default {
           { text: 'Components', link: '/guide/components/' },
           { text: 'Directives', link: '/guide/directives/' },
           { text: 'Handlers', link: '/guide/handlers/' },
+          { text: 'CLI', link: '/guide/cli/' },
         ]
       },
       { text: 'Tutorials',
@@ -38,6 +39,7 @@ export default {
             { text: 'Introduction', link: '/guide/' },
             { text: 'Installation', link: '/guide/installation' },
             { text: 'Quick Start', link: '/tutorials/hello-world' },
+            { text: 'CLI Reference', link: '/guide/cli/' },
           ]
         },
         {
