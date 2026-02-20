@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn test_build_hello_world_example() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let app_dir = manifest_dir.join("../../examples/hello-world");
+        let app_dir = manifest_dir.join("../../examples/integration/tiny_http/src/templates");
         let out_dir = TempDir::new().unwrap();
 
         build(&app_dir, out_dir.path(), "index.html").unwrap();
