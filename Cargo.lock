@@ -1254,6 +1254,7 @@ dependencies = [
  "anyhow",
  "clap",
  "console",
+ "serde_json",
  "tempfile",
  "webui-parser",
  "webui-protocol",
