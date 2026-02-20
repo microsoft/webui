@@ -11,7 +11,6 @@ use webui_protocol::{
 fn create_test_protocol() -> WebUIProtocol {
     let mut fragments = HashMap::new();
 
-    // Create the protocol structure directly in Rust
     fragments.insert(
         "index.html".to_string(),
         vec![
@@ -95,14 +94,6 @@ fn create_simple_protocol() -> WebUIProtocol {
     WebUIProtocol { fragments }
 }
 
-fn serialize_json_benchmark(c: &mut Criterion) {
-    let protocol = create_simple_protocol();
-
-    c.bench_function("serialize_json", |b| {
-        b.iter(|| black_box(&protocol).to_json())
-    });
-}
-
 fn serialize_protobuf_benchmark(c: &mut Criterion) {
     let protocol = create_simple_protocol();
 
@@ -121,7 +112,6 @@ fn deserialize_protobuf_benchmark(c: &mut Criterion) {
 }
 
 fn complex_condition_benchmark(c: &mut Criterion) {
-    // Create a complex nested condition
     let nested = ConditionExpr::Compound {
         left: Box::new(ConditionExpr::Predicate(Predicate {
             left: "user.role".to_string(),
@@ -138,14 +128,30 @@ fn complex_condition_benchmark(c: &mut Criterion) {
         )))),
     };
 
-    c.bench_function("serialize_complex_condition", |b| {
-        b.iter(|| serde_json::to_string(black_box(&nested)))
+    let mut fragments = HashMap::new();
+    fragments.insert(
+        "main".to_string(),
+        vec![WebUIFragment::If(WebUIFragmentIf {
+            condition: nested,
+            fragment_id: "then".to_string(),
+        })],
+    );
+    fragments.insert(
+        "then".to_string(),
+        vec![WebUIFragment::Raw(WebUIFragmentRaw {
+            value: "ok".to_string(),
+        })],
+    );
+    let protocol = WebUIProtocol { fragments };
+    let bytes = protocol.to_protobuf().expect("encode failed");
+
+    c.bench_function("deserialize_complex_condition", |b| {
+        b.iter(|| WebUIProtocol::from_protobuf(black_box(&bytes)))
     });
 }
 
 criterion_group!(
     benches,
-    serialize_json_benchmark,
     serialize_protobuf_benchmark,
     deserialize_protobuf_benchmark,
     complex_condition_benchmark

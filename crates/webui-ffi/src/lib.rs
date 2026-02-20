@@ -64,7 +64,8 @@ pub unsafe extern "C" fn webui_handler_destroy(handler_ptr: *mut c_void) {
 /// # Arguments
 ///
 /// * `handler_ptr` - Pointer to a WebUI handler instance
-/// * `protocol_json` - JSON string of the WebUI protocol
+/// * `protocol_data` - Pointer to protobuf binary data of the WebUI protocol
+/// * `protocol_len` - Length of the protobuf binary data in bytes
 /// * `data_json` - JSON string of the data to render with
 ///
 /// # Returns
@@ -75,32 +76,31 @@ pub unsafe extern "C" fn webui_handler_destroy(handler_ptr: *mut c_void) {
 /// # Safety
 ///
 /// The handler_ptr must be a valid pointer returned by webui_handler_create.
-/// protocol_json and data_json must be valid null-terminated UTF-8 strings.
+/// protocol_data must be a valid pointer to protobuf binary data of protocol_len bytes.
+/// data_json must be a valid null-terminated UTF-8 string.
 #[no_mangle]
 pub unsafe extern "C" fn webui_handler_render(
     handler_ptr: *mut c_void,
-    protocol_json: *const c_char,
+    protocol_data: *const u8,
+    protocol_len: usize,
     data_json: *const c_char,
 ) -> *mut c_char {
-    if handler_ptr.is_null() || protocol_json.is_null() || data_json.is_null() {
+    if handler_ptr.is_null() || protocol_data.is_null() || data_json.is_null() {
         return std::ptr::null_mut();
     }
 
     let context = &*(handler_ptr as *const HandlerContext);
 
-    // Convert C strings to Rust strings
-    let protocol_str = match CStr::from_ptr(protocol_json).to_str() {
-        Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
-    };
+    // Create byte slice from protobuf binary data
+    let protocol_bytes = std::slice::from_raw_parts(protocol_data, protocol_len);
 
     let data_str = match CStr::from_ptr(data_json).to_str() {
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
     };
 
-    // Parse protocol and data from JSON
-    let protocol = match WebUIProtocol::from_json(protocol_str) {
+    // Parse protocol from protobuf binary data
+    let protocol = match WebUIProtocol::from_protobuf(protocol_bytes) {
         Ok(p) => p,
         Err(_) => return std::ptr::null_mut(),
     };

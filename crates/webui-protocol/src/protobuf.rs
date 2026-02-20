@@ -359,19 +359,6 @@ mod tests {
     }
 
     #[test]
-    fn test_protobuf_is_smaller_than_json() {
-        let protocol = sample_protocol();
-        let json = protocol.to_json().expect("json failed");
-        let pb = protocol.to_protobuf().expect("protobuf failed");
-        assert!(
-            pb.len() < json.len(),
-            "protobuf ({}) should be smaller than JSON ({})",
-            pb.len(),
-            json.len()
-        );
-    }
-
-    #[test]
     fn test_protobuf_all_fragment_types() {
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -578,6 +565,53 @@ mod tests {
 
         let result = WebUIProtocol::from_protobuf(&buf);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_protobuf_validation_catches_missing_for_reference() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "main".to_string(),
+            vec![WebUIFragment::For(WebUIFragmentFor {
+                item: "item".to_string(),
+                collection: "items".to_string(),
+                fragment_id: "missing-for".to_string(),
+            })],
+        );
+
+        let proto_msg = proto::WebUiProtocol::from(&WebUIProtocol { fragments });
+        let mut buf = Vec::with_capacity(proto_msg.encoded_len());
+        proto_msg.encode(&mut buf).unwrap();
+
+        let result = WebUIProtocol::from_protobuf(&buf);
+        assert!(result.is_err());
+        if let Err(crate::ProtocolError::Validation(msg)) = result {
+            assert!(msg.contains("missing-for"));
+        }
+    }
+
+    #[test]
+    fn test_protobuf_validation_catches_missing_if_reference() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "main".to_string(),
+            vec![WebUIFragment::If(WebUIFragmentIf {
+                condition: ConditionExpr::Identifier {
+                    value: "flag".to_string(),
+                },
+                fragment_id: "missing-if".to_string(),
+            })],
+        );
+
+        let proto_msg = proto::WebUiProtocol::from(&WebUIProtocol { fragments });
+        let mut buf = Vec::with_capacity(proto_msg.encoded_len());
+        proto_msg.encode(&mut buf).unwrap();
+
+        let result = WebUIProtocol::from_protobuf(&buf);
+        assert!(result.is_err());
+        if let Err(crate::ProtocolError::Validation(msg)) = result {
+            assert!(msg.contains("missing-if"));
+        }
     }
 
     #[test]

@@ -21,7 +21,8 @@ void webui_handler_destroy(void *handler_ptr);
 /// # Arguments
 ///
 /// * `handler_ptr` - Pointer to a WebUI handler instance
-/// * `protocol_json` - JSON string of the WebUI protocol
+/// * `protocol_data` - Pointer to protobuf binary data of the WebUI protocol
+/// * `protocol_len` - Length of the protobuf binary data in bytes
 /// * `data_json` - JSON string of the data to render with
 ///
 /// # Returns
@@ -32,8 +33,12 @@ void webui_handler_destroy(void *handler_ptr);
 /// # Safety
 ///
 /// The handler_ptr must be a valid pointer returned by webui_handler_create.
-/// protocol_json and data_json must be valid null-terminated UTF-8 strings.
-char *webui_handler_render(void *handler_ptr, const char *protocol_json, const char *data_json);
+/// protocol_data must be a valid pointer to protobuf binary data of protocol_len bytes.
+/// data_json must be a valid null-terminated UTF-8 string.
+char *webui_handler_render(void *handler_ptr,
+                           const uint8_t *protocol_data,
+                           uintptr_t protocol_len,
+                           const char *data_json);
 
 /// Free a string returned by a WebUI FFI function.
 ///
