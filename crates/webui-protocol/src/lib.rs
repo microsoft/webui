@@ -1,15 +1,36 @@
 //! WebUI Protocol implementation.
 //!
 //! This crate defines the protocol used by the WebUI framework for cross-platform
-//! representation of UI components and templates. The protocol is serialized
-//! using Protocol Buffers (protobuf) for optimal runtime performance.
-use serde::Serialize;
+//! representation of UI components and templates. Types are generated directly
+//! from `proto/webui.proto` using prost for optimal runtime performance —
+//! no conversion layer between domain types and protobuf types.
+
+use prost::Message;
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use thiserror::Error;
 
-pub mod protobuf;
+/// Generated protobuf types from `proto/webui.proto`.
+pub mod proto {
+    include!(concat!(env!("OUT_DIR"), "/webui.rs"));
+}
+
+// Re-export all generated types at the crate root.
+pub use proto::*;
+
+// Type aliases preserving the `WebUI` naming convention.
+// prost generates `WebUi*` from the proto `WebUI*` messages.
+pub type WebUIProtocol = WebUiProtocol;
+pub type WebUIFragment = WebUiFragment;
+pub type WebUIFragmentRaw = WebUiFragmentRaw;
+pub type WebUIFragmentComponent = WebUiFragmentComponent;
+pub type WebUIFragmentFor = WebUiFragmentFor;
+pub type WebUIFragmentSignal = WebUiFragmentSignal;
+pub type WebUIFragmentIf = WebUiFragmentIf;
+
+/// A mapping of unique fragment identifiers to their corresponding fragment lists.
+pub type WebUIFragmentRecords = HashMap<String, FragmentList>;
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
@@ -22,92 +43,8 @@ pub enum ProtocolError {
 
 pub type Result<T> = std::result::Result<T, ProtocolError>;
 
-/// Logical operators for composing compound conditions.
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub enum LogicalOperator {
-    /// Represents a logical AND.
-    And,
-    /// Represents a logical OR.
-    Or,
-}
+// ── Display implementations ─────────────────────────────────────────────
 
-/// Operators used for comparing values in a predicate.
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub enum ComparisonOperator {
-    /// Greater than operator ( > ).
-    GreaterThan,
-    /// Less than operator ( < ).
-    LessThan,
-    /// Equal to operator ( == ).
-    Equal,
-    /// Not equal to operator ( != ).
-    NotEqual,
-    /// Greater than or equal to operator ( >= ).
-    GreaterThanOrEqual,
-    /// Less than or equal to operator ( <= ).
-    LessThanOrEqual,
-}
-
-/// A simple predicate that compares two values.
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub struct Predicate {
-    /// The left-hand side value.
-    pub left: String,
-    /// The operator used in comparison.
-    pub operator: ComparisonOperator,
-    /// The right-hand side value.
-    pub right: String,
-}
-
-/// Represents a condition expression that can be used in an `if` fragment.
-/// The condition can be:
-/// - A simple predicate,
-/// - A negated condition,
-/// - Or a compound condition combining two expressions.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ConditionExpr {
-    /// A simple predicate condition.
-    Predicate(Predicate),
-    /// A negation of a condition expression.
-    Not(Box<ConditionExpr>),
-    /// A compound condition combining two expressions using a logical operator.
-    Compound {
-        /// The left-hand side condition.
-        left: Box<ConditionExpr>,
-        /// The logical operator (And or Or).
-        op: LogicalOperator,
-        /// The right-hand side condition.
-        right: Box<ConditionExpr>,
-    },
-    /// A identifier condition, single variable.
-    Identifier {
-        /// The identifier to evaluate.
-        value: String,
-    },
-}
-
-// Implement Display for ConditionExpr
-impl fmt::Display for ConditionExpr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ConditionExpr::Identifier { value } => {
-                write!(f, "{}", value)
-            }
-            ConditionExpr::Predicate(pred) => {
-                write!(f, "{} {} {}", pred.left, pred.operator, pred.right)
-            }
-            ConditionExpr::Not(expr) => {
-                write!(f, "!({})", expr)
-            }
-            ConditionExpr::Compound { left, op, right } => {
-                // Use parentheses for compound expressions to maintain precedence
-                write!(f, "({} {} {})", left, op, right)
-            }
-        }
-    }
-}
-
-// Implement Display for ComparisonOperator
 impl fmt::Display for ComparisonOperator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -117,174 +54,199 @@ impl fmt::Display for ComparisonOperator {
             ComparisonOperator::NotEqual => write!(f, "!="),
             ComparisonOperator::GreaterThanOrEqual => write!(f, ">="),
             ComparisonOperator::LessThanOrEqual => write!(f, "<="),
+            ComparisonOperator::Unspecified => write!(f, "?"),
         }
     }
 }
 
-// Implement Display for LogicalOperator
 impl fmt::Display for LogicalOperator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LogicalOperator::And => write!(f, "&&"),
             LogicalOperator::Or => write!(f, "||"),
+            LogicalOperator::Unspecified => write!(f, "?"),
         }
     }
 }
 
-// Custom serialization implementation for ConditionExpr
-impl Serialize for ConditionExpr {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeMap;
-
-        match self {
-            ConditionExpr::Predicate(pred) => {
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("kind", "predicate")?;
-                map.serialize_entry("left", &pred.left)?;
-                map.serialize_entry("operator", &pred.operator)?;
-                map.serialize_entry("right", &pred.right)?;
-                map.end()
+impl fmt::Display for ConditionExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.expr {
+            Some(condition_expr::Expr::Identifier(id)) => write!(f, "{}", id.value),
+            Some(condition_expr::Expr::Predicate(pred)) => {
+                let op = ComparisonOperator::try_from(pred.operator)
+                    .unwrap_or(ComparisonOperator::Unspecified);
+                write!(f, "{} {} {}", pred.left, op, pred.right)
             }
-            ConditionExpr::Not(expr) => {
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("kind", "not")?;
-                map.serialize_entry("condition", expr)?;
-                map.end()
+            Some(condition_expr::Expr::Not(not)) => match &not.condition {
+                Some(inner) => write!(f, "!({})", inner),
+                None => write!(f, "!(?)"),
+            },
+            Some(condition_expr::Expr::Compound(compound)) => {
+                let op =
+                    LogicalOperator::try_from(compound.op).unwrap_or(LogicalOperator::Unspecified);
+                let left_str = compound
+                    .left
+                    .as_ref()
+                    .map(|l| l.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                let right_str = compound
+                    .right
+                    .as_ref()
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                write!(f, "({} {} {})", left_str, op, right_str)
             }
-            ConditionExpr::Compound { left, op, right } => {
-                let mut map = serializer.serialize_map(Some(4))?;
-                map.serialize_entry("kind", "compound")?;
-                map.serialize_entry("left", &**left)?;
-                map.serialize_entry("op", op)?;
-                map.serialize_entry("right", &**right)?;
-                map.end()
-            }
-            ConditionExpr::Identifier { value } => {
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("kind", "identifier")?;
-                map.serialize_entry("value", value)?;
-                map.end()
-            }
+            None => write!(f, "<empty>"),
         }
     }
 }
 
-/// Defines the various types of fragments in the WebUI protocol.
-/// Each variant specifies a different kind of UI operation:
-/// - Raw contents,
-/// - Components with additional styling,
-/// - Loops over collections,
-/// - Signal bindings for dynamic data,
-/// - Conditional rendering.
-#[derive(Clone, Debug, Serialize, PartialEq)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum WebUIFragment {
-    /// Outputs static content.
-    Raw(WebUIFragmentRaw),
-    /// A reusable component with styling.
-    Component(WebUIFragmentComponent),
-    /// Iterates over a collection to generate repeated content.
-    For(WebUIFragmentFor),
-    /// Connects dynamic content via signals.
-    Signal(WebUIFragmentSignal),
-    /// Renders content conditionally.
-    If(WebUIFragmentIf),
+// ── Convenience constructors ────────────────────────────────────────────
+
+impl WebUiFragment {
+    /// Create a raw (static content) fragment.
+    pub fn raw(value: impl Into<String>) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::Raw(WebUiFragmentRaw {
+                value: value.into(),
+            })),
+        }
+    }
+
+    /// Create a component fragment.
+    pub fn component(fragment_id: impl Into<String>) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::Component(
+                WebUiFragmentComponent {
+                    fragment_id: fragment_id.into(),
+                },
+            )),
+        }
+    }
+
+    /// Create a for-loop fragment.
+    pub fn for_loop(
+        item: impl Into<String>,
+        collection: impl Into<String>,
+        fragment_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::ForLoop(WebUiFragmentFor {
+                item: item.into(),
+                collection: collection.into(),
+                fragment_id: fragment_id.into(),
+            })),
+        }
+    }
+
+    /// Create a signal fragment.
+    pub fn signal(value: impl Into<String>, raw: bool) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::Signal(WebUiFragmentSignal {
+                value: value.into(),
+                raw,
+            })),
+        }
+    }
+
+    /// Create an if-condition fragment.
+    pub fn if_cond(condition: ConditionExpr, fragment_id: impl Into<String>) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::IfCond(WebUiFragmentIf {
+                condition: Some(condition),
+                fragment_id: fragment_id.into(),
+            })),
+        }
+    }
 }
 
-/// A raw fragment containing static text or HTML content.
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub struct WebUIFragmentRaw {
-    /// The content to render.
-    pub value: String,
+impl ConditionExpr {
+    /// Create an identifier condition.
+    pub fn identifier(value: impl Into<String>) -> Self {
+        Self {
+            expr: Some(condition_expr::Expr::Identifier(IdentifierCondition {
+                value: value.into(),
+            })),
+        }
+    }
+
+    /// Create a predicate condition.
+    pub fn predicate(
+        left: impl Into<String>,
+        operator: ComparisonOperator,
+        right: impl Into<String>,
+    ) -> Self {
+        Self {
+            expr: Some(condition_expr::Expr::Predicate(Predicate {
+                left: left.into(),
+                operator: operator as i32,
+                right: right.into(),
+            })),
+        }
+    }
+
+    /// Create a negation condition.
+    pub fn negated(inner: ConditionExpr) -> Self {
+        Self {
+            expr: Some(condition_expr::Expr::Not(Box::new(NotCondition {
+                condition: Some(Box::new(inner)),
+            }))),
+        }
+    }
+
+    /// Create a compound condition.
+    pub fn compound(left: ConditionExpr, op: LogicalOperator, right: ConditionExpr) -> Self {
+        Self {
+            expr: Some(condition_expr::Expr::Compound(Box::new(
+                CompoundCondition {
+                    left: Some(Box::new(left)),
+                    op: op as i32,
+                    right: Some(Box::new(right)),
+                },
+            ))),
+        }
+    }
 }
 
-/// A component fragment which includes CSS styling and references a nested fragment record.
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub struct WebUIFragmentComponent {
-    /// The identifier for the associated fragment record.
-    #[serde(rename = "fragmentId")]
-    pub fragment_id: String,
-}
+// ── Serialization / deserialization / validation ────────────────────────
 
-/// A loop (or "for") fragment that iterates over items in a collection.
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub struct WebUIFragmentFor {
-    /// The name representing a singular item (e.g., "person").
-    pub item: String,
-    /// The collection name (e.g., "people").
-    pub collection: String,
-    /// The identifier for the fragment to render for each item.
-    #[serde(rename = "fragmentId")]
-    pub fragment_id: String,
-}
-
-/// A signal fragment used for real-time or dynamic data binding.
-/// The `raw` property indicates whether the signal value is rendered directly.
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub struct WebUIFragmentSignal {
-    /// The value or identifier of the signal.
-    pub value: String,
-    /// Determines if the value should be rendered as raw content.
-    /// Defaults to false if not specified.
-    #[serde(default)]
-    pub raw: bool,
-}
-
-/// A conditional fragment that evaluates a condition before rendering its content.
-/// If the provided condition is met, the content identified by `fragmentId` is rendered.
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub struct WebUIFragmentIf {
-    /// The condition expression to evaluate.
-    pub condition: ConditionExpr,
-    /// The identifier for the fragment record to render if the condition evaluates to true.
-    #[serde(rename = "fragmentId")]
-    pub fragment_id: String,
-}
-
-/// A mapping of unique fragment identifiers to their corresponding fragment vectors.
-/// This facilitates organizing the different parts of a webpage.
-pub type WebUIFragmentRecords = HashMap<String, Vec<WebUIFragment>>;
-
-/// The root protocol structure that represents the complete configuration for a webpage.
-/// It contains all the fragment records.
-#[derive(Clone, Debug, Serialize, PartialEq)]
-pub struct WebUIProtocol {
-    /// A map linking fragment identifiers to their associated fragments.
-    pub fragments: WebUIFragmentRecords,
-}
-
-impl WebUIProtocol {
-    // Helper method to validate and return the protocol
+impl WebUiProtocol {
+    /// Validate that all fragment references point to existing fragment IDs.
     fn validate_protocol(protocol: Self) -> Result<Self> {
         let fragments = &protocol.fragments;
 
-        let invalid_ref = fragments.iter().find_map(|(_, fragment_vec)| {
-            fragment_vec.iter().find_map(|fragment| match fragment {
-                WebUIFragment::Component(component)
-                    if !fragments.contains_key(&component.fragment_id) =>
-                {
-                    Some(ProtocolError::Validation(format!(
-                        "Component references non-existent fragment ID: {}",
-                        component.fragment_id
-                    )))
-                }
-                WebUIFragment::For(for_loop) if !fragments.contains_key(&for_loop.fragment_id) => {
-                    Some(ProtocolError::Validation(format!(
-                        "For loop references non-existent fragment ID: {}",
-                        for_loop.fragment_id
-                    )))
-                }
-                WebUIFragment::If(if_cond) if !fragments.contains_key(&if_cond.fragment_id) => {
-                    Some(ProtocolError::Validation(format!(
-                        "If condition references non-existent fragment ID: {}",
-                        if_cond.fragment_id
-                    )))
-                }
-                _ => None,
-            })
+        let invalid_ref = fragments.iter().find_map(|(_, fragment_list)| {
+            fragment_list
+                .fragments
+                .iter()
+                .find_map(|frag| match frag.fragment.as_ref() {
+                    Some(web_ui_fragment::Fragment::Component(comp))
+                        if !fragments.contains_key(&comp.fragment_id) =>
+                    {
+                        Some(ProtocolError::Validation(format!(
+                            "Component references non-existent fragment ID: {}",
+                            comp.fragment_id
+                        )))
+                    }
+                    Some(web_ui_fragment::Fragment::ForLoop(fl))
+                        if !fragments.contains_key(&fl.fragment_id) =>
+                    {
+                        Some(ProtocolError::Validation(format!(
+                            "For loop references non-existent fragment ID: {}",
+                            fl.fragment_id
+                        )))
+                    }
+                    Some(web_ui_fragment::Fragment::IfCond(ic))
+                        if !fragments.contains_key(&ic.fragment_id) =>
+                    {
+                        Some(ProtocolError::Validation(format!(
+                            "If condition references non-existent fragment ID: {}",
+                            ic.fragment_id
+                        )))
+                    }
+                    _ => None,
+                })
         });
 
         if let Some(err) = invalid_ref {
@@ -297,5 +259,332 @@ impl WebUIProtocol {
     /// Serialize protocol to pretty JSON (for debug/inspect output only).
     pub fn to_json_pretty(&self) -> std::result::Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
+    }
+
+    /// Serialize protocol to protobuf binary format.
+    pub fn to_protobuf(&self) -> Result<Vec<u8>> {
+        let len = self.encoded_len();
+        let mut buf = Vec::with_capacity(len);
+        self.encode(&mut buf)
+            .map_err(|e| ProtocolError::Validation(format!("Protobuf encode error: {e}")))?;
+        Ok(buf)
+    }
+
+    /// Deserialize protocol from protobuf binary bytes with validation.
+    pub fn from_protobuf(bytes: &[u8]) -> Result<Self> {
+        let protocol = Self::decode(bytes)
+            .map_err(|e| ProtocolError::Validation(format!("Protobuf decode error: {e}")))?;
+        Self::validate_protocol(protocol)
+    }
+
+    /// Read and deserialize a protobuf file with validation.
+    pub fn from_protobuf_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+        let bytes = std::fs::read(path)?;
+        Self::from_protobuf(&bytes)
+    }
+
+    /// Write protocol to a protobuf file.
+    pub fn to_protobuf_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
+        let bytes = self.to_protobuf()?;
+        std::fs::write(path, bytes)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_protocol() -> WebUIProtocol {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("Hello, WebUI!\n"),
+                    WebUIFragment::for_loop("person", "people", "for-1"),
+                    WebUIFragment::signal("description", true),
+                    WebUIFragment::if_cond(ConditionExpr::identifier("contact"), "if-1"),
+                ],
+            },
+        );
+        fragments.insert(
+            "for-1".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::signal("person.name", false)],
+            },
+        );
+        fragments.insert(
+            "if-1".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("contact-card")],
+            },
+        );
+        fragments.insert(
+            "contact-card".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("Hello, "),
+                    WebUIFragment::signal("name", false),
+                ],
+            },
+        );
+        WebUIProtocol { fragments }
+    }
+
+    #[test]
+    fn test_protobuf_roundtrip() {
+        let protocol = sample_protocol();
+        let bytes = protocol.to_protobuf().expect("encode failed");
+        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
+        assert_eq!(protocol, decoded);
+    }
+
+    #[test]
+    fn test_protobuf_all_fragment_types() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "main".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("text"),
+                    WebUIFragment::component("comp"),
+                    WebUIFragment::for_loop("x", "xs", "loop"),
+                    WebUIFragment::signal("sig", true),
+                    WebUIFragment::if_cond(
+                        ConditionExpr::predicate("a", ComparisonOperator::GreaterThan, "1"),
+                        "cond",
+                    ),
+                ],
+            },
+        );
+        fragments.insert(
+            "comp".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("c")],
+            },
+        );
+        fragments.insert(
+            "loop".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("l")],
+            },
+        );
+        fragments.insert(
+            "cond".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("i")],
+            },
+        );
+
+        let protocol = WebUIProtocol { fragments };
+        let bytes = protocol.to_protobuf().unwrap();
+        let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
+        assert_eq!(protocol, decoded);
+    }
+
+    #[test]
+    fn test_protobuf_all_comparison_operators() {
+        let ops = [
+            ComparisonOperator::GreaterThan,
+            ComparisonOperator::LessThan,
+            ComparisonOperator::Equal,
+            ComparisonOperator::NotEqual,
+            ComparisonOperator::GreaterThanOrEqual,
+            ComparisonOperator::LessThanOrEqual,
+        ];
+        for op in &ops {
+            let mut fragments = HashMap::new();
+            fragments.insert(
+                "main".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::if_cond(
+                        ConditionExpr::predicate("a", *op, "b"),
+                        "then",
+                    )],
+                },
+            );
+            fragments.insert(
+                "then".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("ok")],
+                },
+            );
+            let p = WebUIProtocol { fragments };
+            let bytes = p.to_protobuf().unwrap();
+            let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
+            assert_eq!(p, decoded);
+        }
+    }
+
+    #[test]
+    fn test_protobuf_nested_conditions() {
+        let nested = ConditionExpr::compound(
+            ConditionExpr::predicate("user.role", ComparisonOperator::Equal, "admin"),
+            LogicalOperator::And,
+            ConditionExpr::negated(ConditionExpr::predicate(
+                "user.disabled",
+                ComparisonOperator::Equal,
+                "true",
+            )),
+        );
+
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "main".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::if_cond(nested, "then")],
+            },
+        );
+        fragments.insert(
+            "then".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("ok")],
+            },
+        );
+        let p = WebUIProtocol { fragments };
+        let bytes = p.to_protobuf().unwrap();
+        let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
+        assert_eq!(p, decoded);
+    }
+
+    #[test]
+    fn test_protobuf_compound_or_condition() {
+        let compound = ConditionExpr::compound(
+            ConditionExpr::identifier("isAdmin"),
+            LogicalOperator::Or,
+            ConditionExpr::identifier("isEditor"),
+        );
+
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "main".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::if_cond(compound, "body")],
+            },
+        );
+        fragments.insert(
+            "body".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("yes")],
+            },
+        );
+        let p = WebUIProtocol { fragments };
+        let bytes = p.to_protobuf().unwrap();
+        let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
+        assert_eq!(p, decoded);
+    }
+
+    #[test]
+    fn test_protobuf_invalid_bytes() {
+        let result = WebUIProtocol::from_protobuf(&[0xFF, 0xFF, 0xFF]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_protobuf_empty_bytes() {
+        let result = WebUIProtocol::from_protobuf(&[]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().fragments.is_empty());
+    }
+
+    #[test]
+    fn test_protobuf_file_roundtrip() {
+        let protocol = sample_protocol();
+        let dir = std::env::temp_dir().join("webui-proto-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.bin");
+
+        protocol.to_protobuf_file(&path).unwrap();
+        let decoded = WebUIProtocol::from_protobuf_file(&path).unwrap();
+        assert_eq!(protocol, decoded);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_protobuf_validation_catches_missing_reference() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "main".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("does-not-exist")],
+            },
+        );
+
+        let protocol = WebUIProtocol { fragments };
+        let buf = protocol.to_protobuf().unwrap();
+
+        let result = WebUIProtocol::from_protobuf(&buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_protobuf_validation_catches_missing_for_reference() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "main".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::for_loop("item", "items", "missing-for")],
+            },
+        );
+
+        let protocol = WebUIProtocol { fragments };
+        let buf = protocol.to_protobuf().unwrap();
+
+        let result = WebUIProtocol::from_protobuf(&buf);
+        assert!(result.is_err());
+        if let Err(ProtocolError::Validation(msg)) = result {
+            assert!(msg.contains("missing-for"));
+        }
+    }
+
+    #[test]
+    fn test_protobuf_validation_catches_missing_if_reference() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "main".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::if_cond(
+                    ConditionExpr::identifier("flag"),
+                    "missing-if",
+                )],
+            },
+        );
+
+        let protocol = WebUIProtocol { fragments };
+        let buf = protocol.to_protobuf().unwrap();
+
+        let result = WebUIProtocol::from_protobuf(&buf);
+        assert!(result.is_err());
+        if let Err(ProtocolError::Validation(msg)) = result {
+            assert!(msg.contains("missing-if"));
+        }
+    }
+
+    #[test]
+    fn test_protobuf_signal_default_raw_false() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "main".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::signal("name", false)],
+            },
+        );
+        let p = WebUIProtocol { fragments };
+        let bytes = p.to_protobuf().unwrap();
+        let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
+        let frag = &decoded.fragments["main"].fragments[0];
+        match frag.fragment.as_ref() {
+            Some(web_ui_fragment::Fragment::Signal(s)) => assert!(!s.raw),
+            _ => panic!("expected signal"),
+        }
+    }
+
+    #[test]
+    fn test_protobuf_pre_allocated_buffer() {
+        let protocol = sample_protocol();
+        let bytes = protocol.to_protobuf().unwrap();
+        assert_eq!(bytes.len(), protocol.encoded_len());
     }
 }

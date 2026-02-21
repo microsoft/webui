@@ -1,6 +1,8 @@
 use std::io::Result;
 
 fn main() -> Result<()> {
-    prost_build::compile_protos(&["proto/webui.proto"], &["proto/"])?;
+    let mut config = prost_build::Config::new();
+    config.type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]");
+    config.compile_protos(&["proto/webui.proto"], &["proto/"])?;
     Ok(())
 }

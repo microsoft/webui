@@ -27,22 +27,19 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
-    use webui_protocol::{WebUIFragment, WebUIFragmentRaw, WebUIFragmentSignal};
+    use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol};
 
     #[test]
     fn test_inspect_outputs_valid_json() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
-            vec![
-                WebUIFragment::Raw(WebUIFragmentRaw {
-                    value: "Hello".to_string(),
-                }),
-                WebUIFragment::Signal(WebUIFragmentSignal {
-                    value: "name".to_string(),
-                    raw: false,
-                }),
-            ],
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("Hello"),
+                    WebUIFragment::signal("name", false),
+                ],
+            },
         );
         let protocol = WebUIProtocol { fragments };
 
@@ -54,7 +51,7 @@ mod tests {
         let json = loaded.to_json_pretty().unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(parsed.get("fragments").is_some());
-        assert!(parsed["fragments"]["index.html"].is_array());
+        assert!(parsed["fragments"]["index.html"]["fragments"].is_array());
     }
 
     #[test]

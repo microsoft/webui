@@ -94,7 +94,7 @@ fn run(args: &BuildArgs) -> Result<()> {
 
     // Build the protocol
     let fragment_records = parser.into_fragment_records();
-    let fragment_count: usize = fragment_records.values().map(|v| v.len()).sum();
+    let fragment_count: usize = fragment_records.values().map(|v| v.fragments.len()).sum();
     let protocol = WebUIProtocol {
         fragments: fragment_records,
     };
@@ -153,7 +153,7 @@ mod tests {
     use super::*;
     use std::path::Path;
     use tempfile::TempDir;
-    use webui_protocol::WebUIFragment;
+    use webui_protocol::web_ui_fragment::Fragment;
 
     fn create_app_dir(files: &[(&str, &str)]) -> TempDir {
         let dir = TempDir::new().unwrap();
@@ -199,9 +199,13 @@ mod tests {
         let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
         let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
 
-        let index = &protocol.fragments["index.html"];
-        assert!(index.iter().any(|f| matches!(f, WebUIFragment::For(_))));
-        assert!(index.iter().any(|f| matches!(f, WebUIFragment::If(_))));
+        let index = &protocol.fragments["index.html"].fragments;
+        assert!(index
+            .iter()
+            .any(|f| matches!(f.fragment.as_ref(), Some(Fragment::ForLoop(_)))));
+        assert!(index
+            .iter()
+            .any(|f| matches!(f.fragment.as_ref(), Some(Fragment::IfCond(_)))));
     }
 
     #[test]
@@ -272,14 +276,16 @@ mod tests {
 
         let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
         let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
-        let index = &protocol.fragments["index.html"];
+        let index = &protocol.fragments["index.html"].fragments;
 
         assert!(index
             .iter()
-            .any(|f| matches!(f, WebUIFragment::For(fl) if fl.collection == "people")));
-        assert!(index.iter().any(|f| matches!(f, WebUIFragment::If(_))));
+            .any(|f| matches!(f.fragment.as_ref(), Some(Fragment::ForLoop(fl)) if fl.collection == "people")));
+        assert!(index
+            .iter()
+            .any(|f| matches!(f.fragment.as_ref(), Some(Fragment::IfCond(_)))));
         assert!(index.iter().any(
-            |f| matches!(f, WebUIFragment::Signal(s) if s.value == "raw_description" && s.raw)
+            |f| matches!(f.fragment.as_ref(), Some(Fragment::Signal(s)) if s.value == "raw_description" && s.raw)
         ));
     }
 

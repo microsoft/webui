@@ -2,9 +2,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::collections::HashMap;
 use std::hint::black_box;
 use webui_protocol::{
-    ComparisonOperator, ConditionExpr, LogicalOperator, Predicate, WebUIFragment,
-    WebUIFragmentComponent, WebUIFragmentFor, WebUIFragmentIf, WebUIFragmentRaw,
-    WebUIFragmentSignal, WebUIProtocol,
+    ComparisonOperator, ConditionExpr, FragmentList, LogicalOperator, WebUIFragment, WebUIProtocol,
 };
 
 #[allow(dead_code)]
@@ -13,54 +11,38 @@ fn create_test_protocol() -> WebUIProtocol {
 
     fragments.insert(
         "index.html".to_string(),
-        vec![
-            WebUIFragment::Raw(WebUIFragmentRaw {
-                value: "Hello, WebUI!\n".to_string(),
-            }),
-            WebUIFragment::For(WebUIFragmentFor {
-                item: "person".to_string(),
-                collection: "people".to_string(),
-                fragment_id: "for-1".to_string(),
-            }),
-            WebUIFragment::Signal(WebUIFragmentSignal {
-                value: "description".to_string(),
-                raw: true,
-            }),
-            WebUIFragment::If(WebUIFragmentIf {
-                condition: ConditionExpr::Identifier {
-                    value: "contact".to_string(),
-                },
-                fragment_id: "if-1".to_string(),
-            }),
-        ],
+        FragmentList {
+            fragments: vec![
+                WebUIFragment::raw("Hello, WebUI!\n"),
+                WebUIFragment::for_loop("person", "people", "for-1"),
+                WebUIFragment::signal("description", true),
+                WebUIFragment::if_cond(ConditionExpr::identifier("contact"), "if-1"),
+            ],
+        },
     );
 
     fragments.insert(
         "for-1".to_string(),
-        vec![WebUIFragment::Signal(WebUIFragmentSignal {
-            value: "person.name".to_string(),
-            raw: false,
-        })],
+        FragmentList {
+            fragments: vec![WebUIFragment::signal("person.name", false)],
+        },
     );
 
     fragments.insert(
         "if-1".to_string(),
-        vec![WebUIFragment::Component(WebUIFragmentComponent {
-            fragment_id: "contact-card".to_string(),
-        })],
+        FragmentList {
+            fragments: vec![WebUIFragment::component("contact-card")],
+        },
     );
 
     fragments.insert(
         "contact-card".to_string(),
-        vec![
-            WebUIFragment::Raw(WebUIFragmentRaw {
-                value: "Hello, ".to_string(),
-            }),
-            WebUIFragment::Signal(WebUIFragmentSignal {
-                value: "name".to_string(),
-                raw: false,
-            }),
-        ],
+        FragmentList {
+            fragments: vec![
+                WebUIFragment::raw("Hello, "),
+                WebUIFragment::signal("name", false),
+            ],
+        },
     );
 
     WebUIProtocol { fragments }
@@ -71,24 +53,19 @@ fn create_simple_protocol() -> WebUIProtocol {
 
     fragments.insert(
         "index.html".to_string(),
-        vec![
-            WebUIFragment::Raw(WebUIFragmentRaw {
-                value: "Hello, WebUI!\n".to_string(),
-            }),
-            WebUIFragment::For(WebUIFragmentFor {
-                item: "person".to_string(),
-                collection: "people".to_string(),
-                fragment_id: "for-1".to_string(),
-            }),
-        ],
+        FragmentList {
+            fragments: vec![
+                WebUIFragment::raw("Hello, WebUI!\n"),
+                WebUIFragment::for_loop("person", "people", "for-1"),
+            ],
+        },
     );
 
     fragments.insert(
         "for-1".to_string(),
-        vec![WebUIFragment::Signal(WebUIFragmentSignal {
-            value: "person.name".to_string(),
-            raw: false,
-        })],
+        FragmentList {
+            fragments: vec![WebUIFragment::signal("person.name", false)],
+        },
     );
 
     WebUIProtocol { fragments }
@@ -112,35 +89,28 @@ fn deserialize_protobuf_benchmark(c: &mut Criterion) {
 }
 
 fn complex_condition_benchmark(c: &mut Criterion) {
-    let nested = ConditionExpr::Compound {
-        left: Box::new(ConditionExpr::Predicate(Predicate {
-            left: "user.role".to_string(),
-            operator: ComparisonOperator::Equal,
-            right: "admin".to_string(),
-        })),
-        op: LogicalOperator::And,
-        right: Box::new(ConditionExpr::Not(Box::new(ConditionExpr::Predicate(
-            Predicate {
-                left: "user.disabled".to_string(),
-                operator: ComparisonOperator::Equal,
-                right: "true".to_string(),
-            },
-        )))),
-    };
+    let nested = ConditionExpr::compound(
+        ConditionExpr::predicate("user.role", ComparisonOperator::Equal, "admin"),
+        LogicalOperator::And,
+        ConditionExpr::negated(ConditionExpr::predicate(
+            "user.disabled",
+            ComparisonOperator::Equal,
+            "true",
+        )),
+    );
 
     let mut fragments = HashMap::new();
     fragments.insert(
         "main".to_string(),
-        vec![WebUIFragment::If(WebUIFragmentIf {
-            condition: nested,
-            fragment_id: "then".to_string(),
-        })],
+        FragmentList {
+            fragments: vec![WebUIFragment::if_cond(nested, "then")],
+        },
     );
     fragments.insert(
         "then".to_string(),
-        vec![WebUIFragment::Raw(WebUIFragmentRaw {
-            value: "ok".to_string(),
-        })],
+        FragmentList {
+            fragments: vec![WebUIFragment::raw("ok")],
+        },
     );
     let protocol = WebUIProtocol { fragments };
     let bytes = protocol.to_protobuf().expect("encode failed");

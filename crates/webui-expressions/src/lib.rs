@@ -4,7 +4,10 @@
 
 use serde_json::Value;
 use thiserror::Error;
-use webui_protocol::{ComparisonOperator, ConditionExpr, LogicalOperator, Predicate};
+use webui_protocol::{
+    condition_expr, ComparisonOperator, CompoundCondition, ConditionExpr, LogicalOperator,
+    Predicate,
+};
 use webui_state::find_value_by_dotted_path;
 
 /// Error types for expression evaluation.
@@ -51,32 +54,38 @@ pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool> {
 // Helper function to count logical operators and check if they're mixed
 fn count_logical_operators(condition: &ConditionExpr) -> (usize, bool) {
     let mut count = 0;
-    let mut last_op: Option<LogicalOperator> = None;
+    let mut last_op: Option<i32> = None;
     let mut has_mixed = false;
 
     // We need to use a stack to avoid recursion
     let mut stack = vec![condition];
 
     while let Some(expr) = stack.pop() {
-        match expr {
-            ConditionExpr::Compound { left, op, right } => {
+        match &expr.expr {
+            Some(condition_expr::Expr::Compound(compound)) => {
                 count += 1;
 
                 // Check if we're mixing operators
-                if let Some(last) = &last_op {
-                    if last != op {
+                if let Some(last) = last_op {
+                    if last != compound.op {
                         has_mixed = true;
                     }
                 } else {
-                    last_op = Some(op.clone());
+                    last_op = Some(compound.op);
                 }
 
                 // Push sub-expressions to stack
-                stack.push(right);
-                stack.push(left);
+                if let Some(right) = compound.right.as_ref() {
+                    stack.push(right);
+                }
+                if let Some(left) = compound.left.as_ref() {
+                    stack.push(left);
+                }
             }
-            ConditionExpr::Not(inner) => {
-                stack.push(inner);
+            Some(condition_expr::Expr::Not(not_cond)) => {
+                if let Some(inner) = not_cond.condition.as_ref() {
+                    stack.push(inner);
+                }
             }
             _ => {} // Predicates and identifiers don't have logical operators
         }
@@ -87,34 +96,19 @@ fn count_logical_operators(condition: &ConditionExpr) -> (usize, bool) {
 
 // Iterative evaluation of expressions
 fn evaluate_expr(condition: &ConditionExpr, state: &Value) -> Result<bool> {
-    match condition {
-        ConditionExpr::Predicate(pred) => evaluate_predicate(pred, state),
-        ConditionExpr::Not(expr) => {
-            let result = evaluate_expr(expr, state)?;
+    match &condition.expr {
+        Some(condition_expr::Expr::Predicate(pred)) => evaluate_predicate(pred, state),
+        Some(condition_expr::Expr::Not(not_cond)) => {
+            let inner = not_cond.condition.as_ref().ok_or_else(|| {
+                ExpressionError::Evaluation("Not condition missing inner expression".to_string())
+            })?;
+            let result = evaluate_expr(inner, state)?;
             Ok(!result)
         }
-        ConditionExpr::Compound { left, op, right } => {
-            let left_result = evaluate_expr(left, state)?;
-
-            // Short-circuit evaluation
-            match op {
-                LogicalOperator::And => {
-                    if !left_result {
-                        return Ok(false);
-                    }
-                    evaluate_expr(right, state)
-                }
-                LogicalOperator::Or => {
-                    if left_result {
-                        return Ok(true);
-                    }
-                    evaluate_expr(right, state)
-                }
-            }
-        }
-        ConditionExpr::Identifier { value } => {
+        Some(condition_expr::Expr::Compound(compound)) => evaluate_compound(compound, state),
+        Some(condition_expr::Expr::Identifier(id)) => {
             // Look up the identifier in state
-            if let Some(val) = find_value_by_dotted_path(value, state) {
+            if let Some(val) = find_value_by_dotted_path(&id.value, state) {
                 match val {
                     Value::Bool(b) => Ok(b),
                     Value::Null => Ok(false),
@@ -124,9 +118,44 @@ fn evaluate_expr(condition: &ConditionExpr, state: &Value) -> Result<bool> {
                     Value::Object(o) => Ok(!o.is_empty()),
                 }
             } else {
-                Err(ExpressionError::MissingValue(value.clone()))
+                Err(ExpressionError::MissingValue(id.value.clone()))
             }
         }
+        None => Err(ExpressionError::Evaluation(
+            "Empty condition expression".to_string(),
+        )),
+    }
+}
+
+fn evaluate_compound(compound: &CompoundCondition, state: &Value) -> Result<bool> {
+    let left = compound.left.as_ref().ok_or_else(|| {
+        ExpressionError::Evaluation("Compound missing left expression".to_string())
+    })?;
+    let right = compound.right.as_ref().ok_or_else(|| {
+        ExpressionError::Evaluation("Compound missing right expression".to_string())
+    })?;
+
+    let left_result = evaluate_expr(left, state)?;
+    let op = LogicalOperator::try_from(compound.op).map_err(|_| {
+        ExpressionError::Evaluation(format!("Invalid logical operator: {}", compound.op))
+    })?;
+
+    match op {
+        LogicalOperator::And => {
+            if !left_result {
+                return Ok(false);
+            }
+            evaluate_expr(right, state)
+        }
+        LogicalOperator::Or => {
+            if left_result {
+                return Ok(true);
+            }
+            evaluate_expr(right, state)
+        }
+        LogicalOperator::Unspecified => Err(ExpressionError::Evaluation(
+            "Unspecified logical operator".to_string(),
+        )),
     }
 }
 
@@ -148,8 +177,15 @@ fn evaluate_predicate(predicate: &Predicate, state: &Value) -> Result<bool> {
         }
     };
 
+    let op = ComparisonOperator::try_from(predicate.operator).map_err(|_| {
+        ExpressionError::Evaluation(format!(
+            "Invalid comparison operator: {}",
+            predicate.operator
+        ))
+    })?;
+
     // Compare values based on operator
-    compare_values(&left_val, &predicate.operator, &right_val)
+    compare_values(&left_val, &op, &right_val)
 }
 
 // Check if a string is a literal value
@@ -220,6 +256,9 @@ fn compare_values(left: &Value, op: &ComparisonOperator, right: &Value) -> Resul
         ComparisonOperator::LessThan => compare_ordered(left, right, |a, b| a < b),
         ComparisonOperator::GreaterThanOrEqual => compare_ordered(left, right, |a, b| a >= b),
         ComparisonOperator::LessThanOrEqual => compare_ordered(left, right, |a, b| a <= b),
+        ComparisonOperator::Unspecified => Err(ExpressionError::Evaluation(
+            "Unspecified comparison operator".to_string(),
+        )),
     }
 }
 
@@ -266,15 +305,13 @@ fn extract_number(val: &Value) -> Result<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use webui_protocol::{ComparisonOperator, ConditionExpr, LogicalOperator, Predicate};
+    use webui_protocol::{ComparisonOperator, ConditionExpr, LogicalOperator};
     use webui_test_utils::test_json;
 
     #[test]
     fn test_simple_identifier() {
         // Test true identifier
-        let condition = ConditionExpr::Identifier {
-            value: "flag".to_string(),
-        };
+        let condition = ConditionExpr::identifier("flag");
 
         let state = test_json!({
             "flag": true
@@ -288,9 +325,7 @@ mod tests {
         );
 
         // Test false identifier
-        let condition = ConditionExpr::Identifier {
-            value: "flag".to_string(),
-        };
+        let condition = ConditionExpr::identifier("flag");
 
         let state = test_json!({
             "flag": false
@@ -304,9 +339,7 @@ mod tests {
         );
 
         // Test non-boolean identifier treated as boolean
-        let condition = ConditionExpr::Identifier {
-            value: "name".to_string(),
-        };
+        let condition = ConditionExpr::identifier("name");
 
         let state = test_json!({
             "name": "John"
@@ -322,11 +355,7 @@ mod tests {
 
     #[test]
     fn test_predicate() {
-        let condition = ConditionExpr::Predicate(Predicate {
-            left: "age".to_string(),
-            operator: ComparisonOperator::GreaterThan,
-            right: "18".to_string(),
-        });
+        let condition = ConditionExpr::predicate("age", ComparisonOperator::GreaterThan, "18");
 
         // Test with age > 18
         let state = test_json!({
@@ -355,9 +384,7 @@ mod tests {
 
     #[test]
     fn test_not_expression() {
-        let condition = ConditionExpr::Not(Box::new(ConditionExpr::Identifier {
-            value: "flag".to_string(),
-        }));
+        let condition = ConditionExpr::negated(ConditionExpr::identifier("flag"));
 
         // Test with flag = true
         let state = test_json!({
@@ -387,15 +414,11 @@ mod tests {
     #[test]
     fn test_compound_expression() {
         // Test AND
-        let condition = ConditionExpr::Compound {
-            left: Box::new(ConditionExpr::Identifier {
-                value: "isAdmin".to_string(),
-            }),
-            op: LogicalOperator::And,
-            right: Box::new(ConditionExpr::Identifier {
-                value: "isActive".to_string(),
-            }),
-        };
+        let condition = ConditionExpr::compound(
+            ConditionExpr::identifier("isAdmin"),
+            LogicalOperator::And,
+            ConditionExpr::identifier("isActive"),
+        );
 
         let state = test_json!({
             "isAdmin": true,
@@ -410,15 +433,11 @@ mod tests {
         );
 
         // Test OR
-        let condition = ConditionExpr::Compound {
-            left: Box::new(ConditionExpr::Identifier {
-                value: "isAdmin".to_string(),
-            }),
-            op: LogicalOperator::Or,
-            right: Box::new(ConditionExpr::Identifier {
-                value: "isEditor".to_string(),
-            }),
-        };
+        let condition = ConditionExpr::compound(
+            ConditionExpr::identifier("isAdmin"),
+            LogicalOperator::Or,
+            ConditionExpr::identifier("isEditor"),
+        );
 
         let state = test_json!({
             "isAdmin": false,
@@ -436,21 +455,15 @@ mod tests {
     #[test]
     fn test_mixed_operators_error() {
         // Create a condition with mixed operators (AND and OR)
-        let condition = ConditionExpr::Compound {
-            left: Box::new(ConditionExpr::Compound {
-                left: Box::new(ConditionExpr::Identifier {
-                    value: "a".to_string(),
-                }),
-                op: LogicalOperator::And,
-                right: Box::new(ConditionExpr::Identifier {
-                    value: "b".to_string(),
-                }),
-            }),
-            op: LogicalOperator::Or,
-            right: Box::new(ConditionExpr::Identifier {
-                value: "c".to_string(),
-            }),
-        };
+        let condition = ConditionExpr::compound(
+            ConditionExpr::compound(
+                ConditionExpr::identifier("a"),
+                LogicalOperator::And,
+                ConditionExpr::identifier("b"),
+            ),
+            LogicalOperator::Or,
+            ConditionExpr::identifier("c"),
+        );
 
         let state = test_json!({
             "a": true, "b": true, "c": true
@@ -463,19 +476,15 @@ mod tests {
     #[test]
     fn test_too_many_operators_error() {
         // Create a condition with more than 5 operators
-        let mut condition = ConditionExpr::Identifier {
-            value: "a".to_string(),
-        };
+        let mut condition = ConditionExpr::identifier("a");
 
         // Add 6 logical operators (exceeding the limit of 5)
         for i in 0..6 {
-            condition = ConditionExpr::Compound {
-                left: Box::new(condition),
-                op: LogicalOperator::And,
-                right: Box::new(ConditionExpr::Identifier {
-                    value: format!("var{}", i),
-                }),
-            };
+            condition = ConditionExpr::compound(
+                condition,
+                LogicalOperator::And,
+                ConditionExpr::identifier(format!("var{}", i)),
+            );
         }
 
         let state = test_json!({
@@ -510,11 +519,7 @@ mod tests {
         ];
 
         for (op, right, expected) in ops.iter() {
-            let condition = ConditionExpr::Predicate(Predicate {
-                left: "value".to_string(),
-                operator: op.clone(),
-                right: right.to_string(),
-            });
+            let condition = ConditionExpr::predicate("value", *op, *right);
 
             let result = evaluate(&condition, &state);
             assert!(
@@ -535,11 +540,7 @@ mod tests {
         });
 
         // Test string equality
-        let condition = ConditionExpr::Predicate(Predicate {
-            left: "name".to_string(),
-            operator: ComparisonOperator::Equal,
-            right: "\"John\"".to_string(),
-        });
+        let condition = ConditionExpr::predicate("name", ComparisonOperator::Equal, "\"John\"");
 
         let result = evaluate(&condition, &state);
         assert!(
@@ -549,11 +550,7 @@ mod tests {
         );
 
         // Test string inequality
-        let condition = ConditionExpr::Predicate(Predicate {
-            left: "name".to_string(),
-            operator: ComparisonOperator::NotEqual,
-            right: "\"Jane\"".to_string(),
-        });
+        let condition = ConditionExpr::predicate("name", ComparisonOperator::NotEqual, "\"Jane\"");
 
         let result = evaluate(&condition, &state);
         assert!(
@@ -575,11 +572,8 @@ mod tests {
         });
 
         // Test nested property access
-        let condition = ConditionExpr::Predicate(Predicate {
-            left: "user.profile.age".to_string(),
-            operator: ComparisonOperator::GreaterThan,
-            right: "18".to_string(),
-        });
+        let condition =
+            ConditionExpr::predicate("user.profile.age", ComparisonOperator::GreaterThan, "18");
 
         let result = evaluate(&condition, &state);
         assert!(
@@ -598,11 +592,7 @@ mod tests {
         });
 
         // Test with a missing value
-        let condition = ConditionExpr::Predicate(Predicate {
-            left: "user.age".to_string(),
-            operator: ComparisonOperator::GreaterThan,
-            right: "18".to_string(),
-        });
+        let condition = ConditionExpr::predicate("user.age", ComparisonOperator::GreaterThan, "18");
 
         let result = evaluate(&condition, &state);
         assert!(matches!(result, Err(ExpressionError::MissingValue(_))));

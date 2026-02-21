@@ -17,8 +17,7 @@ use std::collections::HashMap;
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIteratorMut};
 use tree_sitter_html::LANGUAGE;
 use webui_protocol::{
-    WebUIFragment, WebUIFragmentComponent, WebUIFragmentFor, WebUIFragmentIf, WebUIFragmentRaw,
-    WebUIFragmentRecords,
+    web_ui_fragment::Fragment, ConditionExpr, FragmentList, WebUIFragment, WebUIFragmentRecords,
 };
 
 /// Counter for generating unique fragment IDs.
@@ -124,8 +123,12 @@ impl HtmlParser {
         self.flush_raw_buffer(&mut entry_fragment);
 
         // Insert the entry record.
-        self.fragment_records
-            .insert(fragment_id.to_string(), entry_fragment);
+        self.fragment_records.insert(
+            fragment_id.to_string(),
+            FragmentList {
+                fragments: entry_fragment,
+            },
+        );
 
         // Return all fragments including generated sub-fragments
         Ok(())
@@ -149,35 +152,26 @@ impl HtmlParser {
     ) {
         self.flush_raw_buffer(fragments);
         println!("Adding for fragment: {} in {}", item, collection);
-        fragments.push(WebUIFragment::For(WebUIFragmentFor {
-            item,
-            collection,
-            fragment_id,
-        }));
+        fragments.push(WebUIFragment::for_loop(item, collection, fragment_id));
     }
 
     /// Add an if fragment, flushing raw buffer first
     fn add_if_fragment(
         &mut self,
-        condition: webui_protocol::ConditionExpr,
+        condition: ConditionExpr,
         fragment_id: String,
         fragments: &mut Vec<WebUIFragment>,
     ) {
         self.flush_raw_buffer(fragments);
         println!("Adding if fragment: {}", condition);
-        fragments.push(WebUIFragment::If(WebUIFragmentIf {
-            condition,
-            fragment_id,
-        }));
+        fragments.push(WebUIFragment::if_cond(condition, fragment_id));
     }
 
     /// Add a component fragment, flushing raw buffer first
     fn add_component_fragment(&mut self, fragment_id: String, fragments: &mut Vec<WebUIFragment>) {
         self.flush_raw_buffer(fragments);
         println!("Adding component fragment: {}", fragment_id);
-        fragments.push(WebUIFragment::Component(WebUIFragmentComponent {
-            fragment_id,
-        }));
+        fragments.push(WebUIFragment::component(fragment_id));
     }
 
     /// Add a non-raw fragment, flushing the raw buffer first if needed
@@ -191,9 +185,7 @@ impl HtmlParser {
     fn flush_raw_buffer(&mut self, fragments: &mut Vec<WebUIFragment>) {
         if !self.raw_buffer.is_empty() {
             println!("Flushing raw buffer: {}", self.raw_buffer);
-            fragments.push(WebUIFragment::Raw(WebUIFragmentRaw {
-                value: std::mem::take(&mut self.raw_buffer),
-            }));
+            fragments.push(WebUIFragment::raw(std::mem::take(&mut self.raw_buffer)));
         }
     }
 
@@ -307,9 +299,12 @@ impl HtmlParser {
                     match handlebars_result {
                         Ok(parsed_fragments) => {
                             for fragment in parsed_fragments {
-                                match fragment {
-                                    WebUIFragment::Raw(raw) => self.add_raw_fragment(&raw.value),
-                                    _ => self.add_fragment(fragment, fragments),
+                                if matches!(fragment.fragment.as_ref(), Some(Fragment::Raw(_))) {
+                                    if let Some(Fragment::Raw(raw)) = fragment.fragment.as_ref() {
+                                        self.add_raw_fragment(&raw.value);
+                                    }
+                                } else {
+                                    self.add_fragment(fragment, fragments);
                                 }
                             }
                         }
@@ -459,8 +454,12 @@ impl HtmlParser {
         std::mem::swap(&mut self.raw_buffer, &mut temp_buffer);
 
         // Store the record
-        self.fragment_records
-            .insert(fragment_id.clone(), for_fragment);
+        self.fragment_records.insert(
+            fragment_id.clone(),
+            FragmentList {
+                fragments: for_fragment,
+            },
+        );
 
         // Add the for directive fragment to the parent fragment
         self.add_for_fragment(
@@ -522,8 +521,12 @@ impl HtmlParser {
         self.flush_raw_buffer(&mut if_fragment);
 
         // Store the if fragment in the records
-        self.fragment_records
-            .insert(fragment_id.clone(), if_fragment);
+        self.fragment_records.insert(
+            fragment_id.clone(),
+            FragmentList {
+                fragments: if_fragment,
+            },
+        );
 
         // Restore the parent buffer - only after we've processed all if content
         self.raw_buffer = parent_buffer;
@@ -605,7 +608,7 @@ impl HtmlParser {
 
 #[cfg(test)]
 mod tests {
-    use webui_protocol::ConditionExpr;
+    use webui_protocol::condition_expr;
 
     use super::*;
 
@@ -617,21 +620,24 @@ mod tests {
 
         assert!(result.is_ok());
         let fragment_records = parser.into_fragment_records();
-        let fragments = fragment_records
+        let fragment_list = fragment_records
             .get("test.html")
             .expect("Failed to get test.html fragment");
+        let fragments = &fragment_list.fragments;
         assert_eq!(fragments.len(), 3);
 
         // Verify each fragment
         assert!(
-            matches!(fragments.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "Hello, ")
+            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "Hello, ")
         );
         assert!(
-            matches!(fragments.get(1), Some(WebUIFragment::Signal(signal)) if
+            matches!(fragments.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Signal(signal)) if
                 signal.value == "name" && !signal.raw
             )
         );
-        assert!(matches!(fragments.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "!"));
+        assert!(
+            matches!(fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "!")
+        );
     }
 
     #[test]
@@ -642,21 +648,24 @@ mod tests {
 
         assert!(result.is_ok());
         let fragment_records = parser.into_fragment_records();
-        let fragments = fragment_records
+        let fragment_list = fragment_records
             .get("test.html")
             .expect("Failed to get test.html fragment");
+        let fragments = &fragment_list.fragments;
         assert_eq!(fragments.len(), 3);
 
         // Verify each fragment
         assert!(
-            matches!(fragments.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "Hello, ")
+            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "Hello, ")
         );
         assert!(
-            matches!(fragments.get(1), Some(WebUIFragment::Signal(signal)) if
+            matches!(fragments.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Signal(signal)) if
                 signal.value == "html_content" && signal.raw
             )
         );
-        assert!(matches!(fragments.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "!"));
+        assert!(
+            matches!(fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "!")
+        );
     }
 
     #[test]
@@ -668,15 +677,16 @@ mod tests {
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
         println!("Fragment records: {:#?}", fragment_records);
-        let fragments = fragment_records
+        let fragment_list = fragment_records
             .get("test.html")
             .expect("Failed to get test.html fragment");
+        let fragments = &fragment_list.fragments;
 
         // Verify each fragment
         assert_eq!(fragments.len(), 1);
 
         assert!(
-            matches!(fragments.first(), Some(WebUIFragment::For(for_loop)) if
+            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::ForLoop(for_loop)) if
                 for_loop.item == "item" &&
                 for_loop.collection == "items" &&
                 for_loop.fragment_id == "for-1"
@@ -684,20 +694,21 @@ mod tests {
         );
 
         // Verify the sub-fragment contains our item content
-        let for_fragment = fragment_records
+        let for_fragment_list = fragment_records
             .get("for-1")
             .expect("Failed to get for-1 fragment");
+        let for_fragment = &for_fragment_list.fragments;
         assert_eq!(for_fragment.len(), 3);
         assert!(
-            matches!(for_fragment.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "<div class=\"item\">")
+            matches!(for_fragment.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "<div class=\"item\">")
         );
         assert!(
-            matches!(for_fragment.get(1), Some(WebUIFragment::Signal(signal)) if
+            matches!(for_fragment.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Signal(signal)) if
                 signal.value == "item.name" && !signal.raw
             )
         );
         assert!(
-            matches!(for_fragment.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "</div>")
+            matches!(for_fragment.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</div>")
         );
     }
 
@@ -711,33 +722,35 @@ mod tests {
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
         println!("Fragment records: {:#?}", fragment_records);
-        let fragments = fragment_records
+        let fragment_list = fragment_records
             .get("test.html")
             .expect("Failed to get test.html fragment");
+        let fragments = &fragment_list.fragments;
         assert_eq!(fragments.len(), 1);
 
         assert!(
-            matches!(fragments.first(), Some(WebUIFragment::If(if_cond)) if
-                matches!(&if_cond.condition, ConditionExpr::Identifier { value } if value == "isLoggedIn") &&
+            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::IfCond(if_cond)) if
+                matches!(if_cond.condition.as_ref().and_then(|c| c.expr.as_ref()), Some(condition_expr::Expr::Identifier(id)) if id.value == "isLoggedIn") &&
                 if_cond.fragment_id == "if-1"
             )
         );
 
         // Verify the sub-fragment contains our content
-        let if_fragment = fragment_records
+        let if_fragment_list = fragment_records
             .get("if-1")
             .expect("Failed to get if-1 fragment");
+        let if_fragment = &if_fragment_list.fragments;
         assert_eq!(if_fragment.len(), 3);
         assert!(
-            matches!(if_fragment.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "<div>Welcome back, ")
+            matches!(if_fragment.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "<div>Welcome back, ")
         );
         assert!(
-            matches!(if_fragment.get(1), Some(WebUIFragment::Signal(signal)) if
+            matches!(if_fragment.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Signal(signal)) if
                 signal.value == "username" && !signal.raw
             )
         );
         assert!(
-            matches!(if_fragment.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "!</div>")
+            matches!(if_fragment.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "!</div>")
         );
     }
 
@@ -764,30 +777,32 @@ mod tests {
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
         println!("Fragment records: {:#?}", fragment_records);
-        let fragments = fragment_records
+        let fragment_list = fragment_records
             .get("test.html")
             .expect("Failed to get test.html fragment");
+        let fragments = &fragment_list.fragments;
         assert_eq!(fragments.len(), 3);
 
         assert!(
-            matches!(fragments.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "<my-component><template shadowrootmode=\"open\">")
+            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "<my-component><template shadowrootmode=\"open\">")
         );
         assert!(
-            matches!(fragments.get(1), Some(WebUIFragment::Component(component)) if
+            matches!(fragments.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Component(component)) if
                 component.fragment_id == "my-component"
             )
         );
         assert!(
-            matches!(fragments.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "</template></my-component>")
+            matches!(fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</template></my-component>")
         );
 
         // Verify the sub-fragment contains our component content
-        let component_fragment = fragment_records
+        let component_fragment_list = fragment_records
             .get("my-component")
             .expect("Failed to get my-component fragment");
+        let component_fragment = &component_fragment_list.fragments;
         assert_eq!(component_fragment.len(), 1);
         assert!(
-            matches!(component_fragment.first(), Some(WebUIFragment::Raw(raw)) if
+            matches!(component_fragment.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if
                 raw.value == "<div>My Component</div>"
             )
         );
@@ -816,30 +831,32 @@ mod tests {
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
         println!("Fragment records: {:#?}", fragment_records);
-        let fragments = fragment_records
+        let fragment_list = fragment_records
             .get("test.html")
             .expect("Failed to get test.html fragment");
+        let fragments = &fragment_list.fragments;
         assert_eq!(fragments.len(), 3);
 
         assert!(
-            matches!(fragments.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "Hello<my-component><template shadowrootmode=\"open\">")
+            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "Hello<my-component><template shadowrootmode=\"open\">")
         );
         assert!(
-            matches!(fragments.get(1), Some(WebUIFragment::Component(component)) if
+            matches!(fragments.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Component(component)) if
                 component.fragment_id == "my-component"
             )
         );
         assert!(
-            matches!(fragments.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "</template><p>World</p></my-component>")
+            matches!(fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</template><p>World</p></my-component>")
         );
 
         // Verify the sub-fragment contains our component content
-        let component_fragment = fragment_records
+        let component_fragment_list = fragment_records
             .get("my-component")
             .expect("Failed to get my-component fragment");
+        let component_fragment = &component_fragment_list.fragments;
         assert_eq!(component_fragment.len(), 1);
         assert!(
-            matches!(component_fragment.first(), Some(WebUIFragment::Raw(raw)) if
+            matches!(component_fragment.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if
                 raw.value == "<div>My Component</div>"
             )
         );
@@ -861,47 +878,51 @@ mod tests {
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
 
-        let fragments = fragment_records
+        let fragment_list = fragment_records
             .get("test.html")
             .expect("Failed to get test.html fragment");
+        let fragments = &fragment_list.fragments;
         assert_eq!(fragments.len(), 1);
         assert!(
-            matches!(fragments.first(), Some(WebUIFragment::For(for_loop)) if
+            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::ForLoop(for_loop)) if
                 for_loop.item == "category" &&
                 for_loop.collection == "categories" &&
                 for_loop.fragment_id == "for-1"
             )
         );
 
-        let for_fragment = fragment_records
+        let for_fragment_list = fragment_records
             .get("for-1")
             .expect("Failed to get for-1 fragment");
+        let for_fragment = &for_fragment_list.fragments;
         assert_eq!(for_fragment.len(), 1);
         assert!(
-            matches!(for_fragment.first(), Some(WebUIFragment::If(if_cond)) if
-                matches!(&if_cond.condition, ConditionExpr::Identifier { value } if value == "category.hasItems") &&
+            matches!(for_fragment.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::IfCond(if_cond)) if
+                matches!(if_cond.condition.as_ref().and_then(|c| c.expr.as_ref()), Some(condition_expr::Expr::Identifier(id)) if id.value == "category.hasItems") &&
                 if_cond.fragment_id == "if-1"
             )
         );
 
-        let if_fragment = fragment_records
+        let if_fragment_list = fragment_records
             .get("if-1")
             .expect("Failed to get if-1 fragment");
+        let if_fragment = &if_fragment_list.fragments;
         assert_eq!(if_fragment.len(), 1);
         assert!(
-            matches!(if_fragment.first(), Some(WebUIFragment::For(for_loop)) if
+            matches!(if_fragment.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::ForLoop(for_loop)) if
                 for_loop.item == "item" &&
                 for_loop.collection == "category.items" &&
                 for_loop.fragment_id == "for-2"
             )
         );
 
-        let nested_for_fragment = fragment_records
+        let nested_for_fragment_list = fragment_records
             .get("for-2")
             .expect("Failed to get for-2 fragment");
+        let nested_for_fragment = &nested_for_fragment_list.fragments;
         assert_eq!(nested_for_fragment.len(), 1);
         assert!(
-            matches!(nested_for_fragment.first(), Some(WebUIFragment::Signal(signal)) if
+            matches!(nested_for_fragment.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Signal(signal)) if
                 signal.value == "item.title" && !signal.raw
             )
         );
@@ -927,13 +948,14 @@ mod tests {
 
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
-        let fragments = fragment_records
+        let fragment_list = fragment_records
             .get("test.html")
             .expect("Failed to get test.html fragment");
+        let fragments = &fragment_list.fragments;
         assert_eq!(fragments.len(), 1);
 
         assert!(
-            matches!(fragments.first(), Some(WebUIFragment::For(for_loop)) if
+            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::ForLoop(for_loop)) if
                 for_loop.item == "category" &&
                 for_loop.collection == "categories" &&
                 for_loop.fragment_id == "for-1"
@@ -941,65 +963,68 @@ mod tests {
         );
 
         // Verify for fragments contains the category.name signal
-        let for_fragments: &Vec<WebUIFragment> = fragment_records
+        let for_fragments: &Vec<WebUIFragment> = &fragment_records
             .get("for-1")
-            .expect("Failed to get for-1 fragment");
+            .expect("Failed to get for-1 fragment")
+            .fragments;
         assert_eq!(for_fragments.len(), 5);
         assert!(
-            matches!(for_fragments.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "<div class=\"category\"><h2>")
+            matches!(for_fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "<div class=\"category\"><h2>")
         );
         assert!(
-            matches!(for_fragments.get(1), Some(WebUIFragment::Signal(signal)) if
+            matches!(for_fragments.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Signal(signal)) if
                 signal.value == "category.name" && !signal.raw
             )
         );
         assert!(
-            matches!(for_fragments.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "</h2>")
+            matches!(for_fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</h2>")
         );
         assert!(
-            matches!(for_fragments.get(3), Some(WebUIFragment::If(if_cond)) if
-                matches!(&if_cond.condition, ConditionExpr::Identifier { value } if value == "category.hasItems") &&
+            matches!(for_fragments.get(3).and_then(|f| f.fragment.as_ref()), Some(Fragment::IfCond(if_cond)) if
+                matches!(if_cond.condition.as_ref().and_then(|c| c.expr.as_ref()), Some(condition_expr::Expr::Identifier(id)) if id.value == "category.hasItems") &&
                 if_cond.fragment_id == "if-1"
             )
         );
         assert!(
-            matches!(for_fragments.get(4), Some(WebUIFragment::Raw(raw)) if raw.value == "</div>")
+            matches!(for_fragments.get(4).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</div>")
         );
 
         // Verify nested if condition.
-        let if_fragments: &Vec<WebUIFragment> = fragment_records
+        let if_fragments: &Vec<WebUIFragment> = &fragment_records
             .get("if-1")
-            .expect("Failed to get if-1 fragment");
+            .expect("Failed to get if-1 fragment")
+            .fragments;
         assert_eq!(if_fragments.len(), 3);
         assert!(
-            matches!(if_fragments.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "<ul>")
+            matches!(if_fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "<ul>")
         );
         assert!(
-            matches!(if_fragments.get(1), Some(WebUIFragment::For(for_loop)) if
+            matches!(if_fragments.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::ForLoop(for_loop)) if
                 for_loop.item == "item" &&
                 for_loop.collection == "category.items" &&
                 for_loop.fragment_id == "for-2"
             )
         );
         assert!(
-            matches!(if_fragments.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "</ul>")
+            matches!(if_fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</ul>")
         );
 
         // Verify nested for each.
-        let nested_for_fragments: &Vec<WebUIFragment> = fragment_records
+        let nested_for_fragments: &Vec<WebUIFragment> = &fragment_records
             .get("for-2")
-            .expect("Failed to get for-2 fragment");
+            .expect("Failed to get for-2 fragment")
+            .fragments;
         assert_eq!(nested_for_fragments.len(), 3);
         assert!(
-            matches!(nested_for_fragments.first(), Some(WebUIFragment::Raw(raw)) if raw.value == "<li>")
+            matches!(nested_for_fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "<li>")
         );
         assert!(
-            matches!(nested_for_fragments.get(1), Some(WebUIFragment::Signal(signal)) if
+            matches!(nested_for_fragments.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Signal(signal)) if
                 signal.value == "item.title" && !signal.raw
             )
         );
         assert!(
-            matches!(nested_for_fragments.get(2), Some(WebUIFragment::Raw(raw)) if raw.value == "</li>")
+            matches!(nested_for_fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</li>")
         );
     }
 }

@@ -22,35 +22,38 @@ The framework consists of four primary modules:
 - Proactive error handling with actionable messages
 
 ## Protocol Specification (webui-protocol)
-The protocol defines the serializable structure representing UI templates. At runtime, the protocol uses protobuf for efficient binary serialization.
+The protocol defines the serializable structure representing UI templates. At runtime, the protocol uses protobuf for efficient binary serialization. Types are generated directly from `proto/webui.proto` using prost — there is no separate domain type layer.
 
 ### Data Types
 ```rust
 /// The root protocol structure representing a complete webpage configuration.
+/// Generated from protobuf `message WebUIProtocol`.
 pub struct WebUIProtocol {
-    /// Map of fragment identifiers to their associated fragments.
-    pub fragments: WebUIFragmentRecords,
+    /// Map of fragment identifiers to their associated fragment lists.
+    pub fragments: HashMap<String, FragmentList>,
 }
 
-/// A mapping of unique fragment identifiers to their corresponding fragment vectors.
-pub type WebUIFragmentRecords = HashMap<String, Vec<WebUIFragment>>;
+/// A list of fragments (needed because protobuf maps cannot have repeated values directly).
+pub struct FragmentList {
+    pub fragments: Vec<WebUIFragment>,
+}
 
-/// Defines the various types of fragments in the WebUI protocol.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum WebUIFragment {
-    /// Outputs static content.
+/// A mapping of unique fragment identifiers to their corresponding fragment lists.
+pub type WebUIFragmentRecords = HashMap<String, FragmentList>;
+
+/// A single fragment — one of several types.
+/// Generated from protobuf `message WebUIFragment` with a `oneof fragment` field.
+pub struct WebUIFragment {
+    pub fragment: Option<web_ui_fragment::Fragment>,
+}
+
+/// The fragment oneof variants.
+pub enum Fragment {
     Raw(WebUIFragmentRaw),
-    /// A reusable component with styling.
     Component(WebUIFragmentComponent),
-    /// Iterates over a collection to generate repeated content.
-    For(WebUIFragmentFor),
-    /// Connects dynamic content via signals.
+    ForLoop(WebUIFragmentFor),
     Signal(WebUIFragmentSignal),
-    /// Renders content conditionally.
-    If(WebUIFragmentIf),
-    /// Represents a boolean attribute (e.g., disabled, checked).
-    BooleanAttribute(WebUIFragmentBooleanAttribute),
+    IfCond(WebUIFragmentIf),
 }
 ```
 ### Fragment Types
@@ -65,7 +68,6 @@ pub struct WebUIFragmentRaw {
 ```rust
 pub struct WebUIFragmentComponent {
     /// The identifier for the associated fragment record.
-    #[serde(rename = "fragmentId")]
     pub fragment_id: String,
 }
 ```
@@ -77,7 +79,6 @@ pub struct WebUIFragmentFor {
     /// The collection name (e.g., "people").
     pub collection: String,
     /// The identifier for the fragment to render for each item.
-    #[serde(rename = "fragmentId")]
     pub fragment_id: String,
 }
 ```
@@ -87,7 +88,6 @@ pub struct WebUIFragmentSignal {
     /// The value or identifier of the signal.
     pub value: String,
     /// Determines if the value should be rendered as raw content.
-    #[serde(default)]
     pub raw: bool,
 }
 ```
@@ -95,16 +95,14 @@ pub struct WebUIFragmentSignal {
 ```rust
 pub struct WebUIFragmentIf {
     /// The condition expression to evaluate.
-    pub condition: ConditionExpr,
+    pub condition: Option<ConditionExpr>,
     /// The identifier for the fragment record to render if true.
-    #[serde(rename = "fragmentId")]
     pub fragment_id: String,
 }
 ```
 #### Boolean Attribute Fragment
+> **Note:** Boolean attributes are specified in the design but not yet implemented.
 ```rust
-/// Represents a boolean attribute on an element.
-/// Boolean attributes must start with '?' (e.g., ?disabled).
 pub struct WebUIFragmentBooleanAttribute {
     /// The boolean attribute name (e.g., "disabled").
     pub name: String,
@@ -113,67 +111,69 @@ pub struct WebUIFragmentBooleanAttribute {
 }
 ```
 #### Condition Expressions
+Condition expressions are protobuf messages with a `oneof expr` field:
 ```rust
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum ConditionExpr {
-    /// A simple predicate condition.
+/// A condition expression tree (protobuf message with oneof).
+pub struct ConditionExpr {
+    pub expr: Option<condition_expr::Expr>,
+}
+
+pub enum Expr {
     Predicate(Predicate),
-    /// A negation of a condition expression.
-    Not(Box<ConditionExpr>),
-    /// A compound condition combining two expressions with a logical operator.
-    Compound {
-        /// The left-hand side condition.
-        left: Box<ConditionExpr>,
-        /// The logical operator (And or Or).
-        op: LogicalOperator,
-        /// The right-hand side condition.
-        right: Box<ConditionExpr>,
-    },
-    /// An identifier condition, single variable.
-    Identifier {
-        /// The identifier to evaluate.
-        value: String,
-    },
+    Not(Box<NotCondition>),
+    Compound(Box<CompoundCondition>),
+    Identifier(IdentifierCondition),
+}
+
+pub struct NotCondition {
+    pub condition: Option<Box<ConditionExpr>>,
+}
+
+pub struct CompoundCondition {
+    pub left: Option<Box<ConditionExpr>>,
+    pub op: i32, // LogicalOperator enum value
+    pub right: Option<Box<ConditionExpr>>,
+}
+
+pub struct IdentifierCondition {
+    pub value: String,
 }
 ```
 #### Operators
 ```rust
-/// Logical operators for compound conditions.
-#[derive(Clone, Serialize, Deserialize)]
+/// Logical operators for compound conditions (protobuf enum, i32 repr).
 pub enum LogicalOperator {
-    /// Represents a logical AND.
-    And,
-    /// Represents a logical OR.
-    Or,
+    Unspecified = 0,
+    And = 1,
+    Or = 2,
 }
 
-/// Comparison operators for predicates.
-#[derive(Clone, Serialize, Deserialize)]
+/// Comparison operators for predicates (protobuf enum, i32 repr).
 pub enum ComparisonOperator {
-    GreaterThan,         // >
-    LessThan,            // <
-    Equal,               // ==
-    NotEqual,            // !=
-    GreaterThanOrEqual,  // >=
-    LessThanOrEqual,     // <=
+    Unspecified = 0,
+    GreaterThan = 1,     // >
+    LessThan = 2,        // <
+    Equal = 3,           // ==
+    NotEqual = 4,        // !=
+    GreaterThanOrEqual = 5, // >=
+    LessThanOrEqual = 6,   // <=
 }
 ```
 #### Predicates
 ```rust
-#[derive(Clone, Serialize, Deserialize)]
 pub struct Predicate {
     /// The left-hand side value.
     pub left: String,
-    /// The operator used in comparison.
-    pub operator: ComparisonOperator,
+    /// The operator used in comparison (ComparisonOperator as i32).
+    pub operator: i32,
     /// The right-hand side value.
     pub right: String,
 }
 ```
 #### Serialization Requirements
-- Protobuf binary serialization/deserialization as the primary format, using `prost` for zero-copy decoding
-- JSON output supported via `webui inspect` for debugging only
+- Protobuf binary serialization/deserialization as the primary format, using `prost` for direct encode/decode with no conversion layer
+- Types are generated from `proto/webui.proto` at build time via `prost-build`
+- JSON output supported via `webui inspect` for debugging only (using serde derives on generated types)
 - Support for custom error types and propagation
 - Validation of protocol structure during deserialization
 - Performance optimizations for large protocol structures

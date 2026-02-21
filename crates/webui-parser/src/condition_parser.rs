@@ -4,7 +4,7 @@
 //! It uses a non-recursive approach for parsing expressions.
 
 use crate::{ParserError, Result};
-use webui_protocol::{ComparisonOperator, ConditionExpr, LogicalOperator, Predicate};
+use webui_protocol::{ComparisonOperator, ConditionExpr, LogicalOperator};
 
 /// Parser for WebUI condition expressions.
 pub struct ConditionParser;
@@ -51,9 +51,7 @@ impl ConditionParser {
     fn parse_identifier(&self, input: &str) -> Result<ConditionExpr> {
         // Check if the input is a simple identifier (variable name)
         if self.is_valid_identifier(input) {
-            return Ok(ConditionExpr::Identifier {
-                value: input.to_string(),
-            });
+            return Ok(ConditionExpr::identifier(input));
         }
 
         Err(ParserError::Parse(format!(
@@ -96,7 +94,7 @@ impl ConditionParser {
 
             // Parse the negated expression
             let expr = self.parse(expr_str)?;
-            return Ok(ConditionExpr::Not(Box::new(expr)));
+            return Ok(ConditionExpr::negated(expr));
         }
 
         Err(ParserError::Parse("Not a negation expression".to_string()))
@@ -149,13 +147,9 @@ impl ConditionParser {
                     right
                 };
 
-                let predicate = Predicate {
-                    left: left.to_string(),
-                    operator,
-                    right: right.to_string(),
-                };
+                let predicate = ConditionExpr::predicate(left, operator, right);
 
-                return Ok(ConditionExpr::Predicate(predicate));
+                return Ok(predicate);
             }
         }
 
@@ -238,11 +232,7 @@ impl ConditionParser {
                 // Parse the two sides of the operator
                 if let Ok(left) = self.parse(left_str) {
                     if let Ok(right) = self.parse(right_str) {
-                        return Some(ConditionExpr::Compound {
-                            left: Box::new(left),
-                            op,
-                            right: Box::new(right),
-                        });
+                        return Some(ConditionExpr::compound(left, op, right));
                     }
                 }
             }
@@ -261,6 +251,7 @@ impl Default for ConditionParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use webui_protocol::condition_expr::Expr;
 
     #[test]
     fn test_parse_identifier() {
@@ -269,13 +260,13 @@ mod tests {
             .parse("isLoggedIn")
             .expect("Failed to parse identifier");
 
-        assert!(matches!(result, ConditionExpr::Identifier { value } if value == "isLoggedIn"));
+        assert!(matches!(&result.expr, Some(Expr::Identifier(id)) if id.value == "isLoggedIn"));
 
         // Test dot notation
         let result = parser
             .parse("user.isAdmin")
             .expect("Failed to parse dotted identifier");
-        assert!(matches!(result, ConditionExpr::Identifier { value } if value == "user.isAdmin"));
+        assert!(matches!(&result.expr, Some(Expr::Identifier(id)) if id.value == "user.isAdmin"));
     }
 
     #[test]
@@ -285,16 +276,16 @@ mod tests {
             .parse("!isLoggedIn")
             .expect("Failed to parse NOT expression");
 
-        // Check both outer and inner expression
-        assert!(matches!(result, ConditionExpr::Not(expr) if
-            matches!(&*expr, ConditionExpr::Identifier { value } if value == "isLoggedIn")
+        // Check outer is Not
+        assert!(matches!(&result.expr, Some(Expr::Not(not)) if
+            matches!(not.condition.as_ref().and_then(|c| c.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "isLoggedIn")
         ));
 
         // Test with whitespace
         let result = parser
             .parse("! isLoggedIn")
             .expect("Failed to parse NOT expression with space");
-        assert!(matches!(result, ConditionExpr::Not(_)));
+        assert!(matches!(&result.expr, Some(Expr::Not(_))));
     }
 
     #[test]
@@ -316,7 +307,7 @@ mod tests {
                 .parse(input)
                 .expect("Failed to parse predicate expression");
             assert!(
-                matches!(result, ConditionExpr::Predicate(pred) if pred.operator == expected_op)
+                matches!(&result.expr, Some(Expr::Predicate(pred)) if ComparisonOperator::try_from(pred.operator) == Ok(expected_op))
             );
         }
 
@@ -324,9 +315,9 @@ mod tests {
         let result = parser
             .parse("name == \"John\"")
             .expect("Failed to parse string comparison");
-        assert!(matches!(result, ConditionExpr::Predicate(pred) if
+        assert!(matches!(&result.expr, Some(Expr::Predicate(pred)) if
             pred.left == "name" &&
-            matches!(pred.operator, ComparisonOperator::Equal) &&
+            ComparisonOperator::try_from(pred.operator) == Ok(ComparisonOperator::Equal) &&
             pred.right == "John"
         ));
     }
@@ -339,25 +330,21 @@ mod tests {
         let result = parser
             .parse("isLoggedIn && age > 18")
             .expect("Failed to parse compound AND expression");
-        assert!(
-            matches!(result, ConditionExpr::Compound { left, op, right } if
-                matches!(&*left, ConditionExpr::Identifier { value } if value == "isLoggedIn") &&
-                matches!(op, LogicalOperator::And) &&
-                matches!(*right, ConditionExpr::Predicate(_))
-            )
-        );
+        assert!(matches!(&result.expr, Some(Expr::Compound(compound)) if
+            matches!(compound.left.as_ref().and_then(|l| l.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "isLoggedIn") &&
+            LogicalOperator::try_from(compound.op) == Ok(LogicalOperator::And) &&
+            matches!(compound.right.as_ref().and_then(|r| r.expr.as_ref()), Some(Expr::Predicate(_)))
+        ));
 
         // Test OR condition with "or" keyword
         let result = parser
             .parse("status == 'premium' or isAdmin")
             .expect("Failed to parse compound OR expression");
-        assert!(
-            matches!(result, ConditionExpr::Compound { left, op, right } if
-                matches!(*left, ConditionExpr::Predicate(_)) &&
-                matches!(op, LogicalOperator::Or) &&
-                matches!(&*right, ConditionExpr::Identifier { value } if value == "isAdmin")
-            )
-        );
+        assert!(matches!(&result.expr, Some(Expr::Compound(compound)) if
+            matches!(compound.left.as_ref().and_then(|l| l.expr.as_ref()), Some(Expr::Predicate(_))) &&
+            LogicalOperator::try_from(compound.op) == Ok(LogicalOperator::Or) &&
+            matches!(compound.right.as_ref().and_then(|r| r.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "isAdmin")
+        ));
     }
 
     #[test]
@@ -368,13 +355,13 @@ mod tests {
         let result = parser
             .parse("age > 18 && isVerified || isAdmin")
             .expect("Failed to parse complex expression");
-        assert!(matches!(result, ConditionExpr::Compound { .. }));
+        assert!(matches!(&result.expr, Some(Expr::Compound(_))));
 
         // Negated expression
         let result = parser
             .parse("!isVerified")
             .expect("Failed to parse NOT expression");
-        assert!(matches!(result, ConditionExpr::Not(_)));
+        assert!(matches!(&result.expr, Some(Expr::Not(_))));
     }
 
     #[test]

@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use thiserror::Error;
 use webui_expressions::evaluate;
-use webui_protocol::{WebUIFragment, WebUIProtocol};
+use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUIProtocol};
 use webui_state::find_value_by_dotted_path;
 
 /// Error types for the WebUI handler.
@@ -111,8 +111,8 @@ impl WebUIHandler {
         fragment_id: &str,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        if let Some(fragment) = context.protocol.fragments.get(fragment_id) {
-            self.process_fragment(fragment, context)
+        if let Some(fragment_list) = context.protocol.fragments.get(fragment_id) {
+            self.process_fragment(&fragment_list.fragments, context)
         } else {
             Err(HandlerError::MissingFragment(fragment_id.to_string()))
         }
@@ -124,27 +124,28 @@ impl WebUIHandler {
     /// during rendering, while `state` contains the global application state.
     fn process_fragment(
         &self,
-        fragment: &Vec<WebUIFragment>,
+        fragments: &[WebUIFragment],
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        for item in fragment {
-            match item {
-                WebUIFragment::Raw(raw) => {
+        for item in fragments {
+            match item.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => {
                     context.writer.write(&raw.value)?;
                 }
-                WebUIFragment::Component(component) => {
+                Some(Fragment::Component(component)) => {
                     self.process_component(component, context)?;
                 }
-                WebUIFragment::For(for_loop) => {
+                Some(Fragment::ForLoop(for_loop)) => {
                     self.process_for_loop(for_loop, context)?;
                 }
-                WebUIFragment::Signal(signal) => {
+                Some(Fragment::Signal(signal)) => {
                     let content = self.process_signal(signal, context)?;
                     context.writer.write(&content)?;
                 }
-                WebUIFragment::If(if_cond) => {
+                Some(Fragment::IfCond(if_cond)) => {
                     self.process_if(if_cond, context)?;
                 }
+                None => {}
             }
         }
         Ok(())
@@ -277,7 +278,11 @@ impl WebUIHandler {
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         // Evaluate the condition
-        let condition_met = evaluate(&if_cond.condition, context.state)
+        let condition = if_cond
+            .condition
+            .as_ref()
+            .ok_or_else(|| HandlerError::Rendering("If fragment missing condition".to_string()))?;
+        let condition_met = evaluate(condition, context.state)
             .map_err(|e| HandlerError::Evaluation(e.to_string()))?;
 
         if condition_met {
@@ -328,6 +333,7 @@ pub fn handle(
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use webui_protocol::FragmentList;
     use webui_test_utils::test_json;
 
     // A simple test writer implementation
@@ -371,9 +377,9 @@ mod tests {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
-            vec![WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
-                value: "Hello, WebUI!".to_string(),
-            })],
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("Hello, WebUI!")],
+            },
         );
 
         let protocol = WebUIProtocol { fragments };
@@ -399,18 +405,13 @@ mod tests {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
-            vec![
-                WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
-                    value: "Hello, ".to_string(),
-                }),
-                WebUIFragment::Signal(webui_protocol::WebUIFragmentSignal {
-                    value: "name".to_string(),
-                    raw: false,
-                }),
-                WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
-                    value: "!".to_string(),
-                }),
-            ],
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("Hello, "),
+                    WebUIFragment::signal("name", false),
+                    WebUIFragment::raw("!"),
+                ],
+            },
         );
 
         let protocol = WebUIProtocol { fragments };
@@ -436,29 +437,22 @@ mod tests {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
-            vec![
-                WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
-                    value: "People: ".to_string(),
-                }),
-                WebUIFragment::For(webui_protocol::WebUIFragmentFor {
-                    item: "person".to_string(),
-                    collection: "people".to_string(),
-                    fragment_id: "person-item".to_string(),
-                }),
-            ],
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("People: "),
+                    WebUIFragment::for_loop("person", "people", "person-item"),
+                ],
+            },
         );
 
         fragments.insert(
             "person-item".to_string(),
-            vec![
-                WebUIFragment::Signal(webui_protocol::WebUIFragmentSignal {
-                    value: "person.name".to_string(),
-                    raw: false,
-                }),
-                WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
-                    value: ", ".to_string(),
-                }),
-            ],
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::signal("person.name", false),
+                    WebUIFragment::raw(", "),
+                ],
+            },
         );
 
         let protocol = WebUIProtocol { fragments };
@@ -490,27 +484,23 @@ mod tests {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
-            vec![
-                WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
-                    value: "Status: ".to_string(),
-                }),
-                WebUIFragment::If(webui_protocol::WebUIFragmentIf {
-                    condition: webui_protocol::ConditionExpr::Identifier {
-                        value: "isActive".to_string(),
-                    },
-                    fragment_id: "active-content".to_string(),
-                }),
-                WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
-                    value: "End".to_string(),
-                }),
-            ],
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("Status: "),
+                    WebUIFragment::if_cond(
+                        webui_protocol::ConditionExpr::identifier("isActive"),
+                        "active-content",
+                    ),
+                    WebUIFragment::raw("End"),
+                ],
+            },
         );
 
         fragments.insert(
             "active-content".to_string(),
-            vec![WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
-                value: "Active".to_string(),
-            })],
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("Active")],
+            },
         );
 
         let protocol = WebUIProtocol { fragments };
@@ -542,21 +532,19 @@ mod tests {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
-            vec![
-                WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
-                    value: "Component: ".to_string(),
-                }),
-                WebUIFragment::Component(webui_protocol::WebUIFragmentComponent {
-                    fragment_id: "my-component".to_string(),
-                }),
-            ],
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("Component: "),
+                    WebUIFragment::component("my-component"),
+                ],
+            },
         );
 
         fragments.insert(
             "my-component".to_string(),
-            vec![WebUIFragment::Raw(webui_protocol::WebUIFragmentRaw {
-                value: "<div>Component Content</div>".to_string(),
-            })],
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<div>Component Content</div>")],
+            },
         );
 
         let protocol = WebUIProtocol { fragments };
@@ -585,11 +573,9 @@ mod tests {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
-            vec![WebUIFragment::Component(
-                webui_protocol::WebUIFragmentComponent {
-                    fragment_id: "missing-component".to_string(),
-                },
-            )],
+            FragmentList {
+                fragments: vec![WebUIFragment::component("missing-component")],
+            },
         );
 
         let protocol = WebUIProtocol { fragments };
