@@ -234,6 +234,7 @@ impl HtmlParser {
                 match tag_name.as_str() {
                     "for" => return self.process_for_directive(node, source, fragments),
                     "if" => return self.process_if_directive(node, source, fragments),
+                    "body" => return self.process_body_element(node, source, fragments),
                     _ => {
                         if self.component_registry.contains(tag_name.as_str()) {
                             return self.process_component_directive(
@@ -399,6 +400,15 @@ impl HtmlParser {
         value.contains("{{")
     }
 
+    /// Check if an element node has an end_tag child.
+    fn has_end_tag(&self, node: Node) -> bool {
+        let mut cursor = node.walk();
+        let result = node
+            .named_children(&mut cursor)
+            .any(|child| child.kind() == "end_tag");
+        result
+    }
+
     /// Process a regular HTML element with attribute-aware parsing.
     fn process_regular_element(
         &mut self,
@@ -411,6 +421,7 @@ impl HtmlParser {
         let is_self_closing = tag_node
             .map(|n| n.kind() == "self_closing_tag")
             .unwrap_or(false);
+        let has_end = self.has_end_tag(node);
 
         if let Some(tag_node) = tag_node {
             // Emit "<tagname" as the start of raw content
@@ -427,8 +438,10 @@ impl HtmlParser {
                 } else {
                     self.add_raw_fragment(">");
                 }
+            } else if !has_end {
+                // Void element (no end tag from parser) — just close the opening tag
+                self.add_raw_fragment(">");
             } else {
-                // Emit ">"
                 self.add_raw_fragment(">");
 
                 // Process children (skip start_tag and end_tag nodes)
@@ -594,6 +607,28 @@ impl HtmlParser {
         Ok(())
     }
 
+    /// Process a `<body>` element, injecting body_start/body_end signals.
+    fn process_body_element(
+        &mut self,
+        node: Node,
+        source: &str,
+        fragments: &mut Vec<WebUIFragment>,
+    ) -> Result<()> {
+        self.add_raw_fragment("<body>");
+        self.flush_raw_buffer(fragments);
+        fragments.push(WebUIFragment::signal("body_start", true));
+        for child in node.named_children(&mut node.walk()) {
+            let kind = child.kind();
+            if kind != "start_tag" && kind != "end_tag" {
+                self.process_child_node(child, source, fragments)?;
+            }
+        }
+        self.flush_raw_buffer(fragments);
+        fragments.push(WebUIFragment::signal("body_end", true));
+        self.add_raw_fragment("</body>");
+        Ok(())
+    }
+
     /// Process a <for> directive.
     fn process_for_directive(
         &mut self,
@@ -652,6 +687,11 @@ impl HtmlParser {
 
         // Restore the original buffer
         std::mem::swap(&mut self.raw_buffer, &mut temp_buffer);
+
+        // Skip the for fragment entirely if the body is empty
+        if for_fragment.is_empty() {
+            return Ok(());
+        }
 
         // Store the record
         self.fragment_records.insert(
@@ -1557,6 +1597,203 @@ mod tests {
         );
         assert!(
             matches!(attr_stream.fragments[1].fragment.as_ref(), Some(Fragment::Signal(signal)) if signal.value == "world")
+        );
+    }
+
+    // ── Body signal tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_body_signals() {
+        let (fragments, _) = parse_and_get_fragments("<body><app-shell></app-shell></body>");
+        assert_eq!(fragments.len(), 5);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<body>")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Signal(signal)) if signal.value == "body_start" && signal.raw)
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<app-shell></app-shell>")
+        );
+        assert!(
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Signal(signal)) if signal.value == "body_end" && signal.raw)
+        );
+        assert!(
+            matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</body>")
+        );
+    }
+
+    // ── Empty for handling tests ──────────────────────────────────────
+
+    #[test]
+    fn test_empty_for_produces_nothing() {
+        let (fragments, records) =
+            parse_and_get_fragments(r#"<div><for each="item in items"></for></div>"#);
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<div></div>")
+        );
+        assert!(!records.contains_key("for-1"));
+    }
+
+    // ── Self-closing / void element tests ─────────────────────────────
+
+    #[test]
+    fn test_self_closing_svg_path() {
+        let (fragments, _) =
+            parse_and_get_fragments(r#"<svg width="19"><path d="foo" fill="currentcolor"/></svg>"#);
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#"<svg width="19"><path d="foo" fill="currentcolor"/></svg>"#)
+        );
+    }
+
+    #[test]
+    fn test_html5_void_elements() {
+        let (fragments, _) = parse_and_get_fragments(
+            r#"<div><img src="test.jpg" alt="test"><br><hr><input type="text"></div>"#,
+        );
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#"<div><img src="test.jpg" alt="test"><br><hr><input type="text"></div>"#)
+        );
+    }
+
+    #[test]
+    fn test_self_closing_with_dynamic_attributes() {
+        let (fragments, _) =
+            parse_and_get_fragments(r#"<img src="{{imageUrl}}" alt="{{imageAlt}}" />"#);
+        assert_eq!(fragments.len(), 4);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<img")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "src" && attr.value == "imageUrl")
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "alt" && attr.value == "imageAlt")
+        );
+        assert!(
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "/>")
+        );
+    }
+
+    #[test]
+    fn test_self_closing_with_boolean_attributes() {
+        let (fragments, _) = parse_and_get_fragments(
+            r#"<input type="checkbox" ?checked="{{isSelected}}" ?disabled="{{isDisabled}}" />"#,
+        );
+        assert_eq!(fragments.len(), 4);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input type=\"checkbox\"")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "checked" && matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()), Some(condition_expr::Expr::Identifier(id)) if id.value == "isSelected"))
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "disabled" && matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()), Some(condition_expr::Expr::Identifier(id)) if id.value == "isDisabled"))
+        );
+        assert!(
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "/>")
+        );
+    }
+
+    #[test]
+    fn test_multiple_self_closing_in_sequence() {
+        let (fragments, _) =
+            parse_and_get_fragments(r#"<img src="1.jpg" /><br /><img src="2.jpg" />"#);
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#"<img src="1.jpg"/><br/><img src="2.jpg"/>"#)
+        );
+    }
+
+    #[test]
+    fn test_self_closing_with_mixed_content() {
+        let (fragments, _) =
+            parse_and_get_fragments(r#"<div>Text before<img src="{{url}}" />Text after</div>"#);
+        assert_eq!(fragments.len(), 3);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<div>Text before<img")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "src" && attr.value == "url")
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "/>Text after</div>")
+        );
+    }
+
+    #[test]
+    fn test_self_closing_svg_elements() {
+        let (fragments, _) = parse_and_get_fragments(
+            r#"<svg><circle cx="{{x}}" cy="{{y}}" r="5" /><rect width="10" height="10" /></svg>"#,
+        );
+        assert_eq!(fragments.len(), 4);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<svg><circle")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "cx" && attr.value == "x")
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "cy" && attr.value == "y")
+        );
+        assert!(
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#" r="5"/><rect width="10" height="10"/></svg>"#)
+        );
+    }
+
+    #[test]
+    fn test_self_closing_inside_for_loop() {
+        let (fragments, records) = parse_and_get_fragments(
+            r#"<for each="item in items"><img src="{{item.url}}" /></for>"#,
+        );
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::ForLoop(fl)) if fl.item == "item" && fl.collection == "items" && fl.fragment_id == "for-1")
+        );
+        let for_stream = records.get("for-1").expect("Missing for-1");
+        assert_eq!(for_stream.fragments.len(), 3);
+        assert!(
+            matches!(for_stream.fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<img")
+        );
+        assert!(
+            matches!(for_stream.fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "src" && attr.value == "item.url")
+        );
+        assert!(
+            matches!(for_stream.fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "/>")
+        );
+    }
+
+    #[test]
+    fn test_self_closing_whitespace_variations() {
+        let (fragments, _) =
+            parse_and_get_fragments(r#"<img src="test.jpg"/><input type="text" /><br/>"#);
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#"<img src="test.jpg"/><input type="text"/><br/>"#)
+        );
+    }
+
+    #[test]
+    fn test_deeply_nested_self_closing() {
+        let (fragments, _) = parse_and_get_fragments(
+            r#"<div><section><article><img src="deep.jpg" /><br /></article></section></div>"#,
+        );
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#"<div><section><article><img src="deep.jpg"/><br/></article></section></div>"#)
+        );
+    }
+
+    #[test]
+    fn test_self_closing_vs_empty_regular_tags() {
+        let (fragments, _) =
+            parse_and_get_fragments(r#"<div></div><img src="test.jpg" /><span></span>"#);
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#"<div></div><img src="test.jpg"/><span></span>"#)
         );
     }
 }

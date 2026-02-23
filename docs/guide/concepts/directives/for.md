@@ -60,10 +60,4 @@ Where:
 - The item variable is only available within the loop body
 - You can access nested properties of the item using dot notation
 - If the collection doesn't exist or isn't an array, an error will be raised during rendering
-
-## Protocol Output
-
-When the parser processes a `<for>` directive, it generates a `WebUIFragmentFor` in the protocol with the following properties:
-- `item`: The name of the loop variable
-- `collection`: The name of the array to iterate over
-- `fragmentId`: A reference to the content template for each iteration
+- **Empty `<for>` bodies** (with no children) are silently skipped — no output is generated
