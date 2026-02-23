@@ -20,16 +20,11 @@ When a PR is meant to close a GitHub issue, include the keyword `Closes` followe
 Closes #42
 ```
 
-For issues in a different repository:
+For multiple issues, use one per line:
 
 ```
-Closes owner/repo#42
-```
-
-For multiple issues:
-
-```
-Closes #42, closes #43
+Closes #42
+Closes #43
 ```
 
 > **Note:** Issue-linking keywords only work when the PR targets the repository's default branch. See [GitHub docs: linking a pull request to an issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue#linking-a-pull-request-to-an-issue-using-a-keyword) for the full reference.
