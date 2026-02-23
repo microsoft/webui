@@ -71,24 +71,29 @@ Example:
 <p>There are {{items.length}} items in the list.</p>
 ```
 
-## Protocol Output
+## Body Signals
 
-When the WebUI parser processes signal directives, it generates protocol entries like these:
+WebUI automatically injects two special signals around `<body>` content:
 
-For <code v-pre>{{{}}}</code> (escaped):
-```json
-{
-  "type": "signal",
-  "value": "user.name",
-  "raw": false
-}
+- **`body_start`** — injected immediately after the `<body>` opening tag
+- **`body_end`** — injected immediately before the `</body>` closing tag
+
+These enable handlers to inject content at the start and end of the document body (e.g., hydration scripts, analytics tags).
+
+### Example
+
+Template:
+```html
+<body>
+  <app-shell></app-shell>
+</body>
 ```
 
-For <code v-pre>{{{}}}</code> (raw):
-```json
-{
-  "type": "signal",
-  "value": "rawHtmlContent",
-  "raw": true
-}
+Output (with handler-injected content):
+```html
+<body>
+  <!-- handler can insert content here via body_start -->
+  <app-shell></app-shell>
+  <!-- handler can insert content here via body_end -->
+</body>
 ```

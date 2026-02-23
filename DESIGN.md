@@ -347,14 +347,17 @@ pub fn into_fragment_records(self) -> WebUIFragmentRecords
 - Flush buffer when transitioning to non-raw content
 
 ##### Directive Processing
-- **<for>:** Extract item/collection pair and process children into separate fragment
+- **<for>:** Extract item/collection pair and process children into separate fragment. Empty `<for>` bodies (no children) are silently skipped.
 - **<if>:** Extract and parse condition, process children into separate fragment
+- **<body>:** Injects `body_start` and `body_end` raw signals around the body content
 - **Components:** Check component registry, process as component if found
 
 ##### Element Processing
 - Maintain proper tag structure
 - Process children recursively (iterative implementation)
 - Handle attributes and special elements
+- Omit closing tags when the HTML parser produces no end tag (void elements, etc.)
+- Handle self-closing tags (`/>` syntax) for SVG and other elements
 
 #### Buffer Management
 - **Buffer Isolation:** Isolate directive content from parent context

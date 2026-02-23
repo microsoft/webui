@@ -130,6 +130,7 @@ The `docs/` directory is a VitePress site for external developers consuming WebU
 
 - Any change to user-visible behavior, CLI usage, or public API **must** include a corresponding docs update in the same PR.
 - New features get a guide page (`docs/guide/`) or tutorial (`docs/tutorials/`).
+- **User-facing docs show template syntax, state, and rendered output only.** Never expose protocol internals (fragment types, proto fields, stream IDs) in `/docs`. Protocol details belong in `DESIGN.md` and `docs/guide/advanced/protocol.md`.
 - Verify with `cd docs && pnpm build` when possible.
 
 ---

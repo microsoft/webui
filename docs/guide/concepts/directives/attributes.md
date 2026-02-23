@@ -1,23 +1,15 @@
 # Attribute Directives
 
-WebUI provides several ways to bind dynamic data to HTML attributes. When an attribute value contains handlebars expressions, the parser emits attribute fragments that are resolved at render time.
+WebUI provides several ways to bind dynamic data to HTML attributes. When an attribute value contains handlebars expressions, the value is resolved from state at render time.
 
 ## Simple Dynamic Attributes
 
-Use <code v-pre>{{}}</code> inside an attribute value to bind it to a state signal:
+Use <code v-pre>{{}}</code> inside an attribute value to bind it to a state value:
 
 ```html
 <a href="{{url}}">{{linkText}}</a>
 <img src="{{imageUrl}}" alt="{{imageAlt}}" />
 ```
-
-When the entire attribute value is a single handlebars expression, WebUI produces a simple attribute binding:
-
-```json
-{ "type": "attribute", "name": "href", "value": "url" }
-```
-
-At render time, the signal name is resolved against the state to produce the final attribute value.
 
 ### Example
 
@@ -100,33 +92,13 @@ Prefix an attribute name with `:` to create a complex binding. This is used for 
 <my-component :prop1="{{val1}}" :prop2="{{val2}}"></my-component>
 ```
 
-Complex attributes preserve the `:` prefix in the attribute name and are marked with `complex: true` in the protocol:
+## Mixed Attributes
 
-```json
-{ "type": "attribute", "name": ":config", "value": "settings", "complex": true }
-```
-
-## Mixed (Template) Attributes
-
-When an attribute value contains a mix of static text and dynamic expressions, WebUI creates a template sub-stream:
+When an attribute value contains a mix of static text and dynamic expressions, each part is resolved independently:
 
 ```html
 <input value="hello {{world}}" />
 <use href="#icon-{{iconName}}" />
-```
-
-The parser splits the value into a separate fragment stream referenced by a template ID:
-
-```json
-{ "type": "attribute", "name": "value", "template": "attr-1" }
-```
-
-The sub-stream `attr-1` contains:
-```json
-[
-  { "type": "raw", "value": "hello " },
-  { "type": "signal", "value": "world" }
-]
 ```
 
 ### Example
@@ -145,7 +117,7 @@ Output:
 
 ## Combining Attribute Types
 
-You can mix static attributes, dynamic attributes, boolean attributes, and complex attributes on the same element:
+You can mix static, dynamic, boolean, and complex attributes on the same element:
 
 ```html
 <my-component
@@ -156,15 +128,4 @@ You can mix static attributes, dynamic attributes, boolean attributes, and compl
 </my-component>
 ```
 
-Static attributes (like `id="comp"`) are passed through as raw HTML. Dynamic, boolean, and complex attributes each produce their own attribute fragment in the protocol.
-
-## Protocol Output
-
-The attribute fragment type supports all binding styles through a single flexible structure:
-
-| Attribute Style | Protocol Fields |
-|----------------|----------------|
-| Simple dynamic | `name`, `value` |
-| Boolean (`?`) | `name`, `conditionTree` |
-| Complex (`:`) | `name`, `value`, `complex: true` |
-| Mixed/template | `name`, `template` (references sub-stream) |
+Static attributes (like `id="comp"`) are passed through as-is. Dynamic, boolean, and complex attributes are resolved from state at render time.
