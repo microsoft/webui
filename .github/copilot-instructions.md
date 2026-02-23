@@ -135,9 +135,9 @@ The `docs/` directory is a VitePress site for external developers consuming WebU
 
 ---
 
-## Branch, commit, and PR discipline
+## Additional skills
 
-See `.github/skills/pr/SKILL.md` for branch naming, commit message, PR title, and issue linking conventions.
+- **Pull request skills** — `.github/skills/pr/SKILL.md`
 
 ---
 
