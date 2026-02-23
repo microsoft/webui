@@ -196,7 +196,7 @@ pub struct Predicate {
 - Validation of protocol structure during deserialization
 - Performance optimizations for large protocol structures
 - Support for fragment reference validation
-- Attribute names starting with '?' are treated as boolean attributes using the `BooleanAttribute` fragment type. The attribute is rendered only if the value/expression evaluates to true.
+- Attribute names starting with '?' are treated as boolean attributes using the `Attribute` fragment type with a `condition_tree`. The attribute is rendered only if the condition evaluates to true.
 
 ## State Management (webui-state)
 ### Path Resolution
@@ -259,9 +259,11 @@ pub trait Writer {
 - **Signal fragments:**
   - Resolve value from state using `find_value_by_dotted_path`
   - Escape value if `raw` is false, otherwise write as-is
-- **Boolean attribute fragments:**
-  - Evaluate the value; if true, render the attribute name.
-  - If false, omit the attribute.
+- **Attribute fragments:**
+  - **Boolean (with `condition_tree`):** Evaluate condition; if truthy, render attribute name only. If false, omit entirely.
+  - **Simple dynamic (with `value`):** Resolve signal from state, render as `name="resolved_value"`.
+  - **Template (with `template`):** Render `name="`, process referenced sub-stream, render closing `"`.
+  - **Complex (with `complex: true`):** Same as simple dynamic but for `:` prefixed pass-through attributes.
 - **If fragments:**
   - Evaluate condition using `evaluate`
   - If true, process referenced fragment
@@ -600,9 +602,12 @@ Hello, WebUI!
                 "value": "<person-card"
             },
             {
-                "type": "booleanAttribute",
+                "type": "attribute",
                 "name": "disabled",
-                "value": "person.isInactive"
+                "conditionTree": {
+                    "type": "identifier",
+                    "value": "person.isInactive"
+                }
             },
             {
                 "type": "raw",

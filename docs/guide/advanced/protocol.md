@@ -31,6 +31,22 @@ The `fragments` map keys are fragment identifiers (e.g., `"index.html"`, `"for-1
 | `For` | Loop directive with `item`, `collection`, and a child `fragment_id` |
 | `Signal` | A reactive binding (`value`, `raw` flag) |
 | `If` | Conditional rendering with a `Condition` and child `fragment_id` |
+| `Attribute` | Dynamic HTML attribute binding (simple, boolean, complex, or template) |
+
+### Attribute Fragment
+
+The `Attribute` fragment handles all dynamic attribute bindings:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `string` | Attribute name (may include `:` prefix) |
+| `value` | `string` | Signal name for simple dynamic attributes |
+| `template` | `string` | Fragment ID for mixed static+dynamic attributes |
+| `complex` | `bool` | `true` for `:`-prefixed complex attributes |
+| `condition_tree` | `ConditionExpr` | Condition for `?`-prefixed boolean attributes |
+| `attr_start` | `bool` | `true` for the first dynamic attribute on a component |
+| `attr_skip` | `bool` | `true` for skipped attributes (`class`, `style`, `role`, `data-*`, `aria-*`) |
+| `raw_value` | `bool` | `true` for static attribute values on components |
 
 ### Condition Expressions
 
