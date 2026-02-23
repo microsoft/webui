@@ -54,6 +54,7 @@ export default {
                 { text: '<if> Conditional', link: '/guide/concepts/directives/if' },
                 { text: '<for> Loop', link: '/guide/concepts/directives/for' },
                 { text: '{{}} Signals', link: '/guide/concepts/directives/signals' },
+                { text: 'Attribute Directives', link: '/guide/concepts/directives/attributes' },
               ]
             },
             {
