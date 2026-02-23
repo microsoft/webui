@@ -1,5 +1,10 @@
 # Pull Request Conventions
 
+## Branch discipline
+
+- **Never commit to `main` directly.** Create a branch: `<user>/<short-description>` (e.g. `mmansour/optimize-handler-allocs`).
+- One logical change per commit. Write imperative messages: *"Add …"* not *"Added …"*.
+
 ## PR title format
 
 PR titles must use a [Conventional Commits](https://www.conventionalcommits.org/) prefix:
