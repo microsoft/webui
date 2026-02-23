@@ -65,12 +65,6 @@ export default {
               ]
             }
           ]
-        },
-        {
-          text: 'Advanced Topics',
-          items: [
-            { text: 'Performance Optimization', link: '/guide/advanced/performance' },
-          ]
         }
       ],
       '/tutorials': [
