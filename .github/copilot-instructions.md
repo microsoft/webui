@@ -135,9 +135,9 @@ The `docs/` directory is a VitePress site for external developers consuming WebU
 
 ---
 
-## Additional skills
+## Skills
 
-- **Pull request skills** — `.github/skills/pr/SKILL.md`
+- **Pull request** — `.github/skills/pr/SKILL.md`
 
 ---
 
