@@ -224,6 +224,7 @@ impl WebUIHandler {
     ///
     /// Looks up the value in the context first (for local variables), then in the global state.
     /// This prioritization allows local variables (like loop items) to override global state.
+    /// If the value is not found in either scope, an empty string is returned.
     fn process_signal(
         &self,
         signal: &webui_protocol::WebUIFragmentSignal,
@@ -253,7 +254,7 @@ impl WebUIHandler {
             return self.format_signal_value(&value, signal.raw);
         }
 
-        Err(HandlerError::MissingData(path.clone()))
+        Ok(String::new())
     }
 
     /// Helper function to format a signal value based on the raw flag
@@ -634,5 +635,34 @@ mod tests {
         } else {
             panic!("Expected MissingFragment error");
         }
+    }
+
+    #[test]
+    fn test_missing_signal_renders_empty() {
+        // A signal referencing a field absent from state should render as empty
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("Hello, "),
+                    WebUIFragment::signal("missing_field", false),
+                    WebUIFragment::raw("!"),
+                ],
+            },
+        );
+
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({});
+
+        let mut writer = TestWriter::new();
+
+        assert!(
+            handle(&protocol, &state, &mut writer).is_ok(),
+            "Missing signal should not produce an error"
+        );
+
+        assert_eq!(writer.get_content(), "Hello, !");
+        assert!(writer.is_ended());
     }
 }
