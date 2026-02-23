@@ -1,11 +1,14 @@
-use std::env;
-use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use clap::Parser;
 use tiny_http::Server;
 
 #[path = "../../../../examples/shared/rust/config.rs"]
 mod config;
+#[path = "../../../../examples/shared/rust/output.rs"]
+mod output;
 mod render;
 mod routes {
     pub mod assets;
@@ -16,33 +19,63 @@ mod routes {
 mod watcher;
 
 use crate::config::AppPaths;
+use crate::output::Printer;
 use crate::render::render_to_index_html;
 use crate::watcher::start_file_watcher;
 
-fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    // Parse --app <name> from command-line arguments, default to "hello-world"
-    let app_name = parse_app_arg().unwrap_or_else(|| "hello-world".to_string());
-    let app_dir = PathBuf::from(format!("../../app/{app_name}"));
+#[derive(Parser)]
+#[command(name = "webui-tiny-http", about = "Serve a WebUI app with tiny_http")]
+struct Cli {
+    /// App name inside examples/app/ (defaults to hello-world)
+    #[arg(long, default_value = "hello-world")]
+    app: String,
+}
 
-    if !app_dir.exists() {
-        eprintln!("Error: app directory not found: {}", app_dir.display());
+fn main() {
+    let cli = Cli::parse();
+
+    let result = run(&cli);
+    if result.is_err() {
         std::process::exit(1);
     }
+}
+
+fn run(cli: &Cli) -> Result<()> {
+    let printer = Printer::new();
+    let app_dir = PathBuf::from(format!("../../app/{}", cli.app));
+
+    let app_dir = app_dir
+        .canonicalize()
+        .with_context(|| format!("App directory not found: {}", app_dir.display()))
+        .inspect_err(|err| {
+            printer.error(err);
+            printer.hint("Check that the app name matches a folder under examples/app/");
+        })?;
 
     let paths = Arc::new(AppPaths::from_app_dir(&app_dir));
 
-    println!("Using app: {app_name} ({})", app_dir.display());
+    printer.header("WebUI Tiny HTTP Server");
+    printer.field("App", &cli.app);
+    printer.field("Directory", &app_dir.display());
 
     // Initial render to index.html
-    render_to_index_html(&paths)?;
+    render_to_index_html(&paths)
+        .context("Failed initial render")
+        .inspect_err(|err| {
+            printer.error(err);
+        })?;
+    printer.success("Initial render complete");
 
     // File watcher thread: re-render when template or data change
     start_file_watcher((*paths).clone());
+    printer.success("File watcher started");
 
-    let server = Server::http("127.0.0.1:8080")?;
+    let server = Server::http("127.0.0.1:8080")
+        .map_err(|e| anyhow::anyhow!(e))
+        .context("Failed to start server")?;
 
-    println!("Serving index.html at http://127.0.0.1:8080/");
-    println!("Press Ctrl+C to stop the server.");
+    printer.field("URL", &"http://127.0.0.1:8080/");
+    printer.finish("Server is running — press Ctrl+C to stop");
 
     for request in server.incoming_requests() {
         let url = request.url().to_string();
@@ -65,17 +98,4 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
 
     Ok(())
-}
-
-/// Parse the `--app <name>` argument from command-line args.
-fn parse_app_arg() -> Option<String> {
-    let args: Vec<String> = env::args().collect();
-    let mut i = 1;
-    while i < args.len() {
-        if args[i] == "--app" && i + 1 < args.len() {
-            return Some(args[i + 1].clone());
-        }
-        i += 1;
-    }
-    None
 }

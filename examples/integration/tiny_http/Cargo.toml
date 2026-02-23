@@ -13,5 +13,8 @@ webui-parser = { path = "../../../crates/webui-parser" }
 webui-protocol = { path = "../../../crates/webui-protocol" }
 webui-handler = { path = "../../../crates/webui-handler" }
 tiny_http = "0.12"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1.0"
+console = "0.15"
 
 [workspace]
