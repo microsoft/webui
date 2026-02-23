@@ -145,6 +145,9 @@ impl WebUIHandler {
                 Some(Fragment::IfCond(if_cond)) => {
                     self.process_if(if_cond, context)?;
                 }
+                Some(Fragment::Attribute(attr)) => {
+                    self.process_attribute(attr, context)?;
+                }
                 None => {}
             }
         }
@@ -288,6 +291,43 @@ impl WebUIHandler {
         if condition_met {
             // Process the content if condition is true
             self.process_fragment_id(&if_cond.fragment_id, context)?;
+        }
+
+        Ok(())
+    }
+
+    /// Process an attribute fragment by rendering the attribute name/value pair.
+    fn process_attribute(
+        &self,
+        attr: &webui_protocol::WebUIFragmentAttribute,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        // Boolean attribute with condition tree
+        if let Some(condition) = &attr.condition_tree {
+            let condition_met = evaluate(condition, context.state)
+                .map_err(|e| HandlerError::Evaluation(e.to_string()))?;
+            if condition_met {
+                context.writer.write(&format!(" {}", attr.name))?;
+            }
+            return Ok(());
+        }
+
+        // Template attribute (mixed static + dynamic)
+        if !attr.template.is_empty() {
+            context.writer.write(&format!(" {}=\"", attr.name))?;
+            self.process_fragment_id(&attr.template, context)?;
+            context.writer.write("\"")?;
+            return Ok(());
+        }
+
+        // Simple dynamic attribute
+        if !attr.value.is_empty() {
+            let value = find_value_by_dotted_path(&attr.value, context.state)
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                .unwrap_or_default();
+            context
+                .writer
+                .write(&format!(" {}=\"{}\"", attr.name, value))?;
         }
 
         Ok(())

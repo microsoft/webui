@@ -20,6 +20,7 @@ message WebUIFragment {
     WebUIFragmentFor for_loop = 3;
     WebUIFragmentSignal signal = 4;
     WebUIFragmentIf if_cond = 5;
+    WebUIFragmentAttribute attribute = 6;
   }
 }
 
@@ -50,6 +51,25 @@ message WebUIFragmentSignal {
 message WebUIFragmentIf {
   ConditionExpr condition = 1;
   string fragment_id = 2;
+}
+
+// Dynamic attribute binding.
+message WebUIFragmentAttribute {
+  string name = 1;
+  // For simple dynamic attrs, the signal name.
+  string value = 2;
+  // For mixed (template) attrs, the sub-stream ID.
+  string template = 3;
+  // True for :-prefixed complex attributes.
+  bool complex = 4;
+  // True for the first dynamic attribute on a component element.
+  bool attr_start = 5;
+  // True for skipped attributes (class, style, role, data-*, aria-*).
+  bool attr_skip = 6;
+  // True for static attribute values on components.
+  bool raw_value = 7;
+  // For ?-prefixed boolean attributes, the condition tree.
+  ConditionExpr condition_tree = 8;
 }
 
 // A condition expression tree.

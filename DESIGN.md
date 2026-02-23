@@ -100,16 +100,34 @@ pub struct WebUIFragmentIf {
     pub fragment_id: String,
 }
 ```
-#### Boolean Attribute Fragment
-> **Note:** Boolean attributes are specified in the design but not yet implemented.
+#### Attribute Fragment
+Attribute fragments represent dynamic HTML attributes with various binding types:
 ```rust
-pub struct WebUIFragmentBooleanAttribute {
-    /// The boolean attribute name (e.g., "disabled").
+pub struct WebUIFragmentAttribute {
+    /// The attribute name (may include `:` prefix for complex attributes).
     pub name: String,
-    /// The attribute value to render, if false, attribute is ignored.
+    /// For simple dynamic attributes, the signal name.
     pub value: String,
+    /// For mixed (template) attributes, the sub-stream fragment ID.
+    pub template: String,
+    /// True for `:`-prefixed complex attributes.
+    pub complex: bool,
+    /// True for the first dynamic attribute on a component element.
+    pub attr_start: bool,
+    /// True for skipped attributes (class, style, role, data-*, aria-*).
+    pub attr_skip: bool,
+    /// True for static attribute values on components.
+    pub raw_value: bool,
+    /// For `?`-prefixed boolean attributes, the condition tree.
+    pub condition_tree: Option<ConditionExpr>,
 }
 ```
+
+**Attribute types:**
+- **Simple dynamic:** `href="{{url}}"` → `{ name: "href", value: "url" }`
+- **Boolean (`?` prefix):** `?disabled={{isDisabled}}` → `{ name: "disabled", condition_tree: identifier("isDisabled") }` — rendered only if condition is truthy; silently dropped if value is not a pure handlebars expression.
+- **Complex (`:` prefix):** `:config="{{settings}}"` → `{ name: ":config", value: "settings", complex: true }`
+- **Mixed/template:** `value="hello {{world}}"` → `{ name: "value", template: "attr-1" }` with sub-stream `attr-1: [raw("hello "), signal("world")]`
 #### Condition Expressions
 Condition expressions are protobuf messages with a `oneof expr` field:
 ```rust
