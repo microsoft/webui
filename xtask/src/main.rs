@@ -10,6 +10,7 @@ fn main() -> ExitCode {
         Some("deny") => run_steps(&[Step::DENY]),
         Some("test") => run_steps(&[Step::TEST]),
         Some("build") => run_steps(&[Step::BUILD]),
+        Some("docs") => run_steps(&[Step::DOCS]),
         _ => usage(),
     }
 }
@@ -18,18 +19,26 @@ fn usage() -> ExitCode {
     eprintln!(
         "Usage: cargo xtask <COMMAND>\n\n\
          Commands:\n  \
-           check   Run all checks (fmt, clippy, deny, test, build)\n  \
+           check   Run all checks (fmt, clippy, deny, test, build, docs)\n  \
            fmt     Check formatting\n  \
            clippy  Run clippy lints\n  \
            deny    Run cargo-deny license/advisory checks\n  \
            test    Run all tests\n  \
-           build   Build the workspace"
+           build   Build the workspace\n  \
+           docs    Build the documentation site"
     );
     ExitCode::FAILURE
 }
 
 fn check() -> ExitCode {
-    run_steps(&[Step::FMT, Step::CLIPPY, Step::DENY, Step::TEST, Step::BUILD])
+    run_steps(&[
+        Step::FMT,
+        Step::CLIPPY,
+        Step::DENY,
+        Step::TEST,
+        Step::BUILD,
+        Step::DOCS,
+    ])
 }
 
 struct Step {
@@ -63,6 +72,11 @@ impl Step {
         name: "build",
         cmd: "cargo",
         args: &["build", "--workspace"],
+    };
+    const DOCS: Self = Self {
+        name: "docs",
+        cmd: "pnpm",
+        args: &["--filter", "@webui/docs", "build"],
     };
 }
 

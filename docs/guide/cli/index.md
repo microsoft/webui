@@ -160,7 +160,7 @@ fragments {
 }
 ```
 
-See [Protocol](/guide/advanced/protocol/) for the full schema reference.
+See [Protocol](/guide/advanced/protocol) for the full schema reference.
 
 ## Error Messages
 
