@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
+use crate::config::AppPaths;
 use crate::render::render_to_index_html;
 
 fn collect_file_times(dir_path: &Path) -> HashMap<PathBuf, SystemTime> {
     let mut file_times = HashMap::new();
-    
+
     if let Ok(entries) = fs::read_dir(dir_path) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -24,35 +25,35 @@ fn collect_file_times(dir_path: &Path) -> HashMap<PathBuf, SystemTime> {
             }
         }
     }
-    
+
     file_times
 }
 
-pub fn start_file_watcher() {
+pub fn start_file_watcher(paths: AppPaths) {
     thread::spawn(move || {
-        let watch_dirs = ["../../app/hello-world/templates", "../../app/hello-world/data", "../../app/hello-world/assets"];
+        let watch_dirs = paths.watch_dirs();
         let mut last_file_times: HashMap<PathBuf, SystemTime> = HashMap::new();
 
         // Initialize file times
         for dir in &watch_dirs {
-            if Path::new(dir).exists() {
-                last_file_times.extend(collect_file_times(Path::new(dir)));
+            if dir.exists() {
+                last_file_times.extend(collect_file_times(dir));
             }
         }
 
         loop {
             let mut current_file_times: HashMap<PathBuf, SystemTime> = HashMap::new();
-            
+
             // Collect current file modification times
             for dir in &watch_dirs {
-                if Path::new(dir).exists() {
-                    current_file_times.extend(collect_file_times(Path::new(dir)));
+                if dir.exists() {
+                    current_file_times.extend(collect_file_times(dir));
                 }
             }
 
             // Check for changes
             let mut files_changed = false;
-            
+
             // Check for modified or new files
             for (path, current_time) in &current_file_times {
                 if let Some(&last_time) = last_file_times.get(path) {
@@ -66,7 +67,7 @@ pub fn start_file_watcher() {
                     break;
                 }
             }
-            
+
             // Check for deleted files
             if !files_changed {
                 for path in last_file_times.keys() {
@@ -78,7 +79,7 @@ pub fn start_file_watcher() {
             }
 
             if files_changed {
-                if let Err(err) = render_to_index_html() {
+                if let Err(err) = render_to_index_html(&paths) {
                     eprintln!("Failed to re-render index.html: {err}");
                 }
 

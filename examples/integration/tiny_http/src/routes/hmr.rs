@@ -3,15 +3,16 @@ use std::time::SystemTime;
 
 use tiny_http::{Request, Response, StatusCode};
 
+use crate::config::AppPaths;
+
 // HMR route which will refresh when the template or data file changes
 // Returns a version derived from the latest modification time of
 // template.html or data.json, so no shared counter is needed.
-pub fn handle_hmr(request: Request) {
-    let template_mtime = fs::metadata("../../app/hello-world/templates/index.html")
+pub fn handle_hmr(request: Request, paths: &AppPaths) {
+    let template_mtime = fs::metadata(&paths.template)
         .and_then(|m| m.modified())
         .ok();
-    let data_mtime =
-	fs::metadata("../../app/hello-world/data/state.json").and_then(|m| m.modified()).ok();
+    let data_mtime = fs::metadata(&paths.data).and_then(|m| m.modified()).ok();
 
     let latest: Option<SystemTime> = match (template_mtime, data_mtime) {
         (Some(t), Some(d)) => Some(if t > d { t } else { d }),

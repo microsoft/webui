@@ -1,19 +1,21 @@
 use std::fs;
-use std::path::Path;
 use tiny_http::{Header, Request, Response, StatusCode};
 
-// Asset file route handler that serves files from the shared assets/ directory
-pub fn handle_asset(request: Request) {
+use crate::config::AppPaths;
+
+// Asset file route handler that serves files from the app's assets/ directory
+pub fn handle_asset(request: Request, paths: &AppPaths) {
     let url_path = request.url();
     let path = url_path.split('?').next().unwrap_or("/");
-    let asset_file_path = path[1..].replace("assets/", "../../app/hello-world/assets/"); // Remove leading "/" and use shared path
-    
+    // Strip the leading "/assets/" prefix and resolve against the app's assets dir
+    let relative = path.strip_prefix("/assets/").unwrap_or(path);
+    let asset_file_path = paths.assets_dir.join(relative);
+
     let body = match fs::read_to_string(&asset_file_path) {
         Ok(contents) => contents,
         Err(err) => {
-            eprintln!("Failed to read {}: {err}", asset_file_path);
-            let response = Response::from_string("Not Found")
-                .with_status_code(StatusCode(404));
+            eprintln!("Failed to read {}: {err}", asset_file_path.display());
+            let response = Response::from_string("Not Found").with_status_code(StatusCode(404));
             let _ = request.respond(response);
             return;
         }
@@ -22,7 +24,7 @@ pub fn handle_asset(request: Request) {
     let mut response = Response::from_string(body).with_status_code(StatusCode(200));
 
     // Determine content type based on file extension
-    let content_type = match Path::new(&asset_file_path).extension().and_then(|ext| ext.to_str()) {
+    let content_type = match asset_file_path.extension().and_then(|ext| ext.to_str()) {
         Some("css") => "text/css; charset=utf-8",
         Some("js") => "application/javascript; charset=utf-8",
         Some("html") => "text/html; charset=utf-8",
@@ -35,10 +37,7 @@ pub fn handle_asset(request: Request) {
         _ => "text/plain; charset=utf-8",
     };
 
-    if let Ok(header) = Header::from_bytes(
-        b"Content-Type" as &[u8],
-        content_type.as_bytes(),
-    ) {
+    if let Ok(header) = Header::from_bytes(b"Content-Type" as &[u8], content_type.as_bytes()) {
         response.add_header(header);
     }
 
