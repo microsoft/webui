@@ -7,8 +7,8 @@ pub fn handle_index(request: Request) {
         Ok(contents) => contents,
         Err(err) => {
             eprintln!("Failed to read index.html: {err}");
-            let response = Response::from_string("Internal Server Error")
-                .with_status_code(StatusCode(500));
+            let response =
+                Response::from_string("Internal Server Error").with_status_code(StatusCode(500));
             let _ = request.respond(response);
             return;
         }

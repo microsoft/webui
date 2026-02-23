@@ -1,6 +1,6 @@
 # WebUI Tiny HTTP Integration Example
 
-This example combines the `src/templates/index.html` template and `src/data/state.json` state using the WebUI Rust crates,
+This example combines a WebUI app's template and state JSON using the WebUI Rust crates,
 writes the result to `dist/index.html`, and serves it over HTTP at `http://127.0.0.1:8080/` with simple HMR.
 
 ## Prerequisites
@@ -9,28 +9,43 @@ writes the result to `dist/index.html`, and serves it over HTTP at `http://127.0
 
 ## Running the server
 
-From the repo root or this folder:
+From this folder, run with the default `hello-world` app:
 
 ```bash
 cd examples/integration/tiny_http
 cargo run
 ```
 
+Or specify a different app by name:
+
+```bash
+cargo run -- --app hello-world
+```
+
+The `--app` argument selects a folder under `examples/app/`. Any folder with the same structure works:
+
+```
+examples/app/<name>/
+├── templates/index.html
+├── data/state.json
+└── assets/
+```
+
 This will:
 
-1. Read `src/templates/index.html` as the WebUI template.
-2. Load state from `src/data/state.json`.
+1. Read `<app>/templates/index.html` as the WebUI template.
+2. Load state from `<app>/data/state.json`.
 3. Parse the template into a WebUI protocol using `webui-parser`.
 4. Render the protocol with the state using `webui-handler` and write the result to `dist/index.html`.
 5. Start an HTTP server on `http://127.0.0.1:8080/` that:
 	- Serves `dist/index.html` for `/` and `/index.html`.
-	- Serves files from `assets/` via `/assets/*` routes (e.g., `/assets/app.js`, `/assets/styles.css`).
+	- Serves files from `<app>/assets/` via `/assets/*` routes (e.g., `/assets/app.js`, `/assets/styles.css`).
 	- Exposes `/hmr` for hot module reloading.
-6. Watch all files in `src/templates/`, `src/data/`, and `assets/` directories for changes; when any file changes, re-render `dist/index.html`.
+6. Watch all files in `<app>/templates/`, `<app>/data/`, and `<app>/assets/` directories for changes; when any file changes, re-render `dist/index.html`.
 
-The client-side script in `/assets/app.js` polls `/hmr` and automatically reloads the page when a new version is detected.
+The client-side script in `<app>/assets/app.js` polls `/hmr` and automatically reloads the page when a new version is detected.
 
 ## Notes
 
 - This crate is **not** part of the main Rust workspace; it is a standalone Cargo project under `examples/integration/tiny_http`.
-- Always run `cargo run` from the `examples/integration/tiny_http` directory so the program can find the `assets/` and `dist/` directories relative to the current working directory.
+- Always run `cargo run` from the `examples/integration/tiny_http` directory so the program can find the app directories relative to the current working directory.
