@@ -139,6 +139,7 @@ The `docs/` directory is a VitePress site for external developers consuming WebU
 
 - **Never commit to `main` directly.** Create a branch: `<user>/<short-description>` (e.g. `mmansour/optimize-handler-allocs`).
 - One logical change per commit. Write imperative messages: *"Add …"* not *"Added …"*.
+- PR titles must use a conventional prefix: `feat:` for features, `fix:` for bug fixes, `chore:` for maintenance. See `.github/skills/pr/SKILL.md` for full conventions including issue linking.
 
 ---
 
