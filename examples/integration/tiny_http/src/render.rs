@@ -30,14 +30,14 @@ impl ResponseWriter for MemoryWriter {
 
 pub fn render_to_index_html() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Load and parse the template into a WebUI protocol
-    let template = fs::read_to_string("../../shared/templates/index.html")?;
+    let template = fs::read_to_string("../../app/hello-world/templates/index.html")?;
     let mut parser = HtmlParser::new();
     parser.parse("index.html", &template)?;
     let fragments = parser.into_fragment_records();
     let protocol = WebUIProtocol { fragments };
 
     // Load the state from state.json
-    let state_json = fs::read_to_string("../../shared/data/state.json")?;
+    let state_json = fs::read_to_string("../../app/hello-world/data/state.json")?;
     let state: Value = serde_json::from_str(&state_json)?;
 
     // Render into an in-memory buffer

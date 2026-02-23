@@ -30,7 +30,7 @@ fn collect_file_times(dir_path: &Path) -> HashMap<PathBuf, SystemTime> {
 
 pub fn start_file_watcher() {
     thread::spawn(move || {
-        let watch_dirs = ["../../shared/templates", "../../shared/data", "../../shared/assets"];
+        let watch_dirs = ["../../app/hello-world/templates", "../../app/hello-world/data", "../../app/hello-world/assets"];
         let mut last_file_times: HashMap<PathBuf, SystemTime> = HashMap::new();
 
         // Initialize file times

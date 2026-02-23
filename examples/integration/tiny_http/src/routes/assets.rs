@@ -6,7 +6,7 @@ use tiny_http::{Header, Request, Response, StatusCode};
 pub fn handle_asset(request: Request) {
     let url_path = request.url();
     let path = url_path.split('?').next().unwrap_or("/");
-    let asset_file_path = path[1..].replace("assets/", "../../shared/assets/"); // Remove leading "/" and use shared path
+    let asset_file_path = path[1..].replace("assets/", "../../app/hello-world/assets/"); // Remove leading "/" and use shared path
     
     let body = match fs::read_to_string(&asset_file_path) {
         Ok(contents) => contents,
