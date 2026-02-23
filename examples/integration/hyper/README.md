@@ -7,7 +7,7 @@ writes the result to `dist/index.html`, and serves it over HTTP at `http://127.0
 
 ## Performance highlights
 
-- **HTTP/2 only** — multiplexed streams, header compression, and binary framing via `hyper-util`'s `http2::Builder`
+- **HTTP/1.1 + HTTP/2** — auto-negotiates per connection via `hyper-util`'s `auto::Builder`; browsers use HTTP/1.1 over plaintext while HTTP/2 clients can use h2c
 - **hyper 1.x** — zero-copy HTTP parsing with minimal allocations
 - **`Bytes` bodies** — reference-counted buffers avoid copying response data
 - **`Full<Bytes>`** — lightweight body type with no boxing overhead
