@@ -37,3 +37,20 @@ jobs:
 
       - name: Build (release)
         run: cargo build --release
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: latest
+          run_install: false
+
+      - name: Install docs dependencies
+        run: pnpm install --filter @webui/docs
+
+      - name: Build docs
+        run: pnpm --filter @webui/docs build
