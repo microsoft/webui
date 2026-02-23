@@ -10,6 +10,7 @@ WebUI Framework provides the following core directives:
 - [**`<for>` Loop Iteration**](./for) - Iterate over collections to generate repeated content
 - [**<code v-pre>{{}}</code> Signal Binding**](./signals) - Insert dynamic values with automatic HTML escaping
 - [**<code v-pre>{{{}}}</code> Raw Signal Binding**](./signals#raw-signals) - Insert unescaped HTML content
+- [**Attribute Directives**](./attributes) - Bind dynamic data to HTML attributes (`{{}}`, `?`, `:`, and mixed)
 
 ## How Directives Work
 

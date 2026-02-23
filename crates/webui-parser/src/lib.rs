@@ -137,7 +137,6 @@ impl HtmlParser {
     /// Add raw content to the buffer
     fn add_raw_fragment(&mut self, content: &str) {
         if !content.is_empty() {
-            println!("Storing raw fragment: {}", content);
             self.raw_buffer.push_str(content);
         }
     }
@@ -151,7 +150,6 @@ impl HtmlParser {
         fragments: &mut Vec<WebUIFragment>,
     ) {
         self.flush_raw_buffer(fragments);
-        println!("Adding for fragment: {} in {}", item, collection);
         fragments.push(WebUIFragment::for_loop(item, collection, fragment_id));
     }
 
@@ -163,28 +161,24 @@ impl HtmlParser {
         fragments: &mut Vec<WebUIFragment>,
     ) {
         self.flush_raw_buffer(fragments);
-        println!("Adding if fragment: {}", condition);
         fragments.push(WebUIFragment::if_cond(condition, fragment_id));
     }
 
     /// Add a component fragment, flushing raw buffer first
     fn add_component_fragment(&mut self, fragment_id: String, fragments: &mut Vec<WebUIFragment>) {
         self.flush_raw_buffer(fragments);
-        println!("Adding component fragment: {}", fragment_id);
         fragments.push(WebUIFragment::component(fragment_id));
     }
 
     /// Add a non-raw fragment, flushing the raw buffer first if needed
     fn add_fragment(&mut self, fragment: WebUIFragment, fragments: &mut Vec<WebUIFragment>) {
         self.flush_raw_buffer(fragments);
-        println!("Adding fragment: {:?}", fragment);
         fragments.push(fragment);
     }
 
     /// Flush the raw buffer into fragments if not empty
     fn flush_raw_buffer(&mut self, fragments: &mut Vec<WebUIFragment>) {
         if !self.raw_buffer.is_empty() {
-            println!("Flushing raw buffer: {}", self.raw_buffer);
             fragments.push(WebUIFragment::raw(std::mem::take(&mut self.raw_buffer)));
         }
     }
@@ -250,30 +244,8 @@ impl HtmlParser {
                             );
                         }
 
-                        // For regular HTML elements, extract the raw start/end tags
-                        let start_byte = node.start_byte();
-                        let end_byte = node.end_byte();
-                        let full_content = &source[start_byte..end_byte];
-
-                        // Find indices of opening and closing brackets to extract tags
-                        if let Some(close_bracket_pos) = full_content.find('>') {
-                            // Add opening tag as raw content
-                            let opening_tag = &full_content[0..=close_bracket_pos];
-                            self.add_raw_fragment(opening_tag);
-
-                            // Process children
-                            for child in node.named_children(&mut node.walk()) {
-                                if child.kind() != "start_tag" && child.kind() != "end_tag" {
-                                    self.process_child_node(child, source, fragments)?;
-                                }
-                            }
-
-                            // Find closing tag and add it
-                            if let Some(last_open_pos) = full_content.rfind('<') {
-                                let closing_tag = &full_content[last_open_pos..];
-                                self.add_raw_fragment(closing_tag);
-                            }
-                        }
+                        // Process regular HTML element with attribute-aware parsing
+                        self.process_regular_element(node, source, fragments, &tag_name)?;
 
                         return Ok(());
                     }
@@ -323,11 +295,9 @@ impl HtmlParser {
 
     /// Get the tag name of an element.
     fn get_element_tag_name(&self, node: Node, source: &str) -> Result<String> {
-        // Create a new cursor for this function
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if child.kind() == "start_tag" {
-                // Create another cursor for the inner loop
+            if child.kind() == "start_tag" || child.kind() == "self_closing_tag" {
                 let mut tag_cursor = child.walk();
                 for tag_name_node in child.named_children(&mut tag_cursor) {
                     if tag_name_node.kind() == "tag_name" {
@@ -350,11 +320,18 @@ impl HtmlParser {
     ) -> Result<Option<String>> {
         let query_str = r#"
             (element
-              (start_tag
-                (attribute
-                  (attribute_name) @name
-                  [(quoted_attribute_value (attribute_value) @value)
-                   (attribute_value) @value]))
+              [
+                (start_tag
+                  (attribute
+                    (attribute_name) @name
+                    [(quoted_attribute_value (attribute_value) @value)
+                     (attribute_value) @value]))
+                (self_closing_tag
+                  (attribute
+                    (attribute_name) @name
+                    [(quoted_attribute_value (attribute_value) @value)
+                     (attribute_value) @value]))
+              ]
             )
         "#;
 
@@ -392,6 +369,229 @@ impl HtmlParser {
         }
 
         Ok(None)
+    }
+
+    /// Find the start_tag or self_closing_tag child of an element node.
+    fn find_tag_node<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
+        let mut cursor = node.walk();
+        let result = node
+            .named_children(&mut cursor)
+            .find(|child| child.kind() == "start_tag" || child.kind() == "self_closing_tag");
+        result
+    }
+
+    /// Check if an attribute value is a pure handlebars expression (e.g., "{{name}}" or
+    /// "{{name}}" with quotes). Returns the inner signal name if so.
+    fn extract_single_handlebars(value: &str) -> Option<String> {
+        let trimmed = value.trim();
+        if trimmed.starts_with("{{") && trimmed.ends_with("}}") && !trimmed.starts_with("{{{") {
+            let inner = trimmed[2..trimmed.len() - 2].trim();
+            // Verify there's no other {{ in the middle (i.e., it's truly a single expression)
+            if !inner.contains("{{") && !inner.is_empty() {
+                return Some(inner.to_string());
+            }
+        }
+        None
+    }
+
+    /// Check if an attribute value contains any handlebars expressions.
+    fn contains_handlebars(value: &str) -> bool {
+        value.contains("{{")
+    }
+
+    /// Process a regular HTML element with attribute-aware parsing.
+    fn process_regular_element(
+        &mut self,
+        node: Node,
+        source: &str,
+        fragments: &mut Vec<WebUIFragment>,
+        tag_name: &str,
+    ) -> Result<()> {
+        let tag_node = self.find_tag_node(node);
+        let is_self_closing = tag_node
+            .map(|n| n.kind() == "self_closing_tag")
+            .unwrap_or(false);
+
+        if let Some(tag_node) = tag_node {
+            // Emit "<tagname" as the start of raw content
+            self.add_raw_fragment(&format!("<{}", tag_name));
+
+            // Process attributes on the tag
+            self.process_tag_attributes(tag_node, source, fragments)?;
+
+            if is_self_closing {
+                // Find the /> at the end of the self-closing tag
+                let tag_text = &source[tag_node.start_byte()..tag_node.end_byte()];
+                if tag_text.ends_with("/>") {
+                    self.add_raw_fragment("/>");
+                } else {
+                    self.add_raw_fragment(">");
+                }
+            } else {
+                // Emit ">"
+                self.add_raw_fragment(">");
+
+                // Process children (skip start_tag and end_tag nodes)
+                for child in node.named_children(&mut node.walk()) {
+                    let kind = child.kind();
+                    if kind != "start_tag" && kind != "end_tag" && kind != "self_closing_tag" {
+                        self.process_child_node(child, source, fragments)?;
+                    }
+                }
+
+                // Add closing tag
+                self.add_raw_fragment(&format!("</{}>", tag_name));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Process all attributes on a start_tag or self_closing_tag node.
+    /// Emits attribute fragments for dynamic attributes and accumulates static
+    /// attributes into the raw buffer.
+    fn process_tag_attributes(
+        &mut self,
+        tag_node: Node,
+        source: &str,
+        fragments: &mut Vec<WebUIFragment>,
+    ) -> Result<()> {
+        let mut cursor = tag_node.walk();
+        for child in tag_node.named_children(&mut cursor) {
+            if child.kind() != "attribute" {
+                continue;
+            }
+
+            let attr_name = self.get_attr_name(child, source)?;
+            let attr_value = self.get_attr_value(child, source);
+
+            if let Some(bool_name) = attr_name.strip_prefix('?') {
+                // Boolean attribute: ?disabled={{isDisabled}}
+                self.process_boolean_attribute(bool_name, attr_value.as_deref(), fragments)?;
+            } else if attr_name.starts_with(':') {
+                // Complex attribute: :config="{{settings}}"
+                self.process_complex_attribute(&attr_name, attr_value.as_deref(), fragments)?;
+            } else if let Some(ref val) = attr_value {
+                if Self::contains_handlebars(val) {
+                    // Dynamic attribute with handlebars
+                    self.process_dynamic_attribute(&attr_name, val, fragments)?;
+                } else {
+                    // Static attribute — emit as raw
+                    let attr_text = &source[child.start_byte()..child.end_byte()];
+                    self.add_raw_fragment(&format!(" {}", attr_text));
+                }
+            } else {
+                // Attribute without value (e.g., "disabled") — emit as raw
+                self.add_raw_fragment(&format!(" {}", attr_name));
+            }
+        }
+        Ok(())
+    }
+
+    /// Extract the attribute name from an attribute node.
+    fn get_attr_name(&self, attr_node: Node, source: &str) -> Result<String> {
+        let mut cursor = attr_node.walk();
+        for child in attr_node.children(&mut cursor) {
+            if child.kind() == "attribute_name" {
+                return Ok(source[child.start_byte()..child.end_byte()].to_string());
+            }
+        }
+        Err(ParserError::Html(
+            "Attribute node missing attribute_name".to_string(),
+        ))
+    }
+
+    /// Extract the attribute value from an attribute node (handles both quoted and
+    /// unquoted forms). Returns None if there is no value.
+    fn get_attr_value(&self, attr_node: Node, source: &str) -> Option<String> {
+        let mut cursor = attr_node.walk();
+        for child in attr_node.children(&mut cursor) {
+            match child.kind() {
+                "quoted_attribute_value" => {
+                    // Find the inner attribute_value node
+                    let mut inner_cursor = child.walk();
+                    for inner in child.children(&mut inner_cursor) {
+                        if inner.kind() == "attribute_value" {
+                            return Some(source[inner.start_byte()..inner.end_byte()].to_string());
+                        }
+                    }
+                    // Quoted but empty value — return empty string
+                    return Some(String::new());
+                }
+                "attribute_value" => {
+                    return Some(source[child.start_byte()..child.end_byte()].to_string());
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Process a boolean attribute (?prefix). Silently drops if value is not a
+    /// pure handlebars expression.
+    fn process_boolean_attribute(
+        &mut self,
+        name: &str,
+        value: Option<&str>,
+        fragments: &mut Vec<WebUIFragment>,
+    ) -> Result<()> {
+        if let Some(val) = value {
+            if let Some(signal_name) = Self::extract_single_handlebars(val) {
+                // Valid boolean attribute — emit as attribute fragment with conditionTree
+                let condition = ConditionExpr::identifier(&signal_name);
+                self.add_fragment(WebUIFragment::attribute_boolean(name, condition), fragments);
+                return Ok(());
+            }
+        }
+        // Invalid boolean attribute — silently drop (no output at all)
+        Ok(())
+    }
+
+    /// Process a complex attribute (:prefix).
+    fn process_complex_attribute(
+        &mut self,
+        name: &str,
+        value: Option<&str>,
+        fragments: &mut Vec<WebUIFragment>,
+    ) -> Result<()> {
+        if let Some(val) = value {
+            if let Some(signal_name) = Self::extract_single_handlebars(val) {
+                self.add_fragment(
+                    WebUIFragment::attribute_complex(name, signal_name),
+                    fragments,
+                );
+                return Ok(());
+            }
+        }
+        // No valid handlebars — emit as raw
+        self.add_raw_fragment(&format!(" {}=\"{}\"", name, value.unwrap_or("")));
+        Ok(())
+    }
+
+    /// Process a dynamic attribute (regular name with handlebars in value).
+    fn process_dynamic_attribute(
+        &mut self,
+        name: &str,
+        value: &str,
+        fragments: &mut Vec<WebUIFragment>,
+    ) -> Result<()> {
+        if let Some(signal_name) = Self::extract_single_handlebars(value) {
+            // Pure handlebars — simple attribute fragment
+            self.add_fragment(WebUIFragment::attribute(name, signal_name), fragments);
+        } else {
+            // Mixed static + dynamic — create a template sub-stream
+            let template_id = self.id_counter.next_id("attr");
+            let parsed = self.handlebars_parser.parse(value)?;
+
+            self.fragment_records
+                .insert(template_id.clone(), FragmentList { fragments: parsed });
+
+            self.add_fragment(
+                WebUIFragment::attribute_template(name, template_id),
+                fragments,
+            );
+        }
+        Ok(())
     }
 
     /// Process a <for> directive.
@@ -1025,6 +1225,338 @@ mod tests {
         );
         assert!(
             matches!(nested_for_fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</li>")
+        );
+    }
+
+    // ── Attribute fragment tests ─────────────────────────────────────────
+
+    /// Helper to parse HTML and return the fragments for the entry stream.
+    fn parse_and_get_fragments(html: &str) -> (Vec<WebUIFragment>, WebUIFragmentRecords) {
+        let mut parser = HtmlParser::new();
+        let result = parser.parse("index.html", html);
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let records = parser.into_fragment_records();
+        let fragments = records
+            .get("index.html")
+            .expect("Failed to get index.html fragment")
+            .fragments
+            .clone();
+        (fragments, records)
+    }
+
+    #[test]
+    fn test_attribute_handlebars_in_href() {
+        // Port of: 'should process handlebars from attributes as signals'
+        // <a href="{{url}}">{{name}}</a>
+        let (fragments, _) = parse_and_get_fragments(r#"<a href="{{url}}">{{name}}</a>"#);
+
+        assert_eq!(fragments.len(), 5);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<a")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == "href" && attr.value == "url" && attr.template.is_empty() && !attr.complex)
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">")
+        );
+        assert!(
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Signal(signal)) if signal.value == "name")
+        );
+        assert!(
+            matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</a>")
+        );
+    }
+
+    #[test]
+    fn test_attribute_boolean_with_handlebars() {
+        // Port of: 'should process boolean attribute with handlebars expression'
+        // <button ?disabled={{isDisabled}}>Click</button>
+        let (fragments, _) =
+            parse_and_get_fragments("<button ?disabled={{isDisabled}}>Click</button>");
+
+        assert_eq!(fragments.len(), 3);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<button")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == "disabled" &&
+                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
+                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isDisabled"))
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">Click</button>")
+        );
+    }
+
+    #[test]
+    fn test_attribute_multiple_boolean() {
+        // Port of: 'should process multiple boolean attributes'
+        // <input ?checked={{isChecked}} ?disabled={{isDisabled}} />
+        let (fragments, _) =
+            parse_and_get_fragments("<input ?checked={{isChecked}} ?disabled={{isDisabled}} />");
+
+        assert_eq!(fragments.len(), 4);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == "checked" &&
+                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
+                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isChecked"))
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == "disabled" &&
+                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
+                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isDisabled"))
+        );
+        assert!(
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "/>")
+        );
+    }
+
+    #[test]
+    fn test_attribute_boolean_and_regular_together() {
+        // Port of: 'should process a boolean attribute and a regular attribute together'
+        // <input ?checked="{{isChecked}}" type="checkbox">Hi</input>
+        let (fragments, _) = parse_and_get_fragments(
+            r#"<input ?checked="{{isChecked}}" type="checkbox">Hi</input>"#,
+        );
+
+        assert_eq!(fragments.len(), 3);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == "checked" &&
+                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
+                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isChecked"))
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == " type=\"checkbox\">Hi</input>")
+        );
+    }
+
+    #[test]
+    fn test_attribute_boolean_sandwiched() {
+        // Port of: 'should process a boolean attribute sandwiched between regular attributes'
+        // <input version={{edition}} ?checked="{{isChecked}}" type="checkbox">Hi</input>
+        let (fragments, _) = parse_and_get_fragments(
+            r#"<input version={{edition}} ?checked="{{isChecked}}" type="checkbox">Hi</input>"#,
+        );
+
+        assert_eq!(fragments.len(), 4);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == "version" && attr.value == "edition")
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == "checked" &&
+                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
+                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isChecked"))
+        );
+        assert!(
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == " type=\"checkbox\">Hi</input>")
+        );
+    }
+
+    #[test]
+    fn test_attribute_boolean_ending() {
+        // Port of: 'should process html ending with boolean attribute correctly'
+        // <input version={{edition}} ?checked="{{isChecked}}">Hi</input>
+        let (fragments, _) = parse_and_get_fragments(
+            r#"<input version={{edition}} ?checked="{{isChecked}}">Hi</input>"#,
+        );
+
+        assert_eq!(fragments.len(), 4);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == "version" && attr.value == "edition")
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == "checked" &&
+                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
+                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isChecked"))
+        );
+        assert!(
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">Hi</input>")
+        );
+    }
+
+    #[test]
+    fn test_attribute_boolean_dotted_path() {
+        // Port of: 'should process boolean attribute with dotted path'
+        // <div ?checked={{layout.isPinned}}>Content</div>
+        let (fragments, _) =
+            parse_and_get_fragments("<div ?checked={{layout.isPinned}}>Content</div>");
+
+        assert_eq!(fragments.len(), 3);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<div")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == "checked" &&
+                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
+                    Some(condition_expr::Expr::Identifier(id)) if id.value == "layout.isPinned"))
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">Content</div>")
+        );
+    }
+
+    #[test]
+    fn test_attribute_colon_prefixed_complex() {
+        // Port of: 'should process colon-prefixed attribute with handlebars'
+        // <my-component :config="{{settings}}"></my-component>
+        let (fragments, _) =
+            parse_and_get_fragments(r#"<my-component :config="{{settings}}"></my-component>"#);
+
+        assert_eq!(fragments.len(), 3);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<my-component")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == ":config" && attr.value == "settings" && attr.complex)
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "></my-component>")
+        );
+    }
+
+    #[test]
+    fn test_attribute_multiple_colon_prefixed() {
+        // Port of: 'should process multiple colon-prefixed complex attributes'
+        // <my-component :prop1="{{val1}}" :prop2="{{val2}}"></my-component>
+        let (fragments, _) = parse_and_get_fragments(
+            r#"<my-component :prop1="{{val1}}" :prop2="{{val2}}"></my-component>"#,
+        );
+
+        assert_eq!(fragments.len(), 4);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<my-component")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == ":prop1" && attr.value == "val1" && attr.complex)
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == ":prop2" && attr.value == "val2" && attr.complex)
+        );
+        assert!(
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "></my-component>")
+        );
+    }
+
+    #[test]
+    fn test_attribute_mixed_normal_boolean_colon() {
+        // Port of: 'should process mixed normal, boolean, and colon-prefixed attributes'
+        // <my-component id="comp" :config="{{settings}}" ?enabled="{{isEnabled}}"></my-component>
+        let (fragments, _) = parse_and_get_fragments(
+            r#"<my-component id="comp" :config="{{settings}}" ?enabled="{{isEnabled}}"></my-component>"#,
+        );
+
+        assert_eq!(fragments.len(), 4);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<my-component id=\"comp\"")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == ":config" && attr.value == "settings" && attr.complex)
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == "enabled" &&
+                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
+                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isEnabled"))
+        );
+        assert!(
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "></my-component>")
+        );
+    }
+
+    #[test]
+    fn test_attribute_reject_boolean_without_handlebars() {
+        // Port of: 'should reject boolean attribute without handlebars'
+        // <input ?checked="name"></input>
+        let (fragments, _) = parse_and_get_fragments(r#"<input ?checked="name"></input>"#);
+
+        // Boolean attribute is silently dropped
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input></input>")
+        );
+    }
+
+    #[test]
+    fn test_attribute_reject_boolean_with_partial_handlebars() {
+        // Port of: 'should reject boolean attribute with partial handlebars'
+        // <input ?checked="Hello {{name}}"></input>
+        let (fragments, _) =
+            parse_and_get_fragments(r#"<input ?checked="Hello {{name}}"></input>"#);
+
+        // Boolean attribute is silently dropped
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input></input>")
+        );
+    }
+
+    #[test]
+    fn test_attribute_reject_boolean_with_plain_value() {
+        // Port of: 'should reject boolean attribute with plain value'
+        // <button ?disabled="true">Click</button>
+        let (fragments, _) = parse_and_get_fragments(r#"<button ?disabled="true">Click</button>"#);
+
+        // Boolean attribute is silently dropped
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<button>Click</button>")
+        );
+    }
+
+    #[test]
+    fn test_attribute_mixed_static_dynamic() {
+        // Port of: 'should process mixed attributes correctly'
+        // <input value="hello {{world}}">Hi</input>
+        let (fragments, records) =
+            parse_and_get_fragments(r#"<input value="hello {{world}}">Hi</input>"#);
+
+        assert_eq!(fragments.len(), 3);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
+                attr.name == "value" && attr.template == "attr-1")
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">Hi</input>")
+        );
+
+        // Verify the template sub-stream
+        let attr_stream = records.get("attr-1").expect("Missing attr-1 sub-stream");
+        assert_eq!(attr_stream.fragments.len(), 2);
+        assert!(
+            matches!(attr_stream.fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "hello ")
+        );
+        assert!(
+            matches!(attr_stream.fragments[1].fragment.as_ref(), Some(Fragment::Signal(signal)) if signal.value == "world")
         );
     }
 }

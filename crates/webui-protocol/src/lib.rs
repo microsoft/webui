@@ -28,6 +28,7 @@ pub type WebUIFragmentComponent = WebUiFragmentComponent;
 pub type WebUIFragmentFor = WebUiFragmentFor;
 pub type WebUIFragmentSignal = WebUiFragmentSignal;
 pub type WebUIFragmentIf = WebUiFragmentIf;
+pub type WebUIFragmentAttribute = WebUiFragmentAttribute;
 
 /// A mapping of unique fragment identifiers to their corresponding fragment lists.
 pub type WebUIFragmentRecords = HashMap<String, FragmentList>;
@@ -159,6 +160,59 @@ impl WebUiFragment {
             })),
         }
     }
+
+    /// Create a simple dynamic attribute fragment (value is a single signal name).
+    pub fn attribute(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::Attribute(
+                WebUiFragmentAttribute {
+                    name: name.into(),
+                    value: value.into(),
+                    ..Default::default()
+                },
+            )),
+        }
+    }
+
+    /// Create a template attribute fragment (mixed static + dynamic content).
+    pub fn attribute_template(name: impl Into<String>, template: impl Into<String>) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::Attribute(
+                WebUiFragmentAttribute {
+                    name: name.into(),
+                    template: template.into(),
+                    ..Default::default()
+                },
+            )),
+        }
+    }
+
+    /// Create a complex attribute fragment (:-prefixed).
+    pub fn attribute_complex(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::Attribute(
+                WebUiFragmentAttribute {
+                    name: name.into(),
+                    value: value.into(),
+                    complex: true,
+                    ..Default::default()
+                },
+            )),
+        }
+    }
+
+    /// Create a boolean attribute fragment (?-prefixed) with a condition tree.
+    pub fn attribute_boolean(name: impl Into<String>, condition_tree: ConditionExpr) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::Attribute(
+                WebUiFragmentAttribute {
+                    name: name.into(),
+                    condition_tree: Some(condition_tree),
+                    ..Default::default()
+                },
+            )),
+        }
+    }
 }
 
 impl ConditionExpr {
@@ -243,6 +297,14 @@ impl WebUiProtocol {
                         Some(ProtocolError::Validation(format!(
                             "If condition references non-existent fragment ID: {}",
                             ic.fragment_id
+                        )))
+                    }
+                    Some(web_ui_fragment::Fragment::Attribute(attr))
+                        if !attr.template.is_empty() && !fragments.contains_key(&attr.template) =>
+                    {
+                        Some(ProtocolError::Validation(format!(
+                            "Attribute references non-existent template fragment ID: {}",
+                            attr.template
                         )))
                     }
                     _ => None,

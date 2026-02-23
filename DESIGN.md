@@ -100,16 +100,34 @@ pub struct WebUIFragmentIf {
     pub fragment_id: String,
 }
 ```
-#### Boolean Attribute Fragment
-> **Note:** Boolean attributes are specified in the design but not yet implemented.
+#### Attribute Fragment
+Attribute fragments represent dynamic HTML attributes with various binding types:
 ```rust
-pub struct WebUIFragmentBooleanAttribute {
-    /// The boolean attribute name (e.g., "disabled").
+pub struct WebUIFragmentAttribute {
+    /// The attribute name (may include `:` prefix for complex attributes).
     pub name: String,
-    /// The attribute value to render, if false, attribute is ignored.
+    /// For simple dynamic attributes, the signal name.
     pub value: String,
+    /// For mixed (template) attributes, the sub-stream fragment ID.
+    pub template: String,
+    /// True for `:`-prefixed complex attributes.
+    pub complex: bool,
+    /// True for the first dynamic attribute on a component element.
+    pub attr_start: bool,
+    /// True for skipped attributes (class, style, role, data-*, aria-*).
+    pub attr_skip: bool,
+    /// True for static attribute values on components.
+    pub raw_value: bool,
+    /// For `?`-prefixed boolean attributes, the condition tree.
+    pub condition_tree: Option<ConditionExpr>,
 }
 ```
+
+**Attribute types:**
+- **Simple dynamic:** `href="{{url}}"` → `{ name: "href", value: "url" }`
+- **Boolean (`?` prefix):** `?disabled={{isDisabled}}` → `{ name: "disabled", condition_tree: identifier("isDisabled") }` — rendered only if condition is truthy; silently dropped if value is not a pure handlebars expression.
+- **Complex (`:` prefix):** `:config="{{settings}}"` → `{ name: ":config", value: "settings", complex: true }`
+- **Mixed/template:** `value="hello {{world}}"` → `{ name: "value", template: "attr-1" }` with sub-stream `attr-1: [raw("hello "), signal("world")]`
 #### Condition Expressions
 Condition expressions are protobuf messages with a `oneof expr` field:
 ```rust
@@ -178,7 +196,7 @@ pub struct Predicate {
 - Validation of protocol structure during deserialization
 - Performance optimizations for large protocol structures
 - Support for fragment reference validation
-- Attribute names starting with '?' are treated as boolean attributes using the `BooleanAttribute` fragment type. The attribute is rendered only if the value/expression evaluates to true.
+- Attribute names starting with '?' are treated as boolean attributes using the `Attribute` fragment type with a `condition_tree`. The attribute is rendered only if the condition evaluates to true.
 
 ## State Management (webui-state)
 ### Path Resolution
@@ -241,9 +259,11 @@ pub trait Writer {
 - **Signal fragments:**
   - Resolve value from state using `find_value_by_dotted_path`
   - Escape value if `raw` is false, otherwise write as-is
-- **Boolean attribute fragments:**
-  - Evaluate the value; if true, render the attribute name.
-  - If false, omit the attribute.
+- **Attribute fragments:**
+  - **Boolean (with `condition_tree`):** Evaluate condition; if truthy, render attribute name only. If false, omit entirely.
+  - **Simple dynamic (with `value`):** Resolve signal from state, render as `name="resolved_value"`.
+  - **Template (with `template`):** Render `name="`, process referenced sub-stream, render closing `"`.
+  - **Complex (with `complex: true`):** Same as simple dynamic but for `:` prefixed pass-through attributes.
 - **If fragments:**
   - Evaluate condition using `evaluate`
   - If true, process referenced fragment
@@ -582,9 +602,12 @@ Hello, WebUI!
                 "value": "<person-card"
             },
             {
-                "type": "booleanAttribute",
+                "type": "attribute",
                 "name": "disabled",
-                "value": "person.isInactive"
+                "conditionTree": {
+                    "type": "identifier",
+                    "value": "person.isInactive"
+                }
             },
             {
                 "type": "raw",
