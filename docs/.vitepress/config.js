@@ -69,7 +69,6 @@ export default {
         {
           text: 'Advanced Topics',
           items: [
-            { text: 'WebUI Protocol', link: '/guide/advanced/protocol' },
             { text: 'Performance Optimization', link: '/guide/advanced/performance' },
           ]
         }

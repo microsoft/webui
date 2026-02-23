@@ -160,8 +160,6 @@ fragments {
 }
 ```
 
-See [Protocol](/guide/advanced/protocol) for the full schema reference.
-
 ## Error Messages
 
 The CLI provides helpful error messages with suggestions:
