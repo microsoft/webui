@@ -7,8 +7,11 @@ use tiny_http::Server;
 
 #[path = "../../../../examples/shared/rust/config.rs"]
 mod config;
+#[path = "../../../../examples/shared/rust/hmr.rs"]
+mod hmr;
 #[path = "../../../../examples/shared/rust/output.rs"]
 mod output;
+#[path = "../../../../examples/shared/rust/render.rs"]
 mod render;
 mod routes {
     pub mod assets;
@@ -16,6 +19,7 @@ mod routes {
     pub mod index;
     pub mod not_found;
 }
+#[path = "../../../../examples/shared/rust/watcher.rs"]
 mod watcher;
 
 use crate::config::AppPaths;

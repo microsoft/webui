@@ -6,16 +6,19 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use clap::Parser;
 use http_body_util::Full;
-use hyper::server::conn::http2;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
 use tokio::net::TcpListener;
 
 #[path = "../../../../examples/shared/rust/config.rs"]
 mod config;
+#[path = "../../../../examples/shared/rust/hmr.rs"]
+mod hmr;
 #[path = "../../../../examples/shared/rust/output.rs"]
 mod output;
+#[path = "../../../../examples/shared/rust/render.rs"]
 mod render;
 mod routes {
     pub mod assets;
@@ -23,6 +26,7 @@ mod routes {
     pub mod index;
     pub mod not_found;
 }
+#[path = "../../../../examples/shared/rust/watcher.rs"]
 mod watcher;
 
 use crate::config::AppPaths;
@@ -95,7 +99,7 @@ async fn run(cli: &Cli) -> Result<()> {
         let paths = Arc::clone(&paths);
 
         tokio::task::spawn(async move {
-            if let Err(err) = http2::Builder::new(TokioExecutor::new())
+            if let Err(err) = auto::Builder::new(TokioExecutor::new())
                 .serve_connection(
                     io,
                     service_fn(|req| handle_request(req, Arc::clone(&paths))),
