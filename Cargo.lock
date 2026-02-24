@@ -1281,6 +1281,7 @@ dependencies = [
  "serde",
  "serde_json",
  "webui-handler",
+ "webui-parser",
  "webui-protocol",
  "windows",
 ]

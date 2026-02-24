@@ -9,10 +9,11 @@ repository.workspace = true
 
 [lib]
 name = "webui_ffi"
-crate-type = ["cdylib", "staticlib"]
+crate-type = ["cdylib", "staticlib", "lib"]
 
 [dependencies]
 webui-handler = { path = "../webui-handler" }
+webui-parser = { path = "../webui-parser" }
 webui-protocol = { path = "../webui-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
