@@ -1076,7 +1076,6 @@ impl HtmlParser {
 
 #[cfg(test)]
 mod tests {
-    use webui_protocol::condition_expr;
     use webui_test_utils::*;
 
     use super::*;
@@ -1089,23 +1088,11 @@ mod tests {
 
         assert!(result.is_ok());
         let fragment_records = parser.into_fragment_records();
-        let fragment_list = fragment_records
-            .get("test.html")
-            .expect("Failed to get test.html fragment");
-        let fragments = &fragment_list.fragments;
-        assert_eq!(fragments.len(), 3);
 
-        // Verify each fragment
-        assert!(
-            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "Hello, ")
-        );
-        assert!(
-            matches!(fragments.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Signal(signal)) if
-                signal.value == "name" && !signal.raw
-            )
-        );
-        assert!(
-            matches!(fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "!")
+        assert_stream!(
+            fragment_records,
+            "test.html",
+            [raw("Hello, "), signal("name"), raw("!"),]
         );
     }
 
@@ -1117,23 +1104,11 @@ mod tests {
 
         assert!(result.is_ok());
         let fragment_records = parser.into_fragment_records();
-        let fragment_list = fragment_records
-            .get("test.html")
-            .expect("Failed to get test.html fragment");
-        let fragments = &fragment_list.fragments;
-        assert_eq!(fragments.len(), 3);
 
-        // Verify each fragment
-        assert!(
-            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "Hello, ")
-        );
-        assert!(
-            matches!(fragments.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Signal(signal)) if
-                signal.value == "html_content" && signal.raw
-            )
-        );
-        assert!(
-            matches!(fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "!")
+        assert_stream!(
+            fragment_records,
+            "test.html",
+            [raw("Hello, "), signal_raw("html_content"), raw("!"),]
         );
     }
 
@@ -1146,38 +1121,22 @@ mod tests {
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
         println!("Fragment records: {:#?}", fragment_records);
-        let fragment_list = fragment_records
-            .get("test.html")
-            .expect("Failed to get test.html fragment");
-        let fragments = &fragment_list.fragments;
 
-        // Verify each fragment
-        assert_eq!(fragments.len(), 1);
-
-        assert!(
-            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::ForLoop(for_loop)) if
-                for_loop.item == "item" &&
-                for_loop.collection == "items" &&
-                for_loop.fragment_id == "for-1"
-            )
+        assert_stream!(
+            fragment_records,
+            "test.html",
+            [for_loop("item", "items", "for-1"),]
         );
 
         // Verify the sub-fragment contains our item content
-        let for_fragment_list = fragment_records
-            .get("for-1")
-            .expect("Failed to get for-1 fragment");
-        let for_fragment = &for_fragment_list.fragments;
-        assert_eq!(for_fragment.len(), 3);
-        assert!(
-            matches!(for_fragment.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "<div class=\"item\">")
-        );
-        assert!(
-            matches!(for_fragment.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Signal(signal)) if
-                signal.value == "item.name" && !signal.raw
-            )
-        );
-        assert!(
-            matches!(for_fragment.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</div>")
+        assert_stream!(
+            fragment_records,
+            "for-1",
+            [
+                raw("<div class=\"item\">"),
+                signal("item.name"),
+                raw("</div>"),
+            ]
         );
     }
 
@@ -1191,35 +1150,18 @@ mod tests {
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
         println!("Fragment records: {:#?}", fragment_records);
-        let fragment_list = fragment_records
-            .get("test.html")
-            .expect("Failed to get test.html fragment");
-        let fragments = &fragment_list.fragments;
-        assert_eq!(fragments.len(), 1);
 
-        assert!(
-            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::IfCond(if_cond)) if
-                matches!(if_cond.condition.as_ref().and_then(|c| c.expr.as_ref()), Some(condition_expr::Expr::Identifier(id)) if id.value == "isLoggedIn") &&
-                if_cond.fragment_id == "if-1"
-            )
-        );
+        assert_stream!(fragment_records, "test.html", [if_cond("if-1"),]);
 
         // Verify the sub-fragment contains our content
-        let if_fragment_list = fragment_records
-            .get("if-1")
-            .expect("Failed to get if-1 fragment");
-        let if_fragment = &if_fragment_list.fragments;
-        assert_eq!(if_fragment.len(), 3);
-        assert!(
-            matches!(if_fragment.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "<div>Welcome back, ")
-        );
-        assert!(
-            matches!(if_fragment.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Signal(signal)) if
-                signal.value == "username" && !signal.raw
-            )
-        );
-        assert!(
-            matches!(if_fragment.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "!</div>")
+        assert_stream!(
+            fragment_records,
+            "if-1",
+            [
+                raw("<div>Welcome back, "),
+                signal("username"),
+                raw("!</div>"),
+            ]
         );
     }
 
@@ -1238,17 +1180,15 @@ mod tests {
         let result = parser.parse("test.html", "<my-component></my-component>");
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let records = parser.into_fragment_records();
-        let fragments = &records["test.html"].fragments;
 
-        assert_eq!(fragments.len(), 3);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<my-component>")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "my-component")
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</my-component>")
+        assert_stream!(
+            records,
+            "test.html",
+            [
+                raw("<my-component>"),
+                component("my-component"),
+                raw("</my-component>"),
+            ]
         );
 
         // Component template stream should be wrapped with shadow DOM template + style link
@@ -1315,23 +1255,19 @@ mod tests {
         assert!(result.is_ok());
         let records = parser.into_fragment_records();
 
-        let entry = &records["index.html"].fragments;
-        assert_eq!(entry.len(), 3);
-        assert!(
-            matches!(entry[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-element>")
-        );
-        assert!(
-            matches!(entry[1].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-element")
-        );
-        assert!(
-            matches!(entry[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "Hello</custom-element>")
+        assert_fragments!(
+            records["index.html"].fragments,
+            [
+                raw("<custom-element>"),
+                component("custom-element"),
+                raw("Hello</custom-element>"),
+            ]
         );
 
-        let comp = &records["custom-element"].fragments;
-        assert_eq!(comp.len(), 1);
-        assert!(
-            matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
-                raw.value == r#"<template foo="bar"><slot></slot></template>"#)
+        assert_stream!(
+            records,
+            "custom-element",
+            [raw(r#"<template foo="bar"><slot></slot></template>"#),]
         );
     }
 
@@ -1350,11 +1286,12 @@ mod tests {
         assert!(result.is_ok());
         let records = parser.into_fragment_records();
 
-        let comp = &records["custom-element"].fragments;
-        assert_eq!(comp.len(), 1);
-        assert!(
-            matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
-                raw.value == r#"<template foo="bar"><link rel="stylesheet" href="./custom-element.css"><slot></slot></template>"#)
+        assert_stream!(
+            records,
+            "custom-element",
+            [raw(
+                r#"<template foo="bar"><link rel="stylesheet" href="./custom-element.css"><slot></slot></template>"#
+            ),]
         );
     }
 
@@ -1373,11 +1310,10 @@ mod tests {
         assert!(result.is_ok());
         let records = parser.into_fragment_records();
 
-        let comp = &records["custom-element"].fragments;
-        assert_eq!(comp.len(), 1);
-        assert!(
-            matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
-                raw.value == "<template><slot></slot></template>")
+        assert_stream!(
+            records,
+            "custom-element",
+            [raw("<template><slot></slot></template>"),]
         );
     }
 
@@ -1417,23 +1353,21 @@ mod tests {
         assert!(result.is_ok());
         let records = parser.into_fragment_records();
 
-        let entry = &records["index.html"].fragments;
-        assert_eq!(entry.len(), 3);
-        assert!(
-            matches!(entry[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-element>")
-        );
-        assert!(
-            matches!(entry[1].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-element")
-        );
-        assert!(
-            matches!(entry[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</custom-element>")
+        assert_fragments!(
+            records["index.html"].fragments,
+            [
+                raw("<custom-element>"),
+                component("custom-element"),
+                raw("</custom-element>"),
+            ]
         );
 
-        let comp = &records["custom-element"].fragments;
-        assert_eq!(comp.len(), 1);
-        assert!(
-            matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
-                raw.value == "<template shadowrootmode=\"open\"><div>Custom Element</div></template>")
+        assert_stream!(
+            records,
+            "custom-element",
+            [raw(
+                "<template shadowrootmode=\"open\"><div>Custom Element</div></template>"
+            ),]
         );
     }
 
@@ -1448,20 +1382,14 @@ mod tests {
         assert!(result.is_ok());
         let records = parser.into_fragment_records();
 
-        let entry = &records["index.html"].fragments;
-        assert_eq!(entry.len(), 4);
-        assert!(
-            matches!(entry[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-widget")
-        );
-        assert!(
-            matches!(entry[1].fragment.as_ref(), Some(Fragment::Attribute(a)) if
-                a.name == "config" && a.value == "settings" && a.attr_start)
-        );
-        assert!(
-            matches!(entry[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "/>")
-        );
-        assert!(
-            matches!(entry[3].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-widget")
+        assert_fragments!(
+            records["index.html"].fragments,
+            [
+                raw("<custom-widget"),
+                attr_start("config", "settings"),
+                raw("/>"),
+                component("custom-widget"),
+            ]
         );
     }
 
@@ -1479,29 +1407,23 @@ mod tests {
         assert!(result.is_ok());
         let records = parser.into_fragment_records();
 
-        let entry = &records["index.html"].fragments;
-        assert_eq!(entry.len(), 5);
-        assert!(
-            matches!(entry[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-icon>")
-        );
-        assert!(
-            matches!(entry[1].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-icon")
-        );
-        assert!(
-            matches!(entry[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<use")
-        );
-        assert!(
-            matches!(entry[3].fragment.as_ref(), Some(Fragment::Attribute(a)) if a.name == "href" && a.template == "attr-1")
-        );
-        assert!(
-            matches!(entry[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "/></custom-icon>")
+        assert_fragments!(
+            records["index.html"].fragments,
+            [
+                raw("<custom-icon>"),
+                component("custom-icon"),
+                raw("<use"),
+                attr_template("href", "attr-1"),
+                raw("/></custom-icon>"),
+            ]
         );
 
-        let comp = &records["custom-icon"].fragments;
-        assert_eq!(comp.len(), 1);
-        assert!(
-            matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
-                raw.value == "<template shadowrootmode=\"open\"><svg><slot></slot></svg></template>")
+        assert_stream!(
+            records,
+            "custom-icon",
+            [raw(
+                "<template shadowrootmode=\"open\"><svg><slot></slot></svg></template>"
+            ),]
         );
     }
 
@@ -1519,29 +1441,18 @@ mod tests {
         assert!(result.is_ok());
         let records = parser.into_fragment_records();
 
-        let entry = &records["index.html"].fragments;
-        assert_eq!(entry.len(), 6);
-        assert!(
-            matches!(entry[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-element")
-        );
-        // First dynamic attr: boolean with attrStart
-        assert!(
-            matches!(entry[1].fragment.as_ref(), Some(Fragment::Attribute(a)) if
-                a.name == "disabled" && a.attr_start &&
-                matches!(a.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
-                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isDisabled"))
-        );
-        // Static attr after dynamic: rawValue
-        assert!(
-            matches!(entry[2].fragment.as_ref(), Some(Fragment::Attribute(a)) if
-                a.name == "title" && a.value == "Hello" && a.raw_value)
-        );
-        assert!(matches!(entry[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">"));
-        assert!(
-            matches!(entry[4].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-element")
-        );
-        assert!(
-            matches!(entry[5].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</custom-element>")
+        assert_fragments!(
+            records["index.html"].fragments,
+            [
+                raw("<custom-element"),
+                // First dynamic attr: boolean with attrStart
+                bool_attr_start("disabled", "isDisabled"),
+                // Static attr after dynamic: rawValue
+                attr_raw("title", "Hello"),
+                raw(">"),
+                component("custom-element"),
+                raw("</custom-element>"),
+            ]
         );
     }
 
@@ -1578,54 +1489,21 @@ mod tests {
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
 
-        let fragment_list = fragment_records
-            .get("test.html")
-            .expect("Failed to get test.html fragment");
-        let fragments = &fragment_list.fragments;
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::ForLoop(for_loop)) if
-                for_loop.item == "category" &&
-                for_loop.collection == "categories" &&
-                for_loop.fragment_id == "for-1"
-            )
+        assert_stream!(
+            fragment_records,
+            "test.html",
+            [for_loop("category", "categories", "for-1"),]
         );
 
-        let for_fragment_list = fragment_records
-            .get("for-1")
-            .expect("Failed to get for-1 fragment");
-        let for_fragment = &for_fragment_list.fragments;
-        assert_eq!(for_fragment.len(), 1);
-        assert!(
-            matches!(for_fragment.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::IfCond(if_cond)) if
-                matches!(if_cond.condition.as_ref().and_then(|c| c.expr.as_ref()), Some(condition_expr::Expr::Identifier(id)) if id.value == "category.hasItems") &&
-                if_cond.fragment_id == "if-1"
-            )
+        assert_stream!(fragment_records, "for-1", [if_cond("if-1"),]);
+
+        assert_stream!(
+            fragment_records,
+            "if-1",
+            [for_loop("item", "category.items", "for-2"),]
         );
 
-        let if_fragment_list = fragment_records
-            .get("if-1")
-            .expect("Failed to get if-1 fragment");
-        let if_fragment = &if_fragment_list.fragments;
-        assert_eq!(if_fragment.len(), 1);
-        assert!(
-            matches!(if_fragment.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::ForLoop(for_loop)) if
-                for_loop.item == "item" &&
-                for_loop.collection == "category.items" &&
-                for_loop.fragment_id == "for-2"
-            )
-        );
-
-        let nested_for_fragment_list = fragment_records
-            .get("for-2")
-            .expect("Failed to get for-2 fragment");
-        let nested_for_fragment = &nested_for_fragment_list.fragments;
-        assert_eq!(nested_for_fragment.len(), 1);
-        assert!(
-            matches!(nested_for_fragment.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Signal(signal)) if
-                signal.value == "item.title" && !signal.raw
-            )
-        );
+        assert_stream!(fragment_records, "for-2", [signal("item.title"),]);
     }
 
     #[test]
@@ -1648,83 +1526,42 @@ mod tests {
 
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
-        let fragment_list = fragment_records
-            .get("test.html")
-            .expect("Failed to get test.html fragment");
-        let fragments = &fragment_list.fragments;
-        assert_eq!(fragments.len(), 1);
 
-        assert!(
-            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::ForLoop(for_loop)) if
-                for_loop.item == "category" &&
-                for_loop.collection == "categories" &&
-                for_loop.fragment_id == "for-1"
-            )
+        assert_stream!(
+            fragment_records,
+            "test.html",
+            [for_loop("category", "categories", "for-1"),]
         );
 
         // Verify for fragments contains the category.name signal
-        let for_fragments: &Vec<WebUIFragment> = &fragment_records
-            .get("for-1")
-            .expect("Failed to get for-1 fragment")
-            .fragments;
-        assert_eq!(for_fragments.len(), 5);
-        assert!(
-            matches!(for_fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "<div class=\"category\"><h2>")
-        );
-        assert!(
-            matches!(for_fragments.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Signal(signal)) if
-                signal.value == "category.name" && !signal.raw
-            )
-        );
-        assert!(
-            matches!(for_fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</h2>")
-        );
-        assert!(
-            matches!(for_fragments.get(3).and_then(|f| f.fragment.as_ref()), Some(Fragment::IfCond(if_cond)) if
-                matches!(if_cond.condition.as_ref().and_then(|c| c.expr.as_ref()), Some(condition_expr::Expr::Identifier(id)) if id.value == "category.hasItems") &&
-                if_cond.fragment_id == "if-1"
-            )
-        );
-        assert!(
-            matches!(for_fragments.get(4).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</div>")
+        assert_stream!(
+            fragment_records,
+            "for-1",
+            [
+                raw("<div class=\"category\"><h2>"),
+                signal("category.name"),
+                raw("</h2>"),
+                if_cond("if-1"),
+                raw("</div>"),
+            ]
         );
 
         // Verify nested if condition.
-        let if_fragments: &Vec<WebUIFragment> = &fragment_records
-            .get("if-1")
-            .expect("Failed to get if-1 fragment")
-            .fragments;
-        assert_eq!(if_fragments.len(), 3);
-        assert!(
-            matches!(if_fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "<ul>")
-        );
-        assert!(
-            matches!(if_fragments.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::ForLoop(for_loop)) if
-                for_loop.item == "item" &&
-                for_loop.collection == "category.items" &&
-                for_loop.fragment_id == "for-2"
-            )
-        );
-        assert!(
-            matches!(if_fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</ul>")
+        assert_stream!(
+            fragment_records,
+            "if-1",
+            [
+                raw("<ul>"),
+                for_loop("item", "category.items", "for-2"),
+                raw("</ul>"),
+            ]
         );
 
         // Verify nested for each.
-        let nested_for_fragments: &Vec<WebUIFragment> = &fragment_records
-            .get("for-2")
-            .expect("Failed to get for-2 fragment")
-            .fragments;
-        assert_eq!(nested_for_fragments.len(), 3);
-        assert!(
-            matches!(nested_for_fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "<li>")
-        );
-        assert!(
-            matches!(nested_for_fragments.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Signal(signal)) if
-                signal.value == "item.title" && !signal.raw
-            )
-        );
-        assert!(
-            matches!(nested_for_fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</li>")
+        assert_stream!(
+            fragment_records,
+            "for-2",
+            [raw("<li>"), signal("item.title"), raw("</li>"),]
         );
     }
 
@@ -1782,24 +1619,14 @@ mod tests {
         let (fragments, _) =
             parse_and_get_fragments("<input ?checked={{isChecked}} ?disabled={{isDisabled}} />");
 
-        assert_eq!(fragments.len(), 4);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == "checked" &&
-                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
-                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isChecked"))
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == "disabled" &&
-                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
-                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isDisabled"))
-        );
-        assert!(
-            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "/>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<input"),
+                bool_attr("checked", "isChecked"),
+                bool_attr("disabled", "isDisabled"),
+                raw("/>"),
+            ]
         );
     }
 
@@ -1811,18 +1638,13 @@ mod tests {
             r#"<input ?checked="{{isChecked}}" type="checkbox">Hi</input>"#,
         );
 
-        assert_eq!(fragments.len(), 3);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == "checked" &&
-                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
-                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isChecked"))
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == " type=\"checkbox\">Hi</input>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<input"),
+                bool_attr("checked", "isChecked"),
+                raw(" type=\"checkbox\">Hi</input>"),
+            ]
         );
     }
 
@@ -1834,22 +1656,14 @@ mod tests {
             r#"<input version={{edition}} ?checked="{{isChecked}}" type="checkbox">Hi</input>"#,
         );
 
-        assert_eq!(fragments.len(), 4);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == "version" && attr.value == "edition")
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == "checked" &&
-                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
-                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isChecked"))
-        );
-        assert!(
-            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == " type=\"checkbox\">Hi</input>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<input"),
+                attr("version", "edition"),
+                bool_attr("checked", "isChecked"),
+                raw(" type=\"checkbox\">Hi</input>"),
+            ]
         );
     }
 
@@ -1861,22 +1675,14 @@ mod tests {
             r#"<input version={{edition}} ?checked="{{isChecked}}">Hi</input>"#,
         );
 
-        assert_eq!(fragments.len(), 4);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == "version" && attr.value == "edition")
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == "checked" &&
-                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
-                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isChecked"))
-        );
-        assert!(
-            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">Hi</input>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<input"),
+                attr("version", "edition"),
+                bool_attr("checked", "isChecked"),
+                raw(">Hi</input>"),
+            ]
         );
     }
 
@@ -1887,18 +1693,13 @@ mod tests {
         let (fragments, _) =
             parse_and_get_fragments("<div ?checked={{layout.isPinned}}>Content</div>");
 
-        assert_eq!(fragments.len(), 3);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<div")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == "checked" &&
-                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
-                    Some(condition_expr::Expr::Identifier(id)) if id.value == "layout.isPinned"))
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">Content</div>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<div"),
+                bool_attr("checked", "layout.isPinned"),
+                raw(">Content</div>"),
+            ]
         );
     }
 
@@ -1909,16 +1710,13 @@ mod tests {
         let (fragments, _) =
             parse_and_get_fragments(r#"<my-component :config="{{settings}}"></my-component>"#);
 
-        assert_eq!(fragments.len(), 3);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<my-component")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == ":config" && attr.value == "settings" && attr.complex)
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "></my-component>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<my-component"),
+                attr_complex(":config", "settings"),
+                raw("></my-component>"),
+            ]
         );
     }
 
@@ -1930,20 +1728,14 @@ mod tests {
             r#"<my-component :prop1="{{val1}}" :prop2="{{val2}}"></my-component>"#,
         );
 
-        assert_eq!(fragments.len(), 4);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<my-component")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == ":prop1" && attr.value == "val1" && attr.complex)
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == ":prop2" && attr.value == "val2" && attr.complex)
-        );
-        assert!(
-            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "></my-component>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<my-component"),
+                attr_complex(":prop1", "val1"),
+                attr_complex(":prop2", "val2"),
+                raw("></my-component>"),
+            ]
         );
     }
 
@@ -1955,22 +1747,14 @@ mod tests {
             r#"<my-component id="comp" :config="{{settings}}" ?enabled="{{isEnabled}}"></my-component>"#,
         );
 
-        assert_eq!(fragments.len(), 4);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<my-component id=\"comp\"")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == ":config" && attr.value == "settings" && attr.complex)
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == "enabled" &&
-                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
-                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isEnabled"))
-        );
-        assert!(
-            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "></my-component>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<my-component id=\"comp\""),
+                attr_complex(":config", "settings"),
+                bool_attr("enabled", "isEnabled"),
+                raw("></my-component>"),
+            ]
         );
     }
 
@@ -1981,10 +1765,7 @@ mod tests {
         let (fragments, _) = parse_and_get_fragments(r#"<input ?checked="name"></input>"#);
 
         // Boolean attribute is silently dropped
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input></input>")
-        );
+        assert_fragments!(fragments, [raw("<input></input>"),]);
     }
 
     #[test]
@@ -1995,10 +1776,7 @@ mod tests {
             parse_and_get_fragments(r#"<input ?checked="Hello {{name}}"></input>"#);
 
         // Boolean attribute is silently dropped
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input></input>")
-        );
+        assert_fragments!(fragments, [raw("<input></input>"),]);
     }
 
     #[test]
@@ -2008,10 +1786,7 @@ mod tests {
         let (fragments, _) = parse_and_get_fragments(r#"<button ?disabled="true">Click</button>"#);
 
         // Boolean attribute is silently dropped
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<button>Click</button>")
-        );
+        assert_fragments!(fragments, [raw("<button>Click</button>"),]);
     }
 
     #[test]
@@ -2021,27 +1796,17 @@ mod tests {
         let (fragments, records) =
             parse_and_get_fragments(r#"<input value="hello {{world}}">Hi</input>"#);
 
-        assert_eq!(fragments.len(), 3);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == "value" && attr.template == "attr-1")
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">Hi</input>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<input"),
+                attr_template("value", "attr-1"),
+                raw(">Hi</input>"),
+            ]
         );
 
         // Verify the template sub-stream
-        let attr_stream = records.get("attr-1").expect("Missing attr-1 sub-stream");
-        assert_eq!(attr_stream.fragments.len(), 2);
-        assert!(
-            matches!(attr_stream.fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "hello ")
-        );
-        assert!(
-            matches!(attr_stream.fragments[1].fragment.as_ref(), Some(Fragment::Signal(signal)) if signal.value == "world")
-        );
+        assert_stream!(records, "attr-1", [raw("hello "), signal("world"),]);
     }
 
     // ── Body signal tests ─────────────────────────────────────────────
@@ -2049,21 +1814,15 @@ mod tests {
     #[test]
     fn test_body_signals() {
         let (fragments, _) = parse_and_get_fragments("<body><app-shell></app-shell></body>");
-        assert_eq!(fragments.len(), 5);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<body>")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Signal(signal)) if signal.value == "body_start" && signal.raw)
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<app-shell></app-shell>")
-        );
-        assert!(
-            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Signal(signal)) if signal.value == "body_end" && signal.raw)
-        );
-        assert!(
-            matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</body>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<body>"),
+                signal_raw("body_start"),
+                raw("<app-shell></app-shell>"),
+                signal_raw("body_end"),
+                raw("</body>"),
+            ]
         );
     }
 
@@ -2073,10 +1832,7 @@ mod tests {
     fn test_empty_for_produces_nothing() {
         let (fragments, records) =
             parse_and_get_fragments(r#"<div><for each="item in items"></for></div>"#);
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<div></div>")
-        );
+        assert_fragments!(fragments, [raw("<div></div>"),]);
         assert!(!records.contains_key("for-1"));
     }
 
@@ -2086,9 +1842,11 @@ mod tests {
     fn test_self_closing_svg_path() {
         let (fragments, _) =
             parse_and_get_fragments(r#"<svg width="19"><path d="foo" fill="currentcolor"/></svg>"#);
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#"<svg width="19"><path d="foo" fill="currentcolor"/></svg>"#)
+        assert_fragments!(
+            fragments,
+            [raw(
+                r#"<svg width="19"><path d="foo" fill="currentcolor"/></svg>"#
+            ),]
         );
     }
 
@@ -2097,9 +1855,11 @@ mod tests {
         let (fragments, _) = parse_and_get_fragments(
             r#"<div><img src="test.jpg" alt="test"><br><hr><input type="text"></div>"#,
         );
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#"<div><img src="test.jpg" alt="test"><br><hr><input type="text"></div>"#)
+        assert_fragments!(
+            fragments,
+            [raw(
+                r#"<div><img src="test.jpg" alt="test"><br><hr><input type="text"></div>"#
+            ),]
         );
     }
 
@@ -2107,18 +1867,14 @@ mod tests {
     fn test_self_closing_with_dynamic_attributes() {
         let (fragments, _) =
             parse_and_get_fragments(r#"<img src="{{imageUrl}}" alt="{{imageAlt}}" />"#);
-        assert_eq!(fragments.len(), 4);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<img")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "src" && attr.value == "imageUrl")
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "alt" && attr.value == "imageAlt")
-        );
-        assert!(
-            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "/>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<img"),
+                attr("src", "imageUrl"),
+                attr("alt", "imageAlt"),
+                raw("/>"),
+            ]
         );
     }
 
@@ -2127,18 +1883,14 @@ mod tests {
         let (fragments, _) = parse_and_get_fragments(
             r#"<input type="checkbox" ?checked="{{isSelected}}" ?disabled="{{isDisabled}}" />"#,
         );
-        assert_eq!(fragments.len(), 4);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<input type=\"checkbox\"")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "checked" && matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()), Some(condition_expr::Expr::Identifier(id)) if id.value == "isSelected"))
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "disabled" && matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()), Some(condition_expr::Expr::Identifier(id)) if id.value == "isDisabled"))
-        );
-        assert!(
-            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "/>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<input type=\"checkbox\""),
+                bool_attr("checked", "isSelected"),
+                bool_attr("disabled", "isDisabled"),
+                raw("/>"),
+            ]
         );
     }
 
@@ -2146,9 +1898,9 @@ mod tests {
     fn test_multiple_self_closing_in_sequence() {
         let (fragments, _) =
             parse_and_get_fragments(r#"<img src="1.jpg" /><br /><img src="2.jpg" />"#);
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#"<img src="1.jpg"/><br/><img src="2.jpg"/>"#)
+        assert_fragments!(
+            fragments,
+            [raw(r#"<img src="1.jpg"/><br/><img src="2.jpg"/>"#),]
         );
     }
 
@@ -2156,15 +1908,13 @@ mod tests {
     fn test_self_closing_with_mixed_content() {
         let (fragments, _) =
             parse_and_get_fragments(r#"<div>Text before<img src="{{url}}" />Text after</div>"#);
-        assert_eq!(fragments.len(), 3);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<div>Text before<img")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "src" && attr.value == "url")
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "/>Text after</div>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<div>Text before<img"),
+                attr("src", "url"),
+                raw("/>Text after</div>"),
+            ]
         );
     }
 
@@ -2173,18 +1923,14 @@ mod tests {
         let (fragments, _) = parse_and_get_fragments(
             r#"<svg><circle cx="{{x}}" cy="{{y}}" r="5" /><rect width="10" height="10" /></svg>"#,
         );
-        assert_eq!(fragments.len(), 4);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<svg><circle")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "cx" && attr.value == "x")
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "cy" && attr.value == "y")
-        );
-        assert!(
-            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#" r="5"/><rect width="10" height="10"/></svg>"#)
+        assert_fragments!(
+            fragments,
+            [
+                raw("<svg><circle"),
+                attr("cx", "x"),
+                attr("cy", "y"),
+                raw(r#" r="5"/><rect width="10" height="10"/></svg>"#),
+            ]
         );
     }
 
@@ -2193,20 +1939,11 @@ mod tests {
         let (fragments, records) = parse_and_get_fragments(
             r#"<for each="item in items"><img src="{{item.url}}" /></for>"#,
         );
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::ForLoop(fl)) if fl.item == "item" && fl.collection == "items" && fl.fragment_id == "for-1")
-        );
-        let for_stream = records.get("for-1").expect("Missing for-1");
-        assert_eq!(for_stream.fragments.len(), 3);
-        assert!(
-            matches!(for_stream.fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<img")
-        );
-        assert!(
-            matches!(for_stream.fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if attr.name == "src" && attr.value == "item.url")
-        );
-        assert!(
-            matches!(for_stream.fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "/>")
+        assert_fragments!(fragments, [for_loop("item", "items", "for-1"),]);
+        assert_stream!(
+            records,
+            "for-1",
+            [raw("<img"), attr("src", "item.url"), raw("/>"),]
         );
     }
 
@@ -2214,9 +1951,9 @@ mod tests {
     fn test_self_closing_whitespace_variations() {
         let (fragments, _) =
             parse_and_get_fragments(r#"<img src="test.jpg"/><input type="text" /><br/>"#);
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#"<img src="test.jpg"/><input type="text"/><br/>"#)
+        assert_fragments!(
+            fragments,
+            [raw(r#"<img src="test.jpg"/><input type="text"/><br/>"#),]
         );
     }
 
@@ -2225,9 +1962,11 @@ mod tests {
         let (fragments, _) = parse_and_get_fragments(
             r#"<div><section><article><img src="deep.jpg" /><br /></article></section></div>"#,
         );
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#"<div><section><article><img src="deep.jpg"/><br/></article></section></div>"#)
+        assert_fragments!(
+            fragments,
+            [raw(
+                r#"<div><section><article><img src="deep.jpg"/><br/></article></section></div>"#
+            ),]
         );
     }
 
@@ -2235,9 +1974,9 @@ mod tests {
     fn test_self_closing_vs_empty_regular_tags() {
         let (fragments, _) =
             parse_and_get_fragments(r#"<div></div><img src="test.jpg" /><span></span>"#);
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#"<div></div><img src="test.jpg"/><span></span>"#)
+        assert_fragments!(
+            fragments,
+            [raw(r#"<div></div><img src="test.jpg"/><span></span>"#),]
         );
     }
 
@@ -2249,16 +1988,8 @@ mod tests {
         let (fragments, records) = parse_and_get_fragments(
             r#"<for each="item in items" template="static"><span>Item</span></for>"#,
         );
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::ForLoop(fl)) if
-            fl.item == "item" && fl.collection == "items" && fl.fragment_id == "static")
-        );
-        let stream = records.get("static").expect("Missing 'static' stream");
-        assert_eq!(stream.fragments.len(), 1);
-        assert!(
-            matches!(stream.fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<span>Item</span>")
-        );
+        assert_fragments!(fragments, [for_loop("item", "items", "static"),]);
+        assert_stream!(records, "static", [raw("<span>Item</span>"),]);
     }
 
     #[test]
@@ -2269,29 +2000,22 @@ mod tests {
         let result = parser.parse("index.html", html);
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let records = parser.into_fragment_records();
-        let entry = &records["index.html"].fragments;
-        assert_eq!(entry.len(), 1);
-        assert!(
-            matches!(entry[0].fragment.as_ref(), Some(Fragment::ForLoop(fl)) if
-            fl.item == "outerItem" && fl.collection == "outerItems" && fl.fragment_id == "static")
+
+        assert_fragments!(
+            records["index.html"].fragments,
+            [for_loop("outerItem", "outerItems", "static"),]
         );
-        let static_stream = records.get("static").expect("Missing 'static' stream");
-        assert_eq!(static_stream.fragments.len(), 5);
-        assert!(
-            matches!(static_stream.fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<div><span>")
-        );
-        assert!(
-            matches!(static_stream.fragments[1].fragment.as_ref(), Some(Fragment::Signal(s)) if s.value == "outerItem.name")
-        );
-        assert!(
-            matches!(static_stream.fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</span>")
-        );
-        assert!(
-            matches!(static_stream.fragments[3].fragment.as_ref(), Some(Fragment::ForLoop(fl)) if
-            fl.item == "innerItem" && fl.collection == "innerItems" && fl.fragment_id == "static")
-        );
-        assert!(
-            matches!(static_stream.fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</div>")
+
+        assert_stream!(
+            records,
+            "static",
+            [
+                raw("<div><span>"),
+                signal("outerItem.name"),
+                raw("</span>"),
+                for_loop("innerItem", "innerItems", "static"),
+                raw("</div>"),
+            ]
         );
     }
 
@@ -2302,15 +2026,8 @@ mod tests {
         // Port of: 'should handle <if> with multiple children'
         let (fragments, records) =
             parse_and_get_fragments(r#"<if condition="valid"><p>hello</p><p>world</p></if>"#);
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::IfCond(ic)) if ic.fragment_id == "if-1")
-        );
-        let if_stream = records.get("if-1").expect("Missing if-1");
-        assert_eq!(if_stream.fragments.len(), 1);
-        assert!(
-            matches!(if_stream.fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<p>hello</p><p>world</p>")
-        );
+        assert_fragments!(fragments, [if_cond("if-1"),]);
+        assert_stream!(records, "if-1", [raw("<p>hello</p><p>world</p>"),]);
     }
 
     #[test]
@@ -2318,15 +2035,8 @@ mod tests {
         // Port of: 'should handle <for> with multiple children'
         let (fragments, records) =
             parse_and_get_fragments(r#"<for each="item in items"><p>hello</p><p>world</p></for>"#);
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::ForLoop(fl)) if fl.fragment_id == "for-1")
-        );
-        let for_stream = records.get("for-1").expect("Missing for-1");
-        assert_eq!(for_stream.fragments.len(), 1);
-        assert!(
-            matches!(for_stream.fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<p>hello</p><p>world</p>")
-        );
+        assert_fragments!(fragments, [for_loop("item", "items", "for-1"),]);
+        assert_stream!(records, "for-1", [raw("<p>hello</p><p>world</p>"),]);
     }
 
     // ── Feature 3: Handlebars at beginning/end of text ──────────────────
@@ -2335,36 +2045,21 @@ mod tests {
     fn test_handlebars_at_beginning() {
         // Port of: 'should process handlebars from text at beginning'
         let (fragments, _) = parse_and_get_fragments("{{first}}");
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Signal(s)) if s.value == "first")
-        );
+        assert_fragments!(fragments, [signal("first"),]);
     }
 
     #[test]
     fn test_handlebars_at_beginning_and_raw() {
         // Port of: 'should process handlebars from text at beginning and raw'
         let (fragments, _) = parse_and_get_fragments("{{first}}test");
-        assert_eq!(fragments.len(), 2);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Signal(s)) if s.value == "first")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "test")
-        );
+        assert_fragments!(fragments, [signal("first"), raw("test"),]);
     }
 
     #[test]
     fn test_handlebars_raw_and_end() {
         // Port of: 'should process handlebars from text at raw and end'
         let (fragments, _) = parse_and_get_fragments("test{{first}}");
-        assert_eq!(fragments.len(), 2);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "test")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Signal(s)) if s.value == "first")
-        );
+        assert_fragments!(fragments, [raw("test"), signal("first"),]);
     }
 
     // ── Feature 4: Handlebars edge cases ────────────────────────────────
@@ -2373,43 +2068,28 @@ mod tests {
     fn test_handlebars_invalid_triple_open() {
         // Port of: 'should not process handlebars when invalid'
         let (fragments, _) = parse_and_get_fragments("{{{invalid}}");
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "{{{invalid}}")
-        );
+        assert_fragments!(fragments, [raw("{{{invalid}}"),]);
     }
 
     #[test]
     fn test_handlebars_four_open_braces() {
         // Port of: 'should not process handlebars when invalid since triple exists'
         let (fragments, _) = parse_and_get_fragments("{{{{invalid}}");
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "{{{{invalid}}")
-        );
+        assert_fragments!(fragments, [raw("{{{{invalid}}"),]);
     }
 
     #[test]
     fn test_handlebars_five_open_with_valid_double() {
         // Port of: 'should not process handlebars when invalid but with valid triple'
         let (fragments, _) = parse_and_get_fragments("{{{{{invalid}}");
-        assert_eq!(fragments.len(), 2);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "{{{")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Signal(s)) if s.value == "invalid")
-        );
+        assert_fragments!(fragments, [raw("{{{"), signal("invalid"),]);
     }
 
     #[test]
     fn test_entities_preserved() {
         // Port of: 'should process entities correctly'
         let (fragments, _) = parse_and_get_fragments("<p>Hello&#125;World</p>");
-        assert_eq!(fragments.len(), 1);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<p>Hello&#125;World</p>")
-        );
+        assert_fragments!(fragments, [raw("<p>Hello&#125;World</p>"),]);
     }
 
     // ── Feature 5: DOCTYPE handling ─────────────────────────────────────
@@ -2438,41 +2118,25 @@ mod tests {
         let result = parser.parse("index.html", html);
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let records = parser.into_fragment_records();
-        let entry = &records["index.html"].fragments;
 
         // <custom-element, :config(attrStart), class(attrSkip), style(attrSkip),
         // role(attrSkip), data-test(attrSkip), aria-test(attrSkip), >, component, </custom-element>
-        assert_eq!(entry.len(), 10);
-        assert!(
-            matches!(entry[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-element")
-        );
-        // :config with attrStart
-        assert!(
-            matches!(entry[1].fragment.as_ref(), Some(Fragment::Attribute(a)) if
-                a.name == ":config" && a.value == "config" && a.complex && a.attr_start)
-        );
-        // Skipped attrs
-        assert!(
-            matches!(entry[2].fragment.as_ref(), Some(Fragment::Attribute(a)) if a.name == "class" && a.attr_skip)
-        );
-        assert!(
-            matches!(entry[3].fragment.as_ref(), Some(Fragment::Attribute(a)) if a.name == "style" && a.attr_skip)
-        );
-        assert!(
-            matches!(entry[4].fragment.as_ref(), Some(Fragment::Attribute(a)) if a.name == "role" && a.attr_skip)
-        );
-        assert!(
-            matches!(entry[5].fragment.as_ref(), Some(Fragment::Attribute(a)) if a.name == "data-test" && a.attr_skip)
-        );
-        assert!(
-            matches!(entry[6].fragment.as_ref(), Some(Fragment::Attribute(a)) if a.name == "aria-test" && a.attr_skip)
-        );
-        assert!(matches!(entry[7].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">"));
-        assert!(
-            matches!(entry[8].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-element")
-        );
-        assert!(
-            matches!(entry[9].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</custom-element>")
+        assert_fragments!(
+            records["index.html"].fragments,
+            [
+                raw("<custom-element"),
+                // :config with attrStart
+                attr_complex_start(":config", "config"),
+                // Skipped attrs
+                attr_skip("class", "value0"),
+                attr_skip("style", "value1"),
+                attr_skip("role", "value2"),
+                attr_skip("data-test", "value3"),
+                attr_skip("aria-test", "value4"),
+                raw(">"),
+                component("custom-element"),
+                raw("</custom-element>"),
+            ]
         );
     }
 
@@ -2503,32 +2167,25 @@ mod tests {
         let records = parser.into_fragment_records();
 
         // Entry stream
-        let entry = &records["index.html"].fragments;
-        assert_eq!(entry.len(), 1);
-        assert!(
-            matches!(entry[0].fragment.as_ref(), Some(Fragment::ForLoop(fl)) if fl.fragment_id == "for-1")
+        assert_fragments!(
+            records["index.html"].fragments,
+            [for_loop("item", "items", "for-1"),]
         );
 
         // For stream
-        let for_stream = &records["for-1"].fragments;
-        assert_eq!(for_stream.len(), 5);
-        assert!(
-            matches!(for_stream[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-element>")
-        );
-        assert!(
-            matches!(for_stream[1].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-element")
-        );
-        assert!(
-            matches!(for_stream[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-button>")
-        );
-        assert!(
-            matches!(for_stream[3].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-button")
-        );
-        assert!(
-            matches!(for_stream[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "Ok</custom-button></custom-element>")
+        assert_stream!(
+            records,
+            "for-1",
+            [
+                raw("<custom-element>"),
+                component("custom-element"),
+                raw("<custom-button>"),
+                component("custom-button"),
+                raw("Ok</custom-button></custom-element>"),
+            ]
         );
 
-        // Component streams
+        // Component streams — custom-element has contains() checks, keep manual
         let ce = &records["custom-element"].fragments;
         assert_eq!(ce.len(), 3);
         assert!(
@@ -2541,18 +2198,20 @@ mod tests {
             matches!(ce[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("</custom-child><slot></slot></template>"))
         );
 
-        let cb = &records["custom-button"].fragments;
-        assert_eq!(cb.len(), 1);
-        assert!(
-            matches!(cb[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
-                raw.value == "<template shadowrootmode=\"open\"><slot></slot></template>")
+        assert_stream!(
+            records,
+            "custom-button",
+            [raw(
+                "<template shadowrootmode=\"open\"><slot></slot></template>"
+            ),]
         );
 
-        let cc = &records["custom-child"].fragments;
-        assert_eq!(cc.len(), 1);
-        assert!(
-            matches!(cc[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
-                raw.value == "<template shadowrootmode=\"open\"><h1>Hello World!</h1></template>")
+        assert_stream!(
+            records,
+            "custom-child",
+            [raw(
+                "<template shadowrootmode=\"open\"><h1>Hello World!</h1></template>"
+            ),]
         );
     }
 
