@@ -21,7 +21,7 @@ The `webui` binary will be available at `target/release/webui`.
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>]
 ```
 
 **Arguments:**
@@ -31,6 +31,14 @@ webui build [APP] --out <OUT> [--entry <FILE>]
 | `APP` | Path to the app folder | `.` (current directory) |
 | `--out <OUT>` | Output folder for protocol and assets | *(required)* |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
+| `--css <MODE>` | CSS delivery strategy: `external` or `inline` | `external` |
+
+**CSS Modes:**
+
+| Mode | Behavior |
+|------|----------|
+| `external` | Emits `<link>` tags referencing external `.css` files. CSS files are copied to the output folder. |
+| `inline` | Embeds CSS content directly in `<style>` tags inside shadow DOM templates. No separate CSS files are written. |
 
 **Examples:**
 
@@ -43,6 +51,9 @@ webui build ./my-app --out ./dist
 
 # Use a custom entry file
 webui build ./my-app --out ./dist --entry home.html
+
+# Build with inline CSS (no external CSS files)
+webui build ./my-app --out ./dist --css inline
 ```
 
 ### `webui inspect`
@@ -128,9 +139,11 @@ The `--out` folder will contain:
 ```
 dist/
 ├── protocol.bin        # The WebUI protocol (protobuf binary)
-├── my-card.css         # Component CSS (copied)
-└── nav-bar.css         # Component CSS (copied)
+├── my-card.css         # Component CSS (--css external only)
+└── nav-bar.css         # Component CSS (--css external only)
 ```
+
+With `--css inline`, only `protocol.bin` is written — CSS is embedded directly in the protocol's template fragments.
 
 ### protocol.bin
 

@@ -4,8 +4,12 @@
 
 use crate::{ParserError, Result};
 use std::collections::HashMap;
+#[cfg(feature = "fs")]
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(feature = "fs")]
+use std::path::Path;
+use std::path::PathBuf;
+#[cfg(feature = "fs")]
 use walkdir::WalkDir;
 
 /// Represents a web component in the registry.
@@ -43,6 +47,7 @@ impl ComponentRegistry {
     }
 
     /// Register multiple components from directories recursively.
+    #[cfg(feature = "fs")]
     pub fn register_from_paths<P: AsRef<Path>>(&mut self, directories: &[P]) -> Result<&mut Self> {
         for dir in directories {
             for entry in WalkDir::new(dir.as_ref())
@@ -78,6 +83,7 @@ impl ComponentRegistry {
     }
 
     /// Register a web component from paths to HTML and CSS files.
+    #[cfg(feature = "fs")]
     pub fn register_component_from_paths<P: AsRef<Path>, Q: AsRef<Path>>(
         &mut self,
         html_path: P,

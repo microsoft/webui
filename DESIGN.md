@@ -331,9 +331,27 @@ pub struct HtmlParser {
     css_parser: CssParser,
     condition_parser: ConditionParser,
     handlebars_parser: HandlebarsParser,
+    css_strategy: CssStrategy,
     // Other fields...
 }
 ```
+
+#### CSS Strategy
+```rust
+/// Strategy for how component CSS is delivered in rendered output.
+pub enum CssStrategy {
+    /// Emit `<link rel="stylesheet" href="./component.css">` tags (default).
+    External,
+    /// Embed CSS content inline in `<style>` tags within the shadow DOM template.
+    Inline,
+}
+```
+
+- **External** (default): Emits `<link>` tags referencing external `.css` files. Used by the CLI for production builds where CSS files are served separately.
+- **Inline**: Embeds the full CSS content in `<style>` tags inside the shadow DOM template. Used when all files are needed in-memory.
+
+Set via `parser.set_css_strategy(CssStrategy::Inline)`.
+
 #### Primary Method
 ```rust
 pub fn parse(&mut self, fragment_id: &str, html_content: &str) -> Result<(), ParserError>
@@ -462,7 +480,8 @@ webui/
 │   ├── webui-parser/         # HTML/CSS/template parser
 │   ├── webui-protocol/       # Protocol definition
 │   ├── webui-state/          # State management
-│   └── webui-test-utils/     # Testing utilities
+│   ├── webui-test-utils/     # Testing utilities
+│   └── webui-wasm/           # WebAssembly bindings
 ├── examples/                 # Example applications
 ├── docs/                     # Documentation
 ├── tests/                    # Integration tests
@@ -489,13 +508,14 @@ The `webui` CLI provides the developer-facing build toolchain for WebUI applicat
 Builds a WebUI application from an app folder into the protocol format.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>]
 ```
 
 **Arguments:**
 - `APP` — Path to the app folder (defaults to current directory `.`)
 - `--out <OUT>` — Output folder for protocol and assets (required)
 - `--entry <FILE>` — Entry HTML file name (defaults to `index.html`)
+- `--css <MODE>` — CSS delivery strategy: `external` (default) or `inline`
 
 #### `webui inspect`
 Inspects a `protocol.bin` file by converting it to JSON and printing to stdout. Useful for debugging and piping to `jq`.

@@ -21,6 +21,16 @@ use webui_protocol::{
     WebUIFragmentAttribute, WebUIFragmentRecords,
 };
 
+/// Strategy for how component CSS is delivered in rendered output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CssStrategy {
+    /// Emit `<link rel="stylesheet" href="./component.css">` tags (default).
+    #[default]
+    External,
+    /// Embed CSS content inline in `<style>` tags within the shadow DOM template.
+    Inline,
+}
+
 /// Counter for generating unique fragment IDs.
 struct FragmentIdCounter {
     /// Map of counter types to their current values.
@@ -74,6 +84,9 @@ pub struct HtmlParser {
 
     /// Buffer for accumulating raw content
     raw_buffer: String,
+
+    /// How component CSS is delivered in output.
+    css_strategy: CssStrategy,
 }
 
 impl HtmlParser {
@@ -92,8 +105,15 @@ impl HtmlParser {
             handlebars_parser: HandlebarsParser::new(),
             raw_buffer: String::new(),
             fragment_records: WebUIFragmentRecords::new(),
+            css_strategy: CssStrategy::default(),
             parser,
         }
+    }
+
+    /// Set the CSS strategy for component stylesheet delivery.
+    pub fn set_css_strategy(&mut self, strategy: CssStrategy) -> &mut Self {
+        self.css_strategy = strategy;
+        self
     }
 
     /// Get a mutable reference to the component registry.
@@ -940,13 +960,23 @@ impl HtmlParser {
 
         // Parse and register component template if not already done
         if !self.fragment_records.contains_key(tag_name) {
-            let has_css = css_content.is_some();
-            let css_path = if has_css {
-                Some(format!("{}.css", tag_name))
-            } else {
-                None
+            let css_injection = match self.css_strategy {
+                CssStrategy::External => {
+                    if css_content.is_some() {
+                        Some(format!(
+                            "<link rel=\"stylesheet\" href=\"./{}.css\">",
+                            tag_name
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                CssStrategy::Inline => css_content
+                    .as_ref()
+                    .map(|css| format!("<style>{}</style>", css.trim())),
             };
-            let processed = self.process_component_template(&html_content, css_path.as_deref());
+            let processed =
+                self.process_component_template(&html_content, css_injection.as_deref());
             self.parse(tag_name, &processed)?;
         }
 
@@ -972,32 +1002,27 @@ impl HtmlParser {
     }
 
     /// Process component template HTML: wrap in shadow DOM template if needed,
-    /// inject stylesheet link, and strip runtime-only attributes.
-    fn process_component_template(&mut self, html: &str, styles: Option<&str>) -> String {
+    /// inject CSS snippet (link or inline style), and strip runtime-only attributes.
+    fn process_component_template(&mut self, html: &str, css_snippet: Option<&str>) -> String {
         let trimmed = html.trim();
         let has_template = trimmed.starts_with("<template");
 
         if has_template {
             // Strip @/:/?-prefixed attributes from the template tag
             let stripped = self.strip_runtime_attrs_from_template(trimmed);
-            if let Some(style_path) = styles {
-                // Inject link after the first > in the template tag
+            if let Some(snippet) = css_snippet {
+                // Inject CSS snippet after the first > in the template tag
                 if let Some(pos) = stripped.find('>') {
-                    let mut result = String::with_capacity(stripped.len() + style_path.len() + 50);
+                    let mut result = String::with_capacity(stripped.len() + snippet.len() + 16);
                     result.push_str(&stripped[..=pos]);
-                    result.push_str(&format!(
-                        "<link rel=\"stylesheet\" href=\"./{}\">",
-                        style_path
-                    ));
+                    result.push_str(snippet);
                     result.push_str(&stripped[pos + 1..]);
                     return result;
                 }
             }
             stripped
-        } else if let Some(style_path) = styles {
-            format!(
-                "<template shadowrootmode=\"open\"><link rel=\"stylesheet\" href=\"./{style_path}\">{trimmed}</template>"
-            )
+        } else if let Some(snippet) = css_snippet {
+            format!("<template shadowrootmode=\"open\">{snippet}{trimmed}</template>")
         } else {
             format!("<template shadowrootmode=\"open\">{trimmed}</template>")
         }
@@ -2255,6 +2280,60 @@ mod tests {
         assert!(
             matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if
                 raw.value.contains("</body>") && raw.value.contains("</html>"))
+        );
+    }
+
+    #[test]
+    fn test_css_strategy_external_emits_link_tag() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component("my-card", "<p><slot></slot></p>", Some("p { color: red; }"))
+            .ok();
+        parser.parse("index.html", "<my-card>Hello</my-card>").ok();
+        let records = parser.into_fragment_records();
+        let my_card = &records["my-card"].fragments;
+        let raw_text: String = my_card
+            .iter()
+            .filter_map(|f| match &f.fragment {
+                Some(Fragment::Raw(r)) => Some(r.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            raw_text.contains(r#"<link rel="stylesheet" href="./my-card.css">"#),
+            "Expected external <link> tag in: {}",
+            raw_text
+        );
+    }
+
+    #[test]
+    fn test_css_strategy_inline_emits_style_tag() {
+        let mut parser = HtmlParser::new();
+        parser.set_css_strategy(CssStrategy::Inline);
+        parser
+            .component_registry_mut()
+            .register_component("my-card", "<p><slot></slot></p>", Some("p { color: red; }"))
+            .ok();
+        parser.parse("index.html", "<my-card>Hello</my-card>").ok();
+        let records = parser.into_fragment_records();
+        let my_card = &records["my-card"].fragments;
+        let raw_text: String = my_card
+            .iter()
+            .filter_map(|f| match &f.fragment {
+                Some(Fragment::Raw(r)) => Some(r.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            raw_text.contains("<style>p { color: red; }</style>"),
+            "Expected inline <style> tag in: {}",
+            raw_text
+        );
+        assert!(
+            !raw_text.contains("<link"),
+            "Should not have <link> tag in inline mode: {}",
+            raw_text
         );
     }
 }
