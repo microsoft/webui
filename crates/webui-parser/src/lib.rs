@@ -1077,6 +1077,7 @@ impl HtmlParser {
 #[cfg(test)]
 mod tests {
     use webui_protocol::condition_expr;
+    use webui_test_utils::*;
 
     use super::*;
 
@@ -1393,22 +1394,15 @@ mod tests {
         );
         assert!(result.is_ok());
         let records = parser.into_fragment_records();
-
-        let entry = &records["index.html"].fragments;
-        assert_eq!(entry.len(), 5);
-        assert!(
-            matches!(entry[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-element")
-        );
-        assert!(
-            matches!(entry[1].fragment.as_ref(), Some(Fragment::Attribute(a)) if
-                a.name == "appearance" && a.value == "subtle" && a.attr_start && a.raw_value)
-        );
-        assert!(matches!(entry[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">"));
-        assert!(
-            matches!(entry[3].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-element")
-        );
-        assert!(
-            matches!(entry[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "Hello World</custom-element>")
+        assert_fragments!(
+            records["index.html"].fragments,
+            [
+                raw("<custom-element"),
+                attr_raw_start("appearance", "subtle"),
+                raw(">"),
+                component("custom-element"),
+                raw("Hello World</custom-element>"),
+            ]
         );
     }
 
@@ -1753,47 +1747,31 @@ mod tests {
     #[test]
     fn test_attribute_handlebars_in_href() {
         // Port of: 'should process handlebars from attributes as signals'
-        // <a href="{{url}}">{{name}}</a>
         let (fragments, _) = parse_and_get_fragments(r#"<a href="{{url}}">{{name}}</a>"#);
-
-        assert_eq!(fragments.len(), 5);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<a")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == "href" && attr.value == "url" && attr.template.is_empty() && !attr.complex)
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">")
-        );
-        assert!(
-            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Signal(signal)) if signal.value == "name")
-        );
-        assert!(
-            matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</a>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<a"),
+                attr("href", "url"),
+                raw(">"),
+                signal("name"),
+                raw("</a>"),
+            ]
         );
     }
 
     #[test]
     fn test_attribute_boolean_with_handlebars() {
         // Port of: 'should process boolean attribute with handlebars expression'
-        // <button ?disabled={{isDisabled}}>Click</button>
         let (fragments, _) =
             parse_and_get_fragments("<button ?disabled={{isDisabled}}>Click</button>");
-
-        assert_eq!(fragments.len(), 3);
-        assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<button")
-        );
-        assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(attr)) if
-                attr.name == "disabled" &&
-                matches!(attr.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
-                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isDisabled"))
-        );
-        assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">Click</button>")
+        assert_fragments!(
+            fragments,
+            [
+                raw("<button"),
+                bool_attr("disabled", "isDisabled"),
+                raw(">Click</button>"),
+            ]
         );
     }
 
