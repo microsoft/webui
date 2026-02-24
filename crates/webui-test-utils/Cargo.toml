@@ -1,6 +1,7 @@
 [package]
 name = "webui-test-utils"
 description = "Test utilities for WebUI framework"
+publish = false
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

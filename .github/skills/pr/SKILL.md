@@ -1,3 +1,8 @@
+---
+name: pr
+description: Guidance for branch naming, commit messages, and PR titles.
+---
+
 # Pull Request Conventions
 
 ## Branch discipline
@@ -14,6 +19,7 @@ PR titles must use a [Conventional Commits](https://www.conventionalcommits.org/
 | `feat:` | New feature or capability | `feat: add HTTP/2 support to hyper example` |
 | `fix:` | Bug fix | `fix: render missing signals as empty` |
 | `chore:` | Maintenance, refactoring, CI, docs, dependencies | `chore: move shared files to examples/app` |
+
 
 The prefix is **lowercase**, followed by a colon and a space, then a short imperative description.
 

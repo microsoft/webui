@@ -129,15 +129,17 @@ Every code change ships with tests. No exceptions.
 The `docs/` directory is a VitePress site for external developers consuming WebUI.
 
 - Any change to user-visible behavior, CLI usage, or public API **must** include a corresponding docs update in the same PR.
-- New features get a guide page (`docs/guide/`) or tutorial (`docs/tutorials/`).
-- **User-facing docs show template syntax, state, and rendered output only.** Never expose protocol internals (fragment types, proto fields, stream IDs) in `/docs`. Protocol details belong in `DESIGN.md` and `docs/guide/advanced/protocol.md`.
-- Verify with `cd docs && pnpm build` when possible.
+- For the full docs synchronization workflow, use the skill: `skills/docs-sync/SKILL.md`.
 
 ---
 
 ## Skills
 
-- **Pull request** — `.github/skills/pr/SKILL.md`
+- **Pull request** — `skills/pr/SKILL.md`
+- **Quality gate** — `skills/quality-gate/SKILL.md`
+- **FFI boundary** — `skills/ffi/SKILL.md`
+- **Protobuf schema evolution** — `skills/protobuf/SKILL.md`
+- **Docs synchronization** — `skills/docs-sync/SKILL.md`
 
 ---
 
@@ -160,27 +162,18 @@ The `docs/` directory is a VitePress site for external developers consuming WebU
 
 ## FFI boundary (`webui-ffi`)
 
-The FFI crate exposes WebUI to **any** host language (C, C#, Go, Ruby, Python, Node.js, etc.) via a C-compatible ABI. Treat it as the project's most sensitive surface.
+The FFI crate exposes WebUI to many host languages via a C-compatible ABI and remains a high-sensitivity surface.
 
-- Every `pub extern "C" fn` must have a `# Safety` doc section explaining pointer validity, lifetime, and ownership expectations.
-- All `unsafe` blocks require a `// SAFETY:` comment. No exceptions.
-- Assume callers are in a different language with no Rust safety net — validate every input (null pointers, invalid UTF-8, out-of-range values) before dereferencing or converting.
-- Never panic across the FFI boundary. Catch all errors and return them as error codes or null pointers. A panic in FFI is undefined behavior.
-- C header generation is handled by `cbindgen` in `build.rs`. After changing any `#[no_mangle]` function signature, verify the generated header in `include/webui_ffi.h` is correct.
-- Keep the FFI surface minimal and stable — additions are easy, removals break every consumer.
-- Platform-specific code must be gated behind `#[cfg(target_os = "...")]` and every platform path must be tested or at least compile-checked.
-- Design for ABI stability: prefer opaque pointers and integer error codes over exposing Rust struct layouts.
+- Treat all FFI changes as safety- and compatibility-critical.
+- Use the full workflow and checklist in: `skills/ffi/SKILL.md`.
 
 ---
 
 ## Protobuf schema evolution
 
-The protocol is defined in `crates/webui-protocol/proto/webui.proto` and compiled by `prost` via `build.rs`. Schema changes cascade through the entire stack: **protocol → handler → FFI → CLI**.
+Schema changes cascade through protocol → handler → FFI → CLI and should optimize runtime performance first.
 
-- Never remove or renumber existing proto fields — mark them `reserved` instead.
-- Add new fields as optional with sensible defaults so older serialized data remains decodable.
-- After any `.proto` change, rebuild the full workspace (`cargo xtask build`) and run all tests — not just the protocol crate.
-- Update `DESIGN.md` protocol section in the same commit.
+- Use the protocol evolution workflow in: `skills/protobuf/SKILL.md`.
 
 ---
 
@@ -234,7 +227,7 @@ Before finishing any task, confirm **all** of these:
 - [ ] No new `unwrap`/`expect` in library code.
 - [ ] No unnecessary allocations introduced; buffers reused where possible.
 - [ ] FFI changes include `# Safety` docs and never panic across the boundary.
-- [ ] Proto schema changes are backward-compatible and cascade-tested.
+- [ ] Proto schema changes prioritize performance and are cascade-tested.
 - [ ] New dependencies use `workspace = true` and pass `cargo deny check`.
 - [ ] Commit is on a feature branch, not `main`.
 - [ ] Commit message is imperative with Copilot co-author trailer.

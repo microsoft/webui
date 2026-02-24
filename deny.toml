@@ -9,7 +9,6 @@ allow = [
     "Apache-2.0",
     "MPL-2.0",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
 ]
 confidence-threshold = 0.8
 
@@ -17,4 +16,17 @@ confidence-threshold = 0.8
 ignore = true
 
 [bans]
-multiple-versions = "warn"
+multiple-versions = "deny"
+skip = [
+    { name = "wasi" },
+    { name = "windows-sys" },
+    { name = "windows-targets" },
+    { name = "windows_aarch64_gnullvm" },
+    { name = "windows_aarch64_msvc" },
+    { name = "windows_i686_gnu" },
+    { name = "windows_i686_gnullvm" },
+    { name = "windows_i686_msvc" },
+    { name = "windows_x86_64_gnu" },
+    { name = "windows_x86_64_gnullvm" },
+    { name = "windows_x86_64_msvc" },
+]

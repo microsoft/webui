@@ -9,7 +9,11 @@ fn main() -> ExitCode {
         Some("clippy") => run_steps(&[Step::CLIPPY]),
         Some("deny") => run_steps(&[Step::DENY]),
         Some("test") => run_steps(&[Step::TEST]),
-        Some("build") => run_steps(&[Step::BUILD]),
+        Some("build") => run_steps(&[
+            Step::BUILD,
+            Step::BUILD_INTEGRATION_HYPER,
+            Step::BUILD_INTEGRATION_TINY_HTTP,
+        ]),
         Some("docs") => run_steps(&[Step::DOCS]),
         _ => usage(),
     }
@@ -37,6 +41,8 @@ fn check() -> ExitCode {
         Step::DENY,
         Step::TEST,
         Step::BUILD,
+        Step::BUILD_INTEGRATION_HYPER,
+        Step::BUILD_INTEGRATION_TINY_HTTP,
         Step::DOCS,
     ])
 }
@@ -72,6 +78,24 @@ impl Step {
         name: "build",
         cmd: "cargo",
         args: &["build", "--workspace"],
+    };
+    const BUILD_INTEGRATION_HYPER: Self = Self {
+        name: "build (integration/hyper)",
+        cmd: "cargo",
+        args: &[
+            "build",
+            "--manifest-path",
+            "examples/integration/hyper/Cargo.toml",
+        ],
+    };
+    const BUILD_INTEGRATION_TINY_HTTP: Self = Self {
+        name: "build (integration/tiny_http)",
+        cmd: "cargo",
+        args: &[
+            "build",
+            "--manifest-path",
+            "examples/integration/tiny_http/Cargo.toml",
+        ],
     };
     const DOCS: Self = Self {
         name: "docs",
