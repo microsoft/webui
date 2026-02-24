@@ -285,7 +285,15 @@ impl HtmlParser {
                     }
                 }
             }
-            // For other node types (like doctype, head, body), traverse their children
+            // Preserve <!DOCTYPE ...> as raw content. Tree-sitter parses it as a
+            // "doctype" node whose children are tokens (< ! DOCTYPE etc.), so we
+            // grab the original source text verbatim to ensure full-page HTML
+            // templates round-trip correctly.
+            "doctype" => {
+                let content = &source[node.start_byte()..node.end_byte()];
+                self.add_raw_fragment(content);
+            }
+            // For other node types (like head, body), traverse their children
             _ => {
                 self.process_html_node(node, source, fragments)?;
             }
@@ -667,8 +675,10 @@ impl HtmlParser {
         let item = parts[0];
         let collection = parts[2];
 
-        // Generate a unique fragment ID for the for loop content
-        let fragment_id = self.id_counter.next_id("for");
+        // Use custom template attribute if provided, otherwise auto-generate
+        let fragment_id = self
+            .get_element_attribute(node, "template", source)?
+            .unwrap_or_else(|| self.id_counter.next_id("for"));
         let mut for_fragment: Vec<WebUIFragment> = Vec::new();
 
         // Create a temporary buffer for for loop content
@@ -1794,6 +1804,189 @@ mod tests {
         assert_eq!(fragments.len(), 1);
         assert!(
             matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == r#"<div></div><img src="test.jpg"/><span></span>"#)
+        );
+    }
+
+    // ── Feature 1: Custom template attribute on <for> ────────────────────
+
+    #[test]
+    fn test_for_custom_template_attribute() {
+        // Port of: 'should process transient node for with template'
+        let (fragments, records) = parse_and_get_fragments(
+            r#"<for each="item in items" template="static"><span>Item</span></for>"#,
+        );
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::ForLoop(fl)) if
+            fl.item == "item" && fl.collection == "items" && fl.fragment_id == "static")
+        );
+        let stream = records.get("static").expect("Missing 'static' stream");
+        assert_eq!(stream.fragments.len(), 1);
+        assert!(
+            matches!(stream.fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<span>Item</span>")
+        );
+    }
+
+    #[test]
+    fn test_for_recursive_template() {
+        // Port of: 'should process recursive transient nodes'
+        let mut parser = HtmlParser::new();
+        let html = r#"<for template="static" each="outerItem in outerItems"><div><span>{{outerItem.name}}</span><for template="static" each="innerItem in innerItems" /></div></for>"#;
+        let result = parser.parse("index.html", html);
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let records = parser.into_fragment_records();
+        let entry = &records["index.html"].fragments;
+        assert_eq!(entry.len(), 1);
+        assert!(
+            matches!(entry[0].fragment.as_ref(), Some(Fragment::ForLoop(fl)) if
+            fl.item == "outerItem" && fl.collection == "outerItems" && fl.fragment_id == "static")
+        );
+        let static_stream = records.get("static").expect("Missing 'static' stream");
+        assert_eq!(static_stream.fragments.len(), 5);
+        assert!(
+            matches!(static_stream.fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<div><span>")
+        );
+        assert!(
+            matches!(static_stream.fragments[1].fragment.as_ref(), Some(Fragment::Signal(s)) if s.value == "outerItem.name")
+        );
+        assert!(
+            matches!(static_stream.fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</span>")
+        );
+        assert!(
+            matches!(static_stream.fragments[3].fragment.as_ref(), Some(Fragment::ForLoop(fl)) if
+            fl.item == "innerItem" && fl.collection == "innerItems" && fl.fragment_id == "static")
+        );
+        assert!(
+            matches!(static_stream.fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</div>")
+        );
+    }
+
+    // ── Feature 2: <if> / <for> with multiple children ──────────────────
+
+    #[test]
+    fn test_if_multiple_children() {
+        // Port of: 'should handle <if> with multiple children'
+        let (fragments, records) =
+            parse_and_get_fragments(r#"<if condition="valid"><p>hello</p><p>world</p></if>"#);
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::IfCond(ic)) if ic.fragment_id == "if-1")
+        );
+        let if_stream = records.get("if-1").expect("Missing if-1");
+        assert_eq!(if_stream.fragments.len(), 1);
+        assert!(
+            matches!(if_stream.fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<p>hello</p><p>world</p>")
+        );
+    }
+
+    #[test]
+    fn test_for_multiple_children() {
+        // Port of: 'should handle <for> with multiple children'
+        let (fragments, records) =
+            parse_and_get_fragments(r#"<for each="item in items"><p>hello</p><p>world</p></for>"#);
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::ForLoop(fl)) if fl.fragment_id == "for-1")
+        );
+        let for_stream = records.get("for-1").expect("Missing for-1");
+        assert_eq!(for_stream.fragments.len(), 1);
+        assert!(
+            matches!(for_stream.fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<p>hello</p><p>world</p>")
+        );
+    }
+
+    // ── Feature 3: Handlebars at beginning/end of text ──────────────────
+
+    #[test]
+    fn test_handlebars_at_beginning() {
+        // Port of: 'should process handlebars from text at beginning'
+        let (fragments, _) = parse_and_get_fragments("{{first}}");
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Signal(s)) if s.value == "first")
+        );
+    }
+
+    #[test]
+    fn test_handlebars_at_beginning_and_raw() {
+        // Port of: 'should process handlebars from text at beginning and raw'
+        let (fragments, _) = parse_and_get_fragments("{{first}}test");
+        assert_eq!(fragments.len(), 2);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Signal(s)) if s.value == "first")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "test")
+        );
+    }
+
+    #[test]
+    fn test_handlebars_raw_and_end() {
+        // Port of: 'should process handlebars from text at raw and end'
+        let (fragments, _) = parse_and_get_fragments("test{{first}}");
+        assert_eq!(fragments.len(), 2);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "test")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Signal(s)) if s.value == "first")
+        );
+    }
+
+    // ── Feature 4: Handlebars edge cases ────────────────────────────────
+
+    #[test]
+    fn test_handlebars_invalid_triple_open() {
+        // Port of: 'should not process handlebars when invalid'
+        let (fragments, _) = parse_and_get_fragments("{{{invalid}}");
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "{{{invalid}}")
+        );
+    }
+
+    #[test]
+    fn test_handlebars_four_open_braces() {
+        // Port of: 'should not process handlebars when invalid since triple exists'
+        let (fragments, _) = parse_and_get_fragments("{{{{invalid}}");
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "{{{{invalid}}")
+        );
+    }
+
+    #[test]
+    fn test_handlebars_five_open_with_valid_double() {
+        // Port of: 'should not process handlebars when invalid but with valid triple'
+        let (fragments, _) = parse_and_get_fragments("{{{{{invalid}}");
+        assert_eq!(fragments.len(), 2);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "{{{")
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Signal(s)) if s.value == "invalid")
+        );
+    }
+
+    #[test]
+    fn test_entities_preserved() {
+        // Port of: 'should process entities correctly'
+        let (fragments, _) = parse_and_get_fragments("<p>Hello&#125;World</p>");
+        assert_eq!(fragments.len(), 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<p>Hello&#125;World</p>")
+        );
+    }
+
+    // ── Feature 5: DOCTYPE handling ─────────────────────────────────────
+
+    #[test]
+    fn test_doctype_preserved() {
+        // DOCTYPE should be preserved as raw content
+        let (fragments, _) = parse_and_get_fragments("<!DOCTYPE html><html><head></head></html>");
+        assert!(fragments.len() >= 1);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("<!DOCTYPE html>"))
         );
     }
 }

@@ -10,38 +10,112 @@ impl HandlebarsParser {
         Self
     }
 
-    /// Simplified parse method (no nested brace support)
+    /// Parse handlebars expressions from text, handling edge cases with
+    /// triple/double brace disambiguation.
+    ///
+    /// Rules for consecutive opening braces (N) without matching `}}}`:
+    /// - N >= 5: first (N-2) braces are raw, remaining `{{…}}` is a valid double
+    /// - N == 3 or 4: entire sequence through `}}` is treated as raw text
     pub fn parse(&self, text: &str) -> Result<Vec<WebUIFragment>> {
+        let bytes = text.as_bytes();
+        let len = bytes.len();
         let mut fragments = Vec::new();
+        let mut raw_buf = String::new();
         let mut pos = 0;
-        while let Some(start) = text[pos..].find("{{") {
-            let start_idx = pos + start;
-            if start_idx > pos {
-                // Add preceding raw text.
-                fragments.push(WebUIFragment::raw(text[pos..start_idx].to_string()));
-            }
-            // Determine if it's triple or double brace.
-            let (is_raw, open_delim, close_delim) = if text[start_idx..].starts_with("{{{") {
-                (true, "{{{", "}}}")
-            } else {
-                (false, "{{", "}}")
+
+        while pos < len {
+            let remaining = &text[pos..];
+            let Some(offset) = remaining.find("{{") else {
+                raw_buf.push_str(&text[pos..]);
+                break;
             };
-            // Look for the closing delimiter.
-            if let Some(end) = text[start_idx + open_delim.len()..].find(close_delim) {
-                let var_start = start_idx + open_delim.len();
-                let var_end = var_start + end;
-                let var_name = text[var_start..var_end].trim().to_string();
-                fragments.push(WebUIFragment::signal(var_name, is_raw));
-                pos = var_end + close_delim.len();
-            } else {
-                // No closing delimiter: treat the rest as raw text.
-                fragments.push(WebUIFragment::raw(text[start_idx..].to_string()));
-                pos = text.len();
+
+            let start = pos + offset;
+            if start > pos {
+                raw_buf.push_str(&text[pos..start]);
             }
+
+            // Count consecutive opening braces
+            let mut brace_count = 0;
+            let mut i = start;
+            while i < len && bytes[i] == b'{' {
+                brace_count += 1;
+                i += 1;
+            }
+
+            if brace_count >= 3 {
+                // Try triple brace: look for }}}
+                if let Some(end_offset) = text[i..].find("}}}") {
+                    let var_end = i + end_offset;
+                    let var_name = text[i..var_end].trim();
+                    if !var_name.is_empty() {
+                        // Extra braces beyond 3 become raw prefix
+                        for _ in 0..(brace_count - 3) {
+                            raw_buf.push('{');
+                        }
+                        if !raw_buf.is_empty() {
+                            fragments.push(WebUIFragment::raw(std::mem::take(&mut raw_buf)));
+                        }
+                        fragments.push(WebUIFragment::signal(var_name.to_string(), true));
+                        pos = var_end + 3;
+                        continue;
+                    }
+                }
+
+                // }}} not found. If N >= 5 we can extract a valid {{…}} from the tail.
+                if brace_count >= 5 {
+                    if let Some(end_offset) = text[i..].find("}}") {
+                        let var_end = i + end_offset;
+                        let var_name = text[i..var_end].trim();
+                        if !var_name.is_empty() {
+                            for _ in 0..(brace_count - 2) {
+                                raw_buf.push('{');
+                            }
+                            if !raw_buf.is_empty() {
+                                fragments.push(WebUIFragment::raw(std::mem::take(&mut raw_buf)));
+                            }
+                            fragments.push(WebUIFragment::signal(var_name.to_string(), false));
+                            pos = var_end + 2;
+                            continue;
+                        }
+                    }
+                }
+
+                // Failed triple (N < 5): consume everything through }} as raw
+                if let Some(end_offset) = text[i..].find("}}") {
+                    let raw_end = i + end_offset + 2;
+                    raw_buf.push_str(&text[start..raw_end]);
+                    pos = raw_end;
+                } else {
+                    raw_buf.push_str(&text[start..]);
+                    pos = len;
+                }
+                continue;
+            }
+
+            // Double brace: look for }}
+            if let Some(end_offset) = text[i..].find("}}") {
+                let var_end = i + end_offset;
+                let var_name = text[i..var_end].trim();
+                if !var_name.is_empty() {
+                    if !raw_buf.is_empty() {
+                        fragments.push(WebUIFragment::raw(std::mem::take(&mut raw_buf)));
+                    }
+                    fragments.push(WebUIFragment::signal(var_name.to_string(), false));
+                    pos = var_end + 2;
+                    continue;
+                }
+            }
+
+            // No valid closing — rest is raw
+            raw_buf.push_str(&text[start..]);
+            pos = len;
         }
-        if pos < text.len() {
-            fragments.push(WebUIFragment::raw(text[pos..].to_string()));
+
+        if !raw_buf.is_empty() {
+            fragments.push(WebUIFragment::raw(raw_buf));
         }
+
         Ok(fragments)
     }
 }
@@ -153,6 +227,46 @@ mod tests {
             Some(Fragment::Signal(signal)) => {
                 assert_eq!(signal.value, "html_content");
                 assert!(signal.raw);
+            }
+            _ => panic!("Expected Signal fragment"),
+        }
+    }
+
+    #[test]
+    fn test_invalid_triple_open() {
+        let parser = HandlebarsParser::new();
+        let result = parser.parse("{{{invalid}}").expect("parse failed");
+        assert_eq!(result.len(), 1);
+        match result[0].fragment.as_ref() {
+            Some(Fragment::Raw(raw)) => assert_eq!(raw.value, "{{{invalid}}"),
+            _ => panic!("Expected Raw fragment"),
+        }
+    }
+
+    #[test]
+    fn test_four_open_braces() {
+        let parser = HandlebarsParser::new();
+        let result = parser.parse("{{{{invalid}}").expect("parse failed");
+        assert_eq!(result.len(), 1);
+        match result[0].fragment.as_ref() {
+            Some(Fragment::Raw(raw)) => assert_eq!(raw.value, "{{{{invalid}}"),
+            _ => panic!("Expected Raw fragment"),
+        }
+    }
+
+    #[test]
+    fn test_five_braces_with_valid_double() {
+        let parser = HandlebarsParser::new();
+        let result = parser.parse("{{{{{invalid}}").expect("parse failed");
+        assert_eq!(result.len(), 2);
+        match result[0].fragment.as_ref() {
+            Some(Fragment::Raw(raw)) => assert_eq!(raw.value, "{{{"),
+            _ => panic!("Expected Raw fragment for prefix"),
+        }
+        match result[1].fragment.as_ref() {
+            Some(Fragment::Signal(s)) => {
+                assert_eq!(s.value, "invalid");
+                assert!(!s.raw);
             }
             _ => panic!("Expected Signal fragment"),
         }
