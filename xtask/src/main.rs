@@ -67,26 +67,22 @@ struct IntegrationBuild {
     commands: &'static [BuildCommand],
 }
 
-const INTEGRATION_HYPER_COMMANDS: &[BuildCommand] = &[BuildCommand {
-    cmd: "cargo",
-    args: &["build"],
-    cwd: Some("examples/integration/hyper"),
-}];
-
-const INTEGRATION_TINY_HTTP_COMMANDS: &[BuildCommand] = &[BuildCommand {
-    cmd: "cargo",
-    args: &["build"],
-    cwd: Some("examples/integration/tiny_http"),
-}];
-
 const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
     IntegrationBuild {
         name: "hyper",
-        commands: INTEGRATION_HYPER_COMMANDS,
+        commands: &[BuildCommand {
+            cmd: "cargo",
+            args: &["build"],
+            cwd: Some("examples/integration/hyper"),
+        }],
     },
     IntegrationBuild {
         name: "tiny_http",
-        commands: INTEGRATION_TINY_HTTP_COMMANDS,
+        commands: &[BuildCommand {
+            cmd: "cargo",
+            args: &["build"],
+            cwd: Some("examples/integration/tiny_http"),
+        }],
     },
 ];
 
