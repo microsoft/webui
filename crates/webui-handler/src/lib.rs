@@ -6,7 +6,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 use thiserror::Error;
-use webui_expressions::evaluate;
+use webui_expressions::{evaluate, ExpressionError};
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUIProtocol};
 use webui_state::find_value_by_dotted_path;
 
@@ -171,6 +171,49 @@ impl WebUIHandler {
         self.process_fragment_id(&component.fragment_id, context)
     }
 
+    /// Resolve a dotted path value, checking local variables first, then global state.
+    fn resolve_value(&self, path: &str, context: &WebUIProcessContext) -> Option<Value> {
+        // Check local vars first
+        if let Some(first_part) = path.split('.').next() {
+            if let Some(local_value) = context.local_vars.get(first_part) {
+                if !path.contains('.') {
+                    return Some(local_value.clone());
+                }
+                let remaining = &path[first_part.len() + 1..];
+                if let Some(v) = find_value_by_dotted_path(remaining, local_value) {
+                    return Some(v);
+                }
+            }
+        }
+        // Fall back to global state
+        find_value_by_dotted_path(path, context.state)
+    }
+
+    /// Evaluate a condition expression, merging local variables into state.
+    /// Returns false if the condition references a missing value.
+    fn evaluate_condition(
+        &self,
+        condition: &webui_protocol::ConditionExpr,
+        context: &WebUIProcessContext,
+    ) -> Result<bool> {
+        let merged_state = if context.local_vars.is_empty() {
+            context.state.clone()
+        } else {
+            let mut merged = context.state.clone();
+            if let Value::Object(map) = &mut merged {
+                for (k, v) in &context.local_vars {
+                    map.insert(k.clone(), v.clone());
+                }
+            }
+            merged
+        };
+        match evaluate(condition, &merged_state) {
+            Ok(result) => Ok(result),
+            Err(ExpressionError::MissingValue(_)) => Ok(false),
+            Err(e) => Err(HandlerError::Evaluation(e.to_string())),
+        }
+    }
+
     /// Process a for loop fragment.
     ///
     /// Creates a new context for each iteration that includes the current loop item.
@@ -181,39 +224,27 @@ impl WebUIHandler {
         for_loop: &webui_protocol::WebUIFragmentFor,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        // Get the collection to iterate over
         let collection_name = &for_loop.collection;
 
-        // First check in global state
-        let collection =
-            if let Some(val) = find_value_by_dotted_path(collection_name, context.state) {
-                match val {
-                    Value::Array(arr) => arr,
-                    _ => {
-                        return Err(HandlerError::TypeError(format!(
-                            "Collection '{}' is not an array",
-                            collection_name
-                        )))
-                    }
-                }
-            } else {
-                return Err(HandlerError::MissingData(collection_name.to_string()));
-            };
+        let collection = self
+            .resolve_value(collection_name, context)
+            .ok_or_else(|| HandlerError::MissingData(collection_name.to_string()))?;
+
+        let items = match collection {
+            Value::Array(arr) => arr,
+            _ => {
+                return Err(HandlerError::TypeError(format!(
+                    "Collection '{}' is not an array",
+                    collection_name
+                )))
+            }
+        };
 
         let item_name = &for_loop.item;
-
-        // Process each item in the collection
-        for item in collection {
-            // Save the current local vars
+        for item in items {
             let saved_vars = context.local_vars.clone();
-
-            // Add the current item to the context
-            context.local_vars.insert(item_name.clone(), item.clone());
-
-            // Process the fragment with the updated context
+            context.local_vars.insert(item_name.clone(), item);
             self.process_fragment_id(&for_loop.fragment_id, context)?;
-
-            // Restore the original context
             context.local_vars = saved_vars;
         }
 
@@ -230,30 +261,9 @@ impl WebUIHandler {
         signal: &webui_protocol::WebUIFragmentSignal,
         context: &WebUIProcessContext,
     ) -> Result<String> {
-        // Parse the path (could be nested like "person.name")
-        let path = &signal.value;
-
-        // First check in local_vars
-        if let Some(first_part) = path.split('.').next() {
-            if let Some(local_value) = context.local_vars.get(first_part) {
-                // If this is a simple path (no dots), just return the value
-                if !path.contains('.') {
-                    return self.format_signal_value(local_value, signal.raw);
-                }
-
-                // Otherwise, use find_value_by_dotted_path starting from the second part
-                let remaining_path = &path[first_part.len() + 1..]; // +1 for the dot
-                if let Some(nested_value) = find_value_by_dotted_path(remaining_path, local_value) {
-                    return self.format_signal_value(&nested_value, signal.raw);
-                }
-            }
-        }
-
-        // If not found in local vars, check in global state
-        if let Some(value) = find_value_by_dotted_path(path, context.state) {
+        if let Some(value) = self.resolve_value(&signal.value, context) {
             return self.format_signal_value(&value, signal.raw);
         }
-
         Ok(String::new())
     }
 
@@ -281,16 +291,13 @@ impl WebUIHandler {
         if_cond: &webui_protocol::WebUIFragmentIf,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        // Evaluate the condition
         let condition = if_cond
             .condition
             .as_ref()
             .ok_or_else(|| HandlerError::Rendering("If fragment missing condition".to_string()))?;
-        let condition_met = evaluate(condition, context.state)
-            .map_err(|e| HandlerError::Evaluation(e.to_string()))?;
+        let condition_met = self.evaluate_condition(condition, context)?;
 
         if condition_met {
-            // Process the content if condition is true
             self.process_fragment_id(&if_cond.fragment_id, context)?;
         }
 
@@ -305,8 +312,7 @@ impl WebUIHandler {
     ) -> Result<()> {
         // Boolean attribute with condition tree
         if let Some(condition) = &attr.condition_tree {
-            let condition_met = evaluate(condition, context.state)
-                .map_err(|e| HandlerError::Evaluation(e.to_string()))?;
+            let condition_met = self.evaluate_condition(condition, context)?;
             if condition_met {
                 context.writer.write(&format!(" {}", attr.name))?;
             }
@@ -323,12 +329,18 @@ impl WebUIHandler {
 
         // Simple dynamic attribute
         if !attr.value.is_empty() {
-            let value = find_value_by_dotted_path(&attr.value, context.state)
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                .unwrap_or_default();
-            context
-                .writer
-                .write(&format!(" {}=\"{}\"", attr.name, value))?;
+            if let Some(value) = self.resolve_value(&attr.value, context) {
+                let formatted = match &value {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => String::new(),
+                    _ => value.to_string(),
+                };
+                context
+                    .writer
+                    .write(&format!(" {}=\"{}\"", attr.name, formatted))?;
+            }
         }
 
         Ok(())
@@ -374,7 +386,7 @@ pub fn handle(
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use webui_protocol::FragmentList;
+    use webui_protocol::{ConditionExpr, FragmentList};
     use webui_test_utils::test_json;
 
     // A simple test writer implementation
@@ -664,5 +676,366 @@ mod tests {
 
         assert_eq!(writer.get_content(), "Hello, !");
         assert!(writer.is_ended());
+    }
+
+    // ── Boolean attribute rendering tests ─────────────────────────────
+
+    #[test]
+    fn test_boolean_attr_true() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<button"),
+                    WebUIFragment::attribute_boolean(
+                        "disabled",
+                        ConditionExpr::identifier("isDisabled"),
+                    ),
+                    WebUIFragment::raw(">Click</button>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"isDisabled": true});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(writer.get_content(), "<button disabled>Click</button>");
+    }
+
+    #[test]
+    fn test_boolean_attr_false() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<button"),
+                    WebUIFragment::attribute_boolean(
+                        "disabled",
+                        ConditionExpr::identifier("isDisabled"),
+                    ),
+                    WebUIFragment::raw(">Click</button>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"isDisabled": false});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(writer.get_content(), "<button>Click</button>");
+    }
+
+    #[test]
+    fn test_boolean_attr_missing() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<input type=\"checkbox\""),
+                    WebUIFragment::attribute_boolean(
+                        "checked",
+                        ConditionExpr::identifier("checked"),
+                    ),
+                    WebUIFragment::raw(">"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(writer.get_content(), "<input type=\"checkbox\">");
+    }
+
+    #[test]
+    fn test_boolean_attr_multiple() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<input type=\"checkbox\""),
+                    WebUIFragment::attribute_boolean(
+                        "checked",
+                        ConditionExpr::identifier("checked"),
+                    ),
+                    WebUIFragment::attribute_boolean(
+                        "disabled",
+                        ConditionExpr::identifier("disabled"),
+                    ),
+                    WebUIFragment::raw(">"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"checked": true, "disabled": false});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(writer.get_content(), "<input type=\"checkbox\" checked>");
+    }
+
+    // ── Simple attribute rendering tests ──────────────────────────────
+
+    #[test]
+    fn test_attribute_with_value() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<input"),
+                    WebUIFragment::attribute("value", "inputValue"),
+                    WebUIFragment::raw(">"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"inputValue": "Hello"});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(writer.get_content(), "<input value=\"Hello\">");
+    }
+
+    #[test]
+    fn test_attribute_with_falsy_numeric() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<div name=\"test\""),
+                    WebUIFragment::attribute("handle", "number"),
+                    WebUIFragment::raw("></div>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"number": 0});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(
+            writer.get_content(),
+            "<div name=\"test\" handle=\"0\"></div>"
+        );
+    }
+
+    // ── Template attribute rendering tests ────────────────────────────
+
+    #[test]
+    fn test_mixed_attribute_template() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<input"),
+                    WebUIFragment::attribute_template("value", "attr-1"),
+                    WebUIFragment::raw(">"),
+                ],
+            },
+        );
+        fragments.insert(
+            "attr-1".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("hello "),
+                    WebUIFragment::signal("item", false),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"item": "world"});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(writer.get_content(), "<input value=\"hello world\">");
+    }
+
+    // ── Raw signal rendering test ─────────────────────────────────────
+
+    #[test]
+    fn test_raw_signal_not_escaped() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::signal("html", false),
+                    WebUIFragment::signal("html", true),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"html": "<strong>hi</strong>"});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(
+            writer.get_content(),
+            "&lt;strong&gt;hi&lt;&#x2F;strong&gt;<strong>hi</strong>"
+        );
+    }
+
+    // ── Nested for loop tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_nested_for_loop() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<div>"),
+                    WebUIFragment::for_loop("outerItem", "outerItems", "outer"),
+                    WebUIFragment::raw("</div>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "outer".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<div>"),
+                    WebUIFragment::for_loop("innerItem", "outerItem.innerItems", "inner"),
+                    WebUIFragment::raw("</div>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "inner".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<span>Inner</span>")],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({
+            "outerItems": [
+                {"innerItems": [{"name": "A"}, {"name": "B"}]},
+                {"innerItems": [{"name": "C"}]}
+            ]
+        });
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(
+            writer.get_content(),
+            "<div><div><span>Inner</span><span>Inner</span></div><div><span>Inner</span></div></div>"
+        );
+    }
+
+    #[test]
+    fn test_nested_for_with_signals() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::for_loop("item", "items", "item-tpl")],
+            },
+        );
+        fragments.insert(
+            "item-tpl".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<p>"),
+                    WebUIFragment::signal("item.name", false),
+                    WebUIFragment::raw("</p>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"items": [{"name": "Alice"}, {"name": "Bob"}]});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(writer.get_content(), "<p>Alice</p><p>Bob</p>");
+    }
+
+    #[test]
+    fn test_nested_for_with_global_state() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::for_loop("item", "items", "item-tpl")],
+            },
+        );
+        fragments.insert(
+            "item-tpl".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::signal("item.name", false),
+                    WebUIFragment::raw(" - "),
+                    WebUIFragment::signal("globalTitle", false),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"items": [{"name": "A"}, {"name": "B"}], "globalTitle": "Title"});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(writer.get_content(), "A - TitleB - Title");
+    }
+
+    // ── For + If state scoping tests ──────────────────────────────────
+
+    #[test]
+    fn test_if_in_for_uses_local_state() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::for_loop("item", "items", "item-tpl")],
+            },
+        );
+        fragments.insert(
+            "item-tpl".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::if_cond(
+                    ConditionExpr::identifier("item.visible"),
+                    "visible-tpl",
+                )],
+            },
+        );
+        fragments.insert(
+            "visible-tpl".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::signal("item.name", false)],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"items": [{"name": "Show", "visible": true}, {"name": "Hide", "visible": false}]});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(writer.get_content(), "Show");
+    }
+
+    #[test]
+    fn test_for_if_local_overrides_global() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::for_loop("item", "items", "item-tpl")],
+            },
+        );
+        fragments.insert(
+            "item-tpl".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::if_cond(
+                    ConditionExpr::identifier("item.flag"),
+                    "show-tpl",
+                )],
+            },
+        );
+        fragments.insert(
+            "show-tpl".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("yes")],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        // Global flag is true, but local item.flag is false for second item
+        let state = test_json!({"flag": true, "items": [{"flag": true}, {"flag": false}]});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(writer.get_content(), "yes");
     }
 }
