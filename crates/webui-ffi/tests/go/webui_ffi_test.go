@@ -1,21 +1,5 @@
-package webui_ffi_test
+package webui_ffi
 
-// #cgo LDFLAGS: -L../../../../target/debug -lwebui_ffi
-// #cgo darwin LDFLAGS: -framework CoreFoundation -framework Security
-// #cgo linux LDFLAGS: -lm -ldl -lpthread
-// #include <stdlib.h>
-//
-// // Forward declarations matching the generated C header.
-// extern void  *webui_handler_create();
-// extern void   webui_handler_destroy(void *handler_ptr);
-// extern char  *webui_handler_render(void *handler_ptr,
-//                                     const unsigned char *protocol_data,
-//                                     unsigned long protocol_len,
-//                                     const char *data_json);
-// extern char  *webui_render(const char *html, const char *data_json);
-// extern void   webui_free(char *string_ptr);
-// extern const char *webui_last_error();
-import "C"
 import (
 	"os"
 	"path/filepath"
@@ -29,37 +13,13 @@ import (
 // Helpers
 // ---------------------------------------------------------------------------
 
-// parseAndRender wraps the C function with proper Go string handling.
-func parseAndRender(t *testing.T, html, dataJSON string) string {
+func mustRender(t *testing.T, html, dataJSON string) string {
 	t.Helper()
-	cHTML := C.CString(html)
-	defer C.free(unsafe.Pointer(cHTML))
-
-	cJSON := C.CString(dataJSON)
-	defer C.free(unsafe.Pointer(cJSON))
-
-	ptr := C.webui_render(cHTML, cJSON)
-	if ptr == nil {
-		errPtr := C.webui_last_error()
-		errMsg := "<none>"
-		if errPtr != nil {
-			errMsg = C.GoString(errPtr)
-		}
-		t.Fatalf("webui_render returned NULL; error: %s", errMsg)
+	result, err := Render(html, dataJSON)
+	if err != nil {
+		t.Fatalf("Render returned error: %s", err)
 	}
-
-	result := C.GoString(ptr)
-	C.webui_free(ptr)
 	return result
-}
-
-// lastError returns the last FFI error message, or empty string.
-func lastError() string {
-	ptr := C.webui_last_error()
-	if ptr == nil {
-		return ""
-	}
-	return C.GoString(ptr)
 }
 
 // ---------------------------------------------------------------------------
@@ -67,14 +27,14 @@ func lastError() string {
 // ---------------------------------------------------------------------------
 
 func TestSimplePassthrough(t *testing.T) {
-	got := parseAndRender(t, "<p>Hello</p>", "{}")
+	got := mustRender(t, "<p>Hello</p>", "{}")
 	if got != "<p>Hello</p>" {
 		t.Errorf("got %q, want %q", got, "<p>Hello</p>")
 	}
 }
 
 func TestSignalSubstitution(t *testing.T) {
-	got := parseAndRender(t, "Hello, {{name}}!", `{"name":"WebUI"}`)
+	got := mustRender(t, "Hello, {{name}}!", `{"name":"WebUI"}`)
 	if got != "Hello, WebUI!" {
 		t.Errorf("got %q, want %q", got, "Hello, WebUI!")
 	}
@@ -82,7 +42,7 @@ func TestSignalSubstitution(t *testing.T) {
 
 func TestForLoop(t *testing.T) {
 	html := `<ul><for each="item in items"><li>{{item}}</li></for></ul>`
-	got := parseAndRender(t, html, `{"items":["a","b","c"]}`)
+	got := mustRender(t, html, `{"items":["a","b","c"]}`)
 	want := "<ul><li>a</li><li>b</li><li>c</li></ul>"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -91,7 +51,7 @@ func TestForLoop(t *testing.T) {
 
 func TestIfConditionTrue(t *testing.T) {
 	html := `<if condition="show"><p>Visible</p></if>`
-	got := parseAndRender(t, html, `{"show":true}`)
+	got := mustRender(t, html, `{"show":true}`)
 	if got != "<p>Visible</p>" {
 		t.Errorf("got %q, want %q", got, "<p>Visible</p>")
 	}
@@ -99,7 +59,7 @@ func TestIfConditionTrue(t *testing.T) {
 
 func TestIfConditionFalse(t *testing.T) {
 	html := `<if condition="show"><p>Hidden</p></if>`
-	got := parseAndRender(t, html, `{"show":false}`)
+	got := mustRender(t, html, `{"show":false}`)
 	if got != "" {
 		t.Errorf("got %q, want empty string", got)
 	}
@@ -107,7 +67,7 @@ func TestIfConditionFalse(t *testing.T) {
 
 func TestHTMLEscaping(t *testing.T) {
 	html := "<div>{{content}}</div>"
-	got := parseAndRender(t, html, `{"content":"<script>alert('xss')</script>"}`)
+	got := mustRender(t, html, `{"content":"<script>alert('xss')</script>"}`)
 	if strings.Contains(got, "<script>") {
 		t.Errorf("signal output must be HTML-escaped, got: %s", got)
 	}
@@ -118,7 +78,7 @@ func TestHTMLEscaping(t *testing.T) {
 
 func TestRawSignalUnescaped(t *testing.T) {
 	html := "<div>{{{content}}}</div>"
-	got := parseAndRender(t, html, `{"content":"<b>bold</b>"}`)
+	got := mustRender(t, html, `{"content":"<b>bold</b>"}`)
 	if got != "<div><b>bold</b></div>" {
 		t.Errorf("got %q, want %q", got, "<div><b>bold</b></div>")
 	}
@@ -129,16 +89,16 @@ func TestRawSignalUnescaped(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNullHTMLReturnsNull(t *testing.T) {
-	cJSON := C.CString("{}")
-	defer C.free(unsafe.Pointer(cJSON))
+	cJSON := CString("{}")
+	defer CFree(unsafe.Pointer(cJSON))
 
-	ptr := C.webui_render(nil, cJSON)
+	ptr := RenderRaw(nil, cJSON)
 	if ptr != nil {
-		C.webui_free(ptr)
+		Free(ptr)
 		t.Fatal("expected NULL for nil html")
 	}
 
-	err := lastError()
+	err := LastError()
 	if err == "" {
 		t.Fatal("expected error message")
 	}
@@ -148,18 +108,18 @@ func TestNullHTMLReturnsNull(t *testing.T) {
 }
 
 func TestInvalidJSON(t *testing.T) {
-	cHTML := C.CString("<p>hi</p>")
-	defer C.free(unsafe.Pointer(cHTML))
-	cJSON := C.CString("NOT JSON")
-	defer C.free(unsafe.Pointer(cJSON))
+	cHTML := CString("<p>hi</p>")
+	defer CFree(unsafe.Pointer(cHTML))
+	cJSON := CString("NOT JSON")
+	defer CFree(unsafe.Pointer(cJSON))
 
-	ptr := C.webui_render(cHTML, cJSON)
+	ptr := RenderRaw(cHTML, cJSON)
 	if ptr != nil {
-		C.webui_free(ptr)
+		Free(ptr)
 		t.Fatal("expected NULL for invalid JSON")
 	}
 
-	err := lastError()
+	err := LastError()
 	if !strings.Contains(err, "JSON") {
 		t.Errorf("error should mention JSON, got: %s", err)
 	}
@@ -167,22 +127,22 @@ func TestInvalidJSON(t *testing.T) {
 
 func TestSuccessfulCallClearsError(t *testing.T) {
 	// Trigger error
-	cHTML := C.CString("<p>hi</p>")
-	cJSON := C.CString("NOT JSON")
-	ptr := C.webui_render(cHTML, cJSON)
+	cHTML := CString("<p>hi</p>")
+	cJSON := CString("NOT JSON")
+	ptr := RenderRaw(cHTML, cJSON)
 	if ptr != nil {
-		C.webui_free(ptr)
+		Free(ptr)
 	}
-	C.free(unsafe.Pointer(cHTML))
-	C.free(unsafe.Pointer(cJSON))
+	CFree(unsafe.Pointer(cHTML))
+	CFree(unsafe.Pointer(cJSON))
 
-	if lastError() == "" {
+	if LastError() == "" {
 		t.Fatal("error should be set")
 	}
 
 	// Successful call clears it
-	_ = parseAndRender(t, "<p>ok</p>", "{}")
-	if lastError() != "" {
+	_ = mustRender(t, "<p>ok</p>", "{}")
+	if LastError() != "" {
 		t.Error("error should be cleared after successful call")
 	}
 }
@@ -192,19 +152,19 @@ func TestSuccessfulCallClearsError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandlerCreateAndDestroy(t *testing.T) {
-	handler := C.webui_handler_create()
+	handler := HandlerCreate()
 	if handler == nil {
 		t.Fatal("handler should not be nil")
 	}
-	C.webui_handler_destroy(handler)
+	HandlerDestroy(handler)
 }
 
 func TestHandlerDestroyNull(t *testing.T) {
-	C.webui_handler_destroy(nil) // should not crash
+	HandlerDestroy(nil) // should not crash
 }
 
-func TestFreeStringNull(t *testing.T) {
-	C.webui_free(nil) // should not crash
+func TestFreeNull(t *testing.T) {
+	Free(nil) // should not crash
 }
 
 // ---------------------------------------------------------------------------
@@ -232,7 +192,7 @@ func TestFixtureFile(t *testing.T) {
 		t.Fatalf("reading expected_output.html: %v", err)
 	}
 
-	got := parseAndRender(t, string(html), string(state))
+	got := mustRender(t, string(html), string(state))
 	if got != string(expected) {
 		t.Errorf("fixture mismatch:\ngot:  %q\nwant: %q", got, string(expected))
 	}
