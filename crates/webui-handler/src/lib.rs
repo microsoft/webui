@@ -58,10 +58,40 @@ pub struct WebUIHandler {
 struct WebUIProcessContext<'a> {
     protocol: &'a WebUIProtocol,
     state: &'a Value,
+    #[allow(dead_code)]
     depth: usize,
     writer: &'a mut dyn ResponseWriter,
     // Add local variables map to store context-specific variables (like loop items)
     local_vars: HashMap<String, Value>,
+    /// Accumulates component attribute values between attrStart and the component fragment.
+    component_attrs: HashMap<String, Value>,
+}
+
+/// Convert hyphenated name to camelCase (e.g., "data-title" → "dataTitle").
+fn convert_hyphen_to_camel_case(name: &str) -> String {
+    let mut result = String::with_capacity(name.len());
+    let mut capitalize_next = false;
+    for ch in name.chars() {
+        if ch == '-' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.extend(ch.to_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+/// Get the component attribute name, stripping `:` prefix and converting to camelCase.
+fn component_attr_name(name: &str) -> String {
+    let stripped = name.strip_prefix(':').unwrap_or(name);
+    if stripped.contains('-') {
+        convert_hyphen_to_camel_case(stripped)
+    } else {
+        stripped.to_string()
+    }
 }
 
 impl WebUIHandler {
@@ -93,6 +123,7 @@ impl WebUIHandler {
             depth: 0,
             writer,
             local_vars: HashMap::new(),
+            component_attrs: HashMap::new(),
         };
         self.process_fragment_id(main_fragment_id, &mut context)?;
 
@@ -160,15 +191,20 @@ impl WebUIHandler {
         component: &webui_protocol::WebUIFragmentComponent,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        // Write CSS once per component at the first level
-        if context.depth == 0 {
-            context.writer.write(&format!(
-                "<link rel=\"stylesheet\" href=\"./{}.css\">",
-                component.fragment_id
-            ))?;
-        }
+        // Save parent scope
+        let saved_local_vars = std::mem::take(&mut context.local_vars);
+        let saved_component_attrs = std::mem::take(&mut context.component_attrs);
 
-        self.process_fragment_id(&component.fragment_id, context)
+        // Component gets accumulated attrs as its local vars
+        context.local_vars = saved_component_attrs;
+
+        self.process_fragment_id(&component.fragment_id, context)?;
+
+        // Restore parent scope
+        context.local_vars = saved_local_vars;
+        context.component_attrs = HashMap::new();
+
+        Ok(())
     }
 
     /// Resolve a dotted path value, checking local variables first, then global state.
@@ -310,9 +346,22 @@ impl WebUIHandler {
         attr: &webui_protocol::WebUIFragmentAttribute,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
+        // Initialize component attribute accumulator on attrStart
+        if attr.attr_start {
+            context.component_attrs = HashMap::new();
+        }
+
         // Boolean attribute with condition tree
         if let Some(condition) = &attr.condition_tree {
             let condition_met = self.evaluate_condition(condition, context)?;
+
+            if !attr.attr_skip {
+                let name = component_attr_name(&attr.name);
+                context
+                    .component_attrs
+                    .insert(name, Value::Bool(condition_met));
+            }
+
             if condition_met {
                 context.writer.write(&format!(" {}", attr.name))?;
             }
@@ -321,29 +370,95 @@ impl WebUIHandler {
 
         // Template attribute (mixed static + dynamic)
         if !attr.template.is_empty() {
-            context.writer.write(&format!(" {}=\"", attr.name))?;
-            self.process_fragment_id(&attr.template, context)?;
-            context.writer.write("\"")?;
+            let raw_value = self.render_template_attr_value(&attr.template, context)?;
+            let escaped = html_escape::encode_safe(&raw_value);
+            context
+                .writer
+                .write(&format!(" {}=\"{}\"", attr.name, escaped))?;
+
+            if !attr.attr_skip {
+                let name = component_attr_name(&attr.name);
+                context
+                    .component_attrs
+                    .insert(name, Value::String(raw_value));
+            }
             return Ok(());
         }
 
-        // Simple dynamic attribute
+        // Simple attribute
         if !attr.value.is_empty() {
-            if let Some(value) = self.resolve_value(&attr.value, context) {
-                let formatted = match &value {
-                    Value::String(s) => s.clone(),
-                    Value::Number(n) => n.to_string(),
-                    Value::Bool(b) => b.to_string(),
-                    Value::Null => String::new(),
-                    _ => value.to_string(),
-                };
+            if attr.raw_value {
+                // Static attribute — value is the literal string
                 context
                     .writer
-                    .write(&format!(" {}=\"{}\"", attr.name, formatted))?;
+                    .write(&format!(" {}=\"{}\"", attr.name, attr.value))?;
+                if !attr.attr_skip {
+                    let name = component_attr_name(&attr.name);
+                    context
+                        .component_attrs
+                        .insert(name, Value::String(attr.value.clone()));
+                }
+            } else if attr.complex {
+                // Complex attribute — resolve value, don't render to HTML, store as state
+                if let Some(value) = self.resolve_value(&attr.value, context) {
+                    if !attr.attr_skip {
+                        let stripped = attr.name.strip_prefix(':').unwrap_or(&attr.name);
+                        let name = component_attr_name(stripped);
+                        context.component_attrs.insert(name, value);
+                    }
+                }
+            } else {
+                // Dynamic attribute — resolve and render
+                if let Some(value) = self.resolve_value(&attr.value, context) {
+                    let formatted = match &value {
+                        Value::String(s) => html_escape::encode_safe(s).to_string(),
+                        Value::Number(n) => n.to_string(),
+                        Value::Bool(b) => b.to_string(),
+                        Value::Null => String::new(),
+                        _ => value.to_string(),
+                    };
+                    context
+                        .writer
+                        .write(&format!(" {}=\"{}\"", attr.name, formatted))?;
+
+                    if !attr.attr_skip {
+                        let name = component_attr_name(&attr.name);
+                        context.component_attrs.insert(name, value);
+                    }
+                }
             }
         }
 
         Ok(())
+    }
+
+    /// Render a template attribute's fragments into a raw (unescaped) string.
+    fn render_template_attr_value(
+        &self,
+        template_id: &str,
+        context: &WebUIProcessContext,
+    ) -> Result<String> {
+        let fragments = context
+            .protocol
+            .fragments
+            .get(template_id)
+            .ok_or_else(|| HandlerError::MissingFragment(template_id.to_string()))?;
+        let mut raw_value = String::new();
+        for frag in &fragments.fragments {
+            match frag.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => raw_value.push_str(&raw.value),
+                Some(Fragment::Signal(signal)) => {
+                    if let Some(value) = self.resolve_value(&signal.value, context) {
+                        match &value {
+                            Value::String(s) => raw_value.push_str(s),
+                            _ => raw_value.push_str(&value.to_string()),
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(raw_value)
     }
 
     /// Render the UI based on the protocol and state
@@ -359,6 +474,7 @@ impl WebUIHandler {
             depth: 0,
             writer,
             local_vars: HashMap::new(),
+            component_attrs: HashMap::new(),
         };
 
         self.process_fragment_id("index.html", &mut context)
@@ -386,7 +502,7 @@ pub fn handle(
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use webui_protocol::{ConditionExpr, FragmentList};
+    use webui_protocol::{web_ui_fragment, ConditionExpr, FragmentList, WebUIFragmentAttribute};
     use webui_test_utils::test_json;
 
     // A simple test writer implementation
@@ -615,7 +731,7 @@ mod tests {
         // Check the output
         assert_eq!(
             writer.get_content(),
-            "Component: <link rel=\"stylesheet\" href=\"./my-component.css\"><div>Component Content</div>"
+            "Component: <div>Component Content</div>"
         );
         assert!(writer.is_ended());
     }
@@ -1037,5 +1153,313 @@ mod tests {
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
         assert_eq!(writer.get_content(), "yes");
+    }
+
+    // ── Component attribute state tests ───────────────────────────────
+
+    #[test]
+    fn test_component_attr_state_simple() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<my-comp"),
+                    WebUIFragment {
+                        fragment: Some(web_ui_fragment::Fragment::Attribute(
+                            WebUIFragmentAttribute {
+                                name: "title".into(),
+                                value: "Attribute Title".into(),
+                                attr_start: true,
+                                raw_value: true,
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                    WebUIFragment::raw(">"),
+                    WebUIFragment::component("my-comp"),
+                    WebUIFragment::raw("</my-comp>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "my-comp".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<span>"),
+                    WebUIFragment::signal("title", false),
+                    WebUIFragment::raw("</span>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"title": "Global Title"});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(
+            writer.get_content(),
+            "<my-comp title=\"Attribute Title\"><span>Attribute Title</span></my-comp>"
+        );
+    }
+
+    #[test]
+    fn test_component_attr_state_template() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<my-comp"),
+                    WebUIFragment {
+                        fragment: Some(web_ui_fragment::Fragment::Attribute(
+                            WebUIFragmentAttribute {
+                                name: "title".into(),
+                                template: "title-attr".into(),
+                                attr_start: true,
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                    WebUIFragment::raw(">"),
+                    WebUIFragment::component("my-comp"),
+                    WebUIFragment::raw("</my-comp>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "title-attr".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("hello "),
+                    WebUIFragment::signal("item", false),
+                ],
+            },
+        );
+        fragments.insert(
+            "my-comp".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<span>"),
+                    WebUIFragment::signal("title", false),
+                    WebUIFragment::raw("</span>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"item": "<world>"});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(
+            writer.get_content(),
+            "<my-comp title=\"hello &lt;world&gt;\"><span>hello &lt;world&gt;</span></my-comp>"
+        );
+    }
+
+    #[test]
+    fn test_component_attr_camel_case() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<my-comp"),
+                    WebUIFragment {
+                        fragment: Some(web_ui_fragment::Fragment::Attribute(
+                            WebUIFragmentAttribute {
+                                name: "data-title".into(),
+                                template: "dt-attr".into(),
+                                attr_start: true,
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                    WebUIFragment::raw(">"),
+                    WebUIFragment::component("my-comp"),
+                    WebUIFragment::raw("</my-comp>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "dt-attr".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("prefix "),
+                    WebUIFragment::signal("item", false),
+                ],
+            },
+        );
+        fragments.insert(
+            "my-comp".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<span>"),
+                    WebUIFragment::signal("dataTitle", false),
+                    WebUIFragment::raw("</span>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"item": "a&b"});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(
+            writer.get_content(),
+            "<my-comp data-title=\"prefix a&amp;b\"><span>prefix a&amp;b</span></my-comp>"
+        );
+    }
+
+    #[test]
+    fn test_component_complex_attr() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<my-comp"),
+                    WebUIFragment {
+                        fragment: Some(web_ui_fragment::Fragment::Attribute(
+                            WebUIFragmentAttribute {
+                                name: ":item".into(),
+                                value: "complexItem".into(),
+                                attr_start: true,
+                                complex: true,
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                    WebUIFragment::raw(">"),
+                    WebUIFragment::component("my-comp"),
+                    WebUIFragment::raw("</my-comp>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "my-comp".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<span>"),
+                    WebUIFragment::signal("item.foo", false),
+                    WebUIFragment::raw("</span><p>"),
+                    WebUIFragment::signal("item.bar", false),
+                    WebUIFragment::raw("</p>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"complexItem": {"foo": 1, "bar": "true"}});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(
+            writer.get_content(),
+            "<my-comp><span>1</span><p>true</p></my-comp>"
+        );
+    }
+
+    #[test]
+    fn test_component_no_parent_pollution() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<parent"),
+                    WebUIFragment {
+                        fragment: Some(web_ui_fragment::Fragment::Attribute(
+                            WebUIFragmentAttribute {
+                                name: "var".into(),
+                                value: "var".into(),
+                                attr_start: true,
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                    WebUIFragment::raw(">"),
+                    WebUIFragment::component("parent"),
+                    WebUIFragment::raw("</parent>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "parent".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("Before: "),
+                    WebUIFragment::signal("var", false),
+                    WebUIFragment::raw("<child foo"),
+                    WebUIFragment {
+                        fragment: Some(web_ui_fragment::Fragment::Attribute(
+                            WebUIFragmentAttribute {
+                                name: "var".into(),
+                                value: "replaced".into(),
+                                raw_value: true,
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                    WebUIFragment::raw(">"),
+                    WebUIFragment::component("child"),
+                    WebUIFragment::raw("Label</child>After: "),
+                    WebUIFragment::signal("var", false),
+                ],
+            },
+        );
+        fragments.insert("child".to_string(), FragmentList { fragments: vec![] });
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"var": "original"});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(
+            writer.get_content(),
+            "<parent var=\"original\">Before: original<child foo var=\"replaced\">Label</child>After: original</parent>"
+        );
+    }
+
+    #[test]
+    fn test_component_boolean_attr_state() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<my-comp"),
+                    WebUIFragment {
+                        fragment: Some(web_ui_fragment::Fragment::Attribute(
+                            WebUIFragmentAttribute {
+                                name: "disabled".into(),
+                                attr_start: true,
+                                condition_tree: Some(ConditionExpr::identifier("isDisabled")),
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                    WebUIFragment::raw(">"),
+                    WebUIFragment::component("my-comp"),
+                    WebUIFragment::raw("</my-comp>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "my-comp".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::if_cond(
+                    ConditionExpr::identifier("disabled"),
+                    "show",
+                )],
+            },
+        );
+        fragments.insert(
+            "show".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("disabled!")],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"isDisabled": true});
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &mut writer).unwrap();
+        assert_eq!(
+            writer.get_content(),
+            "<my-comp disabled>disabled!</my-comp>"
+        );
     }
 }
