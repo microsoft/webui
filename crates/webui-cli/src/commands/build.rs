@@ -1,12 +1,31 @@
 use anyhow::{Context, Result};
-use clap::Args;
+use clap::{Args, ValueEnum};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
-use webui_parser::HtmlParser;
+use webui_parser::{CssStrategy, HtmlParser};
 use webui_protocol::WebUIProtocol;
 
 use crate::output::Printer;
+
+/// CSS delivery strategy for component stylesheets.
+#[derive(ValueEnum, Clone, Copy, Debug, Default)]
+pub enum CssMode {
+    /// Emit <link> tags referencing external .css files (default)
+    #[default]
+    External,
+    /// Embed CSS inline in <style> tags within shadow DOM templates
+    Inline,
+}
+
+impl From<CssMode> for CssStrategy {
+    fn from(mode: CssMode) -> Self {
+        match mode {
+            CssMode::External => CssStrategy::External,
+            CssMode::Inline => CssStrategy::Inline,
+        }
+    }
+}
 
 #[derive(Args)]
 pub struct BuildArgs {
@@ -21,6 +40,10 @@ pub struct BuildArgs {
     /// Entry HTML file name (defaults to index.html)
     #[arg(long, default_value = "index.html")]
     pub entry: String,
+
+    /// CSS delivery strategy for component stylesheets
+    #[arg(long, value_enum, default_value_t = CssMode::External)]
+    pub css: CssMode,
 }
 
 pub fn execute(args: &BuildArgs) -> Result<()> {
@@ -52,6 +75,7 @@ fn run(args: &BuildArgs) -> Result<()> {
     printer.field("App", &app.display());
     printer.field("Entry", &args.entry);
     printer.field("Output", &args.out.display());
+    printer.field("CSS", &format!("{:?}", args.css));
     eprintln!();
 
     // Create output directory
@@ -60,6 +84,7 @@ fn run(args: &BuildArgs) -> Result<()> {
 
     // Set up parser and register components from the app directory
     let mut parser = HtmlParser::new();
+    parser.set_css_strategy(args.css.into());
     parser
         .component_registry_mut()
         .register_from_paths(&[&app])
@@ -117,13 +142,15 @@ fn run(args: &BuildArgs) -> Result<()> {
 
     let mut files_written: usize = 1;
 
-    // Copy component CSS files
-    for (filename, css_content) in &css_files {
-        let css_path = args.out.join(filename);
-        fs::write(&css_path, css_content)
-            .with_context(|| format!("Failed to write {}", css_path.display()))?;
-        printer.success(&format!("Wrote {}", printer.bold.apply_to(filename)));
-        files_written += 1;
+    // Copy component CSS files (only in external mode)
+    if matches!(args.css, CssMode::External) {
+        for (filename, css_content) in &css_files {
+            let css_path = args.out.join(filename);
+            fs::write(&css_path, css_content)
+                .with_context(|| format!("Failed to write {}", css_path.display()))?;
+            printer.success(&format!("Wrote {}", printer.bold.apply_to(filename)));
+            files_written += 1;
+        }
     }
 
     let elapsed = started.elapsed();
@@ -144,6 +171,7 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
         app: app.to_path_buf(),
         out: out.to_path_buf(),
         entry: entry.to_string(),
+        css: CssMode::External,
     })
 }
 
@@ -224,6 +252,28 @@ mod tests {
         assert!(css_path.exists());
         let css = fs::read_to_string(&css_path).unwrap();
         assert!(css.contains("color: red"));
+    }
+
+    #[test]
+    fn test_build_with_inline_css_skips_css_files() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<my-card>Hello</my-card>"),
+            ("my-card.html", "<div><slot></slot></div>"),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+
+        run(&BuildArgs {
+            app: app_dir.path().to_path_buf(),
+            out: out_dir.path().to_path_buf(),
+            entry: "index.html".to_string(),
+            css: CssMode::Inline,
+        })
+        .unwrap();
+
+        assert!(out_dir.path().join("protocol.bin").exists());
+        // Inline mode should NOT write external CSS files
+        assert!(!out_dir.path().join("my-card.css").exists());
     }
 
     #[test]
