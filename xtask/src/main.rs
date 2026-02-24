@@ -5,9 +5,10 @@ use std::{
 };
 
 fn main() -> ExitCode {
-    let task = std::env::args().nth(1);
+    let args: Vec<String> = std::env::args().collect();
+    let task = args.get(1).map(|s| s.as_str());
 
-    match task.as_deref() {
+    match task {
         Some("check") => check(),
         Some("fmt") => run_steps(&[Step::FMT]),
         Some("clippy") => run_steps(&[Step::CLIPPY]),
@@ -17,6 +18,11 @@ fn main() -> ExitCode {
         Some("build-integrations") => run_steps(&[Step::BUILD_INTEGRATIONS]),
         Some("build-apps") => run_steps(&[Step::BUILD_APPS]),
         Some("docs") => run_steps(&[Step::DOCS]),
+        Some("run") => {
+            let integration = args.get(2).map(|s| s.as_str());
+            let app = args.get(3).map(|s| s.as_str());
+            run_integration_app(integration, app)
+        }
         _ => usage(),
     }
 }
@@ -33,6 +39,8 @@ fn usage() -> ExitCode {
            build   Build the workspace\n  \
                      build-integrations  Build all examples/integration targets\n  \
                      build-apps  Build all examples/app templates through webui-cli\n  \
+           run     Run an integration with an app\n  \
+                     usage: cargo xtask run <integration> <app>\n  \
            docs    Build the documentation site"
     );
     ExitCode::FAILURE
@@ -65,6 +73,7 @@ struct BuildCommand {
 struct IntegrationBuild {
     name: &'static str,
     commands: &'static [BuildCommand],
+    run_commands: &'static [BuildCommand],
 }
 
 const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
@@ -75,12 +84,22 @@ const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
             args: &["build"],
             cwd: Some("examples/integration/hyper"),
         }],
+        run_commands: &[BuildCommand {
+            cmd: "cargo",
+            args: &["run", "--"],
+            cwd: Some("examples/integration/hyper"),
+        }],
     },
     IntegrationBuild {
         name: "tiny_http",
         commands: &[BuildCommand {
             cmd: "cargo",
             args: &["build"],
+            cwd: Some("examples/integration/tiny_http"),
+        }],
+        run_commands: &[BuildCommand {
+            cmd: "cargo",
+            args: &["run", "--"],
             cwd: Some("examples/integration/tiny_http"),
         }],
     },
@@ -231,6 +250,69 @@ fn run_app_builds() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn find_integration(name: &str) -> Option<&'static IntegrationBuild> {
+    INTEGRATION_BUILDS.iter().find(|b| b.name == name)
+}
+
+fn available_integrations() -> String {
+    INTEGRATION_BUILDS
+        .iter()
+        .map(|b| b.name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn available_apps() -> Result<String, String> {
+    let dirs = collect_child_dirs(Path::new("examples/app"))?;
+    let names: Vec<String> = dirs.iter().map(|d| display_name(d)).collect();
+    Ok(names.join(", "))
+}
+
+fn run_integration_app(integration: Option<&str>, app: Option<&str>) -> ExitCode {
+    let (Some(integration_name), Some(app_name)) = (integration, app) else {
+        eprintln!(
+            "Usage: cargo xtask run <integration> <app>\n\n\
+             Available integrations: {}\n\
+             Available apps: {}",
+            available_integrations(),
+            available_apps().unwrap_or_else(|_| "(unable to list)".into()),
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let Some(build) = find_integration(integration_name) else {
+        eprintln!(
+            "Unknown integration '{}'\nAvailable: {}",
+            integration_name,
+            available_integrations(),
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let app_dir = Path::new("examples/app").join(app_name);
+    if !app_dir.is_dir() {
+        eprintln!(
+            "Unknown app '{}'\nAvailable: {}",
+            app_name,
+            available_apps().unwrap_or_else(|_| "(unable to list)".into()),
+        );
+        return ExitCode::FAILURE;
+    }
+
+    eprintln!("▸ running {} with app {}", integration_name, app_name);
+    for cmd in build.run_commands {
+        let mut args: Vec<&str> = cmd.args.to_vec();
+        args.extend_from_slice(&["--app", app_name]);
+        let cwd = cmd.cwd.map(Path::new);
+        if let Err(message) = run_command(cmd.cmd, &args, cwd) {
+            eprintln!("  ✘ {}", message);
+            return ExitCode::FAILURE;
+        }
+    }
+
+    ExitCode::SUCCESS
 }
 
 fn run_command(cmd: &str, args: &[&str], cwd: Option<&Path>) -> Result<(), String> {

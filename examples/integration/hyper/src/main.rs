@@ -48,8 +48,8 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
-    let result = run(&cli);
-    if result.is_err() {
+    if let Err(err) = run(&cli) {
+        eprintln!("\n  ✘ {err:#}");
         std::process::exit(1);
     }
 }

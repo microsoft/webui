@@ -6,9 +6,7 @@ use std::time::SystemTime;
 /// of the template and data files. Returns a millisecond timestamp
 /// or `"0"` if neither file has a retrievable modification time.
 pub fn hmr_version(template: &Path, data: &Path) -> String {
-    let template_mtime = fs::metadata(template)
-        .and_then(|m| m.modified())
-        .ok();
+    let template_mtime = fs::metadata(template).and_then(|m| m.modified()).ok();
     let data_mtime = fs::metadata(data).and_then(|m| m.modified()).ok();
 
     let latest: Option<SystemTime> = match (template_mtime, data_mtime) {
