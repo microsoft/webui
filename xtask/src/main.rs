@@ -56,6 +56,40 @@ struct Step {
     run: fn() -> Result<(), String>,
 }
 
+struct BuildCommand {
+    cmd: &'static str,
+    args: &'static [&'static str],
+    cwd: Option<&'static str>,
+}
+
+struct IntegrationBuild {
+    name: &'static str,
+    commands: &'static [BuildCommand],
+}
+
+const INTEGRATION_HYPER_COMMANDS: &[BuildCommand] = &[BuildCommand {
+    cmd: "cargo",
+    args: &["build"],
+    cwd: Some("examples/integration/hyper"),
+}];
+
+const INTEGRATION_TINY_HTTP_COMMANDS: &[BuildCommand] = &[BuildCommand {
+    cmd: "cargo",
+    args: &["build"],
+    cwd: Some("examples/integration/tiny_http"),
+}];
+
+const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
+    IntegrationBuild {
+        name: "hyper",
+        commands: INTEGRATION_HYPER_COMMANDS,
+    },
+    IntegrationBuild {
+        name: "tiny_http",
+        commands: INTEGRATION_TINY_HTTP_COMMANDS,
+    },
+];
+
 impl Step {
     const FMT: Self = Self {
         name: "fmt",
@@ -136,99 +170,22 @@ fn run_docs() -> Result<(), String> {
 }
 
 fn run_integration_builds() -> Result<(), String> {
-    let integrations_root = Path::new("examples/integration");
-    let integration_dirs = collect_child_dirs(integrations_root)?;
-
-    if integration_dirs.is_empty() {
-        eprintln!("  • no integration targets found under examples/integration");
+    if INTEGRATION_BUILDS.is_empty() {
+        eprintln!("  • no integration build entries configured");
         return Ok(());
     }
 
-    for integration_dir in integration_dirs {
-        let integration_name = display_name(&integration_dir);
-        eprintln!("  • integration: {}", integration_name);
-
-        if integration_dir.join("xtask-build").is_file() {
-            run_command("sh", &["xtask-build"], Some(&integration_dir)).map_err(|message| {
+    for integration in INTEGRATION_BUILDS {
+        eprintln!("  • integration: {}", integration.name);
+        for command in integration.commands {
+            let cwd = command.cwd.map(Path::new);
+            run_command(command.cmd, command.args, cwd).map_err(|message| {
                 format!(
-                    "integration '{}' failed via xtask-build: {}",
-                    integration_name, message
+                    "integration '{}' command failed: {}",
+                    integration.name, message
                 )
             })?;
-            continue;
         }
-
-        if integration_dir.join("Cargo.toml").is_file() {
-            let manifest = integration_dir.join("Cargo.toml");
-            run_command(
-                "cargo",
-                &[
-                    "build",
-                    "--manifest-path",
-                    manifest.to_string_lossy().as_ref(),
-                ],
-                None,
-            )
-            .map_err(|message| {
-                format!(
-                    "integration '{}' rust build failed: {}",
-                    integration_name, message
-                )
-            })?;
-            continue;
-        }
-
-        if integration_dir.join("package.json").is_file() {
-            run_command("pnpm", &["build"], Some(&integration_dir)).map_err(|message| {
-                format!(
-                    "integration '{}' node build failed: {}",
-                    integration_name, message
-                )
-            })?;
-            continue;
-        }
-
-        let csproj = first_with_extension(&integration_dir, "csproj")?;
-        if let Some(project) = csproj {
-            run_command(
-                "dotnet",
-                &["build", project.to_string_lossy().as_ref(), "-c", "Release"],
-                None,
-            )
-            .map_err(|message| {
-                format!(
-                    "integration '{}' dotnet build failed: {}",
-                    integration_name, message
-                )
-            })?;
-            continue;
-        }
-
-        let solution = first_with_extension(&integration_dir, "sln")?;
-        if let Some(solution_file) = solution {
-            run_command(
-                "dotnet",
-                &[
-                    "build",
-                    solution_file.to_string_lossy().as_ref(),
-                    "-c",
-                    "Release",
-                ],
-                None,
-            )
-            .map_err(|message| {
-                format!(
-                    "integration '{}' solution build failed: {}",
-                    integration_name, message
-                )
-            })?;
-            continue;
-        }
-
-        return Err(format!(
-            "integration '{}' has no recognized build target; add Cargo.toml, package.json, *.csproj/*.sln, or an executable xtask-build script",
-            integration_name
-        ));
     }
 
     Ok(())
@@ -308,23 +265,6 @@ fn collect_child_dirs(root: &Path) -> Result<Vec<PathBuf>, String> {
 
     dirs.sort();
     Ok(dirs)
-}
-
-fn first_with_extension(root: &Path, extension: &str) -> Result<Option<PathBuf>, String> {
-    let entries = fs::read_dir(root).map_err(|error| error.to_string())?;
-    let mut candidates = Vec::new();
-
-    for entry in entries {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let path = entry.path();
-        let path_extension = path.extension().and_then(|value| value.to_str());
-        if path_extension == Some(extension) {
-            candidates.push(path);
-        }
-    }
-
-    candidates.sort();
-    Ok(candidates.into_iter().next())
 }
 
 fn display_name(path: &Path) -> String {
