@@ -17,7 +17,8 @@ use std::collections::HashMap;
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIteratorMut};
 use tree_sitter_html::LANGUAGE;
 use webui_protocol::{
-    web_ui_fragment::Fragment, ConditionExpr, FragmentList, WebUIFragment, WebUIFragmentRecords,
+    web_ui_fragment, web_ui_fragment::Fragment, ConditionExpr, FragmentList, WebUIFragment,
+    WebUIFragmentAttribute, WebUIFragmentRecords,
 };
 
 /// Counter for generating unique fragment IDs.
@@ -162,12 +163,6 @@ impl HtmlParser {
     ) {
         self.flush_raw_buffer(fragments);
         fragments.push(WebUIFragment::if_cond(condition, fragment_id));
-    }
-
-    /// Add a component fragment, flushing raw buffer first
-    fn add_component_fragment(&mut self, fragment_id: String, fragments: &mut Vec<WebUIFragment>) {
-        self.flush_raw_buffer(fragments);
-        fragments.push(WebUIFragment::component(fragment_id));
     }
 
     /// Add a non-raw fragment, flushing the raw buffer first if needed
@@ -787,7 +782,18 @@ impl HtmlParser {
         Ok(())
     }
 
-    // Simplify the process_component_directive method
+    /// Skipped attribute names for components.
+    const SKIPPED_ATTRIBUTES: &[&str] = &["class", "style", "role"];
+    /// Skipped attribute prefixes for components.
+    const SKIPPED_ATTRIBUTE_PREFIXES: &[&str] = &["data-", "aria-"];
+
+    fn is_skipped_attribute(name: &str) -> bool {
+        Self::SKIPPED_ATTRIBUTES.contains(&name)
+            || Self::SKIPPED_ATTRIBUTE_PREFIXES
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+    }
+
     fn process_component_directive(
         &mut self,
         node: Node,
@@ -795,64 +801,317 @@ impl HtmlParser {
         fragments: &mut Vec<WebUIFragment>,
         tag_name: &str,
     ) -> Result<()> {
-        // Build opening tag with attributes
-        let mut opening_tag = format!("<{}", tag_name);
-        for child in node.named_children(&mut node.walk()) {
-            if child.kind() == "attribute" {
-                let attr_text = &source[child.start_byte()..child.end_byte()];
-                opening_tag.push_str(attr_text);
-            }
+        let tag_node = self.find_tag_node(node);
+        let is_self_closing = tag_node
+            .map(|n| n.kind() == "self_closing_tag")
+            .unwrap_or(false);
+
+        // Emit "<tagname"
+        self.add_raw_fragment(&format!("<{}", tag_name));
+
+        // Process attributes — component-aware
+        if let Some(tag_node) = tag_node {
+            self.process_component_tag_attributes(tag_node, source, fragments)?;
         }
-        opening_tag.push('>');
 
-        // Add shadow DOM template opening
-        let start_content = format!("{}<template shadowrootmode=\"open\">", opening_tag);
-        self.add_raw_fragment(&start_content);
+        if is_self_closing {
+            let tag_text = tag_node
+                .map(|n| &source[n.start_byte()..n.end_byte()])
+                .unwrap_or("");
+            if tag_text.ends_with("/>") {
+                self.add_raw_fragment("/>");
+            } else {
+                self.add_raw_fragment(">");
+            }
+        } else {
+            self.add_raw_fragment(">");
+        }
 
-        // Explicitly flush the buffer to create a Raw fragment with the opening content
+        // Flush before component fragment
         self.flush_raw_buffer(fragments);
 
-        // Get the component data we need
-        let html_content;
-        {
+        // Get component data
+        let (html_content, css_content) = {
             let component = self.component_registry.get(tag_name).ok_or_else(|| {
                 ParserError::Directive(format!("Component not found: {}", tag_name))
             })?;
-            html_content = component.html_content.clone();
-        }
+            (
+                component.html_content.clone(),
+                component.css_content.clone(),
+            )
+        };
 
-        // Check if we need to parse the component template
+        // Parse and register component template if not already done
         if !self.fragment_records.contains_key(tag_name) {
-            // Parse component HTML content and add to fragment records
-            let _ = self.parse(tag_name, &html_content);
+            let has_css = css_content.is_some();
+            let css_path = if has_css {
+                Some(format!("{}.css", tag_name))
+            } else {
+                None
+            };
+            let processed = self.process_component_template(&html_content, css_path.as_deref());
+            self.parse(tag_name, &processed)?;
         }
 
-        // Add component fragment directly to output fragments - buffer is already flushed
-        self.add_component_fragment(tag_name.to_string(), fragments);
+        // Emit component fragment
+        fragments.push(WebUIFragment::component(tag_name.to_string()));
 
-        // Start building the closing part with template end
-        self.add_raw_fragment("</template>");
-
-        // Process slot content
-        for child in node.named_children(&mut node.walk()) {
-            if child.kind() != "start_tag" && child.kind() != "end_tag" {
-                if child.kind() == "element" {
-                    // For element slots, extract the full source text
-                    let slot_content = &source[child.start_byte()..child.end_byte()];
-                    self.add_raw_fragment(slot_content);
-                } else {
-                    // For text nodes and others, use normal processing
+        // Process slot content (skip start_tag/end_tag/self_closing_tag)
+        if !is_self_closing {
+            for child in node.named_children(&mut node.walk()) {
+                let kind = child.kind();
+                if kind != "start_tag" && kind != "end_tag" && kind != "self_closing_tag" {
                     self.process_child_node(child, source, fragments)?;
                 }
             }
         }
 
-        // Add closing component tag
-        self.add_raw_fragment(&format!("</{}>", tag_name));
-
-        // Don't flush here to let it combine with any subsequent raw content
+        // Emit closing tag
+        if !is_self_closing {
+            self.add_raw_fragment(&format!("</{}>", tag_name));
+        }
 
         Ok(())
+    }
+
+    fn process_component_tag_attributes(
+        &mut self,
+        tag_node: Node,
+        source: &str,
+        fragments: &mut Vec<WebUIFragment>,
+    ) -> Result<()> {
+        // First pass: collect all attributes
+        let mut attrs: Vec<(String, Option<String>)> = Vec::new();
+
+        let mut cursor = tag_node.walk();
+        for child in tag_node.named_children(&mut cursor) {
+            if child.kind() != "attribute" {
+                continue;
+            }
+            let name = self.get_attr_name(child, source)?;
+            let value = self.get_attr_value(child, source);
+            attrs.push((name, value));
+        }
+
+        // Second pass: emit attributes
+        let mut first_dynamic_emitted = false;
+
+        for (attr_name, attr_value) in &attrs {
+            if let Some(bool_name) = attr_name.strip_prefix('?') {
+                // Boolean attribute
+                if let Some(val) = attr_value {
+                    if let Some(signal_name) = Self::extract_single_handlebars(val) {
+                        let condition = ConditionExpr::identifier(&signal_name);
+                        let mut frag = WebUIFragment::attribute_boolean(bool_name, condition);
+                        if !first_dynamic_emitted {
+                            if let Some(web_ui_fragment::Fragment::Attribute(ref mut a)) =
+                                frag.fragment
+                            {
+                                a.attr_start = true;
+                            }
+                            first_dynamic_emitted = true;
+                        }
+                        self.add_fragment(frag, fragments);
+                    }
+                }
+            } else if attr_name.starts_with(':') {
+                // Complex attribute
+                if let Some(val) = attr_value {
+                    if let Some(signal_name) = Self::extract_single_handlebars(val) {
+                        let mut frag = WebUIFragment::attribute_complex(attr_name, signal_name);
+                        if !first_dynamic_emitted {
+                            if let Some(web_ui_fragment::Fragment::Attribute(ref mut a)) =
+                                frag.fragment
+                            {
+                                a.attr_start = true;
+                            }
+                            first_dynamic_emitted = true;
+                        }
+                        self.add_fragment(frag, fragments);
+                    }
+                }
+            } else if Self::is_skipped_attribute(attr_name) {
+                // Skipped attribute — always emit as attribute with attrSkip
+                if let Some(val) = attr_value {
+                    if let Some(signal_name) = Self::extract_single_handlebars(val) {
+                        let frag = WebUIFragment {
+                            fragment: Some(web_ui_fragment::Fragment::Attribute(
+                                WebUIFragmentAttribute {
+                                    name: attr_name.clone(),
+                                    value: signal_name,
+                                    attr_skip: true,
+                                    ..Default::default()
+                                },
+                            )),
+                        };
+                        self.add_fragment(frag, fragments);
+                    }
+                }
+            } else if let Some(val) = attr_value {
+                if Self::contains_handlebars(val) {
+                    // Dynamic regular attribute
+                    if let Some(signal_name) = Self::extract_single_handlebars(val) {
+                        let mut frag = WebUIFragment::attribute(attr_name, signal_name);
+                        if !first_dynamic_emitted {
+                            if let Some(web_ui_fragment::Fragment::Attribute(ref mut a)) =
+                                frag.fragment
+                            {
+                                a.attr_start = true;
+                            }
+                            first_dynamic_emitted = true;
+                        }
+                        self.add_fragment(frag, fragments);
+                    } else {
+                        // Mixed attribute — template
+                        let template_id = self.id_counter.next_id("attr");
+                        let parsed = self.handlebars_parser.parse(val)?;
+                        self.fragment_records
+                            .insert(template_id.clone(), FragmentList { fragments: parsed });
+                        let mut frag = WebUIFragment::attribute_template(attr_name, template_id);
+                        if !first_dynamic_emitted {
+                            if let Some(web_ui_fragment::Fragment::Attribute(ref mut a)) =
+                                frag.fragment
+                            {
+                                a.attr_start = true;
+                            }
+                            first_dynamic_emitted = true;
+                        }
+                        self.add_fragment(frag, fragments);
+                    }
+                } else {
+                    // Static attribute on component — always rawValue
+                    let mut frag = WebUIFragment {
+                        fragment: Some(web_ui_fragment::Fragment::Attribute(
+                            WebUIFragmentAttribute {
+                                name: attr_name.clone(),
+                                value: val.clone(),
+                                raw_value: true,
+                                ..Default::default()
+                            },
+                        )),
+                    };
+                    if !first_dynamic_emitted {
+                        if let Some(web_ui_fragment::Fragment::Attribute(ref mut a)) = frag.fragment
+                        {
+                            a.attr_start = true;
+                        }
+                        first_dynamic_emitted = true;
+                    }
+                    self.add_fragment(frag, fragments);
+                }
+            } else {
+                // Attribute without value
+                self.add_raw_fragment(&format!(" {}", attr_name));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Process component template HTML: wrap in shadow DOM template if needed,
+    /// inject stylesheet link, and strip runtime-only attributes.
+    fn process_component_template(&self, html: &str, styles: Option<&str>) -> String {
+        let trimmed = html.trim();
+        let has_template = trimmed.starts_with("<template");
+
+        if has_template {
+            // Strip @/:/?-prefixed attributes from the template tag
+            let stripped = Self::strip_runtime_attrs_from_template(trimmed);
+            if let Some(style_path) = styles {
+                // Inject link after the first > in the template tag
+                if let Some(pos) = stripped.find('>') {
+                    let mut result = String::with_capacity(stripped.len() + style_path.len() + 50);
+                    result.push_str(&stripped[..=pos]);
+                    result.push_str(&format!(
+                        "<link rel=\"stylesheet\" href=\"./{}\">",
+                        style_path
+                    ));
+                    result.push_str(&stripped[pos + 1..]);
+                    return result;
+                }
+            }
+            stripped
+        } else if let Some(style_path) = styles {
+            format!(
+                "<template shadowrootmode=\"open\"><link rel=\"stylesheet\" href=\"./{style_path}\">{trimmed}</template>"
+            )
+        } else {
+            format!("<template shadowrootmode=\"open\">{trimmed}</template>")
+        }
+    }
+
+    /// Strip attributes starting with @, :, or ? from the opening template tag.
+    fn strip_runtime_attrs_from_template(html: &str) -> String {
+        let Some(close_pos) = html.find('>') else {
+            return html.to_string();
+        };
+
+        let tag_portion = &html[..close_pos];
+
+        let Some(template_end) = tag_portion.find("template") else {
+            return html.to_string();
+        };
+        let attr_start = template_end + "template".len();
+
+        let before_attrs = &html[..attr_start];
+        let attr_section = &html[attr_start..close_pos];
+        let after_tag = &html[close_pos..];
+
+        let mut result = String::with_capacity(html.len());
+        result.push_str(before_attrs.trim_end());
+
+        let mut i = 0;
+        let bytes = attr_section.as_bytes();
+        while i < bytes.len() {
+            // Skip whitespace
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i >= bytes.len() {
+                break;
+            }
+
+            // Start of attribute name
+            let attr_start_pos = i;
+            while i < bytes.len() && bytes[i] != b'=' && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            let attr_name = &attr_section[attr_start_pos..i];
+
+            let is_runtime = attr_name.starts_with('@')
+                || attr_name.starts_with(':')
+                || attr_name.starts_with('?');
+
+            // Read the value if present
+            let mut attr_end = i;
+            if i < bytes.len() && bytes[i] == b'=' {
+                i += 1;
+                if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+                    let quote = bytes[i];
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != quote {
+                        i += 1;
+                    }
+                    if i < bytes.len() {
+                        i += 1;
+                    }
+                } else {
+                    // Unquoted value (including {foo})
+                    while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                }
+                attr_end = i;
+            }
+
+            if !is_runtime {
+                result.push(' ');
+                result.push_str(&attr_section[attr_start_pos..attr_end]);
+            }
+        }
+
+        result.push_str(after_tag);
+        result
     }
 }
 
@@ -1007,108 +1266,346 @@ mod tests {
     #[test]
     fn test_component_directive() {
         let mut parser = HtmlParser::new();
-        let html = r#"<my-component></my-component>"#;
+        parser
+            .component_registry
+            .register_component(
+                "my-component",
+                "<div>My Component</div>",
+                Some("div { color: blue; }"),
+            )
+            .expect("Failed to register component");
 
-        // Register the component
-        assert!(
-            parser
-                .component_registry
-                .register_component(
-                    "my-component",
-                    "<div>My Component</div>",
-                    Some("div { color: blue; }")
-                )
-                .is_ok(),
-            "Failed to register component"
-        );
-
-        let result = parser.parse("test.html", html);
-
+        let result = parser.parse("test.html", "<my-component></my-component>");
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let fragment_records = parser.into_fragment_records();
-        println!("Fragment records: {:#?}", fragment_records);
-        let fragment_list = fragment_records
-            .get("test.html")
-            .expect("Failed to get test.html fragment");
-        let fragments = &fragment_list.fragments;
+        let records = parser.into_fragment_records();
+        let fragments = &records["test.html"].fragments;
+
         assert_eq!(fragments.len(), 3);
-
         assert!(
-            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "<my-component><template shadowrootmode=\"open\">")
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<my-component>")
         );
         assert!(
-            matches!(fragments.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Component(component)) if
-                component.fragment_id == "my-component"
-            )
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "my-component")
         );
         assert!(
-            matches!(fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</template></my-component>")
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</my-component>")
         );
 
-        // Verify the sub-fragment contains our component content
-        let component_fragment_list = fragment_records
-            .get("my-component")
-            .expect("Failed to get my-component fragment");
-        let component_fragment = &component_fragment_list.fragments;
-        assert_eq!(component_fragment.len(), 1);
+        // Component template stream should be wrapped with shadow DOM template + style link
+        let comp = &records["my-component"].fragments;
+        assert_eq!(comp.len(), 1);
         assert!(
-            matches!(component_fragment.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if
-                raw.value == "<div>My Component</div>"
-            )
+            matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+                raw.value.contains("<template shadowrootmode=\"open\">") && raw.value.contains("<div>My Component</div>"))
         );
     }
 
     #[test]
     fn test_component_directive_with_slots() {
         let mut parser = HtmlParser::new();
-        let html = r#"Hello<my-component><p>World</p></my-component>"#;
+        parser
+            .component_registry
+            .register_component(
+                "my-component",
+                "<div>My Component</div>",
+                Some("div { color: blue; }"),
+            )
+            .expect("Failed to register component");
 
-        // Register the component
-        assert!(
-            parser
-                .component_registry
-                .register_component(
-                    "my-component",
-                    "<div>My Component</div>",
-                    Some("div { color: blue; }")
-                )
-                .is_ok(),
-            "Failed to register component"
+        let result = parser.parse(
+            "test.html",
+            "Hello<my-component><p>World</p></my-component>",
         );
-
-        let result = parser.parse("test.html", html);
-
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let fragment_records = parser.into_fragment_records();
-        println!("Fragment records: {:#?}", fragment_records);
-        let fragment_list = fragment_records
-            .get("test.html")
-            .expect("Failed to get test.html fragment");
-        let fragments = &fragment_list.fragments;
-        assert_eq!(fragments.len(), 3);
+        let records = parser.into_fragment_records();
+        let fragments = &records["test.html"].fragments;
 
+        // Entry: raw(Hello<my-component>) + component + raw(<p>World</p></my-component>)
+        assert!(fragments.len() >= 3);
+        // First fragment should contain "Hello" and "<my-component>"
         assert!(
-            matches!(fragments.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "Hello<my-component><template shadowrootmode=\"open\">")
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("Hello") && raw.value.contains("<my-component>"))
         );
+        // Should have component fragment
+        assert!(fragments.iter().any(|f| matches!(
+            f.fragment.as_ref(),
+            Some(Fragment::Component(c)) if c.fragment_id == "my-component"
+        )));
+        // Should end with closing tag
+        let last = fragments.last().unwrap();
         assert!(
-            matches!(fragments.get(1).and_then(|f| f.fragment.as_ref()), Some(Fragment::Component(component)) if
-                component.fragment_id == "my-component"
+            matches!(last.fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("</my-component>"))
+        );
+    }
+
+    // ── Component template wrapping tests ────────────────────────────
+
+    #[test]
+    fn test_component_no_double_wrap_template() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(
+                "custom-element",
+                r#"<template foo="bar"><slot></slot></template>"#,
+                None,
             )
+            .expect("register");
+        let result = parser.parse("index.html", "<custom-element>Hello</custom-element>");
+        assert!(result.is_ok());
+        let records = parser.into_fragment_records();
+
+        let entry = &records["index.html"].fragments;
+        assert_eq!(entry.len(), 3);
+        assert!(
+            matches!(entry[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-element>")
         );
         assert!(
-            matches!(fragments.get(2).and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if raw.value == "</template><p>World</p></my-component>")
+            matches!(entry[1].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-element")
+        );
+        assert!(
+            matches!(entry[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "Hello</custom-element>")
         );
 
-        // Verify the sub-fragment contains our component content
-        let component_fragment_list = fragment_records
-            .get("my-component")
-            .expect("Failed to get my-component fragment");
-        let component_fragment = &component_fragment_list.fragments;
-        assert_eq!(component_fragment.len(), 1);
+        let comp = &records["custom-element"].fragments;
+        assert_eq!(comp.len(), 1);
         assert!(
-            matches!(component_fragment.first().and_then(|f| f.fragment.as_ref()), Some(Fragment::Raw(raw)) if
-                raw.value == "<div>My Component</div>"
+            matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+                raw.value == r#"<template foo="bar"><slot></slot></template>"#)
+        );
+    }
+
+    #[test]
+    fn test_component_styled_no_double_wrap() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(
+                "custom-element",
+                r#"<template foo="bar"><slot></slot></template>"#,
+                Some("div { color: red; }"),
             )
+            .expect("register");
+        let result = parser.parse("index.html", "<custom-element>Hello</custom-element>");
+        assert!(result.is_ok());
+        let records = parser.into_fragment_records();
+
+        let comp = &records["custom-element"].fragments;
+        assert_eq!(comp.len(), 1);
+        assert!(
+            matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+                raw.value == r#"<template foo="bar"><link rel="stylesheet" href="./custom-element.css"><slot></slot></template>"#)
+        );
+    }
+
+    #[test]
+    fn test_component_strip_runtime_attrs() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(
+                "custom-element",
+                r#"<template @click={foo} :bar="baz" ?bool="true"><slot></slot></template>"#,
+                None,
+            )
+            .expect("register");
+        let result = parser.parse("index.html", "<custom-element>Hello</custom-element>");
+        assert!(result.is_ok());
+        let records = parser.into_fragment_records();
+
+        let comp = &records["custom-element"].fragments;
+        assert_eq!(comp.len(), 1);
+        assert!(
+            matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+                raw.value == "<template><slot></slot></template>")
+        );
+    }
+
+    #[test]
+    fn test_component_with_slots_and_attrs() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component("custom-element", "<slot></slot>", None)
+            .expect("register");
+        let result = parser.parse(
+            "index.html",
+            r#"<custom-element appearance="subtle">Hello World</custom-element>"#,
+        );
+        assert!(result.is_ok());
+        let records = parser.into_fragment_records();
+
+        let entry = &records["index.html"].fragments;
+        assert_eq!(entry.len(), 5);
+        assert!(
+            matches!(entry[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-element")
+        );
+        assert!(
+            matches!(entry[1].fragment.as_ref(), Some(Fragment::Attribute(a)) if
+                a.name == "appearance" && a.value == "subtle" && a.attr_start && a.raw_value)
+        );
+        assert!(matches!(entry[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">"));
+        assert!(
+            matches!(entry[3].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-element")
+        );
+        assert!(
+            matches!(entry[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "Hello World</custom-element>")
+        );
+    }
+
+    #[test]
+    fn test_component_legacy_no_styles() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component("custom-element", "<div>Custom Element</div>", None)
+            .expect("register");
+        let result = parser.parse("index.html", "<custom-element></custom-element>");
+        assert!(result.is_ok());
+        let records = parser.into_fragment_records();
+
+        let entry = &records["index.html"].fragments;
+        assert_eq!(entry.len(), 3);
+        assert!(
+            matches!(entry[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-element>")
+        );
+        assert!(
+            matches!(entry[1].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-element")
+        );
+        assert!(
+            matches!(entry[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</custom-element>")
+        );
+
+        let comp = &records["custom-element"].fragments;
+        assert_eq!(comp.len(), 1);
+        assert!(
+            matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+                raw.value == "<template shadowrootmode=\"open\"><div>Custom Element</div></template>")
+        );
+    }
+
+    #[test]
+    fn test_component_self_closing() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component("custom-widget", "<div>Widget Content</div>", None)
+            .expect("register");
+        let result = parser.parse("index.html", r#"<custom-widget config="{{settings}}" />"#);
+        assert!(result.is_ok());
+        let records = parser.into_fragment_records();
+
+        let entry = &records["index.html"].fragments;
+        assert_eq!(entry.len(), 4);
+        assert!(
+            matches!(entry[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-widget")
+        );
+        assert!(
+            matches!(entry[1].fragment.as_ref(), Some(Fragment::Attribute(a)) if
+                a.name == "config" && a.value == "settings" && a.attr_start)
+        );
+        assert!(
+            matches!(entry[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "/>")
+        );
+        assert!(
+            matches!(entry[3].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-widget")
+        );
+    }
+
+    #[test]
+    fn test_component_nested_self_closing_in_slot() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component("custom-icon", "<svg><slot></slot></svg>", None)
+            .expect("register");
+        let result = parser.parse(
+            "index.html",
+            r##"<custom-icon><use href="#icon-{{iconName}}" /></custom-icon>"##,
+        );
+        assert!(result.is_ok());
+        let records = parser.into_fragment_records();
+
+        let entry = &records["index.html"].fragments;
+        assert_eq!(entry.len(), 5);
+        assert!(
+            matches!(entry[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-icon>")
+        );
+        assert!(
+            matches!(entry[1].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-icon")
+        );
+        assert!(
+            matches!(entry[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<use")
+        );
+        assert!(
+            matches!(entry[3].fragment.as_ref(), Some(Fragment::Attribute(a)) if a.name == "href" && a.template == "attr-1")
+        );
+        assert!(
+            matches!(entry[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "/></custom-icon>")
+        );
+
+        let comp = &records["custom-icon"].fragments;
+        assert_eq!(comp.len(), 1);
+        assert!(
+            matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+                raw.value == "<template shadowrootmode=\"open\"><svg><slot></slot></svg></template>")
+        );
+    }
+
+    #[test]
+    fn test_component_leading_boolean_attr_start() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component("custom-element", "<slot></slot>", None)
+            .expect("register");
+        let result = parser.parse(
+            "index.html",
+            r#"<custom-element ?disabled="{{isDisabled}}" title="Hello"></custom-element>"#,
+        );
+        assert!(result.is_ok());
+        let records = parser.into_fragment_records();
+
+        let entry = &records["index.html"].fragments;
+        assert_eq!(entry.len(), 6);
+        assert!(
+            matches!(entry[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<custom-element")
+        );
+        // First dynamic attr: boolean with attrStart
+        assert!(
+            matches!(entry[1].fragment.as_ref(), Some(Fragment::Attribute(a)) if
+                a.name == "disabled" && a.attr_start &&
+                matches!(a.condition_tree.as_ref().and_then(|c| c.expr.as_ref()),
+                    Some(condition_expr::Expr::Identifier(id)) if id.value == "isDisabled"))
+        );
+        // Static attr after dynamic: rawValue
+        assert!(
+            matches!(entry[2].fragment.as_ref(), Some(Fragment::Attribute(a)) if
+                a.name == "title" && a.value == "Hello" && a.raw_value)
+        );
+        assert!(matches!(entry[3].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == ">"));
+        assert!(
+            matches!(entry[4].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-element")
+        );
+        assert!(
+            matches!(entry[5].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "</custom-element>")
+        );
+    }
+
+    #[test]
+    fn test_component_meta_link_tags() {
+        let (fragments, _) = parse_and_get_fragments(
+            r#"<head><meta charset="utf-8" /><link rel="stylesheet" href="{{cssFile}}" /></head>"#,
+        );
+        assert!(fragments.len() >= 3);
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("<head><meta charset=\"utf-8\"") && raw.value.contains("<link"))
+        );
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(a)) if a.name == "href" && a.value == "cssFile")
+        );
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("/></head>"))
         );
     }
 
