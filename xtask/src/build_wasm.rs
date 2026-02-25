@@ -86,7 +86,12 @@ pub fn run() -> Result<(), String> {
     }
 
     // 6. Run wasm-pack build with env vars
-    let cflags = format!("-I{} -D_WASI_EMULATED_SIGNAL", wasi_include);
+    // -Wno-implicit-function-declaration: tree-sitter-language's WASM headers are minimal
+    // and lack strncpy/towupper declarations; the linker resolves them from wasm stubs.
+    let cflags = format!(
+        "-I{} -D_WASI_EMULATED_SIGNAL -Wno-implicit-function-declaration",
+        wasi_include
+    );
     let mut cmd = Command::new("wasm-pack");
     cmd.args([
         "build",
@@ -272,9 +277,8 @@ fn find_wasi_include() -> Option<String> {
         }
     }
 
-    // Linux: check common wasi-libc paths (apt package installs to /usr/include/)
+    // Linux: check common wasi-libc paths
     for path in &[
-        "/usr/include/wasm32-wasi",
         "/usr/share/wasi-sysroot/include/wasm32-wasi",
         "/opt/wasi-sdk/share/wasi-sysroot/include/wasm32-wasi",
     ] {
