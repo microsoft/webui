@@ -97,15 +97,7 @@ export default {
           ]
         }
       ],
-      '/playground/': [
-        {
-          text: 'Playground',
-          items: [
-            { text: 'Interactive Demo', link: '/playground/' },
-            { text: 'Examples', link: '/playground/examples' },
-          ]
-        }
-      ],
+      '/playground/': [],
     },
     
     // Social links

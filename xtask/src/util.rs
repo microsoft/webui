@@ -5,6 +5,21 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Return the workspace root directory.
+///
+/// This is resolved from the `xtask` crate directory at compile time, so it
+/// remains correct regardless of where `cargo xtask ...` is invoked from.
+pub fn workspace_root() -> Result<PathBuf, String> {
+    let xtask_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let Some(root) = xtask_dir.parent() else {
+        return Err(format!(
+            "Failed to resolve workspace root from {}",
+            xtask_dir.display()
+        ));
+    };
+    Ok(root.to_path_buf())
+}
+
 // ── Styled output (matches webui-cli output.rs) ─────────────────────────
 
 pub struct Printer {
@@ -77,4 +92,23 @@ pub fn which_exists(cmd: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::workspace_root;
+
+    #[test]
+    fn workspace_root_has_workspace_cargo_toml() {
+        let root = match workspace_root() {
+            Ok(root) => root,
+            Err(message) => panic!("{message}"),
+        };
+
+        assert!(
+            root.join("Cargo.toml").is_file(),
+            "workspace root should contain Cargo.toml at {}",
+            root.display()
+        );
+    }
 }

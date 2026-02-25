@@ -3,9 +3,26 @@ mod build_wasm;
 mod util;
 
 use std::process::ExitCode;
-use util::run_command;
+use util::{run_command, workspace_root};
 
 fn main() -> ExitCode {
+    let workspace_root = match workspace_root() {
+        Ok(path) => path,
+        Err(message) => {
+            eprintln!("xtask error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Err(error) = std::env::set_current_dir(&workspace_root) {
+        eprintln!(
+            "xtask error: failed to set current directory to workspace root {}: {}",
+            workspace_root.display(),
+            error
+        );
+        return ExitCode::FAILURE;
+    }
+
     let args: Vec<String> = std::env::args().collect();
     let task = args.get(1).map(|s| s.as_str());
 
@@ -58,6 +75,7 @@ fn check() -> ExitCode {
         Step::BUILD,
         Step::BUILD_INTEGRATIONS,
         Step::BUILD_APPS,
+        Step::BUILD_WASM,
         Step::DOCS,
     ])
 }

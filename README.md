@@ -72,6 +72,14 @@ After building with `--release`, use the binary directly:
 webui build ./my-app --out ./dist
 ```
 
+### Building the WASM Playground
+
+The interactive playground runs WebUI in the browser via WebAssembly. The WASM output is committed to the repo — most developers don't need to rebuild it. Only rebuild when you change Rust code in the core crates:
+
+```bash
+cargo xtask build-wasm
+```
+
 ## Contributing
 
 This project welcomes contributions and suggestions.  Most contributions require you to agree to a
