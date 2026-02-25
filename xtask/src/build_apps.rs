@@ -1,7 +1,7 @@
 //! App and integration build tasks.
 
 use crate::util::{collect_child_dirs, display_name, run_command};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
 // ── Integration builds ──────────────────────────────────────────────────
@@ -111,10 +111,7 @@ pub fn run_app_builds() -> Result<(), String> {
             ));
         }
 
-        let output_dir = PathBuf::from("target")
-            .join("xtask")
-            .join("app-builds")
-            .join(app_name.as_str());
+        let output_dir = app_dir.join("dist");
 
         eprintln!("  • app: {}", app_name);
         run_command(

@@ -1,23 +1,23 @@
-// Route: GET / or GET /index.html — serve rendered HTML from dist/
+// Route: GET / or GET /index.html — stream rendered HTML directly.
 
 import fs from "node:fs";
-import path from "node:path";
+import { renderToResponse } from "../render.js";
 
 /**
- * @param {object} paths - App paths { distDir }
+ * @param {object} paths - App paths { protocolBin, data }
  * @returns {function} Express route handler
  */
 export function indexRoute(paths) {
   return (_req, res) => {
-    const filePath = path.join(paths.distDir, "index.html");
     try {
-      const contents = fs.readFileSync(filePath, "utf-8");
-      res.type("text/html; charset=utf-8").send(contents);
+      res.type("text/html; charset=utf-8");
+      renderToResponse(paths, res);
+      res.end();
     } catch (err) {
-      res
-        .status(500)
-        .type("text/plain")
-        .send(`Failed to read dist/index.html: ${err.message}`);
+      if (!res.headersSent) {
+        res.status(500).type("text/plain");
+      }
+      res.end(`Render failed: ${err.message}`);
     }
   };
 }

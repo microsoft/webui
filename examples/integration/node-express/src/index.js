@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import minimist from "minimist";
 
-import { renderToIndexHtml } from "./render.js";
+import { renderToResponse } from "./render.js";
 import { startFileWatcher } from "./watcher.js";
 import { indexRoute } from "./routes/index.js";
 import { assetsRoute } from "./routes/assets.js";
@@ -35,26 +35,26 @@ function main() {
     process.exit(1);
   }
 
+  // Protocol must be pre-built by `webui build`
+  const protocolBin = path.join(appDir, "dist", "protocol.bin");
+  if (!fs.existsSync(protocolBin)) {
+    process.stderr.write(
+      `  ✘ Protocol not found: ${protocolBin}\n` +
+        `  hint: Run 'cargo run -p webui-cli -- build ${path.join(appDir, "templates")} --out ${path.join(appDir, "dist")}' first\n`,
+    );
+    process.exit(1);
+  }
+
   const paths = {
-    template: path.join(appDir, "templates", "index.html"),
+    protocolBin,
     data: path.join(appDir, "data", "state.json"),
     assetsDir: path.join(appDir, "assets"),
-    distDir: path.resolve(__dirname, "..", "dist"),
   };
 
   // Styled console output (mirrors Rust Printer)
   process.stderr.write(`\n  ⚡ WebUI Express Server\n`);
   process.stderr.write(`  ▸ App       ${args.app}\n`);
   process.stderr.write(`  ▸ Directory ${appDir}\n`);
-
-  // Initial render
-  try {
-    renderToIndexHtml(paths);
-    process.stderr.write(`  ✔ Initial render complete\n`);
-  } catch (err) {
-    process.stderr.write(`  ✘ Initial render failed: ${err.message}\n`);
-    process.exit(1);
-  }
 
   // Start file watcher for HMR
   startFileWatcher(paths);

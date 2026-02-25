@@ -5,18 +5,18 @@ import fs from "node:fs";
 /**
  * Return the HMR version string (latest mtime in ms since epoch).
  *
- * @param {string} templatePath - Path to the template file
+ * @param {string} protocolBinPath - Path to the protocol.bin file
  * @param {string} dataPath - Path to the data file
  * @returns {string} Milliseconds since epoch, or "0"
  */
-export function hmrVersion(templatePath, dataPath) {
+export function hmrVersion(protocolBinPath, dataPath) {
   let latest = 0;
 
   try {
-    const tStat = fs.statSync(templatePath);
+    const tStat = fs.statSync(protocolBinPath);
     latest = Math.max(latest, tStat.mtimeMs);
   } catch {
-    // Template file may not exist
+    // Protocol file may not exist
   }
 
   try {

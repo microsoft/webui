@@ -8,7 +8,7 @@ import { hmrVersion } from "../hmr.js";
  */
 export function hmrRoute(paths) {
   return (_req, res) => {
-    const version = hmrVersion(paths.template, paths.data);
+    const version = hmrVersion(paths.protocolBin, paths.data);
     res.type("text/plain").send(version);
   };
 }

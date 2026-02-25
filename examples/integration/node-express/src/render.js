@@ -1,4 +1,5 @@
-// Render a WebUI app template into dist/index.html using the napi binding.
+// Render a WebUI protocol into dist/index.html using the napi binding.
+// Expects protocol.bin to be pre-built by `webui build`.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -45,16 +46,16 @@ function loadAddon() {
 const addon = loadAddon();
 
 /**
- * Render a WebUI template + state to dist/index.html.
+ * Stream rendered HTML directly to an Express response.
  *
- * @param {object} paths - App paths { template, data, distDir }
+ * @param {object} paths - App paths { protocolBin, data }
+ * @param {object} res - Express response object
  */
-export function renderToIndexHtml(paths) {
-  const template = fs.readFileSync(paths.template, "utf-8");
+export function renderToResponse(paths, res) {
+  const protocolData = fs.readFileSync(paths.protocolBin);
   const stateJson = fs.readFileSync(paths.data, "utf-8");
 
-  const html = addon.render(template, stateJson);
-
-  fs.mkdirSync(paths.distDir, { recursive: true });
-  fs.writeFileSync(path.join(paths.distDir, "index.html"), html, "utf-8");
+  addon.render(protocolData, stateJson, (chunk) => {
+    res.write(chunk);
+  });
 }

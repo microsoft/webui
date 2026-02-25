@@ -1,8 +1,9 @@
-// File watcher: re-render dist/index.html when template or data files change.
+// File watcher: monitors protocol and data files for changes.
+// The HMR client polls /hmr and reloads when the version changes.
+// Since rendering happens per-request, no re-render step is needed.
 
 import fs from "node:fs";
 import path from "node:path";
-import { renderToIndexHtml } from "./render.js";
 
 /**
  * Start watching template and data directories for changes.
@@ -35,7 +36,7 @@ export function startFileWatcher(paths) {
 function collectFileTimes(paths) {
   const times = new Map();
   const watchDirs = [
-    path.dirname(paths.template),
+    path.dirname(paths.protocolBin),
     path.dirname(paths.data),
     paths.assetsDir,
   ];
