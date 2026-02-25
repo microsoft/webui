@@ -17,9 +17,9 @@ runs:
       shell: bash
       run: cargo install wasm-pack
 
-    - name: Install LLVM
+    - name: Install system dependencies
       shell: bash
-      run: sudo apt-get update && sudo apt-get install -y clang llvm lld
+      run: sudo apt-get update && sudo apt-get install -y clang llvm lld protobuf-compiler
 
     - name: Setup WASM headers
       shell: bash
