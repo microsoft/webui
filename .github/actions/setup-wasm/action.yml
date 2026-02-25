@@ -26,11 +26,12 @@ runs:
     - name: Setup WASM headers
       shell: bash
       run: |
-        # wasi-libc installs headers to /usr/share/wasi-sysroot
-        if [ -d "/usr/share/wasi-sysroot/include/wasm32-wasi" ]; then
+        # wasi-libc on Ubuntu installs to /usr/include/wasm32-wasi
+        if [ -d "/usr/include/wasm32-wasi" ]; then
+          echo "WASI_INCLUDE=/usr/include/wasm32-wasi" >> $GITHUB_ENV
+        elif [ -d "/usr/share/wasi-sysroot/include/wasm32-wasi" ]; then
           echo "WASI_INCLUDE=/usr/share/wasi-sysroot/include/wasm32-wasi" >> $GITHUB_ENV
         else
-          # Fallback: tree-sitter-language bundled headers
           cargo fetch
           WASM_HEADERS=$(find $HOME/.cargo/registry/src -path "*/tree-sitter-language-*/wasm/include" -type d | head -1)
           if [ -n "$WASM_HEADERS" ]; then

@@ -272,7 +272,9 @@ fn find_wasi_include() -> Option<String> {
         }
     }
 
+    // Linux: check common wasi-libc paths (apt package installs to /usr/include/)
     for path in &[
+        "/usr/include/wasm32-wasi",
         "/usr/share/wasi-sysroot/include/wasm32-wasi",
         "/opt/wasi-sdk/share/wasi-sysroot/include/wasm32-wasi",
     ] {
