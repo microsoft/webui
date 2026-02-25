@@ -58,10 +58,6 @@ jobs:
   wasm:
     name: WASM Build
     runs-on: ubuntu-latest
-    # Only run when WASM-relevant files change
-    if: |
-      contains(github.event.pull_request.labels.*.name, 'wasm') ||
-      github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v3
       - uses: ./.github/actions/setup-wasm
