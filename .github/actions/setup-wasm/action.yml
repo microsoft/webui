@@ -19,18 +19,26 @@ runs:
 
     - name: Install system dependencies
       shell: bash
-      run: sudo apt-get update && sudo apt-get install -y clang llvm lld protobuf-compiler
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang llvm lld protobuf-compiler wasi-libc
 
     - name: Setup WASM headers
       shell: bash
       run: |
-        cargo fetch
-        WASM_HEADERS=$(find $HOME/.cargo/registry/src -path "*/tree-sitter-language-*/wasm/include" -type d | head -1)
-        if [ -n "$WASM_HEADERS" ]; then
-          echo "WASI_INCLUDE=$WASM_HEADERS" >> $GITHUB_ENV
+        # wasi-libc installs headers to /usr/share/wasi-sysroot
+        if [ -d "/usr/share/wasi-sysroot/include/wasm32-wasi" ]; then
+          echo "WASI_INCLUDE=/usr/share/wasi-sysroot/include/wasm32-wasi" >> $GITHUB_ENV
         else
-          echo "::error::Could not find tree-sitter-language WASM headers"
-          exit 1
+          # Fallback: tree-sitter-language bundled headers
+          cargo fetch
+          WASM_HEADERS=$(find $HOME/.cargo/registry/src -path "*/tree-sitter-language-*/wasm/include" -type d | head -1)
+          if [ -n "$WASM_HEADERS" ]; then
+            echo "WASI_INCLUDE=$WASM_HEADERS" >> $GITHUB_ENV
+          else
+            echo "::error::Could not find WASM C stdlib headers"
+            exit 1
+          fi
         fi
 
     - name: Build WASM
