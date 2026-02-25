@@ -80,6 +80,24 @@ The interactive playground runs WebUI in the browser via WebAssembly. The WASM o
 cargo xtask build-wasm
 ```
 
+### Integration Examples
+
+The `examples/integration/` directory contains ready-to-run server examples:
+
+```bash
+# Run with Rust + hyper (async, HTTP/1.1 + HTTP/2)
+cargo xtask run hyper hello-world
+
+# Run with Rust + tiny_http (synchronous, lightweight)
+cargo xtask run tiny_http hello-world
+
+# Run with Node.js + Express (napi-rs native addon)
+cargo build -p webui-node
+cd examples/integration/node-express && npm ci && node src/index.js --app hello-world
+```
+
+Each integration serves the app on `http://127.0.0.1:8080/` with hot-reload file watching.
+
 ## Contributing
 
 This project welcomes contributions and suggestions.  Most contributions require you to agree to a

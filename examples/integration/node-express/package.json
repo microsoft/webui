@@ -1,0 +1,14 @@
+{
+  "name": "webui-node-express-integration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "WebUI integration example using Node.js (napi-rs) + Express",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "minimist": "^1.2.8"
+  }
+}

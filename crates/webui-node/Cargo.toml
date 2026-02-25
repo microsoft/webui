@@ -1,0 +1,25 @@
+[package]
+name = "webui-node"
+description = "Node.js native addon for WebUI framework via napi-rs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { workspace = true }
+napi-derive = { workspace = true }
+webui-parser = { path = "../webui-parser", default-features = false }
+webui-handler = { path = "../webui-handler" }
+webui-protocol = { path = "../webui-protocol" }
+serde_json = { workspace = true }
+
+[build-dependencies]
+napi-build = { workspace = true }
+
+[dev-dependencies]
+webui-test-utils = { path = "../webui-test-utils" }

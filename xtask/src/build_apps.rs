@@ -45,6 +45,26 @@ pub const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
             cwd: Some("examples/integration/tiny_http"),
         }],
     },
+    IntegrationBuild {
+        name: "node-express",
+        commands: &[
+            BuildCommand {
+                cmd: "cargo",
+                args: &["build", "-p", "webui-node"],
+                cwd: None,
+            },
+            BuildCommand {
+                cmd: "npm",
+                args: &["ci", "--no-audit", "--no-fund"],
+                cwd: Some("examples/integration/node-express"),
+            },
+        ],
+        run_commands: &[BuildCommand {
+            cmd: "node",
+            args: &["src/index.js"],
+            cwd: Some("examples/integration/node-express"),
+        }],
+    },
 ];
 
 pub fn run_integration_builds() -> Result<(), String> {

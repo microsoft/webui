@@ -477,6 +477,7 @@ webui/
 │   ├── webui-expressions/    # Expression evaluation engine
 │   ├── webui-ffi/            # C-compatible FFI bindings
 │   ├── webui-handler/        # Protocol handler implementation
+│   ├── webui-node/           # Node.js native addon (napi-rs)
 │   ├── webui-parser/         # HTML/CSS/template parser
 │   ├── webui-protocol/       # Protocol definition
 │   ├── webui-state/          # State management
