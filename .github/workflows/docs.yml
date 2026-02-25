@@ -8,6 +8,10 @@ on:
     branches: [ "main" ]
     paths:
       - 'docs/**'
+      - 'crates/webui-wasm/**'
+      - 'crates/webui-parser/**'
+      - 'crates/webui-handler/**'
+      - 'crates/webui-protocol/**'
   workflow_dispatch:
 
 jobs:
@@ -15,32 +19,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout the repository
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # Step 2: Setup Node.js environment
+      - name: Build WASM playground
+        uses: ./.github/actions/setup-wasm
+
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '22'
-          
-      # Step 3: Setup pnpm
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v2
         with:
           version: latest
           run_install: false
 
-      # Step 4: Install dependencies
       - name: Install Dependencies
         run: cd docs && pnpm install
 
-      # Step 5: Build the Vitepress site
       - name: Build Site
         run: cd docs && pnpm build
 
-      # Step 6: Deploy to GitHub Pages
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:

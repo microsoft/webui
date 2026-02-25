@@ -1,0 +1,26 @@
+[package]
+name = "webui-wasm"
+description = "WebAssembly bindings for WebUI framework — powers the online playground"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+webui-parser = { path = "../webui-parser", default-features = false }
+webui-handler = { path = "../webui-handler" }
+webui-protocol = { path = "../webui-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+
+[dev-dependencies]
+webui-test-utils = { path = "../webui-test-utils" }

@@ -1,0 +1,45 @@
+name: 'Setup and Build WASM'
+description: 'Install WASM toolchain, build webui-wasm, and verify output'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.93
+        targets: wasm32-unknown-unknown
+
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2
+
+    - name: Install wasm-pack
+      shell: bash
+      run: cargo install wasm-pack
+
+    - name: Install LLVM
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y clang llvm lld
+
+    - name: Setup WASM headers
+      shell: bash
+      run: |
+        cargo fetch
+        WASM_HEADERS=$(find $HOME/.cargo/registry/src -path "*/tree-sitter-language-*/wasm/include" -type d | head -1)
+        if [ -n "$WASM_HEADERS" ]; then
+          echo "WASI_INCLUDE=$WASM_HEADERS" >> $GITHUB_ENV
+        else
+          echo "::error::Could not find tree-sitter-language WASM headers"
+          exit 1
+        fi
+
+    - name: Build WASM
+      shell: bash
+      run: cargo xtask build-wasm
+
+    - name: Verify WASM output
+      shell: bash
+      run: |
+        test -f docs/public/wasm/webui_wasm_bg.wasm
+        test -f docs/public/wasm/webui_wasm.js
+        ! grep -q "from 'env'" docs/public/wasm/webui_wasm.js

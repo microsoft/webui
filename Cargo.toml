@@ -7,6 +7,7 @@ members = [
     "crates/webui-parser",
     "crates/webui-protocol",
     "crates/webui-state",
+    "crates/webui-wasm",
     "xtask",
 ]
 resolver = "2"
@@ -30,6 +31,8 @@ tokio = { version = "1.49.0", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 console = "0.15"
 prost = "0.13"
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"
 
 # Test dependencies
 criterion = "0.8.2"

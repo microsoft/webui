@@ -9,7 +9,7 @@ repository.workspace = true
 
 [features]
 default = ["fs"]
-fs = []
+fs = ["walkdir"]
 
 [dependencies]
 webui-expressions = { path = "../webui-expressions" }
@@ -17,19 +17,13 @@ webui-protocol = { path = "../webui-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-anyhow = { workspace = true }
-tokio = { workspace = true }
 tree-sitter = "0.26.5"
+tree-sitter-language = "0.1.7"
 tree-sitter-html = "0.23.2"
 tree-sitter-css = "0.25.0"
-tree-sitter-typescript = "0.23.2"
-walkdir = "2.5.0"
-lazy_static = "1.5.0"
-nom = "8.0.0"
-streaming-iterator = "0.1.9"
+walkdir = { version = "2.5.0", optional = true }
 
 [dev-dependencies]
 mockall = { workspace = true }
-tokio-test = { workspace = true }
 tempfile = { workspace = true }
 webui-test-utils = { path = "../webui-test-utils" }
