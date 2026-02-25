@@ -1,4 +1,4 @@
-// Render a WebUI protocol into dist/index.html using the napi binding.
+// Stream rendered HTML from a pre-built WebUI protocol via the napi binding.
 // Expects protocol.bin to be pre-built by `webui build`.
 
 import fs from "node:fs";

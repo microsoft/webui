@@ -6,10 +6,10 @@ import fs from "node:fs";
 import path from "node:path";
 
 /**
- * Start watching template and data directories for changes.
- * Re-renders dist/index.html on any modification.
+ * Start watching protocol, data, and asset files for changes.
+ * The HMR client polls /hmr and reloads when files change.
  *
- * @param {object} paths - App paths { template, data, assetsDir, distDir }
+ * @param {object} paths - App paths { protocolBin, data, assetsDir }
  */
 export function startFileWatcher(paths) {
   let lastFileTimes = collectFileTimes(paths);
@@ -18,12 +18,7 @@ export function startFileWatcher(paths) {
     const currentFileTimes = collectFileTimes(paths);
 
     if (hasChanges(lastFileTimes, currentFileTimes)) {
-      try {
-        renderToIndexHtml(paths);
-        process.stderr.write("  ✔ Re-rendered dist/index.html\n");
-      } catch (err) {
-        process.stderr.write(`  ✘ Re-render failed: ${err.message}\n`);
-      }
+      process.stderr.write("  ✔ Files changed — clients will reload via HMR\n");
       lastFileTimes = currentFileTimes;
     }
   }, 500);

@@ -1,6 +1,5 @@
 // Route: GET / or GET /index.html — stream rendered HTML directly.
 
-import fs from "node:fs";
 import { renderToResponse } from "../render.js";
 
 /**

@@ -12,7 +12,6 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import minimist from "minimist";
 
-import { renderToResponse } from "./render.js";
 import { startFileWatcher } from "./watcher.js";
 import { indexRoute } from "./routes/index.js";
 import { assetsRoute } from "./routes/assets.js";

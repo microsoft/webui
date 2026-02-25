@@ -3,7 +3,7 @@
 import { hmrVersion } from "../hmr.js";
 
 /**
- * @param {object} paths - App paths { template, data }
+ * @param {object} paths - App paths { protocolBin, data }
  * @returns {function} Express route handler
  */
 export function hmrRoute(paths) {
