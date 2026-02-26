@@ -17,7 +17,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 authors = ["Microsoft Edge"]
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/microsoft/webui"
 
 [workspace.dependencies]
