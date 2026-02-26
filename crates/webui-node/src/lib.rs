@@ -35,19 +35,31 @@ use webui_protocol::WebUIProtocol;
 /// A writer that streams each rendered fragment to a JS callback.
 struct CallbackWriter<'a, 'env> {
     callback: &'a Function<'env, String, ()>,
+    error: Option<String>,
 }
 
 impl<'a, 'env> CallbackWriter<'a, 'env> {
     fn new(callback: &'a Function<'env, String, ()>) -> Self {
-        Self { callback }
+        Self {
+            callback,
+            error: None,
+        }
     }
 }
 
 impl ResponseWriter for CallbackWriter<'_, '_> {
     fn write(&mut self, content: &str) -> webui_handler::Result<()> {
-        // Ignore return-value type mismatch — JS callbacks may return
-        // non-undefined values (e.g. `res.write()` returns a boolean).
-        let _ = self.callback.call(content.to_owned());
+        if self.error.is_some() {
+            return Ok(());
+        }
+        if let Err(e) = self.callback.call(content.to_owned()) {
+            // Ignore "Value is not undefined" errors from callbacks that
+            // return non-void (e.g. res.write() returns a boolean).
+            let msg = format!("{e}");
+            if !msg.contains("Value is not undefined") {
+                self.error = Some(msg);
+            }
+        }
         Ok(())
     }
 
@@ -81,6 +93,10 @@ pub fn render(
     handler
         .render(&protocol, &state, &mut writer)
         .map_err(|e| NapiError::from_reason(format!("Render error: {e}")))?;
+
+    if let Some(err) = writer.error {
+        return Err(NapiError::from_reason(format!("Callback error: {err}")));
+    }
 
     Ok(())
 }
