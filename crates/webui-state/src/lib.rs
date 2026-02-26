@@ -22,6 +22,7 @@ pub fn find_value_by_dotted_path(path: &str, state: &Value) -> Option<Value> {
     Some(current_value.clone())
 }
 
+// Tests kept inline — module is small enough (1 test) that extraction isn't warranted.
 #[cfg(test)]
 mod tests {
     use super::*;

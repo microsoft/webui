@@ -97,6 +97,7 @@ impl Default for CssParser {
     }
 }
 
+// Tests kept inline — module is small enough (1 test) that extraction isn't warranted.
 #[cfg(test)]
 mod tests {
     use super::*;
