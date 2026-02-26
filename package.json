@@ -12,6 +12,6 @@
     "node": ">=22.0.0"
   },
   "author": "Microsoft Edge",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "packageManager": "pnpm@10.29.3"
 }
