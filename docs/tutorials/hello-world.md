@@ -25,24 +25,7 @@ Create a simple template in `src/templates/index.html`:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{title}}</title>
-    <style>
-        body {
-            font-family: system-ui, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-        .greeting {
-            color: {{color}};
-            font-size: 2rem;
-            margin-bottom: 1rem;
-        }
-        .message {
-            background: #f5f5f5;
-            padding: 1rem;
-            border-radius: 0.5rem;
-        }
-    </style>
+    <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
     <div class="greeting">Hello, {{name}}!</div>
@@ -80,37 +63,51 @@ Create a `state.json` file with the data for rendering:
 }
 ```
 
+## Previewing with `webui start`
+
+The fastest way to preview your app during development is the built-in dev server:
+
+```bash
+webui-cli start ./hello-world/templates --state ./hello-world/data/state.json --servedir ./hello-world/assets --watch
+```
+
+This will:
+1. Build the protocol from your templates
+2. Render the HTML with your state data
+3. Serve the result at `http://127.0.0.1:3000/`
+4. With `--watch`, watch for file changes and automatically reload
+
+Open `http://127.0.0.1:3000/` in your browser to see the rendered output. With `--watch`, editing `templates/index.html` or `data/state.json` triggers automatic reload.
+
+You can also specify a custom port:
+
+```bash
+webui-cli start ./hello-world/templates --state ./hello-world/data/state.json --servedir ./hello-world/assets --watch --port 9090
+```
+
+## Building for Production
+
+To produce a `protocol.bin` for use with a handler in production:
+
+```bash
+webui build ./hello-world/templates --out ./hello-world/dist
+```
+
 ## Rendering with Rust
 
-Let's create a Rust application to render this template:
+Here's how to render a pre-built protocol programmatically with Rust:
 
 ```rust
 use std::fs;
 use serde_json::Value;
-use webui_protocol::{WebUIProtocol, Result};
-use webui_handler::{handle, ResponseWriter};
+use webui_protocol::WebUIProtocol;
+use webui_handler::{WebUIHandler, ResponseWriter};
 
-struct FileWriter {
-    file_path: String,
-    content: String,
-}
+struct StdoutWriter;
 
-impl FileWriter {
-    fn new(file_path: &str) -> Self {
-        Self { 
-            file_path: file_path.to_string(),
-            content: String::new(),
-        }
-    }
-    
-    fn save(&self) -> std::io::Result<()> {
-        fs::write(&self.file_path, &self.content)
-    }
-}
-
-impl ResponseWriter for FileWriter {
+impl ResponseWriter for StdoutWriter {
     fn write(&mut self, content: &str) -> webui_handler::Result<()> {
-        self.content.push_str(content);
+        print!("{content}");
         Ok(())
     }
     
@@ -119,94 +116,26 @@ impl ResponseWriter for FileWriter {
     }
 }
 
-fn main() -> Result<()> {
-    // Load the protocol from protobuf binary
-    let protocol = WebUIProtocol::from_protobuf_file("protocol.bin")?;
+fn main() -> anyhow::Result<()> {
+    let protocol = WebUIProtocol::from_protobuf_file("dist/protocol.bin")?;
+    let state: Value = serde_json::from_str(&fs::read_to_string("data/state.json")?)?;
     
-    // Load the state
-    let state_json = fs::read_to_string("state.json")?;
-    let state: Value = serde_json::from_str(&state_json)?;
-    
-    // Render the template
-    let mut writer = FileWriter::new("output.html");
-    handle(&protocol, &state, &mut writer)?;
-    writer.save()?;
-    
-    println!("Template rendered successfully to output.html");
+    let handler = WebUIHandler::new();
+    let mut writer = StdoutWriter;
+    handler.handle(&protocol, &state, &mut writer)?;
     
     Ok(())
 }
 ```
 
-## Rendering with Go
-
-Here's how you would render the same template with the Go handler:
-
-```go
-package main
-
-import (
-	"encoding/json"
-	"fmt"
-	"io/ioutil"
-	"os"
-
-	"github.com/microsoft/webui/go/parser"
-	"github.com/microsoft/webui/go/handler"
-	"github.com/microsoft/webui/go/protocol"
-)
-
-func main() {
-	// Parse the template
-	p := parser.New()
-	proto, err := p.Parse("src/templates/index.html", []string{"src/templates"})
-	if err != nil {
-		panic(err)
-	}
-
-	// Load the state
-	stateFile, err := os.Open("state.json")
-	if err != nil {
-		panic(err)
-	}
-	defer stateFile.Close()
-
-	var state map[string]interface{}
-	if err := json.NewDecoder(stateFile).Decode(&state); err != nil {
-		panic(err)
-	}
-
-	// Create output file
-	outFile, err := os.Create("output.html")
-	if err != nil {
-		panic(err)
-	}
-	defer outFile.Close()
-
-	// Create file writer
-	writer := handler.NewFileWriter(outFile)
-	
-	// Render the template
-	if err := handler.Handle(proto, state, writer); err != nil {
-		panic(err)
-	}
-
-	fmt.Println("Template rendered successfully to output.html")
-}
-```
-
-## Testing the Output
-
-Open the generated `output.html` file in your browser to see the rendered output.
-
 ## What We've Learned
 
 In this tutorial, we've:
 
-1. Created a simple WebUI template with signals, conditionals, and loops
-2. Defined a state object with the data for rendering
-3. Used the WebUI parser to convert the template to the WebUI protocol
-4. Rendered the protocol with the WebUI handler to generate HTML
+1. Created a WebUI app folder with templates, data, and assets
+2. Used `webui start` to preview the app with live reload
+3. Built the protocol with `webui build` for production use
+4. Rendered the protocol programmatically with the Rust handler
 
 This demonstrates the core workflow of WebUI:
 

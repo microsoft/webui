@@ -1,0 +1,9 @@
+{
+  "name": "webui-node-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  }
+}

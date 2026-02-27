@@ -41,6 +41,8 @@ importers:
         specifier: ^3.5.29
         version: 3.5.29
 
+  examples/integration/node: {}
+
 packages:
 
   '@algolia/autocomplete-core@1.17.7':
