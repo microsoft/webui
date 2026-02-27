@@ -1,5 +1,6 @@
 pub mod build;
 pub mod inspect;
+pub mod start;
 
 use clap::Subcommand;
 
@@ -9,4 +10,6 @@ pub enum Commands {
     Build(build::BuildArgs),
     /// Inspect a protocol.bin file and output JSON to stdout
     Inspect(inspect::InspectArgs),
+    /// Start a development server with live reload
+    Start(start::StartArgs),
 }

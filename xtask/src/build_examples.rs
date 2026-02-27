@@ -1,4 +1,4 @@
-//! App and integration build tasks.
+//! Examples build tasks.
 
 use crate::util::{collect_child_dirs, display_name, run_command};
 use std::path::Path;
@@ -20,50 +20,26 @@ pub struct IntegrationBuild {
 
 pub const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
     IntegrationBuild {
-        name: "hyper",
+        name: "node",
         commands: &[BuildCommand {
-            cmd: "cargo",
-            args: &["build"],
-            cwd: Some("examples/integration/hyper"),
-        }],
-        run_commands: &[BuildCommand {
-            cmd: "cargo",
-            args: &["run", "--"],
-            cwd: Some("examples/integration/hyper"),
-        }],
-    },
-    IntegrationBuild {
-        name: "tiny_http",
-        commands: &[BuildCommand {
-            cmd: "cargo",
-            args: &["build"],
-            cwd: Some("examples/integration/tiny_http"),
-        }],
-        run_commands: &[BuildCommand {
-            cmd: "cargo",
-            args: &["run", "--"],
-            cwd: Some("examples/integration/tiny_http"),
-        }],
-    },
-    IntegrationBuild {
-        name: "node-express",
-        commands: &[
-            BuildCommand {
-                cmd: "cargo",
-                args: &["build", "-p", "webui-node"],
-                cwd: None,
-            },
-            BuildCommand {
-                cmd: "npm",
-                args: &["ci", "--no-audit", "--no-fund"],
-                cwd: Some("examples/integration/node-express"),
-            },
-        ],
-        run_commands: &[BuildCommand {
             cmd: "node",
-            args: &["src/index.js"],
-            cwd: Some("examples/integration/node-express"),
+            args: &["--check", "index.js"],
+            cwd: Some("examples/integration/node"),
         }],
+        run_commands: &[],
+    },
+    IntegrationBuild {
+        name: "rust",
+        commands: &[BuildCommand {
+            cmd: "cargo",
+            args: &[
+                "check",
+                "--manifest-path",
+                "examples/integration/rust/Cargo.toml",
+            ],
+            cwd: None,
+        }],
+        run_commands: &[],
     },
 ];
 
@@ -132,6 +108,11 @@ pub fn run_app_builds() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+pub fn run_example_builds() -> Result<(), String> {
+    run_integration_builds()?;
+    run_app_builds()
 }
 
 // ── Run integration with app ────────────────────────────────────────────

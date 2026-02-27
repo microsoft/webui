@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
+use expand_tilde::expand_tilde;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 use webui_parser::{CssStrategy, HtmlParser};
 use webui_protocol::WebUIProtocol;
 
-use crate::output::Printer;
+use crate::utils::output::Printer;
 
 /// CSS delivery strategy for component stylesheets.
 #[derive(ValueEnum, Clone, Copy, Debug, Default)]
@@ -66,21 +67,27 @@ fn run(args: &BuildArgs) -> Result<()> {
     let started = Instant::now();
     let printer = Printer::new();
 
-    let app = args
-        .app
+    let app_input = expand_tilde(&args.app)
+        .with_context(|| format!("Failed to expand app path: {}", args.app.display()))?
+        .into_owned();
+    let out = expand_tilde(&args.out)
+        .with_context(|| format!("Failed to expand output path: {}", args.out.display()))?
+        .into_owned();
+
+    let app = app_input
         .canonicalize()
         .with_context(|| format!("App folder not found: {}", args.app.display()))?;
 
     printer.header("WebUI Build");
     printer.field("App", &app.display());
     printer.field("Entry", &args.entry);
-    printer.field("Output", &args.out.display());
+    printer.field("Output", &out.display());
     printer.field("CSS", &format!("{:?}", args.css));
     eprintln!();
 
     // Create output directory
-    fs::create_dir_all(&args.out)
-        .with_context(|| format!("Failed to create output dir: {}", args.out.display()))?;
+    fs::create_dir_all(&out)
+        .with_context(|| format!("Failed to create output dir: {}", out.display()))?;
 
     // Set up parser and register components from the app directory
     let mut parser = HtmlParser::new();
@@ -135,7 +142,7 @@ fn run(args: &BuildArgs) -> Result<()> {
     let bytes = protocol
         .to_protobuf()
         .context("Failed to serialize protocol")?;
-    let protocol_path = args.out.join("protocol.bin");
+    let protocol_path = out.join("protocol.bin");
     fs::write(&protocol_path, &bytes)
         .with_context(|| format!("Failed to write {}", protocol_path.display()))?;
     printer.success(&format!("Wrote {}", printer.bold.apply_to("protocol.bin")));
@@ -145,7 +152,7 @@ fn run(args: &BuildArgs) -> Result<()> {
     // Copy component CSS files (only in external mode)
     if matches!(args.css, CssMode::External) {
         for (filename, css_content) in &css_files {
-            let css_path = args.out.join(filename);
+            let css_path = out.join(filename);
             fs::write(&css_path, css_content)
                 .with_context(|| format!("Failed to write {}", css_path.display()))?;
             printer.success(&format!("Wrote {}", printer.bold.apply_to(filename)));

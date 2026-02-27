@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Args;
+use expand_tilde::expand_tilde;
 use std::path::PathBuf;
 use webui_protocol::WebUIProtocol;
 
@@ -10,7 +11,11 @@ pub struct InspectArgs {
 }
 
 pub fn execute(args: &InspectArgs) -> Result<()> {
-    let protocol = WebUIProtocol::from_protobuf_file(&args.file)
+    let input_file = expand_tilde(&args.file)
+        .with_context(|| format!("Failed to expand input path: {}", args.file.display()))?
+        .into_owned();
+
+    let protocol = WebUIProtocol::from_protobuf_file(&input_file)
         .with_context(|| format!("Failed to read {}", args.file.display()))?;
 
     let json = protocol

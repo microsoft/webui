@@ -33,6 +33,8 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>]
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `external` or `inline` | `external` |
 
+Path inputs for `APP`, `--state`, and `--servedir` support absolute paths, relative paths, `~/...`, and `file://...` URI-style values.
+
 **CSS Modes:**
 
 | Mode | Behavior |
@@ -82,6 +84,61 @@ webui inspect dist/protocol.bin | jq '.fragments["index.html"]'
 # Count total fragments
 webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 ```
+
+### `webui start`
+
+Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
+
+```bash
+webui-cli start [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>]
+```
+
+**Arguments:**
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `APP` | Path to the template/component directory | `.` (current directory) |
+| `--state <FILE>` | Path to JSON state file for rendering | *(required)* |
+| `--servedir <DIR>` | Directory served at `/*` | *(optional)* |
+| `--watch` | Enable file watching + HMR | `false` |
+| `--port <PORT>` | Port to bind the development server | `3000` |
+| `--entry <FILE>` | Entry HTML file name | `index.html` |
+| `--css <MODE>` | CSS delivery strategy: `external` or `inline` | `external` |
+
+The `APP` directory should contain your entry HTML and component files.
+
+**What it does:**
+
+1. Builds the protocol from your `APP` directory (no separate `webui build` step needed)
+2. Renders the entry template with state data
+3. Serves the rendered HTML with an injected live-reload script
+4. If `--watch` is enabled, watches app, state, and asset files for changes
+5. If `--watch` is enabled, automatically rebuilds and re-renders when files change
+6. If `--watch` is enabled, connected browsers reload automatically via the polling HMR backend
+
+**Examples:**
+
+```bash
+# Start serving the current directory
+webui-cli start . --state ./state.json --servedir ./assets
+
+# Start serving a specific templates directory
+webui-cli start ./examples/app/hello-world/templates --state ./examples/app/hello-world/data/state.json --servedir ./examples/app/hello-world/assets --watch
+
+# Use a custom port
+webui-cli start ./my-app --state ./state.json --servedir ./assets --port 9090 --watch
+
+# Use inline CSS mode
+webui-cli start ./my-app --state ./state.json --servedir ./assets --css inline --watch
+```
+
+**Routes:**
+
+| Path | Description |
+|------|-------------|
+| `/` or `/index.html` | Rendered HTML with live-reload script |
+| `/*` | Static files from `--servedir` (when provided) |
+| `/hmr` | HMR version endpoint (polling backend, only when `--watch`) |
 
 ## App Folder Structure
 

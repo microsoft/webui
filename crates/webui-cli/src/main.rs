@@ -1,5 +1,5 @@
 mod commands;
-mod output;
+mod utils;
 
 use clap::Parser;
 use commands::Commands;
@@ -17,6 +17,7 @@ fn main() {
     let result = match &cli.command {
         Commands::Build(args) => commands::build::execute(args),
         Commands::Inspect(args) => commands::inspect::execute(args),
+        Commands::Start(args) => commands::start::execute(args),
     };
 
     if result.is_err() {
