@@ -61,9 +61,13 @@ export default {
               text: 'Platform Handlers',
               items: [
                 { text: 'Overview', link: '/guide/concepts/handlers/' },
-                { text: 'Rust', link: '/guide/concepts/handlers/rust' }
+                { text: 'Rust', link: '/guide/concepts/handlers/rust' },
+                { text: 'Node.js', link: '/guide/concepts/handlers/node' },
+                { text: 'WebAssembly', link: '/guide/concepts/handlers/wasm' },
+                { text: 'FFI (C API)', link: '/guide/concepts/handlers/ffi' }
               ]
-            }
+            },
+            { text: 'Plugins', link: '/guide/concepts/plugins/' }
           ]
         }
       ],

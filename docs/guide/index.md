@@ -28,6 +28,8 @@ WebUI Framework returns to the web platform's core strengths while embracing mod
 
 - **Islands of Interactivity**: Following the "Islands Architecture," we keep most of the page static and fast, with interactive components only where needed.
 
+- **Extensible Plugin System**: Framework-specific plugins can customize parsing and rendering behavior — for example, injecting hydration markers for FAST-HTML — without changing WebUI's core.
+
 - **Language-Agnostic Backend**: Whether you use Rust, Go, C#, PHP, Ruby, or any other server language, WebUI works without requiring a Node.js runtime.
 
 ## Real Benefits You'll Experience

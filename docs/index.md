@@ -27,6 +27,7 @@ WebUI Framework is a high-performance solution for building web applications tha
 - **Edge-Ready**: Can be served from edge functions or a streamable Service Worker
 - **Separation of Concerns**: UI structure is cached and separate from state data
 - **Minimal Transfer Size**: Only send the state, not the entire rendered HTML
+- **Framework Integration**: Extensible plugin system for client-side hydration with frameworks like FAST-HTML
 
 ## How It Works
 

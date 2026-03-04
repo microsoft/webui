@@ -110,14 +110,28 @@ handle(&protocol, &state, &mut writer)?;
 
 ## WebUI Handler API
 
-The main function provided by the handler is:
+The main entry point is the `WebUIHandler` struct:
 
 ```rust
-pub fn handle(
-    protocol: &WebUIProtocol,
-    state: &Value, 
-    writer: &mut dyn ResponseWriter
-) -> Result<()>
+pub struct WebUIHandler {
+    plugin: Option<Box<dyn HandlerPlugin>>,
+}
+
+impl WebUIHandler {
+    /// Create a handler with no plugin (plain HTML rendering).
+    pub fn new() -> Self;
+
+    /// Create a handler with a plugin for framework-specific rendering.
+    pub fn with_plugin(plugin: Box<dyn HandlerPlugin>) -> Self;
+
+    /// Render the protocol with state data.
+    pub fn handle(
+        &mut self,
+        protocol: &WebUIProtocol,
+        state: &Value,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()>;
+}
 ```
 
 ### Parameters
@@ -134,6 +148,25 @@ pub trait ResponseWriter {
     fn end(&mut self) -> Result<()>;
 }
 ```
+
+## Using Plugins
+
+The handler supports optional plugins that inject framework-specific content during rendering. Use `with_plugin` to create a handler with a plugin:
+
+```rust
+use webui_handler::{WebUIHandler, plugin::fast::FastHydrationPlugin};
+
+let mut handler = WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new()));
+handler.handle(&protocol, &state, &mut writer)?;
+```
+
+When a plugin is loaded, the handler calls plugin hooks at key rendering points:
+- Before/after signals, loops, and conditionals
+- Before/after each loop iteration
+- When entering/leaving component scopes
+- When processing `Plugin` protocol fragments
+
+See [Plugins](/guide/concepts/plugins/) for the full plugin API and how to write custom plugins.
 
 ## Error Handling
 

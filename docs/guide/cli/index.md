@@ -21,7 +21,7 @@ The `webui` binary will be available at `target/release/webui`.
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>]
 ```
 
 **Arguments:**
@@ -32,6 +32,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>]
 | `--out <OUT>` | Output folder for protocol and assets | *(required)* |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `external` or `inline` | `external` |
+| `--plugin <NAME>` | Load a parser plugin (e.g., `fast`) | *(none)* |
 
 Path inputs for `APP`, `--state`, and `--servedir` support absolute paths, relative paths, `~/...`, and `file://...` URI-style values.
 
@@ -56,6 +57,9 @@ webui build ./my-app --out ./dist --entry home.html
 
 # Build with inline CSS (no external CSS files)
 webui build ./my-app --out ./dist --css inline
+
+# Build with the FAST plugin (hydration support)
+webui build ./my-app --out ./dist --plugin=fast
 ```
 
 ### `webui inspect`
@@ -90,7 +94,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui-cli start [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>]
+webui-cli start [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--plugin <NAME>]
 ```
 
 **Arguments:**
@@ -104,6 +108,7 @@ webui-cli start [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>
 | `--port <PORT>` | Port to bind the development server | `3000` |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `external` or `inline` | `external` |
+| `--plugin <NAME>` | Load parser + handler plugins (e.g., `fast`) | *(none)* |
 
 The `APP` directory should contain your entry HTML and component files.
 
@@ -130,6 +135,9 @@ webui-cli start ./my-app --state ./state.json --servedir ./assets --port 9090 --
 
 # Use inline CSS mode
 webui-cli start ./my-app --state ./state.json --servedir ./assets --css inline --watch
+
+# Use the FAST plugin for hydration
+webui-cli start ./my-app --state ./state.json --plugin=fast --port 3001
 ```
 
 **Routes:**
@@ -247,6 +255,18 @@ The CLI provides helpful error messages with suggestions:
 
   hint: Check that the app folder path exists
 ```
+
+## Plugins
+
+The `--plugin` flag loads framework-specific extensions that customize both parsing and rendering behavior.
+
+### Available Plugins
+
+| Plugin | Description |
+|--------|-------------|
+| `fast` | FAST-HTML hydration support. Parser skips runtime attrs, emits binding data, injects `<f-template>` wrappers. Handler injects hydration comment markers. |
+
+See [Plugins](/guide/concepts/plugins/) for detailed documentation.
 
 ## Next Steps
 

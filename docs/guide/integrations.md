@@ -64,6 +64,18 @@ void *webui_handler_create();
 
 Create a reusable handler instance. Returns an opaque pointer that must eventually be freed with `webui_handler_destroy`. Use this with `webui_handler_render` when rendering pre-compiled protobuf protocols.
 
+### webui_handler_create_with_plugin
+
+```c
+void *webui_handler_create_with_plugin(const char *plugin_id);
+```
+
+Create a reusable handler instance with a named plugin. Currently supported plugins: `"fast"`. Pass `NULL` for no plugin (equivalent to `webui_handler_create`).
+
+- `plugin_id` — null-terminated UTF-8 string identifying the plugin, or `NULL`.
+- **Returns** an opaque pointer on success, or `NULL` on error (call `webui_last_error()` for details).
+- The caller **must** free the returned pointer with `webui_handler_destroy()`.
+
 ### webui_handler_destroy
 
 ```c
@@ -103,6 +115,7 @@ Two rules to remember:
 | `webui_handler_render` | Caller | `webui_free(ptr)` |
 | `webui_last_error` | Library (do **not** free) | Automatically replaced on next call |
 | `webui_handler_create` | Caller | `webui_handler_destroy(ptr)` |
+| `webui_handler_create_with_plugin` | Caller | `webui_handler_destroy(ptr)` |
 
 ## Python
 

@@ -7,6 +7,9 @@ WebUI handlers are the bridge between the WebUI protocol and the final rendered 
 WebUI provides official handlers for several popular programming languages (other languages coming soon):
 
 - [**Rust**](./rust) - High-performance native rendering with the Rust programming language
+- [**Node.js**](./node) - Streaming SSR via a native addon built with napi-rs
+- [**WebAssembly**](./wasm) - In-browser rendering for playgrounds and client-side use
+- [**FFI (C API)**](./ffi) - Shared library for Go, C#, Python, and any language with C interop
 
 ## How Handlers Work
 
@@ -30,6 +33,19 @@ Where:
 - `protocol` is the WebUI protocol object
 - `state` is the data object with values to be rendered
 - `writer` is a callback or interface for writing the rendered output
+
+## Plugin System
+
+Handlers support an optional **plugin system** for injecting framework-specific behavior during rendering. Plugins receive lifecycle callbacks at key points — binding start/end, loop iteration, scope changes — and can write additional content to the output.
+
+```
+handler = Handler::with_plugin(plugin)
+handler.handle(protocol, state, writer)
+```
+
+When no plugin is configured, the handler renders plain HTML. When a plugin is loaded (e.g., `FastHydrationPlugin`), it injects markers that enable client-side hydration.
+
+See [Plugins](/guide/concepts/plugins/) for the full plugin API and built-in plugins.
 
 ## Handler Customization
 

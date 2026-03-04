@@ -54,6 +54,8 @@ pub enum Fragment {
     ForLoop(WebUIFragmentFor),
     Signal(WebUIFragmentSignal),
     IfCond(WebUIFragmentIf),
+    Attribute(WebUIFragmentAttribute),
+    Plugin(WebUIFragmentPlugin),
 }
 ```
 ### Fragment Types
@@ -249,19 +251,31 @@ pub enum ExpressionError {
 ```
 
 ## Handler Implementation (webui-handler)
-### Core Function
+### Core API
 ```rust
-pub fn handler(
-    protocol: &WebUIProtocol,
-    state: &Value,
-    writer: impl Writer
-) -> Result<(), HandlerError>
+pub struct WebUIHandler {
+    plugin: Option<Box<dyn HandlerPlugin>>,
+}
+
+impl WebUIHandler {
+    pub fn new() -> Self;
+    pub fn with_plugin(plugin: Box<dyn HandlerPlugin>) -> Self;
+
+    pub fn handle(
+        &mut self,
+        protocol: &WebUIProtocol,
+        state: &Value,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()>;
+}
 ```
 ### Writer Interface
 ```rust
-pub trait Writer {
-    fn write(&mut self, content: &str) -> Result<(), io::Error>;
-    fn end(&mut self) -> Result<(), io::Error>;
+pub trait ResponseWriter {
+    /// Write content to the output
+    fn write(&mut self, content: &str) -> Result<()>;
+    /// Finalize the output
+    fn end(&mut self) -> Result<()>;
 }
 ```
 
@@ -581,6 +595,27 @@ webui/
 - Performance considerations
 - Error handling guidelines
 - Examples for all major features
+
+## FFI Bindings (webui-ffi)
+
+The FFI crate exposes WebUI to host languages via a C-compatible ABI. The generated
+header is at `crates/webui-ffi/include/webui_ffi.h`.
+
+### Functions
+
+| Function | Description |
+|----------|-------------|
+| `webui_render(html, data_json)` | Parse + render in one call. Returns heap-allocated string (caller frees with `webui_free`). |
+| `webui_handler_create()` | Create a reusable handler (no plugin). |
+| `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin (e.g. `"fast"`). Returns `NULL` on error. |
+| `webui_handler_render(handler, data, len, json)` | Render a pre-compiled protocol. Returns heap-allocated string. |
+| `webui_handler_destroy(handler)` | Destroy a handler. `NULL` is a safe no-op. |
+| `webui_free(ptr)` | Free a string returned by any render function. `NULL` is a safe no-op. |
+| `webui_last_error()` | Return per-thread error message. Caller must **not** free. |
+
+### Error Model
+Thread-local error storage following the POSIX `dlerror()` pattern. After any
+function returns `NULL`, call `webui_last_error()` for a human-readable diagnostic.
 
 ## CLI Tool (webui-cli)
 

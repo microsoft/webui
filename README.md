@@ -24,12 +24,14 @@ WebUI follows a modular architecture with four primary components:
 - **Parser:** Processes HTML/CSS templates into protocol structures at build time
 - **Expression Evaluation:** Handles conditional logic for dynamic rendering
 - **Handler:** Renders protocol with state data into final HTML output at runtime
+- **Plugin System:** Extensible hooks for framework-specific behavior (parsing + rendering) without modifying core logic
 
 ## How It Works
 - **Write Standard HTML/CSS:**  Create templates with familiar syntax plus WebUI directives (`<for>`, `<if>`, `{{signals}}`)
 - **Parse to WebUIProtocol:**  Templates compile to a lightweight, language-agnostic protocol at build time
 - **Native Rendering:** The protocol is rendered with your data using a platform-specific handler in your language of choice
 - **Efficient Output:** The handler produces optimized HTML with Web Component support
+- **Framework Plugins:** Optional plugins (e.g., `--plugin=fast`) inject hydration markers for client-side frameworks like FAST-HTML
 
 ## Getting Started
 
@@ -59,11 +61,14 @@ The `webui` CLI builds your app folder into the WebUI protocol format:
 # Build an app (outputs protocol.bin and component CSS to the out folder)
 cargo run -p webui-cli -- build ./my-app --out ./dist
 
+# Build with the FAST plugin for hydration support
+cargo run -p webui-cli -- build ./my-app --out ./dist --plugin=fast
+
 # Specify a custom entry file
 cargo run -p webui-cli -- build ./my-app --out ./dist --entry page.html
 
 # Build the hello-world example
-cargo run -p webui-cli -- build examples/hello-world --out ./dist
+cargo run -p webui-cli -- build examples/app/hello-world/src --out ./dist
 ```
 
 After building with `--release`, use the binary directly:

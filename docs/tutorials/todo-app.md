@@ -238,3 +238,17 @@ fn get_state(store: &Arc<Mutex<TodoStore>>) -> Value {
 You've now built a modern Todo application using WebUI Framework with proper Web Components. At runtime it will create them as declarative shadow dom.
 
 This architecture combines the benefits of WebUI Framework's server-side rendering with client-side interactivity through standard Web Components, giving you the best of both worlds - fast initial load times and responsive user interactions.
+
+## FAST-HTML Hydration Variant
+
+For applications using [FAST-HTML](https://github.com/nicholasgasior/fast-html) components, WebUI provides a plugin-based hydration workflow. The `todo-fast` example in `examples/app/todo-fast/` demonstrates this approach:
+
+```bash
+# Build with the FAST plugin
+webui build examples/app/todo-fast/src --out examples/app/todo-fast/dist --plugin=fast
+
+# Render with hydration markers
+webui start examples/app/todo-fast/src --state examples/app/todo-fast/data/state.json --plugin=fast
+```
+
+The `--plugin=fast` flag injects hydration comment markers into the rendered HTML, allowing FAST-HTML's client-side runtime to efficiently locate and re-attach to server-rendered dynamic content. See [Plugins](/guide/concepts/plugins/) for details.
