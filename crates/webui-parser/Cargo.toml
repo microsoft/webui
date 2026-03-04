@@ -27,3 +27,8 @@ walkdir = { workspace = true, optional = true }
 mockall = { workspace = true }
 tempfile = { workspace = true }
 webui-test-utils = { path = "../webui-test-utils" }
+criterion = { workspace = true }
+
+[[bench]]
+name = "parser_bench"
+harness = false

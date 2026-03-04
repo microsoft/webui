@@ -19,3 +19,8 @@ html-escape = { workspace = true }
 [dev-dependencies]
 webui-test-utils = { path = "../webui-test-utils" }
 tokio = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "handler_bench"
+harness = false

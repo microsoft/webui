@@ -7,3 +7,6 @@ publish = false
 [dependencies]
 console = { workspace = true }
 ctrlc = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

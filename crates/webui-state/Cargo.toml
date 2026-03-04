@@ -13,3 +13,8 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 webui-test-utils = { path = "../webui-test-utils" }
+criterion = { workspace = true }
+
+[[bench]]
+name = "state_bench"
+harness = false
