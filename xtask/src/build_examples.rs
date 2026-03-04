@@ -78,12 +78,12 @@ pub fn run_app_builds() -> Result<(), String> {
 
     for app_dir in app_dirs {
         let app_name = display_name(&app_dir);
-        let templates_dir = app_dir.join("templates");
-        if !templates_dir.is_dir() {
+        let src_dir = app_dir.join("src");
+        if !src_dir.is_dir() {
             return Err(format!(
-                "app '{}' is missing templates directory at {}",
+                "app '{}' is missing src directory at {}",
                 app_name,
-                templates_dir.display()
+                src_dir.display()
             ));
         }
 
@@ -91,7 +91,7 @@ pub fn run_app_builds() -> Result<(), String> {
 
         eprintln!("  • app: {}", app_name);
 
-        let templates_str = templates_dir.to_string_lossy().to_string();
+        let src_str = src_dir.to_string_lossy().to_string();
         let output_str = output_dir.to_string_lossy().to_string();
 
         // Apps ending in "-fast" use the FAST parser plugin
@@ -101,7 +101,7 @@ pub fn run_app_builds() -> Result<(), String> {
             "webui-cli",
             "--",
             "build",
-            &templates_str,
+            &src_str,
             "--out",
             &output_str,
         ];
