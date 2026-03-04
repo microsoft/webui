@@ -207,40 +207,44 @@ function takeObject(idx) {
  *
  * * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
  * * `state_json` — JSON string of the state data.
+ * * `plugin` — Optional plugin identifier (e.g., `"fast"`).
  *
  * # Returns
  *
  * The rendered HTML string, or throws a JS error on failure.
  * @param {string} protocol_json
  * @param {string} state_json
+ * @param {string | null} [plugin]
  * @returns {string}
  */
-export function render(protocol_json, state_json) {
-    let deferred4_0;
-    let deferred4_1;
+export function render(protocol_json, state_json, plugin) {
+    let deferred5_0;
+    let deferred5_1;
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
         const ptr0 = passStringToWasm0(protocol_json, wasm.__wbindgen_export_0, wasm.__wbindgen_export_1);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(state_json, wasm.__wbindgen_export_0, wasm.__wbindgen_export_1);
         const len1 = WASM_VECTOR_LEN;
-        wasm.render(retptr, ptr0, len0, ptr1, len1);
+        var ptr2 = isLikeNone(plugin) ? 0 : passStringToWasm0(plugin, wasm.__wbindgen_export_0, wasm.__wbindgen_export_1);
+        var len2 = WASM_VECTOR_LEN;
+        wasm.render(retptr, ptr0, len0, ptr1, len1, ptr2, len2);
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
         var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
-        var ptr3 = r0;
-        var len3 = r1;
+        var ptr4 = r0;
+        var len4 = r1;
         if (r3) {
-            ptr3 = 0; len3 = 0;
+            ptr4 = 0; len4 = 0;
             throw takeObject(r2);
         }
-        deferred4_0 = ptr3;
-        deferred4_1 = len3;
-        return getStringFromWasm0(ptr3, len3);
+        deferred5_0 = ptr4;
+        deferred5_1 = len4;
+        return getStringFromWasm0(ptr4, len4);
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_export_3(deferred4_0, deferred4_1, 1);
+        wasm.__wbindgen_export_3(deferred5_0, deferred5_1, 1);
     }
 }
 

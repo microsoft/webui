@@ -7,12 +7,13 @@
  *
  * * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
  * * `state_json` — JSON string of the state data.
+ * * `plugin` — Optional plugin identifier (e.g., `"fast"`).
  *
  * # Returns
  *
  * The rendered HTML string, or throws a JS error on failure.
  */
-export function render(protocol_json: string, state_json: string): string;
+export function render(protocol_json: string, state_json: string, plugin?: string | null): string;
 /**
  * Build the protocol JSON from virtual files without rendering.
  *
@@ -44,7 +45,7 @@ export interface InitOutput {
   readonly memory: WebAssembly.Memory;
   readonly build_and_render: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
   readonly build_protocol: (a: number, b: number, c: number, d: number) => void;
-  readonly render: (a: number, b: number, c: number, d: number, e: number) => void;
+  readonly render: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
   readonly __wbindgen_export_0: (a: number, b: number) => number;
   readonly __wbindgen_export_1: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_export_2: (a: number) => void;
