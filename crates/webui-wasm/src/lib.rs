@@ -11,6 +11,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
+use webui_handler::plugin::FastHydrationPlugin;
 use webui_handler::{ResponseWriter, WebUIHandler};
 use webui_parser::{CssStrategy, HtmlParser};
 use webui_protocol::WebUIProtocol;
@@ -45,13 +46,19 @@ impl ResponseWriter for StringWriter {
 ///
 /// * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
 /// * `state_json` — JSON string of the state data.
+/// * `plugin` — Optional plugin identifier (e.g., `"fast"`).
 ///
 /// # Returns
 ///
 /// The rendered HTML string, or throws a JS error on failure.
 #[wasm_bindgen]
-pub fn render(protocol_json: &str, state_json: &str) -> Result<String, JsValue> {
-    render_inner(protocol_json, state_json).map_err(|e| JsValue::from_str(&e.to_string()))
+pub fn render(
+    protocol_json: &str,
+    state_json: &str,
+    plugin: Option<String>,
+) -> Result<String, JsValue> {
+    render_inner(protocol_json, state_json, plugin.as_deref())
+        .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 /// Build and render a WebUI application from virtual files.
@@ -97,14 +104,29 @@ fn build_protocol_inner(
     serde_json::to_string(&protocol).map_err(|e| BuildError::Protocol(e.to_string()))
 }
 
-fn render_inner(protocol_json: &str, state_json: &str) -> Result<String, BuildError> {
+/// Create a handler with an optional plugin.
+fn create_handler(plugin: Option<&str>) -> Result<WebUIHandler, BuildError> {
+    match plugin {
+        Some("fast") => Ok(WebUIHandler::with_plugin(Box::new(
+            FastHydrationPlugin::new(),
+        ))),
+        Some(unknown) => Err(BuildError::Render(format!("Unknown plugin: {unknown}"))),
+        None => Ok(WebUIHandler::new()),
+    }
+}
+
+fn render_inner(
+    protocol_json: &str,
+    state_json: &str,
+    plugin: Option<&str>,
+) -> Result<String, BuildError> {
     let protocol: WebUIProtocol =
         serde_json::from_str(protocol_json).map_err(|e| BuildError::Protocol(e.to_string()))?;
     let state: Value =
         serde_json::from_str(state_json).map_err(|e| BuildError::State(e.to_string()))?;
 
     let mut writer = StringWriter::with_capacity(1024);
-    let handler = WebUIHandler::new();
+    let mut handler = create_handler(plugin)?;
     handler
         .render(&protocol, &state, &mut writer)
         .map_err(|e| BuildError::Render(e.to_string()))?;
@@ -124,7 +146,7 @@ pub(crate) fn build_and_render_inner(
         serde_json::from_str(state_json).map_err(|e| BuildError::State(e.to_string()))?;
 
     let mut writer = StringWriter::with_capacity(1024);
-    let handler = WebUIHandler::new();
+    let mut handler = create_handler(None)?;
     handler
         .render(&protocol, &state, &mut writer)
         .map_err(|e| BuildError::Render(e.to_string()))?;

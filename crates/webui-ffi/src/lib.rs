@@ -28,6 +28,7 @@ use serde_json::Value;
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
+use webui_handler::plugin::FastHydrationPlugin;
 use webui_handler::{ResponseWriter, WebUIHandler};
 use webui_parser::HtmlParser;
 use webui_protocol::WebUIProtocol;
@@ -134,6 +135,45 @@ pub extern "C" fn webui_handler_create() -> *mut c_void {
     Box::into_raw(context) as *mut c_void
 }
 
+/// Create a new WebUI handler instance with a named plugin.
+///
+/// # Arguments
+///
+/// * `plugin_id` - Null-terminated UTF-8 string identifying the plugin.
+///   Currently supported: `"fast"`. Pass `NULL` for no plugin.
+///
+/// # Returns
+///
+/// An opaque pointer that must be freed with [`webui_handler_destroy`],
+/// or `NULL` on error (call [`webui_last_error`] for details).
+///
+/// # Safety
+///
+/// `plugin_id` must be a valid null-terminated UTF-8 string, or `NULL`.
+#[no_mangle]
+pub unsafe extern "C" fn webui_handler_create_with_plugin(plugin_id: *const c_char) -> *mut c_void {
+    clear_last_error();
+
+    let handler = if plugin_id.is_null() {
+        WebUIHandler::new()
+    } else {
+        match CStr::from_ptr(plugin_id).to_str() {
+            Ok("fast") => WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new())),
+            Ok(unknown) => {
+                set_last_error(format!("unknown plugin: {unknown}"));
+                return std::ptr::null_mut();
+            }
+            Err(e) => {
+                set_last_error(format!("invalid UTF-8 in plugin_id: {e}"));
+                return std::ptr::null_mut();
+            }
+        }
+    };
+
+    let context = Box::new(HandlerContext { handler });
+    Box::into_raw(context) as *mut c_void
+}
+
 /// Destroy a WebUI handler instance.
 ///
 /// # Safety
@@ -185,7 +225,7 @@ pub unsafe extern "C" fn webui_handler_render(
         return std::ptr::null_mut();
     }
 
-    let context = &*(handler_ptr as *const HandlerContext);
+    let context = &mut *(handler_ptr as *mut HandlerContext);
 
     // Create byte slice from protobuf binary data
     let protocol_bytes = std::slice::from_raw_parts(protocol_data, protocol_len);
@@ -306,7 +346,7 @@ pub unsafe extern "C" fn webui_render(
     };
 
     // --- Render --------------------------------------------------------------
-    let handler = WebUIHandler::new();
+    let mut handler = WebUIHandler::new();
     let mut writer = StringResponseWriter::new();
 
     match handler.render(&protocol, &data, &mut writer) {

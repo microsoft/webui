@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
+use webui_handler::plugin::FastHydrationPlugin;
 use webui_handler::{ResponseWriter, WebUIHandler};
+use webui_parser::plugin::FastParserPlugin;
 use webui_parser::{CssStrategy, HtmlParser};
 use webui_protocol::WebUIProtocol;
 
@@ -46,6 +48,10 @@ pub struct StartArgs {
     /// Enable file watching + HMR (disabled by default)
     #[arg(long)]
     pub watch: bool,
+
+    /// Parser/handler plugin to load (e.g., "fast" for FAST-HTML hydration)
+    #[arg(long)]
+    pub plugin: Option<String>,
 }
 
 /// Resolved paths for `webui start`.
@@ -265,6 +271,7 @@ fn run(args: &StartArgs) -> Result<()> {
         state_file: paths.state_file.clone(),
         entry: args.entry.clone(),
         css_strategy: args.css.into(),
+        plugin: args.plugin.clone(),
     };
 
     printer.header("WebUI Dev Server");
@@ -356,11 +363,16 @@ struct RenderConfig {
     state_file: PathBuf,
     entry: String,
     css_strategy: CssStrategy,
+    plugin: Option<String>,
 }
 
 /// Build the protocol from app templates and render with explicit state data.
 fn build_and_render(config: &RenderConfig, hmr_backend: Option<&dyn HmrBackend>) -> Result<String> {
-    let mut parser = HtmlParser::new();
+    let mut parser = match config.plugin.as_deref() {
+        Some("fast") => HtmlParser::with_plugin(Box::new(FastParserPlugin::new())),
+        Some(unknown) => anyhow::bail!("Unknown plugin: {unknown}"),
+        None => HtmlParser::new(),
+    };
     parser.set_css_strategy(config.css_strategy);
     parser
         .component_registry_mut()
@@ -389,7 +401,10 @@ fn build_and_render(config: &RenderConfig, hmr_backend: Option<&dyn HmrBackend>)
 
     // Render to memory
     let mut writer = MemoryWriter::with_capacity(4096);
-    let handler = WebUIHandler::new();
+    let mut handler = match config.plugin.as_deref() {
+        Some("fast") => WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new())),
+        _ => WebUIHandler::new(),
+    };
     handler.handle(&protocol, &state, &mut writer)?;
 
     let html = match hmr_backend {
@@ -629,6 +644,7 @@ mod tests {
             state_file: app.path().join("state.json"),
             entry: "index.html".to_string(),
             css_strategy: CssStrategy::External,
+            plugin: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let html = build_and_render(&config, Some(&hmr)).unwrap();
@@ -646,6 +662,7 @@ mod tests {
             state_file: app.path().join("state.json"),
             entry: "index.html".to_string(),
             css_strategy: CssStrategy::External,
+            plugin: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let html = build_and_render(&config, Some(&hmr)).unwrap();
@@ -660,6 +677,7 @@ mod tests {
             state_file: app.path().join("state.json"),
             entry: "index.html".to_string(),
             css_strategy: CssStrategy::External,
+            plugin: None,
         };
         let html = build_and_render(&config, None).unwrap();
         assert!(!html.contains("/hmr"));
@@ -673,6 +691,7 @@ mod tests {
             state_file: app.path().join("state.json"),
             entry: "index.html".to_string(),
             css_strategy: CssStrategy::External,
+            plugin: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let result = build_and_render(&config, Some(&hmr));
@@ -687,6 +706,7 @@ mod tests {
             state_file: app.path().join("state.json"),
             entry: "index.html".to_string(),
             css_strategy: CssStrategy::External,
+            plugin: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let result = build_and_render(&config, Some(&hmr));
@@ -795,6 +815,7 @@ mod tests {
             state_file: manifest_dir.join("../../examples/app/hello-world/data/state.json"),
             entry: "index.html".to_string(),
             css_strategy: CssStrategy::External,
+            plugin: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let html = build_and_render(&config, Some(&hmr)).unwrap();

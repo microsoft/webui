@@ -1,5 +1,6 @@
 mod build_examples;
 mod build_wasm;
+mod dev;
 mod util;
 
 use std::process::ExitCode;
@@ -41,6 +42,10 @@ fn main() -> ExitCode {
             let app = args.get(3).map(|s| s.as_str());
             build_examples::run_integration_app(integration, app)
         }
+        Some("dev") => {
+            let app = args.get(2).map(|s| s.as_str());
+            dev::run(app)
+        }
         _ => usage(),
     }
 }
@@ -57,7 +62,8 @@ fn usage() -> ExitCode {
            build   Build the workspace\n  \
            build-examples  Build all example integrations and apps\n  \
            build-wasm  Build WASM playground module\n  \
-           docs    Build the documentation site"
+           docs    Build the documentation site\n  \
+           dev <app>  Run example app in dev mode (server + client watch concurrently)"
     );
     ExitCode::FAILURE
 }
@@ -107,7 +113,16 @@ impl Step {
     };
     const BUILD: Self = Self {
         name: "build",
-        run: || run_command("cargo", &["build", "--workspace"], None),
+        run: || {
+            // Exclude xtask from the workspace build: it is already compiled
+            // (it is the running process) and on Windows the OS locks the
+            // running executable, causing "Access is denied" (os error 5).
+            run_command(
+                "cargo",
+                &["build", "--workspace", "--exclude", "xtask"],
+                None,
+            )
+        },
     };
     const BUILD_EXAMPLES: Self = Self {
         name: "build (examples)",

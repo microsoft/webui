@@ -4,6 +4,7 @@ use expand_tilde::expand_tilde;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
+use webui_parser::plugin::FastParserPlugin;
 use webui_parser::{CssStrategy, HtmlParser};
 use webui_protocol::WebUIProtocol;
 
@@ -45,6 +46,10 @@ pub struct BuildArgs {
     /// CSS delivery strategy for component stylesheets
     #[arg(long, value_enum, default_value_t = CssMode::External)]
     pub css: CssMode,
+
+    /// Parser plugin to load (e.g., "fast" for FAST-HTML hydration support)
+    #[arg(long)]
+    pub plugin: Option<String>,
 }
 
 pub fn execute(args: &BuildArgs) -> Result<()> {
@@ -83,6 +88,9 @@ fn run(args: &BuildArgs) -> Result<()> {
     printer.field("Entry", &args.entry);
     printer.field("Output", &out.display());
     printer.field("CSS", &format!("{:?}", args.css));
+    if let Some(ref plugin_name) = args.plugin {
+        printer.field("Plugin", plugin_name);
+    }
     eprintln!();
 
     // Create output directory
@@ -90,7 +98,11 @@ fn run(args: &BuildArgs) -> Result<()> {
         .with_context(|| format!("Failed to create output dir: {}", out.display()))?;
 
     // Set up parser and register components from the app directory
-    let mut parser = HtmlParser::new();
+    let mut parser = match args.plugin.as_deref() {
+        Some("fast") => HtmlParser::with_plugin(Box::new(FastParserPlugin::new())),
+        Some(unknown) => anyhow::bail!("Unknown plugin: {unknown}"),
+        None => HtmlParser::new(),
+    };
     parser.set_css_strategy(args.css.into());
     parser
         .component_registry_mut()
@@ -179,6 +191,7 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
         out: out.to_path_buf(),
         entry: entry.to_string(),
         css: CssMode::External,
+        plugin: None,
     })
 }
 
@@ -275,6 +288,7 @@ mod tests {
             out: out_dir.path().to_path_buf(),
             entry: "index.html".to_string(),
             css: CssMode::Inline,
+            plugin: None,
         })
         .unwrap();
 

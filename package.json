@@ -6,12 +6,10 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "devDependencies": {
-  },
   "engines": {
     "node": ">=22.0.0"
   },
   "author": "Microsoft Edge",
   "license": "Apache-2.0",
-  "packageManager": "pnpm@10.29.3"
+  "packageManager": "pnpm@10.30.3"
 }

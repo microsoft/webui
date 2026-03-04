@@ -90,21 +90,29 @@ pub fn run_app_builds() -> Result<(), String> {
         let output_dir = app_dir.join("dist");
 
         eprintln!("  • app: {}", app_name);
-        run_command(
-            "cargo",
-            &[
-                "run",
-                "-p",
-                "webui-cli",
-                "--",
-                "build",
-                templates_dir.to_string_lossy().as_ref(),
-                "--out",
-                output_dir.to_string_lossy().as_ref(),
-            ],
-            None,
-        )
-        .map_err(|message| format!("app '{}' build failed: {}", app_name, message))?;
+
+        let templates_str = templates_dir.to_string_lossy().to_string();
+        let output_str = output_dir.to_string_lossy().to_string();
+
+        // Apps ending in "-fast" use the FAST parser plugin
+        let mut args: Vec<&str> = vec![
+            "run",
+            "-p",
+            "webui-cli",
+            "--",
+            "build",
+            &templates_str,
+            "--out",
+            &output_str,
+        ];
+
+        if app_name.ends_with("-fast") {
+            args.push("--plugin");
+            args.push("fast");
+        }
+
+        run_command("cargo", &args, None)
+            .map_err(|message| format!("app '{}' build failed: {}", app_name, message))?;
     }
 
     Ok(())

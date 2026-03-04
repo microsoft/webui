@@ -14,8 +14,8 @@ webui-state = { path = "../webui-state" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-html-escape = "0.2.13"
+html-escape = { workspace = true }
 
 [dev-dependencies]
 webui-test-utils = { path = "../webui-test-utils" }
-tokio = { version = "1.49.0", features = ["full"] }
+tokio = { workspace = true }

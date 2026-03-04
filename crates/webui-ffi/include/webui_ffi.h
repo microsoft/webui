@@ -22,6 +22,23 @@ const char *webui_last_error();
 /// functions and eventually freed with [`webui_handler_destroy`].
 void *webui_handler_create();
 
+/// Create a new WebUI handler instance with a named plugin.
+///
+/// # Arguments
+///
+/// * `plugin_id` - Null-terminated UTF-8 string identifying the plugin.
+///   Currently supported: `"fast"`. Pass `NULL` for no plugin.
+///
+/// # Returns
+///
+/// An opaque pointer that must be freed with [`webui_handler_destroy`],
+/// or `NULL` on error (call [`webui_last_error`] for details).
+///
+/// # Safety
+///
+/// `plugin_id` must be a valid null-terminated UTF-8 string, or `NULL`.
+void *webui_handler_create_with_plugin(const char *plugin_id);
+
 /// Destroy a WebUI handler instance.
 ///
 /// # Safety

@@ -29,6 +29,7 @@ use napi::bindgen_prelude::{Buffer, Function};
 use napi::Error as NapiError;
 use napi_derive::napi;
 use serde_json::Value;
+use webui_handler::plugin::FastHydrationPlugin;
 use webui_handler::{ResponseWriter, WebUIHandler};
 use webui_protocol::WebUIProtocol;
 
@@ -76,11 +77,13 @@ impl ResponseWriter for CallbackWriter<'_, '_> {
 /// * `protocol_data` — Protobuf binary from `webui build` (zero-copy Buffer).
 /// * `state_json` — JSON string with the render state.
 /// * `on_chunk` — Called with each rendered HTML fragment as it is produced.
+/// * `plugin` — Optional plugin identifier (e.g., `"fast"`).
 #[napi]
 pub fn render(
     protocol_data: Buffer,
     state_json: String,
     on_chunk: Function<String, ()>,
+    plugin: Option<String>,
 ) -> napi::Result<()> {
     let protocol = WebUIProtocol::from_protobuf(&protocol_data)
         .map_err(|e| NapiError::from_reason(format!("Protocol decode error: {e}")))?;
@@ -89,7 +92,13 @@ pub fn render(
         .map_err(|e| NapiError::from_reason(format!("State JSON error: {e}")))?;
 
     let mut writer = CallbackWriter::new(&on_chunk);
-    let handler = WebUIHandler::new();
+    let mut handler = match plugin.as_deref() {
+        Some("fast") => WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new())),
+        Some(unknown) => {
+            return Err(NapiError::from_reason(format!("Unknown plugin: {unknown}")));
+        }
+        None => WebUIHandler::new(),
+    };
     handler
         .render(&protocol, &state, &mut writer)
         .map_err(|e| NapiError::from_reason(format!("Render error: {e}")))?;
@@ -122,7 +131,7 @@ mod tests {
         let state: Value = serde_json::from_str(state_json).map_err(|e| e.to_string())?;
 
         let mut output = String::with_capacity(1024);
-        let handler = WebUIHandler::new();
+        let mut handler = WebUIHandler::new();
 
         struct StringWriter<'a> {
             output: &'a mut String,

@@ -1,0 +1,10 @@
+{
+  "name": "hello-world-example",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
+    "start:server": "cargo run -p webui-cli -- start ./src --state ./data/state.json --servedir ./dist --port 3001"
+  }
+}

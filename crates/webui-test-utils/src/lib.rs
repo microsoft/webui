@@ -364,6 +364,7 @@ fn format_fragment(frag: &webui_protocol::WebUIFragment) -> String {
             f.item, f.collection, f.fragment_id
         ),
         Some(Fragment::IfCond(i)) => format!("if(template={:?})", i.fragment_id),
+        Some(Fragment::Plugin(p)) => format!("plugin(data={:?})", p.data),
         None => "None".to_string(),
     }
 }

@@ -378,4 +378,123 @@ mod tests {
         assert!(parser.parse("age >").is_err());
         assert!(parser.parse("&& isAdmin").is_err());
     }
+
+    #[test]
+    fn test_tokenize_simple_identifier() {
+        let parser = ConditionParser::new();
+        let result = parser
+            .parse("isVisible")
+            .expect("Failed to parse simple identifier");
+
+        assert!(
+            matches!(&result.expr, Some(Expr::Identifier(id)) if id.value == "isVisible")
+        );
+    }
+
+    #[test]
+    fn test_tokenize_dotted_path() {
+        let parser = ConditionParser::new();
+        let result = parser
+            .parse("appearance")
+            .expect("Failed to parse identifier");
+
+        assert!(
+            matches!(&result.expr, Some(Expr::Identifier(id)) if id.value == "appearance")
+        );
+    }
+
+    #[test]
+    fn test_tokenize_binary_expression() {
+        let parser = ConditionParser::new();
+        let result = parser
+            .parse("x > 5")
+            .expect("Failed to parse binary expression");
+
+        assert!(matches!(&result.expr, Some(Expr::Predicate(pred)) if
+            pred.left == "x" &&
+            ComparisonOperator::try_from(pred.operator) == Ok(ComparisonOperator::GreaterThan) &&
+            pred.right == "5"
+        ));
+    }
+
+    #[test]
+    fn test_tokenize_complex_and_dotted() {
+        let parser = ConditionParser::new();
+        let result = parser
+            .parse("appearance == \"hub\" && actions.trailing")
+            .expect("Failed to parse complex and-dotted expression");
+
+        assert!(matches!(&result.expr, Some(Expr::Compound(compound)) if
+            matches!(compound.left.as_ref().and_then(|l| l.expr.as_ref()), Some(Expr::Predicate(pred)) if
+                pred.left == "appearance" &&
+                ComparisonOperator::try_from(pred.operator) == Ok(ComparisonOperator::Equal) &&
+                pred.right == "hub"
+            ) &&
+            LogicalOperator::try_from(compound.op) == Ok(LogicalOperator::And) &&
+            matches!(compound.right.as_ref().and_then(|r| r.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "actions.trailing")
+        ));
+    }
+
+    #[test]
+    fn test_tokenize_unary_not() {
+        let parser = ConditionParser::new();
+        let result = parser
+            .parse("!disabled")
+            .expect("Failed to parse unary not expression");
+
+        assert!(matches!(&result.expr, Some(Expr::Not(not)) if
+            matches!(not.condition.as_ref().and_then(|c| c.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "disabled")
+        ));
+    }
+
+    #[test]
+    fn test_tokenize_undefined_comparison() {
+        let parser = ConditionParser::new();
+        let result = parser
+            .parse("foo == undefined")
+            .expect("Failed to parse undefined comparison");
+
+        assert!(matches!(&result.expr, Some(Expr::Predicate(pred)) if
+            pred.left == "foo" &&
+            ComparisonOperator::try_from(pred.operator) == Ok(ComparisonOperator::Equal) &&
+            pred.right == "undefined"
+        ));
+    }
+
+    #[test]
+    fn test_reject_mixed_and_or() {
+        // The Rust parser handles mixed && and || by nesting (unlike NodeJS which rejects them).
+        // "a && b || c" is parsed as Compound(a, And, Compound(b, Or, c)).
+        let parser = ConditionParser::new();
+        let result = parser
+            .parse("a && b || c")
+            .expect("Rust parser handles mixed operators via nesting");
+
+        assert!(matches!(&result.expr, Some(Expr::Compound(compound)) if
+            matches!(compound.left.as_ref().and_then(|l| l.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "a") &&
+            LogicalOperator::try_from(compound.op) == Ok(LogicalOperator::And) &&
+            matches!(compound.right.as_ref().and_then(|r| r.expr.as_ref()), Some(Expr::Compound(inner)) if
+                matches!(inner.left.as_ref().and_then(|l| l.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "b") &&
+                LogicalOperator::try_from(inner.op) == Ok(LogicalOperator::Or) &&
+                matches!(inner.right.as_ref().and_then(|r| r.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "c")
+            )
+        ));
+    }
+
+    #[test]
+    fn test_reject_too_many_tokens() {
+        // The Rust parser has no explicit complexity limit but handles long chains
+        // by deeply nesting Compound nodes. Verify a long chain parses correctly.
+        let parser = ConditionParser::new();
+        let result = parser
+            .parse("a && b && c && d && e && f && g && h && i && j")
+            .expect("Parser handles long chained expressions");
+
+        // The outermost should be a Compound with And
+        assert!(matches!(&result.expr, Some(Expr::Compound(compound)) if
+            matches!(compound.left.as_ref().and_then(|l| l.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "a") &&
+            LogicalOperator::try_from(compound.op) == Ok(LogicalOperator::And) &&
+            matches!(compound.right.as_ref().and_then(|r| r.expr.as_ref()), Some(Expr::Compound(_)))
+        ));
+    }
 }

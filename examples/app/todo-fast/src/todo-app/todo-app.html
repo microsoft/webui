@@ -1,0 +1,24 @@
+<template shadowrootmode="open"
+  @toggle-item="{onToggleItem(e)}"
+  @delete-item="{onDeleteItem(e)}"
+>
+  <h1>{{title}}</h1>
+
+  <div class="add-form">
+    <input
+      class="add-input"
+      placeholder="What needs to be done?"
+      f-ref="{addInput}"
+      @keydown="{onAddKeydown(e)}"
+    />
+    <button class="add-button" @click="{onAddClick()}">Add</button>
+  </div>
+
+  <div class="todo-list">
+    <slot></slot>
+  </div>
+
+  <div class="footer">
+    <span>{{remainingCount}} items remaining</span>
+  </div>
+</template>

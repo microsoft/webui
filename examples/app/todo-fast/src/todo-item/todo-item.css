@@ -1,0 +1,66 @@
+:host {
+  display: block;
+}
+
+:host([state="done"]) .title {
+  text-decoration: line-through;
+  color: #999;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #eee;
+}
+
+.toggle {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid #ccc;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 14px;
+  color: #4caf50;
+}
+
+:host([state="done"]) .toggle {
+  border-color: #4caf50;
+  background: #e8f5e9;
+}
+
+.title {
+  flex: 1;
+  font-size: 15px;
+}
+
+.delete {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 20px;
+  color: #ccc;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.item:hover .delete {
+  opacity: 1;
+}
+
+.delete:hover {
+  color: #e53935;
+  background: #ffebee;
+}

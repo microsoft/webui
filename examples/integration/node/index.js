@@ -7,7 +7,7 @@
 //      cargo run -p webui-cli -- build ../../app/hello-world/templates --out ../../app/hello-world/dist
 //
 // Usage:
-//   node index.js [protocol.bin] [state.json]
+//   node index.js [protocol.bin] [state.json] [--plugin=fast]
 
 import { readFileSync } from "fs";
 import { createRequire } from "module";
@@ -44,6 +44,10 @@ const protocolPath =
   process.argv[2] || "../../app/hello-world/dist/protocol.bin";
 const statePath = process.argv[3] || "../../app/hello-world/data/state.json";
 
+// Check for --plugin=fast flag
+const pluginArg = process.argv.find((a) => a.startsWith("--plugin="));
+const pluginName = pluginArg ? pluginArg.split("=")[1] : undefined;
+
 const addon = loadAddon();
 const protocolData = readFileSync(resolve(import.meta.dirname, protocolPath));
 const stateJson = readFileSync(
@@ -51,5 +55,9 @@ const stateJson = readFileSync(
   "utf-8"
 );
 
-const html = addon.render(protocolData, stateJson);
-process.stdout.write(html + "\n");
+// Pass plugin name as 4th arg to the native addon
+const handlerPlugin = pluginName === "fast" ? "fast" : undefined;
+
+// Render, streaming each chunk to stdout
+addon.render(protocolData, stateJson, (chunk) => process.stdout.write(chunk), handlerPlugin);
+process.stdout.write("\n");

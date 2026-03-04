@@ -7,10 +7,14 @@
 //!
 //!   # Then render it
 //!   cargo run -- ../../app/hello-world/dist/protocol.bin ../../app/hello-world/data/state.json
+//!
+//!   # Render with FAST hydration markers
+//!   cargo run -- ../../app/todo-fast/dist/protocol.bin ../../app/todo-fast/data/state.json --plugin=fast
 
 use anyhow::{Context, Result};
 use std::env;
 use std::fs;
+use webui_handler::plugin::FastHydrationPlugin;
 use webui_handler::{ResponseWriter, WebUIHandler};
 use webui_protocol::WebUIProtocol;
 
@@ -31,12 +35,18 @@ impl ResponseWriter for StdoutWriter {
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
-        eprintln!("Usage: {} <protocol.bin> <state.json>", args[0]);
+        eprintln!(
+            "Usage: {} <protocol.bin> <state.json> [--plugin=fast]",
+            args[0]
+        );
         std::process::exit(1);
     }
 
     let protocol_path = &args[1];
     let state_path = &args[2];
+
+    // Check for --plugin=fast flag
+    let plugin_name = args.iter().find_map(|a| a.strip_prefix("--plugin="));
 
     let protocol = WebUIProtocol::from_protobuf_file(protocol_path)
         .with_context(|| format!("Failed to load protocol: {protocol_path}"))?;
@@ -46,7 +56,11 @@ fn main() -> Result<()> {
     let state: serde_json::Value =
         serde_json::from_str(&state_json).context("Failed to parse state JSON")?;
 
-    let handler = WebUIHandler::new();
+    let mut handler = match plugin_name {
+        Some("fast") => WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new())),
+        Some(unknown) => anyhow::bail!("Unknown plugin: {unknown}"),
+        None => WebUIHandler::new(),
+    };
     let mut writer = StdoutWriter;
     handler
         .handle(&protocol, &state, &mut writer)

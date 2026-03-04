@@ -6,6 +6,7 @@ mod condition_parser;
 mod css_parser;
 mod error;
 mod handlebars_parser;
+pub mod plugin;
 
 pub use component_registry::{Component, ComponentRegistry};
 pub use condition_parser::ConditionParser;
@@ -13,6 +14,7 @@ pub use css_parser::CssParser;
 pub use error::{ParserError, Result};
 pub use handlebars_parser::HandlebarsParser;
 
+use crate::plugin::ParserPlugin;
 use std::collections::HashMap;
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIteratorMut};
 use tree_sitter_html::LANGUAGE;
@@ -87,6 +89,9 @@ pub struct HtmlParser {
 
     /// How component CSS is delivered in output.
     css_strategy: CssStrategy,
+
+    /// Optional parser plugin for framework-specific behavior.
+    plugin: Option<Box<dyn ParserPlugin>>,
 }
 
 impl HtmlParser {
@@ -106,8 +111,16 @@ impl HtmlParser {
             raw_buffer: String::new(),
             fragment_records: WebUIFragmentRecords::new(),
             css_strategy: CssStrategy::default(),
+            plugin: None,
             parser,
         }
+    }
+
+    /// Create a new parser with a plugin for framework-specific behavior.
+    pub fn with_plugin(plugin: Box<dyn ParserPlugin>) -> Self {
+        let mut p = Self::new();
+        p.plugin = Some(plugin);
+        p
     }
 
     /// Set the CSS strategy for component stylesheet delivery.
@@ -451,7 +464,12 @@ impl HtmlParser {
             self.add_raw_fragment(&format!("<{}", tag_name));
 
             // Process attributes on the tag
-            self.process_tag_attributes(tag_node, source, fragments, false)?;
+            let binding_count = self.process_tag_attributes(tag_node, source, fragments, false)?;
+            if let Some(ref mut p) = self.plugin {
+                if let Some(data) = p.on_element_parsed(binding_count) {
+                    self.add_fragment(WebUIFragment::plugin(data), fragments);
+                }
+            }
 
             if is_self_closing {
                 // Find the /> at the end of the self-closing tag
@@ -488,14 +506,16 @@ impl HtmlParser {
     /// fragments and the first non-skipped attribute is marked with `attr_start`.
     /// For regular elements, only dynamic attributes become fragments while
     /// static attributes are accumulated into the raw buffer.
+    /// Returns the number of binding (dynamic) attributes found.
     fn process_tag_attributes(
         &mut self,
         tag_node: Node,
         source: &str,
         fragments: &mut Vec<WebUIFragment>,
         is_component: bool,
-    ) -> Result<()> {
+    ) -> Result<u32> {
         let mut first_dynamic_emitted = false;
+        let mut binding_count: u32 = 0;
         let mut cursor = tag_node.walk();
 
         for child in tag_node.named_children(&mut cursor) {
@@ -504,6 +524,16 @@ impl HtmlParser {
             }
 
             let attr_name = self.get_attr_name(child, source)?;
+
+            // Let plugin skip framework-specific attributes (but still count them
+            // for binding attribute tracking — FAST-HTML creates factories for these)
+            if let Some(ref p) = self.plugin {
+                if p.should_skip_attribute(&attr_name) {
+                    binding_count += 1;
+                    continue;
+                }
+            }
+
             let attr_value = self.get_attr_value(child, source);
 
             if let Some(bool_name) = attr_name.strip_prefix('?') {
@@ -517,10 +547,12 @@ impl HtmlParser {
                                 &mut first_dynamic_emitted,
                             );
                             self.add_fragment(frag, fragments);
+                            binding_count += 1;
                         }
                     }
                 } else {
                     self.process_boolean_attribute(bool_name, attr_value.as_deref(), fragments)?;
+                    binding_count += 1;
                 }
             } else if attr_name.starts_with(':') {
                 // Complex attribute: :config="{{settings}}"
@@ -532,10 +564,12 @@ impl HtmlParser {
                                 &mut first_dynamic_emitted,
                             );
                             self.add_fragment(frag, fragments);
+                            binding_count += 1;
                         }
                     }
                 } else {
                     self.process_complex_attribute(&attr_name, attr_value.as_deref(), fragments)?;
+                    binding_count += 1;
                 }
             } else if is_component && Self::is_skipped_attribute(&attr_name) {
                 // Skipped component attribute (class, style, role, data-*, aria-*)
@@ -552,6 +586,7 @@ impl HtmlParser {
                             )),
                         };
                         self.add_fragment(frag, fragments);
+                        binding_count += 1;
                     }
                 }
             } else if let Some(ref val) = attr_value {
@@ -563,6 +598,7 @@ impl HtmlParser {
                                 &mut first_dynamic_emitted,
                             );
                             self.add_fragment(frag, fragments);
+                            binding_count += 1;
                         } else {
                             let template_id = self.id_counter.next_id("attr");
                             let parsed = self.handlebars_parser.parse(val)?;
@@ -573,9 +609,11 @@ impl HtmlParser {
                                 &mut first_dynamic_emitted,
                             );
                             self.add_fragment(frag, fragments);
+                            binding_count += 1;
                         }
                     } else {
                         self.process_dynamic_attribute(&attr_name, val, fragments)?;
+                        binding_count += 1;
                     }
                 } else if is_component {
                     // Static attribute on component → rawValue fragment
@@ -593,6 +631,7 @@ impl HtmlParser {
                         &mut first_dynamic_emitted,
                     );
                     self.add_fragment(frag, fragments);
+                    binding_count += 1;
                 } else {
                     // Static attribute on regular element → raw text
                     let attr_text = &source[child.start_byte()..child.end_byte()];
@@ -603,7 +642,7 @@ impl HtmlParser {
                 self.add_raw_fragment(&format!(" {}", attr_name));
             }
         }
-        Ok(())
+        Ok(binding_count)
     }
 
     /// Set `attr_start = true` on the first non-skipped attribute fragment for
@@ -744,6 +783,12 @@ impl HtmlParser {
             }
         }
         self.flush_raw_buffer(fragments);
+        // Let plugin inject content before body_end
+        if let Some(ref mut p) = self.plugin {
+            if let Some(body_end_content) = p.on_body_end() {
+                fragments.push(WebUIFragment::raw(body_end_content));
+            }
+        }
         fragments.push(WebUIFragment::signal("body_end", true));
         self.add_raw_fragment("</body>");
         Ok(())
@@ -928,7 +973,12 @@ impl HtmlParser {
 
         // Process attributes — component-aware
         if let Some(tag_node) = tag_node {
-            self.process_tag_attributes(tag_node, source, fragments, true)?;
+            let binding_count = self.process_tag_attributes(tag_node, source, fragments, true)?;
+            if let Some(ref mut p) = self.plugin {
+                if let Some(data) = p.on_element_parsed(binding_count) {
+                    self.add_fragment(WebUIFragment::plugin(data), fragments);
+                }
+            }
         }
 
         if is_self_closing {
@@ -957,6 +1007,13 @@ impl HtmlParser {
                 component.css_content.clone(),
             )
         };
+
+        // Notify plugin about component
+        if let Some(ref mut p) = self.plugin {
+            if let Some(component) = self.component_registry.get(tag_name) {
+                p.on_parse_component(tag_name, component)?;
+            }
+        }
 
         // Parse and register component template if not already done
         if !self.fragment_records.contains_key(tag_name) {
@@ -2334,6 +2391,130 @@ mod tests {
             !raw_text.contains("<link"),
             "Should not have <link> tag in inline mode: {}",
             raw_text
+        );
+    }
+
+    // ── Ported from NodeJS generator.test.js ─────────────────────────
+
+    // test_signal_with_default_value — SKIPPED
+    // The NodeJS `<f-signal value="testSignal">Default Text</f-signal>` feature
+    // is not supported in the Rust parser. There is no `f-signal` element
+    // handling in HtmlParser and no corresponding fragment type in
+    // webui_protocol.
+
+    // test_estimated_buffer_size — SKIPPED
+    // The NodeJS `estimatedBufferSize` field does not exist in the Rust
+    // WebUIFragmentRecords / WebUIProtocol types. Buffer size estimation is
+    // not part of the Rust parser output.
+
+    #[test]
+    fn test_body_start_end_injection() {
+        // Port of: 'should inject body_start and body_end signals around body content'
+        // Verifies body_start appears immediately after <body> and body_end
+        // appears immediately before </body> in a full HTML page.
+        let html = r#"<html><head><title>Test</title></head><body><div>Content</div><p>More</p></body></html>"#;
+        let (fragments, _) = parse_and_get_fragments(html);
+
+        assert_fragments!(
+            fragments,
+            [
+                raw("<html><head><title>Test</title></head><body>"),
+                signal_raw("body_start"),
+                raw("<div>Content</div><p>More</p>"),
+                signal_raw("body_end"),
+                raw("</body></html>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_fail_with_invalid_markup() {
+        // Port of: 'should fail with invalid markup'
+        // tree-sitter HTML grammar is lenient — it recovers from overlapping /
+        // misnested tags rather than returning a parse error. This test
+        // documents that behavior: deliberately overlapping tags do NOT
+        // produce an error.
+        let mut parser = HtmlParser::new();
+        let result = parser.parse("index.html", "<div><span></div></span>");
+
+        // tree-sitter recovers gracefully; the parse succeeds
+        assert!(
+            result.is_ok(),
+            "tree-sitter is lenient and recovers from overlapping tags"
+        );
+    }
+
+    #[test]
+    fn test_complex_raw_text_page() {
+        // Port of: 'should process a complex raw text page with DOCTYPE,
+        // meta tags, styles, and scripts'
+        let html = concat!(
+            "<!DOCTYPE html>",
+            "<html lang=\"en\">",
+            "<head>",
+            "<meta charset=\"utf-8\">",
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">",
+            "<title>Complex Page</title>",
+            "<style>body { margin: 0; padding: 0; } h1 { color: blue; }</style>",
+            "<link rel=\"stylesheet\" href=\"styles.css\">",
+            "</head>",
+            "<body>",
+            "<h1>Hello World</h1>",
+            "<script type=\"module\" src=\"./app.js\"></script>",
+            "</body>",
+            "</html>",
+        );
+        let (fragments, _) = parse_and_get_fragments(html);
+
+        // Should have: raw(DOCTYPE+head+<body>), body_start, raw(body content),
+        // body_end, raw(</body></html>)
+        assert!(
+            fragments.len() >= 5,
+            "Expected at least 5 fragments, got {}",
+            fragments.len()
+        );
+
+        // First fragment: DOCTYPE through opening <body>
+        assert!(
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+                raw.value.contains("<!DOCTYPE html>") &&
+                raw.value.contains("<meta charset=\"utf-8\">") &&
+                raw.value.contains("<meta name=\"viewport\"") &&
+                raw.value.contains("<title>Complex Page</title>") &&
+                raw.value.contains("<style>") &&
+                raw.value.contains("body { margin: 0; padding: 0; }") &&
+                raw.value.ends_with("<body>")),
+            "First fragment should contain all head content through <body>, got: {:?}",
+            fragments[0]
+        );
+
+        // body_start signal
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Signal(s)) if
+                s.value == "body_start" && s.raw),
+            "Second fragment should be body_start signal"
+        );
+
+        // Body content (h1 and script)
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+                raw.value.contains("<h1>Hello World</h1>") &&
+                raw.value.contains("<script")),
+            "Third fragment should contain body content"
+        );
+
+        // body_end signal
+        assert!(
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Signal(s)) if
+                s.value == "body_end" && s.raw),
+            "Fourth fragment should be body_end signal"
+        );
+
+        // Closing tags
+        assert!(
+            matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+                raw.value.contains("</body>") && raw.value.contains("</html>")),
+            "Fifth fragment should contain closing tags"
         );
     }
 }

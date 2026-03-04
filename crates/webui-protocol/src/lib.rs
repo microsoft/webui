@@ -29,6 +29,7 @@ pub type WebUIFragmentFor = WebUiFragmentFor;
 pub type WebUIFragmentSignal = WebUiFragmentSignal;
 pub type WebUIFragmentIf = WebUiFragmentIf;
 pub type WebUIFragmentAttribute = WebUiFragmentAttribute;
+pub type WebUIFragmentPlugin = WebUiFragmentPlugin;
 
 /// A mapping of unique fragment identifiers to their corresponding fragment lists.
 pub type WebUIFragmentRecords = HashMap<String, FragmentList>;
@@ -211,6 +212,16 @@ impl WebUiFragment {
                     ..Default::default()
                 },
             )),
+        }
+    }
+
+    /// Create a plugin data fragment with opaque bytes.
+    /// The data is passed through to the handler plugin without interpretation.
+    pub fn plugin(data: Vec<u8>) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::Plugin(WebUiFragmentPlugin {
+                data,
+            })),
         }
     }
 }

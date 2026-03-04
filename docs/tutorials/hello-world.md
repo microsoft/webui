@@ -120,7 +120,7 @@ fn main() -> anyhow::Result<()> {
     let protocol = WebUIProtocol::from_protobuf_file("dist/protocol.bin")?;
     let state: Value = serde_json::from_str(&fs::read_to_string("data/state.json")?)?;
     
-    let handler = WebUIHandler::new();
+    let mut handler = WebUIHandler::new();
     let mut writer = StdoutWriter;
     handler.handle(&protocol, &state, &mut writer)?;
     

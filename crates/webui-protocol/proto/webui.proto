@@ -21,7 +21,15 @@ message WebUIFragment {
     WebUIFragmentSignal signal = 4;
     WebUIFragmentIf if_cond = 5;
     WebUIFragmentAttribute attribute = 6;
+    WebUIFragmentPlugin plugin = 7;
   }
+}
+
+// Opaque plugin-specific data passed from parser plugin to handler plugin.
+// WebUI framework does not interpret this data — it is a pass-through conduit.
+// Each parser/handler plugin pair defines its own binary contract for the data field.
+message WebUIFragmentPlugin {
+  bytes data = 1;
 }
 
 // Static text or HTML content.
