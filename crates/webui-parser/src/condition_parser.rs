@@ -386,9 +386,7 @@ mod tests {
             .parse("isVisible")
             .expect("Failed to parse simple identifier");
 
-        assert!(
-            matches!(&result.expr, Some(Expr::Identifier(id)) if id.value == "isVisible")
-        );
+        assert!(matches!(&result.expr, Some(Expr::Identifier(id)) if id.value == "isVisible"));
     }
 
     #[test]
@@ -398,9 +396,7 @@ mod tests {
             .parse("appearance")
             .expect("Failed to parse identifier");
 
-        assert!(
-            matches!(&result.expr, Some(Expr::Identifier(id)) if id.value == "appearance")
-        );
+        assert!(matches!(&result.expr, Some(Expr::Identifier(id)) if id.value == "appearance"));
     }
 
     #[test]

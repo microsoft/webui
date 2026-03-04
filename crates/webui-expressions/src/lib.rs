@@ -766,8 +766,7 @@ mod tests {
 
     #[test]
     fn test_greater_equal() {
-        let condition =
-            ConditionExpr::predicate("y", ComparisonOperator::GreaterThanOrEqual, "10");
+        let condition = ConditionExpr::predicate("y", ComparisonOperator::GreaterThanOrEqual, "10");
         let state = test_json!({ "y": 10 });
 
         let result = evaluate(&condition, &state);
@@ -780,8 +779,7 @@ mod tests {
 
     #[test]
     fn test_nested_eq() {
-        let condition =
-            ConditionExpr::predicate("outer.inner", ComparisonOperator::Equal, "42");
+        let condition = ConditionExpr::predicate("outer.inner", ComparisonOperator::Equal, "42");
         let state = test_json!({ "outer": { "inner": 42 } });
 
         let result = evaluate(&condition, &state);

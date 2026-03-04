@@ -377,7 +377,10 @@ mod tests {
         let mut registry = ComponentRegistry::new();
         let result = registry.register_component("fluent.button", "<p>Dot name</p>", None);
 
-        assert!(result.is_err(), "Component name with dot but no hyphen should be rejected");
+        assert!(
+            result.is_err(),
+            "Component name with dot but no hyphen should be rejected"
+        );
         assert!(
             matches!(result, Err(ParserError::Component(ref msg)) if msg.contains("must contain a hyphen")),
             "Wrong error type or message: {:?}",
@@ -391,7 +394,10 @@ mod tests {
         let mut registry = ComponentRegistry::new();
         let result = registry.register_component("foobar", "<p>No hyphen</p>", None);
 
-        assert!(result.is_err(), "Component name without hyphen should be rejected");
+        assert!(
+            result.is_err(),
+            "Component name without hyphen should be rejected"
+        );
         assert!(
             matches!(result, Err(ParserError::Component(ref msg)) if msg.contains("must contain a hyphen")),
             "Wrong error type or message: {:?}",
@@ -403,13 +409,13 @@ mod tests {
     #[test]
     fn test_valid_component_with_hyphen() {
         let mut registry = ComponentRegistry::new();
-        let result = registry.register_component(
-            "fluent-button",
-            "<button>Click me</button>",
-            None,
-        );
+        let result =
+            registry.register_component("fluent-button", "<button>Click me</button>", None);
 
-        assert!(result.is_ok(), "Component name with hyphen should be accepted");
+        assert!(
+            result.is_ok(),
+            "Component name with hyphen should be accepted"
+        );
         assert!(registry.contains("fluent-button"));
         assert_eq!(registry.len(), 1);
     }
@@ -417,20 +423,23 @@ mod tests {
     #[test]
     fn test_valid_component_css_only() {
         let mut registry = ComponentRegistry::new();
-        let result = registry.register_component(
-            "styled-widget",
-            "",
-            Some(".widget { color: blue; }"),
-        );
+        let result =
+            registry.register_component("styled-widget", "", Some(".widget { color: blue; }"));
 
-        assert!(result.is_ok(), "Component with empty HTML and CSS should be accepted");
+        assert!(
+            result.is_ok(),
+            "Component with empty HTML and CSS should be accepted"
+        );
         assert!(registry.contains("styled-widget"));
 
         let component = registry
             .get("styled-widget")
             .expect("Failed to retrieve registered component");
         assert_eq!(component.html_content, "");
-        assert_eq!(component.css_content.as_deref(), Some(".widget { color: blue; }"));
+        assert_eq!(
+            component.css_content.as_deref(),
+            Some(".widget { color: blue; }")
+        );
     }
 
     #[test]
@@ -438,7 +447,10 @@ mod tests {
         let mut registry = ComponentRegistry::new();
         let result = registry.register_component("single", "<p>Single word</p>", None);
 
-        assert!(result.is_err(), "Single-word component name should be rejected");
+        assert!(
+            result.is_err(),
+            "Single-word component name should be rejected"
+        );
         assert!(
             matches!(result, Err(ParserError::Component(ref msg)) if msg.contains("must contain a hyphen")),
             "Wrong error type or message: {:?}",
@@ -450,13 +462,13 @@ mod tests {
     #[test]
     fn test_multiple_hyphens_valid() {
         let mut registry = ComponentRegistry::new();
-        let result = registry.register_component(
-            "my-custom-element",
-            "<div>Custom element</div>",
-            None,
-        );
+        let result =
+            registry.register_component("my-custom-element", "<div>Custom element</div>", None);
 
-        assert!(result.is_ok(), "Component name with multiple hyphens should be accepted");
+        assert!(
+            result.is_ok(),
+            "Component name with multiple hyphens should be accepted"
+        );
         assert!(registry.contains("my-custom-element"));
         assert_eq!(registry.len(), 1);
     }

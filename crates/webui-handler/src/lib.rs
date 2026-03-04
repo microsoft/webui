@@ -1140,11 +1140,7 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<div>"),
-                    WebUIFragment::for_loop(
-                        "innerItem",
-                        "outerItem.innerItems",
-                        "innerTemplate",
-                    ),
+                    WebUIFragment::for_loop("innerItem", "outerItem.innerItems", "innerTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
             },
@@ -1193,11 +1189,7 @@ mod tests {
                 fragments: vec![
                     WebUIFragment::raw("<div>"),
                     WebUIFragment::signal("globalOuter", false),
-                    WebUIFragment::for_loop(
-                        "innerItem",
-                        "outerItem.innerItems",
-                        "innerTemplate",
-                    ),
+                    WebUIFragment::for_loop("innerItem", "outerItem.innerItems", "innerTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
             },
@@ -1679,13 +1671,21 @@ mod tests {
     #[test]
     fn test_escape_special_at_beginning() {
         let result = render_signal("<Hello");
-        assert!(result.starts_with("&lt;"), "Expected &lt; at start, got: {}", result);
+        assert!(
+            result.starts_with("&lt;"),
+            "Expected &lt; at start, got: {}",
+            result
+        );
     }
 
     #[test]
     fn test_escape_special_at_end() {
         let result = render_signal("Hello>");
-        assert!(result.ends_with("&gt;"), "Expected &gt; at end, got: {}", result);
+        assert!(
+            result.ends_with("&gt;"),
+            "Expected &gt; at end, got: {}",
+            result
+        );
     }
 
     #[test]
@@ -1895,11 +1895,7 @@ mod tests {
                     WebUIFragment::raw("<button"),
                     WebUIFragment::attribute_boolean(
                         "disabled",
-                        ConditionExpr::predicate(
-                            "itemCount",
-                            ComparisonOperator::Equal,
-                            "5",
-                        ),
+                        ConditionExpr::predicate("itemCount", ComparisonOperator::Equal, "5"),
                     ),
                     WebUIFragment::raw(">Click</button>"),
                 ],
@@ -1922,11 +1918,7 @@ mod tests {
                     WebUIFragment::raw("<button"),
                     WebUIFragment::attribute_boolean(
                         "disabled",
-                        ConditionExpr::predicate(
-                            "itemCount",
-                            ComparisonOperator::Equal,
-                            "5",
-                        ),
+                        ConditionExpr::predicate("itemCount", ComparisonOperator::Equal, "5"),
                     ),
                     WebUIFragment::raw(">Click</button>"),
                 ],
@@ -2051,10 +2043,7 @@ mod tests {
         fragments.insert(
             "p-title".to_string(),
             FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("P:"),
-                    WebUIFragment::signal("p", false),
-                ],
+                fragments: vec![WebUIFragment::raw("P:"), WebUIFragment::signal("p", false)],
             },
         );
         fragments.insert(
@@ -2268,28 +2257,19 @@ mod tests {
         fragments.insert(
             "attr-title".to_string(),
             FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("T:"),
-                    WebUIFragment::signal("t", false),
-                ],
+                fragments: vec![WebUIFragment::raw("T:"), WebUIFragment::signal("t", false)],
             },
         );
         fragments.insert(
             "attr-data-title".to_string(),
             FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("D:"),
-                    WebUIFragment::signal("d", false),
-                ],
+                fragments: vec![WebUIFragment::raw("D:"), WebUIFragment::signal("d", false)],
             },
         );
         fragments.insert(
             "attr-aria-label".to_string(),
             FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("A:"),
-                    WebUIFragment::signal("a", false),
-                ],
+                fragments: vec![WebUIFragment::raw("A:"), WebUIFragment::signal("a", false)],
             },
         );
         fragments.insert(
@@ -2857,7 +2837,11 @@ mod tests {
         fragments.insert(
             "index.html".to_string(),
             FragmentList {
-                fragments: vec![WebUIFragment::for_loop("item", "list.items", "listTemplate")],
+                fragments: vec![WebUIFragment::for_loop(
+                    "item",
+                    "list.items",
+                    "listTemplate",
+                )],
             },
         );
         fragments.insert(
@@ -2902,7 +2886,11 @@ mod tests {
         fragments.insert(
             "index.html".to_string(),
             FragmentList {
-                fragments: vec![WebUIFragment::for_loop("outer", "data.outer", "outerTemplate")],
+                fragments: vec![WebUIFragment::for_loop(
+                    "outer",
+                    "data.outer",
+                    "outerTemplate",
+                )],
             },
         );
         fragments.insert(
@@ -3327,9 +3315,7 @@ mod tests {
             "custom-element".to_string(),
             FragmentList {
                 fragments: vec![
-                    WebUIFragment::raw(
-                        "<template shadowrootmode=\"open\"><custom-child>",
-                    ),
+                    WebUIFragment::raw("<template shadowrootmode=\"open\"><custom-child>"),
                     WebUIFragment::component("custom-child"),
                     WebUIFragment::raw("</custom-child><slot></slot></template>"),
                 ],
@@ -3423,10 +3409,7 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<div>"),
-                    WebUIFragment::if_cond(
-                        ConditionExpr::identifier("item.flag"),
-                        "ifBlock",
-                    ),
+                    WebUIFragment::if_cond(ConditionExpr::identifier("item.flag"), "ifBlock"),
                     WebUIFragment::raw("</div>"),
                 ],
             },
@@ -3476,10 +3459,7 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<div>"),
-                    WebUIFragment::if_cond(
-                        ConditionExpr::identifier("item.flag"),
-                        "ifBlock",
-                    ),
+                    WebUIFragment::if_cond(ConditionExpr::identifier("item.flag"), "ifBlock"),
                     WebUIFragment::raw("</div>"),
                 ],
             },
@@ -3693,7 +3673,8 @@ mod tests {
             },
         );
         let protocol = WebUIProtocol { fragments };
-        let state = test_json!({"globalSuffix": "Global", "items": [{"name": "Item1"}, {"name": "Item2"}]});
+        let state =
+            test_json!({"globalSuffix": "Global", "items": [{"name": "Item1"}, {"name": "Item2"}]});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
         assert_eq!(
@@ -3738,7 +3719,8 @@ mod tests {
             },
         );
         let protocol = WebUIProtocol { fragments };
-        let state = test_json!({"globalSuffix": "Global", "items": [{"name": "Item1"}, {"name": "Item2"}]});
+        let state =
+            test_json!({"globalSuffix": "Global", "items": [{"name": "Item1"}, {"name": "Item2"}]});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
         assert_eq!(
@@ -3868,7 +3850,11 @@ mod tests {
                     WebUIFragment::raw("<section>"),
                     WebUIFragment::signal("globalPrefix", false),
                     WebUIFragment::signal("outerItem.label", false),
-                    WebUIFragment::for_loop("middleItem", "outerItem.middleItems", "middleTemplate"),
+                    WebUIFragment::for_loop(
+                        "middleItem",
+                        "outerItem.middleItems",
+                        "middleTemplate",
+                    ),
                     WebUIFragment::raw("</section>"),
                 ],
             },
@@ -4124,7 +4110,10 @@ mod tests {
         });
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
-        assert_eq!(writer.get_content(), "<div><section><p>X</p></section></div>");
+        assert_eq!(
+            writer.get_content(),
+            "<div><section><p>X</p></section></div>"
+        );
     }
 
     #[test]

@@ -101,13 +101,7 @@ pub fn run(app: Option<&str>) -> ExitCode {
     }
 }
 
-fn spawn_child(
-    label: &str,
-    cmd: &str,
-    args: &[&str],
-    cwd: &Path,
-    p: &Printer,
-) -> Option<Child> {
+fn spawn_child(label: &str, cmd: &str, args: &[&str], cwd: &Path, p: &Printer) -> Option<Child> {
     eprintln!(
         "  {} starting {}",
         p.dim.apply_to("→"),
