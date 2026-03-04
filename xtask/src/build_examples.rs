@@ -45,12 +45,19 @@ pub const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
 
 pub fn run_integration_builds() -> Result<(), String> {
     if INTEGRATION_BUILDS.is_empty() {
-        eprintln!("  • no integration build entries configured");
+        eprintln!(
+            "  {} no integration build entries configured",
+            console::style("•").dim()
+        );
         return Ok(());
     }
 
     for integration in INTEGRATION_BUILDS {
-        eprintln!("  • integration: {}", integration.name);
+        eprintln!(
+            "  {} integration: {}",
+            console::style("•").dim(),
+            integration.name
+        );
         for command in integration.commands {
             let cwd = command.cwd.map(Path::new);
             run_command(command.cmd, command.args, cwd).map_err(|message| {
@@ -72,7 +79,10 @@ pub fn run_app_builds() -> Result<(), String> {
     let app_dirs = collect_child_dirs(apps_root)?;
 
     if app_dirs.is_empty() {
-        eprintln!("  • no example apps found under examples/app");
+        eprintln!(
+            "  {} no example apps found under examples/app",
+            console::style("•").dim()
+        );
         return Ok(());
     }
 
@@ -89,7 +99,7 @@ pub fn run_app_builds() -> Result<(), String> {
 
         let output_dir = app_dir.join("dist");
 
-        eprintln!("  • app: {}", app_name);
+        eprintln!("  {} app: {}", console::style("•").dim(), app_name);
 
         let src_str = src_dir.to_string_lossy().to_string();
         let output_str = output_dir.to_string_lossy().to_string();
@@ -156,13 +166,18 @@ pub fn run_integration_app(integration: Option<&str>, app: Option<&str>) -> Exit
         return ExitCode::FAILURE;
     }
 
-    eprintln!("▸ running {} with app {}", integration_name, app_name);
+    eprintln!(
+        "{} running {} with app {}",
+        console::style("▸").cyan().bold(),
+        integration_name,
+        app_name
+    );
     for cmd in build.run_commands {
         let mut args: Vec<&str> = cmd.args.to_vec();
         args.extend_from_slice(&["--app", app_name]);
         let cwd = cmd.cwd.map(Path::new);
         if let Err(message) = run_command(cmd.cmd, &args, cwd) {
-            eprintln!("  ✘ {}", message);
+            eprintln!("  {} {}", console::style("✘").red().bold(), message);
             return ExitCode::FAILURE;
         }
     }

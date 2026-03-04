@@ -4,7 +4,7 @@ mod dev;
 mod util;
 
 use std::process::ExitCode;
-use util::{run_command, workspace_root};
+use util::{ensure_cargo_install, ensure_rustup_component, run_command, workspace_root};
 
 fn main() -> ExitCode {
     let workspace_root = match workspace_root() {
@@ -65,7 +65,7 @@ fn usage() -> ExitCode {
            docs    Build the documentation site\n  \
            dev <app>  Run example app in dev mode (server + client watch concurrently)"
     );
-    ExitCode::FAILURE
+    ExitCode::SUCCESS
 }
 
 fn check() -> ExitCode {
@@ -91,11 +91,15 @@ struct Step {
 impl Step {
     const FMT: Self = Self {
         name: "fmt",
-        run: || run_command("cargo", &["fmt", "--all", "--check"], None),
+        run: || {
+            ensure_rustup_component("rustfmt")?;
+            run_command("cargo", &["fmt", "--all", "--check"], None)
+        },
     };
     const CLIPPY: Self = Self {
         name: "clippy",
         run: || {
+            ensure_rustup_component("clippy")?;
             run_command(
                 "cargo",
                 &["clippy", "--workspace", "--", "-D", "warnings"],
@@ -105,7 +109,10 @@ impl Step {
     };
     const DENY: Self = Self {
         name: "deny",
-        run: || run_command("cargo", &["deny", "check"], None),
+        run: || {
+            ensure_cargo_install("cargo-deny", "cargo-deny")?;
+            run_command("cargo", &["deny", "check"], None)
+        },
     };
     const TEST: Self = Self {
         name: "test",
@@ -140,16 +147,21 @@ impl Step {
 
 fn run_steps(steps: &[Step]) -> ExitCode {
     for step in steps {
-        eprintln!("\n▸ {}", step.name);
+        eprintln!("\n{} {}", console::style("▸").cyan().bold(), step.name);
         match (step.run)() {
-            Ok(()) => eprintln!("  ✔ {}", step.name),
+            Ok(()) => eprintln!("  {} {}", console::style("✔").green(), step.name),
             Err(message) => {
-                eprintln!("  ✘ {}", step.name);
-                eprintln!("  ✘ {} — {}", step.name, message);
+                eprintln!("  {} {}", console::style("✘").red().bold(), step.name);
+                eprintln!(
+                    "  {} {} — {}",
+                    console::style("✘").red().bold(),
+                    step.name,
+                    message
+                );
                 return ExitCode::FAILURE;
             }
         }
     }
-    eprintln!("\n✨ All checks passed\n");
+    eprintln!("\n{} All checks passed\n", console::style("✨").green());
     ExitCode::SUCCESS
 }

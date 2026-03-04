@@ -8,7 +8,7 @@ use webui_parser::plugin::FastParserPlugin;
 use webui_parser::{CssStrategy, HtmlParser};
 use webui_protocol::WebUIProtocol;
 
-use crate::utils::output::Printer;
+use crate::utils::output;
 
 /// CSS delivery strategy for component stylesheets.
 #[derive(ValueEnum, Clone, Copy, Debug, Default)]
@@ -54,14 +54,13 @@ pub struct BuildArgs {
 
 pub fn execute(args: &BuildArgs) -> Result<()> {
     run(args).map_err(|err| {
-        let printer = Printer::new();
-        printer.error(&err);
+        output::error(&err);
 
         let err_msg = format!("{:#}", err);
         if err_msg.contains("App folder not found") {
-            printer.hint("Check that the app folder path exists");
+            output::hint("Check that the app folder path exists");
         } else if err_msg.contains("Failed to read") && args.entry == "index.html" {
-            printer.hint("Try using --entry <file> to specify a different entry file");
+            output::hint("Try using --entry <file> to specify a different entry file");
         }
         eprintln!();
         err
@@ -70,7 +69,6 @@ pub fn execute(args: &BuildArgs) -> Result<()> {
 
 fn run(args: &BuildArgs) -> Result<()> {
     let started = Instant::now();
-    let printer = Printer::new();
 
     let app_input = expand_tilde(&args.app)
         .with_context(|| format!("Failed to expand app path: {}", args.app.display()))?
@@ -83,13 +81,13 @@ fn run(args: &BuildArgs) -> Result<()> {
         .canonicalize()
         .with_context(|| format!("App folder not found: {}", args.app.display()))?;
 
-    printer.header("WebUI Build");
-    printer.field("App", &app.display());
-    printer.field("Entry", &args.entry);
-    printer.field("Output", &out.display());
-    printer.field("CSS", &format!("{:?}", args.css));
+    output::header("WebUI Build");
+    output::field("App", &app.display());
+    output::field("Entry", &args.entry);
+    output::field("Output", &out.display());
+    output::field("CSS", &format!("{:?}", args.css));
     if let Some(ref plugin_name) = args.plugin {
-        printer.field("Plugin", plugin_name);
+        output::field("Plugin", plugin_name);
     }
     eprintln!();
 
@@ -110,9 +108,9 @@ fn run(args: &BuildArgs) -> Result<()> {
         .context("Failed to register components")?;
 
     let component_count = parser.component_registry_mut().len();
-    printer.success(&format!(
+    output::success(&format!(
         "Registered {} component{}",
-        printer.bold.apply_to(component_count),
+        console::style(component_count).bold(),
         if component_count == 1 { "" } else { "s" }
     ));
 
@@ -143,10 +141,10 @@ fn run(args: &BuildArgs) -> Result<()> {
         fragments: fragment_records,
     };
 
-    printer.success(&format!(
+    output::success(&format!(
         "Parsed {} ({} fragment{})",
-        printer.bold.apply_to(&args.entry),
-        printer.bold.apply_to(fragment_count),
+        console::style(&args.entry).bold(),
+        console::style(fragment_count).bold(),
         if fragment_count == 1 { "" } else { "s" }
     ));
 
@@ -157,7 +155,7 @@ fn run(args: &BuildArgs) -> Result<()> {
     let protocol_path = out.join("protocol.bin");
     fs::write(&protocol_path, &bytes)
         .with_context(|| format!("Failed to write {}", protocol_path.display()))?;
-    printer.success(&format!("Wrote {}", printer.bold.apply_to("protocol.bin")));
+    output::success(&format!("Wrote {}", console::style("protocol.bin").bold()));
 
     let mut files_written: usize = 1;
 
@@ -167,17 +165,17 @@ fn run(args: &BuildArgs) -> Result<()> {
             let css_path = out.join(filename);
             fs::write(&css_path, css_content)
                 .with_context(|| format!("Failed to write {}", css_path.display()))?;
-            printer.success(&format!("Wrote {}", printer.bold.apply_to(filename)));
+            output::success(&format!("Wrote {}", console::style(filename).bold()));
             files_written += 1;
         }
     }
 
     let elapsed = started.elapsed();
-    printer.finish(&format!(
+    output::finish(&format!(
         "Build complete ({} file{} written) {}",
-        printer.bold.apply_to(files_written),
+        console::style(files_written).bold(),
         if files_written == 1 { "" } else { "s" },
-        printer.dim.apply_to(format!("in {elapsed:.0?}")),
+        console::style(format!("in {elapsed:.0?}")).dim(),
     ));
 
     Ok(())

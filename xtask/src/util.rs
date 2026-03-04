@@ -1,6 +1,5 @@
 //! Shared utilities for xtask commands.
 
-use console::Style;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -18,30 +17,6 @@ pub fn workspace_root() -> Result<PathBuf, String> {
         ));
     };
     Ok(root.to_path_buf())
-}
-
-// ── Styled output (matches webui-cli output.rs) ─────────────────────────
-
-pub struct Printer {
-    pub cyan: Style,
-    pub green: Style,
-    pub red: Style,
-    pub yellow: Style,
-    pub dim: Style,
-    pub bold: Style,
-}
-
-impl Printer {
-    pub fn new() -> Self {
-        Self {
-            cyan: Style::new().cyan().bold(),
-            green: Style::new().green(),
-            red: Style::new().red().bold(),
-            yellow: Style::new().yellow(),
-            dim: Style::new().dim(),
-            bold: Style::new().bold(),
-        }
-    }
 }
 
 /// Run a command and return Ok if it exits with status 0.
@@ -92,6 +67,71 @@ pub fn which_exists(cmd: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok()
+}
+
+/// Ensure a tool installed via `cargo install` is available, installing it
+/// automatically if missing.
+///
+/// `crate_name` is the crate to install (e.g. `"cargo-deny"`, `"wasm-pack"`).
+/// `binary` is the executable name to probe on PATH (e.g. `"cargo-deny"`,
+/// `"wasm-pack"`).
+pub fn ensure_cargo_install(crate_name: &str, binary: &str) -> Result<(), String> {
+    if which_exists(binary) {
+        return Ok(());
+    }
+
+    eprintln!(
+        "    {} not found — installing…",
+        console::style(crate_name).yellow()
+    );
+    run_command("cargo", &["install", crate_name], None)
+        .map_err(|e| format!("failed to install {crate_name}: {e}"))
+}
+
+/// Ensure a rustup component (e.g. `clippy`, `rustfmt`) is available,
+/// adding it automatically if missing.
+pub fn ensure_rustup_component(component: &str) -> Result<(), String> {
+    let output = Command::new("rustup")
+        .args(["component", "list", "--installed"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("failed to run rustup: {e}"))?;
+
+    let installed = String::from_utf8_lossy(&output.stdout);
+    if installed.lines().any(|line| line.starts_with(component)) {
+        return Ok(());
+    }
+
+    eprintln!(
+        "    rustup component '{}' not found — adding…",
+        console::style(component).yellow()
+    );
+    run_command("rustup", &["component", "add", component], None)
+        .map_err(|e| format!("failed to add rustup component {component}: {e}"))
+}
+
+/// Ensure a rustup target (e.g. `wasm32-unknown-unknown`) is installed,
+/// adding it automatically if missing.
+pub fn ensure_rustup_target(target: &str) -> Result<(), String> {
+    let output = Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("failed to run rustup: {e}"))?;
+
+    let installed = String::from_utf8_lossy(&output.stdout);
+    if installed.lines().any(|line| line == target) {
+        return Ok(());
+    }
+
+    eprintln!(
+        "    rustup target '{}' not found — adding…",
+        console::style(target).yellow()
+    );
+    run_command("rustup", &["target", "add", target], None)
+        .map_err(|e| format!("failed to add rustup target {target}: {e}"))
 }
 
 #[cfg(test)]

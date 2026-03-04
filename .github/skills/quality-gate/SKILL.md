@@ -17,6 +17,8 @@ cargo xtask check
 
 This runs, in order: `fmt → clippy → deny → test → build → doc`.
 
+Missing Rust tools (`clippy`, `rustfmt`, `cargo-deny`, `wasm-pack`, `wasm32-unknown-unknown` target) are **auto-installed** on first run — no manual setup needed.
+
 Work is not complete until it passes cleanly.
 
 ## Fast iteration sequence

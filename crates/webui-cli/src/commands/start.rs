@@ -17,7 +17,7 @@ use webui_parser::{CssStrategy, HtmlParser};
 use webui_protocol::WebUIProtocol;
 
 use super::build::CssMode;
-use crate::utils::output::Printer;
+use crate::utils::output;
 
 #[derive(Args)]
 pub struct StartArgs {
@@ -241,16 +241,15 @@ impl HmrBackend for PollingHmrBackend {
 
 pub fn execute(args: &StartArgs) -> Result<()> {
     run(args).map_err(|err| {
-        let printer = Printer::new();
-        printer.error(&err);
+        output::error(&err);
 
         let err_msg = format!("{:#}", err);
         if err_msg.contains("App folder not found") {
-            printer.hint("Check that the app folder path exists");
+            output::hint("Check that the app folder path exists");
         } else if err_msg.contains("State file not found") {
-            printer.hint("Pass a valid --state path to a JSON file");
+            output::hint("Pass a valid --state path to a JSON file");
         } else if err_msg.contains("Serve directory not found") {
-            printer.hint("Pass a valid --servedir path for static assets");
+            output::hint("Pass a valid --servedir path for static assets");
         }
         eprintln!();
         err
@@ -258,7 +257,6 @@ pub fn execute(args: &StartArgs) -> Result<()> {
 }
 
 fn run(args: &StartArgs) -> Result<()> {
-    let printer = Printer::new();
     let paths = StartPaths::from_args(args)?;
     let hmr_backend: Option<Arc<dyn HmrBackend>> = if args.watch {
         Some(Arc::new(PollingHmrBackend::new("/hmr", 1000)))
@@ -274,26 +272,26 @@ fn run(args: &StartArgs) -> Result<()> {
         plugin: args.plugin.clone(),
     };
 
-    printer.header("WebUI Dev Server");
-    printer.field("App", &paths.app_dir.display());
-    printer.field("State", &paths.state_file.display());
+    output::header("WebUI Dev Server");
+    output::field("App", &paths.app_dir.display());
+    output::field("State", &paths.state_file.display());
     match &paths.serve_dir {
-        Some(serve_dir) => printer.field("ServeDir", &serve_dir.display()),
-        None => printer.field("ServeDir", &"(disabled)"),
+        Some(serve_dir) => output::field("ServeDir", &serve_dir.display()),
+        None => output::field("ServeDir", &"(disabled)"),
     }
-    printer.field("Entry", &args.entry);
-    printer.field("Port", &args.port);
-    printer.field("CSS", &format!("{:?}", args.css));
+    output::field("Entry", &args.entry);
+    output::field("Port", &args.port);
+    output::field("CSS", &format!("{:?}", args.css));
     if args.watch {
-        printer.field("HMR", &"enabled (polling /hmr)");
+        output::field("HMR", &"enabled (polling /hmr)");
     } else {
-        printer.field("HMR", &"disabled (pass --watch to enable)");
+        output::field("HMR", &"disabled (pass --watch to enable)");
     }
     eprintln!();
 
     // Initial build + render
     let initial_html = build_and_render(&render_config, hmr_backend.as_deref())?;
-    printer.success("Initial build and render complete");
+    output::success("Initial build and render complete");
 
     let state = Arc::new(Mutex::new(SharedState {
         rendered_html: initial_html,
@@ -307,14 +305,14 @@ fn run(args: &StartArgs) -> Result<()> {
             render_config: render_config.clone(),
             hmr_backend: Arc::clone(active_hmr_backend),
         });
-        printer.success("File watcher started");
+        output::success("File watcher started");
     }
 
     let addr = format!("127.0.0.1:{}", args.port);
     let bind_addr = addr.clone();
 
-    printer.field("URL", &format!("http://{addr}/"));
-    printer.finish("Server is running \u{2014} press Ctrl+C to stop");
+    output::field("URL", &format!("http://{addr}/"));
+    output::finish("Server is running \u{2014} press Ctrl+C to stop");
 
     let server_context = web::Data::new(ServerContext {
         state,
@@ -603,10 +601,16 @@ fn start_file_watcher(config: WatcherConfig) {
                             s.rendered_html = html;
                             s.bump_version();
                         }
-                        eprintln!("  \u{21bb} Rebuilt and re-rendered (HMR version updated)");
+                        eprintln!(
+                            "  {} Rebuilt and re-rendered (HMR version updated)",
+                            console::style("\u{21bb}").green()
+                        );
                     }
                     Err(err) => {
-                        eprintln!("  \u{2718} Rebuild failed: {err:#}");
+                        eprintln!(
+                            "  {} Rebuild failed: {err:#}",
+                            console::style("\u{2718}").red().bold()
+                        );
                     }
                 }
 

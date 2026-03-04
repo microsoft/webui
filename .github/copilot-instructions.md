@@ -215,6 +215,38 @@ The `webui-test-utils` crate provides common test helpers, builders, and fixture
 
 ---
 
+## Terminal output styling
+
+All terminal output uses `console::style()` from the `console` crate. This is the **only** approved method for colored/styled CLI output.
+
+- Use `console::style(text).green()` for success indicators (`✔`).
+- Use `console::style(text).red().bold()` for errors (`✘`).
+- Use `console::style(text).cyan().bold()` for headers and highlights (`▸`).
+- Use `console::style(text).yellow()` for warnings and hints.
+- Use `console::style(text).dim()` for secondary/contextual info.
+- Use `console::style(text).bold()` for values (file names, counts, paths).
+- **Do not** create `Style` structs or `Printer` wrappers — use `console::style()` inline.
+- Semantic output helpers live as **free functions** in `webui-cli/src/utils/output.rs` (`header`, `field`, `success`, `finish`, `error`, `hint`).
+
+---
+
+## Developer tooling auto-installation
+
+`cargo xtask check` automatically installs missing Rust ecosystem tools:
+
+- **Rustup components** (`clippy`, `rustfmt`) — via `rustup component add`.
+- **Rustup targets** (`wasm32-unknown-unknown`) — via `rustup target add`.
+- **Cargo tools** (`cargo-deny`, `wasm-pack`) — via `cargo install`.
+
+Use the helpers in `xtask/src/util.rs`:
+- `ensure_rustup_component(name)` — for rustup components.
+- `ensure_rustup_target(name)` — for compilation targets.
+- `ensure_cargo_install(crate_name, binary)` — for cargo-installed tools.
+
+System-level tools (LLVM, wasi-sdk) cannot be auto-installed; show actionable per-platform hints using `console::style()` formatting.
+
+---
+
 ## Acceptance checklist
 
 Before finishing any task, confirm **all** of these:

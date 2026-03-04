@@ -3,53 +3,31 @@
 //! Builds the `webui-wasm` crate to WebAssembly via `wasm-pack` and patches
 //! the generated JS glue for browser compatibility.
 
-use crate::util::{run_command, which_exists, Printer};
+use crate::util::{ensure_cargo_install, ensure_rustup_target, which_exists};
 use std::path::Path;
 use std::process::Command;
 use std::{env, fs};
 
 /// Build the webui-wasm package for the playground.
 pub fn run() -> Result<(), String> {
-    let p = Printer::new();
     let crate_dir = Path::new("crates/webui-wasm");
     let out_dir = Path::new("docs/public/wasm");
 
-    // 1. Check wasm-pack is installed
-    if !which_exists("wasm-pack") {
-        return Err(missing_tool_error(
-            &p,
-            "wasm-pack",
-            &[("All platforms", "cargo install wasm-pack")],
-        ));
-    }
+    // 1. Ensure wasm-pack is installed (auto-install if missing)
+    ensure_cargo_install("wasm-pack", "wasm-pack")?;
 
-    // 2. Check wasm32-unknown-unknown target
-    let rustup_out = Command::new("rustup")
-        .args(["target", "list", "--installed"])
-        .output()
-        .map_err(|e| format!("Failed to run rustup: {}", e))?;
-    let targets = String::from_utf8_lossy(&rustup_out.stdout);
-    if !targets.contains("wasm32-unknown-unknown") {
-        eprintln!(
-            "  {} Adding wasm32-unknown-unknown target...",
-            p.dim.apply_to("•")
-        );
-        run_command("rustup", &["target", "add", "wasm32-unknown-unknown"], None)?;
-    }
+    // 2. Ensure wasm32-unknown-unknown target is installed
+    ensure_rustup_target("wasm32-unknown-unknown")?;
 
     // 3. Detect C compiler for wasm32
     let cc = find_wasm_cc().ok_or_else(|| {
         missing_tool_error(
-            &p,
             "LLVM clang (with wasm32 support)",
             &[
                 ("macOS", "brew install llvm"),
                 ("Ubuntu/Debian", "sudo apt install clang"),
                 ("Fedora", "sudo dnf install clang"),
-                (
-                    "Windows",
-                    "Download from https://releases.llvm.org/download.html",
-                ),
+                ("Windows", "winget install LLVM.LLVM"),
             ],
         )
     })?;
@@ -58,7 +36,6 @@ pub fn run() -> Result<(), String> {
     // 4. Detect WASM include path (wasi-libc headers for tree-sitter C code)
     let wasi_include = find_wasi_include().ok_or_else(|| {
         missing_tool_error(
-            &p,
             "WASM C stdlib headers",
             &[
                 ("macOS", "brew install wasi-libc"),
@@ -69,14 +46,22 @@ pub fn run() -> Result<(), String> {
         )
     })?;
 
-    eprintln!("  {} CC:   {}", p.dim.apply_to("•"), p.bold.apply_to(&cc));
+    eprintln!(
+        "  {} CC:   {}",
+        console::style("•").dim(),
+        console::style(&cc).bold()
+    );
     if !ar.is_empty() {
-        eprintln!("  {} AR:   {}", p.dim.apply_to("•"), p.bold.apply_to(&ar));
+        eprintln!(
+            "  {} AR:   {}",
+            console::style("•").dim(),
+            console::style(&ar).bold()
+        );
     }
     eprintln!(
         "  {} WASI: {}",
-        p.dim.apply_to("•"),
-        p.bold.apply_to(&wasi_include)
+        console::style("•").dim(),
+        console::style(&wasi_include).bold()
     );
 
     // 5. Clean output directory
@@ -117,7 +102,7 @@ pub fn run() -> Result<(), String> {
 
     // 7. Patch JS glue: replace `import 'env'` with inline C stdlib stubs
     let js_path = out_dir.join("webui_wasm.js");
-    patch_wasm_js_glue(&p, &js_path)?;
+    patch_wasm_js_glue(&js_path)?;
 
     // 8. Remove wasm-pack generated .gitignore
     let gitignore = out_dir.join(".gitignore");
@@ -131,13 +116,13 @@ pub fn run() -> Result<(), String> {
         let size_kb = meta.len() / 1024;
         eprintln!(
             "  {} Output: {}",
-            p.green.apply_to("✔"),
-            p.bold.apply_to(out_dir.display())
+            console::style("✔").green(),
+            console::style(out_dir.display()).bold()
         );
         eprintln!(
             "  {} Size:   {}",
-            p.green.apply_to("✔"),
-            p.bold.apply_to(format!("{} KB", size_kb))
+            console::style("✔").green(),
+            console::style(format!("{} KB", size_kb)).bold()
         );
     }
 
@@ -146,7 +131,7 @@ pub fn run() -> Result<(), String> {
 
 /// Patch the wasm-bindgen JS glue to replace `import * as __wbg_star0 from 'env'`
 /// with inline JavaScript stubs for the C stdlib functions tree-sitter needs.
-fn patch_wasm_js_glue(p: &Printer, js_path: &Path) -> Result<(), String> {
+fn patch_wasm_js_glue(js_path: &Path) -> Result<(), String> {
     let content = fs::read_to_string(js_path)
         .map_err(|e| format!("Failed to read {}: {}", js_path.display(), e))?;
 
@@ -157,8 +142,8 @@ fn patch_wasm_js_glue(p: &Printer, js_path: &Path) -> Result<(), String> {
 
     eprintln!(
         "  {} Patching JS glue: replacing {} import with inline stubs",
-        p.dim.apply_to("•"),
-        p.cyan.apply_to("'env'")
+        console::style("•").dim(),
+        console::style("'env'").cyan().bold()
     );
 
     let stub = "const __wbg_star0 = {\n    \
@@ -340,19 +325,19 @@ fn find_tree_sitter_wasm_headers() -> Option<String> {
 }
 
 /// Build a friendly, colorful error message for a missing tool.
-fn missing_tool_error(p: &Printer, tool: &str, install_hints: &[(&str, &str)]) -> String {
+fn missing_tool_error(tool: &str, install_hints: &[(&str, &str)]) -> String {
     let mut msg = format!(
         "\n  {} {} not found\n\n  {} Install it using one of:\n",
-        p.red.apply_to("✘"),
-        p.bold.apply_to(tool),
-        p.yellow.apply_to("hint:"),
+        console::style("✘").red().bold(),
+        console::style(tool).bold(),
+        console::style("hint:").yellow(),
     );
     for (platform, command) in install_hints {
         msg.push_str(&format!(
             "\n    {} {:<16} {}",
-            p.dim.apply_to("▸"),
-            p.dim.apply_to(platform),
-            p.cyan.apply_to(command),
+            console::style("▸").dim(),
+            console::style(platform).dim(),
+            console::style(command).cyan().bold(),
         ));
     }
     msg.push('\n');

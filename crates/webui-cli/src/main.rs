@@ -1,20 +1,25 @@
 mod commands;
 mod utils;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use commands::Commands;
 
 #[derive(Parser)]
 #[command(name = "webui", about = "WebUI build tool")]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 fn main() {
     let cli = Cli::parse();
 
-    let result = match &cli.command {
+    let Some(command) = &cli.command else {
+        Cli::command().print_help().ok();
+        return;
+    };
+
+    let result = match command {
         Commands::Build(args) => commands::build::execute(args),
         Commands::Inspect(args) => commands::inspect::execute(args),
         Commands::Start(args) => commands::start::execute(args),

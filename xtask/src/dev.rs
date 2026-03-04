@@ -9,11 +9,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crate::util::{collect_child_dirs, display_name, Printer};
+use crate::util::{collect_child_dirs, display_name};
 
 pub fn run(app: Option<&str>) -> ExitCode {
-    let p = Printer::new();
-
     let Some(app_name) = app else {
         eprintln!(
             "Usage: cargo xtask dev <app>\n\nAvailable apps: {}",
@@ -34,15 +32,15 @@ pub fn run(app: Option<&str>) -> ExitCode {
 
     eprintln!(
         "{} dev mode for {} (Ctrl+C to stop)",
-        p.cyan.apply_to("▸"),
-        p.bold.apply_to(app_name),
+        console::style("▸").cyan().bold(),
+        console::style(app_name).bold(),
     );
 
-    let mut server = match spawn_child("server", "pnpm", &["start:server"], &app_dir, &p) {
+    let mut server = match spawn_child("server", "pnpm", &["start:server"], &app_dir) {
         Some(c) => c,
         None => return ExitCode::FAILURE,
     };
-    let mut client = match spawn_child("client", "pnpm", &["start:client"], &app_dir, &p) {
+    let mut client = match spawn_child("client", "pnpm", &["start:client"], &app_dir) {
         Some(c) => c,
         None => {
             let _ = server.kill();
@@ -66,7 +64,7 @@ pub fn run(app: Option<&str>) -> ExitCode {
             let _ = client.kill();
             let _ = server.wait();
             let _ = client.wait();
-            eprintln!("\n  {} stopped", p.green.apply_to("✔"));
+            eprintln!("\n  {} stopped", console::style("✔").green());
             return ExitCode::SUCCESS;
         }
 
@@ -84,13 +82,13 @@ pub fn run(app: Option<&str>) -> ExitCode {
             let c = client.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
 
             if ctrlc.load(Ordering::SeqCst) {
-                eprintln!("\n  {} stopped", p.green.apply_to("✔"));
+                eprintln!("\n  {} stopped", console::style("✔").green());
                 return ExitCode::SUCCESS;
             }
 
             eprintln!(
                 "  {} dev processes exited (server={}, client={})",
-                p.red.apply_to("✘"),
+                console::style("✘").red().bold(),
                 s,
                 c,
             );
@@ -101,11 +99,11 @@ pub fn run(app: Option<&str>) -> ExitCode {
     }
 }
 
-fn spawn_child(label: &str, cmd: &str, args: &[&str], cwd: &Path, p: &Printer) -> Option<Child> {
+fn spawn_child(label: &str, cmd: &str, args: &[&str], cwd: &Path) -> Option<Child> {
     eprintln!(
         "  {} starting {}",
-        p.dim.apply_to("→"),
-        p.cyan.apply_to(label),
+        console::style("→").dim(),
+        console::style(label).cyan().bold(),
     );
 
     match Command::new(cmd)
@@ -118,7 +116,12 @@ fn spawn_child(label: &str, cmd: &str, args: &[&str], cwd: &Path, p: &Printer) -
     {
         Ok(child) => Some(child),
         Err(e) => {
-            eprintln!("  [{}] failed to start: {}", label, e);
+            eprintln!(
+                "  {} [{}] failed to start: {}",
+                console::style("✘").red().bold(),
+                label,
+                e
+            );
             None
         }
     }

@@ -1,62 +1,38 @@
-use console::Style;
-
-pub struct Printer {
-    pub cyan: Style,
-    pub green: Style,
-    pub red: Style,
-    pub dim: Style,
-    pub bold: Style,
+pub fn header(title: &str) {
+    eprintln!(
+        "\n  {} {}\n",
+        console::style("⚡").cyan().bold(),
+        console::style(title).cyan().bold()
+    );
 }
 
-impl Printer {
-    pub fn new() -> Self {
-        Self {
-            cyan: Style::new().cyan().bold(),
-            green: Style::new().green(),
-            red: Style::new().red().bold(),
-            dim: Style::new().dim(),
-            bold: Style::new().bold(),
-        }
-    }
+pub fn field(label: &str, value: &dyn std::fmt::Display) {
+    eprintln!(
+        "  {} {}",
+        console::style(format!("▸ {label:<10}")).dim(),
+        console::style(value).bold()
+    );
+}
 
-    pub fn header(&self, title: &str) {
-        eprintln!(
-            "\n  {} {}\n",
-            self.cyan.apply_to("⚡"),
-            self.cyan.apply_to(title)
-        );
-    }
+pub fn success(message: &str) {
+    eprintln!("  {} {message}", console::style("✔").green());
+}
 
-    pub fn field(&self, label: &str, value: &dyn std::fmt::Display) {
-        eprintln!(
-            "  {} {}",
-            self.dim.apply_to(format!("▸ {label:<10}")),
-            self.bold.apply_to(value)
-        );
-    }
+pub fn finish(message: &str) {
+    eprintln!("\n  {} {message}\n", console::style("✨").green());
+}
 
-    pub fn success(&self, message: &str) {
-        eprintln!("  {} {message}", self.green.apply_to("✔"));
-    }
-
-    pub fn finish(&self, message: &str) {
-        eprintln!("\n  {} {message}\n", self.green.apply_to("✨"));
-    }
-
-    pub fn error(&self, err: &anyhow::Error) {
-        eprintln!("\n  {} {}", self.red.apply_to("✘"), self.red.apply_to(err));
-        for cause in err.chain().skip(1) {
-            eprintln!("  {} {cause}", self.dim.apply_to("caused by:"));
-        }
-    }
-
-    pub fn hint(&self, message: &str) {
-        eprintln!("\n  {} {message}", self.dim.apply_to("hint:"));
+pub fn error(err: &anyhow::Error) {
+    eprintln!(
+        "\n  {} {}",
+        console::style("✘").red().bold(),
+        console::style(err).red().bold()
+    );
+    for cause in err.chain().skip(1) {
+        eprintln!("  {} {cause}", console::style("caused by:").dim());
     }
 }
 
-impl Default for Printer {
-    fn default() -> Self {
-        Self::new()
-    }
+pub fn hint(message: &str) {
+    eprintln!("\n  {} {message}", console::style("hint:").dim());
 }
