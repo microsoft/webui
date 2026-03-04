@@ -809,7 +809,7 @@ mod tests {
     #[test]
     fn test_build_and_render_hello_world_example() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let app_dir = manifest_dir.join("../../examples/app/hello-world/templates");
+        let app_dir = manifest_dir.join("../../examples/app/hello-world/src");
         let config = RenderConfig {
             app_dir,
             state_file: manifest_dir.join("../../examples/app/hello-world/data/state.json"),
