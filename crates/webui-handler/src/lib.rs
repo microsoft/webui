@@ -299,19 +299,16 @@ impl WebUIHandler {
         let collection_name = &for_loop.collection;
 
         // If the collection is missing, treat it as empty (0 iterations) — matches NodeJS behavior.
-        let collection = match self.resolve_value(collection_name, context) {
-            Some(val) => val,
-            None => return Ok(()), // missing collection = no iterations
-        };
-
-        let items = match collection {
-            Value::Array(arr) => arr,
-            _ => {
+        // Hydration comments are always emitted regardless of collection presence.
+        let items = match self.resolve_value(collection_name, context) {
+            Some(Value::Array(arr)) => arr,
+            Some(_) => {
                 return Err(HandlerError::TypeError(format!(
                     "Collection '{}' is not an array",
                     collection_name
                 )))
             }
+            None => Vec::new(),
         };
 
         if let Some(p) = &mut self.plugin {
@@ -353,17 +350,17 @@ impl WebUIHandler {
         signal: &webui_protocol::WebUIFragmentSignal,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        if let Some(value) = self.resolve_value(&signal.value, context) {
-            if let Some(p) = &mut self.plugin {
-                p.on_binding_start(&signal.value, context.writer)?;
-            }
+        if let Some(p) = &mut self.plugin {
+            p.on_binding_start(&signal.value, context.writer)?;
+        }
 
+        if let Some(value) = self.resolve_value(&signal.value, context) {
             let content = self.format_signal_value(&value, signal.raw)?;
             context.writer.write(&content)?;
+        }
 
-            if let Some(p) = &mut self.plugin {
-                p.on_binding_end(&signal.value, context.writer)?;
-            }
+        if let Some(p) = &mut self.plugin {
+            p.on_binding_end(&signal.value, context.writer)?;
         }
         Ok(())
     }
