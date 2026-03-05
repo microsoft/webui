@@ -1,0 +1,18 @@
+[package]
+name = "ssr-performance-showdown"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "webui-ssr-test"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+webui-protocol = { path = "../../../crates/webui-protocol" }
+webui-handler = { path = "../../../crates/webui-handler" }
+actix-web = { workspace = true }
+anyhow = { workspace = true }
+
+[workspace]
