@@ -85,6 +85,22 @@ The interactive playground runs WebUI in the browser via WebAssembly. The WASM o
 cargo xtask build-wasm
 ```
 
+### Running Benchmarks
+
+WebUI includes [Criterion](https://github.com/bheisler/criterion.rs) benchmarks for all core crates. Run them in release mode for accurate results:
+
+```bash
+# Run benchmarks for a specific crate
+cargo bench -p webui-parser
+cargo bench -p webui-handler
+cargo bench -p webui-protocol
+cargo bench -p webui-expressions
+cargo bench -p webui-state
+
+# Run all benchmarks across the workspace
+cargo bench --workspace
+```
+
 ### Development Server
 
 Preview your app using the built-in dev server. Add `--watch` to enable live reload:
