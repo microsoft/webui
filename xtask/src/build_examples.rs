@@ -29,6 +29,15 @@ pub const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
         run_commands: &[],
     },
     IntegrationBuild {
+        name: "electron",
+        commands: &[BuildCommand {
+            cmd: "pnpm",
+            args: &["run", "build"],
+            cwd: Some("examples/integration/electron"),
+        }],
+        run_commands: &[],
+    },
+    IntegrationBuild {
         name: "rust",
         commands: &[BuildCommand {
             cmd: "cargo",
