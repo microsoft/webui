@@ -1,15 +1,9 @@
 [workspace]
 members = [
-    "crates/webui-cli",
-    "crates/webui-expressions",
-    "crates/webui-ffi",
-    "crates/webui-handler",
-    "crates/webui-node",
-    "crates/webui-parser",
-    "crates/webui-protocol",
-    "crates/webui-state",
-    "crates/webui-wasm",
+    "crates/*",
     "xtask",
+    "examples/integration/rust",
+    "examples/integration/ssr-performance-showdown",
 ]
 resolver = "2"
 

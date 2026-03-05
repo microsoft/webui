@@ -1280,6 +1280,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssr-performance-showdown"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "anyhow",
+ "serde_json",
+ "webui-handler",
+ "webui-protocol",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1588,17 +1599,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
-]
-
-[[package]]
-name = "webui-ssr-test"
-version = "0.1.0"
-dependencies = [
- "actix-web",
- "anyhow",
- "serde_json",
- "webui-handler",
- "webui-protocol",
 ]
 
 [[package]]

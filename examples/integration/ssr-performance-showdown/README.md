@@ -11,8 +11,8 @@ as state to `WebUIHandler`, which streams the final HTML.
 ## Usage
 
 ```bash
-# From the repository root — build the protocol first
-cargo run -p webui-cli --release -- build examples/integration/ssr-performance-showdown/app --out examples/integration/ssr-performance-showdown/dist
+# From this folder
+cargo run -p webui-cli --release -- build app --out dist
 
 # Run the server frrm this location
 cargo run -p ssr-performance-showdown --release                 # listen on :3000

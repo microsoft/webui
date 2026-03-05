@@ -14,5 +14,3 @@ webui-protocol = { path = "../../../crates/webui-protocol" }
 webui-handler = { path = "../../../crates/webui-handler" }
 actix-web = { workspace = true }
 anyhow = { workspace = true }
-
-[workspace]
