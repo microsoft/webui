@@ -19,26 +19,18 @@ esbuild ../../app/hello-world/src/index.ts --bundle --outfile=../../app/hello-wo
 
 ## Usage
 
-Run with the default hello-world app:
-
-```bash
-pnpm start
-```
-
-Or point to any other WebUI app:
-
 ```bash
 # hello-world
-electron dist/main.js ../../app/hello-world/dist ../../app/hello-world/data/state.json --plugin=fast
+pnpm start ../../app/hello-world/dist ../../app/hello-world/data/state.json --plugin=fast
 
 # contact-book-manager
-electron dist/main.js ../../app/contact-book-manager/dist ../../app/contact-book-manager/data/state.json --plugin=fast
+pnpm start ../../app/contact-book-manager/dist ../../app/contact-book-manager/data/state.json --plugin=fast
 ```
 
 ## CLI Arguments
 
-| Argument | Description | Default |
-|---|---|---|
-| `dist-dir` | Path to the app's `dist/` directory containing `protocol.bin` and CSS/JS assets | `../../app/hello-world/dist` |
-| `state.json` | Path to the state JSON file | `../../app/hello-world/data/state.json` |
-| `--plugin=fast` | Enable FAST hydration plugin | _(disabled)_ |
+| Argument | Description |
+|---|---|
+| `dist-dir` | **(required)** Path to the app's `dist/` directory containing `protocol.bin` and CSS/JS assets |
+| `state.json` | **(required)** Path to the state JSON file |
+| `--plugin=fast` | Enable FAST hydration plugin _(optional)_ |

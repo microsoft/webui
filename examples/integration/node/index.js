@@ -40,9 +40,15 @@ function loadAddon() {
   );
 }
 
-const protocolPath =
-  process.argv[2] || "../../app/hello-world/dist/protocol.bin";
-const statePath = process.argv[3] || "../../app/hello-world/data/state.json";
+if (!process.argv[2] || !process.argv[3]) {
+  console.error("Usage: node index.js <protocol.bin> <state.json> [--plugin=fast]");
+  console.error("  protocol.bin  Path to the compiled protocol binary");
+  console.error("  state.json    Path to the JSON state file");
+  process.exit(1);
+}
+
+const protocolPath = process.argv[2];
+const statePath = process.argv[3];
 
 // Check for --plugin=fast flag
 const pluginArg = process.argv.find((a) => a.startsWith("--plugin="));

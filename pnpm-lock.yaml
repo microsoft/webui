@@ -100,6 +100,9 @@ importers:
       '@microsoft/fast-html':
         specifier: 'catalog:'
         version: 1.0.0-alpha.38(@microsoft/fast-element@2.10.1)
+      electron:
+        specifier: 'catalog:'
+        version: 36.9.5
       esbuild:
         specifier: 'catalog:'
         version: 0.25.12

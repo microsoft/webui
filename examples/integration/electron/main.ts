@@ -25,8 +25,15 @@ const args = process.argv.slice(2).filter(a => !a.startsWith('--inspect'));
 const positional = args.filter(a => !a.startsWith('--'));
 const flags = args.filter(a => a.startsWith('--'));
 
-const distDir = resolve(positional[0] || join(import.meta.dirname, '..', '..', 'app', 'hello-world', 'dist'));
-const statePath = resolve(positional[1] || join(import.meta.dirname, '..', '..', 'app', 'hello-world', 'data', 'state.json'));
+if (positional.length < 2) {
+  console.error('Usage: electron dist/main.js <dist-dir> <state.json> [--plugin=fast]');
+  console.error('  dist-dir    Path to the app dist/ directory containing protocol.bin');
+  console.error('  state.json  Path to the JSON state file');
+  process.exit(1);
+}
+
+const distDir = resolve(positional[0]);
+const statePath = resolve(positional[1]);
 
 const pluginArg = flags.find(a => a.startsWith('--plugin='));
 const pluginName = pluginArg ? pluginArg.split('=')[1] : undefined;
@@ -36,7 +43,7 @@ const pluginName = pluginArg ? pluginArg.split('=')[1] : undefined;
 // ---------------------------------------------------------------------------
 
 function loadAddon() {
-  const root = resolve(import.meta.dirname, '..', '..', '..');
+  const root = resolve(import.meta.dirname, '..', '..', '..', '..');
   const ext = platform() === 'darwin' ? 'dylib' : platform() === 'win32' ? 'dll' : 'so';
   const prefix = platform() === 'win32' ? '' : 'lib';
   const filename = `${prefix}webui_node.${ext}`;

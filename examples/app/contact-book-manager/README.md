@@ -136,9 +136,6 @@ contact-book-manager/
     │   ├── cb-contact-list/          # Scrollable contact list
     │   ├── cb-header/                # Sticky top bar
     │   └── cb-sidebar/               # Left navigation panel
-    └── electron/                     # Optional Electron wrapper
-        ├── main.ts
-        └── preload.ts
 ```
 
 ## Component Catalog
@@ -193,15 +190,3 @@ Components with multiple action buttons (e.g., `<cb-contact-detail>`) use a sing
 
 - **Desktop (≥768px):** Fixed sidebar (260px) + scrollable main content area
 - **Mobile (<768px):** Sidebar hidden, single-column layout, "Add Contact" button label hidden (icon only)
-
-## Electron (Optional)
-
-The `src/electron/` directory contains an optional desktop wrapper. It uses the `webui-node` native addon to render `protocol.bin` + `state.json` into HTML, then serves it via a custom `webui://` protocol scheme inside an Electron `BrowserWindow`.
-
-To use it, build the native addon first:
-
-```bash
-cargo build -p webui-node --release
-```
-
-The Electron entry point is not part of the standard web build — it is an alternative deployment target that reuses the same SSR binary and client JS bundle.

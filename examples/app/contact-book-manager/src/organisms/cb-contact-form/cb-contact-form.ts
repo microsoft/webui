@@ -25,6 +25,10 @@ export class CbContactForm extends RenderableFASTElement(FASTElement) {
     this.addEventListener('click', (e: Event) => {
       this.onClick(e as MouseEvent);
     });
+
+    // When the form is dynamically created (not SSR'd), the <for> loop
+    // for groups produces no buttons. Ensure they exist after first render.
+    requestAnimationFrame(() => this.ensureGroupButtons());
   }
 
   async prepare(): Promise<void> {
@@ -35,6 +39,47 @@ export class CbContactForm extends RenderableFASTElement(FASTElement) {
     }
     formGroupsStore.set(this, groups);
     this.selectedGroup = this.group || (groups.length > 0 ? groups[0] : '');
+  }
+
+  private ensureGroupButtons(): void {
+    const sr = this.shadowRoot;
+    if (!sr) return;
+
+    const existing = sr.querySelectorAll('.group-option');
+    if (existing.length > 0) return;
+
+    // Read groups from the sidebar (always SSR'd with group nav items)
+    const hostRoot = this.getRootNode() as ShadowRoot;
+    const app = hostRoot?.host;
+    const sidebar = app?.shadowRoot?.querySelector('cb-sidebar');
+    const navItems = sidebar?.shadowRoot?.querySelectorAll('.nav-item[data-nav]') || [];
+    const groups: string[] = [];
+    for (const el of navItems) {
+      const label = (el as HTMLElement).getAttribute('data-nav') || '';
+      if (!['Dashboard', 'All Contacts', 'Favorites'].includes(label) && label) {
+        groups.push(label);
+      }
+    }
+
+    if (groups.length === 0) return;
+
+    const selector = sr.querySelector('.group-selector');
+    if (!selector) return;
+
+    for (const g of groups) {
+      const btn = document.createElement('button');
+      btn.className = 'group-option';
+      btn.setAttribute('data-group', g);
+      btn.textContent = g;
+      selector.appendChild(btn);
+    }
+
+    formGroupsStore.set(this, groups);
+    this.selectedGroup = this.group || groups[0] || '';
+
+    for (const btn of selector.querySelectorAll('.group-option')) {
+      btn.classList.toggle('active', btn.getAttribute('data-group') === this.selectedGroup);
+    }
   }
 
   onClick(e: MouseEvent): void {
