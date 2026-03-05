@@ -66,14 +66,20 @@ fn compute_tiles() -> Vec<serde_json::Value> {
         let x = center_x + angle.cos() * radius;
         let y = center_y + angle.sin() * radius;
 
-        if x >= 0.0
-            && x <= WRAPPER_WIDTH - CELL_SIZE
-            && y >= 0.0
-            && y <= WRAPPER_HEIGHT - CELL_SIZE
+        if (0.0..=WRAPPER_WIDTH - CELL_SIZE).contains(&x)
+            && (0.0..=WRAPPER_HEIGHT - CELL_SIZE).contains(&y)
         {
-            tiles.push(serde_json::json!({
-                "left": format!("{:.2}px", x),
-                "top": format!("{:.2}px", y),
+            tiles.push(serde_json::Value::Object({
+                let mut m = serde_json::Map::with_capacity(2);
+                m.insert(
+                    "left".to_owned(),
+                    serde_json::Value::String(format!("{x:.2}px")),
+                );
+                m.insert(
+                    "top".to_owned(),
+                    serde_json::Value::String(format!("{y:.2}px")),
+                );
+                m
             }));
         }
 
@@ -87,7 +93,10 @@ fn compute_tiles() -> Vec<serde_json::Value> {
 // ── Route handler ───────────────────────────────────────────────────────
 
 async fn handle_index(protocol: web::Data<WebUIProtocol>) -> HttpResponse {
-    let state = serde_json::json!({ "tiles": compute_tiles() });
+    let tiles_value = serde_json::Value::Array(compute_tiles());
+    let mut state_map = serde_json::Map::with_capacity(1);
+    state_map.insert("tiles".to_owned(), tiles_value);
+    let state = serde_json::Value::Object(state_map);
 
     let mut writer = MemoryWriter::with_capacity(256 * 1024);
     let mut handler = WebUIHandler::new();
@@ -124,9 +133,9 @@ fn main() -> Result<()> {
                     .app_data(protocol_data.clone())
                     .route("/", web::get().to(handle_index))
                     .route("/index.html", web::get().to(handle_index))
-                    .default_service(web::route().to(|| async {
-                        HttpResponse::NotFound().body("Not Found")
-                    }))
+                    .default_service(
+                        web::route().to(|| async { HttpResponse::NotFound().body("Not Found") }),
+                    )
             })
             .bind(format!("0.0.0.0:{port}"))
             .with_context(|| format!("Failed to bind to port {port}"))?

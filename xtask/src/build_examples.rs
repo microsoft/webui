@@ -50,6 +50,19 @@ pub const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
         }],
         run_commands: &[],
     },
+    IntegrationBuild {
+        name: "ssr-performance-showdown",
+        commands: &[BuildCommand {
+            cmd: "cargo",
+            args: &[
+                "check",
+                "--manifest-path",
+                "examples/integration/ssr-performance-showdown/Cargo.toml",
+            ],
+            cwd: None,
+        }],
+        run_commands: &[],
+    },
 ];
 
 pub fn run_integration_builds() -> Result<(), String> {
