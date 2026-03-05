@@ -9,8 +9,8 @@ interface TodoItemData {
 
 export class TodoApp extends RenderableFASTElement(FASTElement) {
   @attr title = '';
-  @observable items: TodoItemData[] = [];
-  @observable remainingCount = 0;
+  @observable items!: TodoItemData[];
+  @observable remainingCount!: number;
 
   addInput!: HTMLInputElement;
 
@@ -26,27 +26,25 @@ export class TodoApp extends RenderableFASTElement(FASTElement) {
   }
   async prepare(): Promise<void> {
     const items: TodoItemData[] = [];
-    for (const el of this.querySelectorAll('todo-item')) {
+    for (const el of this.shadowRoot!.querySelectorAll('todo-item')) {
       items.push({
         id: el.getAttribute('id') || '',
         title: el.getAttribute('title') || '',
         state: el.getAttribute('state') || 'pending',
       });
     }
+    this.items = items;
     if (items.length > 0) {
-      this.items = items;
       this.nextId = Math.max(...items.map(i => Number(i.id) || 0)) + 1;
     }
     this.updateCount();
   }
 
   onToggleItem(e: CustomEvent<{id: string}>): void {
-    const id = e.detail.id;
-    this.items = this.items.map(item =>
-      item.id === id
-        ? { ...item, state: item.state === 'done' ? 'pending' : 'done' }
-        : item
-    );
+    const item = this.items.find(i => i.id === e.detail.id);
+    if (item) {
+      item.state = item.state === 'done' ? 'pending' : 'done';
+    }
     this.updateCount();
   }
 
@@ -55,10 +53,11 @@ export class TodoApp extends RenderableFASTElement(FASTElement) {
     this.updateCount();
   }
 
-  onAddKeydown(e: KeyboardEvent): void {
+  onAddKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter') {
       this.addTodo();
     }
+    return true;
   }
 
   onAddClick(): void {

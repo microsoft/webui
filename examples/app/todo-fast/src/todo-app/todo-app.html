@@ -15,7 +15,13 @@
   </div>
 
   <div class="todo-list">
-    <slot></slot>
+    <for each="item in items">
+      <todo-item
+        id="{{item.id}}"
+        title="{{item.title}}"
+        state="{{item.state}}"
+      ></todo-item>
+    </for>
   </div>
 
   <div class="footer">
