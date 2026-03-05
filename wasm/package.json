@@ -6,7 +6,7 @@
   ],
   "description": "WebAssembly bindings for WebUI framework — powers the online playground",
   "version": "0.1.0",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/microsoft/webui"
