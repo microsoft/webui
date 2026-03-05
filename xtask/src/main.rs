@@ -1,6 +1,7 @@
 mod build_examples;
 mod build_wasm;
 mod dev;
+mod process;
 mod util;
 
 use std::process::ExitCode;
@@ -37,6 +38,11 @@ fn main() -> ExitCode {
         Some("build-examples") => run_steps(&[Step::BUILD_EXAMPLES]),
         Some("build-wasm") => run_steps(&[Step::BUILD_WASM]),
         Some("docs") => run_steps(&[Step::DOCS]),
+        Some("bench") => {
+            let target = args.get(2).map(|s| s.as_str());
+            let extra_args: Vec<&str> = args.iter().skip(3).map(String::as_str).collect();
+            bench(target, &extra_args)
+        }
         Some("run") => {
             let integration = args.get(2).map(|s| s.as_str());
             let app = args.get(3).map(|s| s.as_str());
@@ -63,9 +69,49 @@ fn usage() -> ExitCode {
            build-examples  Build all example integrations and apps\n  \
            build-wasm  Build WASM playground module\n  \
            docs    Build the documentation site\n  \
+           bench <name> [-- <criterion args>]  Run benchmarks for a target crate (parser, handler, protocol, expressions, state, all)\n  \
            dev <app>  Run example app in dev mode (server + client watch concurrently)"
     );
     ExitCode::SUCCESS
+}
+
+fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
+    let mut args = vec!["bench"];
+
+    match target {
+        Some("parser") | Some("webui-parser") => {
+            args.extend(["-p", "webui-parser"]);
+        }
+        Some("handler") | Some("webui-handler") => {
+            args.extend(["-p", "webui-handler"]);
+        }
+        Some("protocol") | Some("webui-protocol") => {
+            args.extend(["-p", "webui-protocol"]);
+        }
+        Some("expressions") | Some("webui-expressions") => {
+            args.extend(["-p", "webui-expressions"]);
+        }
+        Some("state") | Some("webui-state") => {
+            args.extend(["-p", "webui-state"]);
+        }
+        Some("all") | None => {
+            args.extend(["--workspace"]);
+        }
+        Some(other) => {
+            eprintln!("Unknown bench target '{other}'. Supported targets: parser, handler, protocol, expressions, state, all");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    args.extend(extra_args.iter().copied());
+
+    match run_command("cargo", &args, None) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("bench failed: {message}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn check() -> ExitCode {

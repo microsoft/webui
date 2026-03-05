@@ -2450,6 +2450,7 @@ dependencies = [
 name = "webui-expressions"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "serde",
  "serde_json",
  "thiserror",
@@ -2476,6 +2477,7 @@ dependencies = [
 name = "webui-handler"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "html-escape",
  "serde",
  "serde_json",
@@ -2505,6 +2507,7 @@ dependencies = [
 name = "webui-parser"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "mockall",
  "serde",
  "serde_json",
@@ -2537,6 +2540,7 @@ dependencies = [
 name = "webui-state"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "serde",
  "serde_json",
  "webui-test-utils",
@@ -2900,6 +2904,7 @@ version = "0.1.0"
 dependencies = [
  "console",
  "ctrlc",
+ "libc",
 ]
 
 [[package]]

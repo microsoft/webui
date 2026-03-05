@@ -3,12 +3,9 @@
 //! Usage: `cargo xtask dev todo-fast`
 
 use std::path::Path;
-use std::process::{Child, Command, ExitCode, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
+use std::process::ExitCode;
 
+use crate::process;
 use crate::util::{collect_child_dirs, display_name};
 
 pub fn run(app: Option<&str>) -> ExitCode {
@@ -36,11 +33,11 @@ pub fn run(app: Option<&str>) -> ExitCode {
         console::style(app_name).bold(),
     );
 
-    let mut server = match spawn_child("server", "pnpm", &["start:server"], &app_dir) {
+    let mut server = match process::spawn_child("server", "pnpm", &["start:server"], &app_dir) {
         Some(c) => c,
         None => return ExitCode::FAILURE,
     };
-    let mut client = match spawn_child("client", "pnpm", &["start:client"], &app_dir) {
+    let mut client = match process::spawn_child("client", "pnpm", &["start:client"], &app_dir) {
         Some(c) => c,
         None => {
             let _ = server.kill();
@@ -49,82 +46,7 @@ pub fn run(app: Option<&str>) -> ExitCode {
         }
     };
 
-    // Catch Ctrl+C so we can kill children and exit cleanly
-    let ctrlc = Arc::new(AtomicBool::new(false));
-    let ctrlc_flag = ctrlc.clone();
-    ctrlc::set_handler(move || {
-        ctrlc_flag.store(true, Ordering::SeqCst);
-    })
-    .expect("failed to set Ctrl+C handler");
-
-    // Poll for Ctrl+C or process exit instead of blocking on .status()
-    loop {
-        if ctrlc.load(Ordering::SeqCst) {
-            let _ = server.kill();
-            let _ = client.kill();
-            let _ = server.wait();
-            let _ = client.wait();
-            eprintln!("\n  {} stopped", console::style("✔").green());
-            return ExitCode::SUCCESS;
-        }
-
-        let server_done = matches!(server.try_wait(), Ok(Some(_)));
-        let client_done = matches!(client.try_wait(), Ok(Some(_)));
-
-        if server_done || client_done {
-            if !server_done {
-                let _ = server.kill();
-            }
-            if !client_done {
-                let _ = client.kill();
-            }
-            let s = server.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
-            let c = client.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
-
-            if ctrlc.load(Ordering::SeqCst) {
-                eprintln!("\n  {} stopped", console::style("✔").green());
-                return ExitCode::SUCCESS;
-            }
-
-            eprintln!(
-                "  {} dev processes exited (server={}, client={})",
-                console::style("✘").red().bold(),
-                s,
-                c,
-            );
-            return ExitCode::FAILURE;
-        }
-
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-fn spawn_child(label: &str, cmd: &str, args: &[&str], cwd: &Path) -> Option<Child> {
-    eprintln!(
-        "  {} starting {}",
-        console::style("→").dim(),
-        console::style(label).cyan().bold(),
-    );
-
-    match Command::new(cmd)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-    {
-        Ok(child) => Some(child),
-        Err(e) => {
-            eprintln!(
-                "  {} [{}] failed to start: {}",
-                console::style("✘").red().bold(),
-                label,
-                e
-            );
-            None
-        }
-    }
+    process::wait_for_pair(&mut server, &mut client)
 }
 
 fn available_apps() -> Result<String, String> {
