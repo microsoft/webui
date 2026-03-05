@@ -1,0 +1,19 @@
+<template shadowrootmode="open">
+  <header class="header">
+    <div class="header-left">
+      <h1 class="title">Contacts</h1>
+    </div>
+    <div class="header-center">
+      <div class="search-container">
+        <span class="search-icon"></span>
+        <input class="search-input" type="text" placeholder="Search contacts..." value="{{searchQuery}}" />
+      </div>
+    </div>
+    <div class="header-right">
+      <button class="add-btn" data-action="add-contact">
+        <span class="add-icon">+</span>
+        <span class="add-label">Add Contact</span>
+      </button>
+    </div>
+  </header>
+</template>

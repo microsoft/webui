@@ -1,0 +1,15 @@
+{
+  "name": "webui-electron-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild main.ts preload.ts --outdir=dist --platform=node --format=esm",
+    "start": "npm run build && electron dist/main.js"
+  },
+  "devDependencies": {
+    "electron": "catalog:",
+    "esbuild": "catalog:",
+    "typescript": "catalog:"
+  }
+}

@@ -39,3 +39,6 @@ Closes #43
 ```
 
 > **Note:** Issue-linking keywords only work when the PR targets the repository's default branch. See [GitHub docs: linking a pull request to an issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue#linking-a-pull-request-to-an-issue-using-a-keyword) for the full reference.
+
+## PR description
+Remove the Co-author-by line from the PR description. If you want to credit a co-author, add them as a reviewer instead. And check all the changes from its merge-base to get a detailed summary for the commit.

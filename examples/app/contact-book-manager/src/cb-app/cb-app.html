@@ -1,0 +1,193 @@
+<template shadowrootmode="open">
+  <div class="contact-data-store" style="display:none" aria-hidden="true">
+    <for each="contact in contacts">
+      <span class="contact-data"
+        data-id="{{contact.id}}"
+        data-fn="{{contact.firstName}}"
+        data-ln="{{contact.lastName}}"
+        data-email="{{contact.email}}"
+        data-phone="{{contact.phone}}"
+        data-company="{{contact.company}}"
+        data-group="{{contact.group}}"
+        data-favorite="{{contact.favorite}}"
+        data-initials="{{contact.initials}}"
+        data-color="{{contact.avatarColor}}"
+        data-notes="{{contact.notes}}"
+        data-address="{{contact.address}}"
+      ></span>
+    </for>
+  </div>
+
+  <cb-header search-query="{{searchQuery}}"></cb-header>
+
+  <div class="layout">
+    <cb-sidebar
+      page="{{page}}"
+      active-group="{{activeGroup}}"
+      total-contacts="{{totalContacts}}"
+      total-favorites="{{totalFavorites}}"
+    ></cb-sidebar>
+
+    <main class="content">
+      <if condition="page == 'dashboard'">
+        <div class="dashboard">
+          <h2 class="page-title">Dashboard</h2>
+          <div class="stats-row">
+            <div class="stat-card">
+              <span class="stat-icon stat-icon-contacts"></span>
+              <div class="stat-content">
+                <span class="stat-value">{{totalContacts}}</span>
+                <span class="stat-label">Total Contacts</span>
+              </div>
+            </div>
+            <div class="stat-card">
+              <span class="stat-icon stat-icon-favorites"></span>
+              <div class="stat-content">
+                <span class="stat-value">{{totalFavorites}}</span>
+                <span class="stat-label">Favorites</span>
+              </div>
+            </div>
+            <div class="stat-card">
+              <span class="stat-icon stat-icon-groups"></span>
+              <div class="stat-content">
+                <span class="stat-value">{{totalGroups}}</span>
+                <span class="stat-label">Groups</span>
+              </div>
+            </div>
+          </div>
+          <h3 class="section-title">Recent Contacts</h3>
+          <div class="contact-list-container">
+            <for each="contact in recentContacts">
+              <cb-contact-card
+                id="{{contact.id}}"
+                first-name="{{contact.firstName}}"
+                last-name="{{contact.lastName}}"
+                email="{{contact.email}}"
+                phone="{{contact.phone}}"
+                company="{{contact.company}}"
+                group="{{contact.group}}"
+                favorite="{{contact.favorite}}"
+                initials="{{contact.initials}}"
+                avatar-color="{{contact.avatarColor}}"
+                notes="{{contact.notes}}"
+                address="{{contact.address}}"
+              ></cb-contact-card>
+            </for>
+          </div>
+        </div>
+      </if>
+
+      <if condition="page == 'contacts'">
+        <div class="contacts-page">
+          <h2 class="page-title">All Contacts</h2>
+          <div class="contact-list-container">
+            <for each="contact in filteredContacts">
+              <cb-contact-card
+                id="{{contact.id}}"
+                first-name="{{contact.firstName}}"
+                last-name="{{contact.lastName}}"
+                email="{{contact.email}}"
+                phone="{{contact.phone}}"
+                company="{{contact.company}}"
+                group="{{contact.group}}"
+                favorite="{{contact.favorite}}"
+                initials="{{contact.initials}}"
+                avatar-color="{{contact.avatarColor}}"
+                notes="{{contact.notes}}"
+                address="{{contact.address}}"
+              ></cb-contact-card>
+            </for>
+          </div>
+        </div>
+      </if>
+
+      <if condition="page == 'favorites'">
+        <div class="favorites-page">
+          <h2 class="page-title">Favorites</h2>
+          <div class="contact-list-container">
+            <for each="contact in favoriteContacts">
+              <cb-contact-card
+                id="{{contact.id}}"
+                first-name="{{contact.firstName}}"
+                last-name="{{contact.lastName}}"
+                email="{{contact.email}}"
+                phone="{{contact.phone}}"
+                company="{{contact.company}}"
+                group="{{contact.group}}"
+                favorite="{{contact.favorite}}"
+                initials="{{contact.initials}}"
+                avatar-color="{{contact.avatarColor}}"
+                notes="{{contact.notes}}"
+                address="{{contact.address}}"
+              ></cb-contact-card>
+            </for>
+          </div>
+        </div>
+      </if>
+
+      <if condition="page == 'group'">
+        <div class="group-page">
+          <h2 class="page-title">{{activeGroup}}</h2>
+          <div class="contact-list-container">
+            <for each="contact in filteredContacts">
+              <cb-contact-card
+                id="{{contact.id}}"
+                first-name="{{contact.firstName}}"
+                last-name="{{contact.lastName}}"
+                email="{{contact.email}}"
+                phone="{{contact.phone}}"
+                company="{{contact.company}}"
+                group="{{contact.group}}"
+                favorite="{{contact.favorite}}"
+                initials="{{contact.initials}}"
+                avatar-color="{{contact.avatarColor}}"
+                notes="{{contact.notes}}"
+                address="{{contact.address}}"
+              ></cb-contact-card>
+            </for>
+          </div>
+        </div>
+      </if>
+
+      <if condition="page == 'detail'">
+        <if condition="selectedContact">
+          <cb-contact-detail
+            id="{{selectedContact.id}}"
+            first-name="{{selectedContact.firstName}}"
+            last-name="{{selectedContact.lastName}}"
+            email="{{selectedContact.email}}"
+            phone="{{selectedContact.phone}}"
+            company="{{selectedContact.company}}"
+            group="{{selectedContact.group}}"
+            favorite="{{selectedContact.favorite}}"
+            initials="{{selectedContact.initials}}"
+            avatar-color="{{selectedContact.avatarColor}}"
+            notes="{{selectedContact.notes}}"
+            address="{{selectedContact.address}}"
+          ></cb-contact-detail>
+        </if>
+      </if>
+
+      <if condition="page == 'add'">
+        <cb-contact-form form-title="Add Contact"></cb-contact-form>
+      </if>
+
+      <if condition="page == 'edit'">
+        <if condition="selectedContact">
+          <cb-contact-form
+            form-title="Edit Contact"
+            edit-id="{{selectedContact.id}}"
+            first-name="{{selectedContact.firstName}}"
+            last-name="{{selectedContact.lastName}}"
+            email="{{selectedContact.email}}"
+            phone="{{selectedContact.phone}}"
+            company="{{selectedContact.company}}"
+            address="{{selectedContact.address}}"
+            group="{{selectedContact.group}}"
+            notes="{{selectedContact.notes}}"
+          ></cb-contact-form>
+        </if>
+      </if>
+    </main>
+  </div>
+</template>

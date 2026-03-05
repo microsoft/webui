@@ -8,6 +8,7 @@ WebUI provides official handlers for several popular programming languages (othe
 
 - [**Rust**](./rust) - High-performance native rendering with the Rust programming language
 - [**Node.js**](./node) - Streaming SSR via a native addon built with napi-rs
+- [**Electron**](./electron) - Desktop apps via Electron with custom `webui://` protocol
 - [**WebAssembly**](./wasm) - In-browser rendering for playgrounds and client-side use
 - [**FFI (C API)**](./ffi) - Shared library for Go, C#, Python, and any language with C interop
 

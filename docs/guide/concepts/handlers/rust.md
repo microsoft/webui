@@ -186,3 +186,9 @@ pub enum HandlerError {
 ```
 
 You can handle these specific error cases to provide better error messages for different failure scenarios.
+
+## Examples
+
+Working integration examples are available in the repository:
+
+- [`examples/integration/rust/`](https://github.com/user/webui/tree/main/examples/integration/rust) — Rust HTTP server integrations (hyper, tiny_http)

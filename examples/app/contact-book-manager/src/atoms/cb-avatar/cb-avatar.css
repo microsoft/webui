@@ -1,0 +1,33 @@
+:host {
+  display: inline-flex;
+}
+
+.avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 600;
+  font-size: 16px;
+  user-select: none;
+}
+
+.initials {
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+:host([size="sm"]) .avatar {
+  width: 32px;
+  height: 32px;
+  font-size: 13px;
+}
+
+:host([size="lg"]) .avatar {
+  width: 64px;
+  height: 64px;
+  font-size: 24px;
+}

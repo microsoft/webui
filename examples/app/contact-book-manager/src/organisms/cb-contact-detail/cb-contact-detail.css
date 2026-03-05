@@ -1,0 +1,173 @@
+:host {
+  display: block;
+}
+
+.detail {
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+.detail-header {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 24px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.detail-name h2 {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.company {
+  font-size: 14px;
+  color: #6b7280;
+}
+
+.detail-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.detail-body {
+  padding: 24px;
+}
+
+.detail-section {
+  margin-bottom: 24px;
+}
+
+.detail-section h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 12px;
+  margin-top: 0;
+}
+
+.detail-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.field-label {
+  font-size: 13px;
+  color: #6b7280;
+  min-width: 100px;
+  flex-shrink: 0;
+}
+
+.field-value {
+  font-size: 14px;
+  color: #111827;
+}
+
+.notes {
+  white-space: pre-wrap;
+}
+
+.detail-footer {
+  padding: 16px 24px;
+  border-top: 1px solid #f3f4f6;
+}
+
+.back-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  color: #0078d4;
+  padding: 8px 0;
+  font-family: inherit;
+}
+
+.back-btn:hover {
+  text-decoration: underline;
+}
+
+/* Inlined avatar styles */
+.avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 600;
+  user-select: none;
+}
+
+.avatar-lg {
+  width: 64px;
+  height: 64px;
+  font-size: 24px;
+}
+
+.avatar-initials {
+  line-height: 1;
+  text-transform: uppercase;
+  color: #fff;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+/* Inlined badge styles */
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  background-color: #e5e7eb;
+  color: #374151;
+}
+
+/* Inlined icon-button styles */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background-color: transparent;
+  cursor: pointer;
+  font-size: 18px;
+  padding: 0;
+  color: #374151;
+  transition: background-color 0.15s;
+}
+
+.icon-btn:hover {
+  background-color: #f3f4f6;
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid #0078d4;
+  outline-offset: 2px;
+}
+
+.icon-btn-danger:hover {
+  background-color: #fee2e2;
+  color: #dc2626;
+}
+
+/* Icon classes using CSS content to avoid emoji encoding issues */
+.icon-edit::before { content: '\270F\FE0F'; }
+.icon-star::before { content: '\2B50'; }
+.icon-trash::before { content: '\1F5D1\FE0F'; }
+.label-email::before { content: '\1F4E7 '; }
+.label-phone::before { content: '\1F4F1 '; }
+.label-address::before { content: '\1F4CD '; }
+.label-group::before { content: '\1F465 '; }
+.label-notes::before { content: '\1F4DD '; }

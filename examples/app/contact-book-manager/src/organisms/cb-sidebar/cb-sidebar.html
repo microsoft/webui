@@ -1,0 +1,30 @@
+<template shadowrootmode="open">
+  <nav class="sidebar">
+    <div class="nav-section">
+      <div class="nav-item active" data-nav="Dashboard">
+        <span class="nav-icon nav-icon-dashboard"></span>
+        <span class="nav-label">Dashboard</span>
+      </div>
+      <div class="nav-item" data-nav="All Contacts">
+        <span class="nav-icon nav-icon-contacts"></span>
+        <span class="nav-label">All Contacts</span>
+        <span class="nav-count">{{totalContacts}}</span>
+      </div>
+      <div class="nav-item" data-nav="Favorites">
+        <span class="nav-icon nav-icon-favorites"></span>
+        <span class="nav-label">Favorites</span>
+        <span class="nav-count">{{totalFavorites}}</span>
+      </div>
+    </div>
+    <div class="nav-divider"></div>
+    <div class="nav-section">
+      <h3 class="nav-heading">Groups</h3>
+      <for each="group in groups">
+        <div class="nav-item" data-nav="{{group}}">
+          <span class="nav-icon nav-icon-folder"></span>
+          <span class="nav-label">{{group}}</span>
+        </div>
+      </for>
+    </div>
+  </nav>
+</template>

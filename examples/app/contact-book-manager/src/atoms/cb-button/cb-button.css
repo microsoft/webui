@@ -1,0 +1,73 @@
+:host {
+  display: inline-flex;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s;
+  line-height: 1.4;
+  background-color: #0078d4;
+  color: #fff;
+}
+
+.btn:hover {
+  background-color: #106ebe;
+}
+
+.btn:active {
+  background-color: #005a9e;
+}
+
+.btn:focus-visible {
+  outline: 2px solid #0078d4;
+  outline-offset: 2px;
+}
+
+:host([variant="secondary"]) .btn {
+  background-color: #fff;
+  color: #374151;
+  border-color: #d1d5db;
+}
+
+:host([variant="secondary"]) .btn:hover {
+  background-color: #f9fafb;
+  border-color: #9ca3af;
+}
+
+:host([variant="danger"]) .btn {
+  background-color: #dc2626;
+  color: #fff;
+}
+
+:host([variant="danger"]) .btn:hover {
+  background-color: #b91c1c;
+}
+
+:host([variant="ghost"]) .btn {
+  background-color: transparent;
+  color: #374151;
+}
+
+:host([variant="ghost"]) .btn:hover {
+  background-color: #f3f4f6;
+}
+
+:host([size="sm"]) .btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+:host([size="lg"]) .btn {
+  padding: 12px 24px;
+  font-size: 16px;
+}

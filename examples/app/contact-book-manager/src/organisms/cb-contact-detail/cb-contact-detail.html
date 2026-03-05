@@ -1,0 +1,53 @@
+<template shadowrootmode="open">
+  <div class="detail">
+    <div class="detail-header">
+      <div class="avatar avatar-lg" style="background-color: {{avatarColor}}"><span class="avatar-initials">{{initials}}</span></div>
+      <div class="detail-name">
+        <h2>{{firstName}} {{lastName}}</h2>
+        <if condition="company">
+          <span class="company">{{company}}</span>
+        </if>
+      </div>
+      <div class="detail-actions">
+        <button class="icon-btn icon-edit" data-action="edit" title="Edit"></button>
+        <button class="icon-btn icon-star" data-action="toggle-favorite" title="Toggle favorite"></button>
+        <button class="icon-btn icon-btn-danger icon-trash" data-action="delete" title="Delete"></button>
+      </div>
+    </div>
+    <div class="detail-body">
+      <div class="detail-section">
+        <h3>Contact Information</h3>
+        <div class="detail-field">
+          <span class="field-label label-email">Email</span>
+          <span class="field-value">{{email}}</span>
+        </div>
+        <div class="detail-field">
+          <span class="field-label label-phone">Phone</span>
+          <span class="field-value">{{phone}}</span>
+        </div>
+        <if condition="address">
+          <div class="detail-field">
+            <span class="field-label label-address">Address</span>
+            <span class="field-value">{{address}}</span>
+          </div>
+        </if>
+      </div>
+      <div class="detail-section">
+        <h3>Details</h3>
+        <div class="detail-field">
+          <span class="field-label label-group">Group</span>
+          <span class="badge">{{group}}</span>
+        </div>
+        <if condition="notes">
+          <div class="detail-field">
+            <span class="field-label label-notes">Notes</span>
+            <span class="field-value notes">{{notes}}</span>
+          </div>
+        </if>
+      </div>
+    </div>
+    <div class="detail-footer">
+      <button class="back-btn" data-action="back">&larr; Back to list</button>
+    </div>
+  </div>
+</template>

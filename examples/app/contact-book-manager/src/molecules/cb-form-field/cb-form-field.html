@@ -1,0 +1,9 @@
+<template shadowrootmode="open">
+  <div class="field">
+    <label class="label">{{label}}</label>
+    <input class="input" type="{{type}}" placeholder="{{placeholder}}" value="{{value}}" name="{{name}}" />
+    <if condition="error">
+      <span class="error">{{error}}</span>
+    </if>
+  </div>
+</template>

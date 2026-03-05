@@ -1,0 +1,21 @@
+{
+  "name": "contact-book-manager",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build:protocol": "cargo run -p webui-cli -- build ./src --out ./dist --css external --plugin=fast",
+    "build:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap",
+    "build": "npm run build:protocol && npm run build:client",
+    "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
+    "start:server": "cargo run -p webui-cli -- start ./src --state ./data/state.json --plugin=fast --servedir ./dist --port 3001",
+    "start": "cargo xtask dev contact-book-manager"
+  },
+  "devDependencies": {
+    "@microsoft/fast-element": "catalog:",
+    "@microsoft/fast-html": "catalog:",
+    "esbuild": "catalog:",
+    "tslib": "catalog:",
+    "typescript": "catalog:"
+  }
+}

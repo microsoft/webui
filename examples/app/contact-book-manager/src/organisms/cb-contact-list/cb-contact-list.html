@@ -1,0 +1,31 @@
+<template shadowrootmode="open">
+  <div class="list-container">
+    <if condition="hasContacts">
+      <div class="list">
+        <for each="contact in contacts">
+          <cb-contact-card
+            id="{{contact.id}}"
+            first-name="{{contact.firstName}}"
+            last-name="{{contact.lastName}}"
+            email="{{contact.email}}"
+            phone="{{contact.phone}}"
+            company="{{contact.company}}"
+            group="{{contact.group}}"
+            favorite="{{contact.favorite}}"
+            initials="{{contact.initials}}"
+            avatar-color="{{contact.avatarColor}}"
+            notes="{{contact.notes}}"
+            address="{{contact.address}}"
+          ></cb-contact-card>
+        </for>
+      </div>
+    </if>
+    <if condition="!hasContacts">
+      <cb-empty-state
+        icon=""
+        title="No contacts found"
+        message="Try adjusting your search or add a new contact."
+      ></cb-empty-state>
+    </if>
+  </div>
+</template>

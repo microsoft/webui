@@ -137,16 +137,6 @@ impl ConditionParser {
                     _ => unreachable!(),
                 };
 
-                // Clean up the right side (if it's a string literal)
-                let right = if (right.starts_with('"') && right.ends_with('"'))
-                    || (right.starts_with('\'') && right.ends_with('\''))
-                {
-                    // Remove quotes
-                    &right[1..right.len() - 1]
-                } else {
-                    right
-                };
-
                 let predicate = ConditionExpr::predicate(left, operator, right);
 
                 return Ok(predicate);
@@ -318,7 +308,7 @@ mod tests {
         assert!(matches!(&result.expr, Some(Expr::Predicate(pred)) if
             pred.left == "name" &&
             ComparisonOperator::try_from(pred.operator) == Ok(ComparisonOperator::Equal) &&
-            pred.right == "John"
+            pred.right == "\"John\""
         ));
     }
 
@@ -424,7 +414,7 @@ mod tests {
             matches!(compound.left.as_ref().and_then(|l| l.expr.as_ref()), Some(Expr::Predicate(pred)) if
                 pred.left == "appearance" &&
                 ComparisonOperator::try_from(pred.operator) == Ok(ComparisonOperator::Equal) &&
-                pred.right == "hub"
+                pred.right == "\"hub\""
             ) &&
             LogicalOperator::try_from(compound.op) == Ok(LogicalOperator::And) &&
             matches!(compound.right.as_ref().and_then(|r| r.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "actions.trailing")

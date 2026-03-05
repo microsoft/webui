@@ -1,0 +1,49 @@
+:host {
+  display: block;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.nav-item:hover {
+  background: #f3f4f6;
+}
+
+:host([active]) .nav-item {
+  background: #e0f2fe;
+  color: #0078d4;
+}
+
+.nav-icon {
+  font-size: 18px;
+  width: 24px;
+  text-align: center;
+}
+
+.nav-label {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.nav-count {
+  font-size: 12px;
+  background: #e5e7eb;
+  color: #6b7280;
+  border-radius: 10px;
+  padding: 1px 8px;
+  min-width: 22px;
+  text-align: center;
+}
+
+:host([active]) .nav-count {
+  background: #bfdbfe;
+  color: #0078d4;
+}

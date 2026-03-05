@@ -1,0 +1,33 @@
+:host {
+  display: inline-flex;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background-color: transparent;
+  cursor: pointer;
+  font-size: 18px;
+  padding: 0;
+  color: #374151;
+  transition: background-color 0.15s;
+}
+
+.icon-btn:hover {
+  background-color: #f3f4f6;
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid #0078d4;
+  outline-offset: 2px;
+}
+
+:host([variant="danger"]) .icon-btn:hover {
+  background-color: #fee2e2;
+  color: #dc2626;
+}

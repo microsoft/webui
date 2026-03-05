@@ -1,0 +1,9 @@
+<template shadowrootmode="open">
+  <div class="search-container">
+    <span class="search-icon"></span>
+    <input class="search-input" type="text" placeholder="{{placeholder}}" value="{{value}}" />
+    <if condition="value">
+      <button class="clear-btn" data-action="clear" title="Clear">&times;</button>
+    </if>
+  </div>
+</template>
