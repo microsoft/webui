@@ -15,13 +15,16 @@ path = "src/main.rs"
 webui-parser = { path = "../webui-parser" }
 webui-protocol = { path = "../webui-protocol" }
 webui-handler = { path = "../webui-handler" }
+webui-discovery = { path = "../webui-discovery" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 console = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 actix-web = { workspace = true }
 expand-tilde = { workspace = true }
 mime_guess = { workspace = true }
+walkdir = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

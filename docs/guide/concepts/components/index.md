@@ -97,3 +97,65 @@ example we have `profile-page.html`, `user-card.html`, and `admin-controls.html`
   </if>
 </div>
 ```
+
+## External Component Sources
+
+In addition to discovering components in your app directory, WebUI can load components from **npm packages** and **local paths** using the `--components` CLI flag.
+
+### npm Packages
+
+Components published as npm packages can be discovered automatically. The package must:
+
+1. Be installed via npm, pnpm, or yarn (present in `node_modules/`)
+2. Include a `package.json` with:
+   - `exports["./template-webui.html"]` — the component's HTML template
+   - `exports["./styles.css"]` — the component's CSS (optional)
+   - `customElements` — path to a [Custom Elements Manifest](https://github.com/webcomponents/custom-elements-manifest) JSON file
+
+The Custom Elements Manifest provides the component's tag name:
+
+```json
+{
+  "schemaVersion": "1.0.0",
+  "modules": [{
+    "kind": "javascript-module",
+    "declarations": [{
+      "kind": "class",
+      "name": "MyButton",
+      "tagName": "my-button"
+    }]
+  }]
+}
+```
+
+**Example `package.json`:**
+
+```json
+{
+  "name": "@reactive-ui/button",
+  "version": "1.0.0",
+  "customElements": "./custom-elements.json",
+  "exports": {
+    "./template-webui.html": "./dist/template-webui.html",
+    "./styles.css": "./dist/styles.css"
+  }
+}
+```
+
+**Scoped packages:** When you pass a bare scope like `@reactive-ui`, all sub-packages under `node_modules/@reactive-ui/` are discovered and each is checked for WebUI component exports.
+
+### Local Paths
+
+You can also point to directories outside your app folder:
+
+```bash
+webui build ./my-app --out ./dist --components ./shared/components
+```
+
+Local path discovery works identically to app directory scanning — HTML files with hyphenated names are registered as components, with matching CSS files auto-paired.
+
+### Caching
+
+npm package discovery results are cached at `~/.webui/cache/components/`. The cache invalidates automatically when a package's `package.json` content changes. Local path sources are always re-scanned.
+
+See the [CLI Reference](/guide/cli/) for full `--components` usage.

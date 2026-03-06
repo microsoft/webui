@@ -386,6 +386,64 @@ pub fn get(&self, name: &str) -> Option<&Component>
 - Directory scanning with file matching
 - Cache optimization for repeated lookups
 
+### External Component Discovery (webui-discovery)
+
+The `webui-discovery` crate discovers components from external sources. It has **no dependency on `webui-parser`** — it returns plain data structs that callers register into their component registry. This makes it reusable by CLI, FFI, and other host integrations.
+
+#### Source Classification
+```rust
+enum ComponentSource {
+    /// npm package: starts with `@` (scoped) or is a bare identifier
+    NpmPackage(String),
+    /// Local filesystem path: starts with `.`, `/`, `\`, or drive letter
+    Path(PathBuf),
+}
+```
+
+#### Public API
+```rust
+/// Discover components from a single source.
+pub fn discover_source(source: &str, search_dir: &Path) -> Result<DiscoveryResult>
+
+/// Collect resolved local paths for file watching.
+pub fn collect_watch_paths(sources: &[String], search_dir: &Path) -> Vec<PathBuf>
+
+/// A discovered component (tag name, HTML template, optional CSS).
+pub struct DiscoveredComponent {
+    pub tag_name: String,
+    pub html_content: String,
+    pub css_content: Option<String>,
+    pub source: String,
+}
+```
+
+#### npm Package Resolution
+1. Walk up from the search directory to find `node_modules/` (Node.js-style resolution)
+2. For scoped packages (`@scope`), enumerate all sub-directories
+3. For each package, read `package.json`:
+   - `exports["./template-webui.html"]` → template HTML path
+   - `exports["./styles.css"]` → styles CSS path (optional)
+   - `customElements` → path to Custom Elements Manifest
+4. Parse the Custom Elements Manifest for `modules[].declarations[].tagName`
+5. Return `DiscoveredComponent` structs (callers handle registration)
+
+Conditional exports are resolved with deterministic priority: `default` → `import` → `require`.
+
+#### Security
+- **Path traversal**: Export paths are validated — absolute paths and `..` components are rejected
+- **Symlink escape**: Resolved package paths must remain within `node_modules/` after `fs::canonicalize()`
+- **File size limits**: Manifests and templates are capped at 10 MB to prevent denial-of-service
+
+#### Discovery Cache
+- Location: `~/.webui/cache/components/`
+- Cache key: hash of source identifier + resolved path
+- Invalidation: hash of `package.json` content (re-discover on change)
+- Atomic writes: temp file + rename to prevent corruption from concurrent builds
+- Corrupt cache files are silently ignored (graceful fallback)
+
+#### Local Path Resolution
+Local paths perform a recursive WalkDir scan for HTML files with hyphenated names, pairing matching CSS files — the same convention used by the parser's `ComponentRegistry`.
+
 ### HTML Parser
 ```rust
 pub struct HtmlParser {
@@ -574,6 +632,7 @@ pub enum ParserError {
 webui/
 ├── crates/
 │   ├── webui-cli/            # CLI build tool (binary: "webui")
+│   ├── webui-discovery/      # External component discovery (npm, paths)
 │   ├── webui-expressions/    # Expression evaluation engine
 │   ├── webui-ffi/            # C-compatible FFI bindings
 │   ├── webui-handler/        # Protocol handler implementation

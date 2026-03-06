@@ -1,34 +1,77 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebUI Hello World</title>
-    <link rel="stylesheet" href="/index.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebUI Hello World</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      line-height: 1.6;
+    }
+
+    h1 {
+      color: #333;
+      border-bottom: 2px solid #eee;
+      padding-bottom: 10px;
+    }
+
+    .people-list {
+      background-color: #f9f9f9;
+      padding: 15px;
+      border-radius: 5px;
+      margin-bottom: 20px;
+    }
+
+    .person {
+      border-left: 3px solid #0078d7;
+      padding-left: 10px;
+      margin-bottom: 10px;
+    }
+
+    .description {
+      background-color: #e9f5ff;
+      padding: 15px;
+      border-radius: 5px;
+      margin-bottom: 20px;
+    }
+
+    .contact {
+      background-color: #eafff4;
+      padding: 15px;
+      border-radius: 5px;
+    }
+  </style>
 </head>
+
 <body>
-    <h1>Hello, WebUI!</h1>
+  <h1>Hello, WebUI!</h1>
 
-    <div class="people-list">
-        <h2>People</h2>
-        <for each="person in people">
-            <div class="person">
-                <p>Name: {{person.name}}</p>
-            </div>
-        </for>
+  <div class="people-list">
+    <h2>People</h2>
+    <for each="person in people">
+      <div class="person">
+        <p>Name: {{person.name}}</p>
+      </div>
+    </for>
+  </div>
+
+  <div class="description">
+    {{{raw_description}}}
+  </div>
+
+  <if condition="contact">
+    <div class="contact">
+      <h2>Contact</h2>
+      <p>Hello, {{name}}</p>
     </div>
+  </if>
 
-    <div class="description">
-        {{{raw_description}}}
-    </div>
-
-    <if condition="contact">
-        <div class="contact">
-            <h2>Contact</h2>
-            <p>Hello, {{name}}</p>
-        </div>
-    </if>
-
-    <script src="/index.js"></script>
+  <script src="/index.js"></script>
 </body>
+
 </html>

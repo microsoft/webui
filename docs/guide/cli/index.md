@@ -21,7 +21,7 @@ The `webui` binary will be available at `target/release/webui`.
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]...
 ```
 
 **Arguments:**
@@ -33,6 +33,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>]
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `external` or `inline` | `external` |
 | `--plugin <NAME>` | Load a parser plugin (e.g., `fast`) | *(none)* |
+| `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 
 Path inputs for `APP`, `--state`, and `--servedir` support absolute paths, relative paths, `~/...`, and `file://...` URI-style values.
 
@@ -60,6 +61,12 @@ webui build ./my-app --out ./dist --css inline
 
 # Build with the FAST plugin (hydration support)
 webui build ./my-app --out ./dist --plugin=fast
+
+# Build with external component packages
+webui build ./my-app --out ./dist --components @reactive-ui
+
+# Build with components from a local shared library
+webui build ./my-app --out ./dist --components ./shared/components
 ```
 
 ### `webui inspect`
@@ -94,7 +101,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui-cli start [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--plugin <NAME>]
+webui-cli start [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]...
 ```
 
 **Arguments:**
@@ -109,6 +116,7 @@ webui-cli start [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `external` or `inline` | `external` |
 | `--plugin <NAME>` | Load parser + handler plugins (e.g., `fast`) | *(none)* |
+| `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 
 The `APP` directory should contain your entry HTML and component files.
 
@@ -138,6 +146,9 @@ webui-cli start ./my-app --state ./state.json --servedir ./assets --css inline -
 
 # Use the FAST plugin for hydration
 webui-cli start ./my-app --state ./state.json --plugin=fast --port 3001
+
+# Dev server with external components (--watch watches local paths)
+webui-cli start ./my-app --state ./state.json --components @reactive-ui --watch
 ```
 
 **Routes:**
@@ -267,6 +278,66 @@ The `--plugin` flag loads framework-specific extensions that customize both pars
 | `fast` | FAST-HTML hydration support. Parser skips runtime attrs, emits binding data, injects `<f-template>` wrappers. Handler injects hydration comment markers. |
 
 See [Plugins](/guide/concepts/plugins/) for detailed documentation.
+
+## External Component Sources
+
+The `--components` flag lets you discover components from npm packages or local directories outside your app folder. This is useful for shared component libraries.
+
+### npm Packages
+
+Pass an npm package name. The package must already be installed in `node_modules/`.
+
+```bash
+# Single package
+webui build ./my-app --out ./dist --components my-widget
+
+# Scoped package (discovers all sub-packages)
+webui build ./my-app --out ./dist --components @reactive-ui
+
+# Specific scoped sub-package
+webui build ./my-app --out ./dist --components @reactive-ui/button
+```
+
+**npm package requirements:**
+
+The package's `package.json` must have:
+
+| Field | Purpose |
+|-------|---------|
+| `exports["./template-webui.html"]` | Path to the component's HTML template |
+| `exports["./styles.css"]` | Path to the component's CSS (optional) |
+| `customElements` | Path to a [Custom Elements Manifest](https://github.com/webcomponents/custom-elements-manifest) JSON file |
+
+The Custom Elements Manifest provides the component tag name via `modules[].declarations[].tagName`.
+
+**Resolution:** The CLI searches for `node_modules/` by walking up from the app directory, matching Node.js module resolution behavior. Symlinks (pnpm, npm workspaces) are resolved automatically.
+
+### Local Paths
+
+Pass a filesystem path to discover components the same way the app directory is scanned.
+
+```bash
+# Relative path
+webui build ./my-app --out ./dist --components ./shared/components
+
+# Absolute path
+webui build ./my-app --out ./dist --components /libs/ui-kit
+```
+
+### Multiple Sources
+
+Combine multiple `--components` flags:
+
+```bash
+webui build ./my-app --out ./dist \
+  --components @reactive-ui \
+  --components ./shared/components \
+  --components my-widget
+```
+
+### Caching
+
+Discovered npm package components are cached at `~/.webui/cache/components/` to avoid re-traversing on every build. The cache is automatically invalidated when a package's `package.json` changes. Local path sources are always re-scanned.
 
 ## Next Steps
 

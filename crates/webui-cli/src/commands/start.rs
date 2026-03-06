@@ -12,30 +12,18 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 use webui_handler::plugin::FastHydrationPlugin;
 use webui_handler::{ResponseWriter, WebUIHandler};
-use webui_parser::plugin::FastParserPlugin;
-use webui_parser::{CssStrategy, HtmlParser};
-use webui_protocol::WebUIProtocol;
 
-use super::build::CssMode;
+use super::common::*;
 use crate::utils::output;
 
 #[derive(Args)]
 pub struct StartArgs {
-    /// Path to the template/component directory (defaults to current directory)
-    #[arg(default_value = ".")]
-    pub app: PathBuf,
+    #[command(flatten)]
+    pub app_args: AppArgs,
 
     /// Port to bind the development server to
     #[arg(long, default_value_t = 3000)]
     pub port: u16,
-
-    /// Entry HTML file name (defaults to index.html)
-    #[arg(long, default_value = "index.html")]
-    pub entry: String,
-
-    /// CSS delivery strategy for component stylesheets
-    #[arg(long, value_enum, default_value_t = CssMode::External)]
-    pub css: CssMode,
 
     /// Path to the JSON state file used for rendering
     #[arg(long)]
@@ -48,10 +36,6 @@ pub struct StartArgs {
     /// Enable file watching + HMR (disabled by default)
     #[arg(long)]
     pub watch: bool,
-
-    /// Parser/handler plugin to load (e.g., "fast" for FAST-HTML hydration)
-    #[arg(long)]
-    pub plugin: Option<String>,
 }
 
 /// Resolved paths for `webui start`.
@@ -64,8 +48,8 @@ struct StartPaths {
 
 impl StartPaths {
     fn from_args(args: &StartArgs) -> Result<Self> {
-        let app_input = expand_tilde(&args.app)
-            .with_context(|| format!("Failed to expand app path: {}", args.app.display()))?
+        let app_input = expand_tilde(&args.app_args.app)
+            .with_context(|| format!("Failed to expand app path: {}", args.app_args.app.display()))?
             .into_owned();
         let state_input = expand_tilde(&args.state)
             .with_context(|| format!("Failed to expand state path: {}", args.state.display()))?
@@ -73,7 +57,7 @@ impl StartPaths {
 
         let app_dir = app_input
             .canonicalize()
-            .with_context(|| format!("App folder not found: {}", args.app.display()))?;
+            .with_context(|| format!("App folder not found: {}", args.app_args.app.display()))?;
 
         let state_file = state_input
             .canonicalize()
@@ -145,6 +129,7 @@ impl StartPaths {
 struct SharedState {
     rendered_html: String,
     hmr_version: u64,
+    css_files: HashMap<String, String>,
 }
 
 impl SharedState {
@@ -265,11 +250,9 @@ fn run(args: &StartArgs) -> Result<()> {
     };
 
     let render_config = RenderConfig {
+        app_args: args.app_args.clone(),
         app_dir: paths.app_dir.clone(),
         state_file: paths.state_file.clone(),
-        entry: args.entry.clone(),
-        css_strategy: args.css.into(),
-        plugin: args.plugin.clone(),
     };
 
     output::header("WebUI Dev Server");
@@ -279,9 +262,9 @@ fn run(args: &StartArgs) -> Result<()> {
         Some(serve_dir) => output::field("ServeDir", &serve_dir.display()),
         None => output::field("ServeDir", &"(disabled)"),
     }
-    output::field("Entry", &args.entry);
+    output::field("Entry", &args.app_args.entry);
     output::field("Port", &args.port);
-    output::field("CSS", &format!("{:?}", args.css));
+    output::field("CSS", &format!("{:?}", args.app_args.css));
     if args.watch {
         output::field("HMR", &"enabled (polling /hmr)");
     } else {
@@ -290,17 +273,27 @@ fn run(args: &StartArgs) -> Result<()> {
     eprintln!();
 
     // Initial build + render
-    let initial_html = build_and_render(&render_config, hmr_backend.as_deref())?;
+    let (initial_html, initial_css) = build_and_render(&render_config, hmr_backend.as_deref())?;
     output::success("Initial build and render complete");
 
     let state = Arc::new(Mutex::new(SharedState {
         rendered_html: initial_html,
         hmr_version: 1,
+        css_files: initial_css,
     }));
 
     if let Some(active_hmr_backend) = &hmr_backend {
+        let mut watch_targets = paths.watch_targets();
+
+        // Also watch local path component sources
+        for extra_dir in
+            webui_discovery::collect_watch_paths(&args.app_args.components, &paths.app_dir)
+        {
+            watch_targets.push(WatchTarget::Directory(extra_dir));
+        }
+
         start_file_watcher(WatcherConfig {
-            watch_targets: paths.watch_targets(),
+            watch_targets,
             state: Arc::clone(&state),
             render_config: render_config.clone(),
             hmr_backend: Arc::clone(active_hmr_backend),
@@ -357,36 +350,17 @@ fn run(args: &StartArgs) -> Result<()> {
 
 #[derive(Clone)]
 struct RenderConfig {
+    app_args: AppArgs,
     app_dir: PathBuf,
     state_file: PathBuf,
-    entry: String,
-    css_strategy: CssStrategy,
-    plugin: Option<String>,
 }
 
 /// Build the protocol from app templates and render with explicit state data.
-fn build_and_render(config: &RenderConfig, hmr_backend: Option<&dyn HmrBackend>) -> Result<String> {
-    let mut parser = match config.plugin.as_deref() {
-        Some("fast") => HtmlParser::with_plugin(Box::new(FastParserPlugin::new())),
-        Some(unknown) => anyhow::bail!("Unknown plugin: {unknown}"),
-        None => HtmlParser::new(),
-    };
-    parser.set_css_strategy(config.css_strategy);
-    parser
-        .component_registry_mut()
-        .register_from_paths(&[&config.app_dir])
-        .context("Failed to register components")?;
-
-    let entry_path = config.app_dir.join(&config.entry);
-    let html_content = fs::read_to_string(&entry_path)
-        .with_context(|| format!("Failed to read {}", entry_path.display()))?;
-
-    parser
-        .parse(&config.entry, &html_content)
-        .context("Failed to parse HTML")?;
-
-    let fragments = parser.into_fragment_records();
-    let protocol = WebUIProtocol { fragments };
+fn build_and_render(
+    config: &RenderConfig,
+    hmr_backend: Option<&dyn HmrBackend>,
+) -> Result<(String, HashMap<String, String>)> {
+    let build_output = build_protocol(&config.app_dir, &config.app_args)?;
 
     let json = fs::read_to_string(&config.state_file)
         .with_context(|| format!("Failed to read {}", config.state_file.display()))?;
@@ -399,18 +373,20 @@ fn build_and_render(config: &RenderConfig, hmr_backend: Option<&dyn HmrBackend>)
 
     // Render to memory
     let mut writer = MemoryWriter::with_capacity(4096);
-    let mut handler = match config.plugin.as_deref() {
+    let mut handler = match config.app_args.plugin.as_deref() {
         Some("fast") => WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new())),
         _ => WebUIHandler::new(),
     };
-    handler.handle(&protocol, &state, &mut writer)?;
+    handler.handle(&build_output.protocol, &state, &mut writer)?;
 
     let html = match hmr_backend {
         Some(backend) => backend.inject(&writer.buf),
         None => writer.buf,
     };
 
-    Ok(html)
+    let css_map: HashMap<String, String> = build_output.css_files.into_iter().collect();
+
+    Ok((html, css_map))
 }
 
 fn inject_script_before_body_close(html: &str, script: &str) -> String {
@@ -468,12 +444,22 @@ async fn handle_hmr(context: web::Data<ServerContext>) -> HttpResponse {
 }
 
 async fn handle_asset(path: web::Path<String>, context: web::Data<ServerContext>) -> HttpResponse {
+    let relative = path.into_inner();
+
+    // Check in-memory CSS files first (generated by build_protocol)
+    if let Ok(s) = context.state.lock() {
+        if let Some(css) = s.css_files.get(&relative) {
+            return HttpResponse::Ok()
+                .content_type("text/css; charset=utf-8")
+                .body(css.clone());
+        }
+    }
+
     let Some(assets_dir) = &context.assets_dir else {
         return HttpResponse::NotFound().body("Not Found");
     };
 
-    let relative = path.into_inner();
-    let asset_path = assets_dir.join(relative);
+    let asset_path = assets_dir.join(&relative);
 
     let canonical = match asset_path.canonicalize() {
         Ok(p) => p,
@@ -596,9 +582,10 @@ fn start_file_watcher(config: WatcherConfig) {
 
             if has_changes(&current_times, &last_times) {
                 match build_and_render(&config.render_config, Some(config.hmr_backend.as_ref())) {
-                    Ok(html) => {
+                    Ok((html, css_files)) => {
                         if let Ok(mut s) = config.state.lock() {
                             s.rendered_html = html;
+                            s.css_files = css_files;
                             s.bump_version();
                         }
                         eprintln!(
@@ -644,14 +631,18 @@ mod tests {
     fn test_build_and_render_simple() {
         let app = create_app_dir(&[("index.html", "<h1>Hello</h1>"), ("state.json", "{}")]);
         let config = RenderConfig {
+            app_args: AppArgs {
+                app: app.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssMode::External,
+                plugin: None,
+                components: Vec::new(),
+            },
             app_dir: app.path().to_path_buf(),
             state_file: app.path().join("state.json"),
-            entry: "index.html".to_string(),
-            css_strategy: CssStrategy::External,
-            plugin: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
-        let html = build_and_render(&config, Some(&hmr)).unwrap();
+        let (html, _css_files) = build_and_render(&config, Some(&hmr)).unwrap();
         assert!(html.contains("<h1>Hello</h1>"));
     }
 
@@ -662,14 +653,18 @@ mod tests {
             ("state.json", r#"{"name":"WebUI"}"#),
         ]);
         let config = RenderConfig {
+            app_args: AppArgs {
+                app: app.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssMode::External,
+                plugin: None,
+                components: Vec::new(),
+            },
             app_dir: app.path().to_path_buf(),
             state_file: app.path().join("state.json"),
-            entry: "index.html".to_string(),
-            css_strategy: CssStrategy::External,
-            plugin: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
-        let html = build_and_render(&config, Some(&hmr)).unwrap();
+        let (html, _css_files) = build_and_render(&config, Some(&hmr)).unwrap();
         assert!(html.contains("<p>WebUI</p>"));
     }
 
@@ -677,13 +672,17 @@ mod tests {
     fn test_build_and_render_without_watch_has_no_hmr_script() {
         let app = create_app_dir(&[("index.html", "<h1>Hello</h1>"), ("state.json", "{}")]);
         let config = RenderConfig {
+            app_args: AppArgs {
+                app: app.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssMode::External,
+                plugin: None,
+                components: Vec::new(),
+            },
             app_dir: app.path().to_path_buf(),
             state_file: app.path().join("state.json"),
-            entry: "index.html".to_string(),
-            css_strategy: CssStrategy::External,
-            plugin: None,
         };
-        let html = build_and_render(&config, None).unwrap();
+        let (html, _css_files) = build_and_render(&config, None).unwrap();
         assert!(!html.contains("/hmr"));
     }
 
@@ -691,11 +690,15 @@ mod tests {
     fn test_build_and_render_missing_state_file() {
         let app = create_app_dir(&[("index.html", "<h1>No State</h1>")]);
         let config = RenderConfig {
+            app_args: AppArgs {
+                app: app.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssMode::External,
+                plugin: None,
+                components: Vec::new(),
+            },
             app_dir: app.path().to_path_buf(),
             state_file: app.path().join("state.json"),
-            entry: "index.html".to_string(),
-            css_strategy: CssStrategy::External,
-            plugin: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let result = build_and_render(&config, Some(&hmr));
@@ -706,11 +709,15 @@ mod tests {
     fn test_build_and_render_missing_template() {
         let app = create_app_dir(&[("state.json", "{}")]);
         let config = RenderConfig {
+            app_args: AppArgs {
+                app: app.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssMode::External,
+                plugin: None,
+                components: Vec::new(),
+            },
             app_dir: app.path().to_path_buf(),
             state_file: app.path().join("state.json"),
-            entry: "index.html".to_string(),
-            css_strategy: CssStrategy::External,
-            plugin: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let result = build_and_render(&config, Some(&hmr));
@@ -815,14 +822,18 @@ mod tests {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let app_dir = manifest_dir.join("../../examples/app/hello-world/src");
         let config = RenderConfig {
+            app_args: AppArgs {
+                app: app_dir.clone(),
+                entry: "index.html".to_string(),
+                css: CssMode::External,
+                plugin: None,
+                components: Vec::new(),
+            },
             app_dir,
             state_file: manifest_dir.join("../../examples/app/hello-world/data/state.json"),
-            entry: "index.html".to_string(),
-            css_strategy: CssStrategy::External,
-            plugin: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
-        let html = build_and_render(&config, Some(&hmr)).unwrap();
+        let (html, _css_files) = build_and_render(&config, Some(&hmr)).unwrap();
         assert!(html.contains("Hello, WebUI!"));
         assert!(html.contains("Ali"));
         assert!(html.contains("Mohamed Mansour"));
@@ -836,6 +847,7 @@ mod tests {
         let state = SharedState {
             rendered_html: "<p>Hello</p>".to_string(),
             hmr_version: 42,
+            css_files: HashMap::new(),
         };
         assert_eq!(backend.version_payload(&state), "42");
     }
@@ -848,6 +860,7 @@ mod tests {
             state: Arc::new(Mutex::new(SharedState {
                 rendered_html: "<html><body>ok</body></html>".to_string(),
                 hmr_version: 7,
+                css_files: HashMap::new(),
             })),
             hmr_backend: Some(hmr_backend),
             assets_dir: None,

@@ -2450,11 +2450,26 @@ dependencies = [
  "console",
  "expand-tilde",
  "mime_guess",
+ "serde",
  "serde_json",
  "tempfile",
+ "walkdir",
+ "webui-discovery",
  "webui-handler",
  "webui-parser",
  "webui-protocol",
+]
+
+[[package]]
+name = "webui-discovery"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "expand-tilde",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "walkdir",
 ]
 
 [[package]]

@@ -1,4 +1,5 @@
 pub mod build;
+pub mod common;
 pub mod inspect;
 pub mod start;
 

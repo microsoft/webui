@@ -1,55 +1,21 @@
 use anyhow::{Context, Result};
-use clap::{Args, ValueEnum};
+use clap::Args;
 use expand_tilde::expand_tilde;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
-use webui_parser::plugin::FastParserPlugin;
-use webui_parser::{CssStrategy, HtmlParser};
-use webui_protocol::WebUIProtocol;
 
+use super::common::*;
 use crate::utils::output;
-
-/// CSS delivery strategy for component stylesheets.
-#[derive(ValueEnum, Clone, Copy, Debug, Default)]
-pub enum CssMode {
-    /// Emit <link> tags referencing external .css files (default)
-    #[default]
-    External,
-    /// Embed CSS inline in <style> tags within shadow DOM templates
-    Inline,
-}
-
-impl From<CssMode> for CssStrategy {
-    fn from(mode: CssMode) -> Self {
-        match mode {
-            CssMode::External => CssStrategy::External,
-            CssMode::Inline => CssStrategy::Inline,
-        }
-    }
-}
 
 #[derive(Args)]
 pub struct BuildArgs {
-    /// Path to the app folder (defaults to current directory)
-    #[arg(default_value = ".")]
-    pub app: PathBuf,
+    #[command(flatten)]
+    pub app_args: AppArgs,
 
     /// Output folder for the built protocol and assets
     #[arg(long)]
     pub out: PathBuf,
-
-    /// Entry HTML file name (defaults to index.html)
-    #[arg(long, default_value = "index.html")]
-    pub entry: String,
-
-    /// CSS delivery strategy for component stylesheets
-    #[arg(long, value_enum, default_value_t = CssMode::External)]
-    pub css: CssMode,
-
-    /// Parser plugin to load (e.g., "fast" for FAST-HTML hydration support)
-    #[arg(long)]
-    pub plugin: Option<String>,
 }
 
 pub fn execute(args: &BuildArgs) -> Result<()> {
@@ -59,7 +25,7 @@ pub fn execute(args: &BuildArgs) -> Result<()> {
         let err_msg = format!("{:#}", err);
         if err_msg.contains("App folder not found") {
             output::hint("Check that the app folder path exists");
-        } else if err_msg.contains("Failed to read") && args.entry == "index.html" {
+        } else if err_msg.contains("Failed to read") && args.app_args.entry == "index.html" {
             output::hint("Try using --entry <file> to specify a different entry file");
         }
         eprintln!();
@@ -70,8 +36,8 @@ pub fn execute(args: &BuildArgs) -> Result<()> {
 fn run(args: &BuildArgs) -> Result<()> {
     let started = Instant::now();
 
-    let app_input = expand_tilde(&args.app)
-        .with_context(|| format!("Failed to expand app path: {}", args.app.display()))?
+    let app_input = expand_tilde(&args.app_args.app)
+        .with_context(|| format!("Failed to expand app path: {}", args.app_args.app.display()))?
         .into_owned();
     let out = expand_tilde(&args.out)
         .with_context(|| format!("Failed to expand output path: {}", args.out.display()))?
@@ -79,15 +45,18 @@ fn run(args: &BuildArgs) -> Result<()> {
 
     let app = app_input
         .canonicalize()
-        .with_context(|| format!("App folder not found: {}", args.app.display()))?;
+        .with_context(|| format!("App folder not found: {}", args.app_args.app.display()))?;
 
     output::header("WebUI Build");
     output::field("App", &app.display());
-    output::field("Entry", &args.entry);
+    output::field("Entry", &args.app_args.entry);
     output::field("Output", &out.display());
-    output::field("CSS", &format!("{:?}", args.css));
-    if let Some(ref plugin_name) = args.plugin {
+    output::field("CSS", &format!("{:?}", args.app_args.css));
+    if let Some(ref plugin_name) = args.app_args.plugin {
         output::field("Plugin", plugin_name);
+    }
+    if !args.app_args.components.is_empty() {
+        output::field("Components", &args.app_args.components.join(", "));
     }
     eprintln!();
 
@@ -95,61 +64,33 @@ fn run(args: &BuildArgs) -> Result<()> {
     fs::create_dir_all(&out)
         .with_context(|| format!("Failed to create output dir: {}", out.display()))?;
 
-    // Set up parser and register components from the app directory
-    let mut parser = match args.plugin.as_deref() {
-        Some("fast") => HtmlParser::with_plugin(Box::new(FastParserPlugin::new())),
-        Some(unknown) => anyhow::bail!("Unknown plugin: {unknown}"),
-        None => HtmlParser::new(),
-    };
-    parser.set_css_strategy(args.css.into());
-    parser
-        .component_registry_mut()
-        .register_from_paths(&[&app])
-        .context("Failed to register components")?;
+    // Build the protocol using shared logic
+    let build_output = build_protocol(&app, &args.app_args)?;
 
-    let component_count = parser.component_registry_mut().len();
     output::success(&format!(
         "Registered {} component{}",
-        console::style(component_count).bold(),
-        if component_count == 1 { "" } else { "s" }
+        console::style(build_output.component_count).bold(),
+        if build_output.component_count == 1 {
+            ""
+        } else {
+            "s"
+        }
     ));
-
-    // Read and parse the entry HTML file
-    let entry_path = app.join(&args.entry);
-    let html_content = fs::read_to_string(&entry_path)
-        .with_context(|| format!("Failed to read {}", entry_path.display()))?;
-
-    parser
-        .parse(&args.entry, &html_content)
-        .context("Failed to parse HTML")?;
-
-    // Collect component CSS files before consuming parser
-    let css_files: Vec<(String, String)> = parser
-        .component_registry_mut()
-        .get_all()
-        .filter_map(|c| {
-            c.css_content
-                .as_ref()
-                .map(|css| (format!("{}.css", c.tag_name), css.clone()))
-        })
-        .collect();
-
-    // Build the protocol
-    let fragment_records = parser.into_fragment_records();
-    let fragment_count: usize = fragment_records.values().map(|v| v.fragments.len()).sum();
-    let protocol = WebUIProtocol {
-        fragments: fragment_records,
-    };
 
     output::success(&format!(
         "Parsed {} ({} fragment{})",
-        console::style(&args.entry).bold(),
-        console::style(fragment_count).bold(),
-        if fragment_count == 1 { "" } else { "s" }
+        console::style(&args.app_args.entry).bold(),
+        console::style(build_output.fragment_count).bold(),
+        if build_output.fragment_count == 1 {
+            ""
+        } else {
+            "s"
+        }
     ));
 
     // Write protocol as optimized protobuf binary
-    let bytes = protocol
+    let bytes = build_output
+        .protocol
         .to_protobuf()
         .context("Failed to serialize protocol")?;
     let protocol_path = out.join("protocol.bin");
@@ -160,8 +101,8 @@ fn run(args: &BuildArgs) -> Result<()> {
     let mut files_written: usize = 1;
 
     // Copy component CSS files (only in external mode)
-    if matches!(args.css, CssMode::External) {
-        for (filename, css_content) in &css_files {
+    if matches!(args.app_args.css, CssMode::External) {
+        for (filename, css_content) in &build_output.css_files {
             let css_path = out.join(filename);
             fs::write(&css_path, css_content)
                 .with_context(|| format!("Failed to write {}", css_path.display()))?;
@@ -185,11 +126,14 @@ fn run(args: &BuildArgs) -> Result<()> {
 #[cfg(test)]
 pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Result<()> {
     run(&BuildArgs {
-        app: app.to_path_buf(),
+        app_args: AppArgs {
+            app: app.to_path_buf(),
+            entry: entry.to_string(),
+            css: CssMode::External,
+            plugin: None,
+            components: Vec::new(),
+        },
         out: out.to_path_buf(),
-        entry: entry.to_string(),
-        css: CssMode::External,
-        plugin: None,
     })
 }
 
@@ -200,6 +144,7 @@ mod tests {
     use std::path::Path;
     use tempfile::TempDir;
     use webui_protocol::web_ui_fragment::Fragment;
+    use webui_protocol::WebUIProtocol;
 
     fn create_app_dir(files: &[(&str, &str)]) -> TempDir {
         let dir = TempDir::new().unwrap();
@@ -282,11 +227,14 @@ mod tests {
         let out_dir = TempDir::new().unwrap();
 
         run(&BuildArgs {
-            app: app_dir.path().to_path_buf(),
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssMode::Inline,
+                plugin: None,
+                components: Vec::new(),
+            },
             out: out_dir.path().to_path_buf(),
-            entry: "index.html".to_string(),
-            css: CssMode::Inline,
-            plugin: None,
         })
         .unwrap();
 
@@ -369,5 +317,196 @@ mod tests {
         let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
         assert!(protocol.fragments.contains_key("page.html"));
         assert!(!protocol.fragments.contains_key("index.html"));
+    }
+
+    #[test]
+    fn test_build_with_components_local_path() {
+        // App directory with an entry that uses an external component
+        let app_dir = create_app_dir(&[("index.html", "<ext-card>Hello</ext-card>")]);
+
+        // External component directory (separate from app)
+        let ext_dir = TempDir::new().unwrap();
+        fs::write(
+            ext_dir.path().join("ext-card.html"),
+            "<div class=\"card\"><slot></slot></div>",
+        )
+        .unwrap();
+        fs::write(
+            ext_dir.path().join("ext-card.css"),
+            ".card { border: 1px solid #ccc; }",
+        )
+        .unwrap();
+
+        let out_dir = TempDir::new().unwrap();
+        let ext_path = ext_dir.path().to_string_lossy().to_string();
+
+        run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssMode::External,
+                plugin: None,
+                components: vec![ext_path],
+            },
+            out: out_dir.path().to_path_buf(),
+        })
+        .unwrap();
+
+        // protocol.bin should exist
+        assert!(out_dir.path().join("protocol.bin").exists());
+        // External component CSS should be emitted
+        let css_path = out_dir.path().join("ext-card.css");
+        assert!(css_path.exists());
+        let css = fs::read_to_string(&css_path).unwrap();
+        assert!(css.contains("border"));
+    }
+
+    #[test]
+    fn test_build_with_components_npm_package() {
+        // Create a mock project with node_modules alongside app dir
+        let project_dir = TempDir::new().unwrap();
+        let nm = project_dir.path().join("node_modules");
+        let pkg_dir = nm.join("test-widget");
+        fs::create_dir_all(&pkg_dir).unwrap();
+
+        // Create the npm package files
+        fs::write(
+            pkg_dir.join("template-webui.html"),
+            "<button><slot></slot></button>",
+        )
+        .unwrap();
+        fs::write(pkg_dir.join("styles.css"), ".btn { padding: 4px; }").unwrap();
+
+        let manifest = serde_json::json!({
+            "schemaVersion": "1.0.0",
+            "modules": [{
+                "kind": "javascript-module",
+                "declarations": [{
+                    "kind": "class",
+                    "tagName": "test-widget"
+                }]
+            }]
+        });
+        fs::write(
+            pkg_dir.join("custom-elements.json"),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let pkg_json = serde_json::json!({
+            "name": "test-widget",
+            "version": "1.0.0",
+            "customElements": "./custom-elements.json",
+            "exports": {
+                "./template-webui.html": "./template-webui.html",
+                "./styles.css": "./styles.css"
+            }
+        });
+        fs::write(
+            pkg_dir.join("package.json"),
+            serde_json::to_string(&pkg_json).unwrap(),
+        )
+        .unwrap();
+
+        // Create app directory under project_dir (node_modules found via upward walk)
+        let app_dir = project_dir.path().join("src");
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::write(
+            app_dir.join("index.html"),
+            "<test-widget>Click me</test-widget>",
+        )
+        .unwrap();
+
+        let out_dir = TempDir::new().unwrap();
+
+        run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir,
+                entry: "index.html".to_string(),
+                css: CssMode::External,
+                plugin: None,
+                components: vec!["test-widget".to_string()],
+            },
+            out: out_dir.path().to_path_buf(),
+        })
+        .unwrap();
+
+        assert!(out_dir.path().join("protocol.bin").exists());
+        let css_path = out_dir.path().join("test-widget.css");
+        assert!(css_path.exists());
+        let css = fs::read_to_string(&css_path).unwrap();
+        assert!(css.contains("padding"));
+    }
+
+    #[test]
+    fn test_build_with_components_npm_scoped() {
+        // Create a mock scoped npm package
+        let project_dir = TempDir::new().unwrap();
+        let nm = project_dir.path().join("node_modules");
+        let scope_dir = nm.join("@myui");
+        fs::create_dir_all(&scope_dir).unwrap();
+
+        // Create two sub-packages under the scope
+        for (sub, tag, html) in &[
+            ("btn", "myui-btn", "<button><slot></slot></button>"),
+            ("txt", "myui-txt", "<span><slot></slot></span>"),
+        ] {
+            let pkg_dir = scope_dir.join(sub);
+            fs::create_dir_all(&pkg_dir).unwrap();
+
+            fs::write(pkg_dir.join("template-webui.html"), html).unwrap();
+
+            let manifest = serde_json::json!({
+                "schemaVersion": "1.0.0",
+                "modules": [{
+                    "kind": "javascript-module",
+                    "declarations": [{ "kind": "class", "tagName": tag }]
+                }]
+            });
+            fs::write(
+                pkg_dir.join("custom-elements.json"),
+                serde_json::to_string(&manifest).unwrap(),
+            )
+            .unwrap();
+
+            let pkg_json = serde_json::json!({
+                "name": format!("@myui/{sub}"),
+                "version": "1.0.0",
+                "customElements": "./custom-elements.json",
+                "exports": {
+                    "./template-webui.html": "./template-webui.html"
+                }
+            });
+            fs::write(
+                pkg_dir.join("package.json"),
+                serde_json::to_string(&pkg_json).unwrap(),
+            )
+            .unwrap();
+        }
+
+        // App under project_dir
+        let app_dir = project_dir.path().join("src");
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::write(
+            app_dir.join("index.html"),
+            "<myui-btn>Go</myui-btn><myui-txt>Hi</myui-txt>",
+        )
+        .unwrap();
+
+        let out_dir = TempDir::new().unwrap();
+
+        run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir,
+                entry: "index.html".to_string(),
+                css: CssMode::External,
+                plugin: None,
+                components: vec!["@myui".to_string()],
+            },
+            out: out_dir.path().to_path_buf(),
+        })
+        .unwrap();
+
+        assert!(out_dir.path().join("protocol.bin").exists());
     }
 }
