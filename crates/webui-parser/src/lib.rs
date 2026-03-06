@@ -616,7 +616,8 @@ impl HtmlParser {
                         binding_count += 1;
                     }
                 } else if is_component {
-                    // Static attribute on component → rawValue fragment
+                    // Static attribute on component → rawValue fragment.
+                    // Not counted as a binding attribute.
                     let frag = Self::maybe_mark_attr_start(
                         WebUIFragment {
                             fragment: Some(web_ui_fragment::Fragment::Attribute(
@@ -631,7 +632,6 @@ impl HtmlParser {
                         &mut first_dynamic_emitted,
                     );
                     self.add_fragment(frag, fragments);
-                    binding_count += 1;
                 } else {
                     // Static attribute on regular element → raw text
                     let attr_text = &source[child.start_byte()..child.end_byte()];
@@ -1008,15 +1008,15 @@ impl HtmlParser {
             )
         };
 
-        // Notify plugin about component
-        if let Some(ref mut p) = self.plugin {
-            if let Some(component) = self.component_registry.get(tag_name) {
-                p.on_parse_component(tag_name, component)?;
-            }
-        }
-
         // Parse and register component template if not already done
         if !self.fragment_records.contains_key(tag_name) {
+            // Notify plugin about component (only on first encounter)
+            if let Some(ref mut p) = self.plugin {
+                if let Some(component) = self.component_registry.get(tag_name) {
+                    p.on_parse_component(tag_name, component)?;
+                }
+            }
+
             let css_injection = match self.css_strategy {
                 CssStrategy::External => {
                     if css_content.is_some() {
@@ -2515,6 +2515,177 @@ mod tests {
             matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if
                 raw.value.contains("</body>") && raw.value.contains("</html>")),
             "Fifth fragment should contain closing tags"
+        );
+    }
+
+    // --- Binding count tests (with mock plugin) ---
+
+    /// Mock plugin that records the binding attribute count for each element.
+    struct BindingCountPlugin {
+        counts: Vec<u32>,
+    }
+
+    impl BindingCountPlugin {
+        fn new() -> Self {
+            Self { counts: Vec::new() }
+        }
+    }
+
+    impl crate::plugin::ParserPlugin for BindingCountPlugin {
+        fn on_parse_component(&mut self, _tag_name: &str, _component: &Component) -> Result<()> {
+            Ok(())
+        }
+
+        fn should_skip_attribute(&self, attr_name: &str) -> bool {
+            attr_name.starts_with('@') || attr_name == "f-ref"
+        }
+
+        fn on_body_end(&mut self) -> Option<String> {
+            None
+        }
+
+        fn on_element_parsed(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>> {
+            self.counts.push(binding_attribute_count);
+            if binding_attribute_count > 0 {
+                Some(binding_attribute_count.to_le_bytes().to_vec())
+            } else {
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn test_component_static_attrs_not_counted_as_bindings() {
+        let mut parser = HtmlParser::with_plugin(Box::new(BindingCountPlugin::new()));
+        parser
+            .component_registry
+            .register_component("my-btn", "<button><slot></slot></button>", None)
+            .expect("register");
+
+        // All attributes are static — binding count should be 0
+        let html = r#"<my-btn class="primary" title="Click me">Go</my-btn>"#;
+        let result = parser.parse("index.html", html);
+        assert!(result.is_ok());
+
+        let records = parser.into_fragment_records();
+
+        // No Plugin fragment should appear (binding count = 0)
+        let frags = &records["index.html"].fragments;
+        let plugin_count = frags
+            .iter()
+            .filter(|f| matches!(f.fragment.as_ref(), Some(Fragment::Plugin(_))))
+            .count();
+        assert_eq!(
+            plugin_count, 0,
+            "Static-only component attributes should not emit a Plugin fragment"
+        );
+    }
+
+    #[test]
+    fn test_component_dynamic_attr_counted_as_binding() {
+        let mut parser = HtmlParser::with_plugin(Box::new(BindingCountPlugin::new()));
+        parser
+            .component_registry
+            .register_component("my-btn", "<button><slot></slot></button>", None)
+            .expect("register");
+
+        // One dynamic attribute ({{...}}) — binding count should be 1
+        let html = r#"<my-btn appearance="{{style}}">Go</my-btn>"#;
+        let result = parser.parse("index.html", html);
+        assert!(result.is_ok());
+
+        let records = parser.into_fragment_records();
+        let frags = &records["index.html"].fragments;
+
+        // Exactly one Plugin fragment with count = 1
+        let plugin_frags: Vec<_> = frags
+            .iter()
+            .filter_map(|f| match f.fragment.as_ref() {
+                Some(Fragment::Plugin(p)) => Some(&p.data),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(plugin_frags.len(), 1, "Expected 1 Plugin fragment");
+        let count = u32::from_le_bytes([
+            plugin_frags[0][0],
+            plugin_frags[0][1],
+            plugin_frags[0][2],
+            plugin_frags[0][3],
+        ]);
+        assert_eq!(count, 1, "Binding attribute count should be 1");
+    }
+
+    #[test]
+    fn test_component_mixed_static_and_dynamic_attrs_binding_count() {
+        let mut parser = HtmlParser::with_plugin(Box::new(BindingCountPlugin::new()));
+        parser
+            .component_registry
+            .register_component("my-btn", "<button><slot></slot></button>", None)
+            .expect("register");
+
+        // 2 static, 1 dynamic, 1 skipped-with-plugin (@click) — only dynamic + skipped counted
+        let html = r#"<my-btn class="primary" title="Submit" appearance="{{look}}" @click="{go}">Go</my-btn>"#;
+        let result = parser.parse("index.html", html);
+        assert!(result.is_ok());
+
+        let records = parser.into_fragment_records();
+        let frags = &records["index.html"].fragments;
+
+        let plugin_frags: Vec<_> = frags
+            .iter()
+            .filter_map(|f| match f.fragment.as_ref() {
+                Some(Fragment::Plugin(p)) => Some(&p.data),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(plugin_frags.len(), 1);
+        let count = u32::from_le_bytes([
+            plugin_frags[0][0],
+            plugin_frags[0][1],
+            plugin_frags[0][2],
+            plugin_frags[0][3],
+        ]);
+        // 1 dynamic (appearance) + 1 skipped-but-counted (@click) = 2
+        assert_eq!(
+            count, 2,
+            "Binding count should include dynamic + plugin-skipped attrs, not static"
+        );
+    }
+
+    #[test]
+    fn test_component_only_skipped_plugin_attrs_counted() {
+        let mut parser = HtmlParser::with_plugin(Box::new(BindingCountPlugin::new()));
+        parser
+            .component_registry
+            .register_component("my-btn", "<button><slot></slot></button>", None)
+            .expect("register");
+
+        // Only plugin-skipped attrs (@click, f-ref) plus static — only skipped counted
+        let html = r#"<my-btn title="Hello" @click="{go}" f-ref="{btn}">Go</my-btn>"#;
+        let result = parser.parse("index.html", html);
+        assert!(result.is_ok());
+
+        let records = parser.into_fragment_records();
+        let frags = &records["index.html"].fragments;
+
+        let plugin_frags: Vec<_> = frags
+            .iter()
+            .filter_map(|f| match f.fragment.as_ref() {
+                Some(Fragment::Plugin(p)) => Some(&p.data),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(plugin_frags.len(), 1);
+        let count = u32::from_le_bytes([
+            plugin_frags[0][0],
+            plugin_frags[0][1],
+            plugin_frags[0][2],
+            plugin_frags[0][3],
+        ]);
+        // @click + f-ref = 2, title is static = not counted
+        assert_eq!(
+            count, 2,
+            "Only plugin-skipped attrs should be counted, not static title"
         );
     }
 }
