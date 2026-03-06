@@ -30,9 +30,18 @@ pub fn spawn_child(label: &str, cmd: &str, args: &[&str], cwd: &Path) -> Option<
         console::style(label).cyan().bold(),
     );
 
-    let mut command = Command::new(cmd);
+    // On Windows, non-.exe commands (e.g. .cmd/.bat scripts like pnpm) must be
+    // launched through cmd.exe because CreateProcessW only resolves .exe files.
+    let mut command = if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.arg("/c").arg(cmd).args(args);
+        c
+    } else {
+        let mut c = Command::new(cmd);
+        c.args(args);
+        c
+    };
     command
-        .args(args)
         .current_dir(cwd)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
