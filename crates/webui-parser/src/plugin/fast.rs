@@ -650,10 +650,7 @@ mod tests {
 
         let output = plugin.on_body_end().unwrap();
 
-        assert_eq!(
-            output.matches("<f-template name=\"my-button\">").count(),
-            1
-        );
+        assert_eq!(output.matches("<f-template name=\"my-button\">").count(), 1);
         assert_eq!(output.matches("<f-template name=\"my-card\">").count(), 1);
     }
 
