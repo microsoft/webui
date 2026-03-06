@@ -885,4 +885,75 @@ mod tests {
             "Expected binding end marker for missing collection, got: {output}"
         );
     }
+
+    #[test]
+    fn test_hydration_empty_string_signal_still_emits_markers() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("my-comp")],
+            },
+        );
+        fragments.insert(
+            "my-comp".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<p>"),
+                    WebUIFragment::signal("name", false),
+                    WebUIFragment::raw("</p>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"name": ""});
+        let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
+        assert!(
+            output.contains("<!--fe-b$$start$$0$$name$$fe-b-->"),
+            "Expected binding start marker for empty string signal, got: {output}"
+        );
+        assert!(
+            output.contains("<!--fe-b$$end$$0$$name$$fe-b-->"),
+            "Expected binding end marker for empty string signal, got: {output}"
+        );
+        assert!(output.contains("<!--fe-b$$start$$0$$name$$fe-b--><!--fe-b$$end$$0$$name$$fe-b-->"));
+    }
+
+    #[test]
+    fn test_hydration_empty_collection_still_emits_markers() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("my-comp")],
+            },
+        );
+        fragments.insert(
+            "my-comp".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<ul>"),
+                    WebUIFragment::for_loop("item", "items", "loop-body"),
+                    WebUIFragment::raw("</ul>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "loop-body".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::signal("item", false)],
+            },
+        );
+        let protocol = WebUIProtocol { fragments };
+        let state = test_json!({"items": []});
+        let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
+        assert!(
+            output.contains("<!--fe-b$$start$$0$$loop-body$$fe-b-->"),
+            "Expected binding start marker for empty collection, got: {output}"
+        );
+        assert!(
+            output.contains("<!--fe-b$$end$$0$$loop-body$$fe-b-->"),
+            "Expected binding end marker for empty collection, got: {output}"
+        );
+    }
 }
