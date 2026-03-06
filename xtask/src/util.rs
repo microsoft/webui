@@ -21,8 +21,7 @@ pub fn workspace_root() -> Result<PathBuf, String> {
 
 /// Run a command and return Ok if it exits with status 0.
 pub fn run_command(cmd: &str, args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
-    let mut command = Command::new(cmd);
-    command.args(args);
+    let mut command = build_command(cmd, args);
     if let Some(dir) = cwd {
         command.current_dir(dir);
     }
@@ -32,6 +31,50 @@ pub fn run_command(cmd: &str, args: &[&str], cwd: Option<&Path>) -> Result<(), S
         Ok(status) => Err(format!("exit code {}", status.code().unwrap_or(1))),
         Err(error) => Err(error.to_string()),
     }
+}
+
+/// Build a [`Command`] for `cmd` with `args`, resolving `.cmd`/`.bat` scripts
+/// on Windows.
+///
+/// On Windows `CreateProcessW` cannot launch `.cmd`/`.bat` scripts directly.
+/// This function uses `which` to resolve the executable path and, when the
+/// target is a shell script, wraps it in `cmd.exe /c <resolved_path>`.
+pub fn build_command(cmd: &str, args: &[&str]) -> Command {
+    #[cfg(windows)]
+    {
+        resolve_windows_command(cmd, args)
+    }
+    #[cfg(not(windows))]
+    {
+        let mut c = Command::new(cmd);
+        c.args(args);
+        c
+    }
+}
+
+#[cfg(windows)]
+fn resolve_windows_command(cmd: &str, args: &[&str]) -> Command {
+    if let Ok(resolved) = which::which(cmd) {
+        let ext = resolved
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+
+        if matches!(ext.as_deref(), Some("cmd" | "bat")) {
+            let mut c = Command::new("cmd");
+            c.arg("/c").arg(&resolved).args(args);
+            return c;
+        }
+
+        let mut c = Command::new(&resolved);
+        c.args(args);
+        return c;
+    }
+
+    // Fallback: let cmd.exe attempt resolution.
+    let mut c = Command::new("cmd");
+    c.arg("/c").arg(cmd).args(args);
+    c
 }
 
 /// Collect immediate child directories of `root`, sorted.

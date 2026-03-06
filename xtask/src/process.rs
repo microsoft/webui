@@ -3,17 +3,54 @@
 //! Provides spawning children in their own process group and graceful shutdown
 //! via SIGTERM (Unix) or `CTRL_BREAK_EVENT` (Windows), with a timed fallback
 //! to a forced kill.
+//!
+//! On Windows, spawned children are assigned to a Job Object so the entire
+//! process tree is terminated when the handle is dropped  even when the direct
+//! child is a `cmd.exe /c` wrapper.
 
 use std::path::Path;
-use std::process::{Child, Command, ExitCode, Stdio};
+use std::process::{Child, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::util;
+
 /// Maximum time to wait for a child to exit after a graceful stop signal before
 /// escalating to a forced kill.
 const GRACEFUL_TIMEOUT: Duration = Duration::from_secs(3);
+
+// ---------------------------------------------------------------------------
+// ManagedChild
+// ---------------------------------------------------------------------------
+
+/// A child process with platform-specific process-tree tracking.
+///
+/// On Windows this wraps the child in a Job Object so that `cmd.exe /c`
+/// wrapper processes and their descendants are cleaned up on drop.
+pub struct ManagedChild {
+    inner: Child,
+    #[cfg(windows)]
+    _job: sys::JobHandle,
+}
+
+impl ManagedChild {
+    /// Check if the child has exited without blocking.
+    pub fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.inner.try_wait()
+    }
+
+    /// Block until the child exits and return its status.
+    pub fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.inner.wait()
+    }
+
+    /// Force-kill the child process.
+    pub fn kill(&mut self) -> std::io::Result<()> {
+        self.inner.kill()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Spawning
@@ -23,24 +60,18 @@ const GRACEFUL_TIMEOUT: Duration = Duration::from_secs(3);
 ///
 /// The child inherits stdin/stdout/stderr so its output appears inline. Returns
 /// `None` (and prints an error) if the process cannot be started.
-pub fn spawn_child(label: &str, cmd: &str, args: &[&str], cwd: &Path) -> Option<Child> {
+///
+/// On Windows the child is also assigned to a Job Object with
+/// `KILL_ON_JOB_CLOSE`, ensuring the entire process tree is cleaned up when the
+/// returned [`ManagedChild`] is dropped.
+pub fn spawn_child(label: &str, cmd: &str, args: &[&str], cwd: &Path) -> Option<ManagedChild> {
     eprintln!(
         "  {} starting {}",
-        console::style("→").dim(),
+        console::style("").dim(),
         console::style(label).cyan().bold(),
     );
 
-    // On Windows, non-.exe commands (e.g. .cmd/.bat scripts like pnpm) must be
-    // launched through cmd.exe because CreateProcessW only resolves .exe files.
-    let mut command = if cfg!(windows) {
-        let mut c = Command::new("cmd");
-        c.arg("/c").arg(cmd).args(args);
-        c
-    } else {
-        let mut c = Command::new(cmd);
-        c.args(args);
-        c
-    };
+    let mut command = util::build_command(cmd, args);
     command
         .current_dir(cwd)
         .stdin(Stdio::inherit())
@@ -50,11 +81,20 @@ pub fn spawn_child(label: &str, cmd: &str, args: &[&str], cwd: &Path) -> Option<
     sys::configure_process_group(&mut command);
 
     match command.spawn() {
-        Ok(child) => Some(child),
+        Ok(child) => {
+            #[cfg(windows)]
+            let _job = sys::JobHandle::attach(&child);
+
+            Some(ManagedChild {
+                inner: child,
+                #[cfg(windows)]
+                _job,
+            })
+        }
         Err(e) => {
             eprintln!(
                 "  {} [{}] failed to start: {}",
-                console::style("✘").red().bold(),
+                console::style("").red().bold(),
                 label,
                 e
             );
@@ -69,28 +109,28 @@ pub fn spawn_child(label: &str, cmd: &str, args: &[&str], cwd: &Path) -> Option<
 
 /// Send a graceful stop signal, wait up to [`GRACEFUL_TIMEOUT`], then force
 /// kill.
-pub fn terminate_gracefully(child: &mut Child) {
-    sys::send_graceful_stop(child);
+pub fn terminate_gracefully(managed: &mut ManagedChild) {
+    sys::send_graceful_stop(&managed.inner);
 
     let deadline = Instant::now() + GRACEFUL_TIMEOUT;
     while Instant::now() < deadline {
-        if matches!(child.try_wait(), Ok(Some(_))) {
+        if matches!(managed.try_wait(), Ok(Some(_))) {
             return;
         }
         thread::sleep(Duration::from_millis(50));
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = managed.kill();
+    let _ = managed.wait();
 }
 
-/// Run a Ctrl+C–aware poll loop for exactly two child processes.
+/// Run a Ctrl+Caware poll loop for exactly two child processes.
 ///
 /// * On Ctrl+C both children receive a graceful stop signal in parallel.
 /// * If either child exits on its own the other is also stopped.
 /// * Returns [`ExitCode::SUCCESS`] for user-initiated stops, or
 ///   [`ExitCode::FAILURE`] if a child crashed.
-pub fn wait_for_pair(server: &mut Child, client: &mut Child) -> ExitCode {
+pub fn wait_for_pair(server: &mut ManagedChild, client: &mut ManagedChild) -> ExitCode {
     let ctrlc = Arc::new(AtomicBool::new(false));
     let flag = ctrlc.clone();
     ctrlc::set_handler(move || {
@@ -101,7 +141,7 @@ pub fn wait_for_pair(server: &mut Child, client: &mut Child) -> ExitCode {
     loop {
         if ctrlc.load(Ordering::SeqCst) {
             shutdown_pair(server, client);
-            eprintln!("\n  {} stopped", console::style("✔").green());
+            eprintln!("\n  {} stopped", console::style("").green());
             return ExitCode::SUCCESS;
         }
 
@@ -119,13 +159,13 @@ pub fn wait_for_pair(server: &mut Child, client: &mut Child) -> ExitCode {
             let c = client.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
 
             if ctrlc.load(Ordering::SeqCst) {
-                eprintln!("\n  {} stopped", console::style("✔").green());
+                eprintln!("\n  {} stopped", console::style("").green());
                 return ExitCode::SUCCESS;
             }
 
             eprintln!(
                 "  {} dev processes exited (server={}, client={})",
-                console::style("✘").red().bold(),
+                console::style("").red().bold(),
                 s,
                 c,
             );
@@ -138,9 +178,9 @@ pub fn wait_for_pair(server: &mut Child, client: &mut Child) -> ExitCode {
 
 /// Signal both children gracefully, then force-kill any that don't exit in
 /// time.
-fn shutdown_pair(a: &mut Child, b: &mut Child) {
-    sys::send_graceful_stop(a);
-    sys::send_graceful_stop(b);
+fn shutdown_pair(a: &mut ManagedChild, b: &mut ManagedChild) {
+    sys::send_graceful_stop(&a.inner);
+    sys::send_graceful_stop(&b.inner);
 
     let deadline = Instant::now() + GRACEFUL_TIMEOUT;
 
@@ -207,6 +247,7 @@ mod sys {
 
 #[cfg(windows)]
 mod sys {
+    use std::ffi::c_void;
     use std::process::{Child, Command};
 
     /// `CREATE_NEW_PROCESS_GROUP` makes the child the root of a new process
@@ -217,8 +258,151 @@ mod sys {
     /// `CTRL_C_EVENT` which always targets the current console's group).
     const CTRL_BREAK_EVENT: u32 = 1;
 
+    // -- Job Object constants ------------------------------------------------
+
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
+    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: u32 = 9;
+    const PROCESS_SET_QUOTA: u32 = 0x0100;
+    const PROCESS_TERMINATE: u32 = 0x0001;
+
+    type Handle = *mut c_void;
+
     extern "system" {
         fn GenerateConsoleCtrlEvent(dw_ctrl_event: u32, dw_process_group_id: u32) -> i32;
+        fn CreateJobObjectW(security_attributes: Handle, name: *const u16) -> Handle;
+        fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
+        fn SetInformationJobObject(job: Handle, class: u32, info: *const c_void, len: u32) -> i32;
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
+        fn CloseHandle(handle: Handle) -> i32;
+    }
+
+    // -- repr(C) structs matching the Windows Job Object API ------------------
+
+    /// `JOBOBJECT_BASIC_LIMIT_INFORMATION`. The compiler-inserted padding
+    /// matches the C layout on both x86 and x86_64.
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct BasicLimitInfo {
+        per_process_user_time_limit: i64,
+        per_job_user_time_limit: i64,
+        limit_flags: u32,
+        minimum_working_set_size: usize,
+        maximum_working_set_size: usize,
+        active_process_limit: u32,
+        affinity: usize,
+        priority_class: u32,
+        scheduling_class: u32,
+    }
+
+    /// `IO_COUNTERS`.
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct IoCounters {
+        read_operation_count: u64,
+        write_operation_count: u64,
+        other_operation_count: u64,
+        read_transfer_count: u64,
+        write_transfer_count: u64,
+        other_transfer_count: u64,
+    }
+
+    /// `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`.
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct ExtendedLimitInfo {
+        basic: BasicLimitInfo,
+        io_info: IoCounters,
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory_used: usize,
+        peak_job_memory_used: usize,
+    }
+
+    // -- JobHandle RAII wrapper -----------------------------------------------
+
+    /// RAII wrapper for a Windows Job Object handle.
+    ///
+    /// When dropped, the handle is closed. Because the job is created with
+    /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, all processes still in the job are
+    /// terminated  ensuring no orphaned children survive a `cmd.exe /c` wrapper.
+    pub struct JobHandle(Handle);
+
+    // SAFETY: Job Object handles are not bound to a specific thread.
+    unsafe impl Send for JobHandle {}
+    unsafe impl Sync for JobHandle {}
+
+    impl JobHandle {
+        /// Create a Job Object with `KILL_ON_JOB_CLOSE` and assign `child` to
+        /// it. Returns a no-op handle if any Win32 call fails (best-effort).
+        pub fn attach(child: &Child) -> Self {
+            // SAFETY: `CreateJobObjectW` with null args creates an unnamed job.
+            let job = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
+            if job.is_null() {
+                return Self(std::ptr::null_mut());
+            }
+
+            let info = ExtendedLimitInfo {
+                basic: BasicLimitInfo {
+                    per_process_user_time_limit: 0,
+                    per_job_user_time_limit: 0,
+                    limit_flags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                    minimum_working_set_size: 0,
+                    maximum_working_set_size: 0,
+                    active_process_limit: 0,
+                    affinity: 0,
+                    priority_class: 0,
+                    scheduling_class: 0,
+                },
+                io_info: IoCounters {
+                    read_operation_count: 0,
+                    write_operation_count: 0,
+                    other_operation_count: 0,
+                    read_transfer_count: 0,
+                    write_transfer_count: 0,
+                    other_transfer_count: 0,
+                },
+                process_memory_limit: 0,
+                job_memory_limit: 0,
+                peak_process_memory_used: 0,
+                peak_job_memory_used: 0,
+            };
+
+            // SAFETY: `info` is a valid, zero-initialised
+            // `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` with only `LimitFlags` set.
+            unsafe {
+                SetInformationJobObject(
+                    job,
+                    JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                    std::ptr::addr_of!(info).cast(),
+                    std::mem::size_of::<ExtendedLimitInfo>() as u32,
+                );
+            }
+
+            let access = PROCESS_SET_QUOTA | PROCESS_TERMINATE;
+            // SAFETY: `child.id()` is a valid PID of a process we just spawned.
+            let process = unsafe { OpenProcess(access, 0, child.id()) };
+            if !process.is_null() {
+                // SAFETY: both handles are valid.
+                unsafe {
+                    AssignProcessToJobObject(job, process);
+                    CloseHandle(process);
+                }
+            }
+
+            Self(job)
+        }
+    }
+
+    impl Drop for JobHandle {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: `self.0` is a valid Job Object handle (guarded).
+                // Closing triggers `KILL_ON_JOB_CLOSE` for remaining processes.
+                unsafe {
+                    CloseHandle(self.0);
+                }
+            }
+        }
     }
 
     pub fn configure_process_group(command: &mut Command) {
@@ -226,7 +410,7 @@ mod sys {
         command.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
 
-    /// Send `CTRL_BREAK_EVENT` to the child's process group — the Windows
+    /// Send `CTRL_BREAK_EVENT` to the child's process group  the Windows
     /// equivalent of Unix SIGTERM for console applications.
     pub fn send_graceful_stop(child: &Child) {
         // SAFETY: `GenerateConsoleCtrlEvent` is safe to call with a valid

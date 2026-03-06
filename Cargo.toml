@@ -41,6 +41,7 @@ tree-sitter-html = "0.23.2"
 tree-sitter-css = "0.25.0"
 walkdir = "2.5.0"
 libc = "0.2.182"
+which = "7"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
