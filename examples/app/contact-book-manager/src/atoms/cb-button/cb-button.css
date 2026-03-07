@@ -7,67 +7,67 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 8px 16px;
+  padding: var(--spacing-s) var(--spacing-l);
   border: 1px solid transparent;
-  border-radius: 6px;
-  font-size: 14px;
+  border-radius: var(--border-radius-m);
+  font-size: var(--font-size-m);
   font-weight: 500;
   font-family: inherit;
   cursor: pointer;
   transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s;
   line-height: 1.4;
-  background-color: #0078d4;
-  color: #fff;
+  background-color: var(--color-brand-primary);
+  color: var(--color-white);
 }
 
 .btn:hover {
-  background-color: #106ebe;
+  background-color: var(--color-brand-primary-hover);
 }
 
 .btn:active {
-  background-color: #005a9e;
+  background-color: var(--color-brand-primary-active);
 }
 
 .btn:focus-visible {
-  outline: 2px solid #0078d4;
+  outline: 2px solid var(--color-brand-primary);
   outline-offset: 2px;
 }
 
 :host([variant="secondary"]) .btn {
-  background-color: #fff;
-  color: #374151;
-  border-color: #d1d5db;
+  background-color: var(--color-white);
+  color: var(--color-neutral-700);
+  border-color: var(--color-neutral-300);
 }
 
 :host([variant="secondary"]) .btn:hover {
-  background-color: #f9fafb;
-  border-color: #9ca3af;
+  background-color: var(--color-neutral-100);
+  border-color: var(--color-neutral-400);
 }
 
 :host([variant="danger"]) .btn {
-  background-color: #dc2626;
-  color: #fff;
+  background-color: var(--color-danger);
+  color: var(--color-white);
 }
 
 :host([variant="danger"]) .btn:hover {
-  background-color: #b91c1c;
+  background-color: var(--color-danger-hover);
 }
 
 :host([variant="ghost"]) .btn {
   background-color: transparent;
-  color: #374151;
+  color: var(--color-neutral-700);
 }
 
 :host([variant="ghost"]) .btn:hover {
-  background-color: #f3f4f6;
+  background-color: var(--color-neutral-150);
 }
 
 :host([size="sm"]) .btn {
-  padding: 4px 10px;
-  font-size: 12px;
+  padding: var(--spacing-xs) var(--spacing-m);
+  font-size: var(--font-size-xs);
 }
 
 :host([size="lg"]) .btn {
-  padding: 12px 24px;
-  font-size: 16px;
+  padding: var(--spacing-m) var(--spacing-xxl);
+  font-size: var(--font-size-l);
 }

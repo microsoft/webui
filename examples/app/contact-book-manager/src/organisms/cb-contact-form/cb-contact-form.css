@@ -3,22 +3,22 @@
 }
 
 .form-container {
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-  padding: 32px;
+  background: var(--color-white);
+  border-radius: var(--border-radius-xl);
+  box-shadow: var(--shadow-s);
+  padding: var(--spacing-3xl);
 }
 
 .form-title {
   font-size: 22px;
   font-weight: 700;
-  margin: 0 0 24px;
+  margin: 0 0 var(--spacing-xxl);
 }
 
 .form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0 20px;
+  gap: 0 var(--spacing-xl);
 }
 
 @media (max-width: 640px) {
@@ -31,80 +31,80 @@
 .form-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 16px;
+  gap: var(--spacing-xs);
+  margin-bottom: var(--spacing-l);
 }
 
 .field-input {
   width: 100%;
-  padding: 10px 14px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 14px;
+  padding: var(--spacing-m) var(--spacing-m);
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--border-radius-m);
+  font-size: var(--font-size-m);
   font-family: inherit;
   box-sizing: border-box;
 }
 
 .field-input:focus {
   outline: none;
-  border-color: #0078d4;
-  box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.15);
+  border-color: var(--color-brand-primary);
+  box-shadow: var(--shadow-focus-ring);
 }
 
 .form-field-full {
-  margin-bottom: 16px;
+  margin-bottom: var(--spacing-l);
 }
 
 .field-label {
-  font-size: 13px;
+  font-size: var(--font-size-s);
   font-weight: 600;
-  color: #374151;
+  color: var(--color-neutral-700);
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: var(--spacing-xs);
 }
 
 .group-selector {
   display: flex;
-  gap: 8px;
+  gap: var(--spacing-s);
   flex-wrap: wrap;
-  margin-top: 4px;
+  margin-top: var(--spacing-xs);
 }
 
 .group-option {
-  padding: 8px 16px;
-  border: 1px solid #d1d5db;
+  padding: var(--spacing-s) var(--spacing-l);
+  border: 1px solid var(--color-neutral-300);
   border-radius: 20px;
-  background: #fff;
+  background: var(--color-white);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--font-size-s);
   font-family: inherit;
   transition: all 0.15s;
 }
 
 .group-option:hover {
-  border-color: #0078d4;
-  color: #0078d4;
+  border-color: var(--color-brand-primary);
+  color: var(--color-brand-primary);
 }
 
 .group-option.active {
-  background: #0078d4;
-  color: #fff;
-  border-color: #0078d4;
+  background: var(--color-brand-primary);
+  color: var(--color-white);
+  border-color: var(--color-brand-primary);
 }
 
 .notes-input {
   width: 100%;
-  padding: 10px 14px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 14px;
+  padding: var(--spacing-m) var(--spacing-m);
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--border-radius-m);
+  font-size: var(--font-size-m);
   font-family: inherit;
   resize: vertical;
   box-sizing: border-box;
 }
 
 .notes-input:focus {
-  border-color: #0078d4;
+  border-color: var(--color-brand-primary);
   outline: none;
   box-shadow: 0 0 0 2px rgba(0, 120, 212, 0.2);
 }
@@ -112,38 +112,38 @@
 .form-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 12px;
-  margin-top: 24px;
-  padding-top: 20px;
-  border-top: 1px solid #f3f4f6;
+  gap: var(--spacing-m);
+  margin-top: var(--spacing-xxl);
+  padding-top: var(--spacing-xl);
+  border-top: 1px solid var(--color-neutral-150);
 }
 
 .cancel-btn {
-  padding: 10px 24px;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  background: #fff;
+  padding: var(--spacing-m) var(--spacing-xxl);
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--border-radius-l);
+  background: var(--color-white);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--font-size-m);
   font-family: inherit;
 }
 
 .cancel-btn:hover {
-  background: #f9fafb;
+  background: var(--color-neutral-100);
 }
 
 .save-btn {
-  padding: 10px 24px;
+  padding: var(--spacing-m) var(--spacing-xxl);
   border: none;
-  border-radius: 8px;
-  background: #0078d4;
-  color: #fff;
+  border-radius: var(--border-radius-l);
+  background: var(--color-brand-primary);
+  color: var(--color-white);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--font-size-m);
   font-weight: 600;
   font-family: inherit;
 }
 
 .save-btn:hover {
-  background: #106ebe;
+  background: var(--color-brand-primary-hover);
 }

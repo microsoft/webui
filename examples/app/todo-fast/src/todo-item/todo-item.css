@@ -4,40 +4,40 @@
 
 :host([state="done"]) .title {
   text-decoration: line-through;
-  color: #999;
+  color: var(--color-neutral-400);
 }
 
 .item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border-bottom: 1px solid #eee;
+  gap: var(--spacing-m);
+  padding: var(--spacing-ml) var(--spacing-l);
+  border-bottom: 1px solid var(--color-neutral-200);
 }
 
 .toggle {
   width: 28px;
   height: 28px;
-  border-radius: 50%;
-  border: 2px solid #ccc;
+  border-radius: var(--border-radius-round);
+  border: 2px solid var(--color-neutral-300);
   background: transparent;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  font-size: 14px;
-  color: #4caf50;
+  font-size: var(--font-size-m);
+  color: var(--color-success);
 }
 
 :host([state="done"]) .toggle {
-  border-color: #4caf50;
-  background: #e8f5e9;
+  border-color: var(--color-success);
+  background: var(--color-success-light);
 }
 
 .title {
   flex: 1;
-  font-size: 15px;
+  font-size: var(--font-size-ml);
 }
 
 .delete {
@@ -47,8 +47,8 @@
   background: transparent;
   cursor: pointer;
   font-size: 20px;
-  color: #ccc;
-  border-radius: 4px;
+  color: var(--color-neutral-300);
+  border-radius: var(--border-radius-s);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -61,6 +61,6 @@
 }
 
 .delete:hover {
-  color: #e53935;
-  background: #ffebee;
+  color: var(--color-danger);
+  background: var(--color-danger-light);
 }

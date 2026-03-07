@@ -5,9 +5,9 @@
 .sidebar {
   width: 260px;
   min-height: calc(100vh - 65px);
-  background: #fff;
-  border-right: 1px solid #e5e7eb;
-  padding: 16px 12px;
+  background: var(--color-white);
+  border-right: 1px solid var(--color-neutral-200);
+  padding: var(--spacing-l) var(--spacing-m);
   overflow-y: auto;
 }
 
@@ -19,16 +19,16 @@
 
 .nav-divider {
   height: 1px;
-  background: #e5e7eb;
-  margin: 12px 0;
+  background: var(--color-neutral-200);
+  margin: var(--spacing-m) 0;
 }
 
 .nav-heading {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #9ca3af;
-  padding: 8px 14px 4px;
+  color: var(--color-neutral-400);
+  padding: var(--spacing-s) var(--spacing-m) var(--spacing-xs);
   font-weight: 600;
   margin: 0;
 }
@@ -37,47 +37,47 @@
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-radius: 8px;
+  gap: var(--spacing-m);
+  padding: var(--spacing-m) var(--spacing-m);
+  border-radius: var(--border-radius-l);
   cursor: pointer;
   transition: background 0.15s;
 }
 
 .nav-item:hover {
-  background: #f3f4f6;
+  background: var(--color-neutral-150);
 }
 
 .nav-item.active {
-  background: #e0f2fe;
-  color: #0078d4;
+  background: var(--color-brand-light);
+  color: var(--color-brand-primary);
 }
 
 .nav-icon {
-  font-size: 18px;
+  font-size: var(--font-size-xl);
   width: 24px;
   text-align: center;
 }
 
 .nav-label {
   flex: 1;
-  font-size: 14px;
+  font-size: var(--font-size-m);
   font-weight: 500;
 }
 
 .nav-count {
-  font-size: 12px;
-  background: #e5e7eb;
-  color: #6b7280;
-  border-radius: 10px;
-  padding: 1px 8px;
+  font-size: var(--font-size-xs);
+  background: var(--color-neutral-200);
+  color: var(--color-neutral-500);
+  border-radius: var(--border-radius-pill);
+  padding: 1px var(--spacing-s);
   min-width: 22px;
   text-align: center;
 }
 
 .nav-item.active .nav-count {
-  background: #bfdbfe;
-  color: #0078d4;
+  background: var(--color-brand-accent);
+  color: var(--color-brand-primary);
 }
 
 .nav-icon-dashboard::before { content: '\1F4CA'; }

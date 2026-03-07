@@ -6,44 +6,66 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>WebUI Hello World</title>
   <style>
+    :root {
+      /* Colors */
+      --color-neutral-900: #333;
+      --color-neutral-200: #eee;
+      --color-neutral-100: #f9f9f9;
+      --color-brand-primary: #0078d7;
+      --color-brand-light: #e9f5ff;
+      --color-success-light: #eafff4;
+
+      /* Spacing */
+      --spacing-xl: 20px;
+      --spacing-l: 15px;
+      --spacing-m: 10px;
+
+      /* Border Radius */
+      --border-radius-m: 5px;
+
+      /* Typography */
+      --font-family-base: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      --line-height-base: 1.6;
+    }
+
     body {
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      font-family: var(--font-family-base);
       max-width: 800px;
       margin: 0 auto;
-      padding: 20px;
-      line-height: 1.6;
+      padding: var(--spacing-xl);
+      line-height: var(--line-height-base);
     }
 
     h1 {
-      color: #333;
-      border-bottom: 2px solid #eee;
-      padding-bottom: 10px;
+      color: var(--color-neutral-900);
+      border-bottom: 2px solid var(--color-neutral-200);
+      padding-bottom: var(--spacing-m);
     }
 
     .people-list {
-      background-color: #f9f9f9;
-      padding: 15px;
-      border-radius: 5px;
-      margin-bottom: 20px;
+      background-color: var(--color-neutral-100);
+      padding: var(--spacing-l);
+      border-radius: var(--border-radius-m);
+      margin-bottom: var(--spacing-xl);
     }
 
     .person {
-      border-left: 3px solid #0078d7;
-      padding-left: 10px;
-      margin-bottom: 10px;
+      border-left: 3px solid var(--color-brand-primary);
+      padding-left: var(--spacing-m);
+      margin-bottom: var(--spacing-m);
     }
 
     .description {
-      background-color: #e9f5ff;
-      padding: 15px;
-      border-radius: 5px;
-      margin-bottom: 20px;
+      background-color: var(--color-brand-light);
+      padding: var(--spacing-l);
+      border-radius: var(--border-radius-m);
+      margin-bottom: var(--spacing-xl);
     }
 
     .contact {
-      background-color: #eafff4;
-      padding: 15px;
-      border-radius: 5px;
+      background-color: var(--color-success-light);
+      padding: var(--spacing-l);
+      border-radius: var(--border-radius-m);
     }
   </style>
 </head>

@@ -4,24 +4,24 @@
 
 .input {
   width: 100%;
-  padding: 10px 14px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 14px;
+  padding: var(--spacing-m) var(--spacing-m);
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--border-radius-m);
+  font-size: var(--font-size-m);
   font-family: inherit;
   line-height: 1.4;
-  color: #111827;
-  background-color: #fff;
+  color: var(--color-neutral-950);
+  background-color: var(--color-white);
   box-sizing: border-box;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .input::placeholder {
-  color: #9ca3af;
+  color: var(--color-neutral-400);
 }
 
 .input:focus {
   outline: none;
-  border-color: #0078d4;
-  box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.15);
+  border-color: var(--color-brand-primary);
+  box-shadow: var(--shadow-focus-ring);
 }

@@ -5,15 +5,15 @@
 .card {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 14px 18px;
-  border-bottom: 1px solid #f3f4f6;
+  gap: var(--spacing-m);
+  padding: var(--spacing-m) 18px;
+  border-bottom: 1px solid var(--color-neutral-150);
   cursor: pointer;
   transition: background 0.15s;
 }
 
 .card:hover {
-  background: #f9fafb;
+  background: var(--color-neutral-100);
 }
 
 .card-content {
@@ -33,14 +33,14 @@
 .name {
   font-size: 15px;
   font-weight: 600;
-  color: #111827;
+  color: var(--color-neutral-950);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .fav-star {
-  font-size: 12px;
+  font-size: var(--font-size-xs);
 }
 
 .fav-star::before {
@@ -48,22 +48,22 @@
 }
 
 .email {
-  font-size: 13px;
-  color: #6b7280;
+  font-size: var(--font-size-s);
+  color: var(--color-neutral-500);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .phone {
-  font-size: 13px;
-  color: #9ca3af;
+  font-size: var(--font-size-s);
+  color: var(--color-neutral-400);
 }
 
 .avatar {
   width: 40px;
   height: 40px;
-  border-radius: 50%;
+  border-radius: var(--border-radius-round);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -71,18 +71,18 @@
 }
 
 .avatar-initials {
-  color: #fff;
-  font-size: 14px;
+  color: var(--color-white);
+  font-size: var(--font-size-m);
   font-weight: 600;
   letter-spacing: 0.5px;
 }
 
 .badge {
-  font-size: 12px;
-  padding: 2px 10px;
-  border-radius: 12px;
-  background: #e5e7eb;
-  color: #374151;
+  font-size: var(--font-size-xs);
+  padding: 2px var(--spacing-m);
+  border-radius: var(--border-radius-xl);
+  background: var(--color-neutral-200);
+  color: var(--color-neutral-700);
   white-space: nowrap;
   flex-shrink: 0;
 }

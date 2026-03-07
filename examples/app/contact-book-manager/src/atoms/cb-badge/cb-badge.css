@@ -4,31 +4,31 @@
 
 .badge {
   display: inline-block;
-  padding: 2px 10px;
-  border-radius: 12px;
-  font-size: 12px;
+  padding: 2px var(--spacing-m);
+  border-radius: var(--border-radius-xl);
+  font-size: var(--font-size-xs);
   font-weight: 500;
   line-height: 1.5;
-  background-color: #e5e7eb;
-  color: #374151;
+  background-color: var(--color-neutral-200);
+  color: var(--color-neutral-700);
 }
 
 :host([variant="work"]) .badge {
-  background-color: #dbeafe;
-  color: #1d4ed8;
+  background-color: var(--color-brand-lighter);
+  color: var(--color-blue-text);
 }
 
 :host([variant="family"]) .badge {
-  background-color: #dcfce7;
-  color: #15803d;
+  background-color: var(--color-success-light);
+  color: var(--color-success-text);
 }
 
 :host([variant="friends"]) .badge {
-  background-color: #f3e8ff;
-  color: #7e22ce;
+  background-color: var(--color-purple-light);
+  color: var(--color-purple-text);
 }
 
 :host([variant="other"]) .badge {
-  background-color: #e5e7eb;
-  color: #374151;
+  background-color: var(--color-neutral-200);
+  color: var(--color-neutral-700);
 }

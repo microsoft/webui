@@ -8,10 +8,10 @@
   justify-content: center;
   width: 40px;
   height: 40px;
-  border-radius: 50%;
-  color: #fff;
+  border-radius: var(--border-radius-round);
+  color: var(--color-white);
   font-weight: 600;
-  font-size: 16px;
+  font-size: var(--font-size-l);
   user-select: none;
 }
 
@@ -23,11 +23,11 @@
 :host([size="sm"]) .avatar {
   width: 32px;
   height: 32px;
-  font-size: 13px;
+  font-size: var(--font-size-s);
 }
 
 :host([size="lg"]) .avatar {
   width: 64px;
   height: 64px;
-  font-size: 24px;
+  font-size: var(--font-size-xxl);
 }
