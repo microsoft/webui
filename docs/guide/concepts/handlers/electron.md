@@ -51,7 +51,7 @@ This avoids the need for a local HTTP server and provides a clean, secure origin
 
 A complete working example is available at [`examples/integration/electron/`](https://github.com/user/webui/tree/main/examples/integration/electron).
 
-The [Contact Book Manager](https://github.com/user/webui/tree/main/examples/app/contact-book-manager) app demonstrates a full-featured WebUI application that works both in the browser (via `webui start`) and as an Electron desktop app.
+The [Contact Book Manager](https://github.com/user/webui/tree/main/examples/app/contact-book-manager) app demonstrates a full-featured WebUI application that works both in the browser (via `webui serve`) and as an Electron desktop app.
 
 ## Performance Notes
 

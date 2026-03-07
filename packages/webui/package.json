@@ -1,0 +1,48 @@
+{
+  "bin": {
+    "webui": "bin/webui"
+  },
+  "description": "WebUI — high-performance server-side rendering framework. Build-time protocol compiler and streaming renderer.",
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
+    "typescript": "catalog:"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "exports": {
+    ".": {
+      "import": {
+        "default": "./dist/index.js",
+        "types": "./dist/index.d.ts"
+      }
+    }
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "wasm/"
+  ],
+  "license": "MIT",
+  "name": "@microsoft/webui",
+  "optionalDependencies": {
+    "@microsoft/webui-darwin-arm64": "workspace:*",
+    "@microsoft/webui-darwin-x64": "workspace:*",
+    "@microsoft/webui-linux-arm64": "workspace:*",
+    "@microsoft/webui-linux-x64": "workspace:*",
+    "@microsoft/webui-win32-arm64": "workspace:*",
+    "@microsoft/webui-win32-x64": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nicolo-ribaudo/nicolo-nicolo.git"
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts src/platform.ts src/install.ts --outdir=dist --format=esm --platform=node && tsc --emitDeclarationOnly",
+    "postinstall": "node --input-type=module -e \"try{await import('./dist/install.js')}catch{}\"",
+    "test": "esbuild test/integration.test.ts --outfile=test/integration.test.js --format=esm --platform=node && node --test test/integration.test.js"
+  },
+  "type": "module",
+  "version": "0.0.1"
+}

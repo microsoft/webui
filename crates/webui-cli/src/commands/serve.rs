@@ -10,14 +10,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
+use webui::WebUIHandler;
 use webui_handler::plugin::FastHydrationPlugin;
-use webui_handler::{ResponseWriter, WebUIHandler};
+use webui_handler::ResponseWriter;
 
 use super::common::*;
 use crate::utils::output;
 
 #[derive(Args)]
-pub struct StartArgs {
+pub struct ServeArgs {
     #[command(flatten)]
     pub app_args: AppArgs,
 
@@ -38,16 +39,16 @@ pub struct StartArgs {
     pub watch: bool,
 }
 
-/// Resolved paths for `webui start`.
+/// Resolved paths for `webui serve`.
 #[derive(Clone)]
-struct StartPaths {
+struct ServePaths {
     app_dir: PathBuf,
     state_file: PathBuf,
     serve_dir: Option<PathBuf>,
 }
 
-impl StartPaths {
-    fn from_args(args: &StartArgs) -> Result<Self> {
+impl ServePaths {
+    fn from_args(args: &ServeArgs) -> Result<Self> {
         let app_input = expand_tilde(&args.app_args.app)
             .with_context(|| format!("Failed to expand app path: {}", args.app_args.app.display()))?
             .into_owned();
@@ -224,7 +225,7 @@ impl HmrBackend for PollingHmrBackend {
     }
 }
 
-pub fn execute(args: &StartArgs) -> Result<()> {
+pub fn execute(args: &ServeArgs) -> Result<()> {
     run(args).map_err(|err| {
         output::error(&err);
 
@@ -241,8 +242,8 @@ pub fn execute(args: &StartArgs) -> Result<()> {
     })
 }
 
-fn run(args: &StartArgs) -> Result<()> {
-    let paths = StartPaths::from_args(args)?;
+fn run(args: &ServeArgs) -> Result<()> {
+    let paths = ServePaths::from_args(args)?;
     let hmr_backend: Option<Arc<dyn HmrBackend>> = if args.watch {
         Some(Arc::new(PollingHmrBackend::new("/hmr", 1000)))
     } else {
@@ -360,7 +361,8 @@ fn build_and_render(
     config: &RenderConfig,
     hmr_backend: Option<&dyn HmrBackend>,
 ) -> Result<(String, HashMap<String, String>)> {
-    let build_output = build_protocol(&config.app_dir, &config.app_args)?;
+    let build_options = config.app_args.to_build_options(&config.app_dir);
+    let build_result = webui::build(build_options).with_context(|| "Build failed")?;
 
     let json = fs::read_to_string(&config.state_file)
         .with_context(|| format!("Failed to read {}", config.state_file.display()))?;
@@ -377,14 +379,14 @@ fn build_and_render(
         Some("fast") => WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new())),
         _ => WebUIHandler::new(),
     };
-    handler.handle(&build_output.protocol, &state, &mut writer)?;
+    handler.handle(&build_result.protocol, &state, &mut writer)?;
 
     let html = match hmr_backend {
         Some(backend) => backend.inject(&writer.buf),
         None => writer.buf,
     };
 
-    let css_map: HashMap<String, String> = build_output.css_files.into_iter().collect();
+    let css_map: HashMap<String, String> = build_result.css_files.into_iter().collect();
 
     Ok((html, css_map))
 }
@@ -634,7 +636,7 @@ mod tests {
             app_args: AppArgs {
                 app: app.path().to_path_buf(),
                 entry: "index.html".to_string(),
-                css: CssMode::External,
+                css: CssStrategy::Link,
                 plugin: None,
                 components: Vec::new(),
             },
@@ -656,7 +658,7 @@ mod tests {
             app_args: AppArgs {
                 app: app.path().to_path_buf(),
                 entry: "index.html".to_string(),
-                css: CssMode::External,
+                css: CssStrategy::Link,
                 plugin: None,
                 components: Vec::new(),
             },
@@ -675,7 +677,7 @@ mod tests {
             app_args: AppArgs {
                 app: app.path().to_path_buf(),
                 entry: "index.html".to_string(),
-                css: CssMode::External,
+                css: CssStrategy::Link,
                 plugin: None,
                 components: Vec::new(),
             },
@@ -693,7 +695,7 @@ mod tests {
             app_args: AppArgs {
                 app: app.path().to_path_buf(),
                 entry: "index.html".to_string(),
-                css: CssMode::External,
+                css: CssStrategy::Link,
                 plugin: None,
                 components: Vec::new(),
             },
@@ -712,7 +714,7 @@ mod tests {
             app_args: AppArgs {
                 app: app.path().to_path_buf(),
                 entry: "index.html".to_string(),
-                css: CssMode::External,
+                css: CssStrategy::Link,
                 plugin: None,
                 components: Vec::new(),
             },
@@ -825,7 +827,7 @@ mod tests {
             app_args: AppArgs {
                 app: app_dir.clone(),
                 entry: "index.html".to_string(),
-                css: CssMode::External,
+                css: CssStrategy::Link,
                 plugin: None,
                 components: Vec::new(),
             },

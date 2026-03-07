@@ -53,12 +53,12 @@ Example:
 webui inspect ./dist/protocol.bin
 ```
 
-### `webui start`
+### `webui serve`
 
 Starts a dev server with build+render. Live reload/HMR is optional via `--watch`.
 
 ```bash
-webui-cli start [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>]
+webui-cli serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>]
 ```
 
 - `APP`: template/component directory (default `.`)
@@ -79,7 +79,7 @@ Behavior:
 Example:
 
 ```bash
-webui-cli start ./examples/app/hello-world/templates \
+webui-cli serve ./examples/app/hello-world/templates \
   --state ./examples/app/hello-world/data/state.json \
   --servedir ./examples/app/hello-world/assets \
   --watch \

@@ -1,7 +1,5 @@
 [advisories]
-ignore = [
-    { id = "RUSTSEC-2026-0007", reason = "transitive dep via tokio; awaiting upstream bytes fix" },
-]
+ignore = []
 
 [licenses]
 allow = [
@@ -22,16 +20,9 @@ ignore = true
 multiple-versions = "deny"
 skip = [
     { name = "convert_case" },
+    { name = "getrandom" },
+    { name = "hashbrown" },
+    { name = "r-efi" },
     { name = "socket2" },
-    { name = "wasi" },
     { name = "windows-sys" },
-    { name = "windows-targets" },
-    { name = "windows_aarch64_gnullvm" },
-    { name = "windows_aarch64_msvc" },
-    { name = "windows_i686_gnu" },
-    { name = "windows_i686_gnullvm" },
-    { name = "windows_i686_msvc" },
-    { name = "windows_x86_64_gnu" },
-    { name = "windows_x86_64_gnullvm" },
-    { name = "windows_x86_64_msvc" },
 ]

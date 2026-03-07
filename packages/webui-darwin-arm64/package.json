@@ -1,0 +1,17 @@
+{
+  "cpu": [
+    "arm64"
+  ],
+  "description": "WebUI platform-specific binary for macOS ARM64",
+  "files": [
+    "bin/webui",
+    "webui.node"
+  ],
+  "license": "MIT",
+  "name": "@microsoft/webui-darwin-arm64",
+  "os": [
+    "darwin"
+  ],
+  "preferUnplugged": true,
+  "version": "0.0.1"
+}

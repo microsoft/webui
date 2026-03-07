@@ -1,0 +1,17 @@
+{
+  "cpu": [
+    "arm64"
+  ],
+  "description": "WebUI platform-specific binary for Linux ARM64",
+  "files": [
+    "bin/webui",
+    "webui.node"
+  ],
+  "license": "MIT",
+  "name": "@microsoft/webui-linux-arm64",
+  "os": [
+    "linux"
+  ],
+  "preferUnplugged": true,
+  "version": "0.0.1"
+}

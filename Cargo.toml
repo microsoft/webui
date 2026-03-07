@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 authors = ["Microsoft Edge"]
 license = "MIT"
@@ -24,12 +24,12 @@ env_logger = "0.11.9"
 async-trait = "0.1.89"
 tokio = { version = "1.49.0", features = ["full"] }
 clap = { version = "4", features = ["derive", "color"] }
-console = "0.15"
+console = "0.16.2"
 ctrlc = "3.4"
-prost = "0.13"
+prost = "0.14.3"
 napi = { version = "3", features = ["napi4"] }
 napi-derive = "3"
-wasm-bindgen = "0.2"
+wasm-bindgen = "=0.2.100"
 serde-wasm-bindgen = "0.6"
 actix-web = "4.11.0"
 expand-tilde = "0.6.1"
@@ -41,7 +41,7 @@ tree-sitter-html = "0.23.2"
 tree-sitter-css = "0.25.0"
 walkdir = "2.5.0"
 libc = "0.2.182"
-which = "7"
+which = "8.0.1"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
@@ -55,7 +55,7 @@ tempfile = "3.25.0"
 tokio-test = "0.4.5"
 
 # Build dependencies
-prost-build = "0.13"
+prost-build = "0.14.3"
 napi-build = "2"
 cbindgen = "0.29.2"
 

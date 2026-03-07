@@ -4,15 +4,17 @@ The `webui` command-line tool is the primary way to build WebUI applications. It
 
 ## Installation
 
-Build from source:
+Install via npm:
 
 ```bash
-git clone https://github.com/microsoft/webui.git
-cd webui
-cargo build --release
+npm install @microsoft/webui
 ```
 
-The `webui` binary will be available at `target/release/webui`.
+Or install via Cargo for standalone CLI use:
+
+```bash
+cargo install webui-cli
+```
 
 ## Commands
 
@@ -31,7 +33,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `APP` | Path to the app folder | `.` (current directory) |
 | `--out <OUT>` | Output folder for protocol and assets | *(required)* |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
-| `--css <MODE>` | CSS delivery strategy: `external` or `inline` | `external` |
+| `--css <STRATEGY>` | CSS delivery strategy: `link` or `style` | `link` |
 | `--plugin <NAME>` | Load a parser plugin (e.g., `fast`) | *(none)* |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 
@@ -41,8 +43,8 @@ Path inputs for `APP`, `--state`, and `--servedir` support absolute paths, relat
 
 | Mode | Behavior |
 |------|----------|
-| `external` | Emits `<link>` tags referencing external `.css` files. CSS files are copied to the output folder. |
-| `inline` | Embeds CSS content directly in `<style>` tags inside shadow DOM templates. No separate CSS files are written. |
+| `link` | Emits `<link>` tags referencing external `.css` files. CSS files are copied to the output folder. |
+| `style` | Embeds CSS content directly in `<style>` tags inside shadow DOM templates. No separate CSS files are written. |
 
 **Examples:**
 
@@ -56,8 +58,8 @@ webui build ./my-app --out ./dist
 # Use a custom entry file
 webui build ./my-app --out ./dist --entry home.html
 
-# Build with inline CSS (no external CSS files)
-webui build ./my-app --out ./dist --css inline
+# Build with style CSS (no external CSS files)
+webui build ./my-app --out ./dist --css style
 
 # Build with the FAST plugin (hydration support)
 webui build ./my-app --out ./dist --plugin=fast
@@ -96,12 +98,12 @@ webui inspect dist/protocol.bin | jq '.fragments["index.html"]'
 webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 ```
 
-### `webui start`
+### `webui serve`
 
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui-cli start [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]...
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]...
 ```
 
 **Arguments:**
@@ -114,7 +116,7 @@ webui-cli start [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>
 | `--watch` | Enable file watching + HMR | `false` |
 | `--port <PORT>` | Port to bind the development server | `3000` |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
-| `--css <MODE>` | CSS delivery strategy: `external` or `inline` | `external` |
+| `--css <MODE>` | CSS delivery strategy: `link` or `style` | `link` |
 | `--plugin <NAME>` | Load parser + handler plugins (e.g., `fast`) | *(none)* |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 
@@ -133,22 +135,22 @@ The `APP` directory should contain your entry HTML and component files.
 
 ```bash
 # Start serving the current directory
-webui-cli start . --state ./state.json --servedir ./assets
+webui serve . --state ./state.json --servedir ./assets
 
 # Start serving a specific templates directory
-webui-cli start ./examples/app/hello-world/templates --state ./examples/app/hello-world/data/state.json --servedir ./examples/app/hello-world/assets --watch
+webui serve ./examples/app/hello-world/templates --state ./examples/app/hello-world/data/state.json --servedir ./examples/app/hello-world/assets --watch
 
 # Use a custom port
-webui-cli start ./my-app --state ./state.json --servedir ./assets --port 9090 --watch
+webui serve ./my-app --state ./state.json --servedir ./assets --port 9090 --watch
 
-# Use inline CSS mode
-webui-cli start ./my-app --state ./state.json --servedir ./assets --css inline --watch
+# Use style CSS mode
+webui serve ./my-app --state ./state.json --servedir ./assets --css style --watch
 
 # Use the FAST plugin for hydration
-webui-cli start ./my-app --state ./state.json --plugin=fast --port 3001
+webui serve ./my-app --state ./state.json --plugin=fast --port 3001
 
 # Dev server with external components (--watch watches local paths)
-webui-cli start ./my-app --state ./state.json --components @reactive-ui --watch
+webui serve ./my-app --state ./state.json --components @reactive-ui --watch
 ```
 
 **Routes:**
@@ -215,11 +217,11 @@ The `--out` folder will contain:
 ```
 dist/
 ├── protocol.bin        # The WebUI protocol (protobuf binary)
-├── my-card.css         # Component CSS (--css external only)
-└── nav-bar.css         # Component CSS (--css external only)
+├── my-card.css         # Component CSS (--css link only)
+└── nav-bar.css         # Component CSS (--css link only)
 ```
 
-With `--css inline`, only `protocol.bin` is written — CSS is embedded directly in the protocol's template fragments.
+With `--css style`, only `protocol.bin` is written — CSS is embedded directly in the protocol's template fragments.
 
 ### protocol.bin
 

@@ -12,8 +12,7 @@ name = "webui"
 path = "src/main.rs"
 
 [dependencies]
-webui-parser = { path = "../webui-parser" }
-webui-protocol = { path = "../webui-protocol" }
+webui = { path = "../webui", features = ["cli"] }
 webui-handler = { path = "../webui-handler" }
 webui-discovery = { path = "../webui-discovery" }
 clap = { workspace = true }

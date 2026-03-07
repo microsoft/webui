@@ -25,12 +25,13 @@ use webui_protocol::{
 
 /// Strategy for how component CSS is delivered in rendered output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum CssStrategy {
     /// Emit `<link rel="stylesheet" href="./component.css">` tags (default).
     #[default]
-    External,
-    /// Embed CSS content inline in `<style>` tags within the shadow DOM template.
-    Inline,
+    Link,
+    /// Embed CSS content in `<style>` tags within the shadow DOM template.
+    Style,
 }
 
 /// Counter for generating unique fragment IDs.
@@ -1106,7 +1107,7 @@ impl HtmlParser {
             }
 
             let css_injection = match self.css_strategy {
-                CssStrategy::External => {
+                CssStrategy::Link => {
                     if css_content.is_some() {
                         Some(format!(
                             "<link rel=\"stylesheet\" href=\"./{}.css\">",
@@ -1116,7 +1117,7 @@ impl HtmlParser {
                         None
                     }
                 }
-                CssStrategy::Inline => css_content
+                CssStrategy::Style => css_content
                     .as_ref()
                     .map(|css| format!("<style>{}</style>", css.trim())),
             };
@@ -2455,7 +2456,7 @@ mod tests {
     #[test]
     fn test_css_strategy_inline_emits_style_tag() {
         let mut parser = HtmlParser::new();
-        parser.set_css_strategy(CssStrategy::Inline);
+        parser.set_css_strategy(CssStrategy::Style);
         parser
             .component_registry_mut()
             .register_component("my-card", "<p><slot></slot></p>", Some("p { color: red; }"))

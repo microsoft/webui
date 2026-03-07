@@ -1,6 +1,7 @@
 packages:
   - docs
   - examples/**
+  - packages/*
   - '!**/test/**'
 
 catalog:
@@ -14,8 +15,9 @@ catalog:
   '@codemirror/view': ^6.39.15
   '@microsoft/fast-element': ^2.0.1
   '@microsoft/fast-html': 1.0.0-alpha.38
-  electron: ^36.3.1
-  esbuild: ^0.25.0
+  '@types/node': ^25.3.5
+  electron: ^40.8.0
+  esbuild: ^0.27.3
   tslib: ^2.8.0
   typescript: ^5.9.3
   vitepress: ^1.6.4

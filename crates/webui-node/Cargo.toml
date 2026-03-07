@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { workspace = true }
 napi-derive = { workspace = true }
+webui = { path = "../webui" }
 webui-handler = { path = "../webui-handler" }
 webui-protocol = { path = "../webui-protocol" }
 serde_json = { workspace = true }
@@ -23,3 +24,4 @@ napi-build = { workspace = true }
 [dev-dependencies]
 webui-parser = { path = "../webui-parser", default-features = false }
 webui-test-utils = { path = "../webui-test-utils" }
+tempfile = { workspace = true }

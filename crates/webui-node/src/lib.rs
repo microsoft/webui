@@ -33,6 +33,103 @@ use webui_handler::plugin::FastHydrationPlugin;
 use webui_handler::{ResponseWriter, WebUIHandler};
 use webui_protocol::WebUIProtocol;
 
+/// Build statistics returned from the build function.
+#[napi(object)]
+pub struct JsBuildStats {
+    /// Build duration in milliseconds.
+    pub duration_ms: f64,
+    /// Total number of protocol fragments.
+    pub fragment_count: u32,
+    /// Number of registered components.
+    pub component_count: u32,
+    /// Number of CSS files produced.
+    pub css_file_count: u32,
+    /// Size of the serialized protocol in bytes.
+    pub protocol_size_bytes: u32,
+    /// Number of unique CSS tokens discovered.
+    pub token_count: u32,
+}
+
+/// Result of a successful build operation.
+#[napi(object)]
+pub struct JsBuildResult {
+    /// Serialized protocol (protobuf binary).
+    pub protocol: Buffer,
+    /// CSS files as alternating [filename, content, filename, content, ...].
+    pub css_files: Vec<String>,
+    /// Build statistics.
+    pub stats: JsBuildStats,
+}
+
+/// Build options for the webui build API.
+#[napi(object)]
+pub struct JsBuildOptions {
+    /// Path to the application folder containing templates.
+    pub app_dir: String,
+    /// Entry HTML file name (defaults to "index.html").
+    pub entry: Option<String>,
+    /// CSS mode: "link" (default) or "style".
+    pub css: Option<String>,
+    /// Parser plugin (e.g., "fast").
+    pub plugin: Option<String>,
+    /// Additional component sources (npm packages or local paths).
+    pub components: Option<Vec<String>>,
+}
+
+/// Build a WebUI application from an app directory.
+///
+/// Returns the compiled protocol bytes, CSS files, and build statistics.
+#[napi]
+pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
+    let css = match options.css.as_deref() {
+        Some("style") => webui::CssStrategy::Style,
+        Some("link") | None => webui::CssStrategy::Link,
+        Some(unknown) => {
+            return Err(NapiError::from_reason(format!(
+                "Unknown CSS mode: {unknown}. Use \"link\" or \"style\"."
+            )));
+        }
+    };
+
+    let build_options = webui::BuildOptions {
+        app_dir: std::path::PathBuf::from(&options.app_dir),
+        entry: options.entry.unwrap_or_else(|| "index.html".to_string()),
+        css,
+        plugin: options.plugin,
+        components: options.components.unwrap_or_default(),
+    };
+
+    let result = webui::build(build_options)
+        .map_err(|e| NapiError::from_reason(format!("Build error: {e}")))?;
+
+    // Flatten css_files into alternating [filename, content, ...] for JS interop
+    let css_files: Vec<String> = result
+        .css_files
+        .into_iter()
+        .flat_map(|(name, content)| [name, content])
+        .collect();
+
+    Ok(JsBuildResult {
+        protocol: Buffer::from(result.protocol_bytes),
+        css_files,
+        stats: JsBuildStats {
+            duration_ms: result.stats.duration.as_secs_f64() * 1000.0,
+            fragment_count: result.stats.fragment_count as u32,
+            component_count: result.stats.component_count as u32,
+            css_file_count: result.stats.css_file_count as u32,
+            protocol_size_bytes: result.stats.protocol_size_bytes as u32,
+            token_count: result.stats.token_count as u32,
+        },
+    })
+}
+
+/// Inspect protocol bytes and return a JSON representation.
+#[napi]
+pub fn inspect(protocol_data: Buffer) -> napi::Result<String> {
+    webui::inspect_bytes(&protocol_data)
+        .map_err(|e| NapiError::from_reason(format!("Inspect error: {e}")))
+}
+
 /// A writer that streams each rendered fragment to a JS callback.
 struct CallbackWriter<'a, 'env> {
     callback: &'a Function<'env, String, ()>,
@@ -119,7 +216,8 @@ mod tests {
     fn build_protocol(html: &str) -> Vec<u8> {
         let mut parser = HtmlParser::new();
         parser.parse("index.html", html).expect("parse failed");
-        let protocol = WebUIProtocol::new(parser.into_fragment_records());
+        let tokens = parser.take_tokens();
+        let protocol = WebUIProtocol::with_tokens(parser.into_fragment_records(), tokens);
         protocol.to_protobuf().expect("protobuf encode failed")
     }
 
@@ -231,6 +329,113 @@ mod tests {
     #[test]
     fn test_invalid_protobuf() {
         let result = render_to_string(&[0xFF, 0xFF, 0xFF], "{}");
+        assert!(result.is_err());
+    }
+
+    // ── Tests for build() and inspect() napi exports ─────────────────
+
+    #[test]
+    fn test_build_simple_app() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<h1>Hello</h1>").unwrap();
+
+        let options = JsBuildOptions {
+            app_dir: dir.path().to_string_lossy().to_string(),
+            entry: None,
+            css: None,
+            plugin: None,
+            components: None,
+        };
+
+        let result = build(options).unwrap();
+        assert!(!result.protocol.is_empty());
+        assert!(result.stats.fragment_count > 0);
+        assert!(result.stats.protocol_size_bytes > 0);
+        assert!(result.stats.duration_ms >= 0.0);
+    }
+
+    #[test]
+    fn test_build_with_custom_entry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("page.html"), "<p>Custom</p>").unwrap();
+
+        let options = JsBuildOptions {
+            app_dir: dir.path().to_string_lossy().to_string(),
+            entry: Some("page.html".to_string()),
+            css: None,
+            plugin: None,
+            components: None,
+        };
+
+        let result = build(options).unwrap();
+        assert!(!result.protocol.is_empty());
+    }
+
+    #[test]
+    fn test_build_missing_app_dir() {
+        let options = JsBuildOptions {
+            app_dir: "/nonexistent/path".to_string(),
+            entry: None,
+            css: None,
+            plugin: None,
+            components: None,
+        };
+
+        let result = build(options);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_invalid_css() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<h1>Hello</h1>").unwrap();
+
+        let options = JsBuildOptions {
+            app_dir: dir.path().to_string_lossy().to_string(),
+            entry: None,
+            css: Some("bogus".to_string()),
+            plugin: None,
+            components: None,
+        };
+
+        let result = build(options);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_with_components_css() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<my-card>Hello</my-card>").unwrap();
+        std::fs::write(dir.path().join("my-card.html"), "<div><slot></slot></div>").unwrap();
+        std::fs::write(dir.path().join("my-card.css"), ".card { color: red; }").unwrap();
+
+        let options = JsBuildOptions {
+            app_dir: dir.path().to_string_lossy().to_string(),
+            entry: None,
+            css: Some("link".to_string()),
+            plugin: None,
+            components: None,
+        };
+
+        let result = build(options).unwrap();
+        // css_files is flattened: [filename, content, filename, content, ...]
+        assert_eq!(result.css_files.len(), 2);
+        assert_eq!(result.css_files[0], "my-card.css");
+        assert!(result.css_files[1].contains("color: red"));
+        assert_eq!(result.stats.css_file_count, 1);
+    }
+
+    #[test]
+    fn test_inspect_valid_protocol() {
+        let proto = build_protocol("<h1>Hello {{name}}</h1>");
+        let json = inspect(napi::bindgen_prelude::Buffer::from(proto)).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.get("fragments").is_some());
+    }
+
+    #[test]
+    fn test_inspect_invalid_protocol() {
+        let result = inspect(napi::bindgen_prelude::Buffer::from(vec![0xFF, 0xFF]));
         assert!(result.is_err());
     }
 }

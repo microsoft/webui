@@ -1,9 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Args;
 use expand_tilde::expand_tilde;
-use std::fs;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use super::common::*;
 use crate::utils::output;
@@ -34,8 +32,6 @@ pub fn execute(args: &BuildArgs) -> Result<()> {
 }
 
 fn run(args: &BuildArgs) -> Result<()> {
-    let started = Instant::now();
-
     let app_input = expand_tilde(&args.app_args.app)
         .with_context(|| format!("Failed to expand app path: {}", args.app_args.app.display()))?
         .into_owned();
@@ -60,75 +56,38 @@ fn run(args: &BuildArgs) -> Result<()> {
     }
     eprintln!();
 
-    // Create output directory
-    fs::create_dir_all(&out)
-        .with_context(|| format!("Failed to create output dir: {}", out.display()))?;
-
-    // Build the protocol using shared logic
-    let build_output = build_protocol(&app, &args.app_args)?;
+    let build_options = args.app_args.to_build_options(&app);
+    let stats = webui::build_to_disk(build_options, &out).with_context(|| "Build failed")?;
 
     output::success(&format!(
         "Registered {} component{}",
-        console::style(build_output.component_count).bold(),
-        if build_output.component_count == 1 {
-            ""
-        } else {
-            "s"
-        }
+        console::style(stats.component_count).bold(),
+        if stats.component_count == 1 { "" } else { "s" }
     ));
 
     output::success(&format!(
         "Parsed {} ({} fragment{})",
         console::style(&args.app_args.entry).bold(),
-        console::style(build_output.fragment_count).bold(),
-        if build_output.fragment_count == 1 {
-            ""
-        } else {
-            "s"
-        }
+        console::style(stats.fragment_count).bold(),
+        if stats.fragment_count == 1 { "" } else { "s" }
     ));
 
-    if build_output.token_count > 0 {
+    if stats.token_count > 0 {
         output::success(&format!(
             "Discovered {} CSS token{}",
-            console::style(build_output.token_count).bold(),
-            if build_output.token_count == 1 {
-                ""
-            } else {
-                "s"
-            }
+            console::style(stats.token_count).bold(),
+            if stats.token_count == 1 { "" } else { "s" }
         ));
     }
 
-    // Write protocol as optimized protobuf binary
-    let bytes = build_output
-        .protocol
-        .to_protobuf()
-        .context("Failed to serialize protocol")?;
-    let protocol_path = out.join("protocol.bin");
-    fs::write(&protocol_path, &bytes)
-        .with_context(|| format!("Failed to write {}", protocol_path.display()))?;
+    let files_written = 1 + stats.css_file_count;
     output::success(&format!("Wrote {}", console::style("protocol.bin").bold()));
 
-    let mut files_written: usize = 1;
-
-    // Copy component CSS files (only in external mode)
-    if matches!(args.app_args.css, CssMode::External) {
-        for (filename, css_content) in &build_output.css_files {
-            let css_path = out.join(filename);
-            fs::write(&css_path, css_content)
-                .with_context(|| format!("Failed to write {}", css_path.display()))?;
-            output::success(&format!("Wrote {}", console::style(filename).bold()));
-            files_written += 1;
-        }
-    }
-
-    let elapsed = started.elapsed();
     output::finish(&format!(
         "Build complete ({} file{} written) {}",
         console::style(files_written).bold(),
         if files_written == 1 { "" } else { "s" },
-        console::style(format!("in {elapsed:.0?}")).dim(),
+        console::style(format!("in {:.0?}", stats.duration)).dim(),
     ));
 
     Ok(())
@@ -141,7 +100,7 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
         app_args: AppArgs {
             app: app.to_path_buf(),
             entry: entry.to_string(),
-            css: CssMode::External,
+            css: CssStrategy::Link,
             plugin: None,
             components: Vec::new(),
         },
@@ -153,6 +112,7 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
     use webui_protocol::web_ui_fragment::Fragment;
@@ -242,7 +202,7 @@ mod tests {
             app_args: AppArgs {
                 app: app_dir.path().to_path_buf(),
                 entry: "index.html".to_string(),
-                css: CssMode::Inline,
+                css: CssStrategy::Style,
                 plugin: None,
                 components: Vec::new(),
             },
@@ -262,7 +222,8 @@ mod tests {
 
         let result = build(app_dir.path(), out_dir.path(), "index.html");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Failed to read"));
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(err.contains("Failed to read"));
     }
 
     #[test]
@@ -356,7 +317,7 @@ mod tests {
             app_args: AppArgs {
                 app: app_dir.path().to_path_buf(),
                 entry: "index.html".to_string(),
-                css: CssMode::External,
+                css: CssStrategy::Link,
                 plugin: None,
                 components: vec![ext_path],
             },
@@ -435,7 +396,7 @@ mod tests {
             app_args: AppArgs {
                 app: app_dir,
                 entry: "index.html".to_string(),
-                css: CssMode::External,
+                css: CssStrategy::Link,
                 plugin: None,
                 components: vec!["test-widget".to_string()],
             },
@@ -511,7 +472,7 @@ mod tests {
             app_args: AppArgs {
                 app: app_dir,
                 entry: "index.html".to_string(),
-                css: CssMode::External,
+                css: CssStrategy::Link,
                 plugin: None,
                 components: vec!["@myui".to_string()],
             },

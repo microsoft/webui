@@ -20,59 +20,42 @@ Parser plugins emit opaque binary data into `Plugin` protocol fragments. Handler
 
 ## Using Plugins via the CLI
 
-Pass `--plugin <NAME>` to `webui build` or `webui start`:
+Pass `--plugin <NAME>` to `webui build` or `webui serve`:
 
 ```bash
 # Build with the FAST plugin
 webui build ./my-app --out ./dist --plugin=fast
 
 # Dev server with the FAST plugin
-webui start ./my-app --state ./data/state.json --plugin=fast
+webui serve ./my-app --state ./data/state.json --plugin=fast
 ```
 
 When `--plugin=fast` is specified:
 - **Build**: The `FastParserPlugin` is loaded during parsing
 - **Start**: Both `FastParserPlugin` and `FastHydrationPlugin` are loaded
 
-## Using Plugins in Rust Code
+## Using Plugins with Handlers
 
-### Parser Plugin
-
-```rust
-use webui_parser::{HtmlParser, plugin::fast::FastParserPlugin};
-
-let mut parser = HtmlParser::with_plugin(Box::new(FastParserPlugin::new()));
-parser.parse("index.html", &html)?;
-let records = parser.into_fragment_records();
-```
-
-### Handler Plugin
-
-```rust
-use webui_handler::{WebUIHandler, plugin::fast::FastHydrationPlugin};
+::: code-group
+```rust [Rust]
+use webui_handler::plugin::FastHydrationPlugin;
+use webui::WebUIHandler;
 
 let mut handler = WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new()));
 handler.handle(&protocol, &state, &mut writer)?;
 ```
 
-### FFI (C API)
+```js [Node.js]
+import { renderStream } from '@microsoft/webui';
 
-```c
-// Create a handler with FAST plugin
+renderStream(protocolData, state, (chunk) => res.write(chunk), 'fast');
+```
+
+```c [FFI (C API)]
 void *handler = webui_handler_create_with_plugin("fast");
-
-// Render as usual
 char *html = webui_handler_render(handler, protocol_data, protocol_len, state_json);
 ```
-
-### Node.js
-
-```js
-const { render } = require('@aspect/webui');
-
-// Pass plugin name as the fourth argument
-render(protocolData, stateJson, onChunk, 'fast');
-```
+:::
 
 ## Built-in Plugin: FAST-HTML
 

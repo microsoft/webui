@@ -2,9 +2,13 @@
 
 WebUI Framework can be installed and used with various environments and languages. This guide covers the most common installation methods.
 
-## NPM Installation
+## npm (Recommended)
 
-Install the WebUI Framework package:
+The `@microsoft/webui` npm package is the primary way to use WebUI. It gives you:
+
+- **`npx webui build`** — the CLI for building templates into protocols
+- **`import { build, render } from '@microsoft/webui'`** — a programmatic API for Node.js
+- **Native performance** via platform-specific binaries (no compilation required)
 
 ::: code-group
 ```bash [npm]
@@ -22,33 +26,32 @@ pnpm add @microsoft/webui
 
 ### Configure package.json
 
-Add the following scripts to your package.json file:
+A typical project setup:
 
 ```json
 {
   "scripts": {
-    "start": "webui dev",
-    "build": "webui build"
+    "build": "webui build ./src --out ./dist",
+    "dev": "webui serve ./src --state ./data/state.json --watch"
+  },
+  "dependencies": {
+    "@microsoft/webui": "latest"
   }
 }
 ```
 
-This allows you to run the development server with `npm start` and build for production with `npm run build`.
+Run the development server with `npm run dev` and build for production with `npm run build`.
 
-## Rust Installation
+### Cross-Platform Support
 
-### Build the CLI from Source
+The npm package uses platform-specific optional dependencies to deliver native binaries. Supported platforms are installed automatically — no Rust toolchain required.
 
-```bash
-git clone https://github.com/microsoft/webui.git
-cd webui
-cargo build --release
-```
+## Rust CLI
 
-The `webui` binary will be at `target/release/webui`. You can copy it to a directory on your `PATH`:
+Rust users who only need the CLI can install it directly from crates.io:
 
 ```bash
-cp target/release/webui ~/.cargo/bin/
+cargo install webui-cli
 ```
 
 Then build your app:
@@ -59,50 +62,15 @@ webui build ./my-app --out ./dist
 
 See the [CLI Reference](/guide/cli/) for full usage details.
 
-### Add WebUI to your Cargo.toml
+## Rust Library
+
+For Rust applications that need programmatic build or render capabilities, add the `webui` crate:
 
 ```toml
 [dependencies]
-webui = { git = "https://github.com/microsoft/webui" }
+webui = "*" # see https://crates.io/crates/webui for latest version
 ```
 
-### Create a WebUI Project
+This gives you access to `webui::build()`, `webui::BuildOptions`, `webui::BuildResult`, and `webui::inspect()` for build-time operations, as well as `webui::WebUIHandler` for rendering.
 
-Create a new Rust project with WebUI:
-
-```bash
-cargo new my-webui-project
-cd my-webui-project
-```
-
-### Configure Cargo.toml for Development
-
-Update your Cargo.toml to include development commands:
-
-```toml
-[package]
-name = "my-webui-project"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-webui = { git = "https://github.com/microsoft/webui" }
-
-[[bin]]
-name = "dev"
-path = "src/dev.rs"
-
-[[bin]]
-name = "build"
-path = "src/build.rs"
-```
-
-This allows you to run:
-
-```bash
-# For development
-cargo run --bin dev
-
-# For production build
-cargo run --bin build
-```
+See the [Rust Handler](/guide/concepts/handlers/rust) guide for API details and examples.

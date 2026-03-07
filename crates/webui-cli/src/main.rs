@@ -22,7 +22,7 @@ fn main() {
     let result = match command {
         Commands::Build(args) => commands::build::execute(args),
         Commands::Inspect(args) => commands::inspect::execute(args),
-        Commands::Start(args) => commands::start::execute(args),
+        Commands::Serve(args) => commands::serve::execute(args),
     };
 
     if result.is_err() {

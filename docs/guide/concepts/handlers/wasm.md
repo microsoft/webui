@@ -129,7 +129,7 @@ This provides instant feedback with the exact same parser and handler used in pr
 | Aspect | Server (CLI / Rust / Node) | WASM (Browser) |
 |--------|---------------------------|----------------|
 | Protocol format | Protobuf binary | JSON |
-| CSS strategy | External (default) or inline | Always inline |
+| CSS strategy | Link (default) or style | Always inline |
 | File I/O | Filesystem | Virtual file map |
 | Streaming | Yes (callback-based) | No (returns full string) |
 | Plugin support | Yes | Yes |

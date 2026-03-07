@@ -3,6 +3,7 @@ mod build_wasm;
 mod dev;
 mod process;
 mod util;
+mod version;
 
 use std::process::ExitCode;
 use util::{ensure_cargo_install, ensure_rustup_component, run_command, workspace_root};
@@ -52,6 +53,10 @@ fn main() -> ExitCode {
             let app = args.get(2).map(|s| s.as_str());
             dev::run(app)
         }
+        Some("version") => {
+            let ver = args.get(2).map(|s| s.as_str());
+            version::run(ver)
+        }
         _ => usage(),
     }
 }
@@ -70,7 +75,8 @@ fn usage() -> ExitCode {
            build-wasm  Build WASM playground module\n  \
            docs    Build the documentation site\n  \
            bench <name> [-- <criterion args>]  Run benchmarks for a target crate (parser, handler, protocol, expressions, state, all)\n  \
-           dev <app>  Run example app in dev mode (server + client watch concurrently)"
+           dev <app>  Run example app in dev mode (server + client watch concurrently)\n  \
+           version <semver>  Update version across all Cargo.toml and package.json files"
     );
     ExitCode::SUCCESS
 }

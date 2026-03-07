@@ -39,7 +39,11 @@ export default {
             { text: 'Introduction', link: '/guide/' },
             { text: 'Installation', link: '/guide/installation' },
             { text: 'Quick Start', link: '/tutorials/hello-world' },
-            { text: 'CLI Reference', link: '/guide/cli/' },
+            { text: 'CLI Reference', link: '/guide/cli/', items: [
+              { text: 'webui build', link: '/guide/cli/#webui-build' },
+              { text: 'webui inspect', link: '/guide/cli/#webui-inspect' },
+              { text: 'webui serve', link: '/guide/cli/#webui-serve' },
+            ]},
           ]
         },
         {
@@ -58,12 +62,20 @@ export default {
                 { text: 'Attribute Directives', link: '/guide/concepts/directives/attributes' },
               ]
             },
+            { text: 'Hydration & Interactivity', link: '/guide/concepts/hydration', items: [
+              { text: 'Class Definition', link: '/guide/concepts/hydration#class-definition' },
+              { text: 'Templating', link: '/guide/concepts/hydration#templating' },
+              { text: 'Observation', link: '/guide/concepts/hydration#observation' },
+              { text: 'Events', link: '/guide/concepts/hydration#events' },
+              { text: 'References', link: '/guide/concepts/hydration#references' },
+              { text: 'Initial State', link: '/guide/concepts/hydration#initial-state' },
+            ]},
             {
               text: 'Platform Handlers',
               items: [
                 { text: 'Overview', link: '/guide/concepts/handlers/' },
                 { text: 'Rust', link: '/guide/concepts/handlers/rust' },
-                { text: 'Node.js', link: '/guide/concepts/handlers/node' },
+                { text: 'Node', link: '/guide/concepts/handlers/node' },
                 { text: 'Electron', link: '/guide/concepts/handlers/electron' },
                 { text: 'WebAssembly', link: '/guide/concepts/handlers/wasm' },
                 { text: 'FFI (C API)', link: '/guide/concepts/handlers/ffi' }

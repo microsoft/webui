@@ -164,7 +164,7 @@ fn parse_to_protocol(
         .ok_or_else(|| BuildError::MissingEntry(entry.to_string()))?;
 
     let mut parser = HtmlParser::new();
-    parser.set_css_strategy(CssStrategy::Inline);
+    parser.set_css_strategy(CssStrategy::Style);
 
     // Register components from virtual files (no filesystem needed)
     for (filename, content) in files {
@@ -316,7 +316,7 @@ mod tests {
         let result = build_and_render_inner(&files, "{}", "index.html");
         assert!(result.is_ok(), "Render failed: {:?}", result);
         let html = result.as_deref().unwrap_or("");
-        // WASM uses CssStrategy::Inline, so CSS should be in <style> tags, not <link>
+        // WASM uses CssStrategy::Style, so CSS should be in <style> tags, not <link>
         assert!(
             html.contains("<style>p { color: red; }</style>"),
             "Expected inline <style> tag in: {}",

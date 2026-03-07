@@ -1,7 +1,7 @@
 pub mod build;
 pub mod common;
 pub mod inspect;
-pub mod start;
+pub mod serve;
 
 use clap::Subcommand;
 
@@ -12,5 +12,5 @@ pub enum Commands {
     /// Inspect a protocol.bin file and output JSON to stdout
     Inspect(inspect::InspectArgs),
     /// Start a development server with live reload
-    Start(start::StartArgs),
+    Serve(serve::ServeArgs),
 }

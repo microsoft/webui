@@ -248,7 +248,7 @@ For applications using [FAST-HTML](https://github.com/nicholasgasior/fast-html) 
 webui build examples/app/todo-fast/src --out examples/app/todo-fast/dist --plugin=fast
 
 # Render with hydration markers
-webui start examples/app/todo-fast/src --state examples/app/todo-fast/data/state.json --plugin=fast
+webui serve examples/app/todo-fast/src --state examples/app/todo-fast/data/state.json --plugin=fast
 ```
 
 The `--plugin=fast` flag injects hydration comment markers into the rendered HTML, allowing FAST-HTML's client-side runtime to efficiently locate and re-attach to server-rendered dynamic content. See [Plugins](/guide/concepts/plugins/) for details.

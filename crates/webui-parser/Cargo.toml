@@ -10,6 +10,7 @@ repository.workspace = true
 [features]
 default = ["fs"]
 fs = ["walkdir"]
+cli = ["clap"]
 
 [dependencies]
 webui-expressions = { path = "../webui-expressions" }
@@ -22,6 +23,7 @@ tree-sitter-language = { workspace = true }
 tree-sitter-html = { workspace = true }
 tree-sitter-css = { workspace = true }
 walkdir = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
 
 [dev-dependencies]
 mockall = { workspace = true }

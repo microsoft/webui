@@ -63,12 +63,12 @@ Create a `state.json` file with the data for rendering:
 }
 ```
 
-## Previewing with `webui start`
+## Previewing with `webui serve`
 
 The fastest way to preview your app during development is the built-in dev server:
 
 ```bash
-webui-cli start ./hello-world/templates --state ./hello-world/data/state.json --servedir ./hello-world/assets --watch
+webui serve ./hello-world/templates --state ./hello-world/data/state.json --servedir ./hello-world/assets --watch
 ```
 
 This will:
@@ -82,7 +82,7 @@ Open `http://127.0.0.1:3000/` in your browser to see the rendered output. With `
 You can also specify a custom port:
 
 ```bash
-webui-cli start ./hello-world/templates --state ./hello-world/data/state.json --servedir ./hello-world/assets --watch --port 9090
+webui serve ./hello-world/templates --state ./hello-world/data/state.json --servedir ./hello-world/assets --watch --port 9090
 ```
 
 ## Building for Production
@@ -133,7 +133,7 @@ fn main() -> anyhow::Result<()> {
 In this tutorial, we've:
 
 1. Created a WebUI app folder with templates, data, and assets
-2. Used `webui start` to preview the app with live reload
+2. Used `webui serve` to preview the app with live reload
 3. Built the protocol with `webui build` for production use
 4. Rendered the protocol programmatically with the Rust handler
 

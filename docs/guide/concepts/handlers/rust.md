@@ -1,194 +1,169 @@
 # WebUI Rust Handler
 
-The WebUI Rust handler provides high-performance rendering of WebUI protocols in Rust applications.
+The `webui` crate provides high-performance build and rendering of WebUI protocols in Rust. It streams rendered HTML fragments via the `ResponseWriter` trait for progressive rendering with zero unnecessary allocations.
 
 ## Installation
 
-Add the WebUI crates to your `Cargo.toml`:
-
 ```toml
 [dependencies]
-webui-protocol = "0.1.0"
-webui-handler = "0.1.0"
-webui-expressions = "0.1.0"
-webui-state = "0.1.0"
+webui = "*" # see https://crates.io/crates/webui for latest version
+serde_json = "1"
 ```
-
-## Basic Usage
-
-```rust
-use webui_protocol::WebUIProtocol;
-use serde_json::{json, Value};
-use webui_handler::{handle, ResponseWriter, Result};
-use webui_protocol::WebUIProtocol;
-
-// Define a simple response writer
-struct StringWriter {
-    content: String,
-}
-
-impl StringWriter {
-    fn new() -> Self {
-        Self { content: String::new() }
-    }
-}
-
-impl ResponseWriter for StringWriter {
-    fn write(&mut self, content: &str) -> Result<()> {
-        self.content.push_str(content);
-        Ok(())
-    }
-    
-    fn end(&mut self) -> Result<()> {
-        // Nothing to do for string writer
-        Ok(())
-    }
-}
-
-fn main() -> Result<()> {
-    // Load protocol from file
-    let protocol = WebUIProtocol::from_protobuf_file("template.bin")?;
-    
-    // Create state data
-    let state = json!({
-        "title": "WebUI Example",
-        "items": [
-            {"name": "Item 1", "description": "First item"},
-            {"name": "Item 2", "description": "Second item"},
-            {"name": "Item 3", "description": "Third item"}
-        ]
-    });
-    
-    // Create writer
-    let mut writer = StringWriter::new();
-    
-    // Render the protocol
-    handle(&protocol, &state, &mut writer)?;
-    
-    // Use the rendered HTML
-    println!("Rendered HTML: {}", writer.content);
-    
-    Ok(())
-}
-```
-
-## Stream-Based Writing
-
-For high-performance use cases, you can implement the `ResponseWriter` trait for streaming output:
-
-```rust
-use std::io::{self, Write};
-use webui_handler::{ResponseWriter, Result};
-
-struct StreamWriter<W: Write> {
-    writer: W,
-}
-
-impl<W: Write> StreamWriter<W> {
-    fn new(writer: W) -> Self {
-        Self { writer }
-    }
-}
-
-impl<W: Write> ResponseWriter for StreamWriter<W> {
-    fn write(&mut self, content: &str) -> Result<()> {
-        self.writer.write_all(content.as_bytes())?;
-        Ok(())
-    }
-    
-    fn end(&mut self) -> Result<()> {
-        self.writer.flush()?;
-        Ok(())
-    }
-}
-
-// Usage with any Write implementation:
-let file = File::create("output.html")?;
-let mut writer = StreamWriter::new(file);
-handle(&protocol, &state, &mut writer)?;
-```
-
-## WebUI Handler API
-
-The main entry point is the `WebUIHandler` struct:
-
-```rust
-pub struct WebUIHandler {
-    plugin: Option<Box<dyn HandlerPlugin>>,
-}
-
-impl WebUIHandler {
-    /// Create a handler with no plugin (plain HTML rendering).
-    pub fn new() -> Self;
-
-    /// Create a handler with a plugin for framework-specific rendering.
-    pub fn with_plugin(plugin: Box<dyn HandlerPlugin>) -> Self;
-
-    /// Render the protocol with state data.
-    pub fn handle(
-        &mut self,
-        protocol: &WebUIProtocol,
-        state: &Value,
-        writer: &mut dyn ResponseWriter,
-    ) -> Result<()>;
-}
-```
-
-### Parameters
-
-- `protocol`: The WebUI protocol to render
-- `state`: A JSON value containing the data for rendering
-- `writer`: An implementation of the `ResponseWriter` trait for output
-
-### ResponseWriter Trait
-
-```rust
-pub trait ResponseWriter {
-    fn write(&mut self, content: &str) -> Result<()>;
-    fn end(&mut self) -> Result<()>;
-}
-```
-
-## Using Plugins
-
-The handler supports optional plugins that inject framework-specific content during rendering. Use `with_plugin` to create a handler with a plugin:
-
-```rust
-use webui_handler::{WebUIHandler, plugin::fast::FastHydrationPlugin};
-
-let mut handler = WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new()));
-handler.handle(&protocol, &state, &mut writer)?;
-```
-
-When a plugin is loaded, the handler calls plugin hooks at key rendering points:
-- Before/after signals, loops, and conditionals
-- Before/after each loop iteration
-- When entering/leaving component scopes
-- When processing `Plugin` protocol fragments
-
-See [Plugins](/guide/concepts/plugins/) for the full plugin API and how to write custom plugins.
-
-## Error Handling
-
-The WebUI handler provides detailed error types through the `HandlerError` enum:
-
-```rust
-pub enum HandlerError {
-    Rendering(String),
-    MissingFragment(String),
-    MissingData(String),
-    TypeError(String),
-    Protocol(webui_protocol::ProtocolError),
-    Evaluation(String),
-    Io(std::io::Error),
-    Writer(String),
-}
-```
-
-You can handle these specific error cases to provide better error messages for different failure scenarios.
 
 ## Examples
 
-Working integration examples are available in the repository:
+::: code-group
+```rust [Actix Web]
+use actix_web::{web, App, HttpServer, HttpResponse};
+use webui::{WebUIHandler, ResponseWriter, WebUIProtocol};
+use serde_json::json;
+use std::fs;
 
-- [`examples/integration/rust/`](https://github.com/user/webui/tree/main/examples/integration/rust) — Rust HTTP server integrations (hyper, tiny_http)
+struct StringWriter(String);
+
+impl ResponseWriter for StringWriter {
+    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
+        self.0.push_str(content);
+        Ok(())
+    }
+    fn end(&mut self) -> webui_handler::Result<()> { Ok(()) }
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let protocol_bytes = fs::read("./dist/protocol.bin").unwrap();
+    let protocol = WebUIProtocol::from_protobuf(&protocol_bytes).unwrap();
+    let protocol = web::Data::new(protocol);
+
+    HttpServer::new(move || {
+        App::new()
+            .app_data(protocol.clone())
+            .route("/", web::get().to(|proto: web::Data<WebUIProtocol>| async move {
+                let state = json!({ "title": "Home" });
+                let mut writer = StringWriter(String::new());
+                let mut handler = WebUIHandler::new();
+                handler.handle(&proto, &state, &mut writer).unwrap();
+                HttpResponse::Ok().content_type("text/html").body(writer.0)
+            }))
+    })
+    .bind("127.0.0.1:3000")?
+    .run()
+    .await
+}
+```
+
+```rust [Axum]
+use axum::{routing::get, Router, extract::State};
+use webui::{WebUIHandler, ResponseWriter, WebUIProtocol};
+use serde_json::json;
+use std::{fs, sync::Arc};
+
+struct StringWriter(String);
+
+impl ResponseWriter for StringWriter {
+    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
+        self.0.push_str(content);
+        Ok(())
+    }
+    fn end(&mut self) -> webui_handler::Result<()> { Ok(()) }
+}
+
+#[tokio::main]
+async fn main() {
+    let protocol_bytes = fs::read("./dist/protocol.bin").unwrap();
+    let protocol = Arc::new(WebUIProtocol::from_protobuf(&protocol_bytes).unwrap());
+
+    let app = Router::new()
+        .route("/", get(|State(proto): State<Arc<WebUIProtocol>>| async move {
+            let state = json!({ "title": "Home" });
+            let mut writer = StringWriter(String::new());
+            let mut handler = WebUIHandler::new();
+            handler.handle(&proto, &state, &mut writer).unwrap();
+            axum::response::Html(writer.0)
+        }))
+        .with_state(protocol);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+```rust [Hyper]
+use hyper::{server::conn::http1, service::service_fn, body::Bytes, Request, Response};
+use hyper_util::rt::TokioIo;
+use http_body_util::Full;
+use webui::{WebUIHandler, ResponseWriter, WebUIProtocol};
+use serde_json::json;
+use std::{fs, sync::Arc};
+
+struct StringWriter(String);
+
+impl ResponseWriter for StringWriter {
+    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
+        self.0.push_str(content);
+        Ok(())
+    }
+    fn end(&mut self) -> webui_handler::Result<()> { Ok(()) }
+}
+
+#[tokio::main]
+async fn main() {
+    let protocol_bytes = fs::read("./dist/protocol.bin").unwrap();
+    let protocol = Arc::new(WebUIProtocol::from_protobuf(&protocol_bytes).unwrap());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await.unwrap();
+    loop {
+        let (stream, _) = listener.accept().await.unwrap();
+        let proto = protocol.clone();
+        tokio::spawn(async move {
+            http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), service_fn(move |_: Request<_>| {
+                    let proto = proto.clone();
+                    async move {
+                        let state = json!({ "title": "Home" });
+                        let mut writer = StringWriter(String::new());
+                        let mut handler = WebUIHandler::new();
+                        handler.handle(&proto, &state, &mut writer).unwrap();
+                        Ok::<_, hyper::Error>(Response::new(Full::new(Bytes::from(writer.0))))
+                    }
+                }))
+                .await
+                .ok();
+        });
+    }
+}
+```
+:::
+
+## API Reference
+
+### Build
+
+| Function | Description |
+|----------|-------------|
+| `build(options)` | Build templates into a protocol. Returns `BuildResult` |
+| `build_to_disk(options, out_dir)` | Build and write `protocol.bin` + CSS files to disk |
+| `inspect(path)` | Read a protocol file and return JSON |
+| `inspect_bytes(bytes)` | Convert protocol bytes to JSON |
+
+### BuildOptions
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `app_dir` | `PathBuf` | — | Path to app folder |
+| `entry` | `String` | `"index.html"` | Entry file |
+| `css` | `CssStrategy` | `Link` | CSS delivery: `Link` or `Style` |
+| `plugin` | `Option<String>` | `None` | Parser plugin (e.g. `"fast"`) |
+| `components` | `Vec<String>` | `[]` | External component sources |
+
+### BuildStats
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `duration` | `Duration` | Build time |
+| `fragment_count` | `usize` | Total fragments |
+| `component_count` | `usize` | Components registered |
+| `css_file_count` | `usize` | CSS files produced |
+| `protocol_size_bytes` | `usize` | Protocol binary size |
+| `token_count` | `usize` | CSS tokens discovered |
+

@@ -1,105 +1,27 @@
-# WebUI Node.js Handler
+# WebUI Native Node Module Handler
 
-The WebUI Node.js handler provides high-performance server-side rendering via a native addon built with [napi-rs](https://napi.rs). It compiles the Rust handler directly into a `.node` addon — no C ABI intermediary — and supports true streaming SSR by delivering rendered fragments through a callback.
+The `@microsoft/webui` npm package provides high-performance server-side rendering for Node.js / Bun / Deno. It uses a native addon with zero-copy Buffer access and streams rendered HTML fragments via callbacks for progressive rendering with minimal latency.
 
 ## Installation
 
-Build the native addon from the WebUI workspace:
-
 ```bash
-cargo build -p webui-node           # debug
-cargo build -p webui-node --release # release
+npm install @microsoft/webui
 ```
 
-This produces a native addon library:
+## Examples
 
-| Platform | Library file |
-|---|---|
-| macOS | `target/release/libwebui_node.dylib` |
-| Linux | `target/release/libwebui_node.so` |
-| Windows | `target/release/webui_node.dll` |
+::: code-group
+```js [Node.js]
+import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
+import { renderStream } from '@microsoft/webui';
 
-## Basic Usage
-
-```js
-import { readFileSync } from 'fs';
-import { createRequire } from 'module';
-
-// Load the native addon
-const require = createRequire(import.meta.url);
-const { render } = require('./target/release/libwebui_node.dylib');
-
-// Read pre-compiled protocol (from `webui build`)
-const protocol = readFileSync('./dist/protocol.bin');
-const state = JSON.stringify({
-  title: "Hello World",
-  items: ["Milk", "Eggs", "Bread"]
-});
-
-// Render, streaming each fragment to stdout
-render(protocol, state, (chunk) => process.stdout.write(chunk));
-```
-
-## API Reference
-
-### `render(protocolData, stateJson, onChunk, plugin?)`
-
-Render a pre-compiled WebUI protocol with JSON state data. Each rendered HTML fragment is streamed to the `onChunk` callback as it is produced.
-
-**Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `protocolData` | `Buffer` | Protobuf binary from `webui build` (zero-copy) |
-| `stateJson` | `string` | JSON string with the render state |
-| `onChunk` | `(chunk: string) => void` | Called with each rendered HTML fragment |
-| `plugin` | `string \| undefined` | Optional plugin identifier (e.g., `"fast"`) |
-
-**Throws** on invalid protocol data, malformed JSON, or render errors.
-
-## Streaming to an HTTP Response
-
-The callback-based API enables true streaming SSR with any Node.js HTTP framework:
-
-### Express
-
-```js
-import express from 'express';
-import { readFileSync } from 'fs';
-import { createRequire } from 'module';
-
-const require = createRequire(import.meta.url);
-const { render } = require('./target/release/libwebui_node.dylib');
-const protocol = readFileSync('./dist/protocol.bin');
-
-const app = express();
-
-app.get('/', (req, res) => {
-  res.setHeader('Content-Type', 'text/html');
-  const state = JSON.stringify({ title: "My App", items: [] });
-  render(protocol, state, (chunk) => res.write(chunk));
-  res.end();
-});
-
-app.listen(3000);
-```
-
-### Node.js HTTP
-
-```js
-import { createServer } from 'http';
-import { readFileSync } from 'fs';
-import { createRequire } from 'module';
-
-const require = createRequire(import.meta.url);
-const { render } = require('./target/release/libwebui_node.dylib');
 const protocol = readFileSync('./dist/protocol.bin');
 
 const server = createServer((req, res) => {
   if (req.url === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html' });
-    const state = JSON.stringify({ title: "Home" });
-    render(protocol, state, (chunk) => res.write(chunk));
+    renderStream(protocol, { title: "Home" }, (chunk) => res.write(chunk));
     res.end();
   }
 });
@@ -107,40 +29,67 @@ const server = createServer((req, res) => {
 server.listen(3000);
 ```
 
-## Using Plugins
+```ts [Bun]
+import { renderStream } from '@microsoft/webui';
 
-Pass a plugin name as the fourth argument to enable framework-specific rendering:
+const protocol = Bun.file('./dist/protocol.bin');
+const protocolData = Buffer.from(await protocol.arrayBuffer());
 
-```js
-// Render with FAST-HTML hydration markers
-render(protocol, state, (chunk) => res.write(chunk), 'fast');
+Bun.serve({
+  port: 3000,
+  fetch(req) {
+    const chunks: string[] = [];
+    renderStream(protocolData, { title: "Home" }, (chunk) => chunks.push(chunk));
+    return new Response(chunks.join(''), {
+      headers: { 'Content-Type': 'text/html' },
+    });
+  },
+});
 ```
 
-When `"fast"` is specified, the handler injects hydration comment markers that FAST-HTML's client-side runtime uses to locate and re-hydrate dynamic content. See [Plugins](/guide/concepts/plugins/) for details.
+```ts [Deno]
+import { renderStream } from '@microsoft/webui';
 
-## Example
+const protocol = Deno.readFileSync('./dist/protocol.bin');
+const protocolData = Buffer.from(protocol);
 
-A complete working example is available at `examples/integration/node/`:
-
-```bash
-# 1. Build the native addon
-cargo build -p webui-node
-
-# 2. Build the hello-world protocol
-cargo run -p webui-cli -- build examples/app/hello-world/src \
-  --out examples/app/hello-world/dist
-
-# 3. Run the example
-cd examples/integration/node
-node index.js
-
-# With FAST plugin
-node index.js ../../app/todo-fast/dist/protocol.bin \
-  ../../app/todo-fast/data/state.json --plugin=fast
+Deno.serve({ port: 3000 }, (_req) => {
+  const chunks: string[] = [];
+  renderStream(protocolData, { title: "Home" }, (chunk) => chunks.push(chunk));
+  return new Response(chunks.join(''), {
+    headers: { 'Content-Type': 'text/html' },
+  });
+});
 ```
+:::
 
-## Performance Notes
+## API Reference
 
-- The native addon uses **zero-copy Buffer** access — protocol data is read directly from the Node.js `Buffer` without copying into Rust.
-- Each `onChunk` call crosses the Rust→JS boundary, so fragment-level streaming gives you progressive rendering with minimal latency.
-- The addon is stateless per call — create a new `render` invocation per request. The protocol data can be loaded once and reused across all requests.
+| Function | Description |
+|----------|-------------|
+| `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, stats }` |
+| `render(protocol, state)` | Render protocol to HTML string |
+| `renderStream(protocol, state, onChunk)` | Stream rendered HTML fragments via callback |
+| `inspect(protocol)` | Convert protocol to JSON for debugging |
+
+### BuildOptions
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `appDir` | `string` | — | Path to app folder |
+| `entry` | `string` | `"index.html"` | Entry file |
+| `css` | `"link" \| "style"` | `"link"` | CSS delivery strategy |
+| `plugin` | `string` | — | Parser plugin (e.g. `"fast"`) |
+| `components` | `string[]` | — | External component sources |
+
+### BuildStats
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `durationMs` | `number` | Build time in milliseconds |
+| `fragmentCount` | `number` | Total fragments |
+| `componentCount` | `number` | Components registered |
+| `cssFileCount` | `number` | CSS files produced |
+| `protocolSizeBytes` | `number` | Protocol binary size |
+| `tokenCount` | `number` | CSS tokens discovered |
+

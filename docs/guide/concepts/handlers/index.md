@@ -7,7 +7,7 @@ WebUI handlers are the bridge between the WebUI protocol and the final rendered 
 WebUI provides official handlers for several popular programming languages (other languages coming soon):
 
 - [**Rust**](./rust) - High-performance native rendering with the Rust programming language
-- [**Node.js**](./node) - Streaming SSR via a native addon built with napi-rs
+- [**Node**](./node) - Streaming SSR via a native addon built with napi-rs for Node, Bun, and Deno.
 - [**Electron**](./electron) - Desktop apps via Electron with custom `webui://` protocol
 - [**WebAssembly**](./wasm) - In-browser rendering for playgrounds and client-side use
 - [**FFI (C API)**](./ffi) - Shared library for Go, C#, Python, and any language with C interop

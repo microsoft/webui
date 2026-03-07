@@ -466,14 +466,14 @@ pub struct HtmlParser {
 /// Strategy for how component CSS is delivered in rendered output.
 pub enum CssStrategy {
     /// Emit `<link rel="stylesheet" href="./component.css">` tags (default).
-    External,
+    Link,
     /// Embed CSS content inline in `<style>` tags within the shadow DOM template.
-    Inline,
+    Style,
 }
 ```
 
-- **External** (default): Emits `<link>` tags referencing external `.css` files. Used by the CLI for production builds where CSS files are served separately.
-- **Inline**: Embeds the full CSS content in `<style>` tags inside the shadow DOM template. Used when all files are needed in-memory.
+- **Link** (default): Emits `<link>` tags referencing external `.css` files. Used by the CLI for production builds where CSS files are served separately.
+- **Style**: Embeds the full CSS content in `<style>` tags inside the shadow DOM template. Used when all files are needed in-memory.
 
 Set via `parser.set_css_strategy(CssStrategy::Inline)`.
 
@@ -518,7 +518,7 @@ parser.parse("index.html", &html)?;
 **CLI integration:**
 ```bash
 webui build ./templates --out ./dist --plugin=fast
-webui start ./templates --state ./data/state.json --plugin=fast
+webui serve ./templates --state ./data/state.json --plugin=fast
 ```
 #### Content Processing
 
@@ -678,6 +678,7 @@ pub enum ParserError {
 ```
 webui/
 ├── crates/
+│   ├── webui/                # Programmatic library API (build, inspect, re-exports)
 │   ├── webui-cli/            # CLI build tool (binary: "webui")
 │   ├── webui-discovery/      # External component discovery (npm, paths)
 │   ├── webui-expressions/    # Expression evaluation engine
@@ -689,11 +690,47 @@ webui/
 │   ├── webui-state/          # State management
 │   ├── webui-test-utils/     # Testing utilities
 │   └── webui-wasm/           # WebAssembly bindings
+├── packages/
+│   └── @microsoft/
+│       ├── webui/            # npm package (CLI + programmatic JS API)
+│       ├── webui-darwin-arm64/   # Platform binary (macOS ARM64)
+│       ├── webui-darwin-x64/     # Platform binary (macOS x64)
+│       ├── webui-linux-x64/      # Platform binary (Linux x64)
+│       ├── webui-linux-arm64/    # Platform binary (Linux ARM64)
+│       ├── webui-win32-x64/      # Platform binary (Windows x64)
+│       └── webui-win32-arm64/    # Platform binary (Windows ARM64)
 ├── examples/                 # Example applications
 ├── docs/                     # Documentation
 ├── tests/                    # Integration tests
 └── benchmarks/               # Performance benchmarks
 ```
+
+### Crate Dependency Graph
+
+```
+webui-cli ──────► webui (library) ◄────── webui-node
+                    │                        │
+                    ├── webui-parser          ├── webui-handler
+                    ├── webui-handler         ├── webui-protocol
+                    ├── webui-protocol        └── serde_json
+                    └── webui-discovery
+
+webui-ffi ──────► webui-handler ◄────── webui-wasm
+                  webui-parser              webui-parser
+                  webui-protocol            webui-protocol
+```
+
+The `webui` library crate is the primary API surface for programmatic use.
+It re-exports `WebUIHandler`, `ResponseWriter`, and `WebUIProtocol` from their
+respective crates and provides `build()`, `build_to_disk()`, and `inspect()`
+functions with `BuildStats` (duration, fragment/component/CSS counts, protocol size).
+
+### npm Distribution
+
+The `@microsoft/webui` npm package follows the esbuild single-package model:
+- `bin: { "webui": "bin/webui" }` — CLI binary via platform-specific `optionalDependencies`
+- `main: "lib/main.js"` — Programmatic API that loads the `.node` native addon directly
+- WASM fallback for render when native addon is unavailable (one-time warning logged)
 ### Documentation Guidelines
 - Using `vitepress` in `docs/`
 - API documentation for all public interfaces

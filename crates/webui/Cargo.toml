@@ -1,0 +1,22 @@
+[package]
+name = "webui"
+description = "Programmatic API for the WebUI build-time rendering framework"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+cli = ["webui-parser/cli"]
+
+[dependencies]
+webui-parser = { path = "../webui-parser" }
+webui-protocol = { path = "../webui-protocol" }
+webui-handler = { path = "../webui-handler" }
+webui-discovery = { path = "../webui-discovery" }
+thiserror = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
