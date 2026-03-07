@@ -1,12 +1,15 @@
 export default {
   title: "WebUI Framework",
   description: "Native HTML Templating for Every Platform",
+  appearance: true,
   head: [
     ['link', { rel: 'icon', href: '/favicon.ico' }],
   ],
   themeConfig: {
     logo: '/logo.svg',
     siteTitle: 'WebUI Framework',
+    aside: false,
+    outline: false,
     
     // Navigation bar
     nav: [

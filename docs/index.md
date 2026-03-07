@@ -1,38 +1,34 @@
 ---
 layout: home
 hero:
-  name: "WebUI Framework"
-  text: "Fast Web Rendering Without JavaScript Overhead"
-  tagline: Build UIs at compile time, serve them blazingly fast from any backend language
+  name: "WebUI"
+  text: "Web Rendering Without a JavaScript Runtime"
+  tagline: Compile templates to binary. Serve them instantly from any backend.
   actions:
     - theme: brand
-      text: Get Started
+      text: Get Started →
       link: /guide/
     - theme: alt
       text: View on GitHub
       link: https://github.com/microsoft/webui
+
+features:
+  - icon: ⚡
+    title: Compiled to Binary
+    details: Templates are compiled at build time into a Protocol Buffer binary — no parsing or interpretation at runtime.
+  - icon: 🌐
+    title: Language Agnostic
+    details: Render from Rust, Node, Bun, Deno, C#, Python, Go — or any language via FFI.
+  - icon: 🔩
+    title: Minimal Runtime Work
+    details: Static and dynamic split at build time. At runtime the server fills in state and evaluates expressions — no client-side scripting for template logic.
+  - icon: 🧩
+    title: Web Components
+    details: Built on native web components with Shadow DOM encapsulation for style isolation and reusability.
+  - icon: 🔌
+    title: Plugin System
+    details: Parser and handler plugins for hydration, adding reactivity to interactive islands, custom directives, and framework-specific behavior.
+  - icon: 🏗️
+    title: Replaces Node.js SSR
+    details: No JavaScript runtime on the server. Rust-native rendering uses less memory and handles more requests per second — fewer servers, lower bills.
 ---
-
-# Welcome to WebUI Framework
-
-## A New Approach to Server-Side Rendering
-
-WebUI Framework is a high-performance solution for building web applications that deliver exceptional user experiences without JavaScript runtime overhead. Unlike traditional frameworks that build UIs at runtime, WebUI separates dynamic from static content at build time and creates an efficient protocol for fast rendering.
-
-### Why WebUI?
-
-- **Language Agnostic Backend**: Use Rust, Go, C#, PHP, Ruby, or any other language - no Node.js required!
-- **Optimized Web Vitals**: Significantly faster FCP, LCP, and INP metrics compared to JS-based SSR
-- **Web Component-Based**: Built on the native web platform using modern web components
-- **Edge-Ready**: Can be served from edge functions or a streamable Service Worker
-- **Separation of Concerns**: UI structure is cached and separate from state data
-- **Minimal Transfer Size**: Only send the state, not the entire rendered HTML
-- **Framework Integration**: Extensible plugin system for client-side hydration with frameworks like FAST-HTML
-
-## How It Works
-
-1. **Build Time**: WebUI discovers all your web components and creates a protocol that separates dynamic from static content
-2. **Serving**: Your backend (in any language) applies state to this protocol through a lightweight handler
-3. **Rendering**: Content reaches the browser pre-rendered and ready to display, with minimal JavaScript overhead
-
-Get started now by following our [installation guide](/guide/) or check out the [Hello World tutorial](/tutorials/hello-world).

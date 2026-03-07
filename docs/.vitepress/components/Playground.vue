@@ -70,9 +70,6 @@ function selectFile(name) {
 }
 
 function openNewFileInput() {
-  if (isMobileViewport()) {
-    mobileSidebarOpen.value = true
-  }
   showNewFileInput.value = true
   nextTick(() => {
     if (newFileInput.value) {
@@ -136,7 +133,7 @@ async function setupEditor() {
   const { EditorState } = await import('@codemirror/state')
   const { defaultKeymap, history, historyKeymap } = await import('@codemirror/commands')
   const { oneDark } = await import('@codemirror/theme-one-dark')
-  const { bracketMatching } = await import('@codemirror/language')
+  const { bracketMatching, syntaxHighlighting, defaultHighlightStyle } = await import('@codemirror/language')
 
   const lang = getLanguage(activeFile.value)
   let langExt
@@ -208,7 +205,7 @@ async function setupEditor() {
         bracketMatching(),
         keymap.of([...defaultKeymap, ...historyKeymap]),
         langExt,
-        ...(isDark ? [oneDark] : []),
+        ...(isDark ? [oneDark] : [syntaxHighlighting(defaultHighlightStyle, { fallback: true })]),
         updateListener,
         editorTheme,
       ],
@@ -264,7 +261,6 @@ async function render() {
     const bodyBg = readThemeVar('--vp-c-bg', '#ffffff')
     const bodyText = readThemeVar('--vp-c-text-1', '#213547')
     const border = readThemeVar('--vp-c-divider', '#e2e2e3')
-    const heading = readThemeVar('--vp-c-text-1', '#213547')
     const mono = readThemeVar('--vp-font-family-mono', "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace")
     const base = readThemeVar('--vp-font-family-base', "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif")
 
@@ -275,32 +271,24 @@ async function render() {
   <meta name="color-scheme" content="light dark">
   <style>
     *, *::before, *::after { box-sizing: border-box; }
-    :root {
-      --preview-bg: ${bodyBg};
-      --preview-text: ${bodyText};
-      --preview-border: ${border};
-      --preview-heading: ${heading};
-      --preview-font-base: ${base};
-      --preview-font-mono: ${mono};
-    }
     body {
-      font-family: var(--preview-font-base);
+      font-family: ${base};
       padding: 24px;
       margin: 0;
-      color: var(--preview-text);
-      background: var(--preview-bg);
+      color: ${bodyText};
+      background: ${bodyBg};
       line-height: 1.6;
     }
     h1, h2, h3, h4, h5, h6 {
-      color: var(--preview-heading);
+      color: ${bodyText};
       margin-top: 0;
     }
     code, pre {
-      font-family: var(--preview-font-mono);
+      font-family: ${mono};
     }
     hr {
       border: 0;
-      border-top: 1px solid var(--preview-border);
+      border-top: 1px solid ${border};
     }
     ${css}
   </style>
@@ -379,68 +367,9 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="playground-shell" :class="{ 'mobile-sidebar-open': mobileSidebarOpen }">
-    <button
-      class="mobile-files-btn"
-      type="button"
-      @click="toggleMobileSidebar"
-      :aria-expanded="mobileSidebarOpen ? 'true' : 'false'"
-      aria-controls="playground-sidebar"
-    >
-      Files
-    </button>
-    <button
-      v-if="mobileSidebarOpen"
-      class="mobile-overlay"
-      type="button"
-      aria-label="Close file drawer"
-      @click="closeMobileSidebar"
-    ></button>
-
+  <div class="playground-shell">
     <!-- Main content -->
     <div class="playground-main">
-      <!-- File tree sidebar -->
-      <div id="playground-sidebar" class="sidebar">
-        <div class="sidebar-header">
-          <span>EXPLORER</span>
-          <button class="sidebar-btn" @click="openNewFileInput" title="New file">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          </button>
-        </div>
-
-        <div v-if="showNewFileInput" class="new-file-row">
-          <input
-            ref="newFileInput"
-            v-model="newFileName"
-            @keyup.enter="addFile"
-            @keyup.escape="showNewFileInput = false"
-            placeholder="filename.html"
-            autofocus
-          />
-        </div>
-
-        <div class="file-list">
-          <div
-            v-for="(_, name) in files"
-            :key="name"
-            class="file-item"
-            :class="{ active: activeFile === name }"
-            @click="selectFile(name)"
-          >
-            <span class="file-icon" :style="{ color: getFileIconColor(name) }">{{ getFileIcon(name) }}</span>
-            <span class="file-name">{{ name }}</span>
-            <button
-              v-if="name !== 'index.html' && name !== 'state.json'"
-              class="delete-btn"
-              @click.stop="deleteFile(name)"
-              title="Delete file"
-            >
-              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
-          </div>
-        </div>
-      </div>
-
       <!-- Editor area -->
       <div class="editor-area">
         <!-- Editor tabs -->
@@ -454,7 +383,29 @@ onUnmounted(() => {
           >
             <span class="tab-icon" :style="{ color: getFileIconColor(name) }">{{ getFileIcon(name) }}</span>
             <span class="tab-name">{{ name }}</span>
+            <button
+              v-if="name !== 'index.html' && name !== 'state.json'"
+              class="tab-close-btn"
+              @click.stop="deleteFile(name)"
+              title="Close file"
+            >
+              <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
           </div>
+          <button class="tab-add-btn" @click="openNewFileInput" title="New file">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+        </div>
+        <div v-if="showNewFileInput" class="tab-new-file-row">
+          <input
+            ref="newFileInput"
+            v-model="newFileName"
+            @keyup.enter="addFile"
+            @keyup.escape="showNewFileInput = false"
+            @blur="showNewFileInput = false"
+            placeholder="filename.html"
+            autofocus
+          />
         </div>
         <div ref="editorContainer" class="editor-container"></div>
       </div>
@@ -618,11 +569,13 @@ onUnmounted(() => {
 .delete-btn:hover { color: var(--vp-c-danger-1); background: var(--vp-c-default-soft); }
 
 /* ─── Editor area ─── */
+/* ─── Editor area ─── */
 .editor-area {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   background: var(--vp-c-bg);
 }
 
@@ -661,6 +614,56 @@ onUnmounted(() => {
 .tab-icon { font-size: 9px; }
 .tab-name { font-family: inherit; }
 
+.tab-close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: transparent;
+  color: var(--vp-c-text-3);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+  margin-left: 2px;
+  opacity: 0;
+  transition: all 0.12s;
+}
+.tab:hover .tab-close-btn { opacity: 1; }
+.tab-close-btn:hover { color: var(--vp-c-text-1); background: var(--vp-c-default-soft); }
+
+.tab-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  min-width: 32px;
+  border: none;
+  background: transparent;
+  color: var(--vp-c-text-3);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.tab-add-btn:hover { color: var(--vp-c-text-1); background: var(--vp-c-default-soft); }
+
+.tab-new-file-row {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--vp-c-divider);
+  background: var(--vp-c-bg-alt);
+}
+.tab-new-file-row input {
+  width: 200px;
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid var(--vp-c-brand-1);
+  border-radius: 4px;
+  background: var(--vp-c-bg);
+  color: var(--vp-c-text-1);
+  outline: none;
+  font-family: inherit;
+}
+
 .editor-container {
   flex: 1;
   overflow: hidden;
@@ -679,6 +682,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   background: var(--vp-c-bg);
 }
 
