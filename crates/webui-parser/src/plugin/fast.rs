@@ -488,6 +488,7 @@ mod tests {
             tag_name: tag.to_string(),
             html_content: html.to_string(),
             css_content: css.map(ToString::to_string),
+            css_tokens: Vec::new(),
             source_path: PathBuf::from("/test"),
             class_name: None,
         }

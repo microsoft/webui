@@ -45,7 +45,7 @@ fn create_test_protocol() -> WebUIProtocol {
         },
     );
 
-    WebUIProtocol { fragments }
+    WebUIProtocol::new(fragments)
 }
 
 fn create_simple_protocol() -> WebUIProtocol {
@@ -68,7 +68,7 @@ fn create_simple_protocol() -> WebUIProtocol {
         },
     );
 
-    WebUIProtocol { fragments }
+    WebUIProtocol::new(fragments)
 }
 
 fn serialize_protobuf_benchmark(c: &mut Criterion) {
@@ -112,7 +112,7 @@ fn complex_condition_benchmark(c: &mut Criterion) {
             fragments: vec![WebUIFragment::raw("ok")],
         },
     );
-    let protocol = WebUIProtocol { fragments };
+    let protocol = WebUIProtocol::new(fragments);
     let bytes = protocol.to_protobuf().expect("encode failed");
 
     c.bench_function("deserialize_complex_condition", |b| {
@@ -209,7 +209,7 @@ fn create_medium_protocol() -> WebUIProtocol {
         },
     );
 
-    WebUIProtocol { fragments }
+    WebUIProtocol::new(fragments)
 }
 
 fn create_large_protocol(component_count: usize) -> WebUIProtocol {
@@ -299,7 +299,7 @@ fn create_large_protocol(component_count: usize) -> WebUIProtocol {
         );
     }
 
-    WebUIProtocol { fragments }
+    WebUIProtocol::new(fragments)
 }
 
 fn serialize_medium_benchmark(c: &mut Criterion) {

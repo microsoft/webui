@@ -15,7 +15,7 @@ pub use error::{ParserError, Result};
 pub use handlebars_parser::HandlebarsParser;
 
 use crate::plugin::ParserPlugin;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIteratorMut};
 use tree_sitter_html::LANGUAGE;
 use webui_protocol::{
@@ -92,6 +92,15 @@ pub struct HtmlParser {
 
     /// Optional parser plugin for framework-specific behavior.
     plugin: Option<Box<dyn ParserPlugin>>,
+
+    /// Accumulated CSS custom property token names from all processed
+    /// components and inline `<style>` tags.
+    token_store: HashSet<String>,
+
+    /// CSS custom property names **defined** in inline `<style>` tags
+    /// (e.g., `:root { --color-primary: #0078d4; }`). These are excluded
+    /// from the final token set since the app already provides their values.
+    token_definitions: HashSet<String>,
 }
 
 impl HtmlParser {
@@ -112,6 +121,8 @@ impl HtmlParser {
             fragment_records: WebUIFragmentRecords::new(),
             css_strategy: CssStrategy::default(),
             plugin: None,
+            token_store: HashSet::new(),
+            token_definitions: HashSet::new(),
             parser,
         }
     }
@@ -136,6 +147,24 @@ impl HtmlParser {
 
     pub fn into_fragment_records(mut self) -> WebUIFragmentRecords {
         std::mem::take(&mut self.fragment_records)
+    }
+
+    /// Take the accumulated CSS tokens as a sorted, deduplicated `Vec`.
+    ///
+    /// Tokens that are **defined** in inline `<style>` tags (e.g., in a
+    /// `:root` block) are excluded — only externally-referenced tokens
+    /// that the app does not already define are returned.
+    ///
+    /// This consumes the internal token store. Call after parsing is complete.
+    #[must_use]
+    pub fn take_tokens(&mut self) -> Vec<String> {
+        let definitions = std::mem::take(&mut self.token_definitions);
+        let mut tokens: Vec<String> = std::mem::take(&mut self.token_store)
+            .into_iter()
+            .filter(|t| !definitions.contains(t))
+            .collect();
+        tokens.sort();
+        tokens
     }
 
     /// Parse HTML content to generate WebUI fragments.
@@ -287,6 +316,15 @@ impl HtmlParser {
                         let style_content = &source[child.start_byte()..child.end_byte()];
                         let processed_css = self.css_parser.parse_inline_css(style_content)?;
 
+                        // Single parse: extract both token usages and definitions
+                        if let Ok((tokens, defs)) = self
+                            .css_parser
+                            .extract_tokens_and_definitions(style_content)
+                        {
+                            self.token_store.extend(tokens);
+                            self.token_definitions.extend(defs);
+                        }
+
                         // Add the style tag with processed CSS
                         let style_tag = format!("<style>{}</style>", processed_css);
                         self.add_raw_fragment(&style_tag);
@@ -320,6 +358,11 @@ impl HtmlParser {
             "doctype" => {
                 let content = &source[node.start_byte()..node.end_byte()];
                 self.add_raw_fragment(content);
+            }
+            // HTML comment: check for handlebars bindings like <!--{{tokens}}-->
+            "comment" => {
+                let content = &source[node.start_byte()..node.end_byte()];
+                self.process_comment(content, fragments)?;
             }
             // For other node types (like head, body), traverse their children
             _ => {
@@ -794,6 +837,47 @@ impl HtmlParser {
         Ok(())
     }
 
+    /// Process an HTML comment node.
+    ///
+    /// If the comment contains handlebars expressions (e.g., `<!--{{tokens}}-->`),
+    /// parse them as signal fragments. Otherwise, preserve the comment as raw content.
+    fn process_comment(&mut self, content: &str, fragments: &mut Vec<WebUIFragment>) -> Result<()> {
+        // Strip <!-- and --> delimiters to get the inner text
+        let inner = content
+            .strip_prefix("<!--")
+            .and_then(|s| s.strip_suffix("-->"))
+            .unwrap_or("");
+
+        let trimmed = inner.trim();
+
+        // Quick check: if no handlebars syntax, preserve as raw comment
+        if !trimmed.contains("{{") {
+            self.add_raw_fragment(content);
+            return Ok(());
+        }
+
+        // Parse the inner text through the handlebars parser
+        let parsed = self.handlebars_parser.parse(trimmed)?;
+
+        // Check if the result is *only* signal fragments (no raw text mixed in).
+        // If all fragments are signals, emit them without comment delimiters.
+        // If there's any raw text mixed in, preserve the whole comment as-is.
+        let all_signals = parsed
+            .iter()
+            .all(|f| matches!(f.fragment.as_ref(), Some(Fragment::Signal(_))));
+
+        if all_signals && !parsed.is_empty() {
+            for fragment in parsed {
+                self.add_fragment(fragment, fragments);
+            }
+        } else {
+            // Mixed content or parse result has raw parts — keep as raw comment
+            self.add_raw_fragment(content);
+        }
+
+        Ok(())
+    }
+
     /// Process a <for> directive.
     fn process_for_directive(
         &mut self,
@@ -998,15 +1082,19 @@ impl HtmlParser {
         self.flush_raw_buffer(fragments);
 
         // Get component data
-        let (html_content, css_content) = {
+        let (html_content, css_content, css_tokens) = {
             let component = self.component_registry.get(tag_name).ok_or_else(|| {
                 ParserError::Directive(format!("Component not found: {}", tag_name))
             })?;
             (
                 component.html_content.clone(),
                 component.css_content.clone(),
+                component.css_tokens.clone(),
             )
         };
+
+        // Merge component CSS tokens into the global token store
+        self.token_store.extend(css_tokens);
 
         // Parse and register component template if not already done
         if !self.fragment_records.contains_key(tag_name) {
@@ -2687,5 +2775,227 @@ mod tests {
             count, 2,
             "Only plugin-skipped attrs should be counted, not static title"
         );
+    }
+
+    // ── Comment binding tests ────────────────────────────────────────
+
+    #[test]
+    fn test_comment_handlebars_signal() {
+        let mut parser = HtmlParser::new();
+        let html = "<!--{{tokens}}-->";
+        parser.parse("test.html", html).expect("parse failed");
+        let records = parser.into_fragment_records();
+
+        assert_stream!(records, "test.html", [signal("tokens")]);
+    }
+
+    #[test]
+    fn test_comment_triple_brace_raw_signal() {
+        let mut parser = HtmlParser::new();
+        let html = "<!--{{{tokens}}}-->";
+        parser.parse("test.html", html).expect("parse failed");
+        let records = parser.into_fragment_records();
+
+        assert_stream!(records, "test.html", [signal_raw("tokens")]);
+    }
+
+    #[test]
+    fn test_comment_regular_preserved() {
+        let mut parser = HtmlParser::new();
+        let html = "<!-- regular comment -->";
+        parser.parse("test.html", html).expect("parse failed");
+        let records = parser.into_fragment_records();
+
+        assert_stream!(records, "test.html", [raw("<!-- regular comment -->")]);
+    }
+
+    #[test]
+    fn test_comment_dotted_signal() {
+        let mut parser = HtmlParser::new();
+        let html = "<!--{{tokens.light}}-->";
+        parser.parse("test.html", html).expect("parse failed");
+        let records = parser.into_fragment_records();
+
+        assert_stream!(records, "test.html", [signal("tokens.light")]);
+    }
+
+    #[test]
+    fn test_comment_arbitrary_identifier() {
+        let mut parser = HtmlParser::new();
+        let html = "<!--{{someOtherBinding}}-->";
+        parser.parse("test.html", html).expect("parse failed");
+        let records = parser.into_fragment_records();
+
+        assert_stream!(records, "test.html", [signal("someOtherBinding")]);
+    }
+
+    #[test]
+    fn test_comment_with_surrounding_content() {
+        let mut parser = HtmlParser::new();
+        let html = "<div><!--{{tokens}}--></div>";
+        parser.parse("test.html", html).expect("parse failed");
+        let records = parser.into_fragment_records();
+
+        assert_stream!(
+            records,
+            "test.html",
+            [raw("<div>"), signal("tokens"), raw("</div>")]
+        );
+    }
+
+    // ── Token collection tests ───────────────────────────────────────
+
+    #[test]
+    fn test_tokens_from_style_tag() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<style>
+            .btn { color: var(--colorPrimary); background: var(--bgColor); }
+        </style>"#;
+        parser.parse("test.html", html).expect("parse failed");
+        let tokens = parser.take_tokens();
+
+        assert_eq!(tokens, vec!["bgColor", "colorPrimary"]);
+    }
+
+    #[test]
+    fn test_tokens_from_component_css() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(
+                "my-button",
+                "<button>Click</button>",
+                Some(":host { color: var(--textColor); border: var(--borderWidth); }"),
+            )
+            .expect("register failed");
+
+        let html = "<my-button></my-button>";
+        parser.parse("test.html", html).expect("parse failed");
+        let tokens = parser.take_tokens();
+
+        assert_eq!(tokens, vec!["borderWidth", "textColor"]);
+    }
+
+    #[test]
+    fn test_tokens_merged_from_style_and_components() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(
+                "my-widget",
+                "<div>Widget</div>",
+                Some(".w { padding: var(--spacingM); }"),
+            )
+            .expect("register failed");
+
+        let html = r#"<style>.root { color: var(--textColor); }</style><my-widget></my-widget>"#;
+        parser.parse("test.html", html).expect("parse failed");
+        let tokens = parser.take_tokens();
+
+        assert_eq!(tokens, vec!["spacingM", "textColor"]);
+    }
+
+    #[test]
+    fn test_tokens_deduplicated() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(
+                "my-btn",
+                "<button>B</button>",
+                Some(".b { color: var(--shared); }"),
+            )
+            .expect("register failed");
+
+        let html = r#"<style>.x { color: var(--shared); }</style><my-btn></my-btn>"#;
+        parser.parse("test.html", html).expect("parse failed");
+        let tokens = parser.take_tokens();
+
+        assert_eq!(tokens, vec!["shared"]);
+    }
+
+    #[test]
+    fn test_tokens_empty_when_no_vars() {
+        let mut parser = HtmlParser::new();
+        let html = "<div>Hello</div>";
+        parser.parse("test.html", html).expect("parse failed");
+        let tokens = parser.take_tokens();
+
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn test_tokens_exclude_locally_defined_in_component() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(
+                "my-card",
+                "<div>Card</div>",
+                Some(":host { --local: 5px; width: var(--external); }"),
+            )
+            .expect("register failed");
+
+        let html = "<my-card></my-card>";
+        parser.parse("test.html", html).expect("parse failed");
+        let tokens = parser.take_tokens();
+
+        assert_eq!(tokens, vec!["external"]);
+    }
+
+    #[test]
+    fn test_tokens_exclude_entry_root_definitions() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(
+                "my-btn",
+                "<button>B</button>",
+                Some(".b { color: var(--color-primary); border-radius: var(--radius-m); }"),
+            )
+            .expect("register failed");
+
+        // Entry HTML defines --color-primary and --radius-m in :root
+        // Components use them — they should NOT appear in hoisted tokens
+        let html = r#"<style>
+            :root {
+                --color-primary: #0078d4;
+                --radius-m: 6px;
+            }
+            body { color: var(--color-primary); }
+        </style>
+        <my-btn></my-btn>"#;
+        parser.parse("test.html", html).expect("parse failed");
+        let tokens = parser.take_tokens();
+
+        // Both tokens are defined in entry :root, so neither should be hoisted
+        assert!(
+            tokens.is_empty(),
+            "Tokens defined in entry :root should be excluded: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn test_tokens_entry_defs_exclude_but_external_kept() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(
+                "my-card",
+                "<div>Card</div>",
+                Some(".c { color: var(--color-primary); margin: var(--external-spacing); }"),
+            )
+            .expect("register failed");
+
+        // Entry defines --color-primary but NOT --external-spacing
+        let html = r#"<style>
+            :root { --color-primary: #0078d4; }
+        </style>
+        <my-card></my-card>"#;
+        parser.parse("test.html", html).expect("parse failed");
+        let tokens = parser.take_tokens();
+
+        // Only --external-spacing should be hoisted (not defined in entry)
+        assert_eq!(tokens, vec!["external-spacing"]);
     }
 }

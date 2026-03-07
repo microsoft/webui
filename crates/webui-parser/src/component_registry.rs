@@ -2,7 +2,7 @@
 //!
 //! This module manages the registry of web components used in the application.
 
-use crate::{ParserError, Result};
+use crate::{CssParser, ParserError, Result};
 use std::collections::HashMap;
 #[cfg(feature = "fs")]
 use std::fs;
@@ -24,6 +24,10 @@ pub struct Component {
     /// The CSS content of the component, if any
     pub css_content: Option<String>,
 
+    /// CSS custom property token names extracted from this component's CSS
+    /// (sorted, deduplicated, without `--` prefix).
+    pub css_tokens: Vec<String>,
+
     /// The file path where this component is defined
     pub source_path: PathBuf,
 
@@ -32,10 +36,18 @@ pub struct Component {
 }
 
 /// Registry of web components.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ComponentRegistry {
     /// Map of component tag names to their component data
     components: HashMap<String, Component>,
+    /// Reusable CSS parser for token extraction during registration.
+    css_parser: CssParser,
+}
+
+impl Default for ComponentRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ComponentRegistry {
@@ -43,6 +55,7 @@ impl ComponentRegistry {
     pub fn new() -> Self {
         Self {
             components: HashMap::new(),
+            css_parser: CssParser::new(),
         }
     }
 
@@ -117,18 +130,19 @@ impl ComponentRegistry {
         let html_content = fs::read_to_string(html_path)
             .map_err(|e| ParserError::IO(format!("Failed to read HTML file: {}", e)))?;
 
-        // Read CSS content if available
-        let css_content = if let Some(css_path) = css_path {
+        // Read CSS content and extract tokens if available
+        let (css_content, css_tokens) = if let Some(css_path) = css_path {
             let css_path = css_path.as_ref();
             if css_path.exists() {
                 let content = fs::read_to_string(css_path)
                     .map_err(|e| ParserError::IO(format!("Failed to read CSS file: {}", e)))?;
-                Some(content)
+                let tokens = self.extract_sorted_tokens(&content)?;
+                (Some(content), tokens)
             } else {
-                None
+                (None, Vec::new())
             }
         } else {
-            None
+            (None, Vec::new())
         };
 
         // Create and register the component
@@ -136,6 +150,7 @@ impl ComponentRegistry {
             tag_name: tag_name.to_string(),
             html_content,
             css_content,
+            css_tokens,
             source_path: html_path.to_path_buf(),
             class_name: None,
         };
@@ -167,11 +182,18 @@ impl ComponentRegistry {
             )));
         }
 
+        // Extract CSS tokens if CSS content is provided
+        let css_tokens = match css_content {
+            Some(css) => self.extract_sorted_tokens(css)?,
+            None => Vec::new(),
+        };
+
         // Create component with dummy path since it's coming from string content
         let component: Component = Component {
             tag_name: tag_name.to_string(),
             html_content: html_content.to_string(),
             css_content: css_content.map(ToString::to_string),
+            css_tokens,
             source_path: PathBuf::new(), // Empty path since it's not from a file
             class_name: None,
         };
@@ -179,6 +201,14 @@ impl ComponentRegistry {
         // Register the component
         self.components.insert(tag_name.to_string(), component);
         Ok(())
+    }
+
+    /// Extract CSS tokens from content and return as a sorted `Vec`.
+    fn extract_sorted_tokens(&mut self, css_content: &str) -> Result<Vec<String>> {
+        let tokens = self.css_parser.extract_tokens(css_content)?;
+        let mut sorted: Vec<String> = tokens.into_iter().collect();
+        sorted.sort();
+        Ok(sorted)
     }
 
     /// Check if a tag name is registered as a component.
@@ -485,5 +515,47 @@ mod tests {
             result
         );
         assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn test_register_component_extracts_css_tokens() {
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_component(
+                "my-btn",
+                "<button>Click</button>",
+                Some(":host { color: var(--text-color); padding: var(--spacing-m); }"),
+            )
+            .expect("register failed");
+
+        let component = registry.get("my-btn").expect("component not found");
+        assert_eq!(component.css_tokens, vec!["spacing-m", "text-color"]);
+    }
+
+    #[test]
+    fn test_register_component_no_css_no_tokens() {
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_component("my-card", "<div>Card</div>", None)
+            .expect("register failed");
+
+        let component = registry.get("my-card").expect("component not found");
+        assert!(component.css_tokens.is_empty());
+    }
+
+    #[test]
+    fn test_register_component_excludes_local_defs_from_tokens() {
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_component(
+                "my-widget",
+                "<div>W</div>",
+                Some(":host { --local: 5px; margin: var(--external); width: var(--local); }"),
+            )
+            .expect("register failed");
+
+        let component = registry.get("my-widget").expect("component not found");
+        // --local is defined locally so excluded; only --external is a token
+        assert_eq!(component.css_tokens, vec!["external"]);
     }
 }

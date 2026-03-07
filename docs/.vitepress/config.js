@@ -47,6 +47,7 @@ export default {
           items: [
             { text: 'State Management', link: '/guide/concepts/state-management' },
             { text: 'Components', link: '/guide/concepts/components' },
+            { text: 'CSS Token Hoisting', link: '/guide/concepts/css-tokens' },
             {
               text: 'Template Directives',
               items: [

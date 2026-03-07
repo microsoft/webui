@@ -46,7 +46,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
 
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("protocol.bin");

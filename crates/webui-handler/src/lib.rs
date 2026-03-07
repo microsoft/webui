@@ -632,7 +632,7 @@ mod tests {
             },
         );
 
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
 
         // Create a test writer
@@ -664,7 +664,7 @@ mod tests {
             },
         );
 
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"name": "WebUI"});
 
         // Create a test writer
@@ -705,7 +705,7 @@ mod tests {
             },
         );
 
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "people": [
                 {"name": "Alice"},
@@ -753,7 +753,7 @@ mod tests {
             },
         );
 
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
 
         // Test with isActive = true
         let state_true = test_json!({"isActive": true});
@@ -797,7 +797,7 @@ mod tests {
             },
         );
 
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
 
         // Create a test writer
@@ -828,7 +828,7 @@ mod tests {
             },
         );
 
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
 
         // Create a test writer
@@ -861,7 +861,7 @@ mod tests {
             },
         );
 
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
 
         let mut writer = TestWriter::new();
@@ -893,7 +893,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"isDisabled": true});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -916,7 +916,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"isDisabled": false});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -939,7 +939,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -966,7 +966,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"checked": true, "disabled": false});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -988,7 +988,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"inputValue": "Hello"});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -1008,7 +1008,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"number": 0});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -1042,7 +1042,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"item": "world"});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -1063,7 +1063,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"html": "<strong>hi</strong>"});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -1104,7 +1104,7 @@ mod tests {
                 fragments: vec![WebUIFragment::raw("<span>Inner</span>")],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "outerItems": [
                 {"innerItems": [{"name": "A"}, {"name": "B"}]},
@@ -1152,7 +1152,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "outerItems": [
                 {"innerItems": [{"name": "Item1"}, {"name": "Item2"}]},
@@ -1202,7 +1202,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "globalOuter": "GO",
             "globalInner": "GI",
@@ -1245,7 +1245,7 @@ mod tests {
                 fragments: vec![WebUIFragment::signal("item.name", false)],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"items": [{"name": "Show", "visible": true}, {"name": "Hide", "visible": false}]});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -1276,7 +1276,7 @@ mod tests {
                 fragments: vec![WebUIFragment::raw("yes")],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         // Global flag is true, but local item.flag is false for second item
         let state = test_json!({"flag": true, "items": [{"flag": true}, {"flag": false}]});
         let mut writer = TestWriter::new();
@@ -1321,7 +1321,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"title": "Global Title"});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -1374,7 +1374,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"item": "<world>"});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -1427,7 +1427,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"item": "a&b"});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -1474,7 +1474,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"complexItem": {"foo": 1, "bar": "true"}});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -1533,7 +1533,7 @@ mod tests {
             },
         );
         fragments.insert("child".to_string(), FragmentList { fragments: vec![] });
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"var": "original"});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -1582,7 +1582,7 @@ mod tests {
                 fragments: vec![WebUIFragment::raw("disabled!")],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"isDisabled": true});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -1603,7 +1603,7 @@ mod tests {
                 fragments: vec![WebUIFragment::signal("v", false)],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"v": value});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -1715,7 +1715,7 @@ mod tests {
                     ],
                 },
             );
-            let protocol = WebUIProtocol { fragments };
+            let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({"checked": 1});
             let mut writer = TestWriter::new();
             handle(&protocol, &state, &mut writer).unwrap();
@@ -1737,7 +1737,7 @@ mod tests {
                     ],
                 },
             );
-            let protocol = WebUIProtocol { fragments };
+            let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({"checked": "yes"});
             let mut writer = TestWriter::new();
             handle(&protocol, &state, &mut writer).unwrap();
@@ -1759,7 +1759,7 @@ mod tests {
                     ],
                 },
             );
-            let protocol = WebUIProtocol { fragments };
+            let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({"checked": {}});
             let mut writer = TestWriter::new();
             handle(&protocol, &state, &mut writer).unwrap();
@@ -1782,7 +1782,7 @@ mod tests {
                     ],
                 },
             );
-            let protocol = WebUIProtocol { fragments };
+            let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({"checked": "false"});
             let mut writer = TestWriter::new();
             handle(&protocol, &state, &mut writer).unwrap();
@@ -1808,7 +1808,7 @@ mod tests {
                     ],
                 },
             );
-            let protocol = WebUIProtocol { fragments };
+            let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({"checked": 0});
             let mut writer = TestWriter::new();
             handle(&protocol, &state, &mut writer).unwrap();
@@ -1830,7 +1830,7 @@ mod tests {
                     ],
                 },
             );
-            let protocol = WebUIProtocol { fragments };
+            let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({"checked": ""});
             let mut writer = TestWriter::new();
             handle(&protocol, &state, &mut writer).unwrap();
@@ -1852,7 +1852,7 @@ mod tests {
                     ],
                 },
             );
-            let protocol = WebUIProtocol { fragments };
+            let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({"checked": false});
             let mut writer = TestWriter::new();
             handle(&protocol, &state, &mut writer).unwrap();
@@ -1874,7 +1874,7 @@ mod tests {
                     ],
                 },
             );
-            let protocol = WebUIProtocol { fragments };
+            let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({});
             let mut writer = TestWriter::new();
             handle(&protocol, &state, &mut writer).unwrap();
@@ -1898,7 +1898,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"itemCount": 5});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -1921,7 +1921,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"itemCount": 3});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -2003,7 +2003,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"who": "<world>"});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -2106,7 +2106,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"p": "<p>", "cExtra": "x&y"});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -2197,7 +2197,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"who": "Bob", "items": [{"name": "A<1>"}, {"name": "B&2"}]});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -2283,7 +2283,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"t": "<t&1>", "d": "d<2>", "a": "a&3"});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -2328,7 +2328,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"title": "Global Title"});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -2379,7 +2379,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"title": "Global Title", "items": [{"title": "Local Title"}]});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -2445,7 +2445,7 @@ mod tests {
                 fragments: vec![WebUIFragment::raw("<div>Disabled</div>")],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"isDisabled": true});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -2490,7 +2490,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"keyHyphen": "Global Value"});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -2603,7 +2603,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "title": "Hello",
             "skippedClass": "my-class",
@@ -2683,7 +2683,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -2771,7 +2771,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -2818,7 +2818,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"complexItem": {"foo": 1, "bar": "true"}});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -2870,7 +2870,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"list": {"items": [{"name": "Alice"}, {"name": "Bob"}]}});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -2968,7 +2968,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"data": {"outer": [
             {"label": "Outer1", "middle": [{"label": "Middle1", "inner": [{"label": "Inner1A"}, {"label": "Inner1B"}]}]},
             {"label": "Outer2", "middle": [{"label": "Middle2", "inner": [{"label": "Inner2A"}]}]}
@@ -3034,7 +3034,7 @@ mod tests {
                 fragments: vec![WebUIFragment::raw("<span>Enabled</span>")],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"isDisabled": true});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -3095,7 +3095,7 @@ mod tests {
                 fragments: vec![WebUIFragment::raw("<span>Enabled</span>")],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"isDisabled": false});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -3190,9 +3190,7 @@ mod tests {
 
         // Test case 1: isDisabled = true
         {
-            let protocol = WebUIProtocol {
-                fragments: fragments.clone(),
-            };
+            let protocol = WebUIProtocol::new(fragments.clone());
             let state = test_json!({"isDisabled": true});
             let mut writer = TestWriter::new();
             handle(&protocol, &state, &mut writer).unwrap();
@@ -3204,9 +3202,7 @@ mod tests {
 
         // Test case 2: isDisabled = false
         {
-            let protocol = WebUIProtocol {
-                fragments: fragments.clone(),
-            };
+            let protocol = WebUIProtocol::new(fragments.clone());
             let state = test_json!({"isDisabled": false});
             let mut writer = TestWriter::new();
             handle(&protocol, &state, &mut writer).unwrap();
@@ -3244,7 +3240,7 @@ mod tests {
                 )],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -3276,7 +3272,7 @@ mod tests {
                 )],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -3338,7 +3334,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"items": [{"name": "Item1"}]});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -3373,7 +3369,7 @@ mod tests {
                 fragments: vec![WebUIFragment::raw("<span>If 1</span>")],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
 
         // True case: x = 10 > 5
         let state_true = test_json!({"x": 10});
@@ -3421,7 +3417,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "flag": false,
             "items": [
@@ -3471,7 +3467,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "item": {"flag": true},
             "items": [
@@ -3515,7 +3511,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "testScenario": "RecursiveTemplatesWithGlobalState",
             "items": [
@@ -3570,7 +3566,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"items": [{"name": "Item1"}, {"name": "Item2"}]});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -3618,7 +3614,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "globalPrefix": "Prefix: ",
             "outerItems": [
@@ -3669,7 +3665,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state =
             test_json!({"globalSuffix": "Global", "items": [{"name": "Item1"}, {"name": "Item2"}]});
         let mut writer = TestWriter::new();
@@ -3715,7 +3711,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state =
             test_json!({"globalSuffix": "Global", "items": [{"name": "Item1"}, {"name": "Item2"}]});
         let mut writer = TestWriter::new();
@@ -3749,7 +3745,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"name": "GlobalName", "items": [{"name": "LocalName1"}, {"name": "LocalName2"}]});
         let mut writer = TestWriter::new();
         handle(&protocol, &state, &mut writer).unwrap();
@@ -3809,7 +3805,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "globalPrefix": "Prefix: ",
             "globalSuffix": "Suffix",
@@ -3879,7 +3875,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "globalPrefix": "GP-",
             "outerItems": [
@@ -3943,7 +3939,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "outerItems": [
                 {"label": "Outer1", "innerItems": [{"detail": "Detail1", "show": true}, {"detail": "Detail2", "show": false}]},
@@ -3987,7 +3983,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "item": {"globalValue": "GLOBAL", "otherVal": "other"},
             "items": [
@@ -4042,7 +4038,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "item": {"globalValue": "GLOBAL", "otherVal": "other"},
             "items": [
@@ -4100,7 +4096,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "list": {"outer_items": [{"inner_items": [{"flag": true, "value": "X"}, {"flag": false, "value": "Y"}]}]},
             "inner_item": {"flag": false}
@@ -4155,7 +4151,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "list": {"outer_items": [{"inner_items": [{"value": "X"}, {"value": "Y"}]}]},
             "inner_item": {"flag": true}
@@ -4219,7 +4215,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "globalLimit": 10,
             "list": {"outerItems": [

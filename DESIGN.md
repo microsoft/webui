@@ -31,6 +31,9 @@ The protocol defines the serializable structure representing UI templates. At ru
 pub struct WebUIProtocol {
     /// Map of fragment identifiers to their associated fragment lists.
     pub fragments: HashMap<String, FragmentList>,
+    /// Sorted, deduplicated CSS custom property names used across all
+    /// components and entry page styles (without `--` prefix).
+    pub tokens: Vec<String>,
 }
 
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
@@ -369,6 +372,8 @@ pub struct Component {
     pub name: String,
     pub html_content: String,
     pub css_content: Option<String>,
+    /// Sorted, deduplicated CSS token names extracted from css_content.
+    pub css_tokens: Vec<String>,
 }
 ```
 
@@ -587,6 +592,7 @@ impl CssParser {
     pub fn parse(&mut self, css_content: &str) -> Result<WebUIFragmentRecords, ParserError>
     pub fn process_css(&mut self, css_content: &str, fragments: &mut WebUIFragmentRecords) -> Result<(), ParserError>
     pub fn parse_inline_css(&mut self, style_content: &str) -> Result<String, ParserError>
+    pub fn extract_tokens(&mut self, css_content: &str) -> Result<HashSet<String>, ParserError>
 }
 ```
 
@@ -596,6 +602,47 @@ impl CssParser {
 - Convert dynamic variables to signals
 - Handle nested variable references
 - Process inline and external CSS
+
+### CSS Token Hoisting
+
+CSS Token Hoisting extracts the set of CSS custom properties (tokens) that are **used** across all components and entry page styles at build time. The sorted, deduplicated list is included in the protocol's `tokens` field, enabling host runtimes to resolve only the design tokens the application actually needs.
+
+#### Token Extraction (`CssParser::extract_tokens`)
+
+The `extract_tokens` method uses tree-sitter-css to iteratively walk the CSS AST and extract custom property **usages** from `var()` calls, while **excluding** locally-defined custom properties.
+
+**Extracted (hoisted):**
+- `var(--colorPrimary)` → token `"colorPrimary"`
+- `var(--a, var(--b, var(--c)))` → tokens `"a"`, `"b"`, `"c"` (nested fallbacks)
+- `var(--size, 16px)` → token `"size"` (literal fallbacks ignored)
+
+**Excluded (not hoisted):**
+- `--bar: 12px` — local custom property definitions
+- `var(--bar)` when `--bar` is defined in the same CSS file
+
+The iterative walker visits each `call_expression` node independently, so nested `var()` fallbacks (which are separate `call_expression` nodes in the tree-sitter AST) are naturally handled.
+
+#### Token Collection During Parsing
+
+The `HtmlParser` maintains a `token_store: HashSet<String>` that accumulates tokens from two sources:
+
+1. **Component CSS** — when a component is first encountered during parsing, its pre-extracted `css_tokens` (stored in the `Component` struct at registration time) are merged into the token store.
+2. **Inline `<style>` tags** — when the parser processes a `style_element` node, it calls `extract_tokens` on the CSS content and merges the result.
+
+After parsing completes, `HtmlParser::take_tokens()` returns the sorted, deduplicated token list for inclusion in the protocol.
+
+#### Comment-Based Signal Bindings
+
+HTML comments containing handlebars expressions are parsed as signal fragments:
+
+```html
+<!--{{tokens}}-->        → Signal { value: "tokens", raw: false }
+<!--{{{tokens}}}-->      → Signal { value: "tokens", raw: true }
+<!--{{tokens.light}}-->  → Signal { value: "tokens.light", raw: false }
+<!-- regular comment -->  → Raw (preserved as-is)
+```
+
+This mechanism is general-purpose (not limited to `tokens`) and enables comment-based placeholders for runtime value injection in HTML files. The existing handlebars parser is reused for expression parsing within comment delimiters.
 
 ### Error Handling
 ```rust

@@ -274,6 +274,23 @@ impl ConditionExpr {
     }
 }
 
+// ── Constructors ────────────────────────────────────────────────────────
+
+impl WebUiProtocol {
+    /// Create a protocol from fragment records with no CSS tokens.
+    pub fn new(fragments: WebUIFragmentRecords) -> Self {
+        Self {
+            fragments,
+            tokens: Vec::new(),
+        }
+    }
+
+    /// Create a protocol from fragment records with CSS tokens.
+    pub fn with_tokens(fragments: WebUIFragmentRecords, tokens: Vec<String>) -> Self {
+        Self { fragments, tokens }
+    }
+}
+
 // ── Serialization / deserialization / validation ────────────────────────
 
 impl WebUiProtocol {
@@ -402,7 +419,7 @@ mod tests {
                 ],
             },
         );
-        WebUIProtocol { fragments }
+        WebUIProtocol::new(fragments)
     }
 
     #[test]
@@ -450,7 +467,7 @@ mod tests {
             },
         );
 
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let bytes = protocol.to_protobuf().unwrap();
         let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
         assert_eq!(protocol, decoded);
@@ -483,7 +500,7 @@ mod tests {
                     fragments: vec![WebUIFragment::raw("ok")],
                 },
             );
-            let p = WebUIProtocol { fragments };
+            let p = WebUIProtocol::new(fragments);
             let bytes = p.to_protobuf().unwrap();
             let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
             assert_eq!(p, decoded);
@@ -515,7 +532,7 @@ mod tests {
                 fragments: vec![WebUIFragment::raw("ok")],
             },
         );
-        let p = WebUIProtocol { fragments };
+        let p = WebUIProtocol::new(fragments);
         let bytes = p.to_protobuf().unwrap();
         let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
         assert_eq!(p, decoded);
@@ -542,7 +559,7 @@ mod tests {
                 fragments: vec![WebUIFragment::raw("yes")],
             },
         );
-        let p = WebUIProtocol { fragments };
+        let p = WebUIProtocol::new(fragments);
         let bytes = p.to_protobuf().unwrap();
         let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
         assert_eq!(p, decoded);
@@ -585,7 +602,7 @@ mod tests {
             },
         );
 
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let buf = protocol.to_protobuf().unwrap();
 
         let result = WebUIProtocol::from_protobuf(&buf);
@@ -602,7 +619,7 @@ mod tests {
             },
         );
 
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let buf = protocol.to_protobuf().unwrap();
 
         let result = WebUIProtocol::from_protobuf(&buf);
@@ -625,7 +642,7 @@ mod tests {
             },
         );
 
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let buf = protocol.to_protobuf().unwrap();
 
         let result = WebUIProtocol::from_protobuf(&buf);
@@ -644,7 +661,7 @@ mod tests {
                 fragments: vec![WebUIFragment::signal("name", false)],
             },
         );
-        let p = WebUIProtocol { fragments };
+        let p = WebUIProtocol::new(fragments);
         let bytes = p.to_protobuf().unwrap();
         let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
         let frag = &decoded.fragments["main"].fragments[0];
@@ -659,5 +676,38 @@ mod tests {
         let protocol = sample_protocol();
         let bytes = protocol.to_protobuf().unwrap();
         assert_eq!(bytes.len(), protocol.encoded_len());
+    }
+
+    #[test]
+    fn test_protocol_new_has_empty_tokens() {
+        let protocol = WebUIProtocol::new(HashMap::new());
+        assert!(protocol.tokens.is_empty());
+        assert!(protocol.fragments.is_empty());
+    }
+
+    #[test]
+    fn test_protocol_with_tokens() {
+        let tokens = vec!["color-primary".to_string(), "spacing-m".to_string()];
+        let protocol = WebUIProtocol::with_tokens(HashMap::new(), tokens.clone());
+        assert_eq!(protocol.tokens, tokens);
+    }
+
+    #[test]
+    fn test_protobuf_roundtrip_with_tokens() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("Hello")],
+            },
+        );
+        let tokens = vec!["border-radius-m".to_string(), "color-primary".to_string()];
+        let protocol = WebUIProtocol::with_tokens(fragments, tokens.clone());
+
+        let bytes = protocol.to_protobuf().expect("encode failed");
+        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
+
+        assert_eq!(decoded.tokens, tokens);
+        assert!(decoded.fragments.contains_key("index.html"));
     }
 }

@@ -59,6 +59,8 @@ pub struct BuildOutput {
     pub fragment_count: usize,
     /// Number of registered components
     pub component_count: usize,
+    /// Number of unique CSS tokens discovered
+    pub token_count: usize,
 }
 
 /// Build the protocol from an app directory.
@@ -122,6 +124,10 @@ pub fn build_protocol(app_dir: &Path, args: &AppArgs) -> Result<BuildOutput> {
         })
         .collect();
 
+    // Collect CSS tokens before consuming the parser
+    let tokens = parser.take_tokens();
+    let token_count = tokens.len();
+
     // Build protocol (consumes parser)
     let fragment_records = parser.into_fragment_records();
     let fragment_count: usize = fragment_records.values().map(|v| v.fragments.len()).sum();
@@ -133,14 +139,13 @@ pub fn build_protocol(app_dir: &Path, args: &AppArgs) -> Result<BuildOutput> {
         .map(|(tag, css)| (format!("{tag}.css"), css))
         .collect();
 
-    let protocol = WebUIProtocol {
-        fragments: fragment_records,
-    };
+    let protocol = WebUIProtocol::with_tokens(fragment_records, tokens);
 
     Ok(BuildOutput {
         protocol,
         css_files,
         fragment_count,
         component_count,
+        token_count,
     })
 }

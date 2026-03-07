@@ -432,7 +432,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"name": "Alice"});
         let output = render_no_plugin(&protocol, &state);
         assert_eq!(output, "<p>Alice</p>");
@@ -452,7 +452,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"name": "Alice"});
         let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
         // Root scope is disabled — no markers at root level
@@ -474,7 +474,7 @@ mod tests {
                 fragments: vec![WebUIFragment::signal("item", false)],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"items": ["a", "b"]});
         let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
         // Root scope disabled — no for-loop binding or repeat item markers
@@ -503,7 +503,7 @@ mod tests {
                 fragments: vec![WebUIFragment::raw("<p>Visible</p>")],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
 
         // True case — root scope disabled, no markers; content still rendered
         let state = test_json!({"show": true});
@@ -537,7 +537,7 @@ mod tests {
                 fragments: vec![WebUIFragment::signal("inner", false)],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"before": "B", "inner": "I", "after": "A"});
         let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
         // Root scope disabled — no markers for root-level signals
@@ -563,7 +563,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"itemId": "42", "itemTitle": "Hello"});
         let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
         // Root scope disabled — no plugin data markers
@@ -616,7 +616,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"name": "World", "content": "CONTENT"});
 
         let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
@@ -735,7 +735,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "title": "My Store",
             "categories": [
@@ -829,7 +829,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
         let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
         // Hydration comments must be emitted even when signal is not found in state
@@ -872,7 +872,7 @@ mod tests {
                 fragments: vec![WebUIFragment::signal("item", false)],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
         let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
         // Hydration comments must be emitted even when collection is missing from state
@@ -905,7 +905,7 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"name": ""});
         let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
         assert!(
@@ -944,7 +944,7 @@ mod tests {
                 fragments: vec![WebUIFragment::signal("item", false)],
             },
         );
-        let protocol = WebUIProtocol { fragments };
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"items": []});
         let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
         assert!(

@@ -185,9 +185,7 @@ fn parse_to_protocol(
         .parse(entry, entry_html)
         .map_err(|e| BuildError::Parse(e.to_string()))?;
 
-    Ok(WebUIProtocol {
-        fragments: parser.into_fragment_records(),
-    })
+    Ok(WebUIProtocol::new(parser.into_fragment_records()))
 }
 
 /// Errors from the build-and-render pipeline.

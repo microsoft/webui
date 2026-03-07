@@ -137,7 +137,7 @@ fn build_mixed_protocol() -> WebUIProtocol {
         },
     );
 
-    WebUIProtocol { fragments }
+    WebUIProtocol::new(fragments)
 }
 
 fn handler_plugin_fast_bench(c: &mut Criterion) {
@@ -267,7 +267,7 @@ fn build_condition_protocol() -> WebUIProtocol {
         );
     }
 
-    WebUIProtocol { fragments }
+    WebUIProtocol::new(fragments)
 }
 
 fn build_condition_state() -> Value {
@@ -376,7 +376,7 @@ fn build_nested_component_protocol() -> WebUIProtocol {
         },
     );
 
-    WebUIProtocol { fragments }
+    WebUIProtocol::new(fragments)
 }
 
 fn handler_nested_components_bench(c: &mut Criterion) {
@@ -416,7 +416,7 @@ fn build_signal_protocol(signal_path: &str) -> WebUIProtocol {
             ],
         },
     );
-    WebUIProtocol { fragments }
+    WebUIProtocol::new(fragments)
 }
 
 fn handler_state_depth_bench(c: &mut Criterion) {

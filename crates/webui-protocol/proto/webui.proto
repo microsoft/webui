@@ -5,6 +5,10 @@ package webui;
 // Root protocol containing all fragment records.
 message WebUIProtocol {
   map<string, FragmentList> fragments = 1;
+  // Sorted, deduplicated CSS custom property names used across all components
+  // and entry page styles (e.g., "colorBrandBackground", "spacingMedium").
+  // Only usage via var(--name) is included; local definitions are excluded.
+  repeated string tokens = 2;
 }
 
 // A list of fragments (needed because protobuf maps cannot have repeated values directly).

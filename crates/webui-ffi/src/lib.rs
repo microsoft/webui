@@ -332,9 +332,7 @@ pub unsafe extern "C" fn webui_render(
         return std::ptr::null_mut();
     }
 
-    let protocol = WebUIProtocol {
-        fragments: parser.into_fragment_records(),
-    };
+    let protocol = WebUIProtocol::new(parser.into_fragment_records());
 
     // --- Parse JSON state ----------------------------------------------------
     let data: Value = match serde_json::from_str(data_str) {

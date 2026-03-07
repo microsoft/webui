@@ -88,6 +88,18 @@ fn run(args: &BuildArgs) -> Result<()> {
         }
     ));
 
+    if build_output.token_count > 0 {
+        output::success(&format!(
+            "Discovered {} CSS token{}",
+            console::style(build_output.token_count).bold(),
+            if build_output.token_count == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
+    }
+
     // Write protocol as optimized protobuf binary
     let bytes = build_output
         .protocol
@@ -508,5 +520,55 @@ mod tests {
         .unwrap();
 
         assert!(out_dir.path().join("protocol.bin").exists());
+    }
+
+    #[test]
+    fn test_build_protocol_includes_tokens_from_components() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<my-btn></my-btn>"),
+            ("my-btn.html", "<button><slot></slot></button>"),
+            (
+                "my-btn.css",
+                ".btn { color: var(--text-color); padding: var(--spacing-m); }",
+            ),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+
+        build(app_dir.path(), out_dir.path(), "index.html").unwrap();
+
+        let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
+        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
+
+        assert_eq!(protocol.tokens, vec!["spacing-m", "text-color"]);
+    }
+
+    #[test]
+    fn test_build_protocol_excludes_entry_defined_tokens() {
+        let html = r#"<style>
+            :root { --text-color: #333; --spacing-m: 12px; }
+            body { color: var(--text-color); }
+        </style>
+        <my-btn></my-btn>"#;
+        let app_dir = create_app_dir(&[
+            ("index.html", html),
+            ("my-btn.html", "<button><slot></slot></button>"),
+            (
+                "my-btn.css",
+                ".btn { color: var(--text-color); margin: var(--spacing-m); }",
+            ),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+
+        build(app_dir.path(), out_dir.path(), "index.html").unwrap();
+
+        let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
+        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
+
+        // Both tokens are defined in entry :root — should not be in protocol
+        assert!(
+            protocol.tokens.is_empty(),
+            "Entry-defined tokens should be excluded: {:?}",
+            protocol.tokens
+        );
     }
 }

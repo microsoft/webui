@@ -119,9 +119,7 @@ mod tests {
     fn build_protocol(html: &str) -> Vec<u8> {
         let mut parser = HtmlParser::new();
         parser.parse("index.html", html).expect("parse failed");
-        let protocol = WebUIProtocol {
-            fragments: parser.into_fragment_records(),
-        };
+        let protocol = WebUIProtocol::new(parser.into_fragment_records());
         protocol.to_protobuf().expect("protobuf encode failed")
     }
 
