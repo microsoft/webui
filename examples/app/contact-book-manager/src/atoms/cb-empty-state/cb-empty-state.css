@@ -6,26 +6,26 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 48px;
+  padding: var(--spacing-4xl);
   text-align: center;
 }
 
 .empty-icon {
   font-size: 48px;
-  margin-bottom: 16px;
+  margin-bottom: var(--spacing-l);
   line-height: 1;
 }
 
 .empty-title {
-  font-size: 18px;
+  font-size: var(--font-size-xl);
   font-weight: 600;
-  color: #374151;
-  margin: 0 0 8px;
+  color: var(--color-neutral-700);
+  margin: 0 0 var(--spacing-s);
 }
 
 .empty-message {
-  font-size: 14px;
-  color: #6b7280;
+  font-size: var(--font-size-m);
+  color: var(--color-neutral-500);
   margin: 0;
 }
 

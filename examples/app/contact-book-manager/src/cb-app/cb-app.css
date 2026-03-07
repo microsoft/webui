@@ -1,7 +1,7 @@
 :host {
   display: block;
   min-height: 100vh;
-  background: #f0f2f5;
+  background: var(--color-neutral-50);
 }
 
 .layout {
@@ -11,34 +11,34 @@
 
 .content {
   flex: 1;
-  padding: 24px 32px;
+  padding: var(--spacing-xxl) var(--spacing-3xl);
   overflow-y: auto;
 }
 
 .page-title {
-  font-size: 24px;
+  font-size: var(--font-size-xxl);
   font-weight: 700;
-  color: #111827;
-  margin: 0 0 20px;
+  color: var(--color-neutral-950);
+  margin: 0 0 var(--spacing-xl);
 }
 
 .section-title {
-  font-size: 16px;
+  font-size: var(--font-size-l);
   font-weight: 600;
-  color: #374151;
-  margin: 28px 0 14px;
+  color: var(--color-neutral-700);
+  margin: 28px 0 var(--spacing-m);
 }
 
 .stats-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 16px;
+  gap: var(--spacing-l);
 }
 
 .contact-list-container {
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  background: var(--color-white);
+  border-radius: var(--border-radius-xl);
+  box-shadow: var(--shadow-s);
   overflow: hidden;
 }
 
@@ -46,15 +46,15 @@
 .stat-card {
   display: flex;
   align-items: center;
-  gap: 14px;
-  background: white;
-  border-radius: 12px;
-  padding: 20px 24px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  gap: var(--spacing-m);
+  background: var(--color-white);
+  border-radius: var(--border-radius-xl);
+  padding: var(--spacing-xl) var(--spacing-xxl);
+  box-shadow: var(--shadow-s);
 }
 
 .stat-icon {
-  font-size: 28px;
+  font-size: var(--font-size-3xl);
 }
 
 .stat-content {
@@ -63,14 +63,14 @@
 }
 
 .stat-value {
-  font-size: 28px;
+  font-size: var(--font-size-3xl);
   font-weight: 700;
-  color: #111827;
+  color: var(--color-neutral-950);
 }
 
 .stat-label {
-  font-size: 13px;
-  color: #6b7280;
+  font-size: var(--font-size-s);
+  color: var(--color-neutral-500);
   margin-top: 2px;
 }
 
@@ -80,7 +80,7 @@
     flex-direction: column;
   }
   .content {
-    padding: 16px;
+    padding: var(--spacing-l);
   }
   .stats-row {
     grid-template-columns: 1fr;

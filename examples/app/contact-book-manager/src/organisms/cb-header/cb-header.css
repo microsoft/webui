@@ -5,10 +5,10 @@
 .header {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 16px 24px;
-  background: #fff;
-  border-bottom: 1px solid #e5e7eb;
+  gap: var(--spacing-l);
+  padding: var(--spacing-l) var(--spacing-xxl);
+  background: var(--color-white);
+  border-bottom: 1px solid var(--color-neutral-200);
   position: sticky;
   top: 0;
   z-index: 10;
@@ -22,7 +22,7 @@
 .title {
   font-size: 20px;
   font-weight: 700;
-  color: #111827;
+  color: var(--color-neutral-950);
   margin: 0;
 }
 
@@ -34,30 +34,30 @@
 .search-container {
   display: flex;
   align-items: center;
-  background: #fff;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  padding: 0 12px;
-  gap: 8px;
+  background: var(--color-white);
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--border-radius-l);
+  padding: 0 var(--spacing-m);
+  gap: var(--spacing-s);
   -webkit-app-region: no-drag;
 }
 
 .search-container:focus-within {
-  border-color: #0078d4;
+  border-color: var(--color-brand-primary);
   box-shadow: 0 0 0 2px rgba(0, 120, 212, 0.15);
 }
 
 .search-icon {
-  font-size: 16px;
-  color: #9ca3af;
+  font-size: var(--font-size-l);
+  color: var(--color-neutral-400);
 }
 
 .search-input {
   flex: 1;
   border: none;
   outline: none;
-  padding: 10px 0;
-  font-size: 14px;
+  padding: var(--spacing-m) 0;
+  font-size: var(--font-size-m);
   font-family: inherit;
   background: transparent;
 }
@@ -69,13 +69,13 @@
 .add-btn {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 20px;
-  background: #0078d4;
-  color: #fff;
+  gap: var(--spacing-s);
+  padding: var(--spacing-m) var(--spacing-xl);
+  background: var(--color-brand-primary);
+  color: var(--color-white);
   border: none;
-  border-radius: 8px;
-  font-size: 14px;
+  border-radius: var(--border-radius-l);
+  font-size: var(--font-size-m);
   font-weight: 600;
   cursor: pointer;
   font-family: inherit;
@@ -83,11 +83,11 @@
 }
 
 .add-btn:hover {
-  background: #106ebe;
+  background: var(--color-brand-primary-hover);
 }
 
 .add-icon {
-  font-size: 18px;
+  font-size: var(--font-size-xl);
   font-weight: bold;
 }
 

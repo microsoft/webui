@@ -5,15 +5,15 @@
 .stat-card {
   display: flex;
   align-items: center;
-  gap: 14px;
-  background: white;
-  border-radius: 12px;
-  padding: 20px 24px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  gap: var(--spacing-m);
+  background: var(--color-white);
+  border-radius: var(--border-radius-xl);
+  padding: var(--spacing-xl) var(--spacing-xxl);
+  box-shadow: var(--shadow-s);
 }
 
 .stat-icon {
-  font-size: 28px;
+  font-size: var(--font-size-3xl);
 }
 
 .stat-content {
@@ -22,13 +22,13 @@
 }
 
 .stat-value {
-  font-size: 28px;
+  font-size: var(--font-size-3xl);
   font-weight: 700;
-  color: #111827;
+  color: var(--color-neutral-950);
 }
 
 .stat-label {
-  font-size: 13px;
-  color: #6b7280;
+  font-size: var(--font-size-s);
+  color: var(--color-neutral-500);
   margin-top: 2px;
 }

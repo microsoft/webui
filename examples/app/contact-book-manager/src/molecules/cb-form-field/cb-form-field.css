@@ -5,33 +5,33 @@
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 16px;
+  gap: var(--spacing-xs);
+  margin-bottom: var(--spacing-l);
 }
 
 .label {
-  font-size: 13px;
+  font-size: var(--font-size-s);
   font-weight: 600;
-  color: #374151;
+  color: var(--color-neutral-700);
 }
 
 .input {
   width: 100%;
-  padding: 10px 14px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 14px;
+  padding: var(--spacing-m) var(--spacing-m);
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--border-radius-m);
+  font-size: var(--font-size-m);
   font-family: inherit;
   box-sizing: border-box;
 }
 
 .input:focus {
   outline: none;
-  border-color: #0078d4;
-  box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.15);
+  border-color: var(--color-brand-primary);
+  box-shadow: var(--shadow-focus-ring);
 }
 
 .error {
-  font-size: 12px;
-  color: #dc2626;
+  font-size: var(--font-size-xs);
+  color: var(--color-danger);
 }
