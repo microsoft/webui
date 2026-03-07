@@ -1,8 +1,18 @@
 # WebUI
 
-A high-performance server-side rendering framework built with Rust. No JavaScript runtime required.
+Web rendering without a JavaScript runtime. Compile templates to binary. Serve them instantly from any backend.
 
-**📖 Documentation & Usage → [microsoft.github.io/webui](https://microsoft.github.io/webui)**
+WebUI is a high-performance server-side rendering framework built in Rust. It compiles HTML templates into a Protocol Buffer binary at build time, separating static structure from dynamic content. At runtime, your backend (Rust, Node, Bun, Deno, C#, Python, Go — or any language via FFI) simply fills in state data and gets rendered HTML back. No template parsing, no JS runtime, minimal work.
+
+**📖 Documentation → [microsoft.github.io/webui](https://microsoft.github.io/webui)**
+
+### Highlights
+
+- **Compiled to binary** — Templates are parsed once at build time into a compact protobuf protocol. Runtime just applies state.
+- **Language agnostic** — Native support for Rust, Node/Bun/Deno, C#, Python, Go. Any other language via the C FFI.
+- **Web Components** — Built on native web components with Shadow DOM encapsulation.
+- **Server-side logic** — Conditionals and expressions evaluated on the server, not in the browser.
+- **Plugin system** — Parser and handler plugins for hydration, adding reactivity to interactive islands, custom directives, and framework-specific behavior.
 
 ## Install
 

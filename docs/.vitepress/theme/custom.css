@@ -1,0 +1,619 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+/* ==========================================================
+   1. Design tokens — light mode (default)
+   All theme-aware values live here as custom properties.
+   Dark mode overrides only the variables, never duplicates
+   selectors.
+   ========================================================== */
+
+:root {
+  /* --- Typography --- */
+  --vp-font-family-base: 'Inter', ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --vp-font-family-mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono',
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* --- Radius tokens --- */
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-xl: 24px;
+
+  /* --- Surfaces --- */
+  --vp-c-bg: #efeae7;
+  --vp-c-bg-alt: #e8e3df;
+  --vp-c-bg-elv: #f8f4f1;
+  --vp-c-bg-soft: #e8e3df;
+  --vp-c-mute: #e8e3df;
+  --copilot-panel: #f8f4f1;
+  --copilot-panel-shadow: 0 16px 24px rgba(0, 0, 0, 0.08);
+
+  /* --- Brand / accent --- */
+  --vp-c-brand-1: #a25a02;
+  --vp-c-brand-2: #c87b0a;
+  --vp-c-brand-3: #8a4b03;
+  --vp-c-brand-soft: rgba(162, 90, 2, 0.08);
+  --accent: #a25a02;
+  --accent-soft-border: rgba(162, 90, 2, 0.25);
+  --accent-soft-bg: rgba(162, 90, 2, 0.04);
+  --accent-hover: rgba(162, 90, 2, 0.20);
+
+  /* --- Tip --- */
+  --vp-c-tip-1: var(--accent);
+  --vp-c-tip-soft: var(--vp-c-brand-soft);
+
+  /* --- Text --- */
+  --vp-c-text-1: #272320;
+  --vp-c-text-2: rgba(39, 35, 32, 0.70);
+  --vp-c-text-3: rgba(39, 35, 32, 0.44);
+  --text-muted: rgba(39, 35, 32, 0.55);
+
+  /* --- Borders --- */
+  --vp-c-border: rgba(39, 35, 32, 0.10);
+  --vp-c-divider: rgba(39, 35, 32, 0.06);
+  --vp-c-gutter: rgba(39, 35, 32, 0.04);
+  --border-subtle: rgba(39, 35, 32, 0.06);
+
+  /* --- Nav / Sidebar --- */
+  --vp-nav-bg-color: rgba(239, 234, 231, 0.85);
+  --vp-sidebar-bg-color: #efeae7;
+
+  /* --- Code --- */
+  --vp-code-block-bg: #efeae7;
+  --vp-code-line-highlight-color: rgba(162, 90, 2, 0.06);
+  --vp-code-copy-code-hover-bg: rgba(39, 35, 32, 0.06);
+
+  /* --- Hero gradients --- */
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(135deg, #a25a02, #c87b0a 40%, #8a4b03);
+  --vp-home-hero-image-background-image: linear-gradient(135deg, rgba(162, 90, 2, 0.12), rgba(200, 123, 10, 0.08) 50%, rgba(138, 75, 1, 0.08));
+  --vp-home-hero-image-filter: blur(56px);
+
+  /* --- Buttons --- */
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-text: #fff;
+  --vp-button-brand-bg: #272320;
+  --vp-button-brand-hover-border: transparent;
+  --vp-button-brand-hover-text: #fff;
+  --vp-button-brand-hover-bg: #3d3833;
+  --vp-button-brand-active-border: transparent;
+  --vp-button-brand-active-text: #fff;
+  --vp-button-brand-active-bg: #4e4843;
+  --vp-button-alt-border: rgba(39, 35, 32, 0.12);
+  --vp-button-alt-text: #272320;
+  --vp-button-alt-bg: rgba(39, 35, 32, 0.04);
+  --vp-button-alt-hover-border: rgba(39, 35, 32, 0.20);
+  --vp-button-alt-hover-text: #272320;
+  --vp-button-alt-hover-bg: rgba(39, 35, 32, 0.08);
+
+  /* --- Feature cards --- */
+  --card-bg: #ffffff;
+  --card-border: rgba(39, 35, 32, 0.06);
+  --card-shadow: 0 1px 3px rgba(39, 35, 32, 0.04);
+  --card-hover-border: var(--accent-hover);
+  --card-hover-shadow: 0 8px 32px rgba(39, 35, 32, 0.06);
+  --card-hover-bg: #ffffff;
+
+  /* --- Scrollbar --- */
+  --scrollbar-thumb: rgba(39, 35, 32, 0.12);
+  --scrollbar-thumb-hover: rgba(39, 35, 32, 0.22);
+
+  /* --- Search --- */
+  --search-bg: #ffffff;
+  --search-border: rgba(39, 35, 32, 0.10);
+
+  /* --- Table --- */
+  --table-border: var(--border-subtle);
+  --table-header-bg: rgba(39, 35, 32, 0.03);
+
+  /* --- Badge --- */
+  --vp-badge-info-border: var(--accent-soft-border);
+  --vp-badge-info-text: var(--accent);
+  --vp-badge-info-bg: var(--vp-c-brand-soft);
+}
+
+/* ==========================================================
+   2. Dark mode — override only the variables
+   ========================================================== */
+
+.dark {
+  --vp-c-bg: #0e111b;
+  --vp-c-bg-alt: #0a0d14;
+  --vp-c-bg-elv: #1c1f2e;
+  --vp-c-bg-soft: #151823;
+  --vp-c-mute: #151823;
+  --copilot-panel: #161a26;
+  --copilot-panel-shadow: 0 16px 24px rgba(0, 0, 0, 0.30);
+
+  --vp-c-brand-1: #97abea;
+  --vp-c-brand-2: #b3c1f4;
+  --vp-c-brand-3: #7b8fd2;
+  --vp-c-brand-soft: rgba(151, 171, 234, 0.14);
+  --accent: #97abea;
+  --accent-soft-border: rgba(151, 171, 234, 0.25);
+  --accent-soft-bg: rgba(151, 171, 234, 0.06);
+  --accent-hover: rgba(151, 171, 234, 0.20);
+
+  --vp-c-text-1: #e5ebfa;
+  --vp-c-text-2: rgba(229, 235, 250, 0.60);
+  --vp-c-text-3: rgba(229, 235, 250, 0.38);
+  --text-muted: rgba(229, 235, 250, 0.55);
+
+  --vp-c-border: rgba(229, 235, 250, 0.10);
+  --vp-c-divider: rgba(229, 235, 250, 0.06);
+  --vp-c-gutter: rgba(229, 235, 250, 0.04);
+  --border-subtle: rgba(229, 235, 250, 0.06);
+
+  --vp-nav-bg-color: rgba(14, 17, 27, 0.85);
+  --vp-sidebar-bg-color: #0e111b;
+
+  --vp-code-block-bg: #0e111b;
+  --vp-code-line-highlight-color: rgba(151, 171, 234, 0.08);
+  --vp-code-copy-code-hover-bg: rgba(229, 235, 250, 0.06);
+
+  --vp-home-hero-name-background: linear-gradient(135deg, #97abea, #b3c1f4 40%, #7b8fd2);
+  --vp-home-hero-image-background-image: linear-gradient(135deg, rgba(151, 171, 234, 0.20), rgba(121, 143, 212, 0.12) 50%, rgba(83, 105, 182, 0.12));
+
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-text: #0e111b;
+  --vp-button-brand-bg: #e5ebfa;
+  --vp-button-brand-hover-border: transparent;
+  --vp-button-brand-hover-text: #0e111b;
+  --vp-button-brand-hover-bg: #d1d9ee;
+  --vp-button-brand-active-border: transparent;
+  --vp-button-brand-active-text: #0e111b;
+  --vp-button-brand-active-bg: #bbc5de;
+  --vp-button-alt-border: rgba(229, 235, 250, 0.10);
+  --vp-button-alt-text: #e5ebfa;
+  --vp-button-alt-bg: rgba(229, 235, 250, 0.05);
+  --vp-button-alt-hover-border: rgba(229, 235, 250, 0.18);
+  --vp-button-alt-hover-text: #e5ebfa;
+  --vp-button-alt-hover-bg: rgba(229, 235, 250, 0.08);
+
+  --card-bg: rgba(229, 235, 250, 0.03);
+  --card-border: rgba(229, 235, 250, 0.06);
+  --card-shadow: none;
+  --card-hover-border: var(--accent-hover);
+  --card-hover-shadow: 0 8px 32px rgba(151, 171, 234, 0.06);
+  --card-hover-bg: rgba(151, 171, 234, 0.04);
+
+  --scrollbar-thumb: rgba(229, 235, 250, 0.10);
+  --scrollbar-thumb-hover: rgba(229, 235, 250, 0.18);
+
+  --search-bg: #161a26;
+  --search-border: rgba(229, 235, 250, 0.08);
+
+  --table-border: var(--border-subtle);
+  --table-header-bg: rgba(229, 235, 250, 0.04);
+
+  --vp-badge-info-border: rgba(151, 171, 234, 0.30);
+  --vp-badge-info-text: #b3c1f4;
+  --vp-badge-info-bg: rgba(151, 171, 234, 0.12);
+}
+
+/* ==========================================================
+   3. Layout — raised content panel
+   ========================================================== */
+
+html,
+body {
+  overflow: hidden;
+  height: 100%;
+}
+
+.Layout {
+  height: 100vh;
+  overflow: hidden;
+}
+
+.VPContent {
+  position: fixed !important;
+  inset: 64px 12px 8px 260px;
+  width: auto !important;
+  padding: 0 !important;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--copilot-panel);
+  border-radius: var(--radius-xl) var(--radius-xl) 8px var(--radius-xl);
+  box-shadow: var(--copilot-panel-shadow);
+  z-index: 1;
+}
+
+.VPContent:not(.has-sidebar) {
+  left: 12px;
+}
+
+.VPContent:has(.VPHome) {
+  background: transparent;
+  left: 8px;
+}
+
+/* --- VPDoc reset (panel is on VPContent) --- */
+
+.VPDoc {
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  margin-top: 0;
+  min-height: auto;
+  padding: 48px 56px 96px !important;
+}
+
+.VPDoc .container,
+.VPDoc .content,
+.VPDoc .content-container,
+.vp-doc,
+.vp-doc>* {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.VPDoc .content {
+  width: 100%;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+.vp-doc {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* --- Home page panel --- */
+
+.VPHome {
+  position: relative;
+  min-height: calc(100vh - 80px);
+}
+
+/* --- Responsive --- */
+
+@media (max-width: 959px) {
+  .VPContent {
+    left: 12px !important;
+    top: 64px;
+  }
+
+  .VPDoc {
+    padding: 32px 32px 96px !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .VPContent {
+    left: 6px !important;
+    right: 6px;
+    bottom: 6px;
+    top: 64px;
+    border-radius: var(--radius-lg) var(--radius-lg) 6px var(--radius-lg);
+  }
+
+  .VPDoc {
+    padding: 24px 20px 96px !important;
+  }
+}
+
+/* ==========================================================
+   4. Navbar — clean glass, no borders
+   ========================================================== */
+
+.VPNavBar {
+  backdrop-filter: blur(12px) saturate(1.4);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  border-bottom: none !important;
+}
+
+.VPNavBar .wrapper {
+  padding: 0 !important;
+  max-width: 100% !important;
+}
+
+.VPNavBar .wrapper .container {
+  max-width: 100% !important;
+}
+
+.VPNavBar .content {
+  padding-right: 30px !important;
+  padding-left: var(--vp-sidebar-width) !important;
+}
+
+.VPNavBar.home .content,
+.playground-active .VPNavBar .content {
+  padding-left: 73px !important;
+}
+
+.VPNavBar .divider,
+.VPNavBar .divider-line {
+  display: none !important;
+}
+
+.VPNavBarTitle .title {
+  border-bottom: none !important;
+}
+
+.VPNavBarTitle {
+  padding-left: 0 !important;
+}
+
+.VPNavBar .container > .title {
+  padding-left: 25px !important;
+}
+
+/* ==========================================================
+   5. Sidebar
+   ========================================================== */
+
+.VPSidebar {
+  background-color: var(--vp-sidebar-bg-color) !important;
+  border-right: none !important;
+  padding-left: 24px !important;
+  width: 252px !important;
+}
+
+.VPSidebarItem.level-0 .text {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.VPSidebarItem.is-active>.item>.indicator {
+  background: var(--accent);
+}
+
+.VPSidebarItem .link:hover .text {
+  color: var(--accent);
+}
+
+/* ==========================================================
+   6. Hidden elements
+   ========================================================== */
+
+.VPFooter {
+  display: none !important;
+}
+
+/* VPLocalNav: hidden on desktop, restyled as floating sidebar tab on mobile */
+.VPLocalNav {
+  display: none !important;
+}
+
+@media (max-width: 959px) {
+  .VPLocalNav {
+    display: block !important;
+    position: fixed !important;
+    top: 100px !important;
+    left: 0;
+    right: auto !important;
+    width: auto !important;
+    height: auto !important;
+    background: transparent !important;
+    border: none !important;
+    z-index: 5;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Hide everything except the menu button */
+  .VPLocalNav .container {
+    display: contents;
+  }
+
+  .VPLocalNav .VPLocalNavOutlineDropdown {
+    display: none !important;
+  }
+
+  /* Style the menu button as a peek tab on the left edge */
+  .VPLocalNav .menu {
+    display: flex !important;
+    align-items: center;
+    gap: 0;
+    padding: 10px 6px;
+    background: var(--copilot-panel);
+    border: 1px solid var(--vp-c-border);
+    border-left: none;
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    box-shadow: 2px 2px 12px rgba(0, 0, 0, 0.08);
+    color: var(--accent);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    writing-mode: vertical-rl;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    line-height: 1;
+  }
+
+  .VPLocalNav .menu .menu-icon {
+    font-size: 12px;
+    writing-mode: horizontal-tb;
+    margin-bottom: 4px;
+  }
+
+  .VPLocalNav .menu .menu-text {
+    font-size: 11px;
+  }
+
+  .VPLocalNav .menu:hover,
+  .VPLocalNav .menu:active {
+    background: var(--vp-c-bg-elv);
+    padding-right: 10px;
+  }
+}
+
+/* Mobile nav screen & sidebar must layer above the content panel */
+.VPNavScreen {
+  z-index: 10 !important;
+  background: var(--copilot-panel) !important;
+  bottom: auto !important;
+  height: auto !important;
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+  box-shadow: var(--copilot-panel-shadow);
+  padding: 0 24px !important;
+  width: 100% !important;
+  left: 0 !important;
+  right: 0 !important;
+}
+
+.VPNavScreen .container {
+  padding: 16px 0 24px !important;
+}
+
+/* ==========================================================
+   7. Hero
+   ========================================================== */
+
+.VPHero {
+  padding: 88px 48px 32px !important;
+  max-width: 100% !important;
+}
+
+.VPHero .main {
+  max-width: 720px !important;
+}
+
+.VPHero .name {
+  font-size: 36px !important;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+
+.VPHero .text {
+  font-size: 28px !important;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+.VPHero .tagline {
+  font-size: 16px !important;
+  font-weight: 400;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.VPHero .actions .VPButton.brand,
+.VPHero .actions .VPButton.alt {
+  border-radius: var(--radius-lg);
+  font-weight: 600;
+  padding: 0 28px;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.VPHero .actions .VPButton.brand:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.10);
+}
+
+.VPHero .actions .VPButton.alt:hover {
+  transform: translateY(-1px);
+}
+
+/* ==========================================================
+   8. Content polish
+   ========================================================== */
+
+div[class*='language-'] {
+  border-radius: var(--radius-md) !important;
+}
+
+div[class*='language-']>button.copy {
+  border-radius: 8px;
+}
+
+.vp-code-group .tabs {
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.custom-block {
+  border-radius: var(--radius-md);
+}
+
+.custom-block.tip {
+  border-color: var(--accent-soft-border);
+  background-color: var(--accent-soft-bg);
+}
+
+.vp-doc a {
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.vp-doc a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.vp-doc table {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.vp-doc tr {
+  border-color: var(--table-border);
+}
+
+.vp-doc th {
+  background-color: var(--table-header-bg);
+}
+
+/* ==========================================================
+   9. Feature cards
+   ========================================================== */
+
+.VPFeature {
+  border-radius: var(--radius-lg) !important;
+  background-color: var(--card-bg) !important;
+  border: 1px solid var(--card-border) !important;
+  box-shadow: var(--card-shadow);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.VPFeature:hover {
+  border-color: var(--card-hover-border) !important;
+  background-color: var(--card-hover-bg) !important;
+  box-shadow: var(--card-hover-shadow);
+  transform: translateY(-2px);
+}
+
+/* ==========================================================
+  10. Scrollbar
+   ========================================================== */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* ==========================================================
+  11. Search dialog
+   ========================================================== */
+
+.VPLocalSearchBox .shell {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--search-border);
+  background-color: var(--search-bg);
+}
+
+/* ==========================================================
+  12. Transitions
+   ========================================================== */
+
+.VPSidebarItem .link,
+.VPNavBarMenuLink,
+.VPNavBarMenuGroup {
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
