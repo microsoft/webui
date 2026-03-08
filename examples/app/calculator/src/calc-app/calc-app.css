@@ -1,0 +1,66 @@
+:host {
+  display: block;
+  width: 100%;
+  max-width: 380px;
+}
+
+.calculator {
+  background: var(--color-surface);
+  border-radius: var(--border-radius-xl);
+  padding: var(--spacing-l);
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-m);
+}
+
+/* Mode tabs */
+.mode-tabs {
+  display: flex;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs);
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: var(--border-radius-s);
+}
+
+.mode-tab {
+  flex: 1;
+  padding: var(--spacing-s) var(--spacing-m);
+  border: none;
+  border-radius: var(--border-radius-s);
+  background: var(--color-tab-bg);
+  color: var(--color-tab-text);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-s);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
+  text-transform: capitalize;
+}
+
+.mode-tab:hover {
+  color: var(--color-display-text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.mode-tab[data-active] {
+  background: var(--color-tab-active-bg);
+  color: var(--color-tab-active-text);
+}
+
+/* Button grid */
+.button-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--spacing-s);
+}
+
+:host([columns="5"]) .button-grid {
+  grid-template-columns: repeat(5, 1fr);
+}
+
+:host([columns="6"]) .button-grid {
+  grid-template-columns: repeat(6, 1fr);
+}

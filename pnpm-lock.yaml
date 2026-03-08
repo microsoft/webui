@@ -95,6 +95,24 @@ importers:
         specifier: 'catalog:'
         version: 3.5.29(typescript@5.9.3)
 
+  examples/app/calculator:
+    devDependencies:
+      '@microsoft/fast-element':
+        specifier: 'catalog:'
+        version: 2.10.1
+      '@microsoft/fast-html':
+        specifier: 'catalog:'
+        version: 1.0.0-alpha.38(@microsoft/fast-element@2.10.1)
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.27.3
+      tslib:
+        specifier: 'catalog:'
+        version: 2.8.1
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   examples/app/contact-book-manager:
     devDependencies:
       '@microsoft/fast-element':

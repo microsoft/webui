@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html dir="{{textdirection}}" lang="{{language}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{title}}</title>
+  <style>
+    :root {
+      /* Background & Surface */
+      --color-bg: #1a1a2e;
+      --color-surface: #16213e;
+      --color-surface-hover: #1a2744;
+      --color-surface-raised: #0f3460;
+
+      /* Display */
+      --color-display-bg: rgba(15, 52, 96, 0.6);
+      --color-display-border: rgba(100, 149, 237, 0.15);
+      --color-display-text: #e8e8e8;
+      --color-display-expression: rgba(200, 200, 220, 0.5);
+
+      /* Buttons — Numbers */
+      --color-btn-number: #1e2a4a;
+      --color-btn-number-hover: #263559;
+      --color-btn-number-active: #2d3f6a;
+      --color-btn-number-text: #e8e8e8;
+
+      /* Buttons — Operators */
+      --color-btn-operator: #e94560;
+      --color-btn-operator-hover: #d63b55;
+      --color-btn-operator-active: #c4324a;
+      --color-btn-operator-text: #ffffff;
+
+      /* Buttons — Functions (scientific) */
+      --color-btn-function: #533483;
+      --color-btn-function-hover: #5e3d91;
+      --color-btn-function-active: #6a479f;
+      --color-btn-function-text: #e0d0f0;
+
+      /* Buttons — Action (AC, ±, %) */
+      --color-btn-action: #0f3460;
+      --color-btn-action-hover: #144080;
+      --color-btn-action-active: #194a90;
+      --color-btn-action-text: #a0c4ff;
+
+      /* Buttons — Equal */
+      --color-btn-equal: #e94560;
+      --color-btn-equal-hover: #d63b55;
+      --color-btn-equal-active: #c4324a;
+      --color-btn-equal-text: #ffffff;
+
+      /* Accent */
+      --color-accent: #e94560;
+      --color-accent-soft: rgba(233, 69, 96, 0.15);
+
+      /* Mode tabs */
+      --color-tab-bg: transparent;
+      --color-tab-active-bg: rgba(233, 69, 96, 0.15);
+      --color-tab-text: rgba(200, 200, 220, 0.5);
+      --color-tab-active-text: #e94560;
+
+      /* Spacing */
+      --spacing-xs: 4px;
+      --spacing-s: 8px;
+      --spacing-m: 12px;
+      --spacing-l: 16px;
+      --spacing-xl: 20px;
+      --spacing-xxl: 24px;
+
+      /* Border Radius */
+      --border-radius-s: 8px;
+      --border-radius-m: 12px;
+      --border-radius-l: 16px;
+      --border-radius-xl: 20px;
+
+      /* Typography */
+      --font-family-base: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-family-mono: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+      --font-size-xs: 12px;
+      --font-size-s: 14px;
+      --font-size-m: 16px;
+      --font-size-l: 18px;
+      --font-size-xl: 20px;
+      --font-size-xxl: 24px;
+      --font-size-display: 40px;
+      --font-size-expression: 16px;
+
+      /* Shadows */
+      --shadow-button: 0 2px 4px rgba(0, 0, 0, 0.2);
+      --shadow-button-active: 0 1px 2px rgba(0, 0, 0, 0.3);
+      --shadow-card: 0 8px 32px rgba(0, 0, 0, 0.3);
+      --shadow-display: inset 0 2px 8px rgba(0, 0, 0, 0.2);
+
+      /* Transitions */
+      --transition-fast: 120ms ease;
+      --transition-normal: 200ms ease;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-family-base);
+      background: var(--color-bg);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: var(--spacing-xl);
+    }
+  </style>
+</head>
+<body>
+  <calc-app
+    mode="{{mode}}"
+    display-value="{{displayValue}}"
+    expression="{{expression}}"
+    columns="{{columns}}"
+  ></calc-app>
+
+  <script type="module" src="/index.js"></script>
+</body>
+</html>

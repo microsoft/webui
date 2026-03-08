@@ -1,0 +1,26 @@
+<template shadowrootmode="open"
+  @button-press="{onButtonPress(e)}"
+>
+  <div class="calculator">
+    <div class="mode-tabs" @click="{onModeSelect(e)}">
+      <button class="mode-tab" data-mode="standard" data-active>Standard</button>
+      <button class="mode-tab" data-mode="scientific">Scientific</button>
+    </div>
+
+    <calc-display
+      expression="{{expression}}"
+      value="{{displayValue}}"
+    ></calc-display>
+
+    <div class="button-grid">
+      <for each="btn in buttons">
+        <calc-button
+          label="{{btn.label}}"
+          value="{{btn.value}}"
+          btn-type="{{btn.type}}"
+          btn-span="{{btn.span}}"
+        ></calc-button>
+      </for>
+    </div>
+  </div>
+</template>

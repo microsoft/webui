@@ -1,0 +1,116 @@
+:host {
+  display: block;
+}
+
+:host([btn-span="2"]) {
+  grid-column: span 2;
+}
+
+:host([btn-span="3"]) {
+  grid-column: span 3;
+}
+
+:host([btn-span="4"]) {
+  grid-column: span 4;
+}
+
+:host([btn-span="5"]) {
+  grid-column: span 5;
+}
+
+.btn {
+  width: 100%;
+  height: 100%;
+  min-height: 56px;
+  border: none;
+  border-radius: var(--border-radius-m);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-l);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    transform var(--transition-fast),
+    box-shadow var(--transition-fast);
+  box-shadow: var(--shadow-button);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.btn:active {
+  transform: scale(0.94);
+  box-shadow: var(--shadow-button-active);
+}
+
+/* Number buttons */
+:host([btn-type="number"]) .btn {
+  background: var(--color-btn-number);
+  color: var(--color-btn-number-text);
+}
+
+:host([btn-type="number"]) .btn:hover {
+  background: var(--color-btn-number-hover);
+}
+
+:host([btn-type="number"]) .btn:active {
+  background: var(--color-btn-number-active);
+}
+
+/* Operator buttons */
+:host([btn-type="operator"]) .btn {
+  background: var(--color-btn-operator);
+  color: var(--color-btn-operator-text);
+}
+
+:host([btn-type="operator"]) .btn:hover {
+  background: var(--color-btn-operator-hover);
+}
+
+:host([btn-type="operator"]) .btn:active {
+  background: var(--color-btn-operator-active);
+}
+
+/* Function buttons (scientific) */
+:host([btn-type="function"]) .btn {
+  background: var(--color-btn-function);
+  color: var(--color-btn-function-text);
+  font-size: var(--font-size-s);
+}
+
+:host([btn-type="function"]) .btn:hover {
+  background: var(--color-btn-function-hover);
+}
+
+:host([btn-type="function"]) .btn:active {
+  background: var(--color-btn-function-active);
+}
+
+/* Action buttons (AC, ±, %) */
+:host([btn-type="action"]) .btn {
+  background: var(--color-btn-action);
+  color: var(--color-btn-action-text);
+}
+
+:host([btn-type="action"]) .btn:hover {
+  background: var(--color-btn-action-hover);
+}
+
+:host([btn-type="action"]) .btn:active {
+  background: var(--color-btn-action-active);
+}
+
+/* Equal button */
+:host([btn-type="equal"]) .btn {
+  background: var(--color-btn-equal);
+  color: var(--color-btn-equal-text);
+  font-size: var(--font-size-xl);
+  font-weight: 600;
+}
+
+:host([btn-type="equal"]) .btn:hover {
+  background: var(--color-btn-equal-hover);
+}
+
+:host([btn-type="equal"]) .btn:active {
+  background: var(--color-btn-equal-active);
+}
