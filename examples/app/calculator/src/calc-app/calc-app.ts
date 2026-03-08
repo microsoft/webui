@@ -1,7 +1,7 @@
 import { FASTElement, attr, observable } from '@microsoft/fast-element';
 import { RenderableFASTElement } from '@microsoft/fast-html';
 import type { CalcState, ButtonDef } from '../modes/engine.js';
-import { createInitialState, getMode, getModeKeys } from '../modes/engine.js';
+import { createInitialState, getMode } from '../modes/engine.js';
 import '../modes/standard.js';
 import '../modes/scientific.js';
 
