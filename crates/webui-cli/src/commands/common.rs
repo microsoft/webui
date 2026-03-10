@@ -2,7 +2,7 @@ use clap::Args;
 use std::path::PathBuf;
 pub use webui::CssStrategy;
 
-/// Shared CLI arguments used by both `build` and `start` commands.
+/// Shared CLI arguments used by both `build` and `serve` commands.
 #[derive(Args, Clone)]
 pub struct AppArgs {
     /// Path to the app folder (defaults to current directory)
