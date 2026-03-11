@@ -2558,6 +2558,7 @@ dependencies = [
 name = "webui"
 version = "0.0.1"
 dependencies = [
+ "criterion",
  "serde_json",
  "tempfile",
  "thiserror",

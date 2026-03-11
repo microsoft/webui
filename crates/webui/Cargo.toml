@@ -20,3 +20,11 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+criterion = { workspace = true }
+serde_json = { workspace = true }
+webui-handler = { path = "../webui-handler" }
+webui-protocol = { path = "../webui-protocol" }
+
+[[bench]]
+name = "contact_book_bench"
+harness = false
