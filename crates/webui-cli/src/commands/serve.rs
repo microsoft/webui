@@ -588,6 +588,9 @@ async fn handle_index(req: HttpRequest, context: web::Data<ServerContext>) -> Ht
 async fn handle_hmr(context: web::Data<ServerContext>) -> HttpResponse {
     let Some(hmr_backend) = context.hmr_backend.as_ref() else {
         return HttpResponse::Ok()
+            .insert_header(("Cache-Control", "no-cache, no-store, must-revalidate"))
+            .insert_header(("Pragma", "no-cache"))
+            .insert_header(("Expires", "0"))
             .content_type("text/plain; charset=utf-8")
             .body("0");
     };
@@ -598,6 +601,9 @@ async fn handle_hmr(context: web::Data<ServerContext>) -> HttpResponse {
     };
 
     HttpResponse::Ok()
+        .insert_header(("Cache-Control", "no-cache, no-store, must-revalidate"))
+        .insert_header(("Pragma", "no-cache"))
+        .insert_header(("Expires", "0"))
         .content_type("text/plain; charset=utf-8")
         .body(version)
 }
