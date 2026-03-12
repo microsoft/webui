@@ -3,12 +3,13 @@ import { RenderableFASTElement } from '@microsoft/fast-html';
 
 // Child components used in cb-page-dashboard.html
 import '#organisms/cb-contact-card/cb-contact-card.js';
+import { Contact } from '#api';
 
 export class CbPageDashboard extends RenderableFASTElement(FASTElement) {
   @attr({ attribute: 'total-contacts' }) totalContacts = '0';
   @attr({ attribute: 'total-favorites' }) totalFavorites = '0';
   @attr({ attribute: 'total-groups' }) totalGroups = '0';
-  @observable recentContacts: any[] = [];
+  @observable recentContacts?: Contact[];
 
   async prepare(): Promise<void> {
     if (!this.shadowRoot) return;

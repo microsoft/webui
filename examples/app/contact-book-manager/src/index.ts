@@ -12,21 +12,7 @@ import { Router } from '@microsoft/webui-router';
 import './cb-app/cb-app.js';
 
 // Configure and start hydration
-TemplateElement.options({
-  'cb-app': { observerMap: 'all' },
-  'cb-avatar': { observerMap: 'all' },
-  'cb-badge': { observerMap: 'all' },
-  'cb-button': { observerMap: 'all' },
-  'cb-input': { observerMap: 'all' },
-  'cb-icon-button': { observerMap: 'all' },
-  'cb-empty-state': { observerMap: 'all' },
-  'cb-search-bar': { observerMap: 'all' },
-  'cb-form-field': { observerMap: 'all' },
-  'cb-stat-card': { observerMap: 'all' },
-  'cb-nav-item': { observerMap: 'all' },
-  'cb-header': { observerMap: 'all' },
-  'cb-sidebar': {},
-}).config({
+TemplateElement.config({
   hydrationComplete() {
     performance.measure('contact-book-hydration-completed', 'contact-book-hydration-started');
     console.log('Hydration complete!');

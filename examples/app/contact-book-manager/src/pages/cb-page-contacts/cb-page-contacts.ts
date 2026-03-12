@@ -1,11 +1,10 @@
 import { FASTElement, observable } from '@microsoft/fast-element';
 import { RenderableFASTElement } from '@microsoft/fast-html';
-
-// Child components used in cb-page-contacts.html
 import '#organisms/cb-contact-card/cb-contact-card.js';
+import { Contact } from '#api';
 
 export class CbPageContacts extends RenderableFASTElement(FASTElement) {
-  @observable contacts: any[] = [];
+  @observable contacts?: Contact[];
 
   async prepare(): Promise<void> {
     const sr = this.shadowRoot;

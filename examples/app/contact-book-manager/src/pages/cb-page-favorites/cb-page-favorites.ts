@@ -1,18 +1,17 @@
 import { FASTElement, observable } from '@microsoft/fast-element';
 import { RenderableFASTElement } from '@microsoft/fast-html';
-
-// Child components used in cb-page-favorites.html
 import '#organisms/cb-contact-card/cb-contact-card.js';
+import { Contact } from '#api';
 
 export class CbPageFavorites extends RenderableFASTElement(FASTElement) {
-  @observable favoriteContacts: any[] = [];
+  @observable contacts?: Contact[];
 
   async prepare(): Promise<void> {
     const sr = this.shadowRoot;
     if (!sr) return;
     const cards = sr.querySelectorAll('cb-contact-card');
     if (cards.length > 0) {
-      this.favoriteContacts = Array.from(cards).map((c) => ({
+      this.contacts = Array.from(cards).map((c) => ({
         id: c.getAttribute('id') || '',
         firstName: c.getAttribute('first-name') || '',
         lastName: c.getAttribute('last-name') || '',
@@ -30,7 +29,7 @@ export class CbPageFavorites extends RenderableFASTElement(FASTElement) {
   }
 
   setInitialState(state: Record<string, unknown>): void {
-    this.favoriteContacts = (state.contacts as any[]) ?? [];
+    this.contacts = (state.contacts as any[]) ?? [];
   }
 }
 
