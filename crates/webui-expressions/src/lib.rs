@@ -36,7 +36,19 @@ pub type Result<T> = std::result::Result<T, ExpressionError>;
 
 /// Evaluate a condition expression with the given state
 pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool> {
-    // Count and validate logical operators
+    evaluate_with_resolver(condition, |path| find_value_by_dotted_path(path, state))
+}
+
+/// Evaluate a condition expression using a custom resolver for value lookups.
+///
+/// The `resolver` closure takes a dotted path (e.g., `"contact.name"`) and
+/// returns the resolved value. This allows callers to provide merged views
+/// (e.g., local variables overlaid on global state) without cloning the
+/// entire state tree.
+pub fn evaluate_with_resolver<F>(condition: &ConditionExpr, resolver: F) -> Result<bool>
+where
+    F: Fn(&str) -> Option<Value>,
+{
     let (logical_op_count, has_mixed_ops) = count_logical_operators(condition);
 
     if logical_op_count > 5 {
@@ -47,8 +59,7 @@ pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool> {
         return Err(ExpressionError::MixedOperators);
     }
 
-    // Use iterative evaluation
-    evaluate_expr(condition, state)
+    evaluate_expr(condition, &resolver)
 }
 
 // Helper function to count logical operators and check if they're mixed
@@ -94,21 +105,23 @@ fn count_logical_operators(condition: &ConditionExpr) -> (usize, bool) {
     (count, has_mixed)
 }
 
-// Iterative evaluation of expressions
-fn evaluate_expr(condition: &ConditionExpr, state: &Value) -> Result<bool> {
+// Iterative evaluation of expressions using a resolver closure
+fn evaluate_expr<F>(condition: &ConditionExpr, resolver: &F) -> Result<bool>
+where
+    F: Fn(&str) -> Option<Value>,
+{
     match &condition.expr {
-        Some(condition_expr::Expr::Predicate(pred)) => evaluate_predicate(pred, state),
+        Some(condition_expr::Expr::Predicate(pred)) => evaluate_predicate(pred, resolver),
         Some(condition_expr::Expr::Not(not_cond)) => {
             let inner = not_cond.condition.as_ref().ok_or_else(|| {
                 ExpressionError::Evaluation("Not condition missing inner expression".to_string())
             })?;
-            let result = evaluate_expr(inner, state)?;
+            let result = evaluate_expr(inner, resolver)?;
             Ok(!result)
         }
-        Some(condition_expr::Expr::Compound(compound)) => evaluate_compound(compound, state),
+        Some(condition_expr::Expr::Compound(compound)) => evaluate_compound(compound, resolver),
         Some(condition_expr::Expr::Identifier(id)) => {
-            // Look up the identifier in state
-            if let Some(val) = find_value_by_dotted_path(&id.value, state) {
+            if let Some(val) = resolver(&id.value) {
                 match val {
                     Value::Bool(b) => Ok(b),
                     Value::Null => Ok(false),
@@ -127,7 +140,10 @@ fn evaluate_expr(condition: &ConditionExpr, state: &Value) -> Result<bool> {
     }
 }
 
-fn evaluate_compound(compound: &CompoundCondition, state: &Value) -> Result<bool> {
+fn evaluate_compound<F>(compound: &CompoundCondition, resolver: &F) -> Result<bool>
+where
+    F: Fn(&str) -> Option<Value>,
+{
     let left = compound.left.as_ref().ok_or_else(|| {
         ExpressionError::Evaluation("Compound missing left expression".to_string())
     })?;
@@ -135,7 +151,7 @@ fn evaluate_compound(compound: &CompoundCondition, state: &Value) -> Result<bool
         ExpressionError::Evaluation("Compound missing right expression".to_string())
     })?;
 
-    let left_result = evaluate_expr(left, state)?;
+    let left_result = evaluate_expr(left, resolver)?;
     let op = LogicalOperator::try_from(compound.op).map_err(|_| {
         ExpressionError::Evaluation(format!("Invalid logical operator: {}", compound.op))
     })?;
@@ -145,13 +161,13 @@ fn evaluate_compound(compound: &CompoundCondition, state: &Value) -> Result<bool
             if !left_result {
                 return Ok(false);
             }
-            evaluate_expr(right, state)
+            evaluate_expr(right, resolver)
         }
         LogicalOperator::Or => {
             if left_result {
                 return Ok(true);
             }
-            evaluate_expr(right, state)
+            evaluate_expr(right, resolver)
         }
         LogicalOperator::Unspecified => Err(ExpressionError::Evaluation(
             "Unspecified logical operator".to_string(),
@@ -159,19 +175,19 @@ fn evaluate_compound(compound: &CompoundCondition, state: &Value) -> Result<bool
     }
 }
 
-// Evaluate a predicate (comparison)
-fn evaluate_predicate(predicate: &Predicate, state: &Value) -> Result<bool> {
-    // Get left and right values
-    let left_val = match find_value_by_dotted_path(&predicate.left, state) {
+fn evaluate_predicate<F>(predicate: &Predicate, resolver: &F) -> Result<bool>
+where
+    F: Fn(&str) -> Option<Value>,
+{
+    let left_val = match resolver(&predicate.left) {
         Some(val) => val,
         None => return Err(ExpressionError::MissingValue(predicate.left.clone())),
     };
 
-    // The right side could be a literal value or a variable reference
     let right_val = if is_literal(&predicate.right) {
         parse_literal(&predicate.right)?
     } else {
-        match find_value_by_dotted_path(&predicate.right, state) {
+        match resolver(&predicate.right) {
             Some(val) => val,
             None => return Err(ExpressionError::MissingValue(predicate.right.clone())),
         }
@@ -184,7 +200,6 @@ fn evaluate_predicate(predicate: &Predicate, state: &Value) -> Result<bool> {
         ))
     })?;
 
-    // Compare values based on operator
     compare_values(&left_val, &op, &right_val)
 }
 

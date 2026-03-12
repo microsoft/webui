@@ -11,7 +11,7 @@ use plugin::HandlerPlugin;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
-use webui_expressions::{evaluate, ExpressionError};
+use webui_expressions::{evaluate_with_resolver, ExpressionError};
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUIProtocol};
 use webui_state::find_value_by_dotted_path;
 
@@ -475,7 +475,7 @@ impl WebUIHandler {
         // Check local vars first
         if let Some(first_part) = path.split('.').next() {
             if let Some(local_value) = context.local_vars.get(first_part) {
-                if !path.contains('.') {
+                if first_part.len() == path.len() {
                     return Some(local_value.clone());
                 }
                 let remaining = &path[first_part.len() + 1..];
@@ -488,39 +488,32 @@ impl WebUIHandler {
         find_value_by_dotted_path(path, context.state)
     }
 
-    /// Evaluate a condition expression, merging local variables into state.
+    /// Evaluate a condition expression against the current context.
+    ///
+    /// Uses a resolver closure that checks local variables first, then falls
+    /// back to global state — avoiding a full clone of the state tree.
     /// Returns false if the condition references a missing value.
-    /// When local and global state share a key and both are objects, their properties
-    /// are deep-merged so that the local value takes precedence per-property while
-    /// global-only properties remain accessible (matching NodeJS behaviour).
     fn evaluate_condition(
         &self,
         condition: &webui_protocol::ConditionExpr,
         context: &WebUIProcessContext,
     ) -> Result<bool> {
-        let merged_state = if context.local_vars.is_empty() {
-            context.state.clone()
-        } else {
-            let mut merged = context.state.clone();
-            if let Value::Object(map) = &mut merged {
-                for (k, v) in &context.local_vars {
-                    if let (Some(Value::Object(existing)), Value::Object(local_obj)) =
-                        (map.get(k), v)
-                    {
-                        // Deep merge: start with global, overlay local
-                        let mut merged_obj = existing.clone();
-                        for (lk, lv) in local_obj {
-                            merged_obj.insert(lk.clone(), lv.clone());
-                        }
-                        map.insert(k.clone(), Value::Object(merged_obj));
-                    } else {
-                        map.insert(k.clone(), v.clone());
+        let local_vars = &context.local_vars;
+        let state = context.state;
+        match evaluate_with_resolver(condition, |path| {
+            if let Some(first_part) = path.split('.').next() {
+                if let Some(local_value) = local_vars.get(first_part) {
+                    if first_part.len() == path.len() {
+                        return Some(local_value.clone());
+                    }
+                    let remaining = &path[first_part.len() + 1..];
+                    if let Some(v) = find_value_by_dotted_path(remaining, local_value) {
+                        return Some(v);
                     }
                 }
             }
-            merged
-        };
-        match evaluate(condition, &merged_state) {
+            find_value_by_dotted_path(path, state)
+        }) {
             Ok(result) => Ok(result),
             Err(ExpressionError::MissingValue(_)) => Ok(false),
             Err(e) => Err(HandlerError::Evaluation(e.to_string())),
@@ -563,10 +556,17 @@ impl WebUIHandler {
                 p.push_scope();
             }
 
-            let saved_vars = context.local_vars.clone();
-            context.local_vars.insert(item_name.clone(), item);
+            // Save only the overwritten key instead of cloning the entire HashMap.
+            let saved_value = context.local_vars.insert(item_name.clone(), item);
             self.process_fragment_id(&for_loop.fragment_id, context)?;
-            context.local_vars = saved_vars;
+            match saved_value {
+                Some(v) => {
+                    context.local_vars.insert(item_name.clone(), v);
+                }
+                None => {
+                    context.local_vars.remove(item_name.as_str());
+                }
+            }
 
             if let Some(p) = &mut self.plugin {
                 p.pop_scope();
@@ -607,8 +607,7 @@ impl WebUIHandler {
         }
 
         if let Some(value) = self.resolve_value(&signal.value, context) {
-            let content = self.format_signal_value(&value, signal.raw)?;
-            context.writer.write(&content)?;
+            self.write_signal_value(&value, signal.raw, context.writer)?;
         }
 
         if let Some(p) = &mut self.plugin {
@@ -617,22 +616,28 @@ impl WebUIHandler {
         Ok(())
     }
 
-    /// Helper function to format a signal value based on the raw flag
-    fn format_signal_value(&self, value: &Value, raw: bool) -> Result<String> {
-        let result = if raw {
-            // Raw HTML content
+    /// Write a signal value directly to the writer, avoiding intermediate String allocation.
+    /// For HTML-escaped output, writes the Cow from `encode_safe` directly.
+    fn write_signal_value(
+        &self,
+        value: &Value,
+        raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        if raw {
             match value {
-                Value::String(s) => s.clone(),
-                _ => value.to_string(),
+                Value::String(s) => writer.write(s),
+                _ => writer.write(&value.to_string()),
             }
         } else {
-            // Escaped HTML content
             match value {
-                Value::String(s) => html_escape::encode_safe(s).to_string(),
-                _ => html_escape::encode_safe(&value.to_string()).to_string(),
+                Value::String(s) => writer.write(&html_escape::encode_safe(s)),
+                _ => {
+                    let s = value.to_string();
+                    writer.write(&html_escape::encode_safe(&s))
+                }
             }
-        };
-        Ok(result)
+        }
     }
 
     /// Process an if condition fragment.
@@ -693,7 +698,8 @@ impl WebUIHandler {
             }
 
             if condition_met {
-                context.writer.write(&format!(" {}", attr.name))?;
+                context.writer.write(" ")?;
+                context.writer.write(&attr.name)?;
             }
             return Ok(());
         }
@@ -702,9 +708,7 @@ impl WebUIHandler {
         if !attr.template.is_empty() {
             let raw_value = self.render_template_attr_value(&attr.template, context)?;
             let escaped = html_escape::encode_safe(&raw_value);
-            context
-                .writer
-                .write(&format!(" {}=\"{}\"", attr.name, escaped))?;
+            write_attr(context.writer, &attr.name, &escaped)?;
 
             if !attr.attr_skip {
                 let name = component_attr_name(&attr.name);
@@ -719,9 +723,7 @@ impl WebUIHandler {
         if !attr.value.is_empty() {
             if attr.raw_value {
                 // Static attribute — value is the literal string
-                context
-                    .writer
-                    .write(&format!(" {}=\"{}\"", attr.name, attr.value))?;
+                write_attr(context.writer, &attr.name, &attr.value)?;
                 if !attr.attr_skip {
                     let name = component_attr_name(&attr.name);
                     context
@@ -740,18 +742,20 @@ impl WebUIHandler {
             } else {
                 // Dynamic attribute — resolve and render
                 let value = self.resolve_value(&attr.value, context);
-                let formatted = match &value {
-                    Some(Value::String(s)) => html_escape::encode_safe(s).to_string(),
-                    Some(Value::Number(n)) => n.to_string(),
-                    Some(Value::Bool(b)) => b.to_string(),
-                    Some(Value::Null) | None => String::new(),
-                    Some(v) => v.to_string(),
-                };
                 // Always emit the attribute so FAST hydration binding
                 // markers (data-fe-b-N) match the DOM node structure.
-                context
-                    .writer
-                    .write(&format!(" {}=\"{}\"", attr.name, formatted))?;
+                match &value {
+                    Some(Value::String(s)) => {
+                        write_attr(context.writer, &attr.name, &html_escape::encode_safe(s))?;
+                    }
+                    Some(Value::Null) | None => {
+                        write_attr(context.writer, &attr.name, "")?;
+                    }
+                    Some(other) => {
+                        let s = other.to_string();
+                        write_attr(context.writer, &attr.name, &s)?;
+                    }
+                }
 
                 if !attr.attr_skip {
                     let name = component_attr_name(&attr.name);
@@ -825,6 +829,15 @@ impl Default for WebUIHandler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Write ` name="value"` to the writer without allocating a format string.
+fn write_attr(writer: &mut dyn ResponseWriter, name: &str, value: &str) -> Result<()> {
+    writer.write(" ")?;
+    writer.write(name)?;
+    writer.write("=\"")?;
+    writer.write(value)?;
+    writer.write("\"")
 }
 
 /// Process a WebUI protocol with the provided state and write the output to the given writer.

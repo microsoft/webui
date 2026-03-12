@@ -6,3 +6,4 @@ target/
 docs/.vitepress/cache/
 .history/
 .turbo/
+.memory/

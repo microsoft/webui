@@ -50,6 +50,11 @@ Every decision — API design, data structure choice, algorithm, error path — 
 - `push_str` / `write!` into existing buffers — never `format!` in hot paths.
 - No unnecessary `.clone()` — pass `&str`, `&[T]`, or slices. Use `Cow<'_, str>` when a value is sometimes borrowed, sometimes owned.
 - Prefer explicit state machines and stack-based traversal over recursive AST walking.
+- Never clone large state trees for read-only lookups — use resolver closures or borrowed references.
+- Never clone a `HashMap` to save/restore scope — save/restore only the overwritten key.
+- Never call `.to_string()` on a `Cow` — write it directly to avoid defeating zero-copy.
+- Iterate `split()` directly — never `collect::<Vec<_>>()` when sequential access suffices.
+- For handler-specific patterns, see: `skills/handler-perf/SKILL.md`.
 
 ### Measurement
 
@@ -140,6 +145,7 @@ The `docs/` directory is a VitePress site for external developers consuming WebU
 - **FFI boundary** — `skills/ffi/SKILL.md`
 - **Protobuf schema evolution** — `skills/protobuf/SKILL.md`
 - **Docs synchronization** — `skills/docs-sync/SKILL.md`
+- **Handler performance** — `skills/handler-perf/SKILL.md`
 
 ---
 

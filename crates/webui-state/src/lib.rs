@@ -4,18 +4,17 @@ use serde_json::Value;
 
 // Finds a value in a JSON object by a dotted path.
 pub fn find_value_by_dotted_path(path: &str, state: &Value) -> Option<Value> {
-    let parts: Vec<&str> = path.split('.').collect();
     let mut current_value: &Value = state;
 
-    for part in parts.iter() {
+    for part in path.split('.') {
         match current_value {
             Value::Object(map) => {
-                current_value = map.get(*part)?;
+                current_value = map.get(part)?;
             }
-            Value::Array(arr) if *part == "length" => {
+            Value::Array(arr) if part == "length" => {
                 return Some(Value::Number(serde_json::Number::from(arr.len())));
             }
-            Value::String(s) if *part == "length" => {
+            Value::String(s) if part == "length" => {
                 return Some(Value::Number(serde_json::Number::from(s.len())));
             }
             _ => return None,
