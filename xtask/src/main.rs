@@ -65,7 +65,7 @@ fn usage() -> ExitCode {
     eprintln!(
         "Usage: cargo xtask <COMMAND>\n\n\
          Commands:\n  \
-           check   Run all checks (fmt, clippy, deny, test, build, docs)\n  \
+           check   Run all checks (fmt, clippy, deny, test, build, bench validate, docs)\n  \
            fmt     Check formatting\n  \
            clippy  Run clippy lints\n  \
            deny    Run cargo-deny license/advisory checks\n  \
@@ -74,7 +74,7 @@ fn usage() -> ExitCode {
            build-examples  Build all example integrations and apps\n  \
            build-wasm  Build WASM playground module\n  \
            docs    Build the documentation site\n  \
-           bench <name> [-- <criterion args>]  Run benchmarks for a target crate (parser, handler, protocol, expressions, state, all)\n  \
+           bench <name> [-- <criterion args>]  Run benchmarks for a target crate (parser, handler, protocol, expressions, state, webui, all)\n  \
            dev <app>  Run example app in dev mode (server + client watch concurrently)\n  \
            version <semver>  Update version across all Cargo.toml and package.json files"
     );
@@ -100,11 +100,14 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
         Some("state") | Some("webui-state") => {
             args.extend(["-p", "webui-state"]);
         }
+        Some("webui") | Some("contact-book") => {
+            args.extend(["-p", "webui", "--bench", "contact_book_bench"]);
+        }
         Some("all") | None => {
             args.extend(["--workspace"]);
         }
         Some(other) => {
-            eprintln!("Unknown bench target '{other}'. Supported targets: parser, handler, protocol, expressions, state, all");
+            eprintln!("Unknown bench target '{other}'. Supported targets: parser, handler, protocol, expressions, state, webui, all");
             return ExitCode::FAILURE;
         }
     }
@@ -129,6 +132,7 @@ fn check() -> ExitCode {
         Step::BUILD,
         Step::BUILD_EXAMPLES,
         Step::BUILD_WASM,
+        Step::BENCH_VALIDATE,
         Step::DOCS,
     ])
 }
@@ -194,6 +198,24 @@ impl Step {
     const DOCS: Self = Self {
         name: "docs",
         run: || run_command("pnpm", &["--filter", "@webui/docs", "build"], None),
+    };
+    const BENCH_VALIDATE: Self = Self {
+        name: "bench (validate)",
+        run: || {
+            run_command(
+                "cargo",
+                &[
+                    "bench",
+                    "-p",
+                    "webui",
+                    "--bench",
+                    "contact_book_bench",
+                    "--",
+                    "--test",
+                ],
+                None,
+            )
+        },
     };
 }
 
