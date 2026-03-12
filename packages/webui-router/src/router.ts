@@ -213,8 +213,10 @@ export class WebUIRouter {
       const isSSRd = existing && existing.shadowRoot;
 
       if (isSSRd && this.isInitialNavigation) {
-        // SSR'd content is already correct — don't load the component JS
-        // (which would trigger FAST hydration and wipe the SSR'd DOM).
+        // SSR'd content is visually correct — skip fetchAndMount (which would
+        // re-fetch and replace the DOM), but still load the component JS so
+        // the custom element is defined and FAST can hydrate it.
+        await this.ensureComponentLoaded(comp);
       } else if (!isSSRd) {
         await this.ensureComponentLoaded(comp);
         await this.fetchAndMount(best.el, comp, pathname, best.params);

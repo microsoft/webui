@@ -1,6 +1,6 @@
 ---
 name: quality-gate
-description: Run before every commit or push: formatting, linting, tests, dependency audits, and builds.
+description: "Run before every commit or push: formatting, linting, tests, dependency audits, and builds."
 ---
 
 # Quality Gate Workflow
