@@ -1,7 +1,7 @@
 //! FAST parser plugin for the WebUI parser.
 //!
 //! Tracks component definitions during HTML parsing and generates `<f-template>`
-//! wrappers at body end. Converts BTR template syntax (`<if>`, `<for>`, `{{}}`)
+//! wrappers at body end. Converts WebUI Framework template syntax (`<if>`, `<for>`, `{{}}`)
 //! into FAST-compatible syntax (`<f-when>`, `<f-repeat>`, `{}`).
 
 use super::ParserPlugin;
@@ -20,7 +20,7 @@ struct TrackedComponent {
 /// Implements the `ParserPlugin` trait for the FAST framework:
 /// - Filters FAST-specific runtime binding attributes (`@click`, `f-ref`, etc.)
 /// - Tracks components encountered during parsing
-/// - Generates `<f-template>` wrappers with converted BTR→FAST syntax at body end
+/// - Generates `<f-template>` wrappers with converted FAST syntax at body end
 /// - Emits binding attribute counts as `Plugin` protocol fragment data
 pub struct FastParserPlugin {
     /// Components tracked during parsing, in discovery order.
@@ -118,7 +118,7 @@ impl ParserPlugin for FastParserPlugin {
     }
 }
 
-/// Convert BTR template syntax to FAST syntax in HTML content.
+/// Convert WebUI Framework template syntax to FAST syntax in HTML content.
 ///
 /// Performs the following transformations without regex:
 /// - `<if condition="EXPR">` → `<f-when value="{EXPR}">`
@@ -655,7 +655,7 @@ mod tests {
         assert_eq!(output.matches("<f-template name=\"my-card\">").count(), 1);
     }
 
-    // --- BTR→FAST syntax conversion ---
+    // --- FAST syntax conversion ---
 
     #[test]
     fn convert_if_to_f_when() {
