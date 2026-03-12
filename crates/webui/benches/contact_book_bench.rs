@@ -318,7 +318,12 @@ fn handler_rendering_bench(c: &mut Criterion) {
         let mut handler = WebUIHandler::new();
         let mut warmup_writer = BenchWriter::new(count * BYTES_PER_CONTACT + BASE_HTML_BYTES);
         handler
-            .handle(&fixture.protocol, state, &RenderOptions::new("index.html", "/"), &mut warmup_writer)
+            .handle(
+                &fixture.protocol,
+                state,
+                &RenderOptions::new("index.html", "/"),
+                &mut warmup_writer,
+            )
             .unwrap_or_else(|e| panic!("warmup render failed for {count} contacts: {e}"));
         group.throughput(Throughput::Bytes(warmup_writer.len() as u64));
 
@@ -328,8 +333,13 @@ fn handler_rendering_bench(c: &mut Criterion) {
 
             b.iter(|| {
                 w.clear();
-                h.handle(black_box(&fixture.protocol), black_box(state), &RenderOptions::new("index.html", "/"), &mut w)
-                    .unwrap_or_else(|e| panic!("render failed for {count} contacts: {e}"));
+                h.handle(
+                    black_box(&fixture.protocol),
+                    black_box(state),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut w,
+                )
+                .unwrap_or_else(|e| panic!("render failed for {count} contacts: {e}"));
             });
         });
     }
@@ -351,7 +361,12 @@ fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
         let mut warmup_writer =
             BenchWriter::new(count * BYTES_PER_CONTACT_WITH_PLUGIN + BASE_HTML_BYTES_WITH_PLUGIN);
         handler
-            .handle(&fixture.protocol, state, &RenderOptions::new("index.html", "/"), &mut warmup_writer)
+            .handle(
+                &fixture.protocol,
+                state,
+                &RenderOptions::new("index.html", "/"),
+                &mut warmup_writer,
+            )
             .unwrap_or_else(|e| {
                 panic!("warmup render with plugin failed for {count} contacts: {e}")
             });
@@ -363,10 +378,13 @@ fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
 
             b.iter(|| {
                 w.clear();
-                h.handle(black_box(&fixture.protocol), black_box(state), &RenderOptions::new("index.html", "/"), &mut w)
-                    .unwrap_or_else(|e| {
-                        panic!("render with plugin failed for {count} contacts: {e}")
-                    });
+                h.handle(
+                    black_box(&fixture.protocol),
+                    black_box(state),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut w,
+                )
+                .unwrap_or_else(|e| panic!("render with plugin failed for {count} contacts: {e}"));
             });
         });
     }
@@ -491,7 +509,12 @@ fn collect_render_samples(
     for _ in 0..RENDER_WARMUP_ITERATIONS {
         writer.clear();
         handler
-            .handle(protocol, state, &RenderOptions::new("index.html", "/"), &mut writer)
+            .handle(
+                protocol,
+                state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
             .expect("warmup failed in summary pass");
     }
     let output_bytes = writer.len();
@@ -504,7 +527,12 @@ fn collect_render_samples(
         writer.clear();
         let start = Instant::now();
         handler
-            .handle(black_box(protocol), black_box(state), &RenderOptions::new("index.html", "/"), &mut writer)
+            .handle(
+                black_box(protocol),
+                black_box(state),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
             .expect("render failed in summary pass");
         samples.push(start.elapsed().as_secs_f64() * 1000.0);
     }
