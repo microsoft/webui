@@ -1,5 +1,5 @@
 <template shadowrootmode="open">
-  <div class="card">
+  <a class="card" href="/contacts/{{id}}">
     <div class="avatar" style="background-color: {{avatarColor}}">
       <span class="avatar-initials">{{initials}}</span>
     </div>
@@ -14,5 +14,5 @@
       <span class="phone">{{phone}}</span>
     </div>
     <span class="badge">{{group}}</span>
-  </div>
+  </a>
 </template>

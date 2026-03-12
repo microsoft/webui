@@ -5,7 +5,7 @@
       <div class="detail-name">
         <h2>{{firstName}} {{lastName}}</h2>
         <if condition="company">
-          <span class="company">{{company}}</span>
+        <span class="company">{{company}}</span>
         </if>
       </div>
       <div class="detail-actions">
@@ -26,10 +26,10 @@
           <span class="field-value">{{phone}}</span>
         </div>
         <if condition="address">
-          <div class="detail-field">
-            <span class="field-label label-address">Address</span>
-            <span class="field-value">{{address}}</span>
-          </div>
+        <div class="detail-field">
+          <span class="field-label label-address">Address</span>
+          <span class="field-value">{{address}}</span>
+        </div>
         </if>
       </div>
       <div class="detail-section">
@@ -39,15 +39,15 @@
           <span class="badge">{{group}}</span>
         </div>
         <if condition="notes">
-          <div class="detail-field">
-            <span class="field-label label-notes">Notes</span>
-            <span class="field-value notes">{{notes}}</span>
-          </div>
+        <div class="detail-field">
+          <span class="field-label label-notes">Notes</span>
+          <span class="field-value notes">{{notes}}</span>
+        </div>
         </if>
       </div>
     </div>
     <div class="detail-footer">
-      <button class="back-btn" data-action="back">&larr; Back to list</button>
+      <a class="back-btn" data-action="back">&larr; Back to list</a>
     </div>
   </div>
 </template>

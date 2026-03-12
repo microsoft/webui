@@ -42,6 +42,8 @@
   border-radius: var(--border-radius-l);
   cursor: pointer;
   transition: background 0.15s;
+  text-decoration: none;
+  color: inherit;
 }
 
 .nav-item:hover {

@@ -79,7 +79,9 @@
   font-weight: 600;
   cursor: pointer;
   font-family: inherit;
+  text-decoration: none;
   -webkit-app-region: no-drag;
+  text-decoration: none;
 }
 
 .add-btn:hover {

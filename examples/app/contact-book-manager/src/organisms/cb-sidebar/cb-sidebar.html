@@ -1,29 +1,29 @@
 <template shadowrootmode="open">
   <nav class="sidebar">
     <div class="nav-section">
-      <div class="nav-item active" data-nav="Dashboard">
+      <a class="nav-item active" data-nav="Dashboard" data-href="/" href="/">
         <span class="nav-icon nav-icon-dashboard"></span>
         <span class="nav-label">Dashboard</span>
-      </div>
-      <div class="nav-item" data-nav="All Contacts">
+      </a>
+      <a class="nav-item" data-nav="All Contacts" data-href="/contacts" href="/contacts">
         <span class="nav-icon nav-icon-contacts"></span>
         <span class="nav-label">All Contacts</span>
         <span class="nav-count">{{totalContacts}}</span>
-      </div>
-      <div class="nav-item" data-nav="Favorites">
+      </a>
+      <a class="nav-item" data-nav="Favorites" data-href="/favorites" href="/favorites">
         <span class="nav-icon nav-icon-favorites"></span>
         <span class="nav-label">Favorites</span>
         <span class="nav-count">{{totalFavorites}}</span>
-      </div>
+      </a>
     </div>
     <div class="nav-divider"></div>
     <div class="nav-section">
       <h3 class="nav-heading">Groups</h3>
       <for each="group in groups">
-        <div class="nav-item" data-nav="{{group}}">
+        <a class="nav-item" data-nav="{{group}}" href="/groups/{{group}}">
           <span class="nav-icon nav-icon-folder"></span>
           <span class="nav-label">{{group}}</span>
-        </div>
+        </a>
       </for>
     </div>
   </nav>

@@ -11,15 +11,8 @@ export class CbSidebar extends RenderableFASTElement(FASTElement) {
   @observable contactsActive!: boolean;
   @observable favoritesActive!: boolean;
 
-  private listenersAttached!: boolean;
-
   connectedCallback(): void {
     super.connectedCallback();
-    if (this.listenersAttached) return;
-    this.listenersAttached = true;
-    this.addEventListener('click', (e: Event) => {
-      this.onNavClick(e as MouseEvent);
-    });
   }
 
   async prepare(): Promise<void> {
@@ -58,16 +51,6 @@ export class CbSidebar extends RenderableFASTElement(FASTElement) {
 
   private emit(type: string, detail?: unknown): void {
     this.dispatchEvent(new CustomEvent(type, { bubbles: true, composed: true, detail }));
-  }
-
-  onNavClick(e: MouseEvent): void {
-    const target = (e.composedPath()[0] as HTMLElement).closest('.nav-item') as HTMLElement | null;
-    if (!target) return;
-    const label = target.getAttribute('data-nav') || '';
-    if (label === 'Dashboard') this.emit('navigate', { page: 'dashboard' });
-    else if (label === 'All Contacts') this.emit('navigate', { page: 'contacts' });
-    else if (label === 'Favorites') this.emit('navigate', { page: 'favorites' });
-    else this.emit('navigate', { page: 'group', group: label });
   }
 }
 

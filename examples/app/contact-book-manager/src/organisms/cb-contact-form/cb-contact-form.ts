@@ -18,6 +18,23 @@ export class CbContactForm extends RenderableFASTElement(FASTElement) {
 
   private listenersAttached!: boolean;
 
+  setInitialState(state: Record<string, unknown>): void {
+    this.formTitle = String(state.formTitle ?? 'Add Contact');
+    // Edit mode: contact fields are spread at top level by the API
+    if (state.id) {
+      this.editId = String(state.id);
+      this.firstName = String(state.firstName ?? '');
+      this.lastName = String(state.lastName ?? '');
+      this.email = String(state.email ?? '');
+      this.phone = String(state.phone ?? '');
+      this.company = String(state.company ?? '');
+      this.address = String(state.address ?? '');
+      this.group = String(state.group ?? '');
+      this.notes = String(state.notes ?? '');
+      this.selectedGroup = this.group;
+    }
+  }
+
   connectedCallback(): void {
     super.connectedCallback();
     if (this.listenersAttached) return;
@@ -39,6 +56,13 @@ export class CbContactForm extends RenderableFASTElement(FASTElement) {
     }
     formGroupsStore.set(this, groups);
     this.selectedGroup = this.group || (groups.length > 0 ? groups[0] : '');
+
+    // Set textarea value imperatively (textarea inner text can't use FAST
+    // binding markers — browsers treat textarea content as raw text)
+    const ta = this.shadowRoot?.querySelector('.notes-input') as HTMLTextAreaElement | null;
+    if (ta && this.notes) {
+      ta.value = this.notes;
+    }
   }
 
   private ensureGroupButtons(): void {
@@ -101,7 +125,11 @@ export class CbContactForm extends RenderableFASTElement(FASTElement) {
     } else if (action === 'save') {
       const formData = this.collectFormData();
       if (formData) {
-        this.dispatchEvent(new CustomEvent('form-save', { bubbles: true, composed: true, detail: formData }));
+        this.dispatchEvent(new CustomEvent('form-save', {
+          bubbles: true,
+          composed: true,
+          detail: formData,
+        }));
       }
     }
   }
@@ -119,6 +147,7 @@ export class CbContactForm extends RenderableFASTElement(FASTElement) {
     if (this.editId) data.id = this.editId;
     return data;
   }
+
 }
 
 CbContactForm.defineAsync({

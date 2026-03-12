@@ -1,6 +1,10 @@
 import { FASTElement, observable } from '@microsoft/fast-element';
 import { RenderableFASTElement } from '@microsoft/fast-html';
 
+// Child components used in cb-contact-list.html
+import '../../atoms/cb-empty-state/cb-empty-state.js';
+import '../cb-contact-card/cb-contact-card.js';
+
 interface Contact {
   id: string;
   firstName: string;

@@ -4,14 +4,20 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
-    "start:server": "cargo run -p webui-cli -- serve ./src --state ./data/state.json --plugin=fast --servedir ./dist --port 3001 --watch",
+    "start:client": "esbuild src/index.ts --bundle --splitting --outdir=dist --format=esm --sourcemap --watch",
+    "start:server": "cargo run -p webui-cli -- serve ./src --state ./data/state.json --plugin=fast --servedir ./dist --port 3001 --watch --api-port 4000",
+    "start:api": "esbuild server/api.ts --bundle --platform=node --format=esm --outfile=dist/api.js --packages=external && node dist/api.js",
     "start": "cargo xtask dev contact-book-manager"
-   },
+  },
   "devDependencies": {
+    "@microsoft/webui-router": "workspace:*",
     "@microsoft/fast-element": "catalog:",
     "@microsoft/fast-html": "catalog:",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "cors": "^2.8.5",
     "esbuild": "catalog:",
+    "express": "^5.1.0",
     "tslib": "catalog:",
     "typescript": "catalog:"
   }

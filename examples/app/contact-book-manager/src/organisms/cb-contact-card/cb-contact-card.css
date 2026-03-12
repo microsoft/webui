@@ -8,6 +8,8 @@
   gap: var(--spacing-m);
   padding: var(--spacing-m) 18px;
   border-bottom: 1px solid var(--color-neutral-150);
+  text-decoration: none;
+  color: inherit;
   cursor: pointer;
   transition: background 0.15s;
 }

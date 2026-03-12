@@ -1,6 +1,7 @@
 <template shadowrootmode="open">
   <div class="form-container">
     <h2 class="form-title">{{formTitle}}</h2>
+    <input type="hidden" name="_editId" value="{{editId}}" />
     <div class="form-grid">
       <div class="form-field">
         <label class="field-label">First Name</label>
@@ -31,17 +32,18 @@
       <label class="field-label">Group</label>
       <div class="group-selector">
         <for each="g in groups">
-          <button class="group-option" data-group="{{g}}">{{g}}</button>
+          <button type="button" class="group-option" data-group="{{g}}">{{g}}</button>
         </for>
       </div>
+      <input type="hidden" name="group" value="Other" class="group-input" />
     </div>
     <div class="form-field-full">
       <label class="field-label">Notes</label>
-      <textarea class="notes-input" placeholder="Add notes..." rows="3">{{notes}}</textarea>
+      <textarea class="notes-input" placeholder="Add notes..." rows="3" name="notes"></textarea>
     </div>
     <div class="form-actions">
-      <button class="cancel-btn" data-action="cancel">Cancel</button>
-      <button class="save-btn" data-action="save">Save Contact</button>
+      <button type="button" class="cancel-btn" data-action="cancel">Cancel</button>
+      <button type="button" class="save-btn" data-action="save">Save Contact</button>
     </div>
   </div>
 </template>

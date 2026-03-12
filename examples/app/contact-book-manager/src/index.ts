@@ -1,43 +1,15 @@
 /**
- * Contact-book-manager entry point — bootstraps FAST-HTML hydration.
- *
- * The server pre-renders HTML with hydration markers via `webui build --plugin=fast`.
- * This script:
- *   1. Registers custom elements (17 components) via defineAsync
- *   2. Configures FAST-HTML observation maps for reactive attribute tracking
- *   3. Defines <f-template>, triggering hydration of pre-rendered shadow DOM
+ * Contact-book-manager entry point — bootstraps FAST-HTML hydration
+ * and the client-side router.
  */
 
 performance.mark('contact-book-hydration-started');
 
 import { TemplateElement } from '@microsoft/fast-html';
+import { Router } from '@microsoft/webui-router';
 
-// Side-effect imports — register custom elements via defineAsync
-
-// Root
+// Shell component — eagerly loaded (child imports are co-located in each component)
 import './cb-app/cb-app.js';
-
-// Atoms
-import './atoms/cb-avatar/cb-avatar.js';
-import './atoms/cb-badge/cb-badge.js';
-import './atoms/cb-button/cb-button.js';
-import './atoms/cb-input/cb-input.js';
-import './atoms/cb-icon-button/cb-icon-button.js';
-import './atoms/cb-empty-state/cb-empty-state.js';
-
-// Molecules
-import './molecules/cb-search-bar/cb-search-bar.js';
-import './molecules/cb-form-field/cb-form-field.js';
-import './molecules/cb-stat-card/cb-stat-card.js';
-import './molecules/cb-nav-item/cb-nav-item.js';
-
-// Organisms
-import './organisms/cb-header/cb-header.js';
-import './organisms/cb-sidebar/cb-sidebar.js';
-import './organisms/cb-contact-card/cb-contact-card.js';
-import './organisms/cb-contact-list/cb-contact-list.js';
-import './organisms/cb-contact-detail/cb-contact-detail.js';
-import './organisms/cb-contact-form/cb-contact-form.js';
 
 // Configure and start hydration
 TemplateElement.options({
@@ -54,14 +26,22 @@ TemplateElement.options({
   'cb-nav-item': { observerMap: 'all' },
   'cb-header': { observerMap: 'all' },
   'cb-sidebar': {},
-  'cb-contact-card': { observerMap: 'all' },
-  'cb-contact-list': { observerMap: 'all' },
-  'cb-contact-detail': { observerMap: 'all' },
-  'cb-contact-form': { observerMap: 'all' },
 }).config({
   hydrationComplete() {
     performance.measure('contact-book-hydration-completed', 'contact-book-hydration-started');
     console.log('Hydration complete!');
+    // Start router AFTER hydration — shadow roots are ready.
+    // Page components use lazy loaders for code-split navigation.
+    Router.start({
+      loaders: {
+        'cb-page-dashboard': () => import('./pages/cb-page-dashboard/cb-page-dashboard.js'),
+        'cb-page-contacts': () => import('./pages/cb-page-contacts/cb-page-contacts.js'),
+        'cb-page-favorites': () => import('./pages/cb-page-favorites/cb-page-favorites.js'),
+        'cb-page-group': () => import('./pages/cb-page-group/cb-page-group.js'),
+        'cb-contact-detail': () => import('./organisms/cb-contact-detail/cb-contact-detail.js'),
+        'cb-contact-form': () => import('./organisms/cb-contact-form/cb-contact-form.js'),
+      },
+    });
   },
 }).define({
   name: 'f-template',
