@@ -226,8 +226,17 @@ fn handler_render_null_args_returns_null() {
         let handler = webui_handler_create();
         let c_json = CString::new("{}").expect("static string");
 
+        let c_entry = CString::new("index.html").expect("static string");
+        let c_request_path = CString::new("/").expect("static string");
         // null protocol data
-        let ptr = webui_handler_render(handler, std::ptr::null(), 0, c_json.as_ptr());
+        let ptr = webui_handler_render(
+            handler,
+            std::ptr::null(),
+            0,
+            c_json.as_ptr(),
+            c_entry.as_ptr(),
+            c_request_path.as_ptr(),
+        );
         assert!(ptr.is_null());
         assert!(last_error_string().is_some());
 

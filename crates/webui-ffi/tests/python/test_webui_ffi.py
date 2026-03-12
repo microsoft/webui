@@ -62,8 +62,9 @@ lib.webui_handler_destroy.argtypes = [c_void_p]
 lib.webui_handler_destroy.restype = None
 
 # char *webui_handler_render(void *handler_ptr, const uint8_t *protocol_data,
-#                             uintptr_t protocol_len, const char *data_json)
-lib.webui_handler_render.argtypes = [c_void_p, POINTER(c_ubyte), c_size_t, c_char_p]
+#                             uintptr_t protocol_len, const char *data_json,
+#                             const char *entry_id, const char *request_path)
+lib.webui_handler_render.argtypes = [c_void_p, POINTER(c_ubyte), c_size_t, c_char_p, c_char_p, c_char_p]
 lib.webui_handler_render.restype = c_void_p  # c_void_p to manage manually
 
 # char *webui_render(const char *html, const char *data_json)

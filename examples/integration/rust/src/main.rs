@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use std::env;
 use std::fs;
 use webui_handler::plugin::FastHydrationPlugin;
-use webui_handler::{ResponseWriter, WebUIHandler};
+use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::WebUIProtocol;
 
 struct StdoutWriter;
@@ -63,7 +63,12 @@ fn main() -> Result<()> {
     };
     let mut writer = StdoutWriter;
     handler
-        .handle(&protocol, &state, &mut writer)
+        .handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
         .context("Failed to render")?;
 
     Ok(())

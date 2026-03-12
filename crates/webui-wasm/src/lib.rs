@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use webui_handler::plugin::FastHydrationPlugin;
-use webui_handler::{ResponseWriter, WebUIHandler};
+use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_parser::{CssStrategy, HtmlParser};
 use webui_protocol::WebUIProtocol;
 
@@ -55,10 +55,18 @@ impl ResponseWriter for StringWriter {
 pub fn render(
     protocol_json: &str,
     state_json: &str,
+    entry: &str,
+    request_path: &str,
     plugin: Option<String>,
 ) -> Result<String, JsValue> {
-    render_inner(protocol_json, state_json, plugin.as_deref())
-        .map_err(|e| JsValue::from_str(&e.to_string()))
+    render_inner(
+        protocol_json,
+        state_json,
+        entry,
+        request_path,
+        plugin.as_deref(),
+    )
+    .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 /// Build and render a WebUI application from virtual files.
@@ -77,11 +85,16 @@ pub fn render(
 ///
 /// The rendered HTML string, or throws a JS error on failure.
 #[wasm_bindgen]
-pub fn build_and_render(files: JsValue, state_json: &str, entry: &str) -> Result<String, JsValue> {
+pub fn build_and_render(
+    files: JsValue,
+    state_json: &str,
+    entry: &str,
+    request_path: &str,
+) -> Result<String, JsValue> {
     let files_map: HashMap<String, String> =
         serde_wasm_bindgen::from_value(files).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-    build_and_render_inner(&files_map, state_json, entry)
+    build_and_render_inner(&files_map, state_json, entry, request_path)
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
@@ -118,6 +131,8 @@ fn create_handler(plugin: Option<&str>) -> Result<WebUIHandler, BuildError> {
 fn render_inner(
     protocol_json: &str,
     state_json: &str,
+    entry: &str,
+    request_path: &str,
     plugin: Option<&str>,
 ) -> Result<String, BuildError> {
     let protocol: WebUIProtocol =
@@ -128,7 +143,12 @@ fn render_inner(
     let mut writer = StringWriter::with_capacity(1024);
     let mut handler = create_handler(plugin)?;
     handler
-        .render(&protocol, &state, &mut writer)
+        .render(
+            &protocol,
+            &state,
+            &RenderOptions::new(entry, request_path),
+            &mut writer,
+        )
         .map_err(|e| BuildError::Render(e.to_string()))?;
 
     Ok(writer.content)
@@ -139,6 +159,7 @@ pub(crate) fn build_and_render_inner(
     files: &HashMap<String, String>,
     state_json: &str,
     entry: &str,
+    request_path: &str,
 ) -> Result<String, BuildError> {
     let protocol = parse_to_protocol(files, entry)?;
 
@@ -148,7 +169,12 @@ pub(crate) fn build_and_render_inner(
     let mut writer = StringWriter::with_capacity(1024);
     let mut handler = create_handler(None)?;
     handler
-        .render(&protocol, &state, &mut writer)
+        .render(
+            &protocol,
+            &state,
+            &RenderOptions::new(entry, request_path),
+            &mut writer,
+        )
         .map_err(|e| BuildError::Render(e.to_string()))?;
 
     Ok(writer.content)
@@ -222,7 +248,7 @@ mod tests {
             "<h1>Hello, {{name}}!</h1>".to_string(),
         );
 
-        let result = build_and_render_inner(&files, r#"{"name": "WebUI"}"#, "index.html");
+        let result = build_and_render_inner(&files, r#"{"name": "WebUI"}"#, "index.html", "/");
         assert!(result.is_ok(), "Render failed: {:?}", result);
         assert_eq!(result.as_deref(), Ok("<h1>Hello, WebUI!</h1>"));
     }
@@ -230,7 +256,7 @@ mod tests {
     #[test]
     fn test_missing_entry_file() {
         let files = HashMap::new();
-        let result = build_and_render_inner(&files, "{}", "index.html");
+        let result = build_and_render_inner(&files, "{}", "index.html", "/");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found"), "Unexpected error: {}", err);
@@ -248,7 +274,7 @@ mod tests {
             "<div class=\"card\"><slot></slot></div>".to_string(),
         );
 
-        let result = build_and_render_inner(&files, "{}", "index.html");
+        let result = build_and_render_inner(&files, "{}", "index.html", "/");
         assert!(result.is_ok(), "Render failed: {:?}", result);
         let html = result.as_deref().unwrap_or("");
         assert!(html.contains("card"), "Expected card class in: {}", html);
@@ -263,7 +289,7 @@ mod tests {
         );
 
         let state = r#"{"items": [{"name": "A"}, {"name": "B"}]}"#;
-        let result = build_and_render_inner(&files, state, "index.html");
+        let result = build_and_render_inner(&files, state, "index.html", "/");
         assert!(result.is_ok(), "Render failed: {:?}", result);
         let html = result.as_deref().unwrap_or("");
         assert!(html.contains("A"), "Expected 'A' in: {}", html);
@@ -278,10 +304,10 @@ mod tests {
             "<if condition=\"show\">Visible</if>".to_string(),
         );
 
-        let result_true = build_and_render_inner(&files, r#"{"show": true}"#, "index.html");
+        let result_true = build_and_render_inner(&files, r#"{"show": true}"#, "index.html", "/");
         assert_eq!(result_true.as_deref(), Ok("Visible"));
 
-        let result_false = build_and_render_inner(&files, r#"{"show": false}"#, "index.html");
+        let result_false = build_and_render_inner(&files, r#"{"show": false}"#, "index.html", "/");
         assert_eq!(result_false.as_deref(), Ok(""));
     }
 
@@ -290,7 +316,7 @@ mod tests {
         let mut files = HashMap::new();
         files.insert("index.html".to_string(), "<p>Hi</p>".to_string());
 
-        let result = build_and_render_inner(&files, "not json", "index.html");
+        let result = build_and_render_inner(&files, "not json", "index.html", "/");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -313,7 +339,7 @@ mod tests {
         );
         files.insert("my-card.css".to_string(), "p { color: red; }".to_string());
 
-        let result = build_and_render_inner(&files, "{}", "index.html");
+        let result = build_and_render_inner(&files, "{}", "index.html", "/");
         assert!(result.is_ok(), "Render failed: {:?}", result);
         let html = result.as_deref().unwrap_or("");
         // WASM uses CssStrategy::Style, so CSS should be in <style> tags, not <link>
@@ -337,7 +363,8 @@ mod tests {
             "<div>{{{raw_html}}}</div>".to_string(),
         );
 
-        let result = build_and_render_inner(&files, r#"{"raw_html": "<b>bold</b>"}"#, "index.html");
+        let result =
+            build_and_render_inner(&files, r#"{"raw_html": "<b>bold</b>"}"#, "index.html", "/");
         assert!(result.is_ok(), "Render failed: {:?}", result);
         let html = result.as_deref().unwrap_or("");
         assert!(
@@ -355,7 +382,7 @@ mod tests {
             "<h1>Static</h1><p>Content</p>".to_string(),
         );
 
-        let result = build_and_render_inner(&files, "{}", "index.html");
+        let result = build_and_render_inner(&files, "{}", "index.html", "/");
         assert_eq!(result.as_deref(), Ok("<h1>Static</h1><p>Content</p>"));
     }
 }

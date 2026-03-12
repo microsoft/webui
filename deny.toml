@@ -22,6 +22,7 @@ skip = [
     { name = "convert_case" },
     { name = "getrandom" },
     { name = "hashbrown" },
+    { name = "http" },
     { name = "r-efi" },
     { name = "socket2" },
     { name = "windows-sys" },

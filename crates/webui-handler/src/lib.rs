@@ -4,10 +4,12 @@
 //! into final HTML output based on provided data.
 
 pub mod plugin;
+pub mod route_handler;
+pub mod route_matcher;
 
 use plugin::HandlerPlugin;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 use webui_expressions::{evaluate, ExpressionError};
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUIProtocol};
@@ -52,6 +54,28 @@ pub trait ResponseWriter {
     fn end(&mut self) -> Result<()>;
 }
 
+/// Options controlling how the handler renders a protocol.
+///
+/// The handler performs server-side route matching: matched routes are rendered
+/// visible with content; non-matched routes are rendered hidden and empty.
+pub struct RenderOptions<'a> {
+    /// The fragment ID to start rendering from (e.g., `"index.html"`).
+    pub entry_id: &'a str,
+    /// The URL path to match routes against (e.g., `"/contacts/42"`).
+    pub request_path: &'a str,
+}
+
+impl<'a> RenderOptions<'a> {
+    /// Create render options for the given entry fragment and request path.
+    #[must_use]
+    pub fn new(entry_id: &'a str, request_path: &'a str) -> Self {
+        Self {
+            entry_id,
+            request_path,
+        }
+    }
+}
+
 /// The main WebUI handler that processes protocols and renders them.
 pub struct WebUIHandler {
     plugin: Option<Box<dyn HandlerPlugin>>,
@@ -64,10 +88,13 @@ struct WebUIProcessContext<'a> {
     #[allow(dead_code)]
     depth: usize,
     writer: &'a mut dyn ResponseWriter,
-    // Add local variables map to store context-specific variables (like loop items)
     local_vars: HashMap<String, Value>,
     /// Accumulates component attribute values between attrStart and the component fragment.
     component_attrs: HashMap<String, Value>,
+    /// URL path for server-side route matching.
+    request_path: String,
+    /// Component names visited during rendering (for selective f-template emission).
+    rendered_components: HashSet<String>,
 }
 
 /// Convert hyphenated name to camelCase (e.g., "data-title" → "dataTitle").
@@ -87,6 +114,80 @@ fn convert_hyphen_to_camel_case(name: &str) -> String {
     result
 }
 
+/// Convert camelCase to kebab-case (e.g., "totalContacts" → "total-contacts").
+fn camel_to_kebab(name: &str) -> String {
+    let mut result = String::with_capacity(name.len() + 4);
+    for ch in name.chars() {
+        if ch.is_uppercase() && !result.is_empty() {
+            result.push('-');
+            for lc in ch.to_lowercase() {
+                result.push(lc);
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+/// Emit top-level state values as HTML attributes on a route component element.
+///
+/// This ensures FAST hydration reads the correct values from DOM attributes
+/// instead of using the component's default `@attr` values.
+///
+/// Scalar values (string, number, bool) are emitted as individual kebab-case
+/// attributes. The full state (including arrays/objects) is also emitted as a
+/// `data-state` JSON attribute so components can read complex state during hydration.
+fn emit_state_attributes(state: &Value, writer: &mut dyn ResponseWriter) -> Result<()> {
+    let map = match state.as_object() {
+        Some(m) => m,
+        None => return Ok(()),
+    };
+
+    // Emit scalar values as individual attributes
+    for (key, value) in map {
+        let val_str = match value {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            _ => continue,
+        };
+        let attr_name = camel_to_kebab(key);
+        writer.write(" ")?;
+        writer.write(&attr_name)?;
+        writer.write("=\"")?;
+        for ch in val_str.chars() {
+            match ch {
+                '&' => writer.write("&amp;")?,
+                '"' => writer.write("&quot;")?,
+                '<' => writer.write("&lt;")?,
+                '>' => writer.write("&gt;")?,
+                _ => writer.write(&String::from(ch))?,
+            }
+        }
+        writer.write("\"")?;
+    }
+
+    // Emit full state as data-state for complex values (arrays, objects)
+    let has_complex = map.values().any(|v| v.is_array() || v.is_object());
+    if has_complex {
+        let json_str = state.to_string();
+        writer.write(" data-state=\"")?;
+        for ch in json_str.chars() {
+            match ch {
+                '&' => writer.write("&amp;")?,
+                '"' => writer.write("&quot;")?,
+                '<' => writer.write("&lt;")?,
+                '>' => writer.write("&gt;")?,
+                _ => writer.write(&String::from(ch))?,
+            }
+        }
+        writer.write("\"")?;
+    }
+
+    Ok(())
+}
+
 /// Get the component attribute name, stripping `:` prefix and converting to camelCase.
 fn component_attr_name(name: &str) -> String {
     let stripped = name.strip_prefix(':').unwrap_or(name);
@@ -95,6 +196,34 @@ fn component_attr_name(name: &str) -> String {
     } else {
         stripped.to_string()
     }
+}
+
+/// Pre-scan sibling route fragments and return the name/id of the best match.
+///
+/// Picks the route with the highest specificity (most literal segments).
+/// This ensures `/contacts/add` (2 literals) beats `/contacts/:id` (1 literal + 1 param).
+fn find_best_route_match(fragments: &[WebUIFragment], request_path: &str) -> Option<String> {
+    let mut best_key: Option<String> = None;
+    let mut best_specificity: usize = 0;
+
+    for item in fragments {
+        if let Some(Fragment::Route(route_frag)) = item.fragment.as_ref() {
+            if let Some(m) =
+                route_matcher::match_single_route(&route_frag.path, request_path, route_frag.exact)
+            {
+                if best_key.is_none() || m.specificity > best_specificity {
+                    best_specificity = m.specificity;
+                    best_key = Some(if route_frag.name.is_empty() {
+                        route_frag.fragment_id.clone()
+                    } else {
+                        route_frag.name.clone()
+                    });
+                }
+            }
+        }
+    }
+
+    best_key
 }
 
 impl WebUIHandler {
@@ -112,21 +241,19 @@ impl WebUIHandler {
 
     /// Process a WebUI protocol with the provided state and write the output to the given writer.
     ///
-    /// This method initializes an empty context map that will be used to track scoped variables
-    /// during rendering (such as loop variables that are only available within their loops).
+    /// `options.entry_id` selects the fragment to start rendering from.
+    /// `options.request_path` controls server-side route matching.
     pub fn handle(
         &mut self,
         protocol: &WebUIProtocol,
         state: &Value,
+        options: &RenderOptions<'_>,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        // Start with the main fragment (typically "index.html")
-        let main_fragment_id = "index.html";
-        if !protocol.fragments.contains_key(main_fragment_id) {
-            return Err(HandlerError::MissingFragment(main_fragment_id.to_string()));
+        if !protocol.fragments.contains_key(options.entry_id) {
+            return Err(HandlerError::MissingFragment(options.entry_id.to_string()));
         }
 
-        // Process the main fragment with an empty initial context
         let mut context = WebUIProcessContext {
             protocol,
             state,
@@ -134,10 +261,53 @@ impl WebUIHandler {
             writer,
             local_vars: HashMap::new(),
             component_attrs: HashMap::new(),
+            request_path: options.request_path.to_string(),
+            rendered_components: HashSet::new(),
         };
-        self.process_fragment_id(main_fragment_id, &mut context)?;
+        self.process_fragment_id(options.entry_id, &mut context)?;
 
-        // Finalize the output
+        writer.end()?;
+
+        Ok(())
+    }
+
+    /// Render a component fragment with an active plugin scope.
+    ///
+    /// Like `handle()`, but pushes a component scope so the plugin emits
+    /// binding markers. Use this when rendering a component outside the
+    /// normal page render flow (e.g., re-rendering a route component with
+    /// modified state).
+    pub fn handle_as_component(
+        &mut self,
+        protocol: &WebUIProtocol,
+        state: &Value,
+        entry_id: &str,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        if !protocol.fragments.contains_key(entry_id) {
+            return Err(HandlerError::MissingFragment(entry_id.to_string()));
+        }
+
+        if let Some(p) = &mut self.plugin {
+            p.push_scope();
+        }
+
+        let mut context = WebUIProcessContext {
+            protocol,
+            state,
+            depth: 0,
+            writer,
+            local_vars: HashMap::new(),
+            component_attrs: HashMap::new(),
+            request_path: String::new(),
+            rendered_components: HashSet::new(),
+        };
+        self.process_fragment_id(entry_id, &mut context)?;
+
+        if let Some(p) = &mut self.plugin {
+            p.pop_scope();
+        }
+
         writer.end()?;
 
         Ok(())
@@ -168,6 +338,10 @@ impl WebUIHandler {
         fragments: &[WebUIFragment],
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
+        // Pre-scan: find the best matching route among sibling routes by specificity.
+        // This ensures `/contacts/add` (2 literals) beats `/contacts/:id` (1 literal).
+        let best_route_name = find_best_route_match(fragments, &context.request_path);
+
         for item in fragments {
             match item.fragment.as_ref() {
                 Some(Fragment::Raw(raw)) => {
@@ -193,9 +367,67 @@ impl WebUIHandler {
                         p.on_plugin_data(&plugin_frag.data, context.writer)?;
                     }
                 }
-                Some(Fragment::Route(_)) => {
-                    // Route fragments are handled by the route-aware render path.
-                    // When no route matching is active, route fragments are skipped.
+                Some(Fragment::Route(route_frag)) => {
+                    // Only the best-matching route is active
+                    let route_key = if route_frag.name.is_empty() {
+                        &route_frag.fragment_id
+                    } else {
+                        &route_frag.name
+                    };
+                    let is_matched = best_route_name
+                        .as_ref()
+                        .is_some_and(|best| best == route_key);
+
+                    // Emit <webui-route> with metadata attributes
+                    context.writer.write("<webui-route")?;
+                    if !route_frag.path.is_empty() {
+                        context.writer.write(" path=\"")?;
+                        context.writer.write(&route_frag.path)?;
+                        context.writer.write("\"")?;
+                    }
+                    if !route_frag.name.is_empty() {
+                        context.writer.write(" name=\"")?;
+                        context.writer.write(&route_frag.name)?;
+                        context.writer.write("\"")?;
+                    }
+                    if !route_frag.fragment_id.is_empty() {
+                        context.writer.write(" component=\"")?;
+                        context.writer.write(&route_frag.fragment_id)?;
+                        context.writer.write("\"")?;
+                    }
+                    if route_frag.exact {
+                        context.writer.write(" exact")?;
+                    }
+
+                    if is_matched {
+                        // Matched route: render visible with component content
+                        context.writer.write(" active>")?;
+
+                        if !route_frag.fragment_id.is_empty() {
+                            // Emit component tag with state values as attributes
+                            // so FAST hydration reads them instead of defaults.
+                            context.writer.write("<")?;
+                            context.writer.write(&route_frag.fragment_id)?;
+                            emit_state_attributes(context.state, context.writer)?;
+                            context.writer.write(">")?;
+
+                            self.process_component(
+                                &webui_protocol::WebUIFragmentComponent {
+                                    fragment_id: route_frag.fragment_id.clone(),
+                                },
+                                context,
+                            )?;
+
+                            context.writer.write("</")?;
+                            context.writer.write(&route_frag.fragment_id)?;
+                            context.writer.write(">")?;
+                        }
+                    } else {
+                        // Non-matched route: render hidden and empty
+                        context.writer.write(" style=\"display:none\">")?;
+                    }
+
+                    context.writer.write("</webui-route>")?;
                 }
                 None => {}
             }
@@ -209,6 +441,11 @@ impl WebUIHandler {
         component: &webui_protocol::WebUIFragmentComponent,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
+        // Track this component as rendered (for selective f-template emission)
+        context
+            .rendered_components
+            .insert(component.fragment_id.clone());
+
         // Save parent scope
         let saved_local_vars = std::mem::take(&mut context.local_vars);
         let saved_component_attrs = std::mem::take(&mut context.component_attrs);
@@ -354,6 +591,17 @@ impl WebUIHandler {
         signal: &webui_protocol::WebUIFragmentSignal,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
+        // Hook: emit plugin content (e.g., f-templates) before body_end
+        if signal.raw && signal.value == "body_end" {
+            if let Some(p) = &mut self.plugin {
+                p.on_render_complete(
+                    context.protocol,
+                    &context.rendered_components,
+                    context.writer,
+                )?;
+            }
+        }
+
         if let Some(p) = &mut self.plugin {
             p.on_binding_start(&signal.value, context.writer)?;
         }
@@ -491,22 +739,25 @@ impl WebUIHandler {
                 }
             } else {
                 // Dynamic attribute — resolve and render
-                if let Some(value) = self.resolve_value(&attr.value, context) {
-                    let formatted = match &value {
-                        Value::String(s) => html_escape::encode_safe(s).to_string(),
-                        Value::Number(n) => n.to_string(),
-                        Value::Bool(b) => b.to_string(),
-                        Value::Null => String::new(),
-                        _ => value.to_string(),
-                    };
-                    context
-                        .writer
-                        .write(&format!(" {}=\"{}\"", attr.name, formatted))?;
+                let value = self.resolve_value(&attr.value, context);
+                let formatted = match &value {
+                    Some(Value::String(s)) => html_escape::encode_safe(s).to_string(),
+                    Some(Value::Number(n)) => n.to_string(),
+                    Some(Value::Bool(b)) => b.to_string(),
+                    Some(Value::Null) | None => String::new(),
+                    Some(v) => v.to_string(),
+                };
+                // Always emit the attribute so FAST hydration binding
+                // markers (data-fe-b-N) match the DOM node structure.
+                context
+                    .writer
+                    .write(&format!(" {}=\"{}\"", attr.name, formatted))?;
 
-                    if !attr.attr_skip {
-                        let name = component_attr_name(&attr.name);
-                        context.component_attrs.insert(name, value);
-                    }
+                if !attr.attr_skip {
+                    let name = component_attr_name(&attr.name);
+                    context
+                        .component_attrs
+                        .insert(name, value.unwrap_or(Value::String(String::new())));
                 }
             }
         }
@@ -543,11 +794,14 @@ impl WebUIHandler {
         Ok(raw_value)
     }
 
-    /// Render the UI based on the protocol and state
+    /// Render the UI based on the protocol and state.
+    ///
+    /// Like `handle()` but does not call `writer.end()`.
     pub fn render(
         &mut self,
         protocol: &WebUIProtocol,
         state: &Value,
+        options: &RenderOptions<'_>,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
         let mut context = WebUIProcessContext {
@@ -557,9 +811,13 @@ impl WebUIHandler {
             writer,
             local_vars: HashMap::new(),
             component_attrs: HashMap::new(),
+            request_path: options.request_path.to_string(),
+            rendered_components: HashSet::new(),
         };
 
-        self.process_fragment_id("index.html", &mut context)
+        self.process_fragment_id(options.entry_id, &mut context)?;
+
+        Ok(())
     }
 }
 
@@ -574,10 +832,11 @@ impl Default for WebUIHandler {
 pub fn handle(
     protocol: &WebUIProtocol,
     state: &Value,
+    options: &RenderOptions<'_>,
     writer: &mut dyn ResponseWriter,
 ) -> Result<()> {
     let mut handler = WebUIHandler::new();
-    handler.handle(protocol, state, writer)
+    handler.handle(protocol, state, options, writer)
 }
 
 #[cfg(test)]
@@ -644,7 +903,13 @@ mod tests {
 
         // Handle the protocol
         assert!(
-            handle(&protocol, &state, &mut writer).is_ok(),
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer
+            )
+            .is_ok(),
             "Failed to handle raw protocol"
         );
 
@@ -676,7 +941,13 @@ mod tests {
 
         // Handle the protocol
         assert!(
-            handle(&protocol, &state, &mut writer).is_ok(),
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer
+            )
+            .is_ok(),
             "Failed to handle signal protocol"
         );
 
@@ -723,7 +994,13 @@ mod tests {
 
         // Handle the protocol
         assert!(
-            handle(&protocol, &state, &mut writer).is_ok(),
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer
+            )
+            .is_ok(),
             "Failed to handle for loop protocol"
         );
 
@@ -763,7 +1040,13 @@ mod tests {
         let state_true = test_json!({"isActive": true});
         let mut writer_true = TestWriter::new();
         assert!(
-            handle(&protocol, &state_true, &mut writer_true).is_ok(),
+            handle(
+                &protocol,
+                &state_true,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer_true
+            )
+            .is_ok(),
             "Failed to handle if condition (true case)"
         );
         assert_eq!(writer_true.get_content(), "Status: ActiveEnd");
@@ -773,7 +1056,13 @@ mod tests {
         let state_false = test_json!({"isActive": false});
         let mut writer_false = TestWriter::new();
         assert!(
-            handle(&protocol, &state_false, &mut writer_false).is_ok(),
+            handle(
+                &protocol,
+                &state_false,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer_false
+            )
+            .is_ok(),
             "Failed to handle if condition (false case)"
         );
         assert_eq!(writer_false.get_content(), "Status: End");
@@ -809,7 +1098,13 @@ mod tests {
 
         // Handle the protocol
         assert!(
-            handle(&protocol, &state, &mut writer).is_ok(),
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer
+            )
+            .is_ok(),
             "Failed to handle component protocol"
         );
 
@@ -839,7 +1134,12 @@ mod tests {
         let mut writer = TestWriter::new();
 
         // Handle the protocol
-        let result = handle(&protocol, &state, &mut writer);
+        let result = handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        );
 
         // Expect an error
         assert!(result.is_err());
@@ -871,7 +1171,13 @@ mod tests {
         let mut writer = TestWriter::new();
 
         assert!(
-            handle(&protocol, &state, &mut writer).is_ok(),
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer
+            )
+            .is_ok(),
             "Missing signal should not produce an error"
         );
 
@@ -900,7 +1206,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"isDisabled": true});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(writer.get_content(), "<button disabled>Click</button>");
     }
 
@@ -923,7 +1235,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"isDisabled": false});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(writer.get_content(), "<button>Click</button>");
     }
 
@@ -946,7 +1264,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(writer.get_content(), "<input type=\"checkbox\">");
     }
 
@@ -973,7 +1297,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"checked": true, "disabled": false});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(writer.get_content(), "<input type=\"checkbox\" checked>");
     }
 
@@ -995,7 +1325,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"inputValue": "Hello"});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(writer.get_content(), "<input value=\"Hello\">");
     }
 
@@ -1015,7 +1351,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"number": 0});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div name=\"test\" handle=\"0\"></div>"
@@ -1049,7 +1391,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"item": "world"});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(writer.get_content(), "<input value=\"hello world\">");
     }
 
@@ -1070,7 +1418,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"html": "<strong>hi</strong>"});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "&lt;strong&gt;hi&lt;&#x2F;strong&gt;<strong>hi</strong>"
@@ -1116,7 +1470,13 @@ mod tests {
             ]
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><div><span>Inner</span><span>Inner</span></div><div><span>Inner</span></div></div>"
@@ -1164,7 +1524,13 @@ mod tests {
             ]
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><div><span>Item1</span><span>Item2</span></div><div><span>Item3</span><span>Item4</span></div></div>"
@@ -1216,7 +1582,13 @@ mod tests {
             ]
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><div>GO<span>Item1GI</span><span>Item2GI</span></div><div>GO<span>Item3GI</span><span>Item4GI</span></div></div>"
@@ -1252,7 +1624,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"items": [{"name": "Show", "visible": true}, {"name": "Hide", "visible": false}]});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(writer.get_content(), "Show");
     }
 
@@ -1284,7 +1662,13 @@ mod tests {
         // Global flag is true, but local item.flag is false for second item
         let state = test_json!({"flag": true, "items": [{"flag": true}, {"flag": false}]});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(writer.get_content(), "yes");
     }
 
@@ -1328,7 +1712,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"title": "Global Title"});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<my-comp title=\"Attribute Title\"><span>Attribute Title</span></my-comp>"
@@ -1381,7 +1771,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"item": "<world>"});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<my-comp title=\"hello &lt;world&gt;\"><span>hello &lt;world&gt;</span></my-comp>"
@@ -1434,7 +1830,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"item": "a&b"});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<my-comp data-title=\"prefix a&amp;b\"><span>prefix a&amp;b</span></my-comp>"
@@ -1481,7 +1883,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"complexItem": {"foo": 1, "bar": "true"}});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<my-comp><span>1</span><p>true</p></my-comp>"
@@ -1540,7 +1948,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"var": "original"});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<parent var=\"original\">Before: original<child foo var=\"replaced\">Label</child>After: original</parent>"
@@ -1589,7 +2003,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"isDisabled": true});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<my-comp disabled>disabled!</my-comp>"
@@ -1610,7 +2030,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"v": value});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         writer.get_content()
     }
 
@@ -1722,7 +2148,13 @@ mod tests {
             let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({"checked": 1});
             let mut writer = TestWriter::new();
-            handle(&protocol, &state, &mut writer).unwrap();
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
             assert_eq!(writer.get_content(), "<input checked>");
         }
         // checked: "yes"
@@ -1744,7 +2176,13 @@ mod tests {
             let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({"checked": "yes"});
             let mut writer = TestWriter::new();
-            handle(&protocol, &state, &mut writer).unwrap();
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
             assert_eq!(writer.get_content(), "<input checked>");
         }
         // checked: {} (empty object is truthy)
@@ -1766,7 +2204,13 @@ mod tests {
             let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({"checked": {}});
             let mut writer = TestWriter::new();
-            handle(&protocol, &state, &mut writer).unwrap();
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
             // Empty object is falsy in this expression evaluator
             assert_eq!(writer.get_content(), "<input>");
         }
@@ -1789,7 +2233,13 @@ mod tests {
             let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({"checked": "false"});
             let mut writer = TestWriter::new();
-            handle(&protocol, &state, &mut writer).unwrap();
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
             assert_eq!(writer.get_content(), "<input checked>");
         }
     }
@@ -1815,7 +2265,13 @@ mod tests {
             let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({"checked": 0});
             let mut writer = TestWriter::new();
-            handle(&protocol, &state, &mut writer).unwrap();
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
             assert_eq!(writer.get_content(), "<input>");
         }
         // checked: ""
@@ -1837,7 +2293,13 @@ mod tests {
             let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({"checked": ""});
             let mut writer = TestWriter::new();
-            handle(&protocol, &state, &mut writer).unwrap();
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
             assert_eq!(writer.get_content(), "<input>");
         }
         // checked: false
@@ -1859,7 +2321,13 @@ mod tests {
             let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({"checked": false});
             let mut writer = TestWriter::new();
-            handle(&protocol, &state, &mut writer).unwrap();
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
             assert_eq!(writer.get_content(), "<input>");
         }
         // no checked key at all
@@ -1881,7 +2349,13 @@ mod tests {
             let protocol = WebUIProtocol::new(fragments);
             let state = test_json!({});
             let mut writer = TestWriter::new();
-            handle(&protocol, &state, &mut writer).unwrap();
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
             assert_eq!(writer.get_content(), "<input>");
         }
     }
@@ -1905,7 +2379,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"itemCount": 5});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(writer.get_content(), "<button disabled>Click</button>");
     }
 
@@ -1928,7 +2408,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"itemCount": 3});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(writer.get_content(), "<button>Click</button>");
     }
 
@@ -2010,7 +2496,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"who": "<world>"});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<parent-component title=\"Hello &lt;world&gt;\"><child-component title=\"Child of Hello &lt;world&gt;\"><span>Child of Hello &lt;world&gt;</span></child-component></parent-component>"
@@ -2113,7 +2605,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"p": "<p>", "cExtra": "x&y"});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<parent-component title=\"P:&lt;p&gt;\"><child-component title=\"C(P:&lt;p&gt;)-x&amp;y\"><grandchild-component title=\"C(P:&lt;p&gt;)-x&amp;y\"><span>C(P:&lt;p&gt;)-x&amp;y</span></grandchild-component></child-component></parent-component>"
@@ -2204,7 +2702,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"who": "Bob", "items": [{"name": "A<1>"}, {"name": "B&2"}]});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<parent-component title=\"Parent:Bob\"><child-component title=\"Hi A&lt;1&gt; &#x2F; Parent:Bob\"><span>Hi A&lt;1&gt; &#x2F; Parent:Bob</span></child-component><child-component title=\"Hi B&amp;2 &#x2F; Parent:Bob\"><span>Hi B&amp;2 &#x2F; Parent:Bob</span></child-component></parent-component>"
@@ -2290,7 +2794,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"t": "<t&1>", "d": "d<2>", "a": "a&3"});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<my-component title=\"T:&lt;t&amp;1&gt;\" data-title=\"D:d&lt;2&gt;\" aria-label=\"A:a&amp;3\"><span>T:&lt;t&amp;1&gt;|D:d&lt;2&gt;|A:a&amp;3</span></my-component>"
@@ -2335,7 +2845,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"title": "Global Title"});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<my-component title=\"Attribute Title\"><span>Attribute Title</span></my-component>"
@@ -2386,7 +2902,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"title": "Global Title", "items": [{"title": "Local Title"}]});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<my-component title=\"Attribute Title\"><span>Attribute Title</span></my-component>"
@@ -2452,7 +2974,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"isDisabled": true});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<my-component disabled label=\"Component Label\"><template shadowrootmode=\"open\"><div>Disabled</div><span>Component Label</span></template></my-component>"
@@ -2497,7 +3025,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"keyHyphen": "Global Value"});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<my-component key-hyphen=\"Local Value\"><span>Local Value</span></my-component>"
@@ -2617,7 +3151,13 @@ mod tests {
             "skippedAriaLabel": "label-text"
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         // Skipped attrs render on the element but their values are NOT accessible inside the component.
         // The component's signals for skipped attrs resolve to empty strings.
         // Only "title" (non-skipped) is accessible.
@@ -2690,7 +3230,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<parent-component title=\"Parent Title\"><h1>Parent Title</h1><child-component title=\"Parent Title\"><h2>Parent Title</h2></child-component></parent-component>"
@@ -2778,7 +3324,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<parent-component title=\"Parent Title\"><child-component title=\"Child Title\"><grandchild-component title=\"Child Title\"><h3>Child Title</h3></grandchild-component></child-component></parent-component>"
@@ -2825,7 +3377,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"complexItem": {"foo": 1, "bar": "true"}});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<my-component><span>1</span><p>true</p></my-component>"
@@ -2877,7 +3435,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"list": {"items": [{"name": "Alice"}, {"name": "Bob"}]}});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(writer.get_content(), "<span>Alice</span><span>Bob</span>");
     }
 
@@ -2978,7 +3542,13 @@ mod tests {
             {"label": "Outer2", "middle": [{"label": "Middle2", "inner": [{"label": "Inner2A"}]}]}
         ]}});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<card><p>Outer1 / Middle1 / Inner1A</p></card><card><p>Outer1 / Middle1 / Inner1B</p></card><card><p>Outer2 / Middle2 / Inner2A</p></card>"
@@ -3041,7 +3611,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"isDisabled": true});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<my-component disabled><span>Disabled</span></my-component>"
@@ -3102,7 +3678,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"isDisabled": false});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<my-component><span>Enabled</span></my-component>"
@@ -3197,7 +3779,13 @@ mod tests {
             let protocol = WebUIProtocol::new(fragments.clone());
             let state = test_json!({"isDisabled": true});
             let mut writer = TestWriter::new();
-            handle(&protocol, &state, &mut writer).unwrap();
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
             assert_eq!(
                 writer.get_content(),
                 "<parent-component disabled><div>Parent Disabled</div><child-component disabled><div>Child Disabled</div></child-component></parent-component>"
@@ -3209,7 +3797,13 @@ mod tests {
             let protocol = WebUIProtocol::new(fragments.clone());
             let state = test_json!({"isDisabled": false});
             let mut writer = TestWriter::new();
-            handle(&protocol, &state, &mut writer).unwrap();
+            handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
             assert_eq!(
                 writer.get_content(),
                 "<parent-component><child-component><div>Child Enabled</div></child-component></parent-component>"
@@ -3247,7 +3841,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<custom-element><template shadowrootmode=\"open\"><div>Custom Element</div></template></custom-element>"
@@ -3279,7 +3879,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<custom-element appearance=\"subtle\"><template shadowrootmode=\"open\"><slot></slot></template>Hello World</custom-element>"
@@ -3341,7 +3947,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"items": [{"name": "Item1"}]});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><custom-element><template shadowrootmode=\"open\"><custom-child><template shadowrootmode=\"open\"><h1>Hello World!</h1></template></custom-child><slot></slot></template><custom-button><template shadowrootmode=\"open\"><slot></slot></template>Ok</custom-button></custom-element></div>"
@@ -3378,13 +3990,25 @@ mod tests {
         // True case: x = 10 > 5
         let state_true = test_json!({"x": 10});
         let mut writer_true = TestWriter::new();
-        handle(&protocol, &state_true, &mut writer_true).unwrap();
+        handle(
+            &protocol,
+            &state_true,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer_true,
+        )
+        .unwrap();
         assert_eq!(writer_true.get_content(), "<div><span>If 1</span></div>");
 
         // False case: x = 1 <= 5
         let state_false = test_json!({"x": 1});
         let mut writer_false = TestWriter::new();
-        handle(&protocol, &state_false, &mut writer_false).unwrap();
+        handle(
+            &protocol,
+            &state_false,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer_false,
+        )
+        .unwrap();
         assert_eq!(writer_false.get_content(), "<div></div>");
     }
 
@@ -3431,7 +4055,13 @@ mod tests {
             ]
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><div><span>A</span></div><div></div><div><span>C</span></div></div>"
@@ -3481,7 +4111,13 @@ mod tests {
             ]
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><div></div><div><span>B</span></div><div></div></div>"
@@ -3528,7 +4164,13 @@ mod tests {
             ]
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div expanded=\"false\" class=\"RecursiveTemplatesWithGlobalState\"><span>A</span></div><div expanded=\"true\" class=\"RecursiveTemplatesWithGlobalState\"><span>B</span><div expanded=\"false\" class=\"RecursiveTemplatesWithGlobalState\"><span>C</span></div><div expanded=\"false\" class=\"RecursiveTemplatesWithGlobalState\"><span>D</span></div></div><div expanded=\"false\" class=\"RecursiveTemplatesWithGlobalState\"><span>E</span></div>"
@@ -3573,7 +4215,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"items": [{"name": "Item1"}, {"name": "Item2"}]});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><component-tag><span></span></component-tag><component-tag><span></span></component-tag></div>"
@@ -3627,7 +4275,13 @@ mod tests {
             ]
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><section>Prefix: O1<p>Prefix: O1: I1</p><p>Prefix: O1: I2</p></section><section>Prefix: O2<p>Prefix: O2: I3</p></section></div>"
@@ -3673,7 +4327,13 @@ mod tests {
         let state =
             test_json!({"globalSuffix": "Global", "items": [{"name": "Item1"}, {"name": "Item2"}]});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><component-tag><span>-Global</span></component-tag><component-tag><span>-Global</span></component-tag></div>"
@@ -3719,7 +4379,13 @@ mod tests {
         let state =
             test_json!({"globalSuffix": "Global", "items": [{"name": "Item1"}, {"name": "Item2"}]});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><component-tag><span>-Global</span></component-tag><component-tag><span>-Global</span></component-tag></div>"
@@ -3752,7 +4418,13 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"name": "GlobalName", "items": [{"name": "LocalName1"}, {"name": "LocalName2"}]});
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><span>GlobalName</span><span>GlobalName</span></div>"
@@ -3820,7 +4492,13 @@ mod tests {
             ]
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><section>Prefix: O1<div><p>Suffix: I1</p><p>Suffix: I2</p></div></section><section>Prefix: O2</section><section>Prefix: O3<div><p>Suffix: I3</p></div></section></div>"
@@ -3889,7 +4567,13 @@ mod tests {
             ]
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><section>GP-O1<div><p>M1</p></div><div><p>M2</p></div></section><section>GP-O2<div></div></section><section>GP-O3<div><p>M4</p></div></section></div>"
@@ -3951,7 +4635,13 @@ mod tests {
             ]
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><section>Outer1<article><p>Detail1</p></article><article></article></section><section>Outer2<article><p>Detail3</p></article></section></div>"
@@ -3996,7 +4686,13 @@ mod tests {
             ]
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><span>Local1-LOCAL-Only1-other</span><span>Local2-GLOBAL-Only2-other</span></div>"
@@ -4051,7 +4747,13 @@ mod tests {
             ]
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><component-tag><span>-GLOBAL--other</span></component-tag><component-tag><span>-GLOBAL--other</span></component-tag></div>"
@@ -4106,7 +4808,13 @@ mod tests {
             "inner_item": {"flag": false}
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><section><p>X</p></section></div>"
@@ -4161,7 +4869,13 @@ mod tests {
             "inner_item": {"flag": true}
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><section><p>X</p><p>Y</p></section></div>"
@@ -4229,10 +4943,228 @@ mod tests {
             ]}
         });
         let mut writer = TestWriter::new();
-        handle(&protocol, &state, &mut writer).unwrap();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
         assert_eq!(
             writer.get_content(),
             "<div><section>O1<p>15</p></section><section>O2</section><section>O3</section></div>"
+        );
+    }
+
+    // ── Route-aware rendering tests ─────────────────────────────────────
+
+    fn make_route_protocol() -> WebUIProtocol {
+        use webui_protocol::WebUiFragmentRoute;
+
+        let mut fragments = HashMap::new();
+
+        // Entry page with two routes
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<h1>Shell</h1>"),
+                    WebUIFragment::route_from(WebUiFragmentRoute {
+                        path: "/".into(),
+                        fragment_id: "dash-page".into(),
+                        exact: true,
+                        name: "dashboard".into(),
+                        ..Default::default()
+                    }),
+                    WebUIFragment::route_from(WebUiFragmentRoute {
+                        path: "/contacts/:id".into(),
+                        fragment_id: "detail-page".into(),
+                        exact: true,
+                        name: "detail".into(),
+                        ..Default::default()
+                    }),
+                ],
+            },
+        );
+
+        // Dashboard page component
+        fragments.insert(
+            "dash-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Dashboard</p>")],
+            },
+        );
+
+        // Detail page component
+        fragments.insert(
+            "detail-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Detail</p>")],
+            },
+        );
+
+        WebUIProtocol::new(fragments)
+    }
+
+    #[test]
+    fn test_route_renders_shell_always() {
+        let protocol = make_route_protocol();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        let html = writer.get_content();
+
+        // Shell content always renders regardless of route matching
+        assert!(html.contains("<h1>Shell</h1>"), "shell should render");
+        // Dashboard matches "/" so it should be active
+        assert!(html.contains(" active>"), "matched route should be active");
+        // Detail should be hidden and empty
+        assert!(
+            html.contains("style=\"display:none\""),
+            "non-matched routes should be hidden"
+        );
+    }
+
+    #[test]
+    fn test_route_matched_renders_visible() {
+        let protocol = make_route_protocol();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        let html = writer.get_content();
+
+        // Dashboard route should be visible (active, no display:none)
+        assert!(
+            html.contains("<webui-route path=\"/\" name=\"dashboard\""),
+            "dashboard route should exist"
+        );
+        assert!(
+            html.contains("active><dash-page>"),
+            "matched route should be active with component tag: {html}"
+        );
+        assert!(
+            html.contains("<p>Dashboard</p>"),
+            "matched route should have content"
+        );
+    }
+
+    #[test]
+    fn test_route_non_matched_renders_hidden_empty() {
+        let protocol = make_route_protocol();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        let html = writer.get_content();
+
+        // Detail route should be hidden and empty (no content rendered)
+        assert!(
+            html.contains("<webui-route path=\"/contacts/:id\""),
+            "detail route element should exist"
+        );
+        // The non-matched route should have display:none and no inner content
+        let detail_start = html.find("path=\"/contacts/:id\"").expect("detail route");
+        let after_detail = &html[detail_start..];
+        assert!(
+            after_detail.contains("style=\"display:none\"></webui-route>"),
+            "non-matched route should be empty: {after_detail}"
+        );
+    }
+
+    #[test]
+    fn test_route_parameterized_match() {
+        let protocol = make_route_protocol();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/contacts/42"),
+            &mut writer,
+        )
+        .unwrap();
+        let html = writer.get_content();
+
+        // Detail route matches /contacts/42
+        assert!(
+            html.contains("active><detail-page>"),
+            "detail route should be active: {html}"
+        );
+        assert!(html.contains("<p>Detail</p>"), "detail should have content");
+        // Dashboard should be hidden + empty
+        let dash_start = html.find("name=\"dashboard\"").expect("dashboard route");
+        let after_dash = &html[dash_start..];
+        assert!(
+            after_dash.contains("style=\"display:none\"></webui-route>"),
+            "dashboard should be empty when detail matches"
+        );
+    }
+
+    #[test]
+    fn test_route_no_match_all_hidden_empty() {
+        let protocol = make_route_protocol();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/nonexistent"),
+            &mut writer,
+        )
+        .unwrap();
+        let html = writer.get_content();
+
+        // Shell content should still render
+        assert!(html.contains("<h1>Shell</h1>"));
+        // All routes should be hidden + empty (nothing matched)
+        assert!(
+            !html.contains("<p>Dashboard</p>"),
+            "no route content when nothing matches"
+        );
+        assert!(
+            !html.contains("<p>Detail</p>"),
+            "no route content when nothing matches"
+        );
+    }
+
+    #[test]
+    fn test_route_component_attr_emitted() {
+        let protocol = make_route_protocol();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        let html = writer.get_content();
+        // component attribute should be emitted on webui-route
+        assert!(
+            html.contains("component=\"dash-page\""),
+            "component attr should be on webui-route: {html}"
+        );
+        assert!(
+            html.contains("component=\"detail-page\""),
+            "component attr should be on webui-route: {html}"
         );
     }
 }

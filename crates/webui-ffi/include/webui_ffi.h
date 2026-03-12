@@ -55,6 +55,9 @@ void webui_handler_destroy(void *handler_ptr);
 /// * `protocol_data` - Pointer to protobuf binary data.
 /// * `protocol_len`  - Length of the protobuf data in bytes.
 /// * `data_json`     - Null-terminated JSON string with the render state.
+/// * `entry_id`      - Null-terminated UTF-8 string for the entry fragment.
+/// * `request_path`  - Null-terminated UTF-8 string for the URL path to match
+///   routes against (e.g., `"/contacts/42"`).
 ///
 /// # Returns
 ///
@@ -66,11 +69,13 @@ void webui_handler_destroy(void *handler_ptr);
 ///
 /// * `handler_ptr` must be a valid pointer returned by [`webui_handler_create`].
 /// * `protocol_data` must point to `protocol_len` bytes of valid memory.
-/// * `data_json` must be a valid null-terminated UTF-8 string.
+/// * `data_json`, `entry_id`, and `request_path` must be valid null-terminated UTF-8 strings.
 char *webui_handler_render(void *handler_ptr,
                            const uint8_t *protocol_data,
                            uintptr_t protocol_len,
-                           const char *data_json);
+                           const char *data_json,
+                           const char *entry_id,
+                           const char *request_path);
 
 /// Parse an HTML template and render it with JSON data in a single call.
 ///
@@ -92,6 +97,33 @@ char *webui_handler_render(void *handler_ptr,
 ///
 /// Both `html` and `data_json` must be valid null-terminated UTF-8 strings.
 char *webui_render(const char *html, const char *data_json);
+
+/// Get the f-template HTML strings needed for a route's components.
+///
+/// Walks the protocol's fragment graph from the route's `entry_id` component,
+/// identifies components not in the client's `inventory_hex` bitmask, and
+/// returns a JSON string: `{"templates":[{"name":"...","html":"..."}...],"inventory":"..."}`.
+///
+/// # Arguments
+///
+/// * `protocol_data` - Pointer to protobuf binary data.
+/// * `protocol_len`  - Length of the protobuf data in bytes.
+/// * `entry_id`      - Null-terminated UTF-8 string for the route's component name.
+/// * `inventory_hex` - Null-terminated hex string of the client's inventory bitmask
+///   (pass empty string `""` if no inventory).
+///
+/// # Returns
+///
+/// A heap-allocated JSON string, or `NULL` on error. Caller frees with [`webui_free`].
+///
+/// # Safety
+///
+/// * `protocol_data` must point to `protocol_len` bytes of valid memory.
+/// * `entry_id` and `inventory_hex` must be valid null-terminated UTF-8 strings.
+char *webui_get_route_templates(const uint8_t *protocol_data,
+                                uintptr_t protocol_len,
+                                const char *entry_id,
+                                const char *inventory_hex);
 
 /// Free a string returned by a WebUI FFI function.
 ///

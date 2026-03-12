@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::hint::black_box;
 use webui_handler::plugin::FastHydrationPlugin;
-use webui_handler::{ResponseWriter, WebUIHandler};
+use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::{
     ComparisonOperator, ConditionExpr, FragmentList, LogicalOperator, WebUIFragment, WebUIProtocol,
 };
@@ -148,7 +148,12 @@ fn handler_plugin_fast_bench(c: &mut Criterion) {
     let mut baseline_handler = WebUIHandler::new();
     let mut baseline_writer = BenchWriter::new(16 * 1024);
     baseline_handler
-        .handle(&protocol, &state, &mut baseline_writer)
+        .handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut baseline_writer,
+        )
         .unwrap_or_else(|error| panic!("baseline render failed: {error}"));
     group.throughput(Throughput::Bytes(baseline_writer.len() as u64));
 
@@ -159,7 +164,12 @@ fn handler_plugin_fast_bench(c: &mut Criterion) {
         b.iter(|| {
             writer.clear();
             handler
-                .handle(black_box(&protocol), black_box(&state), &mut writer)
+                .handle(
+                    black_box(&protocol),
+                    black_box(&state),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
                 .unwrap_or_else(|error| panic!("render without plugin failed: {error}"));
         });
     });
@@ -171,7 +181,12 @@ fn handler_plugin_fast_bench(c: &mut Criterion) {
         b.iter(|| {
             writer.clear();
             handler
-                .handle(black_box(&protocol), black_box(&state), &mut writer)
+                .handle(
+                    black_box(&protocol),
+                    black_box(&state),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
                 .unwrap_or_else(|error| panic!("render with fast plugin failed: {error}"));
         });
     });
@@ -190,7 +205,12 @@ fn handler_loop_scaling_bench(c: &mut Criterion) {
         let mut handler = WebUIHandler::new();
         let mut writer = BenchWriter::new(count * 80 + 1024);
         handler
-            .handle(&protocol, &state, &mut writer)
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
             .unwrap_or_else(|error| panic!("loop scaling warmup failed for {count}: {error}"));
         group.throughput(Throughput::Bytes(writer.len() as u64));
 
@@ -200,8 +220,13 @@ fn handler_loop_scaling_bench(c: &mut Criterion) {
 
             b.iter(|| {
                 w.clear();
-                h.handle(black_box(&protocol), black_box(st), &mut w)
-                    .unwrap_or_else(|error| panic!("loop scaling render failed: {error}"));
+                h.handle(
+                    black_box(&protocol),
+                    black_box(st),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut w,
+                )
+                .unwrap_or_else(|error| panic!("loop scaling render failed: {error}"));
             });
         });
     }
@@ -289,7 +314,12 @@ fn handler_condition_variety_bench(c: &mut Criterion) {
     let mut handler = WebUIHandler::new();
     let mut writer = BenchWriter::new(1024);
     handler
-        .handle(&protocol, &state_true, &mut writer)
+        .handle(
+            &protocol,
+            &state_true,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
         .unwrap_or_else(|error| panic!("condition warmup failed: {error}"));
     group.throughput(Throughput::Bytes(writer.len() as u64));
 
@@ -298,8 +328,13 @@ fn handler_condition_variety_bench(c: &mut Criterion) {
         let mut w = BenchWriter::new(1024);
         b.iter(|| {
             w.clear();
-            h.handle(black_box(&protocol), black_box(&state_true), &mut w)
-                .unwrap_or_else(|error| panic!("condition render failed: {error}"));
+            h.handle(
+                black_box(&protocol),
+                black_box(&state_true),
+                &RenderOptions::new("index.html", "/"),
+                &mut w,
+            )
+            .unwrap_or_else(|error| panic!("condition render failed: {error}"));
         });
     });
 
@@ -317,8 +352,13 @@ fn handler_condition_variety_bench(c: &mut Criterion) {
         let mut w = BenchWriter::new(1024);
         b.iter(|| {
             w.clear();
-            h.handle(black_box(&protocol), black_box(&state_mixed), &mut w)
-                .unwrap_or_else(|error| panic!("condition mixed render failed: {error}"));
+            h.handle(
+                black_box(&protocol),
+                black_box(&state_mixed),
+                &RenderOptions::new("index.html", "/"),
+                &mut w,
+            )
+            .unwrap_or_else(|error| panic!("condition mixed render failed: {error}"));
         });
     });
 
@@ -387,7 +427,12 @@ fn handler_nested_components_bench(c: &mut Criterion) {
     let mut handler = WebUIHandler::new();
     let mut writer = BenchWriter::new(8 * 1024);
     handler
-        .handle(&protocol, &state, &mut writer)
+        .handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
         .unwrap_or_else(|error| panic!("nested components warmup failed: {error}"));
     group.throughput(Throughput::Bytes(writer.len() as u64));
 
@@ -396,8 +441,13 @@ fn handler_nested_components_bench(c: &mut Criterion) {
         let mut w = BenchWriter::new(8 * 1024);
         b.iter(|| {
             w.clear();
-            h.handle(black_box(&protocol), black_box(&state), &mut w)
-                .unwrap_or_else(|error| panic!("nested components render failed: {error}"));
+            h.handle(
+                black_box(&protocol),
+                black_box(&state),
+                &RenderOptions::new("index.html", "/"),
+                &mut w,
+            )
+            .unwrap_or_else(|error| panic!("nested components render failed: {error}"));
         });
     });
 
@@ -445,10 +495,13 @@ fn handler_state_depth_bench(c: &mut Criterion) {
             let mut w = BenchWriter::new(256);
             b.iter(|| {
                 w.clear();
-                h.handle(black_box(&protocol), black_box(state), &mut w)
-                    .unwrap_or_else(|error| {
-                        panic!("state depth render failed for {label}: {error}")
-                    });
+                h.handle(
+                    black_box(&protocol),
+                    black_box(state),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut w,
+                )
+                .unwrap_or_else(|error| panic!("state depth render failed for {label}: {error}"));
             });
         });
     }

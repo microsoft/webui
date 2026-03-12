@@ -190,6 +190,21 @@ impl HandlerPlugin for FastHydrationPlugin {
         }
         Ok(())
     }
+
+    fn on_render_complete(
+        &mut self,
+        protocol: &webui_protocol::WebUIProtocol,
+        rendered_components: &std::collections::HashSet<String>,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        // Emit f-templates for only the components that were actually rendered.
+        for name in rendered_components {
+            if let Some(tmpl) = protocol.component_templates.get(name) {
+                writer.write(tmpl)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -399,7 +414,7 @@ mod tests {
     };
     use webui_test_utils::test_json;
 
-    use crate::WebUIHandler;
+    use crate::{RenderOptions, WebUIHandler};
 
     fn render_with_plugin(
         protocol: &WebUIProtocol,
@@ -408,14 +423,28 @@ mod tests {
     ) -> String {
         let mut writer = TestWriter::new();
         let mut handler = WebUIHandler::with_plugin(plugin);
-        handler.handle(protocol, state, &mut writer).unwrap();
+        handler
+            .handle(
+                protocol,
+                state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
         writer.output
     }
 
     fn render_no_plugin(protocol: &WebUIProtocol, state: &serde_json::Value) -> String {
         let mut writer = TestWriter::new();
         let mut handler = WebUIHandler::new();
-        handler.handle(protocol, state, &mut writer).unwrap();
+        handler
+            .handle(
+                protocol,
+                state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
         writer.output
     }
 

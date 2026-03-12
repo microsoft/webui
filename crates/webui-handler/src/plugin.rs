@@ -44,4 +44,14 @@ pub trait HandlerPlugin {
     /// Called when a plugin-specific protocol fragment is encountered.
     /// The data is opaque bytes from the parser plugin — interpretation is plugin-defined.
     fn on_plugin_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
+
+    /// Called after all fragments have been rendered.
+    fn on_render_complete(
+        &mut self,
+        _protocol: &webui_protocol::WebUIProtocol,
+        _rendered_components: &std::collections::HashSet<String>,
+        _writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        Ok(())
+    }
 }

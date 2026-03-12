@@ -29,7 +29,7 @@ use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use webui_handler::plugin::FastHydrationPlugin;
-use webui_handler::{ResponseWriter, WebUIHandler};
+use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_parser::HtmlParser;
 use webui_protocol::WebUIProtocol;
 
@@ -199,6 +199,9 @@ pub unsafe extern "C" fn webui_handler_destroy(handler_ptr: *mut c_void) {
 /// * `protocol_data` - Pointer to protobuf binary data.
 /// * `protocol_len`  - Length of the protobuf data in bytes.
 /// * `data_json`     - Null-terminated JSON string with the render state.
+/// * `entry_id`      - Null-terminated UTF-8 string for the entry fragment.
+/// * `request_path`  - Null-terminated UTF-8 string for the URL path to match
+///   routes against (e.g., `"/contacts/42"`).
 ///
 /// # Returns
 ///
@@ -210,30 +213,57 @@ pub unsafe extern "C" fn webui_handler_destroy(handler_ptr: *mut c_void) {
 ///
 /// * `handler_ptr` must be a valid pointer returned by [`webui_handler_create`].
 /// * `protocol_data` must point to `protocol_len` bytes of valid memory.
-/// * `data_json` must be a valid null-terminated UTF-8 string.
+/// * `data_json`, `entry_id`, and `request_path` must be valid null-terminated UTF-8 strings.
 #[no_mangle]
 pub unsafe extern "C" fn webui_handler_render(
     handler_ptr: *mut c_void,
     protocol_data: *const u8,
     protocol_len: usize,
     data_json: *const c_char,
+    entry_id: *const c_char,
+    request_path: *const c_char,
 ) -> *mut c_char {
     clear_last_error();
 
-    if handler_ptr.is_null() || protocol_data.is_null() || data_json.is_null() {
+    if handler_ptr.is_null()
+        || protocol_data.is_null()
+        || data_json.is_null()
+        || entry_id.is_null()
+        || request_path.is_null()
+    {
         set_last_error("one or more required arguments are null");
         return std::ptr::null_mut();
     }
 
+    // SAFETY: caller guarantees handler_ptr is valid and exclusively owned.
     let context = &mut *(handler_ptr as *mut HandlerContext);
 
-    // Create byte slice from protobuf binary data
+    // SAFETY: caller guarantees protocol_data points to protocol_len valid bytes.
     let protocol_bytes = std::slice::from_raw_parts(protocol_data, protocol_len);
 
+    // SAFETY: caller guarantees data_json is a valid null-terminated string.
     let data_str = match CStr::from_ptr(data_json).to_str() {
         Ok(s) => s,
         Err(e) => {
             set_last_error(format!("invalid UTF-8 in data_json: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+
+    // SAFETY: caller guarantees entry_id is a valid null-terminated string.
+    let entry_str = match CStr::from_ptr(entry_id).to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("invalid UTF-8 in entry_id: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+
+    // SAFETY: caller guarantees request_path is a valid null-terminated string.
+    let path_str = match CStr::from_ptr(request_path).to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("invalid UTF-8 in request_path: {e}"));
             return std::ptr::null_mut();
         }
     };
@@ -258,7 +288,12 @@ pub unsafe extern "C" fn webui_handler_render(
 
     // Render
     let mut writer = StringResponseWriter::new();
-    match context.handler.render(&protocol, &data, &mut writer) {
+    match context.handler.render(
+        &protocol,
+        &data,
+        &RenderOptions::new(entry_str, path_str),
+        &mut writer,
+    ) {
         Ok(_) => match CString::new(writer.content) {
             Ok(s) => s.into_raw(),
             Err(e) => {
@@ -326,8 +361,9 @@ pub unsafe extern "C" fn webui_render(
     };
 
     // --- Parse HTML template into a WebUI protocol ---------------------------
+    let entry_key = "template";
     let mut parser = HtmlParser::new();
-    if let Err(e) = parser.parse("index.html", html_str) {
+    if let Err(e) = parser.parse(entry_key, html_str) {
         set_last_error(format!("HTML parse error: {e}"));
         return std::ptr::null_mut();
     }
@@ -347,7 +383,12 @@ pub unsafe extern "C" fn webui_render(
     let mut handler = WebUIHandler::new();
     let mut writer = StringResponseWriter::new();
 
-    match handler.render(&protocol, &data, &mut writer) {
+    match handler.render(
+        &protocol,
+        &data,
+        &RenderOptions::new(entry_key, "/"),
+        &mut writer,
+    ) {
         Ok(_) => match CString::new(writer.content) {
             Ok(s) => s.into_raw(),
             Err(e) => {
@@ -363,8 +404,98 @@ pub unsafe extern "C" fn webui_render(
 }
 
 // ---------------------------------------------------------------------------
-// FFI: memory management
+// FFI: route template query
 // ---------------------------------------------------------------------------
+
+/// Get the f-template HTML strings needed for a route's components.
+///
+/// Walks the protocol's fragment graph from the route's `entry_id` component,
+/// identifies components not in the client's `inventory_hex` bitmask, and
+/// returns a JSON string: `{"templates":[{"name":"...","html":"..."}...],"inventory":"..."}`.
+///
+/// # Arguments
+///
+/// * `protocol_data` - Pointer to protobuf binary data.
+/// * `protocol_len`  - Length of the protobuf data in bytes.
+/// * `entry_id`      - Null-terminated UTF-8 string for the route's component name.
+/// * `inventory_hex` - Null-terminated hex string of the client's inventory bitmask
+///   (pass empty string `""` if no inventory).
+///
+/// # Returns
+///
+/// A heap-allocated JSON string, or `NULL` on error. Caller frees with [`webui_free`].
+///
+/// # Safety
+///
+/// * `protocol_data` must point to `protocol_len` bytes of valid memory.
+/// * `entry_id` and `inventory_hex` must be valid null-terminated UTF-8 strings.
+#[no_mangle]
+pub unsafe extern "C" fn webui_get_route_templates(
+    protocol_data: *const u8,
+    protocol_len: usize,
+    entry_id: *const c_char,
+    inventory_hex: *const c_char,
+) -> *mut c_char {
+    clear_last_error();
+
+    if protocol_data.is_null() || entry_id.is_null() || inventory_hex.is_null() {
+        set_last_error("one or more required arguments are null");
+        return std::ptr::null_mut();
+    }
+
+    // SAFETY: caller guarantees valid memory.
+    let protocol_bytes = std::slice::from_raw_parts(protocol_data, protocol_len);
+
+    let entry_str = match CStr::from_ptr(entry_id).to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("invalid UTF-8 in entry_id: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+
+    let inv_str = match CStr::from_ptr(inventory_hex).to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("invalid UTF-8 in inventory_hex: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+
+    let protocol = match WebUIProtocol::from_protobuf(protocol_bytes) {
+        Ok(p) => p,
+        Err(e) => {
+            set_last_error(format!("failed to parse protobuf protocol: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+
+    let (templates, updated_inv) =
+        webui_handler::route_handler::get_route_templates(&protocol, entry_str, inv_str);
+
+    // Build JSON response without json! macro (which uses unwrap internally)
+    let tmpl_array: Vec<Value> = templates
+        .iter()
+        .map(|(name, html)| {
+            let mut obj = serde_json::Map::with_capacity(2);
+            obj.insert("name".into(), Value::String(name.clone()));
+            obj.insert("html".into(), Value::String(html.clone()));
+            Value::Object(obj)
+        })
+        .collect();
+
+    let mut result = serde_json::Map::with_capacity(2);
+    result.insert("templates".into(), Value::Array(tmpl_array));
+    result.insert("inventory".into(), Value::String(updated_inv));
+
+    match CString::new(Value::Object(result).to_string()) {
+        Ok(s) => s.into_raw(),
+        Err(e) => {
+            set_last_error(format!("JSON output contains interior NUL byte: {e}"));
+            std::ptr::null_mut()
+        }
+    }
+}
 
 /// Free a string returned by a WebUI FFI function.
 ///

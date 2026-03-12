@@ -30,7 +30,7 @@ use napi::Error as NapiError;
 use napi_derive::napi;
 use serde_json::Value;
 use webui_handler::plugin::FastHydrationPlugin;
-use webui_handler::{ResponseWriter, WebUIHandler};
+use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::WebUIProtocol;
 
 /// Build statistics returned from the build function.
@@ -176,9 +176,12 @@ impl ResponseWriter for CallbackWriter<'_, '_> {
 /// * `on_chunk` — Called with each rendered HTML fragment as it is produced.
 /// * `plugin` — Optional plugin identifier (e.g., `"fast"`).
 #[napi]
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     protocol_data: Buffer,
     state_json: String,
+    entry: String,
+    request_path: String,
     on_chunk: Function<String, ()>,
     plugin: Option<String>,
 ) -> napi::Result<()> {
@@ -197,7 +200,12 @@ pub fn render(
         None => WebUIHandler::new(),
     };
     handler
-        .render(&protocol, &state, &mut writer)
+        .render(
+            &protocol,
+            &state,
+            &RenderOptions::new(&entry, &request_path),
+            &mut writer,
+        )
         .map_err(|e| NapiError::from_reason(format!("Render error: {e}")))?;
 
     if let Some(err) = writer.error {
@@ -246,7 +254,12 @@ mod tests {
             output: &mut output,
         };
         handler
-            .render(&protocol, &state, &mut writer)
+            .render(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
             .map_err(|e| e.to_string())?;
         Ok(output)
     }

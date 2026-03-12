@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 webui = { path = "../webui", features = ["cli"] }
 webui-handler = { path = "../webui-handler" }
+webui-protocol = { path = "../webui-protocol" }
 webui-discovery = { path = "../webui-discovery" }
 clap = { workspace = true }
 anyhow = { workspace = true }
@@ -21,6 +22,7 @@ console = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 actix-web = { workspace = true }
+awc = { workspace = true }
 expand-tilde = { workspace = true }
 mime_guess = { workspace = true }
 walkdir = { workspace = true }

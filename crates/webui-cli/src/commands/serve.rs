@@ -1,4 +1,4 @@
-use actix_web::{web, App, HttpResponse, HttpServer};
+use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use anyhow::{Context, Result};
 use clap::Args;
 use expand_tilde::expand_tilde;
@@ -12,7 +12,9 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 use webui::WebUIHandler;
 use webui_handler::plugin::FastHydrationPlugin;
-use webui_handler::ResponseWriter;
+use webui_handler::route_matcher;
+use webui_handler::{RenderOptions, ResponseWriter};
+use webui_protocol::WebUIProtocol;
 
 use super::common::*;
 use crate::utils::output;
@@ -28,7 +30,7 @@ pub struct ServeArgs {
 
     /// Path to the JSON state file used for rendering
     #[arg(long)]
-    pub state: PathBuf,
+    pub state: Option<PathBuf>,
 
     /// Optional directory to serve static assets from at /*
     #[arg(long)]
@@ -37,13 +39,17 @@ pub struct ServeArgs {
     /// Enable file watching + HMR (disabled by default)
     #[arg(long)]
     pub watch: bool,
+
+    /// Port of the user's API server to proxy route requests to
+    #[arg(long)]
+    pub api_port: Option<u16>,
 }
 
 /// Resolved paths for `webui serve`.
 #[derive(Clone)]
 struct ServePaths {
     app_dir: PathBuf,
-    state_file: PathBuf,
+    state_file: Option<PathBuf>,
     serve_dir: Option<PathBuf>,
 }
 
@@ -52,17 +58,33 @@ impl ServePaths {
         let app_input = expand_tilde(&args.app_args.app)
             .with_context(|| format!("Failed to expand app path: {}", args.app_args.app.display()))?
             .into_owned();
-        let state_input = expand_tilde(&args.state)
-            .with_context(|| format!("Failed to expand state path: {}", args.state.display()))?
-            .into_owned();
 
         let app_dir = app_input
             .canonicalize()
             .with_context(|| format!("App folder not found: {}", args.app_args.app.display()))?;
 
-        let state_file = state_input
-            .canonicalize()
-            .with_context(|| format!("State file not found: {}", args.state.display()))?;
+        let state_file = match &args.state {
+            Some(state_path) => {
+                let state_input = expand_tilde(state_path)
+                    .with_context(|| {
+                        format!("Failed to expand state path: {}", state_path.display())
+                    })?
+                    .into_owned();
+
+                let canonical = state_input
+                    .canonicalize()
+                    .with_context(|| format!("State file not found: {}", state_path.display()))?;
+
+                if !canonical.is_file() {
+                    return Err(anyhow::anyhow!(
+                        "State path must be a file: {}",
+                        canonical.display()
+                    ));
+                }
+                Some(canonical)
+            }
+            None => None,
+        };
 
         let serve_dir = match &args.servedir {
             Some(serve_arg) => {
@@ -98,13 +120,6 @@ impl ServePaths {
             ));
         }
 
-        if !state_file.is_file() {
-            return Err(anyhow::anyhow!(
-                "State path must be a file: {}",
-                state_file.display()
-            ));
-        }
-
         Ok(Self {
             app_dir,
             state_file,
@@ -113,10 +128,11 @@ impl ServePaths {
     }
 
     fn watch_targets(&self) -> Vec<WatchTarget> {
-        let mut targets = vec![
-            WatchTarget::Directory(self.app_dir.clone()),
-            WatchTarget::File(self.state_file.clone()),
-        ];
+        let mut targets = vec![WatchTarget::Directory(self.app_dir.clone())];
+
+        if let Some(state_file) = &self.state_file {
+            targets.push(WatchTarget::File(state_file.clone()));
+        }
 
         if let Some(serve_dir) = &self.serve_dir {
             targets.push(WatchTarget::Directory(serve_dir.clone()));
@@ -131,6 +147,11 @@ struct SharedState {
     rendered_html: String,
     hmr_version: u64,
     css_files: HashMap<String, String>,
+    protocol: Option<WebUIProtocol>,
+    state_data: Option<Value>,
+    component_templates: HashMap<String, String>,
+    /// Entry fragment ID used for rendering (e.g., "index.html").
+    entry: String,
 }
 
 impl SharedState {
@@ -258,7 +279,10 @@ fn run(args: &ServeArgs) -> Result<()> {
 
     output::header("WebUI Dev Server");
     output::field("App", &paths.app_dir.display());
-    output::field("State", &paths.state_file.display());
+    match &paths.state_file {
+        Some(f) => output::field("State", &f.display()),
+        None => output::field("State", &"(none)"),
+    }
     match &paths.serve_dir {
         Some(serve_dir) => output::field("ServeDir", &serve_dir.display()),
         None => output::field("ServeDir", &"(disabled)"),
@@ -266,6 +290,9 @@ fn run(args: &ServeArgs) -> Result<()> {
     output::field("Entry", &args.app_args.entry);
     output::field("Port", &args.port);
     output::field("CSS", &format!("{:?}", args.app_args.css));
+    if let Some(api_port) = args.api_port {
+        output::field("API Port", &api_port);
+    }
     if args.watch {
         output::field("HMR", &"enabled (polling /hmr)");
     } else {
@@ -274,13 +301,17 @@ fn run(args: &ServeArgs) -> Result<()> {
     eprintln!();
 
     // Initial build + render
-    let (initial_html, initial_css) = build_and_render(&render_config, hmr_backend.as_deref())?;
+    let initial_result = build_and_render(&render_config, hmr_backend.as_deref())?;
     output::success("Initial build and render complete");
 
     let state = Arc::new(Mutex::new(SharedState {
-        rendered_html: initial_html,
+        rendered_html: initial_result.html,
         hmr_version: 1,
-        css_files: initial_css,
+        css_files: initial_result.css_files,
+        protocol: Some(initial_result.protocol),
+        state_data: Some(initial_result.state_data),
+        component_templates: initial_result.component_templates,
+        entry: args.app_args.entry.clone(),
     }));
 
     if let Some(active_hmr_backend) = &hmr_backend {
@@ -312,7 +343,11 @@ fn run(args: &ServeArgs) -> Result<()> {
         state,
         hmr_backend,
         assets_dir: paths.serve_dir,
+        api_port: args.api_port,
+        plugin: args.app_args.plugin.clone(),
     });
+
+    let has_api_proxy = server_context.api_port.is_some();
 
     actix_web::rt::System::new()
         .block_on(async move {
@@ -327,6 +362,13 @@ fn run(args: &ServeArgs) -> Result<()> {
                     .route("/", web::get().to(handle_index))
                     .route("/index.html", web::get().to(handle_index))
                     .route("/hmr", web::get().to(handle_hmr))
+                    .route("/.webui/routes.json", web::get().to(handle_routes_json));
+
+                if has_api_proxy {
+                    app = app.route("/api/{tail:.*}", web::route().to(handle_api_proxy));
+                }
+
+                app = app
                     .route("/{tail:.*}", web::get().to(handle_asset))
                     .default_service(web::route().to(handle_not_found));
 
@@ -353,25 +395,35 @@ fn run(args: &ServeArgs) -> Result<()> {
 struct RenderConfig {
     app_args: AppArgs,
     app_dir: PathBuf,
-    state_file: PathBuf,
+    state_file: Option<PathBuf>,
+}
+
+/// Result of a build-and-render cycle.
+struct BuildRenderResult {
+    html: String,
+    css_files: HashMap<String, String>,
+    protocol: WebUIProtocol,
+    state_data: Value,
+    component_templates: HashMap<String, String>,
 }
 
 /// Build the protocol from app templates and render with explicit state data.
 fn build_and_render(
     config: &RenderConfig,
     hmr_backend: Option<&dyn HmrBackend>,
-) -> Result<(String, HashMap<String, String>)> {
+) -> Result<BuildRenderResult> {
     let build_options = config.app_args.to_build_options(&config.app_dir);
     let build_result = webui::build(build_options).with_context(|| "Build failed")?;
 
-    let json = fs::read_to_string(&config.state_file)
-        .with_context(|| format!("Failed to read {}", config.state_file.display()))?;
-    let state: Value = serde_json::from_str(&json).with_context(|| {
-        format!(
-            "Failed to parse state JSON from {}",
-            config.state_file.display()
-        )
-    })?;
+    let state: Value = match &config.state_file {
+        Some(path) => {
+            let json = fs::read_to_string(path)
+                .with_context(|| format!("Failed to read {}", path.display()))?;
+            serde_json::from_str(&json)
+                .with_context(|| format!("Failed to parse state JSON from {}", path.display()))?
+        }
+        None => Value::Object(serde_json::Map::new()),
+    };
 
     // Render to memory
     let mut writer = MemoryWriter::with_capacity(4096);
@@ -379,7 +431,12 @@ fn build_and_render(
         Some("fast") => WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new())),
         _ => WebUIHandler::new(),
     };
-    handler.handle(&build_result.protocol, &state, &mut writer)?;
+    handler.handle(
+        &build_result.protocol,
+        &state,
+        &RenderOptions::new(&config.app_args.entry, "/"),
+        &mut writer,
+    )?;
 
     let html = match hmr_backend {
         Some(backend) => backend.inject(&writer.buf),
@@ -387,8 +444,16 @@ fn build_and_render(
     };
 
     let css_map: HashMap<String, String> = build_result.css_files.into_iter().collect();
+    let template_map: HashMap<String, String> =
+        build_result.component_templates.into_iter().collect();
 
-    Ok((html, css_map))
+    Ok(BuildRenderResult {
+        html,
+        css_files: css_map,
+        protocol: build_result.protocol,
+        state_data: state,
+        component_templates: template_map,
+    })
 }
 
 fn inject_script_before_body_close(html: &str, script: &str) -> String {
@@ -415,9 +480,101 @@ struct ServerContext {
     state: Arc<Mutex<SharedState>>,
     hmr_backend: Option<Arc<dyn HmrBackend>>,
     assets_dir: Option<PathBuf>,
+    api_port: Option<u16>,
+    plugin: Option<String>,
 }
 
-async fn handle_index(context: web::Data<ServerContext>) -> HttpResponse {
+/// Fetch state from the user's API server for a given request path.
+async fn fetch_api_state(api_port: u16, path: &str) -> Result<Value, String> {
+    let client = awc::Client::new();
+    let url = format!("http://127.0.0.1:{api_port}{path}");
+    let mut resp = client
+        .get(&url)
+        .insert_header(("Accept", "application/json"))
+        .send()
+        .await
+        .map_err(|e| format!("API proxy error: {e}"))?;
+    let body = resp
+        .body()
+        .await
+        .map_err(|e| format!("API body error: {e}"))?;
+    let json: Value = serde_json::from_slice(&body).map_err(|e| format!("API JSON error: {e}"))?;
+    // Expect { "state": { ... } }, fall back to entire response
+    Ok(json.get("state").cloned().unwrap_or(json))
+}
+
+/// Resolve state for a request: try API proxy first, then fall back to file state.
+async fn resolve_state(context: &ServerContext, request_path: &str) -> Value {
+    if let Some(api_port) = context.api_port {
+        match fetch_api_state(api_port, request_path).await {
+            Ok(state) => return state,
+            Err(e) => {
+                eprintln!("  {} {e}", console::style("\u{26a0}").yellow());
+            }
+        }
+    }
+
+    context
+        .state
+        .lock()
+        .ok()
+        .and_then(|s| s.state_data.clone())
+        .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+}
+
+/// Render a full HTML page for the given request path, using the handler.
+async fn render_page_response(
+    context: &web::Data<ServerContext>,
+    request_path: &str,
+) -> HttpResponse {
+    let state = resolve_state(context, request_path).await;
+
+    let (protocol, entry, plugin) = match context.state.lock() {
+        Ok(s) => (s.protocol.clone(), s.entry.clone(), context.plugin.clone()),
+        Err(_) => return HttpResponse::InternalServerError().body("Internal Server Error"),
+    };
+
+    let Some(proto) = protocol else {
+        return HttpResponse::InternalServerError().body("Protocol not available");
+    };
+
+    let mut writer = MemoryWriter::with_capacity(4096);
+    let mut handler = match plugin.as_deref() {
+        Some("fast") => WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new())),
+        _ => WebUIHandler::new(),
+    };
+
+    if let Err(e) = handler.handle(
+        &proto,
+        &state,
+        &RenderOptions::new(&entry, request_path),
+        &mut writer,
+    ) {
+        return HttpResponse::InternalServerError().body(format!("Render error: {e}"));
+    }
+
+    let html = match &context.hmr_backend {
+        Some(backend) => backend.inject(&writer.buf),
+        None => writer.buf,
+    };
+
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(html)
+}
+
+async fn handle_index(req: HttpRequest, context: web::Data<ServerContext>) -> HttpResponse {
+    // JSON partial render for client-side navigation
+    if wants_json(&req) {
+        return handle_json_partial(&req, &context, "").await;
+    }
+
+    // With API proxy, render on-the-fly with fresh state
+    if context.api_port.is_some() {
+        return render_page_response(&context, "/").await;
+    }
+
+    // Without API proxy, serve pre-rendered HTML
     let html = match context.state.lock() {
         Ok(s) => s.rendered_html.clone(),
         Err(_) => return HttpResponse::InternalServerError().body("Internal Server Error"),
@@ -445,7 +602,11 @@ async fn handle_hmr(context: web::Data<ServerContext>) -> HttpResponse {
         .body(version)
 }
 
-async fn handle_asset(path: web::Path<String>, context: web::Data<ServerContext>) -> HttpResponse {
+async fn handle_asset(
+    req: HttpRequest,
+    path: web::Path<String>,
+    context: web::Data<ServerContext>,
+) -> HttpResponse {
     let relative = path.into_inner();
 
     // Check in-memory CSS files first (generated by build_protocol)
@@ -458,14 +619,18 @@ async fn handle_asset(path: web::Path<String>, context: web::Data<ServerContext>
     }
 
     let Some(assets_dir) = &context.assets_dir else {
-        return HttpResponse::NotFound().body("Not Found");
+        // No assets dir — try SPA fallback for paths without file extensions
+        return spa_fallback(&req, &context, &relative).await;
     };
 
     let asset_path = assets_dir.join(&relative);
 
     let canonical = match asset_path.canonicalize() {
         Ok(p) => p,
-        Err(_) => return HttpResponse::NotFound().body("Not Found"),
+        Err(_) => {
+            // File not found — SPA fallback for paths without file extensions
+            return spa_fallback(&req, &context, &relative).await;
+        }
     };
 
     if !canonical.starts_with(assets_dir) {
@@ -474,7 +639,7 @@ async fn handle_asset(path: web::Path<String>, context: web::Data<ServerContext>
 
     let body = match fs::read(&canonical) {
         Ok(bytes) => bytes,
-        Err(_) => return HttpResponse::NotFound().body("Not Found"),
+        Err(_) => return spa_fallback(&req, &context, &relative).await,
     };
 
     let content_type = from_path(&canonical).first_or_octet_stream();
@@ -482,6 +647,213 @@ async fn handle_asset(path: web::Path<String>, context: web::Data<ServerContext>
     HttpResponse::Ok()
         .content_type(content_type.as_ref())
         .body(body)
+}
+
+/// Check if the request accepts JSON (for partial render).
+fn wants_json(req: &HttpRequest) -> bool {
+    req.headers()
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("application/json"))
+}
+
+/// SPA fallback: serve HTML or JSON partial depending on Accept header.
+/// Activates for paths that look like route paths (no file extension).
+async fn spa_fallback(
+    req: &HttpRequest,
+    context: &web::Data<ServerContext>,
+    relative: &str,
+) -> HttpResponse {
+    // Only serve fallback for paths without file extensions (likely route paths)
+    if relative.contains('.') {
+        return HttpResponse::NotFound().body("Not Found");
+    }
+
+    // JSON partial render: return { state, templates } for client-side navigation
+    if wants_json(req) {
+        return handle_json_partial(req, context, relative).await;
+    }
+
+    let request_path = format!("/{relative}");
+    render_page_response(context, &request_path).await
+}
+
+/// Handle a JSON partial render request for client-side navigation.
+///
+/// Returns `{ state, templates, inventory, path }` where:
+/// - `templates` only includes f-templates the client doesn't already have
+/// - `inventory` is the updated hex bitmask including the new templates
+async fn handle_json_partial(
+    req: &HttpRequest,
+    context: &web::Data<ServerContext>,
+    path: &str,
+) -> HttpResponse {
+    let request_path = if path.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{path}")
+    };
+
+    let mut state_data = resolve_state(context, &request_path).await;
+
+    // Clone protocol and templates from shared state (release lock quickly)
+    let (protocol, component_templates) = match context.state.lock() {
+        Ok(s) => (s.protocol.clone(), s.component_templates.clone()),
+        Err(_) => {
+            return HttpResponse::InternalServerError().body(r#"{"error":"Internal server error"}"#)
+        }
+    };
+
+    // Inject route params into state
+    if let Some(proto) = &protocol {
+        if let Some(rm) = route_matcher::match_route(&proto.routes, &request_path) {
+            if let Value::Object(ref mut map) = state_data {
+                for (k, v) in &rm.params {
+                    map.insert(k.clone(), Value::String(v.clone()));
+                }
+            }
+        }
+    }
+
+    // Get needed component templates via the handler's graph walk + inventory filter
+    let client_inv_hex = req
+        .headers()
+        .get("x-webui-inventory")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let (needed_names, inv_hex) = if let Some(proto) = &protocol {
+        if let Some(rm) = route_matcher::match_route(&proto.routes, &request_path) {
+            if let Some(route) = proto.routes.get(&rm.route_key) {
+                webui_handler::route_handler::get_needed_components(
+                    proto,
+                    &route.fragment_id,
+                    &client_inv_hex,
+                )
+            } else {
+                (Vec::new(), client_inv_hex)
+            }
+        } else {
+            (Vec::new(), client_inv_hex)
+        }
+    } else {
+        (Vec::new(), client_inv_hex)
+    };
+
+    let templates: Vec<Value> = needed_names
+        .iter()
+        .filter_map(|name| component_templates.get(name))
+        .map(|t| Value::String(t.clone()))
+        .collect();
+
+    let mut resp = serde_json::Map::new();
+    resp.insert("state".into(), state_data);
+    resp.insert("templates".into(), Value::Array(templates));
+    resp.insert("path".into(), Value::String(request_path));
+    resp.insert("inventory".into(), Value::String(inv_hex));
+
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .json(Value::Object(resp))
+}
+
+/// Handle GET /.webui/routes.json — return the route registry as JSON.
+async fn handle_routes_json(context: web::Data<ServerContext>) -> HttpResponse {
+    let routes_array = match context.state.lock() {
+        Ok(s) => match &s.protocol {
+            Some(p) => {
+                let entries: Vec<Value> = p
+                    .routes
+                    .iter()
+                    .map(|(key, record): (&String, &webui_protocol::RouteRecord)| {
+                        let name_val = if record.name.is_empty() {
+                            key.as_str()
+                        } else {
+                            record.name.as_str()
+                        };
+                        let mut m = serde_json::Map::new();
+                        m.insert("name".into(), Value::String(name_val.to_string()));
+                        m.insert("path".into(), Value::String(record.path.clone()));
+                        m.insert(
+                            "fragmentId".into(),
+                            Value::String(record.fragment_id.clone()),
+                        );
+                        m.insert("exact".into(), Value::Bool(record.exact));
+                        Value::Object(m)
+                    })
+                    .collect();
+                Value::Array(entries)
+            }
+            None => Value::Array(Vec::new()),
+        },
+        Err(_) => Value::Array(Vec::new()),
+    };
+
+    let mut envelope = serde_json::Map::new();
+    envelope.insert("routes".into(), routes_array);
+
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .json(Value::Object(envelope))
+}
+
+/// Forward requests under `/api/*` to the user's API server.
+async fn handle_api_proxy(
+    req: HttpRequest,
+    path: web::Path<String>,
+    body: web::Bytes,
+    context: web::Data<ServerContext>,
+) -> HttpResponse {
+    let Some(api_port) = context.api_port else {
+        return HttpResponse::NotFound().body("Not Found");
+    };
+
+    let tail = path.into_inner();
+    let query = req.query_string();
+    let url = if query.is_empty() {
+        format!("http://127.0.0.1:{api_port}/api/{tail}")
+    } else {
+        let mut u = String::with_capacity(30 + tail.len() + query.len());
+        u.push_str("http://127.0.0.1:");
+        u.push_str(&api_port.to_string());
+        u.push_str("/api/");
+        u.push_str(&tail);
+        u.push('?');
+        u.push_str(query);
+        u
+    };
+
+    let client = awc::Client::new();
+    let mut proxy_req = client.request(req.method().clone(), &url);
+
+    // Forward content-type header if present
+    if let Some(ct) = req.headers().get("content-type") {
+        proxy_req = proxy_req.insert_header(("content-type", ct.clone()));
+    }
+
+    let result = if body.is_empty() {
+        proxy_req.send().await
+    } else {
+        proxy_req.send_body(body).await
+    };
+
+    match result {
+        Ok(mut resp) => {
+            let status = resp.status();
+            match resp.body().await {
+                Ok(response_body) => {
+                    let mut builder = HttpResponse::build(status);
+                    if let Some(ct) = resp.headers().get("content-type") {
+                        builder.insert_header(("content-type", ct.clone()));
+                    }
+                    builder.body(response_body)
+                }
+                Err(e) => HttpResponse::BadGateway().body(format!("API proxy body error: {e}")),
+            }
+        }
+        Err(e) => HttpResponse::BadGateway().body(format!("API proxy error: {e}")),
+    }
 }
 
 async fn handle_not_found() -> HttpResponse {
@@ -584,10 +956,13 @@ fn start_file_watcher(config: WatcherConfig) {
 
             if has_changes(&current_times, &last_times) {
                 match build_and_render(&config.render_config, Some(config.hmr_backend.as_ref())) {
-                    Ok((html, css_files)) => {
+                    Ok(result) => {
                         if let Ok(mut s) = config.state.lock() {
-                            s.rendered_html = html;
-                            s.css_files = css_files;
+                            s.rendered_html = result.html;
+                            s.css_files = result.css_files;
+                            s.protocol = Some(result.protocol);
+                            s.state_data = Some(result.state_data);
+                            s.component_templates = result.component_templates;
                             s.bump_version();
                         }
                         eprintln!(
@@ -641,10 +1016,10 @@ mod tests {
                 components: Vec::new(),
             },
             app_dir: app.path().to_path_buf(),
-            state_file: app.path().join("state.json"),
+            state_file: Some(app.path().join("state.json")),
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
-        let (html, _css_files) = build_and_render(&config, Some(&hmr)).unwrap();
+        let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
         assert!(html.contains("<h1>Hello</h1>"));
     }
 
@@ -663,10 +1038,10 @@ mod tests {
                 components: Vec::new(),
             },
             app_dir: app.path().to_path_buf(),
-            state_file: app.path().join("state.json"),
+            state_file: Some(app.path().join("state.json")),
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
-        let (html, _css_files) = build_and_render(&config, Some(&hmr)).unwrap();
+        let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
         assert!(html.contains("<p>WebUI</p>"));
     }
 
@@ -682,9 +1057,9 @@ mod tests {
                 components: Vec::new(),
             },
             app_dir: app.path().to_path_buf(),
-            state_file: app.path().join("state.json"),
+            state_file: Some(app.path().join("state.json")),
         };
-        let (html, _css_files) = build_and_render(&config, None).unwrap();
+        let BuildRenderResult { html, .. } = build_and_render(&config, None).unwrap();
         assert!(!html.contains("/hmr"));
     }
 
@@ -700,11 +1075,29 @@ mod tests {
                 components: Vec::new(),
             },
             app_dir: app.path().to_path_buf(),
-            state_file: app.path().join("state.json"),
+            state_file: Some(app.path().join("state.json")),
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let result = build_and_render(&config, Some(&hmr));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_and_render_no_state_file() {
+        let app = create_app_dir(&[("index.html", "<h1>Hello</h1>")]);
+        let config = RenderConfig {
+            app_args: AppArgs {
+                app: app.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                plugin: None,
+                components: Vec::new(),
+            },
+            app_dir: app.path().to_path_buf(),
+            state_file: None,
+        };
+        let result = build_and_render(&config, None).unwrap();
+        assert!(result.html.contains("<h1>Hello</h1>"));
     }
 
     #[test]
@@ -719,7 +1112,7 @@ mod tests {
                 components: Vec::new(),
             },
             app_dir: app.path().to_path_buf(),
-            state_file: app.path().join("state.json"),
+            state_file: Some(app.path().join("state.json")),
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let result = build_and_render(&config, Some(&hmr));
@@ -832,10 +1225,10 @@ mod tests {
                 components: Vec::new(),
             },
             app_dir,
-            state_file: manifest_dir.join("../../examples/app/hello-world/data/state.json"),
+            state_file: Some(manifest_dir.join("../../examples/app/hello-world/data/state.json")),
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
-        let (html, _css_files) = build_and_render(&config, Some(&hmr)).unwrap();
+        let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
         assert!(html.contains("Hello, WebUI!"));
         assert!(html.contains("Ali"));
         assert!(html.contains("Mohamed Mansour"));
@@ -850,6 +1243,10 @@ mod tests {
             rendered_html: "<p>Hello</p>".to_string(),
             hmr_version: 42,
             css_files: HashMap::new(),
+            protocol: None,
+            state_data: None,
+            component_templates: HashMap::new(),
+            entry: "index.html".to_string(),
         };
         assert_eq!(backend.version_payload(&state), "42");
     }
@@ -863,9 +1260,15 @@ mod tests {
                 rendered_html: "<html><body>ok</body></html>".to_string(),
                 hmr_version: 7,
                 css_files: HashMap::new(),
+                protocol: None,
+                state_data: None,
+                component_templates: HashMap::new(),
+                entry: "index.html".to_string(),
             })),
             hmr_backend: Some(hmr_backend),
             assets_dir: None,
+            api_port: None,
+            plugin: None,
         });
 
         let app = actix_test::init_service(

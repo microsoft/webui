@@ -12,7 +12,9 @@ package webui_ffi
 // extern char  *webui_handler_render(void *handler_ptr,
 //                                     const unsigned char *protocol_data,
 //                                     unsigned long protocol_len,
-//                                     const char *data_json);
+//                                     const char *data_json,
+//                                     const char *entry_id,
+//                                     const char *request_path);
 // extern char  *webui_render(const char *html, const char *data_json);
 // extern void   webui_free(char *string_ptr);
 // extern const char *webui_last_error();
@@ -69,8 +71,8 @@ func HandlerDestroy(ptr unsafe.Pointer) {
 }
 
 // HandlerRender calls webui_handler_render.
-func HandlerRender(handler unsafe.Pointer, protoData *C.uchar, protoLen C.ulong, dataJSON *C.char) *C.char {
-	return C.webui_handler_render(handler, protoData, protoLen, dataJSON)
+func HandlerRender(handler unsafe.Pointer, protoData *C.uchar, protoLen C.ulong, dataJSON *C.char, entryID *C.char, requestPath *C.char) *C.char {
+	return C.webui_handler_render(handler, protoData, protoLen, dataJSON, entryID, requestPath)
 }
 
 // CString wraps C.CString for use from test files.

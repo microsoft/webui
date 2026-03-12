@@ -25,6 +25,7 @@ mod error;
 pub use error::WebUIError;
 
 // Re-export core types from downstream crates
+pub use webui_handler::route_handler::{encode_inventory, get_needed_components, parse_inventory};
 pub use webui_handler::{plugin::HandlerPlugin, HandlerError, ResponseWriter, WebUIHandler};
 pub use webui_parser::CssStrategy;
 pub use webui_protocol::WebUIProtocol;
@@ -76,6 +77,10 @@ pub struct BuildResult {
     pub protocol_bytes: Vec<u8>,
     /// Component CSS files: `(filename, content)` — only components referenced in the protocol.
     pub css_files: Vec<(String, String)>,
+    /// Component f-template strings: `(tag_name, f_template_html)`.
+    /// Includes templates for all components encountered during parsing,
+    /// including route-referenced components.
+    pub component_templates: Vec<(String, String)>,
     /// Build statistics.
     pub stats: BuildStats,
 }
@@ -113,6 +118,7 @@ pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
         protocol: raw.protocol,
         protocol_bytes,
         css_files: raw.css_files,
+        component_templates: raw.component_templates,
         stats,
     })
 }
@@ -129,30 +135,28 @@ pub fn build_to_disk(options: BuildOptions, out_dir: &Path) -> Result<BuildStats
     let result = build(options)?;
 
     fs::create_dir_all(out_dir)
-        .map_err(|e| WebUIError::Io(format!("Failed to create output dir: {e}")))?;
+        .map_err(|e| WebUIError::Io(format!("Failed to create {}: {e}", out_dir.display())))?;
 
-    let protocol_path = out_dir.join("protocol.bin");
-    fs::write(&protocol_path, &result.protocol_bytes)
-        .map_err(|e| WebUIError::Io(format!("Failed to write protocol.bin: {e}")))?;
+    fs::write(out_dir.join("protocol.bin"), &result.protocol_bytes).map_err(|e| {
+        WebUIError::Io(format!(
+            "Failed to write protocol.bin to {}: {e}",
+            out_dir.display()
+        ))
+    })?;
 
-    for (filename, css_content) in &result.css_files {
-        // Sanitize: use only the file-name component to prevent path traversal
-        let safe_name = Path::new(filename)
-            .file_name()
-            .ok_or_else(|| WebUIError::Io(format!("Invalid CSS filename: {filename}")))?;
-        let css_path = out_dir.join(safe_name);
-        fs::write(&css_path, css_content)
-            .map_err(|e| WebUIError::Io(format!("Failed to write {filename}: {e}")))?;
+    for (name, content) in &result.css_files {
+        fs::write(out_dir.join(name), content).map_err(|e| {
+            WebUIError::Io(format!(
+                "Failed to write {name} to {}: {e}",
+                out_dir.display()
+            ))
+        })?;
     }
 
     Ok(result.stats)
 }
 
-/// Inspect a protocol binary file and return its JSON representation.
-///
-/// # Errors
-///
-/// Returns [`WebUIError`] if the file cannot be read or is not valid protobuf.
+/// Inspect a compiled WebUI protocol file and return its JSON representation.
 pub fn inspect(protocol_path: &Path) -> Result<String, WebUIError> {
     let bytes = fs::read(protocol_path)
         .map_err(|e| WebUIError::Io(format!("Failed to read {}: {e}", protocol_path.display())))?;
@@ -160,10 +164,6 @@ pub fn inspect(protocol_path: &Path) -> Result<String, WebUIError> {
 }
 
 /// Inspect raw protocol bytes and return their JSON representation.
-///
-/// # Errors
-///
-/// Returns [`WebUIError`] if the bytes are not valid protobuf.
 pub fn inspect_bytes(protocol_bytes: &[u8]) -> Result<String, WebUIError> {
     let protocol = WebUIProtocol::from_protobuf(protocol_bytes)
         .map_err(|e| WebUIError::Protocol(e.to_string()))?;
@@ -176,6 +176,7 @@ pub fn inspect_bytes(protocol_bytes: &[u8]) -> Result<String, WebUIError> {
 struct RawBuildOutput {
     protocol: WebUIProtocol,
     css_files: Vec<(String, String)>,
+    component_templates: Vec<(String, String)>,
     fragment_count: usize,
     component_count: usize,
     token_count: usize,
@@ -250,6 +251,20 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     let tokens = parser.take_tokens();
     let token_count = tokens.len();
 
+    // Collect route registry
+    let routes = parser.take_routes();
+
+    // Extract individual component f-template strings from the FAST plugin
+    // before consuming the parser.
+    let component_templates = parser
+        .take_plugin()
+        .and_then(|p| {
+            p.as_any()
+                .downcast_ref::<FastParserPlugin>()
+                .map(|fast| fast.take_component_templates())
+        })
+        .unwrap_or_default();
+
     // Build protocol (consumes parser)
     let fragment_records = parser.into_fragment_records();
     let fragment_count: usize = fragment_records.values().map(|v| v.fragments.len()).sum();
@@ -271,11 +286,23 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             .collect()
     };
 
-    let protocol = WebUIProtocol::with_tokens(fragment_records, tokens);
+    let mut protocol = if routes.is_empty() {
+        WebUIProtocol::with_tokens(fragment_records, tokens)
+    } else {
+        WebUIProtocol::with_routes(fragment_records, tokens, routes)
+    };
+
+    // Store f-templates in the protocol so any host server can query them
+    for (tag, tmpl) in &component_templates {
+        protocol
+            .component_templates
+            .insert(tag.clone(), tmpl.clone());
+    }
 
     Ok(RawBuildOutput {
         protocol,
         css_files,
+        component_templates,
         fragment_count,
         component_count,
         token_count,

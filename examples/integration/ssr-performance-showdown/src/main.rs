@@ -15,7 +15,7 @@
 use actix_web::{web, App, HttpResponse, HttpServer};
 use anyhow::{Context, Result};
 use std::path::Path;
-use webui_handler::{ResponseWriter, WebUIHandler};
+use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::WebUIProtocol;
 
 // ── Spiral parameters (match ssr-performance-showdown) ──────────────────
@@ -101,7 +101,12 @@ async fn handle_index(protocol: web::Data<WebUIProtocol>) -> HttpResponse {
     let mut writer = MemoryWriter::with_capacity(256 * 1024);
     let mut handler = WebUIHandler::new();
 
-    if let Err(e) = handler.handle(&protocol, &state, &mut writer) {
+    if let Err(e) = handler.handle(
+        &protocol,
+        &state,
+        &RenderOptions::new("index.html", "/"),
+        &mut writer,
+    ) {
         return HttpResponse::InternalServerError().body(format!("Render error: {e}"));
     }
 

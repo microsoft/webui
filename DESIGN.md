@@ -34,6 +34,8 @@ pub struct WebUIProtocol {
     /// Sorted, deduplicated CSS custom property names used across all
     /// components and entry page styles (without `--` prefix).
     pub tokens: Vec<String>,
+    /// Top-level route registry keyed by route name.
+    pub routes: HashMap<String, RouteRecord>,
 }
 
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
@@ -59,6 +61,7 @@ pub enum Fragment {
     IfCond(WebUIFragmentIf),
     Attribute(WebUIFragmentAttribute),
     Plugin(WebUIFragmentPlugin),
+    Route(WebUIFragmentRoute),
 }
 ```
 ### Fragment Types
@@ -137,6 +140,42 @@ pub struct WebUIFragmentPlugin {
     pub data: Vec<u8>,
 }
 ```
+
+#### Route Fragment
+Route fragments define declarative URL-based routes linking path templates to fragment bodies.
+The parser emits these from `<route>` elements; the handler uses them for server-side route matching.
+```rust
+pub struct WebUIFragmentRoute {
+    pub path: String,              // URL path template (e.g., "/profile/:id")
+    pub fragment_id: String,       // Fragment containing the route body
+    pub exact: bool,               // Require exact path match
+    pub name: String,              // Unique route name
+}
+
+pub struct RouteRecord {
+    pub name: String,
+    pub path: String,
+    pub fragment_id: String,
+    pub exact: bool,
+}
+}
+```
+
+**Route matching:** The handler uses an iterative path template matcher (no regex). Segments are
+compared left-to-right: `:param` binds a value, `*splat` captures remaining segments, `?` marks
+optional parameters. Exact matches (most literal segments) take precedence over parameterized ones.
+
+**Server-side rendering:** When a production server receives a request for `/contacts/42`:
+1. The server resolves state for that path (from its own data layer).
+2. The server calls `handler.handle(protocol, state, RenderOptions::new("index.html", "/contacts/42"), writer)`.
+3. The handler renders the matched route visible with content; all other routes are hidden and empty.
+4. The server returns the rendered HTML.
+
+**Client-side navigation:** When the client navigates from `/dashboard` to `/contacts/42`:
+1. The client sends a request with `Accept: application/json`.
+2. The server returns `{ state, templates, inventory }` — only the route-specific state and
+   component templates the client doesn't already have.
+3. The client mounts the route component with the received state.
 
 **Attribute types:**
 - **Simple dynamic:** `href="{{url}}"` → `{ name: "href", value: "url" }`
@@ -260,6 +299,18 @@ pub struct WebUIHandler {
     plugin: Option<Box<dyn HandlerPlugin>>,
 }
 
+/// Options controlling how the handler renders a protocol.
+pub struct RenderOptions<'a> {
+    /// The fragment ID to start rendering from (e.g., `"index.html"`).
+    pub entry_id: &'a str,
+    /// The URL path to match routes against (e.g., `"/contacts/42"`).
+    pub request_path: &'a str,
+}
+
+impl<'a> RenderOptions<'a> {
+    pub fn new(entry_id: &'a str, request_path: &'a str) -> Self;
+}
+
 impl WebUIHandler {
     pub fn new() -> Self;
     pub fn with_plugin(plugin: Box<dyn HandlerPlugin>) -> Self;
@@ -268,10 +319,20 @@ impl WebUIHandler {
         &mut self,
         protocol: &WebUIProtocol,
         state: &Value,
+        options: &RenderOptions<'_>,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()>;
 }
 ```
+
+**Route-aware rendering:** The handler performs server-side route matching during
+rendering. When processing `Fragment::Route`, the handler matches the route's path
+template against `options.request_path`:
+- **Matched route**: rendered visible (`active` attribute) with component content.
+- **Non-matched routes**: rendered hidden (`style="display:none"`) and empty.
+
+This eliminates the need for post-render HTML pruning — the handler produces
+correct route output in a single pass.
 ### Writer Interface
 ```rust
 pub trait ResponseWriter {
@@ -751,7 +812,7 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 | `webui_render(html, data_json)` | Parse + render in one call. Returns heap-allocated string (caller frees with `webui_free`). |
 | `webui_handler_create()` | Create a reusable handler (no plugin). |
 | `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin (e.g. `"fast"`). Returns `NULL` on error. |
-| `webui_handler_render(handler, data, len, json)` | Render a pre-compiled protocol. Returns heap-allocated string. |
+| `webui_handler_render(handler, data, len, json, entry_id, request_path)` | Render a pre-compiled protocol with route matching. `request_path` controls which route is active. Returns heap-allocated string. |
 | `webui_handler_destroy(handler)` | Destroy a handler. `NULL` is a safe no-op. |
 | `webui_free(ptr)` | Free a string returned by any render function. `NULL` is a safe no-op. |
 | `webui_last_error()` | Return per-thread error message. Caller must **not** free. |
