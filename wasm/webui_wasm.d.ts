@@ -1,6 +1,20 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
+ * Render a pre-built WebUI protocol with state data.
+ *
+ * # Arguments
+ *
+ * * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
+ * * `state_json` — JSON string of the state data.
+ * * `plugin` — Optional plugin identifier (e.g., `"fast"`).
+ *
+ * # Returns
+ *
+ * The rendered HTML string, or throws a JS error on failure.
+ */
+export function render(protocol_json: string, state_json: string, entry: string, request_path: string, plugin?: string | null): string;
+/**
  * Build the protocol JSON from virtual files without rendering.
  *
  * Returns the serialized `WebUIProtocol` as a JSON string.
@@ -23,29 +37,15 @@ export function build_protocol(files: any, entry: string): string;
  *
  * The rendered HTML string, or throws a JS error on failure.
  */
-export function build_and_render(files: any, state_json: string, entry: string): string;
-/**
- * Render a pre-built WebUI protocol with state data.
- *
- * # Arguments
- *
- * * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
- * * `state_json` — JSON string of the state data.
- * * `plugin` — Optional plugin identifier (e.g., `"fast"`).
- *
- * # Returns
- *
- * The rendered HTML string, or throws a JS error on failure.
- */
-export function render(protocol_json: string, state_json: string, plugin?: string | null): string;
+export function build_and_render(files: any, state_json: string, entry: string, request_path: string): string;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
   readonly memory: WebAssembly.Memory;
-  readonly build_and_render: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+  readonly build_and_render: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
   readonly build_protocol: (a: number, b: number, c: number, d: number) => void;
-  readonly render: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+  readonly render: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
   readonly __wbindgen_export_0: (a: number, b: number) => number;
   readonly __wbindgen_export_1: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_export_2: (a: number) => void;
