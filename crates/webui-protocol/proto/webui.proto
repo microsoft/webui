@@ -9,6 +9,12 @@ message WebUIProtocol {
   // and entry page styles (e.g., "colorBrandBackground", "spacingMedium").
   // Only usage via var(--name) is included; local definitions are excluded.
   repeated string tokens = 2;
+  // Top-level route registry keyed by route name.
+  map<string, RouteRecord> routes = 3;
+  // Component f-template HTML strings keyed by tag name.
+  // Populated by the FAST parser plugin at build time. Used by servers
+  // to send f-templates to the client during navigation (JSON partials).
+  map<string, string> component_templates = 4;
 }
 
 // A list of fragments (needed because protobuf maps cannot have repeated values directly).
@@ -26,7 +32,30 @@ message WebUIFragment {
     WebUIFragmentIf if_cond = 5;
     WebUIFragmentAttribute attribute = 6;
     WebUIFragmentPlugin plugin = 7;
+    WebUIFragmentRoute route = 8;
   }
+}
+
+// Declarative route definition linking a URL path template to a fragment.
+message WebUIFragmentRoute {
+  string path = 1;
+  string fragment_id = 2;
+  // Fields 3-4 reserved (removed: redirect_to, error_fragment_id).
+  reserved 3, 4;
+  bool exact = 5;
+  string name = 6;
+  // Fields 7-11 reserved (removed: params, children, outlets, layout, tokens).
+  reserved 7, 8, 9, 10, 11;
+}
+
+// Entry in the top-level route registry (WebUIProtocol.routes).
+message RouteRecord {
+  string name = 1;
+  string path = 2;
+  string fragment_id = 3;
+  bool exact = 4;
+  // Fields 5-8 reserved (removed: params, children, outlets, layout).
+  reserved 5, 6, 7, 8;
 }
 
 // Opaque plugin-specific data passed from parser plugin to handler plugin.

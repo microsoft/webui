@@ -7,6 +7,7 @@ mod css_parser;
 mod error;
 mod handlebars_parser;
 pub mod plugin;
+mod route_parser;
 
 pub use component_registry::{Component, ComponentRegistry};
 pub use condition_parser::ConditionParser;
@@ -19,15 +20,15 @@ use std::collections::{HashMap, HashSet};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIteratorMut};
 use tree_sitter_html::LANGUAGE;
 use webui_protocol::{
-    web_ui_fragment, web_ui_fragment::Fragment, ConditionExpr, FragmentList, WebUIFragment,
-    WebUIFragmentAttribute, WebUIFragmentRecords,
+    web_ui_fragment, web_ui_fragment::Fragment, ConditionExpr, FragmentList, RouteRecord,
+    WebUIFragment, WebUIFragmentAttribute, WebUIFragmentRecords, WebUiFragmentRoute,
 };
 
 /// Strategy for how component CSS is delivered in rendered output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum CssStrategy {
-    /// Emit `<link rel="stylesheet" href="./component.css">` tags (default).
+    /// Emit `<link rel="stylesheet" href="/component.css">` tags (default).
     #[default]
     Link,
     /// Embed CSS content in `<style>` tags within the shadow DOM template.
@@ -102,6 +103,12 @@ pub struct HtmlParser {
     /// (e.g., `:root { --color-primary: #0078d4; }`). These are excluded
     /// from the final token set since the app already provides their values.
     token_definitions: HashSet<String>,
+
+    /// Collected route fragments for the top-level registry.
+    route_fragments: Vec<WebUiFragmentRoute>,
+
+    /// Route name uniqueness tracker.
+    route_name_registry: route_parser::RouteNameRegistry,
 }
 
 impl HtmlParser {
@@ -124,6 +131,8 @@ impl HtmlParser {
             plugin: None,
             token_store: HashSet::new(),
             token_definitions: HashSet::new(),
+            route_fragments: Vec::new(),
+            route_name_registry: route_parser::RouteNameRegistry::new(),
             parser,
         }
     }
@@ -150,6 +159,17 @@ impl HtmlParser {
         std::mem::take(&mut self.fragment_records)
     }
 
+    /// Take the parser plugin. Call before `into_fragment_records()` if you need
+    /// access to plugin state (e.g., component templates).
+    pub fn take_plugin(&mut self) -> Option<Box<dyn ParserPlugin>> {
+        self.plugin.take()
+    }
+
+    /// Get a mutable reference to the parser plugin.
+    pub fn plugin_mut(&mut self) -> Option<&mut dyn ParserPlugin> {
+        self.plugin.as_deref_mut()
+    }
+
     /// Take the accumulated CSS tokens as a sorted, deduplicated `Vec`.
     ///
     /// Tokens that are **defined** in inline `<style>` tags (e.g., in a
@@ -166,6 +186,15 @@ impl HtmlParser {
             .collect();
         tokens.sort();
         tokens
+    }
+
+    /// Take the collected route registry as a map keyed by route name (or fragment ID).
+    ///
+    /// Call after parsing is complete.
+    #[must_use]
+    pub fn take_routes(&mut self) -> HashMap<String, RouteRecord> {
+        let routes = std::mem::take(&mut self.route_fragments);
+        route_parser::collect_route_registry(&routes)
     }
 
     /// Parse HTML content to generate WebUI fragments.
@@ -293,6 +322,7 @@ impl HtmlParser {
                     "for" => return self.process_for_directive(node, source, fragments),
                     "if" => return self.process_if_directive(node, source, fragments),
                     "body" => return self.process_body_element(node, source, fragments),
+                    "route" => return self.process_route_directive(node, source, fragments),
                     _ => {
                         if self.component_registry.contains(tag_name.as_str()) {
                             return self.process_component_directive(
@@ -332,7 +362,7 @@ impl HtmlParser {
                     }
                 }
             }
-            "text" => {
+            "text" | "raw_text" => {
                 let content = &source[node.start_byte()..node.end_byte()];
                 if !content.trim().is_empty() {
                     let handlebars_result = self.handlebars_parser.parse(content);
@@ -450,6 +480,53 @@ impl HtmlParser {
         }
 
         Ok(None)
+    }
+
+    /// Check whether a boolean attribute (no value) exists on an element.
+    /// Returns `true` for `<el attr>` or `<el attr="...">`.
+    fn has_element_attribute(&self, node: Node, attr_name: &str, source: &str) -> Result<bool> {
+        // First check for valued attributes
+        if self
+            .get_element_attribute(node, attr_name, source)?
+            .is_some()
+        {
+            return Ok(true);
+        }
+
+        // Check for boolean (valueless) attributes via tree-sitter query
+        let query_str = r#"
+            (element
+              [
+                (start_tag
+                  (attribute
+                    (attribute_name) @name))
+                (self_closing_tag
+                  (attribute
+                    (attribute_name) @name))
+              ]
+            )
+        "#;
+
+        let query = Query::new(&LANGUAGE.into(), query_str)
+            .map_err(|e| ParserError::Html(format!("Failed to create attribute query: {:?}", e)))?;
+
+        let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, node, source.as_bytes());
+        while let Some(m) = matches.next_mut() {
+            for capture in m.captures.iter() {
+                let capture_name = query.capture_names()[capture.index as usize];
+                if capture_name == "name" {
+                    let name_text = capture.node.utf8_text(source.as_bytes()).map_err(|_| {
+                        ParserError::Html("Invalid UTF-8 for attribute name".to_string())
+                    })?;
+                    if name_text == attr_name {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        Ok(false)
     }
 
     /// Find the start_tag or self_closing_tag child of an element node.
@@ -1029,6 +1106,107 @@ impl HtmlParser {
         Ok(())
     }
 
+    /// Process a `<route>` directive.
+    ///
+    /// Emits a `Fragment::Route` protocol fragment. The handler renders
+    /// `<webui-route>` elements with server-side route matching — matched
+    /// routes get `active` + component content, non-matched get `display:none`.
+    fn process_route_directive(
+        &mut self,
+        node: Node,
+        source: &str,
+        fragments: &mut Vec<WebUIFragment>,
+    ) -> Result<()> {
+        // Extract route attributes
+        let path = self
+            .get_element_attribute(node, "path", source)?
+            .unwrap_or_default();
+
+        let component = self
+            .get_element_attribute(node, "component", source)?
+            .unwrap_or_default();
+
+        let name = self
+            .get_element_attribute(node, "name", source)?
+            .unwrap_or_default();
+
+        let exact = self.has_element_attribute(node, "exact", source)?;
+
+        let attrs = route_parser::RouteAttributes {
+            path: path.clone(),
+            component: component.clone(),
+            name: name.clone(),
+            exact,
+        };
+
+        // Validate attributes (component is required)
+        route_parser::validate_attributes(&attrs)?;
+
+        // Register route name for uniqueness
+        self.route_name_registry.register(&name)?;
+
+        // Extract params from path template (validation only)
+        route_parser::extract_params(&path)?;
+
+        // Ensure the component's template is parsed and registered
+        if !component.is_empty()
+            && self.component_registry.contains(&component)
+            && !self.fragment_records.contains_key(&component)
+        {
+            if let Some(ref mut p) = self.plugin {
+                if let Some(comp) = self.component_registry.get(&component) {
+                    p.on_parse_component(&component, comp)?;
+                }
+            }
+            let (html_content, css_content, css_tokens) = {
+                let comp = self.component_registry.get(&component).ok_or_else(|| {
+                    crate::error::ParserError::Directive(format!(
+                        "Component not found: {component}"
+                    ))
+                })?;
+                (
+                    comp.html_content.clone(),
+                    comp.css_content.clone(),
+                    comp.css_tokens.clone(),
+                )
+            };
+            self.token_store.extend(css_tokens);
+            let css_injection = match self.css_strategy {
+                CssStrategy::Link => {
+                    if css_content.is_some() {
+                        Some(format!(
+                            "<link rel=\"stylesheet\" href=\"/{component}.css\">"
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                CssStrategy::Style => css_content
+                    .as_ref()
+                    .map(|css| format!("<style>{}</style>", css.trim())),
+            };
+            let processed =
+                self.process_component_template(&html_content, css_injection.as_deref());
+            let saved_buffer = std::mem::take(&mut self.raw_buffer);
+            self.parse(&component, &processed)?;
+            self.raw_buffer = saved_buffer;
+        }
+
+        // Flush any pending raw content before the route fragment
+        self.flush_raw_buffer(fragments);
+
+        // Build route metadata for the registry
+        let route_fragment = route_parser::build_route_fragment(&attrs, component.clone());
+
+        // Emit Fragment::Route — the handler renders it as <webui-route>
+        fragments.push(WebUIFragment::route_from(route_fragment.clone()));
+
+        // Track for registry
+        self.route_fragments.push(route_fragment);
+
+        Ok(())
+    }
+
     /// Skipped attribute names for components.
     const SKIPPED_ATTRIBUTES: &[&str] = &["class", "style", "role"];
     /// Skipped attribute prefixes for components.
@@ -1110,7 +1288,7 @@ impl HtmlParser {
                 CssStrategy::Link => {
                     if css_content.is_some() {
                         Some(format!(
-                            "<link rel=\"stylesheet\" href=\"./{}.css\">",
+                            "<link rel=\"stylesheet\" href=\"/{}.css\">",
                             tag_name
                         ))
                     } else {
@@ -1461,7 +1639,7 @@ mod tests {
             records,
             "custom-element",
             [raw(
-                r#"<template foo="bar"><link rel="stylesheet" href="./custom-element.css"><slot></slot></template>"#
+                r#"<template foo="bar"><link rel="stylesheet" href="/custom-element.css"><slot></slot></template>"#
             ),]
         );
     }
@@ -2447,7 +2625,7 @@ mod tests {
             })
             .collect();
         assert!(
-            raw_text.contains(r#"<link rel="stylesheet" href="./my-card.css">"#),
+            raw_text.contains(r#"<link rel="stylesheet" href="/my-card.css">"#),
             "Expected external <link> tag in: {}",
             raw_text
         );
@@ -2640,6 +2818,14 @@ mod tests {
             } else {
                 None
             }
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
         }
     }
 
@@ -2998,5 +3184,105 @@ mod tests {
 
         // Only --external-spacing should be hoisted (not defined in entry)
         assert_eq!(tokens, vec!["external-spacing"]);
+    }
+
+    // ── Route parsing tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_simple_route() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<route path="/profile" component="profile-page" name="profile" exact />"#;
+        parser.parse("test.html", html).expect("parse failed");
+
+        // Routes are emitted as Fragment::Route
+        let records = parser.into_fragment_records();
+        let frags = &records["test.html"].fragments;
+        assert_eq!(frags.len(), 1);
+        match frags[0].fragment.as_ref() {
+            Some(web_ui_fragment::Fragment::Route(r)) => {
+                assert_eq!(r.path, "/profile");
+                assert_eq!(r.name, "profile");
+                assert_eq!(r.fragment_id, "profile-page");
+                assert!(r.exact);
+            }
+            other => panic!("expected Fragment::Route, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_route_with_params() {
+        let mut parser = HtmlParser::new();
+        let html =
+            r#"<route path="/profile/:id/view/:section" component="detail" name="detail" />"#;
+        parser.parse("test.html", html).expect("parse failed");
+
+        // Route is registered in the route registry
+        let routes = parser.take_routes();
+        assert_eq!(routes["detail"].path, "/profile/:id/view/:section");
+    }
+
+    #[test]
+    fn test_parse_route_requires_component() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<route path="/old" />"#;
+        let result = parser.parse("test.html", html);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_multiple_routes() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<route path="/" name="app" component="app-layout" />
+            <route path="/dashboard" name="dashboard" component="dash-page" exact />
+            <route path="/contacts" name="contacts" component="contacts-page" exact />"#;
+        parser.parse("test.html", html).expect("parse failed");
+
+        let routes = parser.take_routes();
+        // Should have 3 routes
+        assert_eq!(routes.len(), 3);
+        assert!(routes.contains_key("app"));
+        assert!(routes.contains_key("dashboard"));
+        assert!(routes.contains_key("contacts"));
+
+        // App has correct path
+        let app = &routes["app"];
+        assert_eq!(app.path, "/");
+    }
+
+    #[test]
+    fn test_parse_route_duplicate_name_error() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<route path="/a" name="home" component="a" />
+            <route path="/b" name="home" component="b" />"#;
+        let result = parser.parse("test.html", html);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_route_requires_component_with_body() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<route path="/error" name="error-page">
+            <div class="error"><h1>Not Found</h1></div>
+        </route>"#;
+        let result = parser.parse("test.html", html);
+        assert!(
+            result.is_err(),
+            "Route without component attribute should fail"
+        );
+    }
+
+    #[test]
+    fn test_parse_multiple_routes_with_registry() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<route path="/" name="home" component="home-page" exact />
+            <route path="/about" name="about" component="about-page" exact />
+            <route path="/contact/:id" name="contact" component="contact-page" />"#;
+        parser.parse("test.html", html).expect("parse failed");
+
+        let routes = parser.take_routes();
+        assert_eq!(routes.len(), 3);
+        assert_eq!(routes["home"].path, "/");
+        assert_eq!(routes["about"].path, "/about");
+        assert_eq!(routes["contact"].path, "/contact/:id");
     }
 }
