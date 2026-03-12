@@ -6,7 +6,7 @@
 
 use super::ParserPlugin;
 use crate::component_registry::Component;
-use crate::Result;
+use crate::{CssStrategy, Result};
 
 /// Information about a tracked component for `<f-template>` generation.
 struct TrackedComponent {
@@ -25,6 +25,8 @@ struct TrackedComponent {
 pub struct FastParserPlugin {
     /// Components tracked during parsing, in discovery order.
     components: Vec<TrackedComponent>,
+    /// CSS delivery strategy for f-templates.
+    css_strategy: CssStrategy,
 }
 
 impl FastParserPlugin {
@@ -33,7 +35,13 @@ impl FastParserPlugin {
     pub fn new() -> Self {
         Self {
             components: Vec::new(),
+            css_strategy: CssStrategy::Link,
         }
+    }
+
+    /// Set the CSS delivery strategy for generated f-templates.
+    pub fn set_css_strategy(&mut self, strategy: CssStrategy) {
+        self.css_strategy = strategy;
     }
 
     /// Take the individual component f-template strings, keyed by tag name.
@@ -50,6 +58,7 @@ impl FastParserPlugin {
                     &comp.tag_name,
                     &comp.html_content,
                     comp.css_content.as_deref(),
+                    self.css_strategy,
                 );
                 (comp.tag_name.clone(), tmpl)
             })
@@ -116,6 +125,7 @@ pub fn generate_f_template(
     tag_name: &str,
     html_content: &str,
     css_content: Option<&str>,
+    css_strategy: CssStrategy,
 ) -> String {
     let mut output = String::with_capacity(256);
     output.push_str("<f-template name=\"");
@@ -125,13 +135,29 @@ pub fn generate_f_template(
     let converted = convert_btr_to_fast(html_content);
     let trimmed = minify_inter_tag_whitespace(converted.trim());
 
+    // Build the CSS injection string based on the configured strategy
+    let css_injection = match css_strategy {
+        CssStrategy::Link => css_content.map(|_| {
+            let mut s = String::with_capacity(40 + tag_name.len());
+            s.push_str("<link rel=\"stylesheet\" href=\"/");
+            s.push_str(tag_name);
+            s.push_str(".css\">");
+            s
+        }),
+        CssStrategy::Style => css_content.map(|css| {
+            let mut s = String::with_capacity(15 + css.len());
+            s.push_str("<style>");
+            s.push_str(css.trim());
+            s.push_str("</style>");
+            s
+        }),
+    };
+
     if trimmed.starts_with("<template") {
         if let Some(close_pos) = trimmed.find('>') {
             output.push_str(&trimmed[..=close_pos]);
-            if css_content.is_some() {
-                output.push_str("<link rel=\"stylesheet\" href=\"/");
-                output.push_str(tag_name);
-                output.push_str(".css\">");
+            if let Some(ref injection) = css_injection {
+                output.push_str(injection);
             }
             output.push_str(&trimmed[close_pos + 1..]);
         } else {
@@ -139,10 +165,8 @@ pub fn generate_f_template(
         }
     } else {
         output.push_str("<template>");
-        if css_content.is_some() {
-            output.push_str("<link rel=\"stylesheet\" href=\"/");
-            output.push_str(tag_name);
-            output.push_str(".css\">");
+        if let Some(ref injection) = css_injection {
+            output.push_str(injection);
         }
         output.push_str(&trimmed);
         output.push_str("</template>");
@@ -690,6 +714,26 @@ mod tests {
         assert!(html.contains("<f-template name=\"no-css\">"));
         assert!(!html.contains("<link rel=\"stylesheet\""));
         assert!(html.contains("<span>text</span>"));
+    }
+
+    #[test]
+    fn component_template_css_strategy_style() {
+        let mut plugin = FastParserPlugin::new();
+        plugin.set_css_strategy(crate::CssStrategy::Style);
+        let comp = make_component("my-comp", "<div>hello</div>", Some("div { color: red; }"));
+        plugin.on_parse_component("my-comp", &comp).unwrap();
+
+        let templates = plugin.take_component_templates();
+        assert_eq!(templates.len(), 1);
+        let (_, html) = &templates[0];
+        assert!(
+            html.contains("<style>div { color: red; }</style>"),
+            "Style strategy should inline CSS, got: {html}"
+        );
+        assert!(
+            !html.contains("<link"),
+            "Style strategy should not emit <link> tags"
+        );
     }
 
     #[test]

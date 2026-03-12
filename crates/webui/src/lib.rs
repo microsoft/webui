@@ -185,7 +185,11 @@ struct RawBuildOutput {
 /// Internal build logic shared by `build()` and `build_to_disk()`.
 fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIError> {
     let mut parser = match options.plugin.as_deref() {
-        Some("fast") => HtmlParser::with_plugin(Box::new(FastParserPlugin::new())),
+        Some("fast") => {
+            let mut plugin = FastParserPlugin::new();
+            plugin.set_css_strategy(options.css);
+            HtmlParser::with_plugin(Box::new(plugin))
+        }
         Some(unknown) => return Err(WebUIError::InvalidPlugin(unknown.to_string())),
         None => HtmlParser::new(),
     };
