@@ -3,6 +3,14 @@
   "version": "1.0.0",
   "type": "module",
   "private": true,
+  "imports": {
+    "#atoms/*": "./src/atoms/*",
+    "#molecules/*": "./src/molecules/*",
+    "#organisms/*": "./src/organisms/*",
+    "#pages/*": "./src/pages/*",
+    "#app/*": "./src/cb-app/*",
+    "#api": "./src/api.ts"
+  },
   "scripts": {
     "start:client": "esbuild src/index.ts --bundle --splitting --outdir=dist --format=esm --sourcemap --watch",
     "start:server": "cargo run -p webui-cli -- serve ./src --state ./data/state.json --plugin=fast --servedir ./dist --port 3001 --watch --api-port 4000",

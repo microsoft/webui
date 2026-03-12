@@ -2,7 +2,7 @@ import { FASTElement, attr, observable } from '@microsoft/fast-element';
 import { RenderableFASTElement } from '@microsoft/fast-html';
 
 // Child components used in cb-page-dashboard.html
-import '../../organisms/cb-contact-card/cb-contact-card.js';
+import '#organisms/cb-contact-card/cb-contact-card.js';
 
 export class CbPageDashboard extends RenderableFASTElement(FASTElement) {
   @attr({ attribute: 'total-contacts' }) totalContacts = '0';

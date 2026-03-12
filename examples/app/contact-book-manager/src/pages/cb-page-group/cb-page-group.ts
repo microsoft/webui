@@ -2,7 +2,7 @@ import { FASTElement, attr, observable } from '@microsoft/fast-element';
 import { RenderableFASTElement } from '@microsoft/fast-html';
 
 // Child components used in cb-page-group.html
-import '../../organisms/cb-contact-card/cb-contact-card.js';
+import '#organisms/cb-contact-card/cb-contact-card.js';
 
 export class CbPageGroup extends RenderableFASTElement(FASTElement) {
   @attr({ attribute: 'group-name' }) groupName = '';

@@ -2,7 +2,7 @@ import { FASTElement, observable } from '@microsoft/fast-element';
 import { RenderableFASTElement } from '@microsoft/fast-html';
 
 // Child components used in cb-page-favorites.html
-import '../../organisms/cb-contact-card/cb-contact-card.js';
+import '#organisms/cb-contact-card/cb-contact-card.js';
 
 export class CbPageFavorites extends RenderableFASTElement(FASTElement) {
   @observable favoriteContacts: any[] = [];

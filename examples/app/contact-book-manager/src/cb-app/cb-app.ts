@@ -1,11 +1,11 @@
 import { FASTElement, attr } from '@microsoft/fast-element';
 import { RenderableFASTElement } from '@microsoft/fast-html';
 import { Router } from '@microsoft/webui-router';
-import { api } from '../api.js';
+import { api } from '#api';
 
 // Child components used in cb-app.html
-import '../organisms/cb-header/cb-header.js';
-import '../organisms/cb-sidebar/cb-sidebar.js';
+import '#organisms/cb-header/cb-header.js';
+import '#organisms/cb-sidebar/cb-sidebar.js';
 
 /** Map route name → sidebar page value for highlighting. */
 const ROUTE_TO_PAGE: Record<string, string> = {
