@@ -14,8 +14,8 @@ serde_json = "1"
 
 ::: code-group
 ```rust [Actix Web]
-use actix_web::{web, App, HttpServer, HttpResponse};
-use webui::{WebUIHandler, ResponseWriter, WebUIProtocol};
+use actix_web::{web, App, HttpServer, HttpRequest, HttpResponse};
+use webui::{WebUIHandler, RenderOptions, ResponseWriter, WebUIProtocol};
 use serde_json::json;
 use std::fs;
 
@@ -38,11 +38,12 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(protocol.clone())
-            .route("/", web::get().to(|proto: web::Data<WebUIProtocol>| async move {
+            .route("/{path:.*}", web::get().to(|proto: web::Data<WebUIProtocol>, req: HttpRequest| async move {
                 let state = json!({ "title": "Home" });
                 let mut writer = StringWriter(String::new());
                 let mut handler = WebUIHandler::new();
-                handler.handle(&proto, &state, &mut writer).unwrap();
+                let options = RenderOptions::new("index.html", req.path());
+                handler.handle(&proto, &state, &options, &mut writer).unwrap();
                 HttpResponse::Ok().content_type("text/html").body(writer.0)
             }))
     })
@@ -53,8 +54,8 @@ async fn main() -> std::io::Result<()> {
 ```
 
 ```rust [Axum]
-use axum::{routing::get, Router, extract::State};
-use webui::{WebUIHandler, ResponseWriter, WebUIProtocol};
+use axum::{routing::get, Router, extract::{State, Request}};
+use webui::{WebUIHandler, RenderOptions, ResponseWriter, WebUIProtocol};
 use serde_json::json;
 use std::{fs, sync::Arc};
 
@@ -74,11 +75,12 @@ async fn main() {
     let protocol = Arc::new(WebUIProtocol::from_protobuf(&protocol_bytes).unwrap());
 
     let app = Router::new()
-        .route("/", get(|State(proto): State<Arc<WebUIProtocol>>| async move {
+        .route("/{*path}", get(|State(proto): State<Arc<WebUIProtocol>>, req: Request| async move {
             let state = json!({ "title": "Home" });
             let mut writer = StringWriter(String::new());
             let mut handler = WebUIHandler::new();
-            handler.handle(&proto, &state, &mut writer).unwrap();
+            let options = RenderOptions::new("index.html", req.uri().path());
+            handler.handle(&proto, &state, &options, &mut writer).unwrap();
             axum::response::Html(writer.0)
         }))
         .with_state(protocol);
@@ -92,7 +94,7 @@ async fn main() {
 use hyper::{server::conn::http1, service::service_fn, body::Bytes, Request, Response};
 use hyper_util::rt::TokioIo;
 use http_body_util::Full;
-use webui::{WebUIHandler, ResponseWriter, WebUIProtocol};
+use webui::{WebUIHandler, RenderOptions, ResponseWriter, WebUIProtocol};
 use serde_json::json;
 use std::{fs, sync::Arc};
 
@@ -117,13 +119,14 @@ async fn main() {
         let proto = protocol.clone();
         tokio::spawn(async move {
             http1::Builder::new()
-                .serve_connection(TokioIo::new(stream), service_fn(move |_: Request<_>| {
+                .serve_connection(TokioIo::new(stream), service_fn(move |req: Request<_>| {
                     let proto = proto.clone();
                     async move {
                         let state = json!({ "title": "Home" });
                         let mut writer = StringWriter(String::new());
                         let mut handler = WebUIHandler::new();
-                        handler.handle(&proto, &state, &mut writer).unwrap();
+                        let options = RenderOptions::new("index.html", req.uri().path());
+                        handler.handle(&proto, &state, &options, &mut writer).unwrap();
                         Ok::<_, hyper::Error>(Response::new(Full::new(Bytes::from(writer.0))))
                     }
                 }))

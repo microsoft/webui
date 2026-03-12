@@ -61,10 +61,12 @@ export default {
                 { text: 'Overview', link: '/guide/concepts/directives/' },
                 { text: '<if> Conditional', link: '/guide/concepts/directives/if' },
                 { text: '<for> Loop', link: '/guide/concepts/directives/for' },
+                { text: '<route> Routing', link: '/guide/concepts/directives/route' },
                 { text: '{{}} Signals', link: '/guide/concepts/directives/signals' },
                 { text: 'Attribute Directives', link: '/guide/concepts/directives/attributes' },
               ]
             },
+            { text: 'Routing', link: '/guide/concepts/routing' },
             { text: 'Hydration & Interactivity', link: '/guide/concepts/hydration', items: [
               { text: 'Class Definition', link: '/guide/concepts/hydration#class-definition' },
               { text: 'Templating', link: '/guide/concepts/hydration#templating' },

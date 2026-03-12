@@ -14,23 +14,22 @@ npm install @microsoft/webui
 ```js [Node.js]
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
-import { renderStream } from '@microsoft/webui';
+import { render } from '@microsoft/webui';
 
 const protocol = readFileSync('./dist/protocol.bin');
 
 const server = createServer((req, res) => {
-  if (req.url === '/') {
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    renderStream(protocol, { title: "Home" }, (chunk) => res.write(chunk));
-    res.end();
-  }
+  res.writeHead(200, { 'Content-Type': 'text/html' });
+  render(protocol, JSON.stringify({ title: "Home" }), 'index.html', req.url,
+    (chunk) => res.write(chunk));
+  res.end();
 });
 
 server.listen(3000);
 ```
 
 ```ts [Bun]
-import { renderStream } from '@microsoft/webui';
+import { render } from '@microsoft/webui';
 
 const protocol = Bun.file('./dist/protocol.bin');
 const protocolData = Buffer.from(await protocol.arrayBuffer());
@@ -38,8 +37,10 @@ const protocolData = Buffer.from(await protocol.arrayBuffer());
 Bun.serve({
   port: 3000,
   fetch(req) {
+    const url = new URL(req.url);
     const chunks: string[] = [];
-    renderStream(protocolData, { title: "Home" }, (chunk) => chunks.push(chunk));
+    render(protocolData, JSON.stringify({ title: "Home" }), 'index.html', url.pathname,
+      (chunk: string) => chunks.push(chunk));
     return new Response(chunks.join(''), {
       headers: { 'Content-Type': 'text/html' },
     });
@@ -48,14 +49,16 @@ Bun.serve({
 ```
 
 ```ts [Deno]
-import { renderStream } from '@microsoft/webui';
+import { render } from '@microsoft/webui';
 
 const protocol = Deno.readFileSync('./dist/protocol.bin');
 const protocolData = Buffer.from(protocol);
 
-Deno.serve({ port: 3000 }, (_req) => {
+Deno.serve({ port: 3000 }, (req) => {
+  const url = new URL(req.url);
   const chunks: string[] = [];
-  renderStream(protocolData, { title: "Home" }, (chunk) => chunks.push(chunk));
+  render(protocolData, JSON.stringify({ title: "Home" }), 'index.html', url.pathname,
+    (chunk: string) => chunks.push(chunk));
   return new Response(chunks.join(''), {
     headers: { 'Content-Type': 'text/html' },
   });
@@ -68,8 +71,7 @@ Deno.serve({ port: 3000 }, (_req) => {
 | Function | Description |
 |----------|-------------|
 | `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, stats }` |
-| `render(protocol, state)` | Render protocol to HTML string |
-| `renderStream(protocol, state, onChunk)` | Stream rendered HTML fragments via callback |
+| `render(protocol, state, entry, requestPath, onChunk, plugin?)` | Render protocol with route matching, streaming HTML fragments via callback |
 | `inspect(protocol)` | Convert protocol to JSON for debugging |
 
 ### BuildOptions

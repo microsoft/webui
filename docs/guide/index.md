@@ -26,6 +26,8 @@ The result: rendering is fast, predictable, and language-agnostic.
 
 - **Web Components** — Templates are standard HTML with native web components and Shadow DOM. No proprietary syntax beyond a few template directives (`<if>`, `<for>`, `{{}}`).
 
+- **Routing** — The `<route>` directive defines URL-to-component mappings. The server renders the matched route on first load; the optional [`@microsoft/webui-router`](/guide/concepts/routing) package adds client-side navigation with lazy loading.
+
 - **Server-side expressions** — Conditionals and expressions are evaluated on the server. Template logic doesn't leak into the browser.
 
 - **Plugin system** — Parser and handler plugins for hydration, adding reactivity to interactive islands, custom directives, and framework-specific behavior.

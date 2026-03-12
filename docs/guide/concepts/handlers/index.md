@@ -27,12 +27,13 @@ This consistent approach ensures that the same template produces identical resul
 While the specific implementation details vary between languages, all handlers provide a similar API:
 
 ```
-handle(protocol, state, writer)
+handle(protocol, state, options, writer)
 ```
 
 Where:
 - `protocol` is the WebUI protocol object
 - `state` is the data object with values to be rendered
+- `options` specifies the entry fragment and request path for [route matching](/guide/concepts/routing)
 - `writer` is a callback or interface for writing the rendered output
 
 ## Plugin System
@@ -41,7 +42,7 @@ Handlers support an optional **plugin system** for injecting framework-specific 
 
 ```
 handler = Handler::with_plugin(plugin)
-handler.handle(protocol, state, writer)
+handler.handle(protocol, state, options, writer)
 ```
 
 When no plugin is configured, the handler renders plain HTML. When a plugin is loaded (e.g., `FastHydrationPlugin`), it injects markers that enable client-side hydration.

@@ -51,7 +51,8 @@ void *handler = webui_handler_create();
 uint8_t *data = load_file("dist/protocol.bin", &len);
 
 // Render
-char *html = webui_handler_render(handler, data, len, state_json);
+char *html = webui_handler_render(handler, data, len, state_json,
+                                  "index.html", request_path);
 if (html) {
     // use html...
     webui_free(html);
@@ -68,7 +69,7 @@ webui_handler_destroy(handler);
 | `webui_render` | `char *(const char *html, const char *data_json)` | Parse + render in one call |
 | `webui_handler_create` | `void *()` | Create a reusable handler (no plugin) |
 | `webui_handler_create_with_plugin` | `void *(const char *plugin_id)` | Create a handler with a named plugin (e.g., `"fast"`) |
-| `webui_handler_render` | `char *(void *handler, const uint8_t *data, uintptr_t len, const char *json)` | Render a pre-compiled protocol |
+| `webui_handler_render` | `char *(void *handler, const uint8_t *data, uintptr_t len, const char *json, const char *entry_id, const char *request_path)` | Render a pre-compiled protocol with route matching |
 | `webui_handler_destroy` | `void(void *handler)` | Destroy a handler instance |
 | `webui_free` | `void(char *ptr)` | Free a string returned by any render function |
 | `webui_last_error` | `const char *()` | Get per-thread error message |
@@ -114,7 +115,8 @@ if (handler == NULL) {
 }
 
 // Render — output includes hydration markers
-char *html = webui_handler_render(handler, protocol_data, protocol_len, state_json);
+char *html = webui_handler_render(handler, protocol_data, protocol_len,
+                                  state_json, "index.html", "/");
 
 webui_free(html);
 webui_handler_destroy(handler);

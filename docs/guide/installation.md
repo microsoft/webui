@@ -46,6 +46,28 @@ Run the development server with `npm run dev` and build for production with `npm
 
 The npm package uses platform-specific optional dependencies to deliver native binaries. Supported platforms are installed automatically — no Rust toolchain required.
 
+## Client-Side Router (Optional)
+
+For single-page navigation with client-side route transitions, install the router package:
+
+::: code-group
+```bash [npm]
+npm install @microsoft/webui-router
+```
+
+```bash [yarn]
+yarn add @microsoft/webui-router
+```
+
+```bash [pnpm]
+pnpm add @microsoft/webui-router
+```
+:::
+
+The router is a separate package because it's only needed for apps with client-side navigation. Server-only apps that do full page loads on every request don't need it.
+
+See the [Routing guide](/guide/concepts/routing) for setup and usage.
+
 ## Rust CLI
 
 Rust users who only need the CLI can install it directly from crates.io:
