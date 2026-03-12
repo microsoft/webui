@@ -2,10 +2,11 @@
 //!
 //! Usage: `cargo xtask dev todo-fast`
 
+use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::process;
+use crate::process::{self, ManagedChild};
 use crate::util::{collect_child_dirs, display_name};
 
 pub fn run(app: Option<&str>) -> ExitCode {
@@ -33,20 +34,61 @@ pub fn run(app: Option<&str>) -> ExitCode {
         console::style(app_name).bold(),
     );
 
-    let mut server = match process::spawn_child("server", "pnpm", &["start:server"], &app_dir) {
-        Some(c) => c,
-        None => return ExitCode::FAILURE,
-    };
-    let mut client = match process::spawn_child("client", "pnpm", &["start:client"], &app_dir) {
-        Some(c) => c,
+    let mut children: Vec<(&str, ManagedChild)> = Vec::with_capacity(3);
+
+    // If the app defines a start:api script, launch it first so the API is
+    // available by the time the serve command starts fetching state.
+    if has_script(&app_dir, "start:api") {
+        match process::spawn_child("api", "pnpm", &["start:api"], &app_dir) {
+            Some(c) => children.push(("api", c)),
+            None => return ExitCode::FAILURE,
+        }
+    }
+
+    match process::spawn_child("server", "pnpm", &["start:server"], &app_dir) {
+        Some(c) => children.push(("server", c)),
         None => {
-            let _ = server.kill();
-            let _ = server.wait();
+            kill_all(&mut children);
             return ExitCode::FAILURE;
         }
-    };
+    }
 
-    process::wait_for_pair(&mut server, &mut client)
+    match process::spawn_child("client", "pnpm", &["start:client"], &app_dir) {
+        Some(c) => children.push(("client", c)),
+        None => {
+            kill_all(&mut children);
+            return ExitCode::FAILURE;
+        }
+    }
+
+    process::wait_for_group(&mut children)
+}
+
+/// Check whether `package.json` in `app_dir` contains a script with the given
+/// name. Returns `false` on any I/O or parse error so the caller can skip the
+/// script silently.
+fn has_script(app_dir: &Path, script: &str) -> bool {
+    let pkg_path = app_dir.join("package.json");
+    let Ok(content) = fs::read_to_string(&pkg_path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+    value
+        .get("scripts")
+        .and_then(|s| s.get(script))
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+}
+
+/// Force-kill and wait on every child spawned so far (used during early
+/// startup failures).
+fn kill_all(children: &mut [(&str, ManagedChild)]) {
+    for (_, child) in children.iter_mut() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 fn available_apps() -> Result<String, String> {

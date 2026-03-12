@@ -124,13 +124,13 @@ pub fn terminate_gracefully(managed: &mut ManagedChild) {
     let _ = managed.wait();
 }
 
-/// Run a Ctrl+Caware poll loop for exactly two child processes.
+/// Run a Ctrl+C–aware poll loop for a group of named child processes.
 ///
-/// * On Ctrl+C both children receive a graceful stop signal in parallel.
-/// * If either child exits on its own the other is also stopped.
+/// * On Ctrl+C all children receive a graceful stop signal in parallel.
+/// * If any child exits on its own the others are also stopped.
 /// * Returns [`ExitCode::SUCCESS`] for user-initiated stops, or
 ///   [`ExitCode::FAILURE`] if a child crashed.
-pub fn wait_for_pair(server: &mut ManagedChild, client: &mut ManagedChild) -> ExitCode {
+pub fn wait_for_group(children: &mut [(&str, ManagedChild)]) -> ExitCode {
     let ctrlc = Arc::new(AtomicBool::new(false));
     let flag = ctrlc.clone();
     ctrlc::set_handler(move || {
@@ -140,34 +140,45 @@ pub fn wait_for_pair(server: &mut ManagedChild, client: &mut ManagedChild) -> Ex
 
     loop {
         if ctrlc.load(Ordering::SeqCst) {
-            shutdown_pair(server, client);
+            shutdown_group(children);
             eprintln!("\n  {} stopped", console::style("").green());
             return ExitCode::SUCCESS;
         }
 
-        let server_done = matches!(server.try_wait(), Ok(Some(_)));
-        let client_done = matches!(client.try_wait(), Ok(Some(_)));
+        let any_done = children
+            .iter_mut()
+            .any(|(_, c)| matches!(c.try_wait(), Ok(Some(_))));
 
-        if server_done || client_done {
-            if !server_done {
-                terminate_gracefully(server);
+        if any_done {
+            // Terminate every child that hasn't exited yet.
+            for (_, child) in children.iter_mut() {
+                if matches!(child.try_wait(), Ok(None)) {
+                    terminate_gracefully(child);
+                }
             }
-            if !client_done {
-                terminate_gracefully(client);
-            }
-            let s = server.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
-            let c = client.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
+
+            // Collect exit codes.
+            let statuses: Vec<(&str, i32)> = children
+                .iter_mut()
+                .map(|(label, child)| {
+                    let code = child.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
+                    (*label, code)
+                })
+                .collect();
 
             if ctrlc.load(Ordering::SeqCst) {
                 eprintln!("\n  {} stopped", console::style("").green());
                 return ExitCode::SUCCESS;
             }
 
+            let summary: Vec<String> = statuses
+                .iter()
+                .map(|(label, code)| format!("{label}={code}"))
+                .collect();
             eprintln!(
-                "  {} dev processes exited (server={}, client={})",
+                "  {} dev processes exited ({})",
                 console::style("").red().bold(),
-                s,
-                c,
+                summary.join(", "),
             );
             return ExitCode::FAILURE;
         }
@@ -176,35 +187,31 @@ pub fn wait_for_pair(server: &mut ManagedChild, client: &mut ManagedChild) -> Ex
     }
 }
 
-/// Signal both children gracefully, then force-kill any that don't exit in
-/// time.
-fn shutdown_pair(a: &mut ManagedChild, b: &mut ManagedChild) {
-    sys::send_graceful_stop(&a.inner);
-    sys::send_graceful_stop(&b.inner);
+/// Signal all children gracefully, then force-kill any that don't exit in time.
+fn shutdown_group(children: &mut [(&str, ManagedChild)]) {
+    for (_, child) in children.iter_mut() {
+        sys::send_graceful_stop(&child.inner);
+    }
 
     let deadline = Instant::now() + GRACEFUL_TIMEOUT;
+    let mut done = vec![false; children.len()];
 
-    let mut a_done = false;
-    let mut b_done = false;
-    while Instant::now() < deadline && !(a_done && b_done) {
-        if !a_done {
-            a_done = matches!(a.try_wait(), Ok(Some(_)));
+    while Instant::now() < deadline && done.iter().any(|d| !d) {
+        for (i, (_, child)) in children.iter_mut().enumerate() {
+            if !done[i] {
+                done[i] = matches!(child.try_wait(), Ok(Some(_)));
+            }
         }
-        if !b_done {
-            b_done = matches!(b.try_wait(), Ok(Some(_)));
-        }
-        if !(a_done && b_done) {
+        if done.iter().any(|d| !d) {
             thread::sleep(Duration::from_millis(50));
         }
     }
 
-    if !a_done {
-        let _ = a.kill();
-        let _ = a.wait();
-    }
-    if !b_done {
-        let _ = b.kill();
-        let _ = b.wait();
+    for (i, (_, child)) in children.iter_mut().enumerate() {
+        if !done[i] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
