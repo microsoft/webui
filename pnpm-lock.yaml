@@ -172,6 +172,24 @@ importers:
 
   examples/integration/node: {}
 
+  examples/server/dotnet/bin/Debug/net10.0:
+    devDependencies:
+      '@microsoft/fast-element':
+        specifier: 'catalog:'
+        version: 2.10.1
+      '@microsoft/fast-html':
+        specifier: 'catalog:'
+        version: 1.0.0-alpha.38(@microsoft/fast-element@2.10.1)
+      '@microsoft/webui-router':
+        specifier: workspace:*
+        version: link:../../../../../../packages/webui-router
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.27.3
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   packages/webui:
     devDependencies:
       '@types/node':
@@ -210,6 +228,15 @@ importers:
   packages/webui-linux-arm64: {}
 
   packages/webui-linux-x64: {}
+
+  packages/webui-router:
+    devDependencies:
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.27.3
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
 
   packages/webui-win32-arm64: {}
 
