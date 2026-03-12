@@ -7,10 +7,12 @@
 
 pub mod fast;
 
+pub use fast::generate_f_template;
 pub use fast::FastParserPlugin;
 
 use crate::component_registry::Component;
 use crate::Result;
+use std::any::Any;
 
 /// A parser plugin that can customize template parsing behavior.
 ///
@@ -21,7 +23,7 @@ use crate::Result;
 /// - **Element completion**: `on_element_parsed` after attributes are processed
 ///
 /// WebUI calls these hooks during parsing; plugins decide what (if anything) to do.
-pub trait ParserPlugin {
+pub trait ParserPlugin: Any {
     /// Called when a component element is encountered during parsing.
     /// Use to track components for later template generation.
     fn on_parse_component(&mut self, tag_name: &str, component: &Component) -> Result<()>;
@@ -40,4 +42,10 @@ pub trait ParserPlugin {
     /// `binding_attribute_count` is the number of dynamic attribute bindings found.
     /// Returns optional opaque bytes to emit as a `Plugin` protocol fragment.
     fn on_element_parsed(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
+
+    /// Downcast to `Any` for plugin-specific access.
+    fn as_any(&self) -> &dyn Any;
+
+    /// Downcast to mutable `Any` for plugin-specific access.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }

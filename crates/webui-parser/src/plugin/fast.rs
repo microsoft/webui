@@ -35,6 +35,26 @@ impl FastParserPlugin {
             components: Vec::new(),
         }
     }
+
+    /// Take the individual component f-template strings, keyed by tag name.
+    ///
+    /// Each value is a complete `<f-template name="tag-name">...</f-template>` string
+    /// ready to be appended to a document. This is used by the JSON partial render
+    /// endpoint to send only the templates the client needs.
+    #[must_use]
+    pub fn take_component_templates(&self) -> Vec<(String, String)> {
+        self.components
+            .iter()
+            .map(|comp| {
+                let tmpl = generate_f_template(
+                    &comp.tag_name,
+                    &comp.html_content,
+                    comp.css_content.as_deref(),
+                );
+                (comp.tag_name.clone(), tmpl)
+            })
+            .collect()
+    }
 }
 
 impl Default for FastParserPlugin {
@@ -74,48 +94,62 @@ impl ParserPlugin for FastParserPlugin {
     }
 
     fn on_body_end(&mut self) -> Option<String> {
-        if self.components.is_empty() {
-            return None;
-        }
-
-        let mut output = String::with_capacity(self.components.len() * 256);
-
-        for comp in &self.components {
-            output.push_str("<f-template name=\"");
-            output.push_str(&comp.tag_name);
-            output.push_str("\">\n");
-
-            let converted = convert_btr_to_fast(&comp.html_content);
-            let trimmed = minify_inter_tag_whitespace(converted.trim());
-
-            if trimmed.starts_with("<template") {
-                if let Some(close_pos) = trimmed.find('>') {
-                    output.push_str(&trimmed[..=close_pos]);
-                    if comp.css_content.is_some() {
-                        output.push_str("<link rel=\"stylesheet\" href=\"./");
-                        output.push_str(&comp.tag_name);
-                        output.push_str(".css\">");
-                    }
-                    output.push_str(&trimmed[close_pos + 1..]);
-                } else {
-                    output.push_str(&trimmed);
-                }
-            } else {
-                output.push_str("<template>");
-                if comp.css_content.is_some() {
-                    output.push_str("<link rel=\"stylesheet\" href=\"./");
-                    output.push_str(&comp.tag_name);
-                    output.push_str(".css\">");
-                }
-                output.push_str(&trimmed);
-                output.push_str("</template>");
-            }
-
-            output.push_str("\n</f-template>\n");
-        }
-
-        Some(output)
+        // f-templates are stored in protocol.component_templates and emitted
+        // selectively by the handler based on which components were rendered.
+        None
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+/// Generate a single f-template HTML string from component data.
+///
+/// Used by the server to generate templates on demand for route components
+/// that weren't encountered during initial parsing.
+pub fn generate_f_template(
+    tag_name: &str,
+    html_content: &str,
+    css_content: Option<&str>,
+) -> String {
+    let mut output = String::with_capacity(256);
+    output.push_str("<f-template name=\"");
+    output.push_str(tag_name);
+    output.push_str("\">\n");
+
+    let converted = convert_btr_to_fast(html_content);
+    let trimmed = minify_inter_tag_whitespace(converted.trim());
+
+    if trimmed.starts_with("<template") {
+        if let Some(close_pos) = trimmed.find('>') {
+            output.push_str(&trimmed[..=close_pos]);
+            if css_content.is_some() {
+                output.push_str("<link rel=\"stylesheet\" href=\"/");
+                output.push_str(tag_name);
+                output.push_str(".css\">");
+            }
+            output.push_str(&trimmed[close_pos + 1..]);
+        } else {
+            output.push_str(&trimmed);
+        }
+    } else {
+        output.push_str("<template>");
+        if css_content.is_some() {
+            output.push_str("<link rel=\"stylesheet\" href=\"/");
+            output.push_str(tag_name);
+            output.push_str(".css\">");
+        }
+        output.push_str(&trimmed);
+        output.push_str("</template>");
+    }
+
+    output.push_str("\n</f-template>\n");
+    output
 }
 
 /// Convert WebUI Framework template syntax to FAST syntax in HTML content.
@@ -167,6 +201,11 @@ fn try_convert_tag(input: &str, pos: usize, result: &mut String) -> Option<usize
         result.push_str("</f-repeat>");
         return Some(6);
     }
+    // <route> in f-templates becomes empty <webui-route> (client router mounts components)
+    if remaining.starts_with("</route>") {
+        result.push_str("</webui-route>");
+        return Some(8);
+    }
 
     // Check for <if condition="...">
     if starts_with_tag_name(remaining, "if") {
@@ -178,6 +217,13 @@ fn try_convert_tag(input: &str, pos: usize, result: &mut String) -> Option<usize
     // Check for <for each="...">
     if starts_with_tag_name(remaining, "for") {
         if let Some(consumed) = convert_for_tag(remaining, result) {
+            return Some(consumed);
+        }
+    }
+
+    // Check for <route ...> → <webui-route ...> in f-templates
+    if starts_with_tag_name(remaining, "route") {
+        if let Some(consumed) = convert_route_tag(remaining, result) {
             return Some(consumed);
         }
     }
@@ -245,6 +291,53 @@ fn convert_for_tag(tag_str: &str, result: &mut String) -> Option<usize> {
     result.push_str("<f-repeat value=\"{");
     result.push_str(attr_value);
     result.push_str("}\">");
+
+    Some(close + 1)
+}
+
+/// Convert `<route ...>` to `<webui-route ...>` in f-templates.
+/// Self-closing routes become `<webui-route ...></webui-route>` (empty).
+/// The component attribute is preserved for the client router.
+fn convert_route_tag(tag_str: &str, result: &mut String) -> Option<usize> {
+    let close = tag_str.find('>')?;
+    let is_self_closing = tag_str[..=close].ends_with("/>");
+    let tag = &tag_str[..=close];
+
+    result.push_str("<webui-route");
+
+    if let Some(v) = extract_attribute_value(tag, "path") {
+        result.push_str(" path=\"");
+        result.push_str(v);
+        result.push('"');
+    }
+    if let Some(v) = extract_attribute_value(tag, "name") {
+        result.push_str(" name=\"");
+        result.push_str(v);
+        result.push('"');
+    }
+    if let Some(v) = extract_attribute_value(tag, "component") {
+        result.push_str(" component=\"");
+        result.push_str(v);
+        result.push('"');
+    }
+    if let Some(v) = extract_attribute_value(tag, "redirectTo") {
+        result.push_str(" redirectto=\"");
+        result.push_str(v);
+        result.push('"');
+    }
+    if tag.contains(" exact") {
+        result.push_str(" exact");
+    }
+    if tag.contains(" layout") {
+        result.push_str(" layout");
+    }
+    result.push_str(" style=\"display:none\"");
+
+    if is_self_closing {
+        result.push_str("></webui-route>");
+    } else {
+        result.push('>');
+    }
 
     Some(close + 1)
 }
@@ -567,56 +660,60 @@ mod tests {
     }
 
     #[test]
-    fn body_end_simple_component() {
+    fn component_template_simple_component() {
         let mut plugin = FastParserPlugin::new();
         let comp = make_component("my-comp", "<div>hello</div>", Some("div { color: red; }"));
         plugin.on_parse_component("my-comp", &comp).unwrap();
 
-        let output = plugin.on_body_end();
-        assert!(output.is_some());
-        let html = output.unwrap_or_default();
-
+        let templates = plugin.take_component_templates();
+        assert_eq!(templates.len(), 1);
+        let (name, html) = &templates[0];
+        assert_eq!(name, "my-comp");
         assert!(html.contains("<f-template name=\"my-comp\">"));
         assert!(html.contains("</f-template>"));
         assert!(html.contains("<template>"));
         assert!(html.contains("</template>"));
-        assert!(html.contains("<link rel=\"stylesheet\" href=\"./my-comp.css\">"));
+        assert!(html.contains("<link rel=\"stylesheet\" href=\"/my-comp.css\">"));
         assert!(html.contains("<div>hello</div>"));
     }
 
     #[test]
-    fn body_end_component_without_css() {
+    fn component_template_without_css() {
         let mut plugin = FastParserPlugin::new();
         let comp = make_component("no-css", "<span>text</span>", None);
         plugin.on_parse_component("no-css", &comp).unwrap();
 
-        let output = plugin.on_body_end();
-        assert!(output.is_some());
-        let html = output.unwrap_or_default();
-
+        let templates = plugin.take_component_templates();
+        assert_eq!(templates.len(), 1);
+        let (name, html) = &templates[0];
+        assert_eq!(name, "no-css");
         assert!(html.contains("<f-template name=\"no-css\">"));
         assert!(!html.contains("<link rel=\"stylesheet\""));
         assert!(html.contains("<span>text</span>"));
     }
 
     #[test]
-    fn body_end_multiple_components() {
+    fn component_template_multiple_components() {
         let mut plugin = FastParserPlugin::new();
         let comp1 = make_component("comp-a", "<div>A</div>", None);
         let comp2 = make_component("comp-b", "<div>B</div>", Some("b { }"));
         plugin.on_parse_component("comp-a", &comp1).unwrap();
         plugin.on_parse_component("comp-b", &comp2).unwrap();
 
-        let output = plugin.on_body_end();
-        assert!(output.is_some());
-        let html = output.unwrap_or_default();
+        let templates = plugin.take_component_templates();
+        assert_eq!(templates.len(), 2);
 
-        assert!(html.contains("<f-template name=\"comp-a\">"));
-        assert!(html.contains("<f-template name=\"comp-b\">"));
+        let names: Vec<&str> = templates.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"comp-a"));
+        assert!(names.contains(&"comp-b"));
+
+        for (_, html) in &templates {
+            assert!(html.contains("<f-template name="));
+        }
     }
 
     #[test]
-    fn body_end_deduplicates_same_component() {
+    fn component_template_deduplicates_same_component() {
         let mut plugin = FastParserPlugin::new();
         let comp = make_component(
             "my-button",
@@ -630,16 +727,18 @@ mod tests {
         plugin.on_parse_component("my-button", &comp).unwrap();
         plugin.on_parse_component("my-button", &comp).unwrap();
 
-        let output = plugin.on_body_end().unwrap();
-        let count = output.matches("<f-template name=\"my-button\">").count();
+        let templates = plugin.take_component_templates();
         assert_eq!(
-            count, 1,
-            "Expected exactly 1 <f-template> for my-button, got {count}"
+            templates.len(),
+            1,
+            "Expected exactly 1 template for my-button, got {}",
+            templates.len()
         );
+        assert_eq!(templates[0].0, "my-button");
     }
 
     #[test]
-    fn body_end_deduplicates_mixed_components() {
+    fn component_template_deduplicates_mixed_components() {
         let mut plugin = FastParserPlugin::new();
         let btn = make_component("my-button", "<button><slot></slot></button>", None);
         let card = make_component("my-card", "<div><slot></slot></div>", Some(".card{}"));
@@ -649,10 +748,13 @@ mod tests {
         plugin.on_parse_component("my-card", &card).unwrap();
         plugin.on_parse_component("my-button", &btn).unwrap();
 
-        let output = plugin.on_body_end().unwrap();
+        let templates = plugin.take_component_templates();
+        assert_eq!(templates.len(), 2);
 
-        assert_eq!(output.matches("<f-template name=\"my-button\">").count(), 1);
-        assert_eq!(output.matches("<f-template name=\"my-card\">").count(), 1);
+        let button_count = templates.iter().filter(|(n, _)| n == "my-button").count();
+        let card_count = templates.iter().filter(|(n, _)| n == "my-card").count();
+        assert_eq!(button_count, 1);
+        assert_eq!(card_count, 1);
     }
 
     // --- FAST syntax conversion ---
@@ -718,15 +820,16 @@ mod tests {
     }
 
     #[test]
-    fn body_end_with_btr_conversion() {
+    fn component_template_with_btr_conversion() {
         let mut plugin = FastParserPlugin::new();
         let html = r#"<div><if condition="visible"><span>hi</span></if></div>"#;
         let comp = make_component("my-widget", html, None);
         plugin.on_parse_component("my-widget", &comp).unwrap();
 
-        let output = plugin.on_body_end();
-        assert!(output.is_some());
-        let result = output.unwrap_or_default();
+        let templates = plugin.take_component_templates();
+        assert_eq!(templates.len(), 1);
+        let (name, result) = &templates[0];
+        assert_eq!(name, "my-widget");
 
         assert!(result.contains("<f-when value=\"{visible}\">"));
         assert!(result.contains("</f-when>"));
@@ -766,7 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn body_end_strips_shadowrootmode_from_f_template() {
+    fn component_template_strips_shadowrootmode_from_f_template() {
         let mut plugin = FastParserPlugin::new();
         let comp = make_component(
             "my-comp",
@@ -774,13 +877,16 @@ mod tests {
             Some("div { color: red; }"),
         );
         plugin.on_parse_component("my-comp", &comp).unwrap();
-        let output = plugin.on_body_end().unwrap();
+        let templates = plugin.take_component_templates();
+        assert_eq!(templates.len(), 1);
+        let (name, html) = &templates[0];
+        assert_eq!(name, "my-comp");
         // f-template content should NOT have shadowrootmode
-        assert!(!output.contains("shadowrootmode"));
+        assert!(!html.contains("shadowrootmode"));
         // But should keep @click (framework attr kept in f-template mode)
-        assert!(output.contains("@click"));
+        assert!(html.contains("@click"));
         // Should have the converted content
-        assert!(output.contains("{{title}}"));
+        assert!(html.contains("{{title}}"));
     }
 
     #[test]
@@ -820,12 +926,36 @@ mod tests {
         let comp = make_component("parent-comp", html, None);
         plugin.on_parse_component("parent-comp", &comp).unwrap();
 
-        let output = plugin.on_body_end().unwrap();
+        let templates = plugin.take_component_templates();
+        assert_eq!(templates.len(), 1);
+        let (name, output) = &templates[0];
+        assert_eq!(name, "parent-comp");
 
         assert!(output.contains("<f-template name=\"parent-comp\">"));
         // shadowrootmode must be stripped from the inner non-JS component's template
         assert!(!output.contains("shadowrootmode"));
         // The inner template structure should be preserved (without shadowrootmode)
         assert!(output.contains("<child-comp><template><p>inner</p></template></child-comp>"));
+    }
+
+    #[test]
+    fn route_tags_converted_to_f_route() {
+        let input = r#"<route path="/home" name="home" exact><span>Home</span></route>"#;
+        let output = convert_btr_to_fast(input);
+        assert!(output.starts_with("<webui-route"));
+        assert!(output.contains(r#"path="/home""#));
+        assert!(output.contains(r#"name="home""#));
+        assert!(output.contains(" exact"));
+        assert!(output.contains("style=\"display:none\""));
+        assert!(output.contains("<span>Home</span>"));
+        assert!(output.ends_with("</webui-route>"));
+    }
+
+    #[test]
+    fn f_route_tags_pass_through() {
+        // <webui-route> tags emitted by the parser should pass through unchanged
+        let input = r#"<webui-route path="/" name="dashboard" component="cb-page-dashboard" exact style="display:none"></webui-route>"#;
+        let output = convert_btr_to_fast(input);
+        assert_eq!(output, input);
     }
 }

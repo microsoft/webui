@@ -30,6 +30,7 @@ pub type WebUIFragmentSignal = WebUiFragmentSignal;
 pub type WebUIFragmentIf = WebUiFragmentIf;
 pub type WebUIFragmentAttribute = WebUiFragmentAttribute;
 pub type WebUIFragmentPlugin = WebUiFragmentPlugin;
+pub type WebUIFragmentRoute = WebUiFragmentRoute;
 
 /// A mapping of unique fragment identifiers to their corresponding fragment lists.
 pub type WebUIFragmentRecords = HashMap<String, FragmentList>;
@@ -224,6 +225,24 @@ impl WebUiFragment {
             })),
         }
     }
+
+    /// Create a route fragment linking a URL path template to a fragment.
+    pub fn route(path: impl Into<String>, fragment_id: impl Into<String>) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::Route(WebUiFragmentRoute {
+                path: path.into(),
+                fragment_id: fragment_id.into(),
+                ..Default::default()
+            })),
+        }
+    }
+
+    /// Create a route fragment from a pre-built `WebUiFragmentRoute`.
+    pub fn route_from(route: WebUiFragmentRoute) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::Route(route)),
+        }
+    }
 }
 
 impl ConditionExpr {
@@ -277,17 +296,38 @@ impl ConditionExpr {
 // ── Constructors ────────────────────────────────────────────────────────
 
 impl WebUiProtocol {
-    /// Create a protocol from fragment records with no CSS tokens.
+    /// Create a protocol from fragment records with no CSS tokens or routes.
     pub fn new(fragments: WebUIFragmentRecords) -> Self {
         Self {
             fragments,
             tokens: Vec::new(),
+            routes: HashMap::new(),
+            component_templates: HashMap::new(),
         }
     }
 
     /// Create a protocol from fragment records with CSS tokens.
     pub fn with_tokens(fragments: WebUIFragmentRecords, tokens: Vec<String>) -> Self {
-        Self { fragments, tokens }
+        Self {
+            fragments,
+            tokens,
+            routes: HashMap::new(),
+            component_templates: HashMap::new(),
+        }
+    }
+
+    /// Create a protocol from fragment records, CSS tokens, and a route registry.
+    pub fn with_routes(
+        fragments: WebUIFragmentRecords,
+        tokens: Vec<String>,
+        routes: HashMap<String, RouteRecord>,
+    ) -> Self {
+        Self {
+            fragments,
+            tokens,
+            routes,
+            component_templates: HashMap::new(),
+        }
     }
 }
 
@@ -334,6 +374,17 @@ impl WebUiProtocol {
                             "Attribute references non-existent template fragment ID: {}",
                             attr.template
                         )))
+                    }
+                    Some(web_ui_fragment::Fragment::Route(route)) => {
+                        if !route.fragment_id.is_empty()
+                            && !fragments.contains_key(&route.fragment_id)
+                        {
+                            return Some(ProtocolError::Validation(format!(
+                                "Route references non-existent fragment ID: {}",
+                                route.fragment_id
+                            )));
+                        }
+                        None
                     }
                     _ => None,
                 })
@@ -690,6 +741,159 @@ mod tests {
         let tokens = vec!["color-primary".to_string(), "spacing-m".to_string()];
         let protocol = WebUIProtocol::with_tokens(HashMap::new(), tokens.clone());
         assert_eq!(protocol.tokens, tokens);
+        assert!(protocol.routes.is_empty());
+    }
+
+    #[test]
+    fn test_protobuf_route_fragment_roundtrip() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "main".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route("/profile/:id", "profile-page")],
+            },
+        );
+        fragments.insert(
+            "profile-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<h1>Profile</h1>")],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let bytes = protocol.to_protobuf().expect("encode failed");
+        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
+        assert_eq!(protocol, decoded);
+
+        let frag = &decoded.fragments["main"].fragments[0];
+        match frag.fragment.as_ref() {
+            Some(web_ui_fragment::Fragment::Route(r)) => {
+                assert_eq!(r.path, "/profile/:id");
+                assert_eq!(r.fragment_id, "profile-page");
+            }
+            _ => panic!("expected route fragment"),
+        }
+    }
+
+    #[test]
+    fn test_protobuf_route_fragment_all_fields() {
+        let mut fragments = HashMap::new();
+        let route_frag = WebUiFragment {
+            fragment: Some(web_ui_fragment::Fragment::Route(WebUiFragmentRoute {
+                path: "/users/:id/posts/:postId".to_string(),
+                fragment_id: "user-posts".to_string(),
+                exact: true,
+                name: "user-posts".to_string(),
+            })),
+        };
+        fragments.insert(
+            "main".to_string(),
+            FragmentList {
+                fragments: vec![route_frag],
+            },
+        );
+        fragments.insert(
+            "user-posts".into(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("posts")],
+            },
+        );
+
+        let protocol = WebUIProtocol::new(fragments);
+        let bytes = protocol.to_protobuf().expect("encode failed");
+        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
+        assert_eq!(protocol, decoded);
+    }
+
+    #[test]
+    fn test_protobuf_route_registry_roundtrip() {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "home".to_string(),
+            RouteRecord {
+                name: "home".to_string(),
+                path: "/".to_string(),
+                fragment_id: "home-page".to_string(),
+                exact: true,
+            },
+        );
+        routes.insert(
+            "profile".to_string(),
+            RouteRecord {
+                name: "profile".to_string(),
+                path: "/profile/:id".to_string(),
+                fragment_id: "profile-page".to_string(),
+                exact: false,
+            },
+        );
+
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "home-page".into(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("home")],
+            },
+        );
+        fragments.insert(
+            "profile-page".into(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("profile")],
+            },
+        );
+
+        let protocol = WebUIProtocol::with_routes(fragments, Vec::new(), routes);
+        let bytes = protocol.to_protobuf().expect("encode failed");
+        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
+        assert_eq!(protocol.routes.len(), decoded.routes.len());
+        assert_eq!(decoded.routes["home"].path, "/");
+        assert_eq!(decoded.routes["profile"].path, "/profile/:id");
+    }
+
+    #[test]
+    fn test_protobuf_route_validation_missing_fragment() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "main".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route("/test", "missing-fragment")],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let buf = protocol.to_protobuf().expect("encode failed");
+        let result = WebUIProtocol::from_protobuf(&buf);
+        assert!(result.is_err());
+        if let Err(ProtocolError::Validation(msg)) = result {
+            assert!(msg.contains("missing-fragment"));
+        }
+    }
+
+    #[test]
+    fn test_protobuf_route_no_fragment_id_roundtrip() {
+        let mut fragments = HashMap::new();
+        let route_frag = WebUiFragment {
+            fragment: Some(web_ui_fragment::Fragment::Route(WebUiFragmentRoute {
+                path: "/old-path".to_string(),
+                ..Default::default()
+            })),
+        };
+        fragments.insert(
+            "main".to_string(),
+            FragmentList {
+                fragments: vec![route_frag],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let bytes = protocol.to_protobuf().expect("encode failed");
+        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
+        assert_eq!(protocol, decoded);
+    }
+
+    #[test]
+    fn test_protobuf_backward_compat_no_routes() {
+        // Protocol without routes field should decode successfully with empty routes map
+        let protocol = WebUIProtocol::new(HashMap::new());
+        let bytes = protocol.to_protobuf().expect("encode failed");
+        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
+        assert!(decoded.routes.is_empty());
     }
 
     #[test]

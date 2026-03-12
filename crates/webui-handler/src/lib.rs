@@ -193,6 +193,10 @@ impl WebUIHandler {
                         p.on_plugin_data(&plugin_frag.data, context.writer)?;
                     }
                 }
+                Some(Fragment::Route(_)) => {
+                    // Route fragments are handled by the route-aware render path.
+                    // When no route matching is active, route fragments are skipped.
+                }
                 None => {}
             }
         }
