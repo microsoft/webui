@@ -58,7 +58,7 @@ The `--plugin=fast` flag enables two things:
 1. **Parser plugin (`FastParserPlugin`)** — During `webui build`:
    - Skips FAST-specific runtime attributes (`@click`, `f-ref`, `f-slotted`, `f-children`)
    - Counts dynamic attribute bindings per element and emits `Plugin` protocol fragments
-   - Tracks components and injects `<f-template name="...">` wrappers at `</body>` with BTR→FAST syntax conversion (`<if>`→`<f-when>`, `<for>`→`<f-repeat>`)
+   - Tracks components and injects `<f-template name="...">` wrappers at `</body>` with FAST syntax conversion (`<if>`→`<f-when>`, `<for>`→`<f-repeat>`)
 
 2. **Handler plugin (`FastHydrationPlugin`)** — During rendering:
    - Wraps signals, for-loops, and if-conditions in `<!--fe-b$$...-->` comment markers

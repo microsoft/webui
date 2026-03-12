@@ -68,7 +68,7 @@ During `webui build --plugin=fast`, the parser plugin:
 - **Skips framework attributes**: `@click`, `f-ref`, `f-slotted`, `f-children` are removed from the protocol (they're handled client-side)
 - **Counts dynamic bindings**: Emits binding counts per element as `Plugin` fragments for the handler
 - **Tracks components**: Records all custom elements discovered during parsing
-- **Injects `<f-template>` wrappers**: At `</body>`, injects template wrappers for each component with BTR→FAST syntax conversion
+- **Injects `<f-template>` wrappers**: At `</body>`, injects template wrappers for each component with FAST syntax conversion
 
 #### Syntax Conversion
 

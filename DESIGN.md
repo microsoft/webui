@@ -507,7 +507,7 @@ pub trait ParserPlugin {
 - Skips FAST-specific runtime attributes (`@click`, `f-ref`, `f-slotted`, `f-children`)
 - Emits `Plugin` fragments with u32 LE attribute binding counts
 - Tracks components and injects `<f-template>` wrappers at body end
-- Converts BTR syntax to FAST syntax: `<if>`→`<f-when>`, `<for>`→`<f-repeat>`, `{{expr}}`→`{expr}` in `:attr` values
+- Converts syntax to FAST syntax: `<if>`→`<f-when>`, `<for>`→`<f-repeat>`, `{{expr}}`→`{expr}` in `:attr` values
 
 **Usage:**
 ```rust
