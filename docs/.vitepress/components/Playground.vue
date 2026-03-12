@@ -246,7 +246,7 @@ async function render() {
 
     // Time the render (protocol + state → HTML) step
     const t2 = performance.now()
-    const html = wasmModule.value.render(protocolJson, stateJson)
+    const html = wasmModule.value.render(protocolJson, stateJson, 'index.html', '/')
     const t3 = performance.now()
     renderTime.value = (t3 - t2).toFixed(1)
 
