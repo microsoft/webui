@@ -7,3 +7,8 @@ docs/.vitepress/cache/
 .history/
 .turbo/
 .memory/
+
+# Staged native binaries (populated by cargo xtask publish-stage)
+dotnet/runtimes/
+packages/*/webui.node
+*.nupkg

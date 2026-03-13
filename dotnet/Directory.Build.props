@@ -1,0 +1,14 @@
+<Project>
+  <PropertyGroup>
+    <Version>0.0.1</Version>
+    <Authors>Microsoft</Authors>
+    <Company>Microsoft</Company>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/microsoft/webui</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/microsoft/webui</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <Copyright>Copyright (c) Microsoft Corporation</Copyright>
+    <Description>WebUI — high-performance server-side rendering without JavaScript runtimes.</Description>
+    <PackageTags>webui</PackageTags>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <PackageId>Microsoft.WebUI.Runtime.osx-x64</PackageId>
+    <RuntimeIdentifier>osx-x64</RuntimeIdentifier>
+    <Description>WebUI native runtime for macOS x64.</Description>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IsPackable>true</IsPackable>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <!-- No managed code in this package -->
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../runtimes/osx-x64/native/libwebui_ffi.dylib"
+          Pack="true"
+          PackagePath="runtimes/osx-x64/native/"
+          Visible="false" />
+  </ItemGroup>
+</Project>
