@@ -16,6 +16,8 @@ public static class WebUIRenderer
     /// <exception cref="WebUIException">Thrown when rendering fails.</exception>
     public static string RenderHtml(string html, string stateJson)
     {
+        ArgumentNullException.ThrowIfNull(html);
+        ArgumentNullException.ThrowIfNull(stateJson);
         return RenderHtmlNative(html, stateJson);
     }
 

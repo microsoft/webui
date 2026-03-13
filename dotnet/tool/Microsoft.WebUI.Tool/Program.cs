@@ -6,8 +6,8 @@ var binaryName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "webui.ex
 
 // Try WEBUI_BINARY_PATH env var first, then PATH
 var envPath = Environment.GetEnvironmentVariable("WEBUI_BINARY_PATH");
-var binary = !string.IsNullOrEmpty(envPath) && File.Exists(Path.Combine(envPath, binaryName))
-    ? Path.Combine(envPath, binaryName)
+var binary = !string.IsNullOrEmpty(envPath) && File.Exists(Path.Join(envPath, binaryName))
+    ? Path.Join(envPath, binaryName)
     : binaryName;
 
 var psi = new ProcessStartInfo(binary)

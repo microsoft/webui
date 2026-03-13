@@ -48,6 +48,10 @@ public sealed class WebUIHandler : IDisposable
     public string Render(byte[] protocol, string stateJson, string entryId, string requestPath)
     {
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
+        ArgumentNullException.ThrowIfNull(protocol);
+        ArgumentNullException.ThrowIfNull(stateJson);
+        ArgumentNullException.ThrowIfNull(entryId);
+        ArgumentNullException.ThrowIfNull(requestPath);
 
         IntPtr resultPtr = NativeBindings.webui_handler_render(
             _handle,
@@ -78,6 +82,9 @@ public sealed class WebUIHandler : IDisposable
     public string GetRouteTemplates(byte[] protocol, string entryId, string inventoryHex)
     {
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
+        ArgumentNullException.ThrowIfNull(protocol);
+        ArgumentNullException.ThrowIfNull(entryId);
+        ArgumentNullException.ThrowIfNull(inventoryHex);
 
         IntPtr resultPtr = NativeBindings.webui_get_route_templates(
             protocol,
