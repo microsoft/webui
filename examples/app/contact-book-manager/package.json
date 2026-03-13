@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
-    "start:server": "cargo run -p webui-cli -- serve ./src --state ./data/state.json --plugin=fast --servedir ./dist --port 3001 --watch",
+    "start:server": "cargo run -p webui-cli -- serve ./src --state ./data/state.json --plugin=fast --servedir ./dist --port 3001 --api-port 4000 --watch",
     "start:api": "esbuild server/api.ts --bundle --platform=node --format=esm --outfile=dist/api.js --packages=external && node dist/api.js",
     "start": "cargo xtask dev contact-book-manager"
    },
