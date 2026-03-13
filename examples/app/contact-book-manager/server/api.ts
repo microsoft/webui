@@ -123,16 +123,21 @@ app.use(express.json());
 // Route state endpoints (content-negotiated for SSR)
 // ---------------------------------------------------------------------------
 
-// Dashboard
-app.get('/', (req: Request, res: Response) => {
+// All SSR routes require Accept: application/json
+const ssr = express.Router();
+ssr.use((req: Request, res: Response, next) => {
   if (!wantsJson(req)) { res.status(404).json({ error: 'Not found' }); return; }
+  next();
+});
+
+// Dashboard
+ssr.get('/', (_req: Request, res: Response) => {
   const stats = buildStats();
   res.json({ state: stats });
 });
 
 // All contacts
-app.get('/contacts', (req: Request, res: Response) => {
-  if (!wantsJson(req)) { res.status(404).json({ error: 'Not found' }); return; }
+ssr.get('/contacts', (_req: Request, res: Response) => {
   res.json({
     state: {
       ...buildStats(),
@@ -142,14 +147,12 @@ app.get('/contacts', (req: Request, res: Response) => {
 });
 
 // Add contact form — must be before /contacts/:id to avoid matching "add" as an id
-app.get('/contacts/add', (req: Request, res: Response) => {
-  if (!wantsJson(req)) { res.status(404).json({ error: 'Not found' }); return; }
+ssr.get('/contacts/add', (_req: Request, res: Response) => {
   res.json({ state: { ...buildStats(), formTitle: 'Add Contact' } });
 });
 
 // Edit contact form — must be before /contacts/:id to avoid conflicts
-app.get('/contacts/:id/edit', (req: Request, res: Response) => {
-  if (!wantsJson(req)) { res.status(404).json({ error: 'Not found' }); return; }
+ssr.get('/contacts/:id/edit', (req: Request, res: Response) => {
   const contact = findContact(req.params.id);
   if (!contact) { res.status(404).json({ error: 'Contact not found' }); return; }
   res.json({
@@ -162,8 +165,7 @@ app.get('/contacts/:id/edit', (req: Request, res: Response) => {
 });
 
 // Contact detail
-app.get('/contacts/:id', (req: Request, res: Response) => {
-  if (!wantsJson(req)) { res.status(404).json({ error: 'Not found' }); return; }
+ssr.get('/contacts/:id', (req: Request, res: Response) => {
   const contact = findContact(req.params.id);
   if (!contact) { res.status(404).json({ error: 'Contact not found' }); return; }
   res.json({
@@ -176,8 +178,7 @@ app.get('/contacts/:id', (req: Request, res: Response) => {
 });
 
 // Favorites
-app.get('/favorites', (req: Request, res: Response) => {
-  if (!wantsJson(req)) { res.status(404).json({ error: 'Not found' }); return; }
+ssr.get('/favorites', (_req: Request, res: Response) => {
   const favorites = favoriteContacts();
   res.json({
     state: {
@@ -188,8 +189,7 @@ app.get('/favorites', (req: Request, res: Response) => {
 });
 
 // Group-filtered contacts
-app.get('/groups/:group', (req: Request, res: Response) => {
-  if (!wantsJson(req)) { res.status(404).json({ error: 'Not found' }); return; }
+ssr.get('/groups/:group', (req: Request, res: Response) => {
   const groupName = req.params.group;
   const filtered = contacts.filter(c => c.group === groupName);
   res.json({
@@ -200,6 +200,8 @@ app.get('/groups/:group', (req: Request, res: Response) => {
     },
   });
 });
+
+app.use(ssr);
 
 // ---------------------------------------------------------------------------
 // REST API endpoints (client-side CRUD)
