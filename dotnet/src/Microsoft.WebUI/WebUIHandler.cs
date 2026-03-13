@@ -22,9 +22,11 @@ public sealed class WebUIHandler : IDisposable
     /// <exception cref="WebUIException">Thrown when the native handler cannot be created.</exception>
     public WebUIHandler(string? plugin = null)
     {
-        _handle = plugin is null
+        string? normalizedPlugin = string.IsNullOrWhiteSpace(plugin) ? null : plugin.Trim();
+
+        _handle = normalizedPlugin is null
             ? NativeBindings.webui_handler_create()
-            : NativeBindings.webui_handler_create_with_plugin(plugin);
+            : NativeBindings.webui_handler_create_with_plugin(normalizedPlugin);
 
         if (_handle == IntPtr.Zero)
         {
