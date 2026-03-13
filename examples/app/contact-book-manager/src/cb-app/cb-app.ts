@@ -104,7 +104,7 @@ export class CbApp extends RenderableFASTElement(FASTElement) {
       this.totalFavorites = String(stats.totalFavorites);
       this.totalGroups = String(stats.totalGroups);
     } catch {
-      // Stats unavailable — keep current values
+      console.error('Failed to fetch stats from API');
     }
   }
 
@@ -114,7 +114,7 @@ export class CbApp extends RenderableFASTElement(FASTElement) {
       await this.refreshStats();
       Router.navigate('/contacts');
     } catch {
-      // Deletion failed — stay on current page
+      console.error(`Failed to delete contact with id ${id}`);
     }
   }
 
@@ -125,7 +125,7 @@ export class CbApp extends RenderableFASTElement(FASTElement) {
       // Re-navigate to refetch state for the active route
       Router.navigate(location.pathname);
     } catch {
-      // Toggle failed
+      console.error(`Failed to toggle favorite for contact with id ${id}`);
     }
   }
 
@@ -140,7 +140,7 @@ export class CbApp extends RenderableFASTElement(FASTElement) {
       await this.refreshStats();
       Router.navigate(`/contacts/${saved.id}`);
     } catch {
-      // Save failed
+      console.error('Failed to save contact', data);
     }
   }
 }
