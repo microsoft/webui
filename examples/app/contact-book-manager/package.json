@@ -17,9 +17,16 @@
     "#app/*": "./src/cb-app/*",
     "#api": "./src/api.ts"
    },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0"
+  },
   "devDependencies": {
     "@microsoft/fast-element": "catalog:",
     "@microsoft/fast-html": "catalog:",
+    "@microsoft/webui-router": "workspace:*",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
     "esbuild": "catalog:",
     "tslib": "catalog:",
     "typescript": "catalog:"
