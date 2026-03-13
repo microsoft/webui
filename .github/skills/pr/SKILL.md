@@ -42,3 +42,7 @@ Closes #43
 
 ## PR description
 Remove the Co-author-by line from the PR description. If you want to credit a co-author, add them as a reviewer instead. And check all the changes from its merge-base to get a detailed summary for the commit.
+
+## Framework change PRs
+
+For PRs touching core framework code (handler, parser, protocol, router, CLI runtime, FFI), apply the **code-review** skill checklist before opening the PR. It covers correctness, concurrency, performance, design, and style checks that complement the automated quality gate.

@@ -141,6 +141,7 @@ The `docs/` directory is a VitePress site for external developers consuming WebU
 ## Skills
 
 - **Pull request** — `skills/pr/SKILL.md`
+- **Code review** — `skills/code-review/SKILL.md`
 - **Quality gate** — `skills/quality-gate/SKILL.md`
 - **FFI boundary** — `skills/ffi/SKILL.md`
 - **Protobuf schema evolution** — `skills/protobuf/SKILL.md`
