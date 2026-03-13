@@ -419,10 +419,10 @@ mod tests {
     fn render_with_plugin(
         protocol: &WebUIProtocol,
         state: &serde_json::Value,
-        plugin: Box<dyn HandlerPlugin>,
+        factory: fn() -> Box<dyn HandlerPlugin>,
     ) -> String {
         let mut writer = TestWriter::new();
-        let mut handler = WebUIHandler::with_plugin(plugin);
+        let handler = WebUIHandler::with_plugin(factory);
         handler
             .handle(
                 protocol,
@@ -436,7 +436,7 @@ mod tests {
 
     fn render_no_plugin(protocol: &WebUIProtocol, state: &serde_json::Value) -> String {
         let mut writer = TestWriter::new();
-        let mut handler = WebUIHandler::new();
+        let handler = WebUIHandler::new();
         handler
             .handle(
                 protocol,
@@ -483,7 +483,7 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"name": "Alice"});
-        let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
+        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         // Root scope is disabled — no markers at root level
         assert_eq!(output, "<p>Alice</p>");
     }
@@ -505,7 +505,7 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"items": ["a", "b"]});
-        let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
+        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         // Root scope disabled — no for-loop binding or repeat item markers
         assert!(!output.contains("$$for-1$$"));
         assert!(!output.contains("fe-repeat"));
@@ -536,13 +536,13 @@ mod tests {
 
         // True case — root scope disabled, no markers; content still rendered
         let state = test_json!({"show": true});
-        let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
+        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         assert!(output.contains("<p>Visible</p>"));
         assert!(!output.contains("fe-b"));
 
         // False case — no content, no markers
         let state = test_json!({"show": false});
-        let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
+        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         assert!(!output.contains("<p>Visible</p>"));
         assert!(!output.contains("fe-b"));
     }
@@ -568,7 +568,7 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"before": "B", "inner": "I", "after": "A"});
-        let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
+        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         // Root scope disabled — no markers for root-level signals
         assert!(!output.contains("$$before$$"));
         assert!(!output.contains("$$after$$"));
@@ -594,7 +594,7 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"itemId": "42", "itemTitle": "Hello"});
-        let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
+        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         // Root scope disabled — no plugin data markers
         assert!(!output.contains("data-fe-c"));
         assert!(output.contains("id=\"42\""));
@@ -648,7 +648,7 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"name": "World", "content": "CONTENT"});
 
-        let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
+        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
 
         // Hydration markers should exist in the output (around component content)
         assert!(
@@ -783,7 +783,7 @@ mod tests {
             ]
         });
 
-        let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
+        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
 
         let expected = "\
             <div>\
@@ -860,7 +860,7 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
-        let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
+        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         // Hydration comments must be emitted even when signal is not found in state
         assert!(
             output.contains("<!--fe-b$$start$$0$$missing_field$$fe-b-->"),
@@ -903,7 +903,7 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
-        let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
+        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         // Hydration comments must be emitted even when collection is missing from state
         assert!(
             output.contains("<!--fe-b$$start$$0$$loop-body$$fe-b-->"),
@@ -936,7 +936,7 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"name": ""});
-        let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
+        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         assert!(
             output.contains("<!--fe-b$$start$$0$$name$$fe-b-->"),
             "Expected binding start marker for empty string signal, got: {output}"
@@ -975,7 +975,7 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"items": []});
-        let output = render_with_plugin(&protocol, &state, Box::new(FastHydrationPlugin::new()));
+        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         assert!(
             output.contains("<!--fe-b$$start$$0$$loop-body$$fe-b-->"),
             "Expected binding start marker for empty collection, got: {output}"

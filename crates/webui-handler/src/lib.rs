@@ -77,8 +77,11 @@ impl<'a> RenderOptions<'a> {
 }
 
 /// The main WebUI handler that processes protocols and renders them.
+///
+/// The handler is stateless: plugin instances are created per-render from
+/// the stored factory function, allowing concurrent renders with `&self`.
 pub struct WebUIHandler {
-    plugin: Option<Box<dyn HandlerPlugin>>,
+    plugin_factory: Option<fn() -> Box<dyn HandlerPlugin>>,
 }
 
 /// Context object for processing WebUI fragments
@@ -95,6 +98,8 @@ struct WebUIProcessContext<'a> {
     request_path: String,
     /// Component names visited during rendering (for selective f-template emission).
     rendered_components: HashSet<String>,
+    /// Per-render plugin instance created from the handler's factory.
+    plugin: Option<Box<dyn HandlerPlugin>>,
 }
 
 /// Convert hyphenated name to camelCase (e.g., "data-title" → "dataTitle").
@@ -229,13 +234,18 @@ fn find_best_route_match(fragments: &[WebUIFragment], request_path: &str) -> Opt
 impl WebUIHandler {
     /// Create a new WebUI handler with no plugin.
     pub fn new() -> Self {
-        Self { plugin: None }
+        Self {
+            plugin_factory: None,
+        }
     }
 
-    /// Create a new WebUI handler with a plugin.
-    pub fn with_plugin(plugin: Box<dyn HandlerPlugin>) -> Self {
+    /// Create a new WebUI handler with a plugin factory.
+    ///
+    /// Each render call creates a fresh plugin instance from the factory,
+    /// enabling concurrent renders with `&self`.
+    pub fn with_plugin(factory: fn() -> Box<dyn HandlerPlugin>) -> Self {
         Self {
-            plugin: Some(plugin),
+            plugin_factory: Some(factory),
         }
     }
 
@@ -244,7 +254,7 @@ impl WebUIHandler {
     /// `options.entry_id` selects the fragment to start rendering from.
     /// `options.request_path` controls server-side route matching.
     pub fn handle(
-        &mut self,
+        &self,
         protocol: &WebUIProtocol,
         state: &Value,
         options: &RenderOptions<'_>,
@@ -263,6 +273,7 @@ impl WebUIHandler {
             component_attrs: HashMap::new(),
             request_path: options.request_path.to_string(),
             rendered_components: HashSet::new(),
+            plugin: self.plugin_factory.map(|f| f()),
         };
         self.process_fragment_id(options.entry_id, &mut context)?;
 
@@ -278,7 +289,7 @@ impl WebUIHandler {
     /// normal page render flow (e.g., re-rendering a route component with
     /// modified state).
     pub fn handle_as_component(
-        &mut self,
+        &self,
         protocol: &WebUIProtocol,
         state: &Value,
         entry_id: &str,
@@ -286,10 +297,6 @@ impl WebUIHandler {
     ) -> Result<()> {
         if !protocol.fragments.contains_key(entry_id) {
             return Err(HandlerError::MissingFragment(entry_id.to_string()));
-        }
-
-        if let Some(p) = &mut self.plugin {
-            p.push_scope();
         }
 
         let mut context = WebUIProcessContext {
@@ -301,10 +308,16 @@ impl WebUIHandler {
             component_attrs: HashMap::new(),
             request_path: String::new(),
             rendered_components: HashSet::new(),
+            plugin: self.plugin_factory.map(|f| f()),
         };
+
+        if let Some(p) = &mut context.plugin {
+            p.push_scope();
+        }
+
         self.process_fragment_id(entry_id, &mut context)?;
 
-        if let Some(p) = &mut self.plugin {
+        if let Some(p) = &mut context.plugin {
             p.pop_scope();
         }
 
@@ -318,7 +331,7 @@ impl WebUIHandler {
     /// The `context` parameter contains scope-local variables that are accessible during rendering,
     /// such as loop iteration variables. This is separate from the global `state`.
     fn process_fragment_id(
-        &mut self,
+        &self,
         fragment_id: &str,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
@@ -334,7 +347,7 @@ impl WebUIHandler {
     /// The `context` maintains scope-specific variables that can be accessed by fragments
     /// during rendering, while `state` contains the global application state.
     fn process_fragment(
-        &mut self,
+        &self,
         fragments: &[WebUIFragment],
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
@@ -363,7 +376,7 @@ impl WebUIHandler {
                     self.process_attribute(attr, context)?;
                 }
                 Some(Fragment::Plugin(plugin_frag)) => {
-                    if let Some(p) = &mut self.plugin {
+                    if let Some(p) = &mut context.plugin {
                         p.on_plugin_data(&plugin_frag.data, context.writer)?;
                     }
                 }
@@ -437,7 +450,7 @@ impl WebUIHandler {
 
     /// Process a component fragment.
     fn process_component(
-        &mut self,
+        &self,
         component: &webui_protocol::WebUIFragmentComponent,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
@@ -453,13 +466,13 @@ impl WebUIHandler {
         // Component gets accumulated attrs as its local vars
         context.local_vars = saved_component_attrs;
 
-        if let Some(p) = &mut self.plugin {
+        if let Some(p) = &mut context.plugin {
             p.push_scope();
         }
 
         self.process_fragment_id(&component.fragment_id, context)?;
 
-        if let Some(p) = &mut self.plugin {
+        if let Some(p) = &mut context.plugin {
             p.pop_scope();
         }
 
@@ -526,7 +539,7 @@ impl WebUIHandler {
     /// This allows nested templates to access both the loop variable and any parent context.
     /// Example: `for item in items` makes "item" available in the loop body.
     fn process_for_loop(
-        &mut self,
+        &self,
         for_loop: &webui_protocol::WebUIFragmentFor,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
@@ -545,13 +558,13 @@ impl WebUIHandler {
             None => Vec::new(),
         };
 
-        if let Some(p) = &mut self.plugin {
+        if let Some(p) = &mut context.plugin {
             p.on_binding_start(&for_loop.fragment_id, context.writer)?;
         }
 
         let item_name = &for_loop.item;
         for (i, item) in items.into_iter().enumerate() {
-            if let Some(p) = &mut self.plugin {
+            if let Some(p) = &mut context.plugin {
                 p.on_repeat_item_start(i, context.writer)?;
                 p.push_scope();
             }
@@ -568,13 +581,13 @@ impl WebUIHandler {
                 }
             }
 
-            if let Some(p) = &mut self.plugin {
+            if let Some(p) = &mut context.plugin {
                 p.pop_scope();
                 p.on_repeat_item_end(i, context.writer)?;
             }
         }
 
-        if let Some(p) = &mut self.plugin {
+        if let Some(p) = &mut context.plugin {
             p.on_binding_end(&for_loop.fragment_id, context.writer)?;
         }
 
@@ -587,13 +600,13 @@ impl WebUIHandler {
     /// This prioritization allows local variables (like loop items) to override global state.
     /// If the value is not found in either scope, an empty string is returned.
     fn process_signal(
-        &mut self,
+        &self,
         signal: &webui_protocol::WebUIFragmentSignal,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         // Hook: emit plugin content (e.g., f-templates) before body_end
         if signal.raw && signal.value == "body_end" {
-            if let Some(p) = &mut self.plugin {
+            if let Some(p) = &mut context.plugin {
                 p.on_render_complete(
                     context.protocol,
                     &context.rendered_components,
@@ -602,7 +615,7 @@ impl WebUIHandler {
             }
         }
 
-        if let Some(p) = &mut self.plugin {
+        if let Some(p) = &mut context.plugin {
             p.on_binding_start(&signal.value, context.writer)?;
         }
 
@@ -610,7 +623,7 @@ impl WebUIHandler {
             self.write_signal_value(&value, signal.raw, context.writer)?;
         }
 
-        if let Some(p) = &mut self.plugin {
+        if let Some(p) = &mut context.plugin {
             p.on_binding_end(&signal.value, context.writer)?;
         }
         Ok(())
@@ -642,7 +655,7 @@ impl WebUIHandler {
 
     /// Process an if condition fragment.
     fn process_if(
-        &mut self,
+        &self,
         if_cond: &webui_protocol::WebUIFragmentIf,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
@@ -652,23 +665,23 @@ impl WebUIHandler {
             .ok_or_else(|| HandlerError::Rendering("If fragment missing condition".to_string()))?;
         let condition_met = self.evaluate_condition(condition, context)?;
 
-        if let Some(p) = &mut self.plugin {
+        if let Some(p) = &mut context.plugin {
             p.on_binding_start(&if_cond.fragment_id, context.writer)?;
         }
 
         if condition_met {
-            if let Some(p) = &mut self.plugin {
+            if let Some(p) = &mut context.plugin {
                 p.push_scope();
             }
 
             self.process_fragment_id(&if_cond.fragment_id, context)?;
 
-            if let Some(p) = &mut self.plugin {
+            if let Some(p) = &mut context.plugin {
                 p.pop_scope();
             }
         }
 
-        if let Some(p) = &mut self.plugin {
+        if let Some(p) = &mut context.plugin {
             p.on_binding_end(&if_cond.fragment_id, context.writer)?;
         }
 
@@ -677,7 +690,7 @@ impl WebUIHandler {
 
     /// Process an attribute fragment by rendering the attribute name/value pair.
     fn process_attribute(
-        &mut self,
+        &self,
         attr: &webui_protocol::WebUIFragmentAttribute,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
@@ -771,7 +784,7 @@ impl WebUIHandler {
 
     /// Render a template attribute's fragments into a raw (unescaped) string.
     fn render_template_attr_value(
-        &mut self,
+        &self,
         template_id: &str,
         context: &WebUIProcessContext,
     ) -> Result<String> {
@@ -802,7 +815,7 @@ impl WebUIHandler {
     ///
     /// Like `handle()` but does not call `writer.end()`.
     pub fn render(
-        &mut self,
+        &self,
         protocol: &WebUIProtocol,
         state: &Value,
         options: &RenderOptions<'_>,
@@ -817,6 +830,7 @@ impl WebUIHandler {
             component_attrs: HashMap::new(),
             request_path: options.request_path.to_string(),
             rendered_components: HashSet::new(),
+            plugin: self.plugin_factory.map(|f| f()),
         };
 
         self.process_fragment_id(options.entry_id, &mut context)?;
@@ -848,7 +862,7 @@ pub fn handle(
     options: &RenderOptions<'_>,
     writer: &mut dyn ResponseWriter,
 ) -> Result<()> {
-    let mut handler = WebUIHandler::new();
+    let handler = WebUIHandler::new();
     handler.handle(protocol, state, options, writer)
 }
 

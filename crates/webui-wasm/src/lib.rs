@@ -120,9 +120,9 @@ fn build_protocol_inner(
 /// Create a handler with an optional plugin.
 fn create_handler(plugin: Option<&str>) -> Result<WebUIHandler, BuildError> {
     match plugin {
-        Some("fast") => Ok(WebUIHandler::with_plugin(Box::new(
-            FastHydrationPlugin::new(),
-        ))),
+        Some("fast") => Ok(WebUIHandler::with_plugin(|| {
+            Box::new(FastHydrationPlugin::new())
+        })),
         Some(unknown) => Err(BuildError::Render(format!("Unknown plugin: {unknown}"))),
         None => Ok(WebUIHandler::new()),
     }
@@ -141,7 +141,7 @@ fn render_inner(
         serde_json::from_str(state_json).map_err(|e| BuildError::State(e.to_string()))?;
 
     let mut writer = StringWriter::with_capacity(1024);
-    let mut handler = create_handler(plugin)?;
+    let handler = create_handler(plugin)?;
     handler
         .render(
             &protocol,
@@ -167,7 +167,7 @@ pub(crate) fn build_and_render_inner(
         serde_json::from_str(state_json).map_err(|e| BuildError::State(e.to_string()))?;
 
     let mut writer = StringWriter::with_capacity(1024);
-    let mut handler = create_handler(None)?;
+    let handler = create_handler(None)?;
     handler
         .render(
             &protocol,

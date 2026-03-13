@@ -99,7 +99,7 @@ async fn handle_index(protocol: web::Data<WebUIProtocol>) -> HttpResponse {
     let state = serde_json::Value::Object(state_map);
 
     let mut writer = MemoryWriter::with_capacity(256 * 1024);
-    let mut handler = WebUIHandler::new();
+    let handler = WebUIHandler::new();
 
     if let Err(e) = handler.handle(
         &protocol,

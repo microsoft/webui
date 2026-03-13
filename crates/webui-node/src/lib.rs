@@ -192,8 +192,8 @@ pub fn render(
         .map_err(|e| NapiError::from_reason(format!("State JSON error: {e}")))?;
 
     let mut writer = CallbackWriter::new(&on_chunk);
-    let mut handler = match plugin.as_deref() {
-        Some("fast") => WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new())),
+    let handler = match plugin.as_deref() {
+        Some("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
         Some(unknown) => {
             return Err(NapiError::from_reason(format!("Unknown plugin: {unknown}")));
         }
@@ -235,7 +235,7 @@ mod tests {
         let state: Value = serde_json::from_str(state_json).map_err(|e| e.to_string())?;
 
         let mut output = String::with_capacity(1024);
-        let mut handler = WebUIHandler::new();
+        let handler = WebUIHandler::new();
 
         struct StringWriter<'a> {
             output: &'a mut String,

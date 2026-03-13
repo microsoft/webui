@@ -376,8 +376,8 @@ Injects FAST-HTML hydration comment markers for client-side re-hydration:
 
 **Usage:**
 ```rust
-let mut handler = WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new()));
-handler.handle(&protocol, &state, &mut writer)?;
+let handler = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));
+handler.handle(&protocol, &state, &options, &mut writer)?;
 ```
 ### Fragment Processing
 - **Raw fragments:** Write value directly to output

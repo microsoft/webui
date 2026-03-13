@@ -158,7 +158,7 @@ pub unsafe extern "C" fn webui_handler_create_with_plugin(plugin_id: *const c_ch
         WebUIHandler::new()
     } else {
         match CStr::from_ptr(plugin_id).to_str() {
-            Ok("fast") => WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new())),
+            Ok("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
             Ok(unknown) => {
                 set_last_error(format!("unknown plugin: {unknown}"));
                 return std::ptr::null_mut();
@@ -236,7 +236,7 @@ pub unsafe extern "C" fn webui_handler_render(
     }
 
     // SAFETY: caller guarantees handler_ptr is valid and exclusively owned.
-    let context = &mut *(handler_ptr as *mut HandlerContext);
+    let context = &*(handler_ptr as *const HandlerContext);
 
     // SAFETY: caller guarantees protocol_data points to protocol_len valid bytes.
     let protocol_bytes = std::slice::from_raw_parts(protocol_data, protocol_len);
@@ -380,7 +380,7 @@ pub unsafe extern "C" fn webui_render(
     };
 
     // --- Render --------------------------------------------------------------
-    let mut handler = WebUIHandler::new();
+    let handler = WebUIHandler::new();
     let mut writer = StringResponseWriter::new();
 
     match handler.render(

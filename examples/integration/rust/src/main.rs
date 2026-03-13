@@ -56,8 +56,8 @@ fn main() -> Result<()> {
     let state: serde_json::Value =
         serde_json::from_str(&state_json).context("Failed to parse state JSON")?;
 
-    let mut handler = match plugin_name {
-        Some("fast") => WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new())),
+    let handler = match plugin_name {
+        Some("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
         Some(unknown) => anyhow::bail!("Unknown plugin: {unknown}"),
         None => WebUIHandler::new(),
     };

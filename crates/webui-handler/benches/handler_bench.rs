@@ -158,7 +158,7 @@ fn handler_plugin_fast_bench(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(baseline_writer.len() as u64));
 
     group.bench_function(BenchmarkId::new("render", "without_plugin"), |b| {
-        let mut handler = WebUIHandler::new();
+        let handler = WebUIHandler::new();
         let mut writer = BenchWriter::new(16 * 1024);
 
         b.iter(|| {
@@ -175,7 +175,7 @@ fn handler_plugin_fast_bench(c: &mut Criterion) {
     });
 
     group.bench_function(BenchmarkId::new("render", "with_fast_plugin"), |b| {
-        let mut handler = WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new()));
+        let handler = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));
         let mut writer = BenchWriter::new(24 * 1024);
 
         b.iter(|| {
@@ -202,7 +202,7 @@ fn handler_loop_scaling_bench(c: &mut Criterion) {
         let state = build_state(count);
 
         // Pre-render to measure output size for throughput
-        let mut handler = WebUIHandler::new();
+        let handler = WebUIHandler::new();
         let mut writer = BenchWriter::new(count * 80 + 1024);
         handler
             .handle(
@@ -311,7 +311,7 @@ fn handler_condition_variety_bench(c: &mut Criterion) {
     let protocol = build_condition_protocol();
 
     let state_true = build_condition_state();
-    let mut handler = WebUIHandler::new();
+    let handler = WebUIHandler::new();
     let mut writer = BenchWriter::new(1024);
     handler
         .handle(
@@ -424,7 +424,7 @@ fn handler_nested_components_bench(c: &mut Criterion) {
     let protocol = build_nested_component_protocol();
     let state = build_state(50);
 
-    let mut handler = WebUIHandler::new();
+    let handler = WebUIHandler::new();
     let mut writer = BenchWriter::new(8 * 1024);
     handler
         .handle(

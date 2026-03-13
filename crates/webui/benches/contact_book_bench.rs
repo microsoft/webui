@@ -315,7 +315,7 @@ fn handler_rendering_bench(c: &mut Criterion) {
 
     for (count, state) in &fixture.states {
         // Pre-render to measure output size for throughput calculation
-        let mut handler = WebUIHandler::new();
+        let handler = WebUIHandler::new();
         let mut warmup_writer = BenchWriter::new(count * BYTES_PER_CONTACT + BASE_HTML_BYTES);
         handler
             .handle(
@@ -328,7 +328,7 @@ fn handler_rendering_bench(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(warmup_writer.len() as u64));
 
         group.bench_with_input(BenchmarkId::new("contacts", count), state, |b, state| {
-            let mut h = WebUIHandler::new();
+            let h = WebUIHandler::new();
             let mut w = BenchWriter::new(warmup_writer.len() + WRITER_HEADROOM);
 
             b.iter(|| {
@@ -357,7 +357,7 @@ fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
     group.measurement_time(MEASUREMENT_TIME);
 
     for (count, state) in &fixture.states {
-        let mut handler = WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new()));
+        let handler = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));
         let mut warmup_writer =
             BenchWriter::new(count * BYTES_PER_CONTACT_WITH_PLUGIN + BASE_HTML_BYTES_WITH_PLUGIN);
         handler
@@ -373,7 +373,7 @@ fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(warmup_writer.len() as u64));
 
         group.bench_with_input(BenchmarkId::new("contacts", count), state, |b, state| {
-            let mut h = WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new()));
+            let h = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));
             let mut w = BenchWriter::new(warmup_writer.len() + WRITER_HEADROOM);
 
             b.iter(|| {
@@ -500,8 +500,8 @@ fn collect_render_samples(
     use_plugin: bool,
 ) -> SummaryRow {
     // Warm up — also measures output size
-    let mut handler = if use_plugin {
-        WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new()))
+    let handler = if use_plugin {
+        WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()))
     } else {
         WebUIHandler::new()
     };

@@ -427,8 +427,8 @@ fn build_and_render(
 
     // Render to memory
     let mut writer = MemoryWriter::with_capacity(4096);
-    let mut handler = match config.app_args.plugin.as_deref() {
-        Some("fast") => WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new())),
+    let handler = match config.app_args.plugin.as_deref() {
+        Some("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
         _ => WebUIHandler::new(),
     };
     handler.handle(
@@ -539,8 +539,8 @@ async fn render_page_response(
     };
 
     let mut writer = MemoryWriter::with_capacity(4096);
-    let mut handler = match plugin.as_deref() {
-        Some("fast") => WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new())),
+    let handler = match plugin.as_deref() {
+        Some("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
         _ => WebUIHandler::new(),
     };
 

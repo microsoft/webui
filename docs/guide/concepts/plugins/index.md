@@ -41,8 +41,8 @@ When `--plugin=fast` is specified:
 use webui_handler::plugin::FastHydrationPlugin;
 use webui::WebUIHandler;
 
-let mut handler = WebUIHandler::with_plugin(Box::new(FastHydrationPlugin::new()));
-handler.handle(&protocol, &state, &mut writer)?;
+let handler = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));
+handler.handle(&protocol, &state, &options, &mut writer)?;
 ```
 
 ```js [Node.js]
