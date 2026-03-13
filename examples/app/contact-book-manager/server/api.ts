@@ -130,25 +130,34 @@ ssr.use((req: Request, res: Response, next) => {
   next();
 });
 
-// Dashboard
-ssr.get('/', (_req: Request, res: Response) => {
-  const stats = buildStats();
-  res.json({ state: stats });
-});
+/** Lightweight state needed by the sidebar shell during SSR. */
+function sidebarState() {
+  return {
+    totalContacts: contacts.length,
+    totalFavorites: favoriteContacts().length,
+    totalGroups: uniqueGroups().length,
+    groups: uniqueGroups(),
+  };
+}
 
-// All contacts
-ssr.get('/contacts', (_req: Request, res: Response) => {
+// Dashboard — needs stats for the stat cards + recent contacts
+ssr.get('/', (_req: Request, res: Response) => {
   res.json({
     state: {
-      ...buildStats(),
-      contacts,
+      ...sidebarState(),
+      recentContacts: recentContacts(5),
     },
   });
 });
 
+// All contacts
+ssr.get('/contacts', (_req: Request, res: Response) => {
+  res.json({ state: { ...sidebarState(), contacts } });
+});
+
 // Add contact form — must be before /contacts/:id to avoid matching "add" as an id
 ssr.get('/contacts/add', (_req: Request, res: Response) => {
-  res.json({ state: { ...buildStats(), formTitle: 'Add Contact' } });
+  res.json({ state: { ...sidebarState(), formTitle: 'Add Contact' } });
 });
 
 // Edit contact form — must be before /contacts/:id to avoid conflicts
@@ -157,7 +166,7 @@ ssr.get('/contacts/:id/edit', (req: Request, res: Response) => {
   if (!contact) { res.status(404).json({ error: 'Contact not found' }); return; }
   res.json({
     state: {
-      ...buildStats(),
+      ...sidebarState(),
       ...contact,
       formTitle: 'Edit Contact',
     },
@@ -168,43 +177,25 @@ ssr.get('/contacts/:id/edit', (req: Request, res: Response) => {
 ssr.get('/contacts/:id', (req: Request, res: Response) => {
   const contact = findContact(req.params.id);
   if (!contact) { res.status(404).json({ error: 'Contact not found' }); return; }
-  res.json({
-    state: {
-      ...buildStats(),
-      ...contact,
-      selectedContact: contact,
-    },
-  });
+  res.json({ state: { ...sidebarState(), selectedContact: contact } });
 });
 
 // Favorites
 ssr.get('/favorites', (_req: Request, res: Response) => {
-  const favorites = favoriteContacts();
-  res.json({
-    state: {
-      ...buildStats(),
-      contacts: favorites,
-    },
-  });
+  res.json({ state: { ...sidebarState(), contacts: favoriteContacts() } });
 });
 
 // Group-filtered contacts
 ssr.get('/groups/:group', (req: Request, res: Response) => {
   const groupName = req.params.group;
   const filtered = contacts.filter(c => c.group === groupName);
-  res.json({
-    state: {
-      ...buildStats(),
-      contacts: filtered,
-      groupName,
-    },
-  });
+  res.json({ state: { ...sidebarState(), contacts: filtered, groupName } });
 });
-
-app.use(ssr);
 
 // ---------------------------------------------------------------------------
 // REST API endpoints (client-side CRUD)
+// Must be registered before the SSR router so that /api/* requests are not
+// blocked by the SSR content-negotiation middleware.
 // ---------------------------------------------------------------------------
 
 // List contacts with optional filtering
@@ -304,6 +295,12 @@ app.delete('/api/contacts/:id', (req: Request, res: Response) => {
 app.get('/api/stats', (_req: Request, res: Response) => {
   res.json(buildStats());
 });
+
+// ---------------------------------------------------------------------------
+// SSR route state endpoints (content-negotiated, must come after /api/*)
+// ---------------------------------------------------------------------------
+
+app.use(ssr);
 
 // ---------------------------------------------------------------------------
 // Start
