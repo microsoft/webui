@@ -70,23 +70,34 @@
   margin-top: var(--spacing-xs);
 }
 
-.group-option {
+.group-radio {
+  cursor: pointer;
+}
+
+.group-radio input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.group-radio-label {
+  display: inline-block;
   padding: var(--spacing-s) var(--spacing-l);
   border: 1px solid var(--color-neutral-300);
   border-radius: 20px;
   background: var(--color-white);
-  cursor: pointer;
   font-size: var(--font-size-s);
   font-family: inherit;
   transition: all 0.15s;
+  text-transform: capitalize;
 }
 
-.group-option:hover {
+.group-radio:hover .group-radio-label {
   border-color: var(--color-brand-primary);
   color: var(--color-brand-primary);
 }
 
-.group-option.active {
+.group-radio input[type="radio"]:checked + .group-radio-label {
   background: var(--color-brand-primary);
   color: var(--color-white);
   border-color: var(--color-brand-primary);

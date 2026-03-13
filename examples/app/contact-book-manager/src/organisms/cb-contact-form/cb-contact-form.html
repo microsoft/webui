@@ -32,10 +32,12 @@
       <label class="field-label">Group</label>
       <div class="group-selector">
         <for each="g in groups">
-          <button type="button" class="group-option" data-group="{{g}}">{{g}}</button>
+          <label class="group-radio">
+            <input type="radio" name="group" value="{{g}}" ?checked="{{selectedGroup == g}}" />
+            <span class="group-radio-label">{{g}}</span>
+          </label>
         </for>
       </div>
-      <input type="hidden" name="group" value="Other" class="group-input" />
     </div>
     <div class="form-field-full">
       <label class="field-label">Notes</label>

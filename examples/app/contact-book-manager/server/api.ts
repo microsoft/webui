@@ -136,7 +136,7 @@ function sidebarState() {
     totalContacts: contacts.length,
     totalFavorites: favoriteContacts().length,
     totalGroups: uniqueGroups().length,
-    groups: uniqueGroups(),
+    groups: uniqueGroups().map(g => g.toLowerCase()),
   };
 }
 
@@ -144,6 +144,7 @@ function sidebarState() {
 ssr.get('/', (_req: Request, res: Response) => {
   res.json({
     state: {
+      page: 'dashboard',
       ...sidebarState(),
       recentContacts: recentContacts(5),
     },
@@ -152,12 +153,12 @@ ssr.get('/', (_req: Request, res: Response) => {
 
 // All contacts
 ssr.get('/contacts', (_req: Request, res: Response) => {
-  res.json({ state: { ...sidebarState(), contacts } });
+  res.json({ state: { page: 'contacts', ...sidebarState(), contacts } });
 });
 
 // Add contact form — must be before /contacts/:id to avoid matching "add" as an id
 ssr.get('/contacts/add', (_req: Request, res: Response) => {
-  res.json({ state: { ...sidebarState(), formTitle: 'Add Contact' } });
+  res.json({ state: { page: 'contacts', ...sidebarState(), formTitle: 'Add Contact' } });
 });
 
 // Edit contact form — must be before /contacts/:id to avoid conflicts
@@ -166,30 +167,41 @@ ssr.get('/contacts/:id/edit', (req: Request, res: Response) => {
   if (!contact) { res.status(404).json({ error: 'Contact not found' }); return; }
   res.json({
     state: {
+      page: 'contacts',
       ...sidebarState(),
       ...contact,
+      selectedGroup: contact.group.toLowerCase(),
       formTitle: 'Edit Contact',
     },
   });
 });
 
-// Contact detail
+// Contact detail — spread contact fields at top level for SSR template bindings
 ssr.get('/contacts/:id', (req: Request, res: Response) => {
   const contact = findContact(req.params.id);
   if (!contact) { res.status(404).json({ error: 'Contact not found' }); return; }
-  res.json({ state: { ...sidebarState(), selectedContact: contact } });
+  res.json({ state: { page: 'contacts', ...sidebarState(), ...contact, selectedContact: contact } });
 });
 
 // Favorites
 ssr.get('/favorites', (_req: Request, res: Response) => {
-  res.json({ state: { ...sidebarState(), contacts: favoriteContacts() } });
+  res.json({ state: { page: 'favorites', ...sidebarState(), contacts: favoriteContacts() } });
 });
 
 // Group-filtered contacts
 ssr.get('/groups/:group', (req: Request, res: Response) => {
-  const groupName = req.params.group;
-  const filtered = contacts.filter(c => c.group === groupName);
-  res.json({ state: { ...sidebarState(), contacts: filtered, groupName } });
+  const groupSlug = req.params.group;
+  const filtered = contacts.filter(c => c.group.toLowerCase() === groupSlug.toLowerCase());
+  const displayName = groupSlug.charAt(0).toUpperCase() + groupSlug.slice(1);
+  res.json({
+    state: {
+      page: 'group',
+      activeGroup: groupSlug.toLowerCase(),
+      ...sidebarState(),
+      contacts: filtered,
+      groupName: displayName,
+    },
+  });
 });
 
 // ---------------------------------------------------------------------------

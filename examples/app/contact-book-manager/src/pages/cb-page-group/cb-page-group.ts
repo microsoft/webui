@@ -32,7 +32,8 @@ export class CbPageGroup extends RenderableFASTElement(FASTElement) {
   }
 
   setInitialState(state: Record<string, unknown>, params?: Record<string, string>): void {
-    this.groupName = String(state.groupName ?? params?.['group'] ?? '');
+    const raw = String(state.groupName ?? params?.['group'] ?? '');
+    this.groupName = raw.charAt(0).toUpperCase() + raw.slice(1);
     this.contacts = (state.contacts as any[]) ?? [];
   }
 }

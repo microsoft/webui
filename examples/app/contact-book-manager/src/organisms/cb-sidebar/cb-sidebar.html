@@ -1,16 +1,16 @@
 <template shadowrootmode="open">
   <nav class="sidebar">
     <div class="nav-section">
-      <a class="nav-item active" data-nav="Dashboard" data-href="/" href="/">
+      <a class="nav-item" ?data-active="{{page == 'dashboard'}}" data-nav="Dashboard" href="/">
         <span class="nav-icon nav-icon-dashboard"></span>
         <span class="nav-label">Dashboard</span>
       </a>
-      <a class="nav-item" data-nav="All Contacts" data-href="/contacts" href="/contacts">
+      <a class="nav-item" ?data-active="{{page == 'contacts'}}" data-nav="All Contacts" href="/contacts">
         <span class="nav-icon nav-icon-contacts"></span>
         <span class="nav-label">All Contacts</span>
         <span class="nav-count">{{totalContacts}}</span>
       </a>
-      <a class="nav-item" data-nav="Favorites" data-href="/favorites" href="/favorites">
+      <a class="nav-item" ?data-active="{{page == 'favorites'}}" data-nav="Favorites" href="/favorites">
         <span class="nav-icon nav-icon-favorites"></span>
         <span class="nav-label">Favorites</span>
         <span class="nav-count">{{totalFavorites}}</span>
@@ -20,7 +20,7 @@
     <div class="nav-section">
       <h3 class="nav-heading">Groups</h3>
       <for each="group in groups">
-        <a class="nav-item" data-nav="{{group}}" href="/groups/{{group}}">
+        <a class="nav-item nav-item-group" ?data-active="{{activeGroup == group}}" data-nav="{{group}}" href="/groups/{{group}}">
           <span class="nav-icon nav-icon-folder"></span>
           <span class="nav-label">{{group}}</span>
         </a>

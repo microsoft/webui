@@ -13,9 +13,9 @@ const ROUTE_TO_PAGE: Record<string, string> = {
   contacts: 'contacts',
   favorites: 'favorites',
   group: 'group',
-  detail: 'detail',
-  add: 'add',
-  edit: 'edit',
+  detail: 'contacts',
+  add: 'contacts',
+  edit: 'contacts',
 };
 
 export class CbApp extends RenderableFASTElement(FASTElement) {
@@ -83,6 +83,8 @@ export class CbApp extends RenderableFASTElement(FASTElement) {
   }
 
   setInitialState(state: Record<string, unknown>): void {
+    if (state.page !== undefined) this.page = String(state.page);
+    if (state.activeGroup !== undefined) this.activeGroup = String(state.activeGroup);
     if (state.totalContacts !== undefined) this.totalContacts = String(state.totalContacts);
     if (state.totalFavorites !== undefined) this.totalFavorites = String(state.totalFavorites);
     if (state.totalGroups !== undefined) this.totalGroups = String(state.totalGroups);
@@ -92,7 +94,7 @@ export class CbApp extends RenderableFASTElement(FASTElement) {
   private onRouteChanged(routeName: string, params: Record<string, string>): void {
     this.page = ROUTE_TO_PAGE[routeName] || '';
     if (routeName === 'group') {
-      this.activeGroup = params['group'] || 'all';
+      this.activeGroup = (params['group'] || 'all').toLowerCase();
     }
   }
 

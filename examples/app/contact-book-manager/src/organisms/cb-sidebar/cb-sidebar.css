@@ -50,7 +50,7 @@
   background: var(--color-neutral-150);
 }
 
-.nav-item.active {
+.nav-item[data-active] {
   background: var(--color-brand-light);
   color: var(--color-brand-primary);
 }
@@ -77,7 +77,7 @@
   text-align: center;
 }
 
-.nav-item.active .nav-count {
+.nav-item[data-active] .nav-count {
   background: var(--color-brand-accent);
   color: var(--color-brand-primary);
 }
@@ -86,6 +86,10 @@
 .nav-icon-contacts::before { content: '\1F465'; }
 .nav-icon-favorites::before { content: '\2B50'; }
 .nav-icon-folder::before { content: '\1F4C1'; }
+
+.nav-item-group .nav-label {
+  text-transform: capitalize;
+}
 
 @media (max-width: 768px) {
   :host {
