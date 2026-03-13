@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <PackageId>Microsoft.WebUI.Runtime.linux-arm64</PackageId>
+    <RuntimeIdentifier>linux-arm64</RuntimeIdentifier>
+    <Description>WebUI native runtime for Linux ARM64.</Description>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IsPackable>true</IsPackable>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <!-- No managed code in this package -->
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../runtimes/linux-arm64/native/libwebui_ffi.so"
+          Pack="true"
+          PackagePath="runtimes/linux-arm64/native/"
+          Visible="false" />
+  </ItemGroup>
+</Project>

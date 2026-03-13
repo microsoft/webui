@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <PackageId>Microsoft.WebUI.Runtime.win-x64</PackageId>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Description>WebUI native runtime for Windows x64.</Description>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IsPackable>true</IsPackable>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <!-- No managed code in this package -->
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../../runtimes/win-x64/native/webui_ffi.dll"
+          Pack="true"
+          PackagePath="runtimes/win-x64/native/"
+          Visible="false" />
+  </ItemGroup>
+</Project>

@@ -1,6 +1,7 @@
 mod build_examples;
 mod build_wasm;
 mod dev;
+mod dotnet;
 mod process;
 mod util;
 mod version;
@@ -57,6 +58,10 @@ fn main() -> ExitCode {
             let ver = args.get(2).map(|s| s.as_str());
             version::run(ver)
         }
+        Some("publish-stage") => {
+            let extra: Vec<String> = args.iter().skip(2).cloned().collect();
+            dotnet::run_stage(&extra)
+        }
         _ => usage(),
     }
 }
@@ -76,7 +81,8 @@ fn usage() -> ExitCode {
            docs    Build the documentation site\n  \
            bench <name> [-- <criterion args>]  Run benchmarks for a target crate (parser, handler, protocol, expressions, state, webui, all)\n  \
            dev <app>  Run example app in dev mode (server + client watch concurrently)\n  \
-           version <semver>  Update version across all Cargo.toml and package.json files"
+           version <semver>  Update version across all Cargo.toml and package.json files\n  \
+           publish-stage [--target <triple|all>] [--profile release]  Stage native binaries for npm + NuGet packaging"
     );
     ExitCode::SUCCESS
 }

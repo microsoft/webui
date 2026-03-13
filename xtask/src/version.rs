@@ -96,6 +96,34 @@ fn update_package_json(path: &Path, version: &str) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Update `<Version>...</Version>` in dotnet/Directory.Build.props.
+fn update_dotnet_version(root: &Path, version: &str) -> Result<(), String> {
+    let props_path = root.join("dotnet").join("Directory.Build.props");
+    if !props_path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&props_path)
+        .map_err(|e| format!("Failed to read Directory.Build.props: {e}"))?;
+
+    let Some(start) = content.find("<Version>") else {
+        return Err("Could not find <Version> tag in Directory.Build.props".to_string());
+    };
+    let tag_value_start = start + "<Version>".len();
+    let Some(end) = content[tag_value_start..].find("</Version>") else {
+        return Err("Could not find closing </Version> tag in Directory.Build.props".to_string());
+    };
+
+    let mut result = String::with_capacity(content.len());
+    result.push_str(&content[..tag_value_start]);
+    result.push_str(version);
+    result.push_str(&content[tag_value_start + end..]);
+
+    fs::write(&props_path, result)
+        .map_err(|e| format!("Failed to write Directory.Build.props: {e}"))?;
+    Ok(())
+}
+
 /// Find all package.json files under `packages/`.
 fn find_package_jsons(root: &Path) -> Vec<PathBuf> {
     let packages_dir = root.join("packages");
@@ -161,7 +189,25 @@ pub fn run(version: Option<&str>) -> ExitCode {
     }
     eprintln!("  {} Cargo.toml (workspace)", console::style("✔").green());
 
-    // 2. Update all package.json files under packages/
+    // 2. Update dotnet/Directory.Build.props
+    if let Err(e) = update_dotnet_version(&root, version) {
+        eprintln!("  {} {e}", console::style("✘").red().bold());
+        return ExitCode::FAILURE;
+    }
+    if root.join("dotnet").join("Directory.Build.props").exists() {
+        eprintln!(
+            "  {} dotnet/Directory.Build.props",
+            console::style("✔").green()
+        );
+    }
+
+    let dotnet_count: usize = if root.join("dotnet").join("Directory.Build.props").exists() {
+        1
+    } else {
+        0
+    };
+
+    // 3. Update all package.json files under packages/
     let package_jsons = find_package_jsons(&root);
     let mut count = 0;
     for pkg_path in &package_jsons {
@@ -182,8 +228,8 @@ pub fn run(version: Option<&str>) -> ExitCode {
     eprintln!(
         "\n  {} Updated {} file{}\n",
         console::style("✨").green(),
-        console::style(1 + count).bold(),
-        if count == 0 { "" } else { "s" }
+        console::style(1 + dotnet_count + count).bold(),
+        if (dotnet_count + count) == 0 { "" } else { "s" }
     );
 
     ExitCode::SUCCESS
@@ -267,5 +313,32 @@ mod tests {
         let content = fs::read_to_string(dir.path().join("Cargo.toml")).unwrap();
         assert!(content.contains("version = \"3.0.0\""));
         assert!(content.contains("edition = \"2021\""));
+    }
+
+    #[test]
+    fn test_update_dotnet_version() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let dotnet_dir = dir.path().join("dotnet");
+        fs::create_dir_all(&dotnet_dir).unwrap();
+        let props = dotnet_dir.join("Directory.Build.props");
+        fs::write(
+            &props,
+            "<Project>\n  <PropertyGroup>\n    <Version>0.0.1</Version>\n  </PropertyGroup>\n</Project>\n",
+        )
+        .unwrap();
+
+        update_dotnet_version(dir.path(), "1.2.3").unwrap();
+
+        let content = fs::read_to_string(&props).unwrap();
+        assert!(content.contains("<Version>1.2.3</Version>"));
+        assert!(!content.contains("<Version>0.0.1</Version>"));
+    }
+
+    #[test]
+    fn test_update_dotnet_version_missing_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // No dotnet dir — should silently succeed
+        let result = update_dotnet_version(dir.path(), "1.0.0");
+        assert!(result.is_ok());
     }
 }
