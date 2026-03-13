@@ -87,6 +87,10 @@ pub struct AttrMatcher {
     pub attr_skip: bool,
     pub raw_value: bool,
     pub bool_signal: Option<String>,
+    /// Match a boolean attribute with a predicate condition (left, op, right).
+    pub bool_predicate: Option<(String, i32, String)>,
+    /// Match a boolean attribute with a negation condition (inner identifier).
+    pub bool_not: Option<String>,
 }
 
 // ── Matcher constructors ────────────────────────────────────────────
@@ -166,6 +170,24 @@ pub fn bool_attr_start(name: &str, signal: &str) -> FragmentMatcher {
         name: name.to_string(),
         bool_signal: Some(signal.to_string()),
         attr_start: true,
+        ..Default::default()
+    })
+}
+
+/// Match a boolean attribute with a predicate condition (e.g., `?disabled={{count > 5}}`).
+pub fn bool_attr_predicate(name: &str, left: &str, op: i32, right: &str) -> FragmentMatcher {
+    FragmentMatcher::Attribute(AttrMatcher {
+        name: name.to_string(),
+        bool_predicate: Some((left.to_string(), op, right.to_string())),
+        ..Default::default()
+    })
+}
+
+/// Match a boolean attribute with a negated condition (e.g., `?disabled={{!isReady}}`).
+pub fn bool_attr_not(name: &str, inner: &str) -> FragmentMatcher {
+    FragmentMatcher::Attribute(AttrMatcher {
+        name: name.to_string(),
+        bool_not: Some(inner.to_string()),
         ..Default::default()
     })
 }
@@ -304,6 +326,62 @@ pub fn assert_fragment_list(
                             "Fragment[{}]: expected identifier condition, got {:?}",
                             i, other
                         ),
+                    }
+                }
+                if let Some((ref left, op, ref right)) = m.bool_predicate {
+                    let cond = a
+                        .condition_tree
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("Fragment[{}]: expected condition_tree", i));
+                    match cond.expr.as_ref() {
+                        Some(webui_protocol::condition_expr::Expr::Predicate(pred)) => {
+                            assert_eq!(
+                                pred.left, *left,
+                                "Fragment[{}]: predicate left mismatch",
+                                i
+                            );
+                            assert_eq!(
+                                pred.operator, op,
+                                "Fragment[{}]: predicate operator mismatch",
+                                i
+                            );
+                            assert_eq!(
+                                pred.right, *right,
+                                "Fragment[{}]: predicate right mismatch",
+                                i
+                            );
+                        }
+                        other => panic!(
+                            "Fragment[{}]: expected predicate condition, got {:?}",
+                            i, other
+                        ),
+                    }
+                }
+                if let Some(ref inner) = m.bool_not {
+                    let cond = a
+                        .condition_tree
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("Fragment[{}]: expected condition_tree", i));
+                    match cond.expr.as_ref() {
+                        Some(webui_protocol::condition_expr::Expr::Not(not_cond)) => {
+                            let inner_cond = not_cond.condition.as_ref().unwrap_or_else(|| {
+                                panic!("Fragment[{}]: not condition missing inner", i)
+                            });
+                            match inner_cond.expr.as_ref() {
+                                Some(webui_protocol::condition_expr::Expr::Identifier(id)) => {
+                                    assert_eq!(
+                                        id.value, *inner,
+                                        "Fragment[{}]: not inner identifier mismatch",
+                                        i
+                                    );
+                                }
+                                other => panic!(
+                                    "Fragment[{}]: expected identifier inside not, got {:?}",
+                                    i, other
+                                ),
+                            }
+                        }
+                        other => panic!("Fragment[{}]: expected not condition, got {:?}", i, other),
                     }
                 }
             }

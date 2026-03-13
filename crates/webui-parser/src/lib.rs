@@ -829,9 +829,12 @@ impl HtmlParser {
         fragments: &mut Vec<WebUIFragment>,
     ) -> Result<()> {
         if let Some(val) = value {
-            if let Some(signal_name) = Self::extract_single_handlebars(val) {
-                // Valid boolean attribute — emit as attribute fragment with conditionTree
-                let condition = ConditionExpr::identifier(&signal_name);
+            if let Some(expr_str) = Self::extract_single_handlebars(val) {
+                // Parse as a full condition expression (supports predicates like page == 'dashboard')
+                let condition = self
+                    .condition_parser
+                    .parse(&expr_str)
+                    .unwrap_or_else(|_| ConditionExpr::identifier(&expr_str));
                 self.add_fragment(WebUIFragment::attribute_boolean(name, condition), fragments);
                 return Ok(());
             }
@@ -2136,6 +2139,65 @@ mod tests {
 
         // Boolean attribute is silently dropped
         assert_fragments!(fragments, [raw("<button>Click</button>"),]);
+    }
+
+    #[test]
+    fn test_attribute_boolean_predicate_equal() {
+        // Boolean attribute with == predicate expression
+        let (fragments, _) =
+            parse_and_get_fragments(r#"<div ?data-active="{{page == 'dashboard'}}">X</div>"#);
+        assert_fragments!(
+            fragments,
+            [
+                raw("<div"),
+                bool_attr_predicate("data-active", "page", 3, "'dashboard'"),
+                raw(">X</div>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_attribute_boolean_predicate_greater_than() {
+        // Boolean attribute with > predicate expression
+        let (fragments, _) = parse_and_get_fragments(r#"<span ?hidden="{{num > 9}}">X</span>"#);
+        assert_fragments!(
+            fragments,
+            [
+                raw("<span"),
+                bool_attr_predicate("hidden", "num", 1, "9"),
+                raw(">X</span>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_attribute_boolean_predicate_not_equal() {
+        // Boolean attribute with != predicate expression
+        let (fragments, _) =
+            parse_and_get_fragments(r#"<a ?data-active="{{status != 'inactive'}}">X</a>"#);
+        assert_fragments!(
+            fragments,
+            [
+                raw("<a"),
+                bool_attr_predicate("data-active", "status", 4, "'inactive'"),
+                raw(">X</a>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_attribute_boolean_negation() {
+        // Boolean attribute with negated expression
+        let (fragments, _) =
+            parse_and_get_fragments(r#"<button ?disabled="{{!isReady}}">X</button>"#);
+        assert_fragments!(
+            fragments,
+            [
+                raw("<button"),
+                bool_attr_not("disabled", "isReady"),
+                raw(">X</button>"),
+            ]
+        );
     }
 
     #[test]
