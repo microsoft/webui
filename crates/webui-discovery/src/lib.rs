@@ -11,8 +11,11 @@ mod cache;
 mod npm;
 
 use anyhow::{Context, Result};
+use console::style;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
+
+const MAX_COMPONENT_FILE_SIZE: u64 = 1_048_576;
 
 /// A component discovered from an external source, ready for registration.
 #[derive(Debug, Clone)]
@@ -103,14 +106,16 @@ fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
         if path.extension().is_some_and(|ext| ext == "html") {
             if let Some(filename) = path.file_stem().and_then(|s| s.to_str()) {
                 if filename.contains('-') {
-                    let html_content = std::fs::read_to_string(path).with_context(|| {
-                        format!("Failed to read component HTML: {}", path.display())
-                    })?;
+                    let html_content = match read_component_file(path, "component HTML")? {
+                        Some(content) => content,
+                        None => continue,
+                    };
                     let css_path = path.with_extension("css");
                     let css_content = if css_path.exists() {
-                        Some(std::fs::read_to_string(&css_path).with_context(|| {
-                            format!("Failed to read component CSS: {}", css_path.display())
-                        })?)
+                        match read_component_file(&css_path, "component CSS")? {
+                            Some(content) => Some(content),
+                            None => continue,
+                        }
                     } else {
                         None
                     };
@@ -126,6 +131,24 @@ fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
     }
 
     Ok(components)
+}
+
+fn read_component_file(path: &Path, label: &str) -> Result<Option<String>> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("Failed to stat {label}: {}", path.display()))?;
+    if metadata.len() > MAX_COMPONENT_FILE_SIZE {
+        eprintln!(
+            "  {} Skipping oversized file: {} ({} bytes)",
+            style("⚠").yellow(),
+            path.display(),
+            metadata.len()
+        );
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {label}: {}", path.display()))?;
+    Ok(Some(content))
 }
 
 /// Collect the resolved local paths from source strings for file watching.
@@ -150,6 +173,8 @@ pub fn collect_watch_paths(sources: &[String], search_dir: &Path) -> Vec<PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_classify_relative_path() {
@@ -198,5 +223,35 @@ mod tests {
             classify_source("C:\\components"),
             ComponentSource::Path(_)
         ));
+    }
+
+    #[test]
+    fn test_discover_from_path_skips_oversized_html() {
+        let tmp = TempDir::new().unwrap();
+        let html_path = tmp.path().join("big-component.html");
+        fs::write(
+            &html_path,
+            vec![b'a'; (MAX_COMPONENT_FILE_SIZE as usize) + 1],
+        )
+        .unwrap();
+
+        let components = discover_from_path(tmp.path()).unwrap();
+        assert!(components.is_empty());
+    }
+
+    #[test]
+    fn test_discover_from_path_skips_component_with_oversized_css() {
+        let tmp = TempDir::new().unwrap();
+        let html_path = tmp.path().join("styled-component.html");
+        let css_path = tmp.path().join("styled-component.css");
+        fs::write(&html_path, "<div>ok</div>").unwrap();
+        fs::write(
+            &css_path,
+            vec![b'b'; (MAX_COMPONENT_FILE_SIZE as usize) + 1],
+        )
+        .unwrap();
+
+        let components = discover_from_path(tmp.path()).unwrap();
+        assert!(components.is_empty());
     }
 }

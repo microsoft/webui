@@ -5,10 +5,11 @@
 //! parses the Custom Elements Manifest for component tag names.
 
 use anyhow::{bail, Context, Result};
+use console::style;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use super::cache::DiscoveryCache;
+use super::cache::{CacheInputs, DiscoveryCache};
 use super::DiscoveredComponent;
 
 /// Maximum file size for package.json and custom elements manifests (10 MB).
@@ -80,18 +81,78 @@ pub fn resolve(
     cache: &mut DiscoveryCache,
 ) -> Result<Vec<DiscoveredComponent>> {
     let node_modules = find_node_modules(cwd)?;
+    let workspace_root = find_workspace_root(cwd).or_else(|| {
+        node_modules
+            .parent()
+            .and_then(|parent| fs::canonicalize(parent).ok())
+    });
 
     if is_bare_scope(name) {
-        resolve_scoped(name, &node_modules, cache)
+        resolve_scoped(name, &node_modules, workspace_root.as_deref(), cache)
     } else {
-        resolve_single(name, &node_modules, cache)
+        resolve_single(name, &node_modules, workspace_root.as_deref(), cache)
     }
+}
+
+fn find_workspace_root(start: &Path) -> Option<PathBuf> {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        if is_workspace_root(dir) {
+            return fs::canonicalize(dir)
+                .ok()
+                .or_else(|| Some(dir.to_path_buf()));
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn is_workspace_root(dir: &Path) -> bool {
+    dir.join("pnpm-workspace.yaml").is_file()
+        || dir.join(".git").exists()
+        || package_json_declares_workspaces(dir)
+}
+
+fn package_json_declares_workspaces(dir: &Path) -> bool {
+    let package_json_path = dir.join("package.json");
+    if !package_json_path.is_file() {
+        return false;
+    }
+
+    let Ok(content) = read_to_string_limited(&package_json_path, MAX_MANIFEST_SIZE) else {
+        return false;
+    };
+    let Ok(package_json) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+
+    package_json.get("workspaces").is_some()
+}
+
+fn is_within_any_node_modules(path: &Path) -> bool {
+    path.ancestors().any(|ancestor| {
+        ancestor
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "node_modules")
+    })
+}
+
+fn is_allowed_package_dir(
+    package_dir: &Path,
+    node_modules_root: &Path,
+    workspace_root: Option<&Path>,
+) -> bool {
+    package_dir.starts_with(node_modules_root)
+        || workspace_root.is_some_and(|root| package_dir.starts_with(root))
+        || is_within_any_node_modules(package_dir)
 }
 
 /// Enumerate all sub-packages under a scoped directory (e.g., `@reactive-ui/*`).
 fn resolve_scoped(
     scope: &str,
     node_modules: &Path,
+    workspace_root: Option<&Path>,
     cache: &mut DiscoveryCache,
 ) -> Result<Vec<DiscoveredComponent>> {
     let scope_dir = node_modules.join(scope);
@@ -112,9 +173,15 @@ fn resolve_scoped(
             continue;
         }
         let sub_name = format!("{}/{}", scope, entry.file_name().to_string_lossy());
-        // Sub-packages without WebUI exports are expected — skip silently.
-        if let Ok(components) = resolve_single(&sub_name, node_modules, cache) {
-            all.extend(components);
+        match resolve_single(&sub_name, node_modules, workspace_root, cache) {
+            Ok(components) => all.extend(components),
+            Err(error) => {
+                eprintln!(
+                    "  {} Skipping package '{}': {error}",
+                    style("⚠").yellow(),
+                    sub_name
+                );
+            }
         }
     }
 
@@ -125,6 +192,7 @@ fn resolve_scoped(
 fn resolve_single(
     name: &str,
     node_modules: &Path,
+    workspace_root: Option<&Path>,
     cache: &mut DiscoveryCache,
 ) -> Result<Vec<DiscoveredComponent>> {
     let pkg_dir = node_modules.join(name);
@@ -145,11 +213,15 @@ fn resolve_single(
             node_modules.display()
         )
     })?;
-    if !pkg_dir.starts_with(&node_modules_canon) {
+    if !is_allowed_package_dir(&pkg_dir, &node_modules_canon, workspace_root) {
+        let workspace_display = workspace_root
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<not found>".to_string());
         bail!(
-            "Package symlink escapes node_modules directory: {} resolves to {}",
+            "Package symlink escapes the workspace and node_modules directories: {} resolves to {} (workspace root: {})",
             name,
-            pkg_dir.display()
+            pkg_dir.display(),
+            workspace_display
         );
     }
 
@@ -160,11 +232,6 @@ fn resolve_single(
     let pkg_json_path = pkg_dir.join("package.json");
     if !pkg_json_path.exists() {
         bail!("No package.json found at {}", pkg_json_path.display());
-    }
-
-    // Check cache first
-    if let Some(cached) = cache.get(name, &pkg_json_path)? {
-        return Ok(cached);
     }
 
     // Read and parse package.json
@@ -202,6 +269,18 @@ fn resolve_single(
     validate_relative_path(cem_rel, "customElements")?;
     let cem_path = pkg_dir.join(cem_rel);
 
+    let cache_inputs = CacheInputs {
+        package_json_path: &pkg_json_path,
+        template_path: &template_path,
+        styles_path: styles_path.as_deref(),
+        manifest_path: &cem_path,
+    };
+
+    // Check cache after resolving all files that affect discovery output.
+    if let Some(cached) = cache.get(name, &cache_inputs)? {
+        return Ok(cached);
+    }
+
     // Parse custom elements manifest for tag names
     let tag_names = parse_custom_elements_manifest(&cem_path)?;
     if tag_names.is_empty() {
@@ -236,7 +315,7 @@ fn resolve_single(
         .collect();
 
     // Update cache
-    cache.put(name, &pkg_json_path, &components)?;
+    cache.put(name, &cache_inputs, &components)?;
 
     Ok(components)
 }
@@ -619,6 +698,102 @@ mod tests {
     }
 
     #[test]
+    fn test_cache_invalidation_on_template_change() {
+        let tmp = TempDir::new().unwrap();
+        let nm = tmp.path().join("node_modules");
+        fs::create_dir(&nm).unwrap();
+
+        create_npm_package(&nm, "cached-pkg", "cached-comp", "<div>cached</div>", None);
+
+        let mut cache = DiscoveryCache::open().unwrap();
+        let first = resolve("cached-pkg", tmp.path(), &mut cache).unwrap();
+        assert_eq!(first[0].html_content, "<div>cached</div>");
+
+        fs::write(
+            nm.join("cached-pkg").join("template-webui.html"),
+            "<div>updated template</div>",
+        )
+        .unwrap();
+
+        let second = resolve("cached-pkg", tmp.path(), &mut cache).unwrap();
+        assert_eq!(second[0].html_content, "<div>updated template</div>");
+    }
+
+    #[test]
+    fn test_cache_invalidation_on_styles_change() {
+        let tmp = TempDir::new().unwrap();
+        let nm = tmp.path().join("node_modules");
+        fs::create_dir(&nm).unwrap();
+
+        create_npm_package(
+            &nm,
+            "styled-pkg",
+            "styled-comp",
+            "<div>cached</div>",
+            Some(".old { color: blue; }"),
+        );
+
+        let mut cache = DiscoveryCache::open().unwrap();
+        let first = resolve("styled-pkg", tmp.path(), &mut cache).unwrap();
+        assert_eq!(
+            first[0].css_content.as_deref(),
+            Some(".old { color: blue; }")
+        );
+
+        fs::write(
+            nm.join("styled-pkg").join("styles.css"),
+            ".new { color: green; }",
+        )
+        .unwrap();
+
+        let second = resolve("styled-pkg", tmp.path(), &mut cache).unwrap();
+        assert_eq!(
+            second[0].css_content.as_deref(),
+            Some(".new { color: green; }")
+        );
+    }
+
+    #[test]
+    fn test_cache_invalidation_on_manifest_change() {
+        let tmp = TempDir::new().unwrap();
+        let nm = tmp.path().join("node_modules");
+        fs::create_dir(&nm).unwrap();
+
+        create_npm_package(
+            &nm,
+            "manifest-pkg",
+            "initial-comp",
+            "<div>cached</div>",
+            None,
+        );
+
+        let mut cache = DiscoveryCache::open().unwrap();
+        let first = resolve("manifest-pkg", tmp.path(), &mut cache).unwrap();
+        assert_eq!(first[0].tag_name, "initial-comp");
+
+        let manifest = serde_json::json!({
+            "schemaVersion": "1.0.0",
+            "modules": [{
+                "kind": "javascript-module",
+                "path": "src/index.js",
+                "declarations": [{
+                    "kind": "class",
+                    "name": "ChangedComponent",
+                    "tagName": "changed-comp"
+                }]
+            }]
+        });
+        fs::write(
+            nm.join("manifest-pkg").join("custom-elements.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let second = resolve("manifest-pkg", tmp.path(), &mut cache).unwrap();
+        assert_eq!(second[0].tag_name, "changed-comp");
+    }
+
+    #[test]
     fn test_validate_relative_path_rejects_absolute() {
         let result = validate_relative_path("/etc/passwd", "exports");
         assert!(result.is_err());
@@ -671,5 +846,53 @@ mod tests {
         let result = resolve("evil-pkg", tmp.path(), &mut cache);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains(".."));
+    }
+
+    #[test]
+    fn test_find_workspace_root_from_pnpm_workspace() {
+        let tmp = TempDir::new().unwrap();
+        let workspace_root = tmp.path().join("workspace");
+        let nested = workspace_root.join("apps").join("demo");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(
+            workspace_root.join("pnpm-workspace.yaml"),
+            "packages:\n  - apps/*\n",
+        )
+        .unwrap();
+
+        let detected = find_workspace_root(&nested).unwrap();
+        assert_eq!(detected, workspace_root.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_is_allowed_package_dir_accepts_workspace_linked_package() {
+        let tmp = TempDir::new().unwrap();
+        let workspace_root = tmp.path().join("workspace");
+        let node_modules = workspace_root.join("node_modules");
+        let linked_pkg = workspace_root.join("packages").join("linked-pkg");
+        fs::create_dir_all(&node_modules).unwrap();
+        fs::create_dir_all(&linked_pkg).unwrap();
+
+        assert!(is_allowed_package_dir(
+            &linked_pkg,
+            &node_modules,
+            Some(&workspace_root),
+        ));
+    }
+
+    #[test]
+    fn test_is_allowed_package_dir_rejects_external_path() {
+        let tmp = TempDir::new().unwrap();
+        let workspace_root = tmp.path().join("workspace");
+        let node_modules = workspace_root.join("node_modules");
+        let external = tmp.path().join("external").join("pkg");
+        fs::create_dir_all(&node_modules).unwrap();
+        fs::create_dir_all(&external).unwrap();
+
+        assert!(!is_allowed_package_dir(
+            &external,
+            &node_modules,
+            Some(&workspace_root),
+        ));
     }
 }

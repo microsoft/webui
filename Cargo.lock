@@ -2650,6 +2650,7 @@ name = "webui-discovery"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "console",
  "expand-tilde",
  "serde",
  "serde_json",
