@@ -25,7 +25,10 @@ mod error;
 pub use error::WebUIError;
 
 // Re-export core types from downstream crates
-pub use webui_handler::route_handler::{encode_inventory, get_needed_components, parse_inventory};
+pub use webui_handler::route_handler::{
+    encode_inventory, get_needed_components, get_needed_components_for_request,
+    get_route_templates, get_route_templates_for_request, parse_inventory,
+};
 pub use webui_handler::{plugin::HandlerPlugin, HandlerError, ResponseWriter, WebUIHandler};
 pub use webui_parser::CssStrategy;
 pub use webui_protocol::WebUIProtocol;

@@ -11,6 +11,31 @@ internal static class NativeBindings
 {
     private const string LibName = "webui_ffi";
 
+    /// <summary>
+    /// SafeHandle wrapper for a native <c>webui_handler</c> pointer.
+    /// </summary>
+    internal sealed class WebUIHandlerSafeHandle : SafeHandle
+    {
+        internal WebUIHandlerSafeHandle()
+            : base(IntPtr.Zero, ownsHandle: true)
+        {
+        }
+
+        internal WebUIHandlerSafeHandle(IntPtr handle)
+            : this()
+        {
+            SetHandle(handle);
+        }
+
+        public override bool IsInvalid => handle == IntPtr.Zero;
+
+        protected override bool ReleaseHandle()
+        {
+            webui_handler_destroy_raw(handle);
+            return true;
+        }
+    }
+
     static NativeBindings()
     {
         NativeLibrary.SetDllImportResolver(
@@ -45,19 +70,19 @@ internal static class NativeBindings
         return IntPtr.Zero;
     }
 
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr webui_handler_create();
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "webui_handler_create")]
+    private static extern IntPtr webui_handler_create_raw();
 
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr webui_handler_create_with_plugin(
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "webui_handler_create_with_plugin")]
+    private static extern IntPtr webui_handler_create_with_plugin_raw(
         [MarshalAs(UnmanagedType.LPUTF8Str)] string? pluginId);
 
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void webui_handler_destroy(IntPtr handlerPtr);
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "webui_handler_destroy")]
+    private static extern void webui_handler_destroy_raw(IntPtr handlerPtr);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr webui_handler_render(
-        IntPtr handlerPtr,
+        WebUIHandlerSafeHandle handlerPtr,
         byte[] protocolData,
         nuint protocolLen,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string dataJson,
@@ -74,7 +99,16 @@ internal static class NativeBindings
         byte[] protocolData,
         nuint protocolLen,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string entryId,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string requestPath,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string inventoryHex);
+
+    internal static WebUIHandlerSafeHandle CreateHandler(string? pluginId)
+    {
+        IntPtr handle = pluginId is null
+            ? webui_handler_create_raw()
+            : webui_handler_create_with_plugin_raw(pluginId);
+        return new WebUIHandlerSafeHandle(handle);
+    }
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern void webui_free(IntPtr stringPtr);

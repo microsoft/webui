@@ -38,5 +38,6 @@ export interface RouterConfig {
 export interface NavigationEvent {
   routeName: string;
   params: Record<string, string>;
+  /** The navigated path, including the query string when present. */
   path: string;
 }

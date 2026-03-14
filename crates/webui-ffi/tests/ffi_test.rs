@@ -4,15 +4,17 @@
 //! Rust linkage to verify correctness. The same functions are exported as
 //! C symbols for Go, C#, and Python consumers.
 
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 
 // Re-use the crate's public C API functions directly.
 // Because we added "lib" to crate-type, Rust integration tests can link
 // against the rlib and call the `pub extern "C"` functions.
 use webui_ffi::{
-    webui_free, webui_handler_create, webui_handler_destroy, webui_handler_render,
-    webui_last_error, webui_render,
+    webui_free, webui_get_route_templates, webui_handler_create, webui_handler_destroy,
+    webui_handler_render, webui_last_error, webui_render,
 };
+use webui_protocol::{FragmentList, RouteRecord, WebUIFragment, WebUIProtocol, WebUiFragmentRoute};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -241,6 +243,153 @@ fn handler_render_null_args_returns_null() {
         assert!(last_error_string().is_some());
 
         webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn get_route_templates_follows_active_route_chain() {
+    let mut fragments = HashMap::new();
+    fragments.insert(
+        "index.html".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::component("mp-app")],
+        },
+    );
+    fragments.insert(
+        "mp-app".to_string(),
+        FragmentList {
+            fragments: vec![
+                WebUIFragment::component("mp-category-nav"),
+                WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/search/:category".to_string(),
+                    fragment_id: "mp-search-page".to_string(),
+                    exact: true,
+                    name: "category".to_string(),
+                    ..Default::default()
+                }),
+                WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/product/:handle".to_string(),
+                    fragment_id: "mp-product-page".to_string(),
+                    exact: true,
+                    name: "product".to_string(),
+                    ..Default::default()
+                }),
+            ],
+        },
+    );
+    fragments.insert(
+        "mp-category-nav".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::raw("<nav></nav>")],
+        },
+    );
+    fragments.insert(
+        "mp-search-page".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::component("mp-product-grid")],
+        },
+    );
+    fragments.insert(
+        "mp-product-grid".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::raw("<grid></grid>")],
+        },
+    );
+    fragments.insert(
+        "mp-product-page".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::component("mp-product-detail")],
+        },
+    );
+    fragments.insert(
+        "mp-product-detail".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::raw("<detail></detail>")],
+        },
+    );
+
+    let mut routes = HashMap::new();
+    routes.insert(
+        "category".to_string(),
+        RouteRecord {
+            name: "category".to_string(),
+            path: "/search/:category".to_string(),
+            fragment_id: "mp-search-page".to_string(),
+            exact: true,
+        },
+    );
+    routes.insert(
+        "product".to_string(),
+        RouteRecord {
+            name: "product".to_string(),
+            path: "/product/:handle".to_string(),
+            fragment_id: "mp-product-page".to_string(),
+            exact: true,
+        },
+    );
+
+    let mut protocol = WebUIProtocol::with_routes(fragments, Vec::new(), routes);
+    protocol.component_templates.insert(
+        "mp-app".to_string(),
+        "<f-template id=app></f-template>".to_string(),
+    );
+    protocol.component_templates.insert(
+        "mp-search-page".to_string(),
+        "<f-template id=search></f-template>".to_string(),
+    );
+    protocol.component_templates.insert(
+        "mp-product-grid".to_string(),
+        "<f-template id=grid></f-template>".to_string(),
+    );
+    protocol.component_templates.insert(
+        "mp-category-nav".to_string(),
+        "<f-template id=nav></f-template>".to_string(),
+    );
+    protocol.component_templates.insert(
+        "mp-product-page".to_string(),
+        "<f-template id=product></f-template>".to_string(),
+    );
+
+    let protocol_bytes = protocol
+        .to_protobuf()
+        .expect("protocol should serialize for ffi test");
+
+    unsafe {
+        let c_entry = CString::new("index.html").expect("static string");
+        let c_request_path = CString::new("/search/shirts").expect("static string");
+        let c_inventory = CString::new("").expect("static string");
+
+        let ptr = webui_get_route_templates(
+            protocol_bytes.as_ptr(),
+            protocol_bytes.len(),
+            c_entry.as_ptr(),
+            c_request_path.as_ptr(),
+            c_inventory.as_ptr(),
+        );
+        assert!(
+            !ptr.is_null(),
+            "webui_get_route_templates returned NULL: {}",
+            last_error_string().unwrap_or_else(|| "<none>".to_string())
+        );
+
+        let json = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        webui_free(ptr);
+
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("ffi response should be valid json");
+        let names: Vec<String> = value["templates"]
+            .as_array()
+            .expect("templates should be an array")
+            .iter()
+            .filter_map(|item| item["name"].as_str().map(|name| name.to_string()))
+            .collect();
+
+        assert!(names.contains(&"mp-app".to_string()));
+        assert!(names.contains(&"mp-category-nav".to_string()));
+        assert!(names.contains(&"mp-search-page".to_string()));
+        assert!(names.contains(&"mp-product-grid".to_string()));
+        assert!(!names.contains(&"mp-product-page".to_string()));
+        assert!(!names.contains(&"mp-product-detail".to_string()));
     }
 }
 

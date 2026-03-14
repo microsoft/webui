@@ -484,7 +484,41 @@ struct ServerContext {
     plugin: Option<String>,
 }
 
-/// Fetch state from the user's API server for a given request path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequestPaths {
+    route_path: String,
+    request_path: String,
+}
+
+fn build_request_paths(relative: &str, query: &str) -> RequestPaths {
+    let route_path = if relative.is_empty() {
+        "/".to_string()
+    } else {
+        let mut path = String::with_capacity(relative.len() + 1);
+        path.push('/');
+        path.push_str(relative);
+        path
+    };
+
+    if query.is_empty() {
+        return RequestPaths {
+            request_path: route_path.clone(),
+            route_path,
+        };
+    }
+
+    let mut request_path = String::with_capacity(route_path.len() + query.len() + 1);
+    request_path.push_str(&route_path);
+    request_path.push('?');
+    request_path.push_str(query);
+
+    RequestPaths {
+        route_path,
+        request_path,
+    }
+}
+
+/// Fetch state from the user's API server for a given request path, including query parameters.
 async fn fetch_api_state(api_port: u16, path: &str) -> Result<Value, String> {
     let client = awc::Client::new();
     let url = format!("http://127.0.0.1:{api_port}{path}");
@@ -522,9 +556,11 @@ async fn resolve_state(context: &ServerContext, request_path: &str) -> Value {
         .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
 }
 
-/// Render a full HTML page for the given request path, using the handler.
+/// Render a full HTML page using route matching from `route_path` and state lookup from
+/// `request_path`, which may include a query string.
 async fn render_page_response(
     context: &web::Data<ServerContext>,
+    route_path: &str,
     request_path: &str,
 ) -> HttpResponse {
     let state = resolve_state(context, request_path).await;
@@ -547,7 +583,7 @@ async fn render_page_response(
     if let Err(e) = handler.handle(
         &proto,
         &state,
-        &RenderOptions::new(&entry, request_path),
+        &RenderOptions::new(&entry, route_path),
         &mut writer,
     ) {
         return HttpResponse::InternalServerError().body(format!("Render error: {e}"));
@@ -571,7 +607,8 @@ async fn handle_index(req: HttpRequest, context: web::Data<ServerContext>) -> Ht
 
     // With API proxy, render on-the-fly with fresh state
     if context.api_port.is_some() {
-        return render_page_response(&context, "/").await;
+        let paths = build_request_paths("", req.query_string());
+        return render_page_response(&context, &paths.route_path, &paths.request_path).await;
     }
 
     // Without API proxy, serve pre-rendered HTML
@@ -675,13 +712,14 @@ async fn spa_fallback(
         return HttpResponse::NotFound().body("Not Found");
     }
 
+    let paths = build_request_paths(relative, req.query_string());
+
     // JSON partial render: return { state, templates } for client-side navigation
     if wants_json(req) {
         return handle_json_partial(req, context, relative).await;
     }
 
-    let request_path = format!("/{relative}");
-    render_page_response(context, &request_path).await
+    render_page_response(context, &paths.route_path, &paths.request_path).await
 }
 
 /// Handle a JSON partial render request for client-side navigation.
@@ -692,31 +730,33 @@ async fn spa_fallback(
 async fn handle_json_partial(
     req: &HttpRequest,
     context: &web::Data<ServerContext>,
-    path: &str,
+    relative: &str,
 ) -> HttpResponse {
-    let request_path = if path.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{path}")
-    };
+    let paths = build_request_paths(relative, req.query_string());
 
-    let mut state_data = resolve_state(context, &request_path).await;
+    let mut state_data = resolve_state(context, &paths.request_path).await;
 
     // Clone protocol and templates from shared state (release lock quickly)
-    let (protocol, component_templates) = match context.state.lock() {
-        Ok(s) => (s.protocol.clone(), s.component_templates.clone()),
+    let (protocol, component_templates, entry) = match context.state.lock() {
+        Ok(s) => (
+            s.protocol.clone(),
+            s.component_templates.clone(),
+            s.entry.clone(),
+        ),
         Err(_) => {
             return HttpResponse::InternalServerError().body(r#"{"error":"Internal server error"}"#)
         }
     };
 
+    let matched_route = protocol
+        .as_ref()
+        .and_then(|proto| route_matcher::match_route(&proto.routes, &paths.route_path));
+
     // Inject route params into state
-    if let Some(proto) = &protocol {
-        if let Some(rm) = route_matcher::match_route(&proto.routes, &request_path) {
-            if let Value::Object(ref mut map) = state_data {
-                for (k, v) in &rm.params {
-                    map.insert(k.clone(), Value::String(v.clone()));
-                }
+    if let Some(rm) = matched_route.as_ref() {
+        if let Value::Object(ref mut map) = state_data {
+            for (k, v) in &rm.params {
+                map.insert(k.clone(), Value::String(v.clone()));
             }
         }
     }
@@ -730,16 +770,8 @@ async fn handle_json_partial(
         .to_string();
 
     let (needed_names, inv_hex) = if let Some(proto) = &protocol {
-        if let Some(rm) = route_matcher::match_route(&proto.routes, &request_path) {
-            if let Some(route) = proto.routes.get(&rm.route_key) {
-                webui_handler::route_handler::get_needed_components(
-                    proto,
-                    &route.fragment_id,
-                    &client_inv_hex,
-                )
-            } else {
-                (Vec::new(), client_inv_hex)
-            }
+        if matched_route.is_some() {
+            collect_needed_template_names(proto, &entry, &paths.route_path, &client_inv_hex)
         } else {
             (Vec::new(), client_inv_hex)
         }
@@ -756,12 +788,26 @@ async fn handle_json_partial(
     let mut resp = serde_json::Map::new();
     resp.insert("state".into(), state_data);
     resp.insert("templates".into(), Value::Array(templates));
-    resp.insert("path".into(), Value::String(request_path));
+    resp.insert("path".into(), Value::String(paths.request_path));
     resp.insert("inventory".into(), Value::String(inv_hex));
 
     HttpResponse::Ok()
         .content_type("application/json")
         .json(Value::Object(resp))
+}
+
+fn collect_needed_template_names(
+    protocol: &WebUIProtocol,
+    entry_fragment_id: &str,
+    request_path: &str,
+    inventory_hex: &str,
+) -> (Vec<String>, String) {
+    webui_handler::route_handler::get_needed_components_for_request(
+        protocol,
+        entry_fragment_id,
+        request_path,
+        inventory_hex,
+    )
 }
 
 /// Handle GET /.webui/routes.json — return the route registry as JSON.
@@ -997,6 +1043,9 @@ mod tests {
     use actix_web::http::StatusCode;
     use actix_web::test as actix_test;
     use tempfile::TempDir;
+    use webui_protocol::{
+        FragmentList, RouteRecord, WebUIFragment, WebUIProtocol, WebUiFragmentRoute,
+    };
 
     fn create_app_dir(files: &[(&str, &str)]) -> TempDir {
         let dir = TempDir::new().unwrap();
@@ -1123,6 +1172,166 @@ mod tests {
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let result = build_and_render(&config, Some(&hmr));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_request_paths_preserves_query_string() {
+        assert_eq!(
+            build_request_paths("search", "q=shirt&sort=price-desc"),
+            RequestPaths {
+                route_path: "/search".to_string(),
+                request_path: "/search?q=shirt&sort=price-desc".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_build_request_paths_handles_root_query() {
+        assert_eq!(
+            build_request_paths("", "q=shirt"),
+            RequestPaths {
+                route_path: "/".to_string(),
+                request_path: "/?q=shirt".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_collect_needed_template_names_follows_active_route_chain() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("mp-app")],
+            },
+        );
+        fragments.insert(
+            "mp-app".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::component("mp-category-nav"),
+                    WebUIFragment::route_from(WebUiFragmentRoute {
+                        path: "/search/:category".to_string(),
+                        fragment_id: "mp-page-search".to_string(),
+                        exact: true,
+                        name: "category".to_string(),
+                        ..Default::default()
+                    }),
+                    WebUIFragment::route_from(WebUiFragmentRoute {
+                        path: "/product/:handle".to_string(),
+                        fragment_id: "mp-page-product".to_string(),
+                        exact: true,
+                        name: "product".to_string(),
+                        ..Default::default()
+                    }),
+                ],
+            },
+        );
+        fragments.insert(
+            "mp-category-nav".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<nav></nav>")],
+            },
+        );
+        fragments.insert(
+            "mp-page-search".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("mp-product-grid")],
+            },
+        );
+        fragments.insert(
+            "mp-product-grid".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<div></div>")],
+            },
+        );
+        fragments.insert(
+            "mp-page-product".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("mp-product-detail")],
+            },
+        );
+        fragments.insert(
+            "mp-product-detail".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<article></article>")],
+            },
+        );
+
+        let mut routes = HashMap::new();
+        routes.insert(
+            "category".to_string(),
+            RouteRecord {
+                name: "category".to_string(),
+                path: "/search/:category".to_string(),
+                fragment_id: "mp-page-search".to_string(),
+                exact: true,
+            },
+        );
+        routes.insert(
+            "product".to_string(),
+            RouteRecord {
+                name: "product".to_string(),
+                path: "/product/:handle".to_string(),
+                fragment_id: "mp-page-product".to_string(),
+                exact: true,
+            },
+        );
+
+        let mut protocol = WebUIProtocol::with_routes(fragments, Vec::new(), routes);
+        protocol.component_templates.insert(
+            "mp-page-search".to_string(),
+            "<f-template id=search></f-template>".to_string(),
+        );
+        protocol.component_templates.insert(
+            "mp-page-product".to_string(),
+            "<f-template id=product></f-template>".to_string(),
+        );
+        let (needed, inventory) =
+            collect_needed_template_names(&protocol, "index.html", "/search/shirts", "");
+
+        assert!(needed.contains(&"mp-app".to_string()));
+        assert!(needed.contains(&"mp-page-search".to_string()));
+        assert!(needed.contains(&"mp-product-grid".to_string()));
+        assert!(needed.contains(&"mp-category-nav".to_string()));
+        assert!(!needed.contains(&"mp-page-product".to_string()));
+        assert!(!needed.contains(&"mp-product-detail".to_string()));
+        assert!(!inventory.is_empty());
+    }
+
+    #[actix_web::test]
+    async fn test_fetch_api_state_preserves_query_string() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = HttpServer::new(|| {
+            App::new().route(
+                "/search",
+                web::get().to(|query: web::Query<HashMap<String, String>>| async move {
+                    HttpResponse::Ok().json(serde_json::json!({
+                        "state": {
+                            "query": query.get("q").cloned().unwrap_or_default(),
+                            "sort": query.get("sort").cloned().unwrap_or_default(),
+                        }
+                    }))
+                }),
+            )
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+
+        let state = fetch_api_state(port, "/search?q=shirt&sort=price-desc")
+            .await
+            .unwrap();
+
+        assert_eq!(state["query"], "shirt");
+        assert_eq!(state["sort"], "price-desc");
+
+        handle.stop(true).await;
     }
 
     #[test]
