@@ -74,6 +74,7 @@ internal static class NativeBindings
         byte[] protocolData,
         nuint protocolLen,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string entryId,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string requestPath,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string inventoryHex);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]

@@ -177,6 +177,23 @@ optional parameters. Exact matches (most literal segments) take precedence over 
    component templates the client doesn't already have.
 3. The client mounts the route component with the received state.
 
+**Partial-template selection:** During client navigation, servers derive template names from the
+normal render fragment graph starting at the persistent entry fragment. The traversal is
+route-aware but state-agnostic:
+
+- follow `component`, `if`, `for`, and attribute-template edges conservatively without evaluating
+  request-time state
+- when a fragment list contains sibling `<route>` fragments, follow only the single best match for
+  the current request path using the same specificity rules as SSR
+- recurse through nested matched route groups so the active route chain is included
+- skip unvisited sibling route branches entirely; later navigations will request those templates if
+  needed
+- filter the discovered component set against the client's inventory bitmask before returning
+  templates
+
+This intentionally over-ships inactive conditional and loop-driven templates inside the active
+route chain rather than trying to mirror a transient server-side state snapshot.
+
 **Attribute types:**
 - **Simple dynamic:** `href="{{url}}"` → `{ name: "href", value: "url" }`
 - **Boolean (`?` prefix):** `?disabled={{isDisabled}}` → `{ name: "disabled", condition_tree: identifier("isDisabled") }` — rendered only if condition is truthy; silently dropped if value is not a pure handlebars expression.

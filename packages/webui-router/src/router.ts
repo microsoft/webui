@@ -7,8 +7,10 @@
  * templates, instantiates the component, and mounts it into the route.
  */
 
+import { buildNavigationTarget, prependBasePath } from './navigation-path.js';
 import { matchPath, specificity } from './matcher.js';
 import type { RouterConfig, NavigationEvent } from './types.js';
+import type { NavigationTarget } from './navigation-path.js';
 
 const ROUTE_SELECTOR = 'webui-route';
 
@@ -134,19 +136,19 @@ export class WebUIRouter {
       if (url.origin !== location.origin) return;
       event.intercept({
         handler: async () => {
-          await this.handleNavigation(this.stripBase(url.pathname));
+          await this.handleNavigation(buildNavigationTarget(url, this.config.basePath ?? ''));
         },
       });
     };
     nav.addEventListener('navigate', handler);
     this.cleanupFns.push(() => nav.removeEventListener('navigate', handler));
 
-    this.handleNavigation(this.currentPath());
+    this.handleNavigation(this.currentTarget());
   }
 
   /** Navigate to a new path. */
   navigate(path: string): void {
-    const fullPath = (this.config.basePath ?? '') + path;
+    const fullPath = prependBasePath(path, this.config.basePath ?? '');
     (window as any).navigation.navigate(fullPath);
   }
 
@@ -166,17 +168,18 @@ export class WebUIRouter {
 
   // ── Route matching ──────────────────────────────────────────────
 
-  private async handleNavigation(pathname: string): Promise<void> {
+  private async handleNavigation(target: NavigationTarget): Promise<void> {
+    const { pathname, requestPath } = target;
     const topRoutes = this.discoverTopRoutes();
 
     if (topRoutes.length > 0) {
       if (!this.isInitialNavigation) {
         this.deactivateAll();
       }
-      const matched = await this.activateMatching(topRoutes, pathname);
+      const matched = await this.activateMatching(topRoutes, target);
       if (!matched && !this.isInitialNavigation) {
         // No client route matched — fall through to server
-        window.location.href = (this.config.basePath ?? '') + pathname;
+        window.location.href = prependBasePath(requestPath, this.config.basePath ?? '');
         return;
       }
     }
@@ -187,12 +190,13 @@ export class WebUIRouter {
     const detail: NavigationEvent = {
       routeName: active ? routeName(active) : '',
       params: active ? getRouteParams(active) : {},
-      path: pathname,
+      path: requestPath,
     };
     window.dispatchEvent(new CustomEvent('webui:route:navigated', { detail }));
   }
 
-  private async activateMatching(routes: HTMLElement[], pathname: string): Promise<boolean> {
+  private async activateMatching(routes: HTMLElement[], target: NavigationTarget): Promise<boolean> {
+    const { pathname, requestPath } = target;
     let best: { el: HTMLElement; params: Record<string, string>; score: number } | null = null;
 
     for (const el of routes) {
@@ -219,10 +223,10 @@ export class WebUIRouter {
         await this.ensureComponentLoaded(comp);
       } else if (!isSSRd) {
         await this.ensureComponentLoaded(comp);
-        await this.fetchAndMount(best.el, comp, pathname, best.params);
+        await this.fetchAndMount(best.el, comp, requestPath, best.params);
       } else if (typeof (existing as any).setInitialState === 'function') {
         await this.ensureComponentLoaded(comp);
-        const fullPath = (this.config.basePath ?? '') + pathname;
+        const fullPath = prependBasePath(requestPath, this.config.basePath ?? '');
         const headers: Record<string, string> = { 'Accept': 'application/json' };
         if (this.inventory) headers['X-WebUI-Inventory'] = this.inventory;
         const resp = await fetch(fullPath, { headers });
@@ -242,10 +246,10 @@ export class WebUIRouter {
   private async fetchAndMount(
     routeEl: HTMLElement,
     componentTag: string,
-    pathname: string,
+    requestPath: string,
     params: Record<string, string> = {},
   ): Promise<void> {
-    const fullPath = (this.config.basePath ?? '') + pathname;
+    const fullPath = prependBasePath(requestPath, this.config.basePath ?? '');
     const headers: Record<string, string> = { 'Accept': 'application/json' };
     if (this.inventory) headers['X-WebUI-Inventory'] = this.inventory;
     const resp = await fetch(fullPath, { headers });
@@ -330,14 +334,8 @@ export class WebUIRouter {
     return last;
   }
 
-  private currentPath(): string {
-    return this.stripBase(window.location.pathname);
-  }
-
-  private stripBase(path: string): string {
-    const base = this.config.basePath ?? '';
-    if (base && path.startsWith(base)) return path.slice(base.length) || '/';
-    return path;
+  private currentTarget(): NavigationTarget {
+    return buildNavigationTarget(new URL(window.location.href), this.config.basePath ?? '');
   }
 
   // ── Component Inventory ────────────────────────────────────────

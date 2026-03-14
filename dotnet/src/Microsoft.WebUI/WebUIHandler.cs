@@ -71,25 +71,28 @@ public sealed class WebUIHandler : IDisposable
     }
 
     /// <summary>
-    /// Returns the route templates for the given protocol entry and inventory.
+    /// Returns the route templates for the active route chain.
     /// </summary>
     /// <param name="protocol">Pre-compiled protocol binary data.</param>
-    /// <param name="entryId">The entry identifier.</param>
+    /// <param name="entryId">The persistent entry identifier.</param>
+    /// <param name="requestPath">The current route path.</param>
     /// <param name="inventoryHex">Hex-encoded inventory string.</param>
     /// <returns>A JSON string containing the route templates.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the handler has been disposed.</exception>
     /// <exception cref="WebUIException">Thrown when the operation fails.</exception>
-    public string GetRouteTemplates(byte[] protocol, string entryId, string inventoryHex)
+    public string GetRouteTemplates(byte[] protocol, string entryId, string requestPath, string inventoryHex)
     {
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
         ArgumentNullException.ThrowIfNull(protocol);
         ArgumentNullException.ThrowIfNull(entryId);
+        ArgumentNullException.ThrowIfNull(requestPath);
         ArgumentNullException.ThrowIfNull(inventoryHex);
 
         IntPtr resultPtr = NativeBindings.webui_get_route_templates(
             protocol,
             (nuint)protocol.Length,
             entryId,
+            requestPath,
             inventoryHex);
 
         if (resultPtr == IntPtr.Zero)

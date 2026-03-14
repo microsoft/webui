@@ -44,14 +44,13 @@ thread_local! {
 
 /// Record an error message so that `webui_last_error()` can return it.
 fn set_last_error(msg: impl Into<String>) {
-    let msg = msg.into();
-    // If the message itself contains a NUL byte, truncate at that point.
-    let c_string = CString::new(msg).unwrap_or_else(|e| {
-        let nul_pos = e.nul_position();
-        let mut bytes = e.into_vec();
+    let mut bytes = msg.into().into_bytes();
+    if let Some(nul_pos) = bytes.iter().position(|byte| *byte == 0) {
         bytes.truncate(nul_pos);
-        CString::new(bytes).expect("truncated string should be NUL-free")
-    });
+    }
+
+    // SAFETY: Any interior NUL byte was removed by truncating at its first position.
+    let c_string = unsafe { CString::from_vec_unchecked(bytes) };
     LAST_ERROR.with(|cell| {
         cell.replace(Some(c_string));
     });
@@ -407,17 +406,20 @@ pub unsafe extern "C" fn webui_render(
 // FFI: route template query
 // ---------------------------------------------------------------------------
 
-/// Get the f-template HTML strings needed for a route's components.
+/// Get the f-template HTML strings needed for the active route chain.
 ///
-/// Walks the protocol's fragment graph from the route's `entry_id` component,
+/// Walks the protocol's fragment graph from the persistent `entry_id` root,
+/// follows only the best-matching nested route chain for `request_path`,
 /// identifies components not in the client's `inventory_hex` bitmask, and
-/// returns a JSON string: `{"templates":[{"name":"...","html":"..."}...],"inventory":"..."}`.
+/// returns a JSON string:
+/// `{"templates":[{"name":"...","html":"..."}...],"inventory":"..."}`.
 ///
 /// # Arguments
 ///
 /// * `protocol_data` - Pointer to protobuf binary data.
 /// * `protocol_len`  - Length of the protobuf data in bytes.
-/// * `entry_id`      - Null-terminated UTF-8 string for the route's component name.
+/// * `entry_id`      - Null-terminated UTF-8 string for the persistent entry fragment.
+/// * `request_path`  - Null-terminated UTF-8 route path used to select the active route chain.
 /// * `inventory_hex` - Null-terminated hex string of the client's inventory bitmask
 ///   (pass empty string `""` if no inventory).
 ///
@@ -428,70 +430,100 @@ pub unsafe extern "C" fn webui_render(
 /// # Safety
 ///
 /// * `protocol_data` must point to `protocol_len` bytes of valid memory.
-/// * `entry_id` and `inventory_hex` must be valid null-terminated UTF-8 strings.
+/// * `entry_id`, `request_path`, and `inventory_hex` must be valid null-terminated UTF-8
+///   strings.
 #[no_mangle]
 pub unsafe extern "C" fn webui_get_route_templates(
     protocol_data: *const u8,
     protocol_len: usize,
     entry_id: *const c_char,
+    request_path: *const c_char,
     inventory_hex: *const c_char,
 ) -> *mut c_char {
     clear_last_error();
 
-    if protocol_data.is_null() || entry_id.is_null() || inventory_hex.is_null() {
-        set_last_error("one or more required arguments are null");
-        return std::ptr::null_mut();
-    }
-
-    // SAFETY: caller guarantees valid memory.
-    let protocol_bytes = std::slice::from_raw_parts(protocol_data, protocol_len);
-
-    let entry_str = match CStr::from_ptr(entry_id).to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_last_error(format!("invalid UTF-8 in entry_id: {e}"));
+    match std::panic::catch_unwind(|| {
+        if protocol_data.is_null()
+            || entry_id.is_null()
+            || request_path.is_null()
+            || inventory_hex.is_null()
+        {
+            set_last_error("one or more required arguments are null");
             return std::ptr::null_mut();
         }
-    };
 
-    let inv_str = match CStr::from_ptr(inventory_hex).to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_last_error(format!("invalid UTF-8 in inventory_hex: {e}"));
-            return std::ptr::null_mut();
+        // SAFETY: The caller guarantees `protocol_data` points to `protocol_len` readable bytes.
+        let protocol_bytes = unsafe { std::slice::from_raw_parts(protocol_data, protocol_len) };
+
+        // SAFETY: The caller guarantees `entry_id` is a valid null-terminated string.
+        let entry_str = match unsafe { CStr::from_ptr(entry_id) }.to_str() {
+            Ok(s) => s,
+            Err(e) => {
+                set_last_error(format!("invalid UTF-8 in entry_id: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        // SAFETY: The caller guarantees `request_path` is a valid null-terminated string.
+        let request_path_str = match unsafe { CStr::from_ptr(request_path) }.to_str() {
+            Ok(s) => s,
+            Err(e) => {
+                set_last_error(format!("invalid UTF-8 in request_path: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        // SAFETY: The caller guarantees `inventory_hex` is a valid null-terminated string.
+        let inv_str = match unsafe { CStr::from_ptr(inventory_hex) }.to_str() {
+            Ok(s) => s,
+            Err(e) => {
+                set_last_error(format!("invalid UTF-8 in inventory_hex: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        let protocol = match WebUIProtocol::from_protobuf(protocol_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                set_last_error(format!("failed to parse protobuf protocol: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        let (templates, updated_inv) =
+            webui_handler::route_handler::get_route_templates_for_request(
+                &protocol,
+                entry_str,
+                request_path_str,
+                inv_str,
+            );
+
+        // Build JSON response without json! macro (which uses unwrap internally)
+        let tmpl_array: Vec<Value> = templates
+            .iter()
+            .map(|(name, html)| {
+                let mut obj = serde_json::Map::with_capacity(2);
+                obj.insert("name".into(), Value::String(name.clone()));
+                obj.insert("html".into(), Value::String(html.clone()));
+                Value::Object(obj)
+            })
+            .collect();
+
+        let mut result = serde_json::Map::with_capacity(2);
+        result.insert("templates".into(), Value::Array(tmpl_array));
+        result.insert("inventory".into(), Value::String(updated_inv));
+
+        match CString::new(Value::Object(result).to_string()) {
+            Ok(s) => s.into_raw(),
+            Err(e) => {
+                set_last_error(format!("JSON output contains interior NUL byte: {e}"));
+                std::ptr::null_mut()
+            }
         }
-    };
-
-    let protocol = match WebUIProtocol::from_protobuf(protocol_bytes) {
-        Ok(p) => p,
-        Err(e) => {
-            set_last_error(format!("failed to parse protobuf protocol: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-
-    let (templates, updated_inv) =
-        webui_handler::route_handler::get_route_templates(&protocol, entry_str, inv_str);
-
-    // Build JSON response without json! macro (which uses unwrap internally)
-    let tmpl_array: Vec<Value> = templates
-        .iter()
-        .map(|(name, html)| {
-            let mut obj = serde_json::Map::with_capacity(2);
-            obj.insert("name".into(), Value::String(name.clone()));
-            obj.insert("html".into(), Value::String(html.clone()));
-            Value::Object(obj)
-        })
-        .collect();
-
-    let mut result = serde_json::Map::with_capacity(2);
-    result.insert("templates".into(), Value::Array(tmpl_array));
-    result.insert("inventory".into(), Value::String(updated_inv));
-
-    match CString::new(Value::Object(result).to_string()) {
-        Ok(s) => s.into_raw(),
-        Err(e) => {
-            set_last_error(format!("JSON output contains interior NUL byte: {e}"));
+    }) {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("panic in webui_get_route_templates");
             std::ptr::null_mut()
         }
     }
