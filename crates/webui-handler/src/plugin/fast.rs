@@ -150,7 +150,14 @@ impl HandlerPlugin for FastHydrationPlugin {
         if !self.is_active() {
             return Ok(());
         }
-        let index = self.binding_stack.pop().unwrap_or(0);
+        let index = match self.binding_stack.pop() {
+            Some(i) => i,
+            None => {
+                return Err(crate::HandlerError::Rendering(
+                    "on_binding_end called without matching on_binding_start".into(),
+                ))
+            }
+        };
         self.build_binding_comment(BINDING_END_PREFIX, index, name);
         writer.write(&self.buffer)
     }
@@ -403,6 +410,24 @@ mod tests {
         let mut writer = TestWriter::new();
         plugin.on_plugin_data(&[1, 2], &mut writer).unwrap();
         assert_eq!(writer.output, "");
+    }
+
+    #[test]
+    fn test_unbalanced_binding_end_returns_error() {
+        let mut plugin = FastHydrationPlugin::new();
+        plugin.push_scope();
+        let mut writer = TestWriter::new();
+        // Call on_binding_end without a matching on_binding_start
+        let result = plugin.on_binding_end("orphan", &mut writer);
+        assert!(
+            result.is_err(),
+            "Expected error for unbalanced on_binding_end"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("on_binding_end called without matching on_binding_start"),
+            "Unexpected error message: {err_msg}"
+        );
     }
 
     // ── Integration tests (full render cycles with WebUIHandler) ────────

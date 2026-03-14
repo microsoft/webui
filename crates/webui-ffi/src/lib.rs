@@ -50,7 +50,7 @@ fn set_last_error(msg: impl Into<String>) {
         let nul_pos = e.nul_position();
         let mut bytes = e.into_vec();
         bytes.truncate(nul_pos);
-        CString::new(bytes).expect("truncated string should be NUL-free")
+        CString::new(bytes).unwrap_or_default()
     });
     LAST_ERROR.with(|cell| {
         cell.replace(Some(c_string));
@@ -154,24 +154,36 @@ pub extern "C" fn webui_handler_create() -> *mut c_void {
 pub unsafe extern "C" fn webui_handler_create_with_plugin(plugin_id: *const c_char) -> *mut c_void {
     clear_last_error();
 
-    let handler = if plugin_id.is_null() {
-        WebUIHandler::new()
-    } else {
-        match CStr::from_ptr(plugin_id).to_str() {
-            Ok("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
-            Ok(unknown) => {
-                set_last_error(format!("unknown plugin: {unknown}"));
-                return std::ptr::null_mut();
+    // SAFETY: AssertUnwindSafe is used because we convert the panic into an
+    // error return rather than resuming, preventing UB at the FFI boundary.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let handler = if plugin_id.is_null() {
+            WebUIHandler::new()
+        } else {
+            // SAFETY: caller guarantees plugin_id is a valid null-terminated string.
+            match CStr::from_ptr(plugin_id).to_str() {
+                Ok("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
+                Ok(unknown) => {
+                    set_last_error(format!("unknown plugin: {unknown}"));
+                    return std::ptr::null_mut();
+                }
+                Err(e) => {
+                    set_last_error(format!("invalid UTF-8 in plugin_id: {e}"));
+                    return std::ptr::null_mut();
+                }
             }
-            Err(e) => {
-                set_last_error(format!("invalid UTF-8 in plugin_id: {e}"));
-                return std::ptr::null_mut();
-            }
-        }
-    };
+        };
 
-    let context = Box::new(HandlerContext { handler });
-    Box::into_raw(context) as *mut c_void
+        let context = Box::new(HandlerContext { handler });
+        Box::into_raw(context) as *mut c_void
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("internal panic in webui FFI");
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// Destroy a WebUI handler instance.
@@ -183,7 +195,15 @@ pub unsafe extern "C" fn webui_handler_create_with_plugin(plugin_id: *const c_ch
 #[no_mangle]
 pub unsafe extern "C" fn webui_handler_destroy(handler_ptr: *mut c_void) {
     if !handler_ptr.is_null() {
-        let _ = Box::from_raw(handler_ptr as *mut HandlerContext);
+        // SAFETY: AssertUnwindSafe is used because we convert the panic into an
+        // error return rather than resuming, preventing UB at the FFI boundary.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: caller guarantees handler_ptr is a valid pointer from webui_handler_create.
+            let _ = Box::from_raw(handler_ptr as *mut HandlerContext);
+        }));
+        if result.is_err() {
+            set_last_error("internal panic in webui FFI");
+        }
     }
 }
 
@@ -235,74 +255,85 @@ pub unsafe extern "C" fn webui_handler_render(
         return std::ptr::null_mut();
     }
 
-    // SAFETY: caller guarantees handler_ptr is valid and exclusively owned.
-    let context = &*(handler_ptr as *const HandlerContext);
+    // SAFETY: AssertUnwindSafe is used because we convert the panic into an
+    // error return rather than resuming, preventing UB at the FFI boundary.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: caller guarantees handler_ptr is valid and exclusively owned.
+        let context = &*(handler_ptr as *const HandlerContext);
 
-    // SAFETY: caller guarantees protocol_data points to protocol_len valid bytes.
-    let protocol_bytes = std::slice::from_raw_parts(protocol_data, protocol_len);
+        // SAFETY: caller guarantees protocol_data points to protocol_len valid bytes.
+        let protocol_bytes = std::slice::from_raw_parts(protocol_data, protocol_len);
 
-    // SAFETY: caller guarantees data_json is a valid null-terminated string.
-    let data_str = match CStr::from_ptr(data_json).to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_last_error(format!("invalid UTF-8 in data_json: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-
-    // SAFETY: caller guarantees entry_id is a valid null-terminated string.
-    let entry_str = match CStr::from_ptr(entry_id).to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_last_error(format!("invalid UTF-8 in entry_id: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-
-    // SAFETY: caller guarantees request_path is a valid null-terminated string.
-    let path_str = match CStr::from_ptr(request_path).to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_last_error(format!("invalid UTF-8 in request_path: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-
-    // Parse protocol from protobuf binary data
-    let protocol = match WebUIProtocol::from_protobuf(protocol_bytes) {
-        Ok(p) => p,
-        Err(e) => {
-            set_last_error(format!("failed to parse protobuf protocol: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-
-    // Parse data JSON
-    let data: Value = match serde_json::from_str(data_str) {
-        Ok(d) => d,
-        Err(e) => {
-            set_last_error(format!("failed to parse data JSON: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-
-    // Render
-    let mut writer = StringResponseWriter::new();
-    match context.handler.render(
-        &protocol,
-        &data,
-        &RenderOptions::new(entry_str, path_str),
-        &mut writer,
-    ) {
-        Ok(_) => match CString::new(writer.content) {
-            Ok(s) => s.into_raw(),
+        // SAFETY: caller guarantees data_json is a valid null-terminated string.
+        let data_str = match CStr::from_ptr(data_json).to_str() {
+            Ok(s) => s,
             Err(e) => {
-                set_last_error(format!("rendered output contains interior NUL byte: {e}"));
+                set_last_error(format!("invalid UTF-8 in data_json: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        // SAFETY: caller guarantees entry_id is a valid null-terminated string.
+        let entry_str = match CStr::from_ptr(entry_id).to_str() {
+            Ok(s) => s,
+            Err(e) => {
+                set_last_error(format!("invalid UTF-8 in entry_id: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        // SAFETY: caller guarantees request_path is a valid null-terminated string.
+        let path_str = match CStr::from_ptr(request_path).to_str() {
+            Ok(s) => s,
+            Err(e) => {
+                set_last_error(format!("invalid UTF-8 in request_path: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        // Parse protocol from protobuf binary data
+        let protocol = match WebUIProtocol::from_protobuf(protocol_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                set_last_error(format!("failed to parse protobuf protocol: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        // Parse data JSON
+        let data: Value = match serde_json::from_str(data_str) {
+            Ok(d) => d,
+            Err(e) => {
+                set_last_error(format!("failed to parse data JSON: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        // Render
+        let mut writer = StringResponseWriter::new();
+        match context.handler.render(
+            &protocol,
+            &data,
+            &RenderOptions::new(entry_str, path_str),
+            &mut writer,
+        ) {
+            Ok(_) => match CString::new(writer.content) {
+                Ok(s) => s.into_raw(),
+                Err(e) => {
+                    set_last_error(format!("rendered output contains interior NUL byte: {e}"));
+                    std::ptr::null_mut()
+                }
+            },
+            Err(e) => {
+                set_last_error(format!("render failed: {e}"));
                 std::ptr::null_mut()
             }
-        },
-        Err(e) => {
-            set_last_error(format!("render failed: {e}"));
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("internal panic in webui FFI");
             std::ptr::null_mut()
         }
     }
@@ -343,61 +374,74 @@ pub unsafe extern "C" fn webui_render(
         return std::ptr::null_mut();
     }
 
-    // --- Extract C strings ---------------------------------------------------
-    let html_str = match CStr::from_ptr(html).to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_last_error(format!("invalid UTF-8 in html: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-
-    let data_str = match CStr::from_ptr(data_json).to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_last_error(format!("invalid UTF-8 in data_json: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-
-    // --- Parse HTML template into a WebUI protocol ---------------------------
-    let entry_key = "template";
-    let mut parser = HtmlParser::new();
-    if let Err(e) = parser.parse(entry_key, html_str) {
-        set_last_error(format!("HTML parse error: {e}"));
-        return std::ptr::null_mut();
-    }
-
-    let protocol = WebUIProtocol::new(parser.into_fragment_records());
-
-    // --- Parse JSON state ----------------------------------------------------
-    let data: Value = match serde_json::from_str(data_str) {
-        Ok(d) => d,
-        Err(e) => {
-            set_last_error(format!("failed to parse data JSON: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-
-    // --- Render --------------------------------------------------------------
-    let handler = WebUIHandler::new();
-    let mut writer = StringResponseWriter::new();
-
-    match handler.render(
-        &protocol,
-        &data,
-        &RenderOptions::new(entry_key, "/"),
-        &mut writer,
-    ) {
-        Ok(_) => match CString::new(writer.content) {
-            Ok(s) => s.into_raw(),
+    // SAFETY: AssertUnwindSafe is used because we convert the panic into an
+    // error return rather than resuming, preventing UB at the FFI boundary.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // --- Extract C strings ---------------------------------------------------
+        // SAFETY: caller guarantees html is a valid null-terminated string.
+        let html_str = match CStr::from_ptr(html).to_str() {
+            Ok(s) => s,
             Err(e) => {
-                set_last_error(format!("rendered output contains interior NUL byte: {e}"));
+                set_last_error(format!("invalid UTF-8 in html: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        // SAFETY: caller guarantees data_json is a valid null-terminated string.
+        let data_str = match CStr::from_ptr(data_json).to_str() {
+            Ok(s) => s,
+            Err(e) => {
+                set_last_error(format!("invalid UTF-8 in data_json: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        // --- Parse HTML template into a WebUI protocol ---------------------------
+        let entry_key = "template";
+        let mut parser = HtmlParser::new();
+        if let Err(e) = parser.parse(entry_key, html_str) {
+            set_last_error(format!("HTML parse error: {e}"));
+            return std::ptr::null_mut();
+        }
+
+        let protocol = WebUIProtocol::new(parser.into_fragment_records());
+
+        // --- Parse JSON state ----------------------------------------------------
+        let data: Value = match serde_json::from_str(data_str) {
+            Ok(d) => d,
+            Err(e) => {
+                set_last_error(format!("failed to parse data JSON: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        // --- Render --------------------------------------------------------------
+        let handler = WebUIHandler::new();
+        let mut writer = StringResponseWriter::new();
+
+        match handler.render(
+            &protocol,
+            &data,
+            &RenderOptions::new(entry_key, "/"),
+            &mut writer,
+        ) {
+            Ok(_) => match CString::new(writer.content) {
+                Ok(s) => s.into_raw(),
+                Err(e) => {
+                    set_last_error(format!("rendered output contains interior NUL byte: {e}"));
+                    std::ptr::null_mut()
+                }
+            },
+            Err(e) => {
+                set_last_error(format!("render failed: {e}"));
                 std::ptr::null_mut()
             }
-        },
-        Err(e) => {
-            set_last_error(format!("render failed: {e}"));
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("internal panic in webui FFI");
             std::ptr::null_mut()
         }
     }
@@ -443,55 +487,68 @@ pub unsafe extern "C" fn webui_get_route_templates(
         return std::ptr::null_mut();
     }
 
-    // SAFETY: caller guarantees valid memory.
-    let protocol_bytes = std::slice::from_raw_parts(protocol_data, protocol_len);
+    // SAFETY: AssertUnwindSafe is used because we convert the panic into an
+    // error return rather than resuming, preventing UB at the FFI boundary.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: caller guarantees valid memory.
+        let protocol_bytes = std::slice::from_raw_parts(protocol_data, protocol_len);
 
-    let entry_str = match CStr::from_ptr(entry_id).to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_last_error(format!("invalid UTF-8 in entry_id: {e}"));
-            return std::ptr::null_mut();
+        // SAFETY: caller guarantees entry_id is a valid null-terminated string.
+        let entry_str = match CStr::from_ptr(entry_id).to_str() {
+            Ok(s) => s,
+            Err(e) => {
+                set_last_error(format!("invalid UTF-8 in entry_id: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        // SAFETY: caller guarantees inventory_hex is a valid null-terminated string.
+        let inv_str = match CStr::from_ptr(inventory_hex).to_str() {
+            Ok(s) => s,
+            Err(e) => {
+                set_last_error(format!("invalid UTF-8 in inventory_hex: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        let protocol = match WebUIProtocol::from_protobuf(protocol_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                set_last_error(format!("failed to parse protobuf protocol: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        let (templates, updated_inv) =
+            webui_handler::route_handler::get_route_templates(&protocol, entry_str, inv_str);
+
+        // Build JSON response without json! macro (which uses unwrap internally)
+        let tmpl_array: Vec<Value> = templates
+            .iter()
+            .map(|(name, html)| {
+                let mut obj = serde_json::Map::with_capacity(2);
+                obj.insert("name".into(), Value::String(name.clone()));
+                obj.insert("html".into(), Value::String(html.clone()));
+                Value::Object(obj)
+            })
+            .collect();
+
+        let mut json_result = serde_json::Map::with_capacity(2);
+        json_result.insert("templates".into(), Value::Array(tmpl_array));
+        json_result.insert("inventory".into(), Value::String(updated_inv));
+
+        match CString::new(Value::Object(json_result).to_string()) {
+            Ok(s) => s.into_raw(),
+            Err(e) => {
+                set_last_error(format!("JSON output contains interior NUL byte: {e}"));
+                std::ptr::null_mut()
+            }
         }
-    };
-
-    let inv_str = match CStr::from_ptr(inventory_hex).to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_last_error(format!("invalid UTF-8 in inventory_hex: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-
-    let protocol = match WebUIProtocol::from_protobuf(protocol_bytes) {
-        Ok(p) => p,
-        Err(e) => {
-            set_last_error(format!("failed to parse protobuf protocol: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-
-    let (templates, updated_inv) =
-        webui_handler::route_handler::get_route_templates(&protocol, entry_str, inv_str);
-
-    // Build JSON response without json! macro (which uses unwrap internally)
-    let tmpl_array: Vec<Value> = templates
-        .iter()
-        .map(|(name, html)| {
-            let mut obj = serde_json::Map::with_capacity(2);
-            obj.insert("name".into(), Value::String(name.clone()));
-            obj.insert("html".into(), Value::String(html.clone()));
-            Value::Object(obj)
-        })
-        .collect();
-
-    let mut result = serde_json::Map::with_capacity(2);
-    result.insert("templates".into(), Value::Array(tmpl_array));
-    result.insert("inventory".into(), Value::String(updated_inv));
-
-    match CString::new(Value::Object(result).to_string()) {
-        Ok(s) => s.into_raw(),
-        Err(e) => {
-            set_last_error(format!("JSON output contains interior NUL byte: {e}"));
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("internal panic in webui FFI");
             std::ptr::null_mut()
         }
     }
@@ -507,6 +564,14 @@ pub unsafe extern "C" fn webui_get_route_templates(
 #[no_mangle]
 pub unsafe extern "C" fn webui_free(string_ptr: *mut c_char) {
     if !string_ptr.is_null() {
-        let _ = CString::from_raw(string_ptr);
+        // SAFETY: AssertUnwindSafe is used because we convert the panic into an
+        // error return rather than resuming, preventing UB at the FFI boundary.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: caller guarantees string_ptr was returned by a WebUI FFI function.
+            let _ = CString::from_raw(string_ptr);
+        }));
+        if result.is_err() {
+            set_last_error("internal panic in webui FFI");
+        }
     }
 }
