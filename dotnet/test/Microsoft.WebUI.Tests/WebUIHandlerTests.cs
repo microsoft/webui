@@ -1,3 +1,4 @@
+using System;
 using Xunit;
 
 namespace Microsoft.WebUI.Tests;
@@ -23,5 +24,15 @@ public class WebUIHandlerTests
         var handler = new WebUIHandler();
         handler.Dispose();
         handler.Dispose(); // Should not throw
+    }
+
+    [Fact]
+    public void Handler_RenderAfterDispose_ThrowsObjectDisposedException()
+    {
+        var handler = new WebUIHandler();
+        handler.Dispose();
+
+        Assert.Throws<ObjectDisposedException>(() =>
+            handler.Render(Array.Empty<byte>(), "{}", "index.html", "/"));
     }
 }
