@@ -42,6 +42,9 @@ fn run(args: &BuildArgs) -> Result<()> {
     let app = app_input
         .canonicalize()
         .with_context(|| format!("App folder not found: {}", args.app_args.app.display()))?;
+    if !app.is_dir() {
+        anyhow::bail!("App path is not a directory: {}", app.display());
+    }
 
     output::header("WebUI Build");
     output::field("App", &app.display());
@@ -231,6 +234,19 @@ mod tests {
         let out_dir = TempDir::new().unwrap();
         let result = build(Path::new("/nonexistent/path"), out_dir.path(), "index.html");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_app_path_must_be_directory() {
+        let file_dir = TempDir::new().unwrap();
+        let app_file = file_dir.path().join("not-a-directory.html");
+        fs::write(&app_file, "<h1>Hello</h1>").unwrap();
+        let out_dir = TempDir::new().unwrap();
+
+        let result = build(&app_file, out_dir.path(), "index.html");
+        assert!(result.is_err());
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(err.contains("App path is not a directory"));
     }
 
     #[test]

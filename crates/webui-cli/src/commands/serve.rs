@@ -19,6 +19,26 @@ use webui_protocol::WebUIProtocol;
 use super::common::*;
 use crate::utils::output;
 
+const FORWARD_REQUEST_HEADERS: &[&str] = &[
+    "authorization",
+    "cookie",
+    "accept",
+    "content-type",
+    "user-agent",
+    "x-request-id",
+    "x-forwarded-for",
+];
+
+const FORWARD_RESPONSE_HEADERS: &[&str] = &[
+    "content-type",
+    "set-cookie",
+    "location",
+    "cache-control",
+    "etag",
+    "last-modified",
+    "x-request-id",
+];
+
 #[derive(Args)]
 pub struct ServeArgs {
     #[command(flatten)]
@@ -458,7 +478,7 @@ fn build_and_render(
 
 fn inject_script_before_body_close(html: &str, script: &str) -> String {
     // Insert before </body> if found, otherwise append
-    if let Some(pos) = html.rfind("</body>") {
+    if let Some(pos) = rfind_ascii_case_insensitive(html, "</body>") {
         let mut result = String::with_capacity(html.len() + script.len() + 1);
         result.push_str(&html[..pos]);
         result.push('\n');
@@ -472,6 +492,39 @@ fn inject_script_before_body_close(html: &str, script: &str) -> String {
         result.push_str(script);
         result
     }
+}
+
+fn rfind_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(haystack.len());
+    }
+
+    let haystack_bytes = haystack.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    if needle_bytes.len() > haystack_bytes.len() {
+        return None;
+    }
+
+    for start in (0..=haystack_bytes.len() - needle_bytes.len()).rev() {
+        if haystack_bytes[start..start + needle_bytes.len()].eq_ignore_ascii_case(needle_bytes) {
+            return Some(start);
+        }
+    }
+
+    None
+}
+
+fn collect_forward_headers(
+    headers: &actix_web::http::header::HeaderMap,
+    allowlist: &[&'static str],
+) -> Vec<(&'static str, actix_web::http::header::HeaderValue)> {
+    let mut forwarded = Vec::with_capacity(allowlist.len());
+    for &name in allowlist {
+        if let Some(value) = headers.get(name) {
+            forwarded.push((name, value.clone()));
+        }
+    }
+    forwarded
 }
 
 // ── Route handlers ──────────────────────────────────────────────────────
@@ -833,9 +886,8 @@ async fn handle_api_proxy(
     let client = awc::Client::new();
     let mut proxy_req = client.request(req.method().clone(), &url);
 
-    // Forward content-type header if present
-    if let Some(ct) = req.headers().get("content-type") {
-        proxy_req = proxy_req.insert_header(("content-type", ct.clone()));
+    for (name, value) in collect_forward_headers(req.headers(), FORWARD_REQUEST_HEADERS) {
+        proxy_req = proxy_req.insert_header((name, value));
     }
 
     let result = if body.is_empty() {
@@ -850,8 +902,10 @@ async fn handle_api_proxy(
             match resp.body().await {
                 Ok(response_body) => {
                     let mut builder = HttpResponse::build(status);
-                    if let Some(ct) = resp.headers().get("content-type") {
-                        builder.insert_header(("content-type", ct.clone()));
+                    for (name, value) in
+                        collect_forward_headers(resp.headers(), FORWARD_RESPONSE_HEADERS)
+                    {
+                        builder.insert_header((name, value));
                     }
                     builder.body(response_body)
                 }
@@ -975,6 +1029,7 @@ fn start_file_watcher(config: WatcherConfig) {
                             "  {} Rebuilt and re-rendered (HMR version updated)",
                             console::style("\u{21bb}").green()
                         );
+                        last_times = current_times;
                     }
                     Err(err) => {
                         eprintln!(
@@ -983,8 +1038,6 @@ fn start_file_watcher(config: WatcherConfig) {
                         );
                     }
                 }
-
-                last_times = current_times;
             }
         }
     });
@@ -1144,6 +1197,42 @@ mod tests {
         let injected = inject_script_before_body_close(html, script);
         assert!(injected.contains("<script>"));
         assert!(injected.starts_with("<h1>Hello</h1>"));
+    }
+
+    #[test]
+    fn test_hmr_script_injection_uppercase_body() {
+        let html = "<html><BODY><p>Hello</p></BODY></html>";
+        let script = "<script>console.log('hmr')</script>";
+        let injected = inject_script_before_body_close(html, script);
+        assert!(injected.contains("<script>"));
+        let script_pos = injected.find("<script>").unwrap();
+        let body_pos = injected.rfind("</BODY>").unwrap();
+        assert!(script_pos < body_pos);
+    }
+
+    #[test]
+    fn test_collect_forward_headers_respects_allowlist() {
+        use actix_web::http::header::{HeaderMap, HeaderName, HeaderValue};
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("authorization"),
+            HeaderValue::from_static("Bearer token"),
+        );
+        headers.insert(
+            HeaderName::from_static("cookie"),
+            HeaderValue::from_static("a=b"),
+        );
+        headers.insert(
+            HeaderName::from_static("connection"),
+            HeaderValue::from_static("keep-alive"),
+        );
+
+        let forwarded = collect_forward_headers(&headers, FORWARD_REQUEST_HEADERS);
+        assert_eq!(forwarded.len(), 2);
+        assert!(forwarded.iter().any(|(n, _)| *n == "authorization"));
+        assert!(forwarded.iter().any(|(n, _)| *n == "cookie"));
+        assert!(!forwarded.iter().any(|(n, _)| *n == "connection"));
     }
 
     #[test]
