@@ -79,6 +79,13 @@ pub(crate) fn extract_params(path: &str) -> Result<Vec<String>> {
 
 /// Validate route attributes for consistency.
 pub(crate) fn validate_attributes(attrs: &RouteAttributes) -> Result<()> {
+    // path is required
+    if attrs.path.is_empty() {
+        return Err(ParserError::Directive(
+            "Route must have a non-empty 'path' attribute".into(),
+        ));
+    }
+
     // component is required
     if attrs.component.is_empty() {
         return Err(ParserError::Directive(format!(
@@ -140,14 +147,22 @@ impl RouteNameRegistry {
 }
 
 /// Collect all route records into a map keyed by route name.
-/// Routes without names are keyed by their fragment ID.
+/// Routes without names are keyed by their fragment ID, with a counter
+/// suffix appended when multiple unnamed routes share the same fragment ID.
 pub(crate) fn collect_route_registry(
     routes: &[WebUiFragmentRoute],
 ) -> HashMap<String, RouteRecord> {
     let mut registry = HashMap::with_capacity(routes.len());
+    let mut unnamed_counts: HashMap<String, usize> = HashMap::new();
     for route in routes {
         let key = if route.name.is_empty() {
-            route.fragment_id.clone()
+            let count = unnamed_counts.entry(route.fragment_id.clone()).or_insert(0);
+            *count += 1;
+            if *count == 1 {
+                route.fragment_id.clone()
+            } else {
+                format!("{}_{}", route.fragment_id, count)
+            }
         } else {
             route.name.clone()
         };
@@ -240,6 +255,32 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_missing_path() {
+        let attrs = RouteAttributes {
+            component: "my-comp".to_string(),
+            ..Default::default()
+        };
+        let err = validate_attributes(&attrs);
+        assert!(err.is_err());
+        assert!(
+            err.unwrap_err().to_string().contains("path"),
+            "Error should mention missing path"
+        );
+    }
+
+    #[test]
+    fn test_validate_missing_both() {
+        let attrs = RouteAttributes::default();
+        let err = validate_attributes(&attrs);
+        assert!(err.is_err());
+        // path is checked first
+        assert!(
+            err.unwrap_err().to_string().contains("path"),
+            "Error should mention missing path first"
+        );
+    }
+
+    #[test]
     fn test_route_name_registry_unique() {
         let mut reg = RouteNameRegistry::new();
         assert!(reg.register("home").is_ok());
@@ -294,5 +335,31 @@ mod tests {
         assert_eq!(registry.len(), 2);
         assert!(registry.contains_key("home"));
         assert!(registry.contains_key("unnamed-page"));
+    }
+
+    #[test]
+    fn test_collect_route_registry_unnamed_collision() {
+        let routes = vec![
+            WebUiFragmentRoute {
+                name: "".to_string(),
+                path: "/a".to_string(),
+                fragment_id: "shared-comp".to_string(),
+                ..Default::default()
+            },
+            WebUiFragmentRoute {
+                name: "".to_string(),
+                path: "/b".to_string(),
+                fragment_id: "shared-comp".to_string(),
+                ..Default::default()
+            },
+        ];
+        let registry = collect_route_registry(&routes);
+        assert_eq!(
+            registry.len(),
+            2,
+            "Both unnamed routes with the same fragment_id must be preserved"
+        );
+        assert!(registry.contains_key("shared-comp"));
+        assert!(registry.contains_key("shared-comp_2"));
     }
 }

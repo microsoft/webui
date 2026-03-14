@@ -201,11 +201,11 @@ fn convert_btr_to_fast(input: &str) -> String {
             }
         }
 
-        // Check for {{expr}} inside :attr values — handled at attribute level
-        // in try_convert_tag. Outside of tags, double-braces are left as-is
-        // (they're text content interpolation for FAST, kept unchanged).
-        result.push(bytes[i] as char);
-        i += 1;
+        // Advance past one full UTF-8 character safely.
+        // Using push_str avoids truncation of multi-byte UTF-8 sequences.
+        let char_len = input[i..].chars().next().map_or(1, |c| c.len_utf8());
+        result.push_str(&input[i..i + char_len]);
+        i += char_len;
     }
 
     result
@@ -395,6 +395,10 @@ fn extract_attribute_value<'a>(tag: &'a str, attr_name: &str) -> Option<&'a str>
             let value_start = abs_pos + attr_name.len() + 2; // skip `="`
             let end_quote = tag[value_start..].find('"')?;
             return Some(&tag[value_start..value_start + end_quote]);
+        } else if after_eq.starts_with('\'') {
+            let value_start = abs_pos + attr_name.len() + 2; // skip `='`
+            let end_quote = tag[value_start..].find('\'')?;
+            return Some(&tag[value_start..value_start + end_quote]);
         }
 
         return None;
@@ -446,8 +450,9 @@ fn convert_complex_attrs(tag_str: &str, result: &mut String) -> Option<usize> {
                 converted.push_str(&tag_content[attr_start..j]);
                 continue;
             }
-            converted.push(tag_bytes[j] as char);
-            j += 1;
+            let char_len = tag_content[j..].chars().next().map_or(1, |c| c.len_utf8());
+            converted.push_str(&tag_content[j..j + char_len]);
+            j += char_len;
         } else {
             // Inside a :attr value — convert {{expr}} to {expr}
             if tag_bytes[j] == b'"' {
@@ -471,8 +476,9 @@ fn convert_complex_attrs(tag_str: &str, result: &mut String) -> Option<usize> {
                     j += 2;
                 }
             } else {
-                converted.push(tag_bytes[j] as char);
-                j += 1;
+                let char_len = tag_content[j..].chars().next().map_or(1, |c| c.len_utf8());
+                converted.push_str(&tag_content[j..j + char_len]);
+                j += char_len;
             }
         }
     }
@@ -511,8 +517,9 @@ fn minify_inter_tag_whitespace(input: &str) -> String {
                 result.push_str(&input[ws_start..i]);
             }
         } else {
-            result.push(bytes[i] as char);
-            i += 1;
+            let char_len = input[i..].chars().next().map_or(1, |c| c.len_utf8());
+            result.push_str(&input[i..i + char_len]);
+            i += char_len;
         }
     }
 
@@ -1001,5 +1008,73 @@ mod tests {
         let input = r#"<webui-route path="/" name="dashboard" component="cb-page-dashboard" exact style="display:none"></webui-route>"#;
         let output = convert_btr_to_fast(input);
         assert_eq!(output, input);
+    }
+
+    // --- PARSER-005: UTF-8 safety tests ---
+
+    #[test]
+    fn convert_non_ascii_text_preserved() {
+        let input = "<div>café résumé naïve</div>";
+        let result = convert_btr_to_fast(input);
+        assert_eq!(result, input, "Non-ASCII text must survive conversion");
+    }
+
+    #[test]
+    fn convert_non_ascii_with_if_directive() {
+        let input = r#"<p>über</p><if condition="ok"><span>ñ</span></if>"#;
+        let output = convert_btr_to_fast(input);
+        assert!(output.contains("<p>über</p>"));
+        assert!(output.contains("<f-when value=\"{ok}\">"));
+        assert!(output.contains("<span>ñ</span>"));
+    }
+
+    #[test]
+    fn minify_whitespace_preserves_non_ascii() {
+        let input = "<div>café</div> <span>résumé</span>";
+        let output = minify_inter_tag_whitespace(input);
+        assert!(
+            output.contains("café"),
+            "Non-ASCII must survive minification, got: {output}"
+        );
+        assert!(
+            output.contains("résumé"),
+            "Non-ASCII must survive minification, got: {output}"
+        );
+    }
+
+    #[test]
+    fn complex_attrs_preserve_non_ascii_values() {
+        let input = r#"<div :title="{{café}}"></div>"#;
+        let output = convert_btr_to_fast(input);
+        assert_eq!(
+            output, r#"<div :title="{café}"></div>"#,
+            "Non-ASCII in :attr value must survive"
+        );
+    }
+
+    // --- PARSER-006: single-quoted attribute support ---
+
+    #[test]
+    fn extract_single_quoted_attribute() {
+        let tag = "<if condition='x > 5'>";
+        let value = extract_attribute_value(tag, "condition");
+        assert_eq!(value, Some("x > 5"));
+    }
+
+    #[test]
+    fn extract_double_quoted_attribute_still_works() {
+        let tag = r#"<if condition="isReady">"#;
+        let value = extract_attribute_value(tag, "condition");
+        assert_eq!(value, Some("isReady"));
+    }
+
+    #[test]
+    fn convert_if_with_single_quotes() {
+        let input = "<if condition='isComplete'><span>Done</span></if>";
+        let output = convert_btr_to_fast(input);
+        assert_eq!(
+            output,
+            r#"<f-when value="{isComplete}"><span>Done</span></f-when>"#
+        );
     }
 }

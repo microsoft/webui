@@ -172,18 +172,21 @@ impl ConditionParser {
     ) -> Option<ConditionExpr> {
         // Track nesting level for quotes
         let mut quote_char: Option<char> = None;
-        let chars: Vec<char> = input.chars().collect();
+        // Use char_indices so operator positions are tracked as byte offsets,
+        // preventing panics when non-ASCII characters precede `&&` / `||`.
+        let indexed: Vec<(usize, char)> = input.char_indices().collect();
 
-        // Find operator indices
-        let mut operator_indices = Vec::new();
+        // Find operator positions stored as (byte_offset, byte_length)
+        let mut operator_indices: Vec<(usize, usize)> = Vec::new();
         let mut i = 0;
 
-        while i < chars.len() {
-            match chars[i] {
+        while i < indexed.len() {
+            let ch = indexed[i].1;
+            match ch {
                 '\'' | '"' => {
                     if quote_char.is_none() {
-                        quote_char = Some(chars[i]);
-                    } else if quote_char == Some(chars[i]) {
+                        quote_char = Some(ch);
+                    } else if quote_char == Some(ch) {
                         quote_char = None;
                     }
                 }
@@ -191,17 +194,26 @@ impl ConditionParser {
                     // Only check for operators when not inside quotes
                     if quote_char.is_none() {
                         for op_str in operators {
-                            if i + op_str.len() <= chars.len() {
-                                let slice = chars[i..i + op_str.len()].iter().collect::<String>();
+                            // All logical operators are ASCII so len() == char count
+                            let op_char_len = op_str.len();
+                            if i + op_char_len <= indexed.len() {
+                                let slice: String =
+                                    indexed[i..i + op_char_len].iter().map(|(_, c)| c).collect();
 
                                 if slice == *op_str {
-                                    // Check if it's an actual operator and not part of a word
-                                    let is_standalone = (i == 0 || !chars[i - 1].is_alphanumeric())
-                                        && (i + op_str.len() == chars.len()
-                                            || !chars[i + op_str.len()].is_alphanumeric());
+                                    let is_standalone = (i == 0
+                                        || !indexed[i - 1].1.is_alphanumeric())
+                                        && (i + op_char_len == indexed.len()
+                                            || !indexed[i + op_char_len].1.is_alphanumeric());
 
                                     if is_standalone {
-                                        operator_indices.push((i, op_str.len()));
+                                        let byte_start = indexed[i].0;
+                                        let byte_end = if i + op_char_len < indexed.len() {
+                                            indexed[i + op_char_len].0
+                                        } else {
+                                            input.len()
+                                        };
+                                        operator_indices.push((byte_start, byte_end - byte_start));
                                     }
                                 }
                             }
@@ -212,14 +224,12 @@ impl ConditionParser {
             i += 1;
         }
 
-        // Process the last operator (assuming right-to-left associativity)
+        // Process the first operator found
         if let Some((op_start, op_len)) = operator_indices.first() {
-            // Extract left and right parts
             let left_str = input[..(*op_start)].trim();
             let right_str = input[(*op_start + *op_len)..].trim();
 
             if !left_str.is_empty() && !right_str.is_empty() {
-                // Parse the two sides of the operator
                 if let Ok(left) = self.parse(left_str) {
                     if let Ok(right) = self.parse(right_str) {
                         return Some(ConditionExpr::compound(left, op, right));
@@ -464,6 +474,30 @@ mod tests {
                 LogicalOperator::try_from(inner.op) == Ok(LogicalOperator::Or) &&
                 matches!(inner.right.as_ref().and_then(|r| r.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "c")
             )
+        ));
+    }
+
+    #[test]
+    fn test_unicode_before_logical_operator() {
+        let parser = ConditionParser::new();
+        // Non-ASCII characters before && must not panic (byte vs char index bug)
+        let result = parser
+            .parse("naïve && ready")
+            .expect("Failed to parse condition with non-ASCII before &&");
+        assert!(matches!(
+            &result.expr,
+            Some(Expr::Compound(compound))
+            if LogicalOperator::try_from(compound.op) == Ok(LogicalOperator::And)
+        ));
+
+        // Non-ASCII before ||
+        let result = parser
+            .parse("café || résumé")
+            .expect("Failed to parse condition with non-ASCII before ||");
+        assert!(matches!(
+            &result.expr,
+            Some(Expr::Compound(compound))
+            if LogicalOperator::try_from(compound.op) == Ok(LogicalOperator::Or)
         ));
     }
 

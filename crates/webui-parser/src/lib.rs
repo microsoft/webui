@@ -1151,6 +1151,14 @@ impl HtmlParser {
         // Extract params from path template (validation only)
         route_parser::extract_params(&path)?;
 
+        // Validate component is a known registered component
+        if !component.is_empty() && !self.component_registry.contains(&component) {
+            return Err(ParserError::Directive(format!(
+                "Route component '{}' is not a known component",
+                component
+            )));
+        }
+
         // Ensure the component's template is parsed and registered
         if !component.is_empty()
             && self.component_registry.contains(&component)
@@ -3253,6 +3261,10 @@ mod tests {
     #[test]
     fn test_parse_simple_route() {
         let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component("profile-page", "<div></div>", None)
+            .expect("register failed");
         let html = r#"<route path="/profile" component="profile-page" name="profile" exact />"#;
         parser.parse("test.html", html).expect("parse failed");
 
@@ -3274,8 +3286,12 @@ mod tests {
     #[test]
     fn test_parse_route_with_params() {
         let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component("detail-page", "<div></div>", None)
+            .expect("register failed");
         let html =
-            r#"<route path="/profile/:id/view/:section" component="detail" name="detail" />"#;
+            r#"<route path="/profile/:id/view/:section" component="detail-page" name="detail" />"#;
         parser.parse("test.html", html).expect("parse failed");
 
         // Route is registered in the route registry
@@ -3294,6 +3310,18 @@ mod tests {
     #[test]
     fn test_parse_multiple_routes() {
         let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component("app-layout", "<div></div>", None)
+            .expect("register failed");
+        parser
+            .component_registry_mut()
+            .register_component("dash-page", "<div></div>", None)
+            .expect("register failed");
+        parser
+            .component_registry_mut()
+            .register_component("contacts-page", "<div></div>", None)
+            .expect("register failed");
         let html = r#"<route path="/" name="app" component="app-layout" />
             <route path="/dashboard" name="dashboard" component="dash-page" exact />
             <route path="/contacts" name="contacts" component="contacts-page" exact />"#;
@@ -3314,8 +3342,16 @@ mod tests {
     #[test]
     fn test_parse_route_duplicate_name_error() {
         let mut parser = HtmlParser::new();
-        let html = r#"<route path="/a" name="home" component="a" />
-            <route path="/b" name="home" component="b" />"#;
+        parser
+            .component_registry_mut()
+            .register_component("comp-a", "<div></div>", None)
+            .expect("register failed");
+        parser
+            .component_registry_mut()
+            .register_component("comp-b", "<div></div>", None)
+            .expect("register failed");
+        let html = r#"<route path="/a" name="home" component="comp-a" />
+            <route path="/b" name="home" component="comp-b" />"#;
         let result = parser.parse("test.html", html);
         assert!(result.is_err());
     }
@@ -3336,6 +3372,18 @@ mod tests {
     #[test]
     fn test_parse_multiple_routes_with_registry() {
         let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component("home-page", "<div></div>", None)
+            .expect("register failed");
+        parser
+            .component_registry_mut()
+            .register_component("about-page", "<div></div>", None)
+            .expect("register failed");
+        parser
+            .component_registry_mut()
+            .register_component("contact-page", "<div></div>", None)
+            .expect("register failed");
         let html = r#"<route path="/" name="home" component="home-page" exact />
             <route path="/about" name="about" component="about-page" exact />
             <route path="/contact/:id" name="contact" component="contact-page" />"#;
@@ -3346,5 +3394,34 @@ mod tests {
         assert_eq!(routes["home"].path, "/");
         assert_eq!(routes["about"].path, "/about");
         assert_eq!(routes["contact"].path, "/contact/:id");
+    }
+
+    #[test]
+    fn test_parse_route_unknown_component_error() {
+        let mut parser = HtmlParser::new();
+        // Do NOT register "unknown-comp" — it should fail
+        let html = r#"<route path="/x" name="x" component="unknown-comp" />"#;
+        let result = parser.parse("test.html", html);
+        assert!(
+            result.is_err(),
+            "Route with unregistered component should fail"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("unknown-comp"),
+            "Error should mention the unknown component name, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_route_requires_path() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component("my-comp", "<div></div>", None)
+            .expect("register failed");
+        let html = r#"<route component="my-comp" name="x" />"#;
+        let result = parser.parse("test.html", html);
+        assert!(result.is_err(), "Route without path attribute should fail");
     }
 }
