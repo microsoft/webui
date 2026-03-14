@@ -169,7 +169,7 @@ export class WebUIRouter {
   // ── Route matching ──────────────────────────────────────────────
 
   private async handleNavigation(target: NavigationTarget): Promise<void> {
-    const { pathname, requestPath } = target;
+    const { requestPath } = target;
     const topRoutes = this.discoverTopRoutes();
 
     if (topRoutes.length > 0) {
