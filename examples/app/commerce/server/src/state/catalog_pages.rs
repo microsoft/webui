@@ -146,7 +146,7 @@ fn active_category_title<'a>(context: &'a ShellContext<'_>, category: &'a str) -
         .map_or(category, |item| item.title.as_str())
 }
 
-fn default_sort<'a>(requested_sort: Option<&'a str>) -> &'a str {
+fn default_sort(requested_sort: Option<&str>) -> &str {
     match requested_sort {
         Some(sort) if !sort.is_empty() => sort,
         _ => "relevance",
