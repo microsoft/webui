@@ -97,6 +97,7 @@ pub fn cookie_for_cart(cart: &StoredCart) -> Option<Cookie<'static>> {
             .path("/")
             .max_age(Duration::days(30))
             .http_only(true)
+            .secure(true)
             .same_site(SameSite::Lax)
             .finish(),
     )
@@ -107,6 +108,7 @@ pub fn clear_cookie() -> Cookie<'static> {
         .path("/")
         .max_age(Duration::seconds(0))
         .http_only(true)
+        .secure(true)
         .same_site(SameSite::Lax)
         .finish()
 }
