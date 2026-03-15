@@ -207,7 +207,7 @@ pub fn without_cart(path: &str) -> String {
 #[must_use]
 pub fn build_cart_state(cart: &StoredCart, catalog: &Catalog, current_path: &str) -> CartState {
     let redirect_to = with_cart_open(current_path, true);
-    let mut items = Vec::with_capacity(cart.lines.len());
+    let mut items = Vec::with_capacity(cart.lines.len().min(64));
     let mut subtotal = 0.0_f64;
     let mut item_count: u32 = 0;
 
