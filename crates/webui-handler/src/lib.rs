@@ -152,24 +152,17 @@ fn emit_state_attributes(state: &Value, writer: &mut dyn ResponseWriter) -> Resu
     // Emit scalar values as individual attributes
     for (key, value) in map {
         let val_str = match value {
-            Value::String(s) => s.clone(),
-            Value::Number(n) => n.to_string(),
-            Value::Bool(b) => b.to_string(),
+            Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
+            Value::Number(n) => std::borrow::Cow::Owned(n.to_string()),
+            Value::Bool(true) => std::borrow::Cow::Borrowed("true"),
+            Value::Bool(false) => std::borrow::Cow::Borrowed("false"),
             _ => continue,
         };
         let attr_name = camel_to_kebab(key);
         writer.write(" ")?;
         writer.write(&attr_name)?;
         writer.write("=\"")?;
-        for ch in val_str.chars() {
-            match ch {
-                '&' => writer.write("&amp;")?,
-                '"' => writer.write("&quot;")?,
-                '<' => writer.write("&lt;")?,
-                '>' => writer.write("&gt;")?,
-                _ => writer.write(&String::from(ch))?,
-            }
-        }
+        write_escaped_state_attr(writer, val_str.as_ref())?;
         writer.write("\"")?;
     }
 
@@ -178,16 +171,36 @@ fn emit_state_attributes(state: &Value, writer: &mut dyn ResponseWriter) -> Resu
     if has_complex {
         let json_str = state.to_string();
         writer.write(" data-state=\"")?;
-        for ch in json_str.chars() {
-            match ch {
-                '&' => writer.write("&amp;")?,
-                '"' => writer.write("&quot;")?,
-                '<' => writer.write("&lt;")?,
-                '>' => writer.write("&gt;")?,
-                _ => writer.write(&String::from(ch))?,
-            }
-        }
+        write_escaped_state_attr(writer, &json_str)?;
         writer.write("\"")?;
+    }
+
+    Ok(())
+}
+
+fn write_escaped_state_attr(writer: &mut dyn ResponseWriter, value: &str) -> Result<()> {
+    let mut last = 0;
+
+    for (index, ch) in value.char_indices() {
+        let escaped = match ch {
+            '&' => Some("&amp;"),
+            '"' => Some("&quot;"),
+            '<' => Some("&lt;"),
+            '>' => Some("&gt;"),
+            _ => None,
+        };
+
+        if let Some(entity) = escaped {
+            if last < index {
+                writer.write(&value[last..index])?;
+            }
+            writer.write(entity)?;
+            last = index + ch.len_utf8();
+        }
+    }
+
+    if last < value.len() {
+        writer.write(&value[last..])?;
     }
 
     Ok(())
@@ -5192,6 +5205,43 @@ mod tests {
         assert!(
             html.contains("component=\"detail-page\""),
             "component attr should be on webui-route: {html}"
+        );
+    }
+
+    #[test]
+    fn test_route_state_attributes_escape_scalars_and_data_state() {
+        let protocol = make_route_protocol();
+        let state = test_json!({
+            "title": "Fish & Chips <\"special\">",
+            "cartOpen": true,
+            "items": [{"name": "A&B"}]
+        });
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        let html = writer.get_content();
+        assert!(
+            html.contains(r#"title="Fish &amp; Chips &lt;&quot;special&quot;&gt;""#),
+            "escaped title should be emitted: {html}"
+        );
+        assert!(
+            html.contains(r#"cart-open="true""#),
+            "bool attrs should render: {html}"
+        );
+        assert!(
+            html.contains(r#"data-state=""#),
+            "complex state should be emitted as data-state: {html}"
+        );
+        assert!(
+            html.contains(r#"&quot;name&quot;:&quot;A&amp;B&quot;"#),
+            "complex state values should be escaped inside data-state: {html}"
         );
     }
 }

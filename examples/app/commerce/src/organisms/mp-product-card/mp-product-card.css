@@ -1,0 +1,46 @@
+:host {
+  display: block;
+}
+
+:host([variant='grid']) {
+  padding-bottom: 0.34375rem;
+}
+
+.card {
+  position: relative;
+  display: block;
+  height: 100%;
+  overflow: hidden;
+  border-radius: var(--webui-radius-lg);
+  border: 1px solid var(--webui-border);
+  text-decoration: none;
+  color: var(--webui-text);
+  transition: border-color 0.2s ease;
+}
+
+.card:hover {
+  border-color: var(--webui-accent);
+}
+
+.media {
+  position: absolute;
+  inset: 0;
+}
+
+:host([variant='grid']) .card,
+:host([variant='related']) .card {
+  aspect-ratio: 1 / 1;
+  height: auto;
+}
+
+:host([variant='hero']) .card,
+:host([variant='carousel']) .card {
+  height: 100%;
+}
+
+@media (max-width: 767px) {
+  :host([variant='hero']) .card {
+    aspect-ratio: 1 / 1;
+    height: auto;
+  }
+}

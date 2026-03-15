@@ -1,0 +1,36 @@
+:host {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  display: flex;
+  padding: 0 1rem 1rem;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+.label {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 0.25rem;
+  background: rgb(0 0 0 / 70%);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 9999px;
+  border: 1px solid var(--webui-border);
+}
+
+.title {
+  margin: 0 1rem 0 0;
+  padding-left: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.025em;
+  color: var(--webui-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

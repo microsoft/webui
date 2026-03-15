@@ -1,0 +1,90 @@
+<template shadowrootmode="open">
+  <div class="cart-panel {{panelOpenClass}}" id="cart-popover">
+    <div class="panel-header">
+      <h2 class="panel-title">My Cart</h2>
+      <a href="{{cartCloseHref}}" class="close-btn" data-action="close" aria-label="Close cart">
+        <mp-icon name="close"></mp-icon>
+      </a>
+    </div>
+
+    <if condition="cartEmpty">
+      <div class="empty-state">
+        <mp-icon name="cart" style="--icon-size: 4rem"></mp-icon>
+        <p class="empty-text">Your cart is empty.</p>
+      </div>
+    </if>
+
+    <if condition="!cartEmpty">
+      <div class="cart-content">
+          <ul class="cart-items">
+            <for each="item in cartItems">
+              <li class="cart-line">
+                <div class="item-image">
+                  <button
+                    class="remove-btn"
+                    type="button"
+                    data-action="remove"
+                    data-handle="{{item.handle}}"
+                    data-color="{{item.color}}"
+                    data-size="{{item.size}}"
+                    data-quantity="0"
+                    aria-label="Remove cart item"
+                  >
+                    <mp-icon name="close"></mp-icon>
+                  </button>
+                  <mp-product-image gradient="{{item.gradient}}" image-url="{{item.imageUrl}}" alt="{{item.title}}" loading="lazy" decoding="async"></mp-product-image>
+                </div>
+                <div class="item-info">
+                  <a href="/product/{{item.handle}}" class="item-title">{{item.title}}</a>
+                  <if condition="item.variantLabel">
+                    <p class="item-variant">{{item.variantLabel}}</p>
+                  </if>
+                </div>
+                <div class="item-actions">
+                  <div class="item-price">
+                    <mp-price value="{{item.price}}" variant="plain" size="sm" currency-code="USD"></mp-price>
+                  </div>
+                  <div class="qty-control">
+                  <form method="post" action="/cart/update" class="qty-form">
+                    <input type="hidden" name="handle" value="{{item.handle}}" />
+                    <input type="hidden" name="color" value="{{item.color}}" />
+                    <input type="hidden" name="size" value="{{item.size}}" />
+                    <input type="hidden" name="redirectTo" value="{{item.redirectTo}}" />
+                    <input type="hidden" name="openCart" value="true" />
+                    <button class="qty-btn" type="submit" name="quantity" value="{{item.decreaseTo}}" data-action="decrease" data-handle="{{item.handle}}" data-color="{{item.color}}" data-size="{{item.size}}" data-quantity="{{item.decreaseTo}}">
+                      <mp-icon name="minus"></mp-icon>
+                    </button>
+                  </form>
+                  <span class="qty-count">{{item.quantity}}</span>
+                  <form method="post" action="/cart/update" class="qty-form">
+                    <input type="hidden" name="handle" value="{{item.handle}}" />
+                    <input type="hidden" name="color" value="{{item.color}}" />
+                    <input type="hidden" name="size" value="{{item.size}}" />
+                    <input type="hidden" name="redirectTo" value="{{item.redirectTo}}" />
+                    <input type="hidden" name="openCart" value="true" />
+                    <button class="qty-btn" type="submit" name="quantity" value="{{item.increaseTo}}" data-action="increase" data-handle="{{item.handle}}" data-color="{{item.color}}" data-size="{{item.size}}" data-quantity="{{item.increaseTo}}">
+                      <mp-icon name="plus"></mp-icon>
+                    </button>
+                  </form>
+                </div>
+              </div>
+            </li>
+          </for>
+        </ul>
+        <div class="cart-footer">
+          <div class="total-row total-breakdown">
+            <span>Taxes</span>
+            <span class="total-value total-price"><span>{{taxes}}</span><span class="currency-label">USD</span></span>
+          </div>
+          <div class="total-row shipping-row"><span>Shipping</span><span class="total-value">Calculated at checkout</span></div>
+          <div class="total-row total-final">
+            <span>Total</span>
+            <span class="total-value total-price"><span>{{subtotal}}</span><span class="currency-label">USD</span></span>
+          </div>
+          <button class="checkout-btn">Proceed to Checkout</button>
+        </div>
+      </div>
+    </if>
+  </div>
+  <a href="{{cartCloseHref}}" class="backdrop {{backdropOpenClass}}" data-action="close" aria-label="Close cart"></a>
+</template>

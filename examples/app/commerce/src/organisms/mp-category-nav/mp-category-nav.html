@@ -1,0 +1,49 @@
+<template shadowrootmode="open">
+  <nav class="category-nav">
+    <details class="mobile-dropdown">
+      <summary class="mobile-summary">
+        <span class="mobile-current">{{currentLabel}}</span>
+      </summary>
+      <ul class="mobile-list">
+        <li>
+          <a href="/search" class="mobile-link {{allActiveClass}}">All</a>
+        </li>
+        <for each="cat in categories">
+          <li>
+            <a href="/search/{{cat.handle}}" class="mobile-link {{cat.activeClass}}">{{cat.title}}</a>
+          </li>
+        </for>
+      </ul>
+    </details>
+    <h3 class="heading">Collections</h3>
+    <ul class="list desktop-list">
+      <li>
+        <if condition="allActiveClass == 'active'">
+          <p class="link active current" data-handle="" data-href="/search">All</p>
+        </if>
+        <if condition="allActiveClass != 'active'">
+          <a href="/search" class="link" data-handle="" data-href="/search">All</a>
+        </if>
+      </li>
+      <for each="cat in categories">
+        <li>
+          <if condition="cat.activeClass == 'active'">
+            <p
+              class="link active current"
+              data-handle="{{cat.handle}}"
+              data-href="/search/{{cat.handle}}"
+            >{{cat.title}}</p>
+          </if>
+          <if condition="cat.activeClass != 'active'">
+            <a
+              href="/search/{{cat.handle}}"
+              class="link"
+              data-handle="{{cat.handle}}"
+              data-href="/search/{{cat.handle}}"
+            >{{cat.title}}</a>
+          </if>
+        </li>
+      </for>
+    </ul>
+  </nav>
+</template>

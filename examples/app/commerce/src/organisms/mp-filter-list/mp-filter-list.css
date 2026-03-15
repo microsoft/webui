@@ -1,0 +1,141 @@
+:host {
+  display: block;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+.filter-list {
+  padding: 0;
+}
+
+.heading {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1rem;
+  color: var(--webui-text-secondary);
+}
+
+.list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.list > li {
+  display: flex;
+}
+
+.list > li + li {
+  margin-top: 0.5rem;
+}
+
+.link {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--webui-text);
+  text-decoration: none;
+  text-underline-offset: 4px;
+  transition: color 150ms ease;
+
+  &:hover {
+    color: var(--webui-text);
+  }
+
+  &.active {
+    color: var(--webui-text);
+    text-decoration: underline;
+  }
+}
+
+.current {
+  cursor: default;
+}
+
+.mobile-dropdown {
+  display: none;
+  position: relative;
+}
+
+.mobile-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.625rem 1rem;
+  border: 1px solid var(--webui-border);
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--webui-text);
+  cursor: pointer;
+  list-style: none;
+}
+
+.mobile-summary::-webkit-details-marker {
+  display: none;
+}
+
+.mobile-summary::after {
+  content: '';
+  width: 0.5rem;
+  height: 0.5rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 150ms ease;
+}
+
+.mobile-dropdown[open] .mobile-summary::after {
+  transform: rotate(225deg);
+}
+
+.mobile-list {
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  list-style: none;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--webui-border);
+  border-radius: 0.5rem;
+  background: var(--webui-bg);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.16);
+}
+
+.mobile-list > li + li {
+  margin-top: 0.75rem;
+}
+
+.mobile-link,
+.mobile-current-item {
+  display: block;
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--webui-text);
+  text-decoration: none;
+}
+
+.mobile-current-item {
+  color: var(--webui-text-secondary);
+}
+
+@media (max-width: 767px) {
+  .mobile-dropdown {
+    display: block;
+  }
+
+  .heading,
+  .desktop-list {
+    display: none;
+  }
+}

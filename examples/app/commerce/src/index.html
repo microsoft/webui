@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{storeName}}</title>
+  <meta name="description" content="High-performance SSR marketplace powered by WebUI and Rust." />
+  <link rel="dns-prefetch" href="https://cdn.shopify.com" />
+  <link rel="preconnect" href="https://cdn.shopify.com" crossorigin />
+  <style>
+    @layer reset, theme, layout;
+
+    @layer reset {
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      html { -webkit-text-size-adjust: 100%; tab-size: 4; line-height: 1.5; }
+      body { line-height: inherit; -webkit-font-smoothing: antialiased; }
+      img, svg, video { display: block; max-width: 100%; }
+      a { color: inherit; text-decoration: inherit; }
+      button, input, select, textarea { font: inherit; color: inherit; }
+      ol, ul { list-style: none; }
+      h1, h2, h3, h4, h5, h6 { font-size: inherit; font-weight: inherit; }
+    }
+
+    @layer theme {
+      :root {
+        --webui-bg: #171717;
+        --webui-surface: #262626;
+        --webui-surface-hover: #404040;
+        --webui-surface-alt: #1a1a1a;
+        --webui-elevated: #333;
+        --webui-text: #fafafa;
+        --webui-text-secondary: #a1a1a1;
+        --webui-text-muted: #a3a3a3;
+        --webui-accent: #2563eb;
+        --webui-accent-hover: #3b82f6;
+        --webui-accent-subtle: color-mix(in oklch, #2563eb 15%, transparent);
+        --webui-border: #262626;
+        --webui-border-strong: #525252;
+        --webui-success: #4caf50;
+        --webui-danger: #e53935;
+        --webui-radius-sm: 0.25rem;
+        --webui-radius-md: 0.375rem;
+        --webui-radius-lg: 0.5rem;
+        --webui-radius-xl: 0.75rem;
+        --webui-radius-full: 9999px;
+        --webui-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        color-scheme: dark;
+      }
+    }
+
+    @layer layout {
+      html { font-family: var(--webui-font); background: var(--webui-bg); color: var(--webui-text); }
+      body { min-height: 100vh; }
+      ::selection { background: color-mix(in oklch, var(--webui-accent) 40%, transparent); }
+    }
+  </style>
+</head>
+<body>
+  <mp-app
+    store-name="{{storeName}}"
+    cart-item-count="{{cartItemCount}}"
+    search-query="{{query}}"
+    catalog-all-active-class="{{allActiveClass}}"
+    catalog-current-label="{{currentCategoryLabel}}"
+    show-catalog-nav="{{showCatalogNav}}"
+    shell-class="{{shellClass}}"
+    page="{{page}}"
+    current-path="{{currentPath}}"
+    cart-open="{{cartOpen}}"
+    cart-href="{{cartHref}}"
+    cart-close-href="{{cartCloseHref}}"
+    cart-subtotal="{{cartSubtotal}}"
+    cart-taxes="{{cartTaxes}}"
+    cart-empty="{{cartEmpty}}"
+    :catalog-categories="{{categories}}"
+    :cart-items="{{cartItems}}"
+  ></mp-app>
+
+  <script src="/index.js" type="module"></script>
+</body>
+</html>

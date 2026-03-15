@@ -1,0 +1,60 @@
+:host {
+  display: block;
+}
+
+.page-content {
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 4rem 1.5rem;
+}
+
+.page-title {
+  font-size: 2.25rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  margin-bottom: 2rem;
+}
+
+.prose {
+  font-size: 1rem;
+  line-height: 1.85;
+  color: var(--webui-text-secondary);
+}
+
+.prose p {
+  margin-bottom: 1.25rem;
+}
+
+.prose h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--webui-text);
+  margin-top: 2.5rem;
+  margin-bottom: 1rem;
+}
+
+.prose ul {
+  list-style: disc;
+  padding-left: 1.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.prose li {
+  margin-bottom: 0.5rem;
+}
+
+.prose a {
+  color: var(--webui-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  transition: color 150ms ease;
+}
+
+.prose a:hover {
+  color: var(--webui-accent);
+}
+
+.prose strong {
+  color: var(--webui-text);
+  font-weight: 600;
+}

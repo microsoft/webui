@@ -1,0 +1,15 @@
+<template shadowrootmode="open">
+  <div class="media">
+    <if condition="imageUrl">
+      <img
+        src="{{imageUrl}}"
+        alt="{{alt}}"
+        width="800"
+        height="800"
+        loading="{{loading}}"
+        decoding="{{decoding}}"
+        fetchpriority="{{fetchPriority}}"
+      />
+    </if>
+  </div>
+</template>

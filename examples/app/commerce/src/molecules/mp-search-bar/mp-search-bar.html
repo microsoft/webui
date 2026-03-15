@@ -1,0 +1,14 @@
+<template shadowrootmode="open">
+  <form class="search-form" action="{{action}}" method="get">
+    <mp-icon name="search" aria-hidden="true"></mp-icon>
+    <input
+      class="search-input"
+      type="text"
+      name="q"
+      value="{{query}}"
+      placeholder="{{placeholder}}"
+      autocomplete="off"
+      aria-label="{{label}}"
+    />
+  </form>
+</template>

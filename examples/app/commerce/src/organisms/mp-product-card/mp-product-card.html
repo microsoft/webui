@@ -1,0 +1,15 @@
+<template shadowrootmode="open">
+  <a href="/product/{{handle}}" class="card">
+    <mp-product-image
+      class="media"
+      gradient="{{gradient}}"
+      image-url="{{imageUrl}}"
+      alt="{{title}}"
+      interactive="true"
+      loading="{{imageLoading}}"
+      decoding="async"
+      fetch-priority="{{imageFetchPriority}}"
+    ></mp-product-image>
+    <mp-product-label title="{{title}}" price="{{price}}" price-size="sm"></mp-product-label>
+  </a>
+</template>

@@ -1,0 +1,15 @@
+<template shadowrootmode="open">
+  <div class="grid">
+    <for each="product in products">
+      <mp-product-card
+        handle="{{product.handle}}"
+        title="{{product.title}}"
+        price="{{product.price}}"
+        gradient="{{product.gradient}}"
+        image-url="{{product.imageUrl}}"
+        image-loading="lazy"
+        variant="grid"
+      ></mp-product-card>
+    </for>
+  </div>
+</template>

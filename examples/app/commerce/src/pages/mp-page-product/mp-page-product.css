@@ -1,0 +1,138 @@
+:host {
+  display: block;
+}
+
+.product-layout {
+  max-width: 96rem;
+  margin: 0 auto;
+  padding: 0 1rem 4rem;
+}
+
+.product-container {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  padding: 2rem;
+  border: 1px solid var(--webui-border);
+  border-radius: var(--webui-radius-lg);
+  background: #000;
+}
+
+@media (min-width: 1024px) {
+  .product-container {
+    flex-direction: row;
+    gap: 2rem;
+    padding: 3rem;
+  }
+
+  .product-gallery-col {
+    flex: 1 1 0;
+  }
+
+  .product-info-col {
+    flex: 0 0 26.4375rem;
+    max-width: 26.4375rem;
+  }
+}
+
+.product-info-col {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding-top: 0;
+}
+
+.product-title {
+  font-size: clamp(2.75rem, 4vw, 3rem);
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: -0.025em;
+  margin: 0 0 0.5rem;
+}
+
+.product-price-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 0.5rem;
+}
+
+mp-price {
+  display: inline-flex;
+}
+
+.product-price-compare {
+  font-size: 0.875rem;
+  color: var(--webui-text-muted);
+  text-decoration: line-through;
+}
+
+.product-description {
+  font-size: 0.875rem;
+  line-height: 1.25;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.product-description p {
+  margin: 0 0 1.5rem;
+}
+
+.product-description ul {
+  margin: 2rem 0 0;
+  padding: 0 0 0 1.5rem;
+}
+
+.product-description li + li {
+  margin-top: 0.4375rem;
+}
+
+mp-add-to-cart {
+  display: block;
+}
+
+.related-section {
+  margin-top: 2rem;
+}
+
+.related-heading {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 2rem;
+  color: var(--webui-text);
+  margin: 0 0 1rem;
+}
+
+.related-scroll {
+  display: flex;
+  gap: 1rem;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 0.5rem;
+}
+
+.related-scroll mp-product-card {
+  flex: 0 0 280px;
+  scroll-snap-align: start;
+}
+
+@media (max-width: 767px) {
+  .related-scroll mp-product-card {
+    flex-basis: 100%;
+  }
+}
+
+.related-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+
+.related-scroll::-webkit-scrollbar-track {
+  background: var(--webui-surface);
+  border-radius: 3px;
+}
+
+.related-scroll::-webkit-scrollbar-thumb {
+  background: var(--webui-border);
+  border-radius: 3px;
+}
+

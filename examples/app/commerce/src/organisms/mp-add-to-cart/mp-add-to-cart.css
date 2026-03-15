@@ -1,0 +1,36 @@
+:host {
+  display: block;
+}
+
+.add-to-cart-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 3.5rem;
+  padding: 1rem;
+  border: none;
+  border-radius: var(--webui-radius-full);
+  background: var(--webui-accent);
+  color: white;
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.5rem;
+  text-align: center;
+  cursor: pointer;
+  opacity: 1;
+  transition: opacity 0.15s, transform 0.1s;
+}
+
+.add-to-cart-btn:hover {
+  opacity: 1;
+}
+
+.add-to-cart-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.add-to-cart-btn:active {
+  transform: scale(0.98);
+}

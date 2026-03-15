@@ -1,0 +1,31 @@
+<template shadowrootmode="open">
+  <div class="gallery">
+    <div class="main-image">
+      <mp-product-image
+        class="image-display"
+        gradient="{{activeGradient}}"
+        image-url="{{activeImageUrl}}"
+        alt=""
+        loading="eager"
+        decoding="async"
+        fetch-priority="high"
+      ></mp-product-image>
+      <div class="nav-buttons">
+        <button class="nav-btn" data-action="prev" aria-label="Previous image">
+          <mp-icon name="chevron-left"></mp-icon>
+        </button>
+        <div class="separator"></div>
+        <button class="nav-btn" data-action="next" aria-label="Next image">
+          <mp-icon name="chevron-right"></mp-icon>
+        </button>
+      </div>
+    </div>
+    <div class="thumbnails">
+      <for each="img in images">
+        <button class="thumb {{img.activeClass}}" data-action="select" data-index="{{img.index}}">
+          <mp-product-image gradient="{{img.gradient}}" image-url="{{img.imageUrl}}" alt="" loading="lazy" decoding="async"></mp-product-image>
+        </button>
+      </for>
+    </div>
+  </div>
+</template>
