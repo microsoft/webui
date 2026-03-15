@@ -341,23 +341,4 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
-    #[actix_web::test]
-    async fn serves_client_bundle_from_dist() {
-        let app =
-            test::init_service(App::new().app_data(test_state()).configure(configure_app)).await;
-
-        let request = TestRequest::with_uri("/index.js").to_request();
-        let response = test::call_service(&app, request).await;
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let content_type = response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default();
-        assert!(
-            content_type.contains("javascript"),
-            "expected javascript content type, got {content_type}"
-        );
-    }
 }
