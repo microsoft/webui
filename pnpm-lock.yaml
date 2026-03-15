@@ -113,6 +113,27 @@ importers:
         specifier: 'catalog:'
         version: 5.9.3
 
+  examples/app/commerce:
+    devDependencies:
+      '@microsoft/fast-element':
+        specifier: 'catalog:'
+        version: 2.10.1
+      '@microsoft/fast-html':
+        specifier: 'catalog:'
+        version: 1.0.0-alpha.38(@microsoft/fast-element@2.10.1)
+      '@microsoft/webui-router':
+        specifier: workspace:*
+        version: link:../../../packages/webui-router
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.27.3
+      tslib:
+        specifier: 'catalog:'
+        version: 2.8.1
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   examples/app/contact-book-manager:
     dependencies:
       cors:
@@ -174,27 +195,6 @@ importers:
         specifier: 'catalog:'
         version: 5.9.3
 
-  examples/demo:
-    devDependencies:
-      '@microsoft/fast-element':
-        specifier: 'catalog:'
-        version: 2.10.1
-      '@microsoft/fast-html':
-        specifier: 'catalog:'
-        version: 1.0.0-alpha.38(@microsoft/fast-element@2.10.1)
-      '@microsoft/webui-router':
-        specifier: workspace:*
-        version: link:../../packages/webui-router
-      esbuild:
-        specifier: 'catalog:'
-        version: 0.27.3
-      tslib:
-        specifier: 'catalog:'
-        version: 2.8.1
-      typescript:
-        specifier: 'catalog:'
-        version: 5.9.3
-
   examples/integration/electron:
     devDependencies:
       electron:
@@ -208,6 +208,24 @@ importers:
         version: 5.9.3
 
   examples/integration/node: {}
+
+  examples/server/dotnet/bin/Debug/net10.0:
+    devDependencies:
+      '@microsoft/fast-element':
+        specifier: 'catalog:'
+        version: 2.10.1
+      '@microsoft/fast-html':
+        specifier: 'catalog:'
+        version: 1.0.0-alpha.38(@microsoft/fast-element@2.10.1)
+      '@microsoft/webui-router':
+        specifier: workspace:*
+        version: link:../../../../../../packages/webui-router
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.27.3
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
 
   packages/webui:
     devDependencies:
