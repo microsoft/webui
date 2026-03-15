@@ -361,8 +361,7 @@ fn run(args: &ServeArgs) -> Result<()> {
                     .app_data(server_context.clone())
                     .route("/", web::get().to(handle_index))
                     .route("/index.html", web::get().to(handle_index))
-                    .route("/hmr", web::get().to(handle_hmr))
-                    .route("/.webui/routes.json", web::get().to(handle_routes_json));
+                    .route("/hmr", web::get().to(handle_hmr));
 
                 if has_api_proxy {
                     app = app.route("/api/{tail:.*}", web::route().to(handle_api_proxy));
@@ -808,46 +807,6 @@ fn collect_needed_template_names(
         request_path,
         inventory_hex,
     )
-}
-
-/// Handle GET /.webui/routes.json — return the route registry as JSON.
-async fn handle_routes_json(context: web::Data<ServerContext>) -> HttpResponse {
-    let routes_array = match context.state.lock() {
-        Ok(s) => match &s.protocol {
-            Some(p) => {
-                let entries: Vec<Value> = p
-                    .routes
-                    .iter()
-                    .map(|(key, record): (&String, &webui_protocol::RouteRecord)| {
-                        let name_val = if record.name.is_empty() {
-                            key.as_str()
-                        } else {
-                            record.name.as_str()
-                        };
-                        let mut m = serde_json::Map::new();
-                        m.insert("name".into(), Value::String(name_val.to_string()));
-                        m.insert("path".into(), Value::String(record.path.clone()));
-                        m.insert(
-                            "fragmentId".into(),
-                            Value::String(record.fragment_id.clone()),
-                        );
-                        m.insert("exact".into(), Value::Bool(record.exact));
-                        Value::Object(m)
-                    })
-                    .collect();
-                Value::Array(entries)
-            }
-            None => Value::Array(Vec::new()),
-        },
-        Err(_) => Value::Array(Vec::new()),
-    };
-
-    let mut envelope = serde_json::Map::new();
-    envelope.insert("routes".into(), routes_array);
-
-    HttpResponse::Ok()
-        .content_type("application/json")
-        .json(Value::Object(envelope))
 }
 
 /// Forward requests under `/api/*` to the user's API server.

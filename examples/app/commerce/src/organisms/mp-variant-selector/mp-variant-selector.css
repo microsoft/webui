@@ -1,0 +1,75 @@
+:host {
+  display: block;
+}
+
+.variants {
+  display: flex;
+  flex-direction: column;
+}
+
+.option-group {
+  margin: 0 0 2rem;
+}
+
+.option-group:last-child {
+  margin-bottom: 0;
+}
+
+.option-name {
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.25rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.option-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+}
+
+.pill {
+  display: inline-flex;
+  justify-content: center;
+  border-radius: 9999px;
+  border: 1px solid var(--webui-border);
+  background: #171717;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.25rem;
+  color: var(--webui-text);
+  cursor: pointer;
+  transition: box-shadow 0.15s, opacity 0.15s;
+
+  &.active {
+    box-shadow: 0 0 0 1px var(--webui-accent);
+    cursor: default;
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    position: relative;
+
+    &::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 15%;
+      right: 15%;
+      height: 1px;
+      background: var(--webui-text-secondary);
+      transform: rotate(-12deg);
+    }
+  }
+
+  &:not(:disabled):not(.active):hover {
+    box-shadow: 0 0 0 1px var(--webui-accent);
+  }
+}

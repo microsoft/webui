@@ -1,0 +1,25 @@
+{
+  "name": "commerce",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
+    "start:server": "cargo run -p marketplace-api -- --port 3100",
+    "start": "cargo xtask dev commerce"
+  },
+  "imports": {
+    "#atoms/*": "./src/atoms/*",
+    "#molecules/*": "./src/molecules/*",
+    "#organisms/*": "./src/organisms/*",
+    "#pages/*": "./src/pages/*"
+  },
+  "devDependencies": {
+    "@microsoft/fast-element": "catalog:",
+    "@microsoft/fast-html": "catalog:",
+    "@microsoft/webui-router": "workspace:*",
+    "esbuild": "catalog:",
+    "typescript": "catalog:",
+    "tslib": "catalog:"
+  }
+}

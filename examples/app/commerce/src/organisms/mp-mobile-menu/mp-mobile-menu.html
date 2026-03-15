@@ -1,0 +1,25 @@
+<template shadowrootmode="open">
+  <div class="menu-panel" popover="manual" id="mobile-menu">
+    <div class="menu-header">
+      <button class="close-btn" data-action="close" aria-label="Close mobile menu">
+        <mp-icon name="close"></mp-icon>
+      </button>
+    </div>
+    <div class="mobile-search">
+      <mp-search-bar
+        variant="mobile"
+        query="{{searchQuery}}"
+        action="/search"
+        placeholder="Search for products..."
+        label="Search for products"
+      ></mp-search-bar>
+    </div>
+    <nav class="menu-nav">
+      <a href="/search" class="menu-link">All</a>
+      <for each="cat in navCategories">
+        <a href="/search/{{cat.handle}}" class="menu-link">{{cat.title}}</a>
+      </for>
+    </nav>
+  </div>
+  <div class="backdrop" data-action="close"></div>
+</template>

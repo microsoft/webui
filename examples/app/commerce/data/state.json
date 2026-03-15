@@ -1,0 +1,20 @@
+{
+  "storeName": "WebUI Store",
+  "cartItemCount": "0",
+  "navCategories": [
+    { "handle": "shirts", "title": "Shirts" },
+    { "handle": "stickers", "title": "Stickers" },
+    { "handle": "bags", "title": "Bags" }
+  ],
+  "categories": [
+    { "handle": "shirts", "title": "Shirts" },
+    { "handle": "stickers", "title": "Stickers" },
+    { "handle": "bags", "title": "Bags" }
+  ],
+  "featuredProducts": [],
+  "carouselProducts": [],
+  "cartEmpty": true,
+  "cartSubtotal": "$0.00",
+  "cartTaxes": "$0.00",
+  "cartItems": []
+}

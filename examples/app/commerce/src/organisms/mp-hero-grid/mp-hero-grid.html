@@ -1,0 +1,17 @@
+<template shadowrootmode="open">
+  <section class="grid">
+    <for each="product in products">
+      <div class="grid-item">
+        <mp-product-card
+          handle="{{product.handle}}"
+          title="{{product.title}}"
+          price="{{product.price}}"
+          gradient="{{product.gradient}}"
+          image-url="{{product.imageUrl}}"
+          image-loading="eager"
+          variant="hero"
+        ></mp-product-card>
+      </div>
+    </for>
+  </section>
+</template>

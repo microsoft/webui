@@ -4,6 +4,7 @@ members = [
     "xtask",
     "examples/integration/rust",
     "examples/integration/ssr-performance-showdown",
+    "examples/app/commerce/server",
 ]
 resolver = "2"
 

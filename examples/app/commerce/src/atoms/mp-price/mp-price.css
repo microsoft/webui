@@ -1,0 +1,49 @@
+:host {
+  display: inline-flex;
+  align-items: center;
+}
+
+.price {
+  display: inline-flex;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.currency {
+  margin-left: 0.25rem;
+  color: inherit;
+}
+
+:host(:not([variant])) .price,
+:host([variant='pill']) .price {
+  background: var(--webui-accent);
+  color: #fff;
+  border-radius: 9999px;
+  font-weight: 400;
+  line-height: 1.25rem;
+}
+
+:host(:not([variant])[size='sm']) .price,
+:host([variant='pill'][size='sm']) .price {
+  padding: 0.5rem;
+  font-size: 0.75rem;
+}
+
+:host(:not([variant])[size='md']) .price,
+:host([variant='pill'][size='md']) .price {
+  padding: 0.5rem;
+  font-size: 0.875rem;
+}
+
+:host([variant='plain']) .price {
+  color: var(--webui-text);
+  font-weight: 500;
+}
+
+:host([variant='plain'][size='sm']) .price {
+  font-size: 0.875rem;
+}
+
+:host([variant='plain'][size='md']) .price {
+  font-size: 1rem;
+}

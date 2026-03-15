@@ -1,0 +1,47 @@
+<template shadowrootmode="open">
+  <nav class="filter-list">
+    <details class="mobile-dropdown">
+      <summary class="mobile-summary">
+        <span class="mobile-current">
+          <for each="option in sortOptions">
+            <if condition="option.activeClass == 'active'">{{option.title}}</if>
+          </for>
+        </span>
+      </summary>
+      <ul class="mobile-list">
+        <for each="option in sortOptions">
+          <li>
+            <if condition="option.activeClass == 'active'">
+              <p class="mobile-current-item">{{option.title}}</p>
+            </if>
+            <if condition="option.activeClass != 'active'">
+              <a href="{{option.href}}" class="mobile-link">{{option.title}}</a>
+            </if>
+          </li>
+        </for>
+      </ul>
+    </details>
+    <h3 class="heading">Sort by</h3>
+    <ul class="list desktop-list">
+      <for each="option in sortOptions">
+        <li>
+          <if condition="option.activeClass == 'active'">
+            <p
+              class="link active current"
+              data-value="{{option.value}}"
+              data-href="{{option.href}}"
+            >{{option.title}}</p>
+          </if>
+          <if condition="option.activeClass != 'active'">
+            <a
+              href="{{option.href}}"
+              class="link"
+              data-value="{{option.value}}"
+              data-href="{{option.href}}"
+            >{{option.title}}</a>
+          </if>
+        </li>
+      </for>
+    </ul>
+  </nav>
+</template>

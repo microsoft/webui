@@ -1,0 +1,64 @@
+:host {
+  display: block;
+}
+
+.carousel-wrapper {
+  position: relative;
+}
+
+.carousel {
+  display: flex;
+  gap: 1rem;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: var(--webui-text-muted) transparent;
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0.75rem;
+
+  &::-webkit-scrollbar {
+    height: 6px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: var(--webui-text-muted);
+    border-radius: 3px;
+  }
+
+  &::-webkit-scrollbar-thumb:hover {
+    background: var(--webui-text-secondary);
+  }
+}
+
+.carousel-item {
+  flex: none;
+  width: 66vw;
+  scroll-snap-align: start;
+  aspect-ratio: 16 / 9;
+}
+
+@media (max-width: 767px) {
+  .carousel-item {
+    width: 66.666667%;
+    max-width: 29.6875rem;
+    height: min(30vh, 17.1875rem);
+    aspect-ratio: auto;
+  }
+}
+
+@media (min-width: 768px) {
+  .carousel-item {
+    width: 33vw;
+  }
+}
+
+mp-product-card {
+  display: block;
+  height: 100%;
+}

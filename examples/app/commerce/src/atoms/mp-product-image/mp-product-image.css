@@ -1,0 +1,23 @@
+:host {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.media {
+  width: 100%;
+  height: 100%;
+  background: #000;
+  transition: transform 300ms ease;
+}
+
+:host([interactive='true']:hover) .media {
+  transform: scale(1.05);
+}
+
+img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
