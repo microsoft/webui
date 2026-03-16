@@ -192,9 +192,13 @@ fn prepend_header(path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
 
     fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join("webui_license_header_tests");
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("webui_license_header_tests_{id}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
