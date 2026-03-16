@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 use actix_web::http::header::LOCATION;
 use actix_web::{web, HttpResponse};
 use serde_json::Value;

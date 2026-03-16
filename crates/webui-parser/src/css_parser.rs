@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! CSS parser for WebUI components.
 //!
 //! This module uses tree-sitter-css to parse CSS files

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Iterative path template matcher for server-side route resolution.
 //!
 //! Matches request paths against route path templates without regex.

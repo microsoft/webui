@@ -26,7 +26,7 @@ Before creating **any** commit, run:
 cargo xtask check
 ```
 
-This executes, in order: `fmt → clippy → deny → test → build`. Work is **not done** until this passes cleanly. If it fails, fix every reported issue before proceeding. No exceptions.
+This executes, in order: `license-headers → fmt → clippy → deny → test → build`. Work is **not done** until this passes cleanly. If it fails, fix every reported issue before proceeding. No exceptions.
 
 ---
 
@@ -82,6 +82,19 @@ Every decision — API design, data structure choice, algorithm, error path — 
 - One concern per module. When a file approaches ~400 lines, split it.
 - Types are `PascalCase`, functions are `snake_case`, constants are `SCREAMING_SNAKE_CASE`.
 - `cargo fmt --all` is the sole formatting authority — never override or disable it.
+
+### License header
+
+Every source file (`.rs`, `.ts`, `.js`, `.cs`, `.h`, `.proto`) **must** start with:
+
+```
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+```
+
+followed by a blank line before any code. `cargo xtask check` enforces this. Run `cargo xtask license-headers --fix` to add missing headers automatically.
+
+Files excluded from the check: `.html`, `.css`, `.json`, `.yml`, `.xml`, and auto-generated files (e.g. `webui_ffi.h`).
 
 ### Dependencies
 - Keep them minimal. Prefer the standard library. Before adding a crate, justify why std doesn't suffice.
@@ -158,6 +171,8 @@ The `docs/` directory is a VitePress site for external developers consuming WebU
 | Format | `cargo xtask fmt` |
 | Lint | `cargo xtask clippy` |
 | License & advisory audit | `cargo xtask deny` |
+| License headers check | `cargo xtask license-headers` |
+| License headers fix | `cargo xtask license-headers --fix` |
 | Tests (workspace) | `cargo xtask test` |
 | Build (workspace) | `cargo xtask build` |
 | Test a single crate | `cargo test -p webui-parser` (or any crate name) |
@@ -265,6 +280,7 @@ Before finishing any task, confirm **all** of these:
 - [ ] No new recursion or regex in core paths.
 - [ ] No new `unwrap`/`expect` in library code.
 - [ ] No unnecessary allocations introduced; buffers reused where possible.
+- [ ] Every new source file has the license header (`// Copyright (c) Microsoft Corporation.` / `// Licensed under the MIT license.`).
 - [ ] FFI changes include `# Safety` docs and never panic across the boundary.
 - [ ] Proto schema changes prioritize performance and are cascade-tested.
 - [ ] New dependencies use `workspace = true` and pass `cargo deny check`.

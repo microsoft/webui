@@ -1,7 +1,11 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 mod build_examples;
 mod build_wasm;
 mod dev;
 mod dotnet;
+mod license_headers;
 mod process;
 mod util;
 mod version;
@@ -62,6 +66,20 @@ fn main() -> ExitCode {
             let extra: Vec<String> = args.iter().skip(2).cloned().collect();
             dotnet::run_stage(&extra)
         }
+        Some("license-headers") => {
+            let fix = args.iter().any(|a| a == "--fix");
+            if fix {
+                match license_headers::fix() {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(msg) => {
+                        eprintln!("{msg}");
+                        ExitCode::FAILURE
+                    }
+                }
+            } else {
+                run_steps(&[Step::LICENSE_HEADERS])
+            }
+        }
         _ => usage(),
     }
 }
@@ -82,7 +100,8 @@ fn usage() -> ExitCode {
            bench <name> [-- <criterion args>]  Run benchmarks for a target crate (parser, handler, protocol, expressions, state, webui, all)\n  \
            dev <app>  Run example app in dev mode (server + client watch concurrently)\n  \
            version <semver>  Update version across all Cargo.toml and package.json files\n  \
-           publish-stage [--target <triple|all>] [--profile release]  Stage native binaries for npm + NuGet packaging"
+           publish-stage [--target <triple|all>] [--profile release]  Stage native binaries for npm + NuGet packaging\n  \
+           license-headers [--fix]  Check (or fix) license headers in source files"
     );
     ExitCode::SUCCESS
 }
@@ -131,6 +150,7 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
 
 fn check() -> ExitCode {
     run_steps(&[
+        Step::LICENSE_HEADERS,
         Step::FMT,
         Step::CLIPPY,
         Step::DENY,
@@ -151,6 +171,10 @@ struct Step {
 }
 
 impl Step {
+    const LICENSE_HEADERS: Self = Self {
+        name: "license-headers",
+        run: license_headers::check,
+    };
     const FMT: Self = Self {
         name: "fmt",
         run: || {

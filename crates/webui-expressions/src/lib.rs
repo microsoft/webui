@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! WebUI expression evaluation module.
 //!
 //! This module handles the evaluation of condition expressions in WebUI templates.

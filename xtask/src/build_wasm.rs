@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! WASM playground build task.
 //!
 //! Builds the `webui-wasm` crate to WebAssembly via `wasm-pack` and patches

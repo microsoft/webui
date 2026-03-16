@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Component discovery cache for avoiding repeated filesystem traversal.
 //!
 //! Caches discovered component data at `~/.webui/cache/components/` and

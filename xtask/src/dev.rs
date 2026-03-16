@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Dev mode: run server + client watch concurrently for an example app.
 //!
 //! Usage: `cargo xtask dev todo-fast`

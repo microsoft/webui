@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! FAST parser plugin for the WebUI parser.
 //!
 //! Tracks component definitions during HTML parsing and generates `<f-template>`

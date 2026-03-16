@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 pub fn header(title: &str) {
     eprintln!(
         "\n  {} {}\n",

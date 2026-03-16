@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 // Program.cs — shim that forwards to the native webui CLI binary
 using System.Diagnostics;
 using System.Runtime.InteropServices;

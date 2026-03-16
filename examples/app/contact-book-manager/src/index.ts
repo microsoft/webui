@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 /**
  * Contact-book-manager entry point — bootstraps FAST-HTML hydration
  * and the client-side router.

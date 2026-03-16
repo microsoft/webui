@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 /**
  * Integration test for the @microsoft/webui npm package.
  * Uses the built-in Node.js test runner.

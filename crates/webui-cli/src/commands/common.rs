@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 use clap::Args;
 use std::path::PathBuf;
 pub use webui::CssStrategy;

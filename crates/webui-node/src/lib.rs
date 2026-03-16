@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Node.js native addon for the WebUI framework via napi-rs.
 //!
 //! Provides high-performance server-side rendering by compiling the Rust

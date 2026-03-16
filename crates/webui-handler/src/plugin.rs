@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Handler plugin trait and built-in plugin implementations.
 //!
 //! The plugin system is framework-agnostic — WebUI provides lifecycle hooks

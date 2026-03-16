@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Integration tests for the webui-ffi C ABI.
 //!
 //! These tests call every `#[no_mangle] extern "C"` function through the

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 import type { ModeEngine, ButtonDef, CalcState } from './engine.js';
 import { registerMode } from './engine.js';
 

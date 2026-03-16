@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 use serde_json::Value;
 
 use super::context::ShellContext;

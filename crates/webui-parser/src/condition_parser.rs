@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Parser for WebUI condition expressions.
 //!
 //! This module handles parsing condition expressions used in if directives.

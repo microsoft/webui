@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! `cargo xtask publish-stage` — copy native binaries into npm and NuGet package directories.
 
 use std::path::{Path, PathBuf};

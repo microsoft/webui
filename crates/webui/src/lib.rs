@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Programmatic API for the WebUI build-time rendering framework.
 //!
 //! This crate provides the core build, render, and inspection APIs

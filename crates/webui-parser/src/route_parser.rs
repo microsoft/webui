@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Route element parsing for `<route>` directives.
 //!
 //! Parses `<route path="..." component="..." ...>` elements into

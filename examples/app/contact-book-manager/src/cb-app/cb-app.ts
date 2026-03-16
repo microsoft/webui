@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 import { FASTElement, attr } from '@microsoft/fast-element';
 import { RenderableFASTElement } from '@microsoft/fast-html';
 import { Router } from '@microsoft/webui-router';

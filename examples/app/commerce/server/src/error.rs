@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, ResponseError};
 use anyhow::Error as AnyhowError;

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Cross-platform child-process lifecycle management.
 //!
 //! Provides spawning children in their own process group and graceful shutdown

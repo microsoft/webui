@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 /**
  * Todo-fast entry point — bootstraps FAST-HTML hydration.
  *

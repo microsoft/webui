@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 // Integration tests for the webui-ffi shared library via P/Invoke.
 //
 // Usage (macOS):

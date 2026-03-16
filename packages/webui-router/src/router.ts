@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 /**
  * Core router — uses the Navigation API to intercept navigations and
  * activates/deactivates `<webui-route>` elements in the DOM tree.

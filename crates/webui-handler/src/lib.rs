@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! WebUI Handler implementation for Rust.
 //!
 //! This crate provides functionality to process and render WebUI protocols

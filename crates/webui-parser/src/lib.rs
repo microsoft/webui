@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Directive parser for WebUI template directives.
 //!
 //! This module handles parsing WebUI-specific directives like <for>, <if>, etc.

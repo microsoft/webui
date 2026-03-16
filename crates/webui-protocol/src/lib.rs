@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! WebUI Protocol implementation.
 //!
 //! This crate defines the protocol used by the WebUI framework for cross-platform

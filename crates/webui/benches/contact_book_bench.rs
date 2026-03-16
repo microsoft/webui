@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! End-to-end benchmark for the contact-book-manager example application.
 //!
 //! Compiles the real contact-book-manager templates into a protocol binary at

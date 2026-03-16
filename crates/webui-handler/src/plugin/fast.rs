@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! FAST Hydration plugin for the WebUI handler.
 //!
 //! Injects HTML comment markers and data attributes that enable client-side

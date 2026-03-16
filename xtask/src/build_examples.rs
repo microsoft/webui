@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Examples build tasks.
 
 use crate::util::{collect_child_dirs, display_name, run_command};

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 /**
  * WebUI Store — FAST-HTML hydration + client-side routing.
  *

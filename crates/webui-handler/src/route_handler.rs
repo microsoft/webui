@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Route component inventory management for incremental route rendering.
 //!
 //! These helpers walk the normal render fragment graph. The request-aware path is

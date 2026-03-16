@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 pub(crate) const HOME: &str = "home";
 pub(crate) const SEARCH: &str = "search";
 pub(crate) const CATEGORY: &str = "category";

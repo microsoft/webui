@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! WebUI FFI (Foreign Function Interface) for interoperability with other languages.
 //!
 //! This crate provides C-compatible APIs for the WebUI handler to be used from languages

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 // Minimal Node.js example: load a pre-built protocol.bin, pass state JSON,
 // and print rendered HTML to stdout using the webui-node native addon.
 //

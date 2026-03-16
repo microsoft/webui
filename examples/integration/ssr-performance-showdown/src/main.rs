@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! SSR Performance Test — WebUI Framework
 //!
 //! Rust server that loads a pre-built protocol.bin, computes a spiral

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 use actix_web::dev::Payload;
 use actix_web::{web, Either, FromRequest, HttpRequest};
 use serde::Deserialize;

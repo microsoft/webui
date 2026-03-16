@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import os from "node:os";

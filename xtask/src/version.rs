@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Atomic version bumping across all Cargo.toml and package.json files.
 
 use std::fs;

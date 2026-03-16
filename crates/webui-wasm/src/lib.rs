@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! WebAssembly bindings for the WebUI framework.
 //!
 //! This crate exposes the WebUI rendering pipeline to JavaScript via `wasm-bindgen`,

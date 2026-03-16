@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 #![allow(clippy::disallowed_methods)]
 
 mod catalog_pages;

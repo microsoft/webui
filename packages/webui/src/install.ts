@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 import fs from "node:fs";
 import { resolve, platformKey, packageName } from "./platform.js";
 

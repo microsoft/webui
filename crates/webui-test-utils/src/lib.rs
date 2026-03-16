@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Test utilities for WebUI framework.
 //!
 //! This crate provides testing helpers and should only be used in test code.

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Component registry for WebUI framework.
 //!
 //! This module manages the registry of web components used in the application.

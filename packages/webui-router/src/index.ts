@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 /**
  * @microsoft/webui-router — DOM-native client-side router for WebUI apps.
  *

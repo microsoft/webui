@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use serde_json::json;
 use std::hint::black_box;

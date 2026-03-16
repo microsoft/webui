@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 // Electron integration for WebUI — renders any pre-built WebUI app in a
 // frameless desktop window using the webui-node native addon.
 //

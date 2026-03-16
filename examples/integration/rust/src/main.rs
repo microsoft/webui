@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! Minimal Rust example: load a pre-built protocol.bin, pass state JSON,
 //! and print rendered HTML to stdout.
 //!

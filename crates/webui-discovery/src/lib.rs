@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! External component discovery for the WebUI framework.
 //!
 //! Discovers components from npm packages and local filesystem paths.

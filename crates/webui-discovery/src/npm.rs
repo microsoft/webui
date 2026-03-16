@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 //! npm package resolution for external component discovery.
 //!
 //! Resolves npm packages from `node_modules/` using Node.js-style upward
