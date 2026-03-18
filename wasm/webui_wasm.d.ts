@@ -1,6 +1,16 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
+ * Produce a complete JSON partial response for client-side navigation.
+ *
+ * Combines application state, route templates, inventory, request path, and
+ * matched route chain into a single JSON string:
+ * `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
+ *
+ * Host servers return this directly — no assembly required.
+ */
+export function render_partial(protocol_json: string, state_json: string, entry_id: string, request_path: string, inventory_hex: string): string;
+/**
  * Render a pre-built WebUI protocol with state data.
  *
  * # Arguments
@@ -46,6 +56,7 @@ export interface InitOutput {
   readonly build_and_render: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
   readonly build_protocol: (a: number, b: number, c: number, d: number) => void;
   readonly render: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
+  readonly render_partial: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
   readonly __wbindgen_export_0: (a: number, b: number) => number;
   readonly __wbindgen_export_1: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_export_2: (a: number) => void;
