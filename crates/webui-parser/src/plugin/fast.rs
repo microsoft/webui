@@ -234,6 +234,15 @@ fn try_convert_tag(input: &str, pos: usize, result: &mut String) -> Option<usize
         return Some(8);
     }
 
+    // <outlet /> is kept as a marker element in f-templates.
+    // The client router finds it and replaces it with <webui-route> stubs.
+    if starts_with_tag_name(remaining, "outlet") {
+        if let Some(close) = remaining.find('>') {
+            result.push_str("<outlet></outlet>");
+            return Some(close + 1);
+        }
+    }
+
     // Check for <if condition="...">
     if starts_with_tag_name(remaining, "if") {
         if let Some(consumed) = convert_if_tag(remaining, result) {
@@ -889,6 +898,29 @@ mod tests {
         let input = r#"<div class="container"><p>Hello</p></div>"#;
         let output = convert_btr_to_fast(input);
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn outlet_kept_as_marker_in_f_template() {
+        let input = r#"<div><outlet /></div>"#;
+        let output = convert_btr_to_fast(input);
+        assert_eq!(output, r#"<div><outlet></outlet></div>"#);
+    }
+
+    #[test]
+    fn outlet_marker_in_component_template() {
+        let mut plugin = FastParserPlugin::new();
+        let html =
+            r#"<template shadowrootmode="open"><h1>Title</h1><main><outlet /></main></template>"#;
+        let comp = make_component("my-shell", html, None);
+        plugin.on_parse_component("my-shell", &comp).unwrap();
+
+        let templates = plugin.take_component_templates();
+        let (_, result) = &templates[0];
+        assert!(
+            result.contains("<outlet></outlet>"),
+            "outlet should be kept as marker in f-template: {result}"
+        );
     }
 
     #[test]

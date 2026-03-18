@@ -10,6 +10,18 @@ import '#organisms/mp-category-nav/mp-category-nav.js';
 import '#organisms/mp-cart-panel/mp-cart-panel.js';
 import '#organisms/mp-footer/mp-footer.js';
 
+function waitForView(el: any, maxFrames = 10): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let frame = 0;
+    const check = (): void => {
+      if (el.$fastController?.view) { resolve(); return; }
+      if (++frame >= maxFrames) { resolve(); return; }
+      requestAnimationFrame(check);
+    };
+    check();
+  });
+}
+
 export class MpApp extends RenderableFASTElement(FASTElement) {
   @attr({ attribute: 'store-name' }) storeName!: string;
   @attr({ attribute: 'cart-item-count' }) cartItemCount!: string;
@@ -31,11 +43,10 @@ export class MpApp extends RenderableFASTElement(FASTElement) {
   @observable cartEmpty!: boolean;
 
   private listenersAttached = false;
-  private routeHandler = (e: Event): void => {
-    const { routeName } = (e as CustomEvent).detail;
+  private routeHandler = (_e: Event): void => {
     this.searchQuery = this.searchQueryFromLocation();
-    this.setPage(routeName);
-    void this.syncShellChildren();
+    this.setPage(this.pageFromLocation());
+    void this.initChildren();
   };
   private catalogStateHandler = (e: Event): void => {
     const detail = (e as CustomEvent).detail as {
@@ -53,7 +64,7 @@ export class MpApp extends RenderableFASTElement(FASTElement) {
   private cartStateHandler = (e: Event): void => {
     const detail = (e as CustomEvent).detail as Record<string, unknown>;
     this.applyCartState(detail);
-    void this.syncShellChildren();
+    void this.initChildren();
   };
 
   connectedCallback(): void {
@@ -96,7 +107,7 @@ export class MpApp extends RenderableFASTElement(FASTElement) {
       this.shellClass = String(state.shellClass);
     }
     this.setPage(this.page);
-    void this.syncShellChildren();
+    void this.initChildren();
   }
 
   async prepare(): Promise<void> {
@@ -152,7 +163,7 @@ export class MpApp extends RenderableFASTElement(FASTElement) {
     }
   }
 
-  private async syncShellChildren(): Promise<void> {
+  private async initChildren(): Promise<void> {
     const sr = this.shadowRoot;
     if (!sr) return;
 
@@ -161,26 +172,38 @@ export class MpApp extends RenderableFASTElement(FASTElement) {
       customElements.whenDefined('mp-mobile-menu'),
       customElements.whenDefined('mp-cart-panel'),
     ]);
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
-    this.pushAndRebind(sr, 'mp-navbar', {
+    const state: Record<string, unknown> = {
       storeName: this.storeName,
       searchQuery: this.searchQuery,
       cartItemCount: this.cartItemCount,
       cartHref: this.cartHref,
-    });
-    this.pushAndRebind(sr, 'mp-mobile-menu', {
-      searchQuery: this.searchQuery,
-    });
-    this.pushAndRebind(sr, 'mp-cart-panel', {
       cartItems: this.cartItems,
       cartEmpty: this.cartEmpty,
-      subtotal: this.cartSubtotal,
-      taxes: this.cartTaxes,
+      cartSubtotal: this.cartSubtotal,
+      cartTaxes: this.cartTaxes,
       cartOpen: this.cartOpen,
       cartCloseHref: this.cartCloseHref,
       currentPath: this.currentPath,
-    });
+    };
+
+    const navbar = sr.querySelector('mp-navbar') as any;
+    if (navbar) {
+      await waitForView(navbar);
+      navbar.setInitialState?.(state);
+    }
+
+    const mobileMenu = sr.querySelector('mp-mobile-menu') as any;
+    if (mobileMenu) {
+      await waitForView(mobileMenu);
+      mobileMenu.setInitialState?.(state);
+    }
+
+    const cartPanel = sr.querySelector('mp-cart-panel') as any;
+    if (cartPanel) {
+      await waitForView(cartPanel);
+      cartPanel.setInitialState?.(state);
+    }
   }
 
   private usesCatalogLayout(page: string): boolean {
@@ -205,26 +228,6 @@ export class MpApp extends RenderableFASTElement(FASTElement) {
     const usesCatalogLayout = this.usesCatalogLayout(page);
     this.showCatalogNav = usesCatalogLayout ? 'true' : '';
     this.shellClass = usesCatalogLayout ? 'catalog-shell' : 'default-shell';
-  }
-
-  private pushAndRebind(
-    sr: ShadowRoot,
-    tag: string,
-    data: Record<string, unknown>,
-  ): void {
-    const el = sr.querySelector(tag) as any;
-    if (!el) return;
-    for (const [key, value] of Object.entries(data)) {
-      if (value !== undefined) {
-        delete el[key];
-        el[key] = value;
-      }
-    }
-    const view = el.$fastController?.view;
-    if (view) {
-      view.unbind();
-      view.bind(el, view.context);
-    }
   }
 }
 

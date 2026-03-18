@@ -98,9 +98,10 @@ internal static class NativeBindings
         [MarshalAs(UnmanagedType.LPUTF8Str)] string dataJson);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr webui_get_route_templates(
+    internal static extern IntPtr webui_render_partial(
         byte[] protocolData,
         nuint protocolLen,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string stateJson,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string entryId,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string requestPath,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string inventoryHex);

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html dir="{{textdirection}}" lang="{{language}}">
+
+<head>
+  <meta charset="utf-8">
+  <title>{{title}}</title>
+  <style>
+    :root {
+      /* Brand */
+      --color-brand-primary: #0078d4;
+      --color-brand-primary-hover: #106ebe;
+      --color-brand-light: #e8f0fe;
+
+      /* Neutral */
+      --color-neutral-800: #1a1a1a;
+      --color-neutral-700: #333;
+      --color-neutral-500: #555;
+      --color-neutral-400: #888;
+      --color-neutral-300: #999;
+      --color-neutral-200: #ddd;
+      --color-neutral-150: #e0e0e0;
+      --color-neutral-100: #eee;
+      --color-neutral-50: #f5f5f5;
+      --color-white: #fff;
+
+      /* Spacing */
+      --spacing-xs: 4px;
+      --spacing-s: 6px;
+      --spacing-m: 8px;
+      --spacing-l: 14px;
+      --spacing-xl: 16px;
+      --spacing-xxl: 20px;
+      --spacing-3xl: 24px;
+
+      /* Border Radius */
+      --border-radius-s: 4px;
+      --border-radius-m: 6px;
+      --border-radius-l: 8px;
+      --border-radius-pill: 20px;
+
+      /* Shadows */
+      --shadow-s: 0 1px 3px rgba(0, 0, 0, 0.08);
+
+      /* Typography */
+      --font-family-base: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      --font-size-xs: 11px;
+      --font-size-s: 12px;
+      --font-size-m: 13px;
+      --font-size-base: 14px;
+      --font-size-l: 16px;
+      --font-size-xl: 18px;
+      --font-size-xxl: 22px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font-family-base);
+      color: var(--color-neutral-800);
+      background: var(--color-neutral-50);
+    }
+  </style>
+</head>
+
+<body>
+  <route path="/" component="routes-app">
+    <route path="sections/:sectionId" component="section-page">
+      <route path="topics/:topicId" component="topic-page">
+        <route path="lessons/:lessonId" component="lesson-page" exact />
+      </route>
+    </route>
+  </route>
+
+  <script type="module" src="/index.js"></script>
+</body>
+
+</html>

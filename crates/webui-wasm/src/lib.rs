@@ -112,6 +112,39 @@ pub fn build_protocol(files: JsValue, entry: &str) -> Result<String, JsValue> {
     build_protocol_inner(&files_map, entry).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+/// Produce a complete JSON partial response for client-side navigation.
+///
+/// Combines application state, route templates, inventory, request path, and
+/// matched route chain into a single JSON string:
+/// `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
+///
+/// Host servers return this directly — no assembly required.
+#[wasm_bindgen]
+pub fn render_partial(
+    protocol_json: &str,
+    state_json: &str,
+    entry_id: &str,
+    request_path: &str,
+    inventory_hex: &str,
+) -> Result<String, JsValue> {
+    let protocol: WebUIProtocol = serde_json::from_str(protocol_json)
+        .map_err(|e| JsValue::from_str(&format!("Protocol JSON error: {e}")))?;
+
+    let state: serde_json::Value = serde_json::from_str(state_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid state JSON: {e}")))?;
+
+    let result = webui_handler::route_handler::render_partial(
+        &protocol,
+        state,
+        entry_id,
+        request_path,
+        inventory_hex,
+    );
+
+    serde_json::to_string(&result)
+        .map_err(|e| JsValue::from_str(&format!("JSON serialize error: {e}")))
+}
+
 fn build_protocol_inner(
     files: &HashMap<String, String>,
     entry: &str,

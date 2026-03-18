@@ -1,0 +1,19 @@
+{
+  "name": "routes-example",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start:api": "cd server && pnpm start",
+    "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
+    "start:server": "cargo run -p webui-cli -- serve ./src --plugin=fast --servedir ./dist --port 3002 --api-port 3100 --watch",
+    "start": "cargo xtask dev routes"
+  },
+  "devDependencies": {
+    "@microsoft/fast-element": "catalog:",
+    "@microsoft/fast-html": "catalog:",
+    "@microsoft/webui-router": "workspace:*",
+    "esbuild": "catalog:",
+    "typescript": "catalog:"
+  }
+}

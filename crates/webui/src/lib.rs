@@ -261,9 +261,6 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     let tokens = parser.take_tokens();
     let token_count = tokens.len();
 
-    // Collect route registry
-    let routes = parser.take_routes();
-
     // Extract individual component f-template strings from the FAST plugin
     // before consuming the parser.
     let component_templates = parser
@@ -296,11 +293,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             .collect()
     };
 
-    let mut protocol = if routes.is_empty() {
-        WebUIProtocol::with_tokens(fragment_records, tokens)
-    } else {
-        WebUIProtocol::with_routes(fragment_records, tokens, routes)
-    };
+    let mut protocol = WebUIProtocol::with_tokens(fragment_records, tokens);
 
     // Store f-templates in the protocol so any host server can query them
     for (tag, tmpl) in &component_templates {

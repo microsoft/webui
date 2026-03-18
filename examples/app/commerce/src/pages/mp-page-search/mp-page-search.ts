@@ -4,34 +4,50 @@
 import { FASTElement, attr, observable } from '@microsoft/fast-element';
 import { RenderableFASTElement } from '@microsoft/fast-html';
 
-import '#organisms/mp-product-grid/mp-product-grid.js';
 import '#organisms/mp-filter-list/mp-filter-list.js';
 
+function waitForView(el: any, maxFrames = 10): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let frame = 0;
+    const check = (): void => {
+      if (el.$fastController?.view) { resolve(); return; }
+      if (++frame >= maxFrames) { resolve(); return; }
+      requestAnimationFrame(check);
+    };
+    check();
+  });
+}
+
+function waitForChild(sr: ShadowRoot, selector: string, maxFrames = 20): Promise<HTMLElement | null> {
+  return new Promise<HTMLElement | null>((resolve) => {
+    const el = sr.querySelector(selector) as HTMLElement | null;
+    if (el) { resolve(el); return; }
+    let frame = 0;
+    const check = (): void => {
+      const found = sr.querySelector(selector) as HTMLElement | null;
+      if (found) { resolve(found); return; }
+      if (++frame >= maxFrames) { resolve(null); return; }
+      requestAnimationFrame(check);
+    };
+    requestAnimationFrame(check);
+  });
+}
+
 export class MpPageSearch extends RenderableFASTElement(FASTElement) {
-  @observable products?: any[];
   @observable categories?: any[];
   @observable sortOptions?: any[];
-  @observable query!: string;
-  @observable resultsCount!: number;
   @attr({ attribute: 'all-active-class' }) allActiveClass = '';
+  @attr({ attribute: 'current-label' }) currentLabel = 'All';
 
   async prepare(): Promise<void> {
     const raw = this.getAttribute('data-state');
     if (raw) {
       try {
-        this.applyState(JSON.parse(raw));
+        const state = JSON.parse(raw);
+        this.applyState(state);
         this.emitCatalogNavState();
+        await this.initChildren(state);
       } catch { /* ignore parse errors */ }
-    }
-
-    if (
-      this.products !== undefined
-      || this.categories !== undefined
-      || this.sortOptions !== undefined
-    ) {
-      // FAST can bind child views before their DOM-extraction fallback runs.
-      // Push the page state back into children during initial hydration too.
-      await this.syncChildren();
     }
   }
 
@@ -41,48 +57,49 @@ export class MpPageSearch extends RenderableFASTElement(FASTElement) {
   ): void {
     this.applyState(state, params);
     this.emitCatalogNavState();
-    // SPA navigation: push data to children and rebind their views
-    this.syncChildren();
+    void this.initChildren(state);
   }
 
   private applyState(
     state: Record<string, unknown>,
     params?: Record<string, string>,
   ): void {
-    if (Array.isArray(state.products)) {
-      this.products = state.products as any[];
-    }
     if (Array.isArray(state.categories)) {
       this.categories = state.categories as any[];
     }
     if (Array.isArray(state.sortOptions)) {
       this.sortOptions = state.sortOptions as any[];
     }
-    if (state.query !== undefined) {
-      this.query = String(state.query);
-    }
-    if (typeof state.resultsCount === 'number') {
-      this.resultsCount = state.resultsCount;
-    }
     if (params?.category) {
       this.allActiveClass = '';
     } else {
       this.allActiveClass = String(state.allActiveClass ?? 'active');
     }
+    if (state.currentCategoryLabel !== undefined) {
+      this.currentLabel = String(state.currentCategoryLabel);
+    }
   }
 
-  private async syncChildren(): Promise<void> {
+  private async initChildren(state: Record<string, unknown>): Promise<void> {
     const sr = this.shadowRoot;
     if (!sr) return;
 
     await Promise.all([
-      customElements.whenDefined('mp-product-grid'),
+      customElements.whenDefined('mp-category-nav'),
       customElements.whenDefined('mp-filter-list'),
     ]);
-    await new Promise<void>(r => requestAnimationFrame(() => r()));
 
-    this.pushAndRebind(sr, 'mp-product-grid', { products: this.products });
-    this.pushAndRebind(sr, 'mp-filter-list', { sortOptions: this.sortOptions });
+    const catNav = await waitForChild(sr, 'mp-category-nav');
+    if (catNav) {
+      await waitForView(catNav);
+      (catNav as any).setInitialState?.(state);
+    }
+
+    const filterList = await waitForChild(sr, 'mp-filter-list');
+    if (filterList) {
+      await waitForView(filterList);
+      (filterList as any).setInitialState?.(state);
+    }
   }
 
   private emitCatalogNavState(): void {
@@ -92,30 +109,6 @@ export class MpPageSearch extends RenderableFASTElement(FASTElement) {
         allActiveClass: this.allActiveClass,
       },
     }));
-  }
-
-  /** Set observable properties on a child and rebind its FAST view. */
-  private pushAndRebind(
-    sr: ShadowRoot,
-    tag: string,
-    data: Record<string, unknown>,
-  ): void {
-    const el = sr.querySelector(tag) as any;
-    if (!el) return;
-    let updated = false;
-    for (const [key, value] of Object.entries(data)) {
-      if (value !== undefined) {
-        delete el[key]; // remove any shadowing instance property
-        el[key] = value;
-        updated = true;
-      }
-    }
-    if (!updated) return;
-    const view = el.$fastController?.view;
-    if (view) {
-      view.unbind();
-      view.bind(el, view.context);
-    }
   }
 }
 

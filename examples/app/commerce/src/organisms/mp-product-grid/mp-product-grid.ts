@@ -1,15 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, observable } from '@microsoft/fast-element';
+import { FASTElement, attr, observable } from '@microsoft/fast-element';
 import { RenderableFASTElement } from '@microsoft/fast-html';
 
 import '#organisms/mp-product-card/mp-product-card.js';
 
 export class MpProductGrid extends RenderableFASTElement(FASTElement) {
   @observable products?: any[];
+  @attr query = '';
 
   async prepare(): Promise<void> {
+    this.query = this.getAttribute('query') || '';
     const sr = this.shadowRoot;
     if (!sr) return;
     const cards = sr.querySelectorAll('mp-product-card');
@@ -27,6 +29,20 @@ export class MpProductGrid extends RenderableFASTElement(FASTElement) {
       });
     });
     this.products = items;
+  }
+
+  setInitialState(state: Record<string, unknown>): void {
+    if (Array.isArray(state.products)) {
+      this.products = state.products;
+    }
+    if (typeof state.query === 'string') {
+      this.query = state.query;
+    }
+    const view = this.$fastController?.view;
+    if (view) {
+      view.unbind();
+      view.bind(this, view.context);
+    }
   }
 }
 

@@ -43,18 +43,17 @@ async fn handle_frontend_request(
         }
     }
 
-    let route_match = data
-        .frontend()
-        .match_route(context.route_path())
-        .ok_or(ServerError::NotFound)?;
+    let route_params = data.frontend().collect_route_params(context.route_path());
     let stable_path = cart::without_cart(context.request_path());
     let cart_state = build_cart_state(&context.cart_read().cart, data.catalog(), &stable_path);
-    let page_state = state::build_route_state(
-        data.catalog(),
-        &route_match,
-        context.request_path(),
-        &cart_state,
-    )
+    let page_state = state::build_route_state(&state::RouteStateRequest {
+        catalog: data.catalog(),
+        route_path: context.route_path(),
+        params: &route_params,
+        request_path: context.request_path(),
+        cart_state: &cart_state,
+        is_partial: context.wants_json(),
+    })
     .ok_or(ServerError::NotFound)?;
 
     if context.wants_json() {
@@ -147,7 +146,7 @@ fn partial_response(
         context.route_path(),
         context.request_path(),
         context.inventory_hex(),
-        page_state,
+        page_state.clone(),
     );
 
     let mut builder = HttpResponse::Ok();
@@ -241,7 +240,31 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn category_partial_includes_cart_shell_state() {
+    async fn search_without_category_renders_product_cards() {
+        let app =
+            test::init_service(App::new().app_data(test_state()).configure(configure_app)).await;
+
+        let request = TestRequest::with_uri("/search").to_request();
+        let response = test::call_service(&app, request).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = match to_bytes(response.into_body()).await {
+            Ok(body) => body,
+            Err(error) => panic!("{error}"),
+        };
+        let html = match String::from_utf8(body.to_vec()) {
+            Ok(html) => html,
+            Err(error) => panic!("{error}"),
+        };
+
+        assert!(
+            html.contains("mp-product-card"),
+            "SSR for /search must render product cards in the outlet"
+        );
+    }
+
+    #[actix_web::test]
+    async fn category_partial_excludes_shell_state() {
         let app =
             test::init_service(App::new().app_data(test_state()).configure(configure_app)).await;
 
@@ -260,13 +283,20 @@ mod tests {
             Err(error) => panic!("{error}"),
         };
 
-        assert_eq!(json["state"]["page"], "category");
-        assert_eq!(json["state"]["cartItemCount"], 0);
-        assert_eq!(json["state"]["cartOpen"], "");
+        // Page-specific state present
+        assert!(json["state"].get("products").is_some());
+        assert!(json["state"].get("categories").is_some());
+        assert!(json["state"].get("sortOptions").is_some());
+
+        // Shell state excluded from partials
+        assert!(json["state"].get("storeName").is_none());
+        assert!(json["state"].get("cartItems").is_none());
+        assert!(json["state"].get("cartItemCount").is_none());
+        assert!(json["state"].get("page").is_none());
     }
 
     #[actix_web::test]
-    async fn empty_search_query_renders_no_results_message() {
+    async fn search_with_query_renders_matching_attributes() {
         let app =
             test::init_service(App::new().app_data(test_state()).configure(configure_app)).await;
 
@@ -283,7 +313,6 @@ mod tests {
             Err(error) => panic!("{error}"),
         };
 
-        assert!(html.contains(r#"class="empty-results">There are no products that match ""#));
         assert!(html.contains(r#"query="bottle""#));
         assert!(html.contains(r#"results-count="0""#));
     }

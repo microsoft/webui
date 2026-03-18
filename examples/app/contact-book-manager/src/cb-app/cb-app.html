@@ -10,13 +10,7 @@
     ></cb-sidebar>
 
     <main class="content">
-      <route path="/" name="dashboard" component="cb-page-dashboard" exact />
-      <route path="/contacts" name="contacts" component="cb-page-contacts" exact />
-      <route path="/contacts/add" name="add" component="cb-contact-form" exact />
-      <route path="/contacts/:id" name="detail" component="cb-contact-detail" exact />
-      <route path="/contacts/:id/edit" name="edit" component="cb-contact-form" exact />
-      <route path="/favorites" name="favorites" component="cb-page-favorites" exact />
-      <route path="/groups/:group" name="group" component="cb-page-group" exact />
+      <outlet />
     </main>
   </div>
 </template>

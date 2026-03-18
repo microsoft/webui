@@ -1,19 +1,13 @@
 <template shadowrootmode="open">
-  <div class="search-layout">
-    <section class="search-main">
-      <if condition="query != '' && resultsCount == 0">
-        <p class="empty-results">
-          There are no products that match "{{query}}"
-        </p>
-      </if>
+  <mp-category-nav
+    all-active-class="{{allActiveClass}}"
+    current-label="{{currentCategoryLabel}}"
+    :categories="{{categories}}"
+  ></mp-category-nav>
 
-      <if condition="query == '' || resultsCount != 0">
-        <mp-product-grid :products="{{products}}"></mp-product-grid>
-      </if>
-    </section>
-
-    <aside class="search-sidebar">
-      <mp-filter-list :sort-options="{{sortOptions}}"></mp-filter-list>
-    </aside>
+  <div class="product-area">
+    <outlet />
   </div>
+
+  <mp-filter-list :sort-options="{{sortOptions}}"></mp-filter-list>
 </template>

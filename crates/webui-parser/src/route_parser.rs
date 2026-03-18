@@ -4,12 +4,11 @@
 //! Route element parsing for `<route>` directives.
 //!
 //! Parses `<route path="..." component="..." ...>` elements into
-//! `WebUIFragmentRoute` protocol fragments and builds a top-level
-//! route registry (`HashMap<String, RouteRecord>`).
+//! `WebUIFragmentRoute` protocol fragments.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use webui_protocol::{RouteRecord, WebUiFragmentRoute};
+use webui_protocol::WebUiFragmentRoute;
 
 use crate::error::{ParserError, Result};
 
@@ -21,7 +20,6 @@ const MAX_PARAMS_PER_ROUTE: usize = 20;
 pub(crate) struct RouteAttributes {
     pub path: String,
     pub component: String,
-    pub name: String,
     pub exact: bool,
 }
 
@@ -29,11 +27,16 @@ pub(crate) struct RouteAttributes {
 ///
 /// Returns param names without the `:` or `*` prefix.
 /// Validates the path template for correctness.
+/// Handles relative paths (starting with `./`) by stripping the prefix
+/// before parameter extraction.
 pub(crate) fn extract_params(path: &str) -> Result<Vec<String>> {
+    // Strip relative prefix — params are the same regardless
+    let normalized = path.strip_prefix("./").unwrap_or(path);
+
     let mut params = Vec::new();
     let mut seen = HashSet::new();
 
-    for segment in path.split('/') {
+    for segment in normalized.split('/') {
         if segment.is_empty() {
             continue;
         }
@@ -97,66 +100,14 @@ pub(crate) fn validate_attributes(attrs: &RouteAttributes) -> Result<()> {
 pub(crate) fn build_route_fragment(
     attrs: &RouteAttributes,
     fragment_id: String,
+    children: Vec<WebUiFragmentRoute>,
 ) -> WebUiFragmentRoute {
     WebUiFragmentRoute {
         path: attrs.path.clone(),
         fragment_id,
         exact: attrs.exact,
-        name: attrs.name.clone(),
+        children,
     }
-}
-
-/// Build a `RouteRecord` from a route fragment for the top-level registry.
-pub(crate) fn build_route_record(route: &WebUiFragmentRoute) -> RouteRecord {
-    RouteRecord {
-        name: route.name.clone(),
-        path: route.path.clone(),
-        fragment_id: route.fragment_id.clone(),
-        exact: route.exact,
-    }
-}
-
-/// Route name uniqueness tracker.
-pub(crate) struct RouteNameRegistry {
-    names: HashSet<String>,
-}
-
-impl RouteNameRegistry {
-    pub fn new() -> Self {
-        Self {
-            names: HashSet::new(),
-        }
-    }
-
-    /// Register a route name, returning an error if it's a duplicate.
-    pub fn register(&mut self, name: &str) -> Result<()> {
-        if name.is_empty() {
-            return Ok(());
-        }
-        if !self.names.insert(name.to_string()) {
-            return Err(ParserError::Directive(format!(
-                "Duplicate route name: '{name}'"
-            )));
-        }
-        Ok(())
-    }
-}
-
-/// Collect all route records into a map keyed by route name.
-/// Routes without names are keyed by their fragment ID.
-pub(crate) fn collect_route_registry(
-    routes: &[WebUiFragmentRoute],
-) -> HashMap<String, RouteRecord> {
-    let mut registry = HashMap::with_capacity(routes.len());
-    for route in routes {
-        let key = if route.name.is_empty() {
-            route.fragment_id.clone()
-        } else {
-            route.name.clone()
-        };
-        registry.insert(key, build_route_record(route));
-    }
-    registry
 }
 
 #[cfg(test)]
@@ -242,60 +193,23 @@ mod tests {
         assert!(validate_attributes(&attrs).is_err());
     }
 
+    // ── Relative path tests ──
+
     #[test]
-    fn test_route_name_registry_unique() {
-        let mut reg = RouteNameRegistry::new();
-        assert!(reg.register("home").is_ok());
-        assert!(reg.register("profile").is_ok());
+    fn test_extract_params_relative_path() {
+        let params = extract_params("./sections/:id").unwrap();
+        assert_eq!(params, vec!["id"]);
     }
 
     #[test]
-    fn test_route_name_registry_duplicate() {
-        let mut reg = RouteNameRegistry::new();
-        assert!(reg.register("home").is_ok());
-        assert!(reg.register("home").is_err());
+    fn test_extract_params_relative_multiple() {
+        let params = extract_params("./topics/:topicId/lessons/:lessonId").unwrap();
+        assert_eq!(params, vec!["topicId", "lessonId"]);
     }
 
     #[test]
-    fn test_route_name_registry_empty_ok() {
-        let mut reg = RouteNameRegistry::new();
-        assert!(reg.register("").is_ok());
-        assert!(reg.register("").is_ok());
-    }
-
-    #[test]
-    fn test_build_route_record() {
-        let route = WebUiFragmentRoute {
-            path: "/users/:id".to_string(),
-            fragment_id: "users-page".to_string(),
-            name: "user-detail".to_string(),
-            exact: true,
-        };
-        let record = build_route_record(&route);
-        assert_eq!(record.name, "user-detail");
-        assert_eq!(record.path, "/users/:id");
-        assert!(record.exact);
-    }
-
-    #[test]
-    fn test_collect_route_registry() {
-        let routes = vec![
-            WebUiFragmentRoute {
-                name: "home".to_string(),
-                path: "/".to_string(),
-                fragment_id: "home-page".to_string(),
-                ..Default::default()
-            },
-            WebUiFragmentRoute {
-                name: "".to_string(),
-                path: "/unnamed".to_string(),
-                fragment_id: "unnamed-page".to_string(),
-                ..Default::default()
-            },
-        ];
-        let registry = collect_route_registry(&routes);
-        assert_eq!(registry.len(), 2);
-        assert!(registry.contains_key("home"));
-        assert!(registry.contains_key("unnamed-page"));
+    fn test_extract_params_relative_splat() {
+        let params = extract_params("./*rest").unwrap();
+        assert_eq!(params, vec!["rest"]);
     }
 }

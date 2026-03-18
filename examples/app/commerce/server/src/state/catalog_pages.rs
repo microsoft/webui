@@ -6,11 +6,13 @@ use serde_json::Value;
 use crate::catalog::{self, Product};
 
 use super::context::ShellContext;
-use super::shell::{apply_page_metadata, base_state};
+use super::shell::{apply_page_metadata, page_state_base};
 
-pub(crate) fn home_state(context: &ShellContext<'_>) -> Value {
-    let mut state = base_state(context);
-    apply_page_metadata(&mut state, "home", false, "default-shell");
+pub(crate) fn home_state(context: &ShellContext<'_>, is_partial: bool) -> Value {
+    let mut state = page_state_base(context, is_partial);
+    if !is_partial {
+        apply_page_metadata(&mut state, "home", false, "default-shell");
+    }
     state.insert(
         "featuredProducts".into(),
         Value::Array(catalog::products_to_json(&context.catalog.home_featured())),
@@ -26,6 +28,7 @@ pub(crate) fn search_state(
     context: &ShellContext<'_>,
     query: &str,
     requested_sort: Option<&str>,
+    is_partial: bool,
 ) -> Value {
     let sort = default_sort(requested_sort);
     let products = if query.is_empty() {
@@ -35,8 +38,10 @@ pub(crate) fn search_state(
     };
     let products = catalog::sorted(products, sort);
 
-    let mut state = base_state(context);
-    apply_page_metadata(&mut state, "search", true, "catalog-shell");
+    let mut state = page_state_base(context, is_partial);
+    if !is_partial {
+        apply_page_metadata(&mut state, "search", true, "catalog-shell");
+    }
     state.insert(
         "products".into(),
         Value::Array(catalog::products_to_json(&products)),
@@ -64,6 +69,7 @@ pub(crate) fn category_state(
     category: &str,
     query: &str,
     requested_sort: Option<&str>,
+    is_partial: bool,
 ) -> Option<Value> {
     if !context
         .catalog
@@ -82,8 +88,10 @@ pub(crate) fn category_state(
     };
     let products = catalog::sorted(products, sort);
 
-    let mut state = base_state(context);
-    apply_page_metadata(&mut state, "category", true, "catalog-shell");
+    let mut state = page_state_base(context, is_partial);
+    if !is_partial {
+        apply_page_metadata(&mut state, "category", true, "catalog-shell");
+    }
     state.insert(
         "products".into(),
         Value::Array(catalog::products_to_json(&products)),
@@ -114,12 +122,18 @@ pub(crate) fn category_state(
     Some(Value::Object(state))
 }
 
-pub(crate) fn product_state(context: &ShellContext<'_>, handle: &str) -> Option<Value> {
+pub(crate) fn product_state(
+    context: &ShellContext<'_>,
+    handle: &str,
+    is_partial: bool,
+) -> Option<Value> {
     let product = context.catalog.by_handle(handle)?;
     let related = context.catalog.related(handle, 10);
 
-    let mut state = base_state(context);
-    apply_page_metadata(&mut state, "product", false, "default-shell");
+    let mut state = page_state_base(context, is_partial);
+    if !is_partial {
+        apply_page_metadata(&mut state, "product", false, "default-shell");
+    }
     state.insert(
         "relatedProducts".into(),
         Value::Array(catalog::products_to_json(&related)),

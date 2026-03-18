@@ -14,10 +14,10 @@ use std::ffi::{CStr, CString};
 // Because we added "lib" to crate-type, Rust integration tests can link
 // against the rlib and call the `pub extern "C"` functions.
 use webui_ffi::{
-    webui_free, webui_get_route_templates, webui_handler_create, webui_handler_destroy,
-    webui_handler_render, webui_last_error, webui_render,
+    webui_free, webui_handler_create, webui_handler_destroy, webui_handler_render,
+    webui_last_error, webui_render, webui_render_partial,
 };
-use webui_protocol::{FragmentList, RouteRecord, WebUIFragment, WebUIProtocol, WebUiFragmentRoute};
+use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol, WebUiFragmentRoute};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -250,7 +250,7 @@ fn handler_render_null_args_returns_null() {
 }
 
 #[test]
-fn get_route_templates_follows_active_route_chain() {
+fn render_partial_returns_templates_inventory_and_chain() {
     let mut fragments = HashMap::new();
     fragments.insert(
         "index.html".to_string(),
@@ -267,14 +267,12 @@ fn get_route_templates_follows_active_route_chain() {
                     path: "/search/:category".to_string(),
                     fragment_id: "mp-search-page".to_string(),
                     exact: true,
-                    name: "category".to_string(),
                     ..Default::default()
                 }),
                 WebUIFragment::route_from(WebUiFragmentRoute {
                     path: "/product/:handle".to_string(),
                     fragment_id: "mp-product-page".to_string(),
                     exact: true,
-                    name: "product".to_string(),
                     ..Default::default()
                 }),
             ],
@@ -311,27 +309,7 @@ fn get_route_templates_follows_active_route_chain() {
         },
     );
 
-    let mut routes = HashMap::new();
-    routes.insert(
-        "category".to_string(),
-        RouteRecord {
-            name: "category".to_string(),
-            path: "/search/:category".to_string(),
-            fragment_id: "mp-search-page".to_string(),
-            exact: true,
-        },
-    );
-    routes.insert(
-        "product".to_string(),
-        RouteRecord {
-            name: "product".to_string(),
-            path: "/product/:handle".to_string(),
-            fragment_id: "mp-product-page".to_string(),
-            exact: true,
-        },
-    );
-
-    let mut protocol = WebUIProtocol::with_routes(fragments, Vec::new(), routes);
+    let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
     protocol.component_templates.insert(
         "mp-app".to_string(),
         "<f-template id=app></f-template>".to_string(),
@@ -348,10 +326,6 @@ fn get_route_templates_follows_active_route_chain() {
         "mp-category-nav".to_string(),
         "<f-template id=nav></f-template>".to_string(),
     );
-    protocol.component_templates.insert(
-        "mp-product-page".to_string(),
-        "<f-template id=product></f-template>".to_string(),
-    );
 
     let protocol_bytes = protocol
         .to_protobuf()
@@ -359,19 +333,21 @@ fn get_route_templates_follows_active_route_chain() {
 
     unsafe {
         let c_entry = CString::new("index.html").expect("static string");
+        let c_state = CString::new(r#"{"query":"shirts"}"#).expect("static string");
         let c_request_path = CString::new("/search/shirts").expect("static string");
         let c_inventory = CString::new("").expect("static string");
 
-        let ptr = webui_get_route_templates(
+        let ptr = webui_render_partial(
             protocol_bytes.as_ptr(),
             protocol_bytes.len(),
+            c_state.as_ptr(),
             c_entry.as_ptr(),
             c_request_path.as_ptr(),
             c_inventory.as_ptr(),
         );
         assert!(
             !ptr.is_null(),
-            "webui_get_route_templates returned NULL: {}",
+            "webui_render_partial returned NULL: {}",
             last_error_string().unwrap_or_else(|| "<none>".to_string())
         );
 
@@ -380,19 +356,72 @@ fn get_route_templates_follows_active_route_chain() {
 
         let value: serde_json::Value =
             serde_json::from_str(&json).expect("ffi response should be valid json");
-        let names: Vec<String> = value["templates"]
-            .as_array()
-            .expect("templates should be an array")
-            .iter()
-            .filter_map(|item| item["name"].as_str().map(|name| name.to_string()))
-            .collect();
 
-        assert!(names.contains(&"mp-app".to_string()));
-        assert!(names.contains(&"mp-category-nav".to_string()));
-        assert!(names.contains(&"mp-search-page".to_string()));
-        assert!(names.contains(&"mp-product-grid".to_string()));
-        assert!(!names.contains(&"mp-product-page".to_string()));
-        assert!(!names.contains(&"mp-product-detail".to_string()));
+        // Should have state, templates, inventory, path, and chain fields
+        assert!(
+            value.get("state").is_some(),
+            "partial response should contain 'state' field"
+        );
+        assert!(value["state"].is_object(), "state should be an object");
+        assert_eq!(
+            value["state"]["query"].as_str(),
+            Some("shirts"),
+            "state should contain the passed-in data"
+        );
+
+        assert!(
+            value.get("templates").is_some(),
+            "partial response should contain 'templates' field"
+        );
+        assert!(
+            value["templates"].is_array(),
+            "templates should be an array"
+        );
+        assert!(
+            !value["templates"]
+                .as_array()
+                .expect("templates is array")
+                .is_empty(),
+            "templates should not be empty for an empty inventory"
+        );
+
+        assert!(
+            value.get("inventory").is_some(),
+            "partial response should contain 'inventory' field"
+        );
+        assert!(
+            value["inventory"].is_string(),
+            "inventory should be a string"
+        );
+
+        assert!(
+            value.get("path").is_some(),
+            "partial response should contain 'path' field"
+        );
+        assert_eq!(
+            value["path"].as_str(),
+            Some("/search/shirts"),
+            "path should match the request path"
+        );
+
+        assert!(
+            value.get("chain").is_some(),
+            "partial response should contain 'chain' field"
+        );
+        assert!(value["chain"].is_array(), "chain should be an array");
+        let chain = value["chain"].as_array().expect("chain should be an array");
+        assert!(!chain.is_empty(), "chain should contain at least one entry");
+
+        // Verify chain entry structure
+        let first = &chain[0];
+        assert!(
+            first.get("component").is_some(),
+            "chain entry should have 'component' field"
+        );
+        assert!(
+            first.get("path").is_some(),
+            "chain entry should have 'path' field"
+        );
     }
 }
 

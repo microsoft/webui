@@ -10,6 +10,18 @@ import '#organisms/mp-variant-selector/mp-variant-selector.js';
 import '#organisms/mp-add-to-cart/mp-add-to-cart.js';
 import '#organisms/mp-product-card/mp-product-card.js';
 
+function waitForView(el: any, maxFrames = 10): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let frame = 0;
+    const check = (): void => {
+      if (el.$fastController?.view) { resolve(); return; }
+      if (++frame >= maxFrames) { resolve(); return; }
+      requestAnimationFrame(check);
+    };
+    check();
+  });
+}
+
 export class MpPageProduct extends RenderableFASTElement(FASTElement) {
   // Product fields as individual @attr
   @attr handle = '';
@@ -58,7 +70,7 @@ export class MpPageProduct extends RenderableFASTElement(FASTElement) {
         if (Array.isArray(state.categories)) this.categories = state.categories;
         if (state.allActiveClass !== undefined) this.allActiveClass = String(state.allActiveClass);
         this.emitCatalogNavState();
-        await this.syncChildren();
+        await this.initChildren(state);
         return;
       } catch { /* fall through to DOM extraction */ }
     }
@@ -134,7 +146,7 @@ export class MpPageProduct extends RenderableFASTElement(FASTElement) {
     }
 
     this.emitCatalogNavState();
-    this.syncChildren();
+    void this.initChildren(state);
   }
 
   private emitCatalogNavState(): void {
@@ -146,65 +158,37 @@ export class MpPageProduct extends RenderableFASTElement(FASTElement) {
     }));
   }
 
-  private async syncChildren(): Promise<void> {
+  private async initChildren(state: Record<string, unknown>): Promise<void> {
     const sr = this.shadowRoot;
     if (!sr) return;
 
     await Promise.all([
       customElements.whenDefined('mp-product-gallery'),
       customElements.whenDefined('mp-variant-selector'),
+      customElements.whenDefined('mp-add-to-cart'),
     ]);
-    await new Promise<void>(r => requestAnimationFrame(() => r()));
 
-    await this.pushAndRebind(sr, 'mp-product-gallery', {
-      images: this.images,
-      activeGradient: this.gradient,
-      activeImageUrl: this.imageUrl,
-    });
-    await this.pushAndRebind(sr, 'mp-variant-selector', {
-      optionGroups: this.optionGroups,
-    });
-    await this.pushAndRebind(sr, 'mp-add-to-cart', {
-      handle: this.handle,
-      productTitle: this.productTitle,
-      price: this.price,
-      gradient: this.gradient,
-      imageUrl: this.imageUrl,
-      defaultColor: this.defaultColor,
-      defaultSize: this.defaultSize,
-      currentPath: this.currentPath,
-    });
-    const addToCart = sr.querySelector('mp-add-to-cart') as { updateSelectionState?: () => void } | null;
-    addToCart?.updateSelectionState?.();
+    const gallery = sr.querySelector('mp-product-gallery') as any;
+    if (gallery) {
+      await waitForView(gallery);
+      gallery.setInitialState?.(state);
+    }
+
+    const selector = sr.querySelector('mp-variant-selector') as any;
+    if (selector) {
+      await waitForView(selector);
+      selector.setInitialState?.(state);
+    }
+
+    const addToCart = sr.querySelector('mp-add-to-cart') as any;
+    if (addToCart) {
+      await waitForView(addToCart);
+      addToCart.setInitialState?.(state);
+      addToCart.updateSelectionState?.();
+    }
 
     const descEl = sr.querySelector('.product-description');
     if (descEl && this.descriptionHtml) descEl.innerHTML = this.descriptionHtml;
-  }
-
-  private async pushAndRebind(
-    sr: ShadowRoot,
-    tag: string,
-    data: Record<string, unknown>,
-  ): Promise<void> {
-    const el = sr.querySelector(tag) as any;
-    if (!el) return;
-    for (const [key, value] of Object.entries(data)) {
-      if (value !== undefined) {
-        delete el[key];
-        el[key] = value;
-      }
-    }
-
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const view = el.$fastController?.view;
-      if (view) {
-        view.unbind();
-        view.bind(el, view.context);
-        return;
-      }
-
-      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
-    }
   }
 }
 

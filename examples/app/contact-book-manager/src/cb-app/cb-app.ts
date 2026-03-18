@@ -10,15 +10,14 @@ import { api } from '#api';
 import '#organisms/cb-header/cb-header.js';
 import '#organisms/cb-sidebar/cb-sidebar.js';
 
-/** Map route name → sidebar page value for highlighting. */
-const ROUTE_TO_PAGE: Record<string, string> = {
-  dashboard: 'dashboard',
-  contacts: 'contacts',
-  favorites: 'favorites',
-  group: 'group',
-  detail: 'contacts',
-  add: 'contacts',
-  edit: 'contacts',
+/** Map route component → sidebar page value for highlighting. */
+const COMPONENT_TO_PAGE: Record<string, string> = {
+  'cb-page-dashboard': 'dashboard',
+  'cb-page-contacts': 'contacts',
+  'cb-page-favorites': 'favorites',
+  'cb-page-group': 'group',
+  'cb-contact-detail': 'contacts',
+  'cb-contact-form': 'contacts',
 };
 
 export class CbApp extends RenderableFASTElement(FASTElement) {
@@ -76,8 +75,8 @@ export class CbApp extends RenderableFASTElement(FASTElement) {
     });
 
     window.addEventListener('webui:route:navigated', (e: Event) => {
-      const { routeName, params } = (e as CustomEvent).detail;
-      this.onRouteChanged(routeName, params);
+      const { component, params } = (e as CustomEvent).detail;
+      this.onRouteChanged(component, params);
     });
   }
 
@@ -94,9 +93,9 @@ export class CbApp extends RenderableFASTElement(FASTElement) {
   }
 
   /** Called when the router activates a new route. */
-  private onRouteChanged(routeName: string, params: Record<string, string>): void {
-    this.page = ROUTE_TO_PAGE[routeName] || '';
-    if (routeName === 'group') {
+  private onRouteChanged(component: string, params: Record<string, string>): void {
+    this.page = COMPONENT_TO_PAGE[component] || '';
+    if (component === 'cb-page-group') {
       this.activeGroup = (params['group'] || 'all').toLowerCase();
     }
   }

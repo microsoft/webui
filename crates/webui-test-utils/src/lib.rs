@@ -446,10 +446,10 @@ fn format_fragment(frag: &webui_protocol::WebUIFragment) -> String {
         ),
         Some(Fragment::IfCond(i)) => format!("if(template={:?})", i.fragment_id),
         Some(Fragment::Plugin(p)) => format!("plugin(data={:?})", p.data),
-        Some(Fragment::Route(r)) => format!(
-            "route(path={:?}, fragment={:?}, name={:?})",
-            r.path, r.fragment_id, r.name
-        ),
+        Some(Fragment::Route(r)) => {
+            format!("route(path={:?}, fragment={:?})", r.path, r.fragment_id)
+        }
+        Some(Fragment::Outlet(_)) => "outlet".to_string(),
         None => "None".to_string(),
     }
 }

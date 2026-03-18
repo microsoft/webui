@@ -19,3 +19,14 @@
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+.empty-results {
+  padding: 3rem 1rem;
+  text-align: center;
+  color: var(--webui-text-secondary, #a1a1a1);
+  font-size: 1.125rem;
+}
+
+.empty-results strong {
+  color: var(--webui-text, #fafafa);
+}

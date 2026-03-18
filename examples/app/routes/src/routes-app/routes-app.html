@@ -1,0 +1,19 @@
+<template shadowrootmode="open">
+  <header>
+    <span>📚</span>
+    <h1>{{appTitle}}</h1>
+  </header>
+
+  <nav>
+    <h2>Sections</h2>
+    <ul>
+      <for each="section in sections">
+        <li><a href="/sections/{{section.id}}">{{section.icon}} {{section.name}}</a></li>
+      </for>
+    </ul>
+  </nav>
+
+  <main>
+    <outlet />
+  </main>
+</template>

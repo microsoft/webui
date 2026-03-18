@@ -1,0 +1,16 @@
+<template shadowrootmode="open">
+  <div class="topic-header">
+    <div class="breadcrumb">{{sectionName}} › {{topicName}}</div>
+    <h3>{{topicName}}</h3>
+  </div>
+
+  <div class="lessons">
+    <for each="lesson in lessons">
+      <a href="/sections/{{id}}/topics/{{topicId}}/lessons/{{lesson.id}}">{{lesson.name}}</a>
+    </for>
+  </div>
+
+  <div class="outlet-area">
+    <outlet />
+  </div>
+</template>

@@ -23,6 +23,12 @@ import { Router } from '@microsoft/webui-router';
 // Shell component — eagerly loaded (child imports are co-located in each component)
 import '#organisms/mp-app/mp-app.js';
 
+// Search page components — eagerly loaded for SSR hydration of nested routes.
+// When defined before hydration, FAST binds to the existing shadow root (hydrate)
+// instead of replacing it (render), preserving outlet content from SSR.
+import '#pages/mp-page-search/mp-page-search.js';
+import '#organisms/mp-product-grid/mp-product-grid.js';
+
 // Configure and start hydration
 TemplateElement.options({
   'mp-app': { observerMap: 'all' },
@@ -62,6 +68,7 @@ TemplateElement.options({
       loaders: {
         'mp-page-home': () => import('#pages/mp-page-home/mp-page-home.js'),
         'mp-page-search': () => import('#pages/mp-page-search/mp-page-search.js'),
+        'mp-product-grid': () => import('#organisms/mp-product-grid/mp-product-grid.js'),
         'mp-page-product': () => import('#pages/mp-page-product/mp-page-product.js'),
         'mp-page-about': () => import('#pages/mp-page-about/mp-page-about.js'),
         'mp-page-terms': () => import('#pages/mp-page-terms/mp-page-terms.js'),

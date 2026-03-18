@@ -93,6 +93,28 @@ export class MpCartPanel extends RenderableFASTElement(FASTElement) {
     this.syncOpenState();
   }
 
+  setInitialState(state: Record<string, unknown>): void {
+    if (Array.isArray(state.cartItems)) {
+      this.cartItems = state.cartItems as CartItem[];
+    }
+    if (state.cartEmpty !== undefined) {
+      this.cartEmpty = Boolean(state.cartEmpty);
+    }
+    if (typeof state.subtotal === 'string') this.subtotal = state.subtotal;
+    if (typeof state.cartSubtotal === 'string') this.subtotal = state.cartSubtotal;
+    if (typeof state.taxes === 'string') this.taxes = state.taxes;
+    if (typeof state.cartTaxes === 'string') this.taxes = state.cartTaxes;
+    if (typeof state.cartOpen === 'string') this.cartOpen = state.cartOpen;
+    if (typeof state.cartCloseHref === 'string') this.cartCloseHref = state.cartCloseHref;
+    if (typeof state.currentPath === 'string') this.currentPath = state.currentPath;
+    this.syncOpenState();
+    const view = this.$fastController?.view;
+    if (view) {
+      view.unbind();
+      view.bind(this, view.context);
+    }
+  }
+
   cartItemsChanged(): void {
     if (Array.isArray(this.cartItems)) {
       this.cartEmpty = this.cartItems.length === 0;

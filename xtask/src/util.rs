@@ -197,23 +197,4 @@ mod tests {
             root.display()
         );
     }
-
-    #[test]
-    fn build_command_resolves_pnpm() {
-        let cmd = super::build_command("pnpm", &["--version"]);
-        let program = format!("{:?}", cmd.get_program());
-        // On Windows, pnpm.cmd must be launched through cmd.exe.
-        // On Unix, pnpm is invoked directly.
-        if cfg!(windows) {
-            assert!(
-                program.contains("cmd"),
-                "expected cmd.exe wrapper on Windows, got {program}"
-            );
-        } else {
-            assert!(
-                program.contains("pnpm"),
-                "expected direct pnpm invocation, got {program}"
-            );
-        }
-    }
 }

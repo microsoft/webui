@@ -133,6 +133,39 @@ pub fn inspect(protocol_data: Buffer) -> napi::Result<String> {
         .map_err(|e| NapiError::from_reason(format!("Inspect error: {e}")))
 }
 
+/// Produce a complete JSON partial response for client-side navigation.
+///
+/// Combines application state, route templates, inventory, request path, and
+/// matched route chain into a single JSON string:
+/// `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
+///
+/// Host servers return this directly — no assembly required.
+#[napi]
+pub fn render_partial(
+    protocol_data: Buffer,
+    state_json: String,
+    entry_id: String,
+    request_path: String,
+    inventory_hex: String,
+) -> napi::Result<String> {
+    let protocol = WebUIProtocol::from_protobuf(&protocol_data)
+        .map_err(|e| NapiError::from_reason(format!("Protocol decode error: {e}")))?;
+
+    let state: serde_json::Value = serde_json::from_str(&state_json)
+        .map_err(|e| NapiError::from_reason(format!("invalid state JSON: {e}")))?;
+
+    let result = webui_handler::route_handler::render_partial(
+        &protocol,
+        state,
+        &entry_id,
+        &request_path,
+        &inventory_hex,
+    );
+
+    serde_json::to_string(&result)
+        .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
+}
+
 /// A writer that streams each rendered fragment to a JS callback.
 struct CallbackWriter<'a, 'env> {
     callback: &'a Function<'env, String, ()>,

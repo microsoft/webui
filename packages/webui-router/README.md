@@ -1,15 +1,15 @@
 # @microsoft/webui-router
 
-Lightweight client-side router for [WebUI](https://github.com/microsoft/webui) apps. Uses the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navigation_API) to intercept navigations, matches routes defined with `<route>` directives, and loads components on demand — preserving server-rendered content on initial page load and fetching JSON partials for subsequent navigations.
+Client-side router for [WebUI](https://github.com/microsoft/webui) apps with nested route support. Uses the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navigation_API) to intercept link clicks and loads components on demand — preserving server-rendered content on initial load and fetching JSON partials for subsequent navigations. The server provides the matched route chain; the client does not perform route matching.
 
 ## How It Works
 
-1. **Server renders the initial page** — the matched route's component is fully SSR'd with a declarative shadow root. The page is interactive before any JavaScript loads.
-2. **Hydration completes** — FAST-HTML hydrates the shell components (nav, sidebar, etc.).
-3. **Router starts** — intercepts link clicks via the Navigation API.
-4. **Client-side navigation** — fetches a JSON partial (`{ state, templates }`) from the server, lazy-loads the route component's JS if needed, and mounts it into the `<webui-route>` element.
+1. **Server renders the full page** — the matched route chain is SSR'd with declarative shadow roots. The page is interactive before JavaScript loads.
+2. **Hydration completes** — FAST-HTML hydrates shell components.
+3. **Router starts** — reads the SSR'd active chain and intercepts link clicks via the Navigation API.
+4. **Client-side navigation** — fetches a JSON partial from the server, which includes the matched route chain. The client diffs old vs new chain and mounts only the changed component. Parent components stay mounted.
 
-No full page reloads. The shell stays in place. Only the route content changes.
+No full page reloads. The shell stays in place. Only route content changes.
 
 ## Installation
 
@@ -19,47 +19,90 @@ npm install @microsoft/webui-router
 
 ## Quick Start
 
-Define routes in your HTML:
+**1. Declare nested routes in `index.html`:**
 
 ```html
-<route path="/" name="home" component="home-page" exact />
-<route path="/users" name="users" component="user-list" exact />
-<route path="/users/:id" name="detail" component="user-detail" exact />
+<body>
+  <route path="/" component="app-shell">
+    <route path="" component="home-page" exact />
+    <route path="users" component="user-list" exact />
+    <route path="users/:id" component="user-detail" exact />
+  </route>
+  <script type="module" src="/index.js"></script>
+</body>
 ```
 
-Start the router after hydration:
+Child routes use **relative paths** (no leading `/`). The nesting is the route tree.
+
+**2. Use `<outlet />` in parent components:**
+
+```html
+<!-- app-shell.html -->
+<template shadowrootmode="open">
+  <nav>
+    <a href="/">Home</a>
+    <a href="/users">Users</a>
+  </nav>
+  <main><outlet /></main>
+  <footer>© 2026</footer>
+</template>
+```
+
+`<outlet />` marks where child route content renders. The nav and footer persist across navigations.
+
+**3. Start the router after hydration:**
 
 ```typescript
 import { TemplateElement } from '@microsoft/fast-html';
 import { Router } from '@microsoft/webui-router';
 
-import './home-page.js'; // eagerly load the shell page
+import './app-shell.js';
 
 TemplateElement.options({
-  'home-page': { observerMap: 'all' },
+  'app-shell': { observerMap: 'all' },
 }).config({
   hydrationComplete() {
     Router.start({
       loaders: {
-        'user-list': () => import('./user-list.js'),
-        'user-detail': () => import('./user-detail.js'),
+        'home-page': () => import('./pages/home-page.js'),
+        'user-list': () => import('./pages/user-list.js'),
+        'user-detail': () => import('./pages/user-detail.js'),
       },
     });
   },
 }).define({ name: 'f-template' });
 ```
 
-Enable code splitting in your bundler so dynamic `import()` calls produce separate chunks:
+Components in `loaders` are lazy-loaded on first navigation. Components not listed are assumed eagerly loaded.
 
-```bash
-esbuild src/index.ts --bundle --splitting --outdir=dist --format=esm
+## Nested Routes
+
+Routes nest to any depth. Each parent uses `<outlet />` for child content:
+
+```html
+<route path="/" component="app-shell">
+  <route path="" component="dashboard" exact />
+  <route path="settings" component="settings-page">
+    <route path="profile" component="profile-page" exact />
+    <route path="billing" component="billing-page" exact />
+  </route>
+</route>
 ```
+
+Navigating from `/settings/profile` to `/settings/billing` only remounts the billing component — `app-shell` and `settings-page` stay mounted with their state preserved.
+
+### The `exact` Attribute
+
+- **Leaf routes** (no children): add `exact`
+- **Parent routes** (have `<outlet />`): omit `exact`
+
+Without `exact`, a route matches any URL that starts with its path — which is what parent routes need.
 
 ## API
 
 ### `Router.start(config?)`
 
-Start the router. Options:
+Start the router. Call after hydration completes.
 
 | Option | Type | Description |
 |--------|------|-------------|
@@ -68,19 +111,31 @@ Start the router. Options:
 
 ### `Router.navigate(path)`
 
-Programmatic navigation.
+Programmatic navigation:
+
+```typescript
+Router.navigate('/users/42');
+```
 
 ### `Router.back()`
 
 Navigate back in history.
 
-### `Router.activeRouteName`
+### `Router.activeComponent`
 
-Name of the currently active route.
+Component tag of the active leaf route:
+
+```typescript
+console.log(Router.activeComponent); // "user-detail"
+```
 
 ### `Router.activeParams`
 
-Bound parameters of the current route (e.g., `{ id: "42" }`).
+Bound parameters from all nesting levels:
+
+```typescript
+console.log(Router.activeParams); // { id: "42" }
+```
 
 ### `Router.destroy()`
 
@@ -88,11 +143,12 @@ Tear down the router and remove event listeners.
 
 ### Navigation Event
 
-The router dispatches `webui:route:navigated` on `window` after each navigation:
+Dispatched on `window` after each navigation:
 
 ```typescript
 window.addEventListener('webui:route:navigated', (e) => {
-  const { routeName, params, path } = e.detail;
+  const { component, params, path } = (e as CustomEvent).detail;
+  console.log(`Navigated to ${component}`, params);
 });
 ```
 
@@ -100,12 +156,12 @@ window.addEventListener('webui:route:navigated', (e) => {
 
 | Pattern | Example | Matches |
 |---------|---------|---------|
-| `/literal` | `/users` | Exact segment |
-| `/:param` | `/users/:id` | Captures segment → `{ id: "42" }` |
-| `/:param?` | `/search/:query?` | Optional segment |
-| `/*splat` | `/files/*path` | Rest of path → `{ path: "a/b/c" }` |
+| `literal` | `users` | Exact segment |
+| `:param` | `users/:id` | Captures segment → `{ id: "42" }` |
+| `:param?` | `search/:query?` | Optional segment |
+| `*splat` | `files/*path` | Rest of path → `{ path: "a/b/c" }` |
 
-Add the `exact` attribute to require full path match (no prefix matching).
+Paths are relative to the parent route. Use `/` prefix only for the root route.
 
 ## Server Contract
 
@@ -119,8 +175,10 @@ X-WebUI-Inventory: <hex bitmask>
 
 The server should return:
 
-- **`Accept: application/json`** → JSON partial: `{ state, templates, inventory, path }`
-- **Otherwise** → Full SSR'd HTML page
+- **`Accept: application/json`** → JSON partial: `{ state, templates, inventory, path, chain }` — returned directly from `renderPartial()`, no assembly required
+- **Otherwise** → Full SSR'd HTML page (handler emits a `<meta name="webui-inventory">` tag in `<head>` so the client knows which templates are loaded)
+
+The `chain` field contains the matched route chain — the client uses it to diff against the previous chain and only remount what changed. The `X-WebUI-Inventory` header is a bitmask of component templates the client already has — the server uses it to avoid sending duplicate templates.
 
 See the [Routing guide](https://github.com/microsoft/webui/blob/main/docs/guide/concepts/routing.md) for complete server implementation examples.
 

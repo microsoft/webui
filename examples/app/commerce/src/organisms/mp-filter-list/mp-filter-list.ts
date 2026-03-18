@@ -56,6 +56,17 @@ export class MpFilterList extends RenderableFASTElement(FASTElement) {
     this.sortOptions = options;
   }
 
+  setInitialState(state: Record<string, unknown>): void {
+    if (Array.isArray(state.sortOptions)) {
+      this.sortOptions = state.sortOptions as any[];
+    }
+    const view = this.$fastController?.view;
+    if (view) {
+      view.unbind();
+      view.bind(this, view.context);
+    }
+  }
+
   private onClick(event: MouseEvent): void {
     if (
       this.findPathElement(event, '.mobile-link')

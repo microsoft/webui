@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en" dir="ltr">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -11,14 +12,60 @@
     @layer reset, theme, layout;
 
     @layer reset {
-      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-      html { -webkit-text-size-adjust: 100%; tab-size: 4; line-height: 1.5; }
-      body { line-height: inherit; -webkit-font-smoothing: antialiased; }
-      img, svg, video { display: block; max-width: 100%; }
-      a { color: inherit; text-decoration: inherit; }
-      button, input, select, textarea { font: inherit; color: inherit; }
-      ol, ul { list-style: none; }
-      h1, h2, h3, h4, h5, h6 { font-size: inherit; font-weight: inherit; }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html {
+        -webkit-text-size-adjust: 100%;
+        tab-size: 4;
+        line-height: 1.5;
+      }
+
+      body {
+        line-height: inherit;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      img,
+      svg,
+      video {
+        display: block;
+        max-width: 100%;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: inherit;
+      }
+
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+        color: inherit;
+      }
+
+      ol,
+      ul {
+        list-style: none;
+      }
+
+      h1,
+      h2,
+      h3,
+      h4,
+      h5,
+      h6 {
+        font-size: inherit;
+        font-weight: inherit;
+      }
     }
 
     @layer theme {
@@ -49,33 +96,86 @@
     }
 
     @layer layout {
-      html { font-family: var(--webui-font); background: var(--webui-bg); color: var(--webui-text); }
-      body { min-height: 100vh; }
-      ::selection { background: color-mix(in oklch, var(--webui-accent) 40%, transparent); }
+      html {
+        font-family: var(--webui-font);
+        background: var(--webui-bg);
+        color: var(--webui-text);
+      }
+
+      body {
+        min-height: 100vh;
+      }
+
+      ::selection {
+        background: color-mix(in oklch, var(--webui-accent) 40%, transparent);
+      }
+    }
+
+    @view-transition {
+      navigation: auto;
+    }
+
+    /* View transition: cross-fade pages with a subtle slide */
+    ::view-transition-old(page-content) {
+      animation: 200ms ease-out both fade-out, 200ms ease-out both slide-to-left;
+    }
+
+    ::view-transition-new(page-content) {
+      animation: 300ms ease-in both fade-in, 300ms ease-in both slide-from-right;
+    }
+
+    /* Going "back" reverses direction via browser heuristic */
+    ::view-transition-old(product-image) {
+      animation: 250ms ease-out both fade-out;
+      z-index: 1;
+    }
+
+    ::view-transition-new(product-image) {
+      animation: 350ms cubic-bezier(0.2, 0, 0.2, 1) both fade-in;
+      z-index: 2;
+    }
+
+    @keyframes fade-in {
+      from {
+        opacity: 0;
+      }
+    }
+
+    @keyframes fade-out {
+      to {
+        opacity: 0;
+      }
+    }
+
+    @keyframes slide-from-right {
+      from {
+        transform: translateX(30px);
+      }
+    }
+
+    @keyframes slide-to-left {
+      to {
+        transform: translateX(-30px);
+      }
     }
   </style>
 </head>
-<body>
-  <mp-app
-    store-name="{{storeName}}"
-    cart-item-count="{{cartItemCount}}"
-    search-query="{{query}}"
-    catalog-all-active-class="{{allActiveClass}}"
-    catalog-current-label="{{currentCategoryLabel}}"
-    show-catalog-nav="{{showCatalogNav}}"
-    shell-class="{{shellClass}}"
-    page="{{page}}"
-    current-path="{{currentPath}}"
-    cart-open="{{cartOpen}}"
-    cart-href="{{cartHref}}"
-    cart-close-href="{{cartCloseHref}}"
-    cart-subtotal="{{cartSubtotal}}"
-    cart-taxes="{{cartTaxes}}"
-    cart-empty="{{cartEmpty}}"
-    :catalog-categories="{{categories}}"
-    :cart-items="{{cartItems}}"
-  ></mp-app>
 
+<body>
+  <route path="/" component="mp-app">
+    <route path="" component="mp-page-home" exact />
+    <route path="search" component="mp-page-search">
+      <route path="" component="mp-product-grid" exact />
+      <route path=":category" component="mp-product-grid" exact />
+    </route>
+    <route path="product/:handle" component="mp-page-product" exact />
+    <route path="about" component="mp-page-about" exact />
+    <route path="terms-conditions" component="mp-page-terms" exact />
+    <route path="shipping-return-policy" component="mp-page-shipping" exact />
+    <route path="privacy-policy" component="mp-page-privacy" exact />
+    <route path="frequently-asked-questions" component="mp-page-faq" exact />
+  </route>
   <script src="/index.js" type="module"></script>
 </body>
+
 </html>

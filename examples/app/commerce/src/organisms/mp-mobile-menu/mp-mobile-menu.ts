@@ -46,6 +46,10 @@ export class MpMobileMenu extends RenderableFASTElement(FASTElement) {
     return this.shadowRoot?.querySelector('.backdrop') ?? null;
   }
 
+  setInitialState(state: Record<string, unknown>): void {
+    if (typeof state.searchQuery === 'string') this.searchQuery = state.searchQuery;
+  }
+
   async prepare(): Promise<void> {
     this.searchQuery = this.getAttribute('search-query') || '';
     const cats: Category[] = [];

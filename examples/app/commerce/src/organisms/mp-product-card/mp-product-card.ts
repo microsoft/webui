@@ -26,6 +26,16 @@ export class MpProductCard extends RenderableFASTElement(FASTElement) {
     this.variant = this.getAttribute('variant') || 'grid';
     this.imageLoading = this.getAttribute('image-loading') || 'lazy';
     this.imageFetchPriority = this.getAttribute('image-fetch-priority') || 'auto';
+    this.applyViewTransitionName();
+  }
+
+  handleChanged(): void {
+    this.applyViewTransitionName();
+  }
+
+  private applyViewTransitionName(): void {
+    if (!this.handle) return;
+    this.style.viewTransitionName = `product-image-${this.handle}`;
   }
 }
 

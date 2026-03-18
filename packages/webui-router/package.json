@@ -17,10 +17,12 @@
   ],
   "scripts": {
     "build": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --platform=browser && tsc --emitDeclarationOnly",
-    "test": "esbuild test/navigation-path.test.ts --bundle --outfile=test/navigation-path.test.js --format=esm --platform=node && node --test test/navigation-path.test.js",
+    "test": "esbuild test/navigation-path.test.ts --bundle --outdir=test/dist --format=esm --platform=node && node --test test/dist/navigation-path.test.js",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/dom-navigation": "catalog:",
+    "@types/dom-view-transitions": "catalog:",
     "esbuild": "catalog:",
     "typescript": "catalog:"
   }

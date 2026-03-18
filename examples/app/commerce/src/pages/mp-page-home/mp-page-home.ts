@@ -7,6 +7,18 @@ import { RenderableFASTElement } from '@microsoft/fast-html';
 import '#organisms/mp-hero-grid/mp-hero-grid.js';
 import '#organisms/mp-carousel/mp-carousel.js';
 
+function waitForView(el: any, maxFrames = 10): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let frame = 0;
+    const check = (): void => {
+      if (el.$fastController?.view) { resolve(); return; }
+      if (++frame >= maxFrames) { resolve(); return; }
+      requestAnimationFrame(check);
+    };
+    check();
+  });
+}
+
 export class MpPageHome extends RenderableFASTElement(FASTElement) {
   @observable featuredProducts?: any[];
   @observable carouselProducts?: any[];
@@ -18,45 +30,11 @@ export class MpPageHome extends RenderableFASTElement(FASTElement) {
         const state = JSON.parse(raw);
         if (Array.isArray(state.featuredProducts)) this.featuredProducts = state.featuredProducts;
         if (Array.isArray(state.carouselProducts)) this.carouselProducts = state.carouselProducts;
+        await this.initChildren(state);
+        return;
       } catch { /* ignore */ }
     }
 
-    if (!this.featuredProducts || !this.carouselProducts) {
-      const sr = this.shadowRoot;
-      if (!sr) return;
-
-      const heroGrid = sr.querySelector('mp-hero-grid');
-      if (heroGrid?.shadowRoot && !this.featuredProducts) {
-        const featured: any[] = [];
-        heroGrid.shadowRoot.querySelectorAll('mp-product-card').forEach((card) => {
-          const el = card as HTMLElement;
-          featured.push({
-            handle: el.getAttribute('handle') || '',
-            title: el.getAttribute('title') || '',
-            price: el.getAttribute('price') || '',
-            gradient: el.getAttribute('gradient') || '',
-            imageUrl: el.getAttribute('image-url') || '',
-          });
-        });
-        if (featured.length > 0) this.featuredProducts = featured;
-      }
-
-      const carousel = sr.querySelector('mp-carousel');
-      if (carousel?.shadowRoot && !this.carouselProducts) {
-        const items: any[] = [];
-        carousel.shadowRoot.querySelectorAll('mp-product-card').forEach((card) => {
-          const el = card as HTMLElement;
-          items.push({
-            handle: el.getAttribute('handle') || '',
-            title: el.getAttribute('title') || '',
-            price: el.getAttribute('price') || '',
-            gradient: el.getAttribute('gradient') || '',
-            imageUrl: el.getAttribute('image-url') || '',
-          });
-        });
-        if (items.length > 0) this.carouselProducts = items;
-      }
-    }
     // SSR hydration: children hydrate from their own SSR content
   }
 
@@ -67,10 +45,10 @@ export class MpPageHome extends RenderableFASTElement(FASTElement) {
     if (Array.isArray(state.carouselProducts)) {
       this.carouselProducts = state.carouselProducts as any[];
     }
-    this.syncChildren();
+    void this.initChildren(state);
   }
 
-  private async syncChildren(): Promise<void> {
+  private async initChildren(state: Record<string, unknown>): Promise<void> {
     const sr = this.shadowRoot;
     if (!sr) return;
 
@@ -78,29 +56,17 @@ export class MpPageHome extends RenderableFASTElement(FASTElement) {
       customElements.whenDefined('mp-hero-grid'),
       customElements.whenDefined('mp-carousel'),
     ]);
-    await new Promise<void>(r => requestAnimationFrame(() => r()));
 
-    this.pushAndRebind(sr, 'mp-hero-grid', { products: this.featuredProducts });
-    this.pushAndRebind(sr, 'mp-carousel', { products: this.carouselProducts });
-  }
-
-  private pushAndRebind(
-    sr: ShadowRoot,
-    tag: string,
-    data: Record<string, unknown>,
-  ): void {
-    const el = sr.querySelector(tag) as any;
-    if (!el) return;
-    for (const [key, value] of Object.entries(data)) {
-      if (value !== undefined) {
-        delete el[key];
-        el[key] = value;
-      }
+    const heroGrid = sr.querySelector('mp-hero-grid') as any;
+    if (heroGrid) {
+      await waitForView(heroGrid);
+      heroGrid.setInitialState?.(state);
     }
-    const view = el.$fastController?.view;
-    if (view) {
-      view.unbind();
-      view.bind(el, view.context);
+
+    const carousel = sr.querySelector('mp-carousel') as any;
+    if (carousel) {
+      await waitForView(carousel);
+      carousel.setInitialState?.(state);
     }
   }
 }

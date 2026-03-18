@@ -33,6 +33,32 @@ byte[] protocol = File.ReadAllBytes("app.webui");
 var html = handler.Render(protocol, """{"user": "Alice"}""", "index.html", "/");
 ```
 
+## Client-Side Navigation (Partial Responses)
+
+When the client navigates via the WebUI Router, your server returns a JSON partial instead of full HTML. Use `RenderPartial` — one call produces the complete response with state, templates, inventory, path, and matched route chain:
+
+```csharp
+app.MapGet("/users/{id}", (HttpContext ctx, string id) =>
+{
+    var state = new { name = GetUser(id).Name };
+    var stateJson = JsonSerializer.Serialize(state);
+
+    if (ctx.Request.Headers.Accept.Contains("application/json"))
+    {
+        // Client-side navigation — return JSON partial (no assembly required)
+        var inventoryHex = ctx.Request.Headers["X-WebUI-Inventory"].FirstOrDefault() ?? "";
+        var json = handler.RenderPartial(protocol, stateJson, "index.html", ctx.Request.Path, inventoryHex);
+        return Results.Content(json, "application/json");
+    }
+
+    // Full SSR — return complete HTML page
+    var html = handler.Render(protocol, stateJson, "index.html", ctx.Request.Path);
+    return Results.Content(html, "text/html");
+});
+```
+
+The response is a JSON string — pipe it directly to the HTTP response. No deserialization needed.
+
 ## Installation
 
 ```bash

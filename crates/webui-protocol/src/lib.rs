@@ -34,6 +34,7 @@ pub type WebUIFragmentIf = WebUiFragmentIf;
 pub type WebUIFragmentAttribute = WebUiFragmentAttribute;
 pub type WebUIFragmentPlugin = WebUiFragmentPlugin;
 pub type WebUIFragmentRoute = WebUiFragmentRoute;
+pub type WebUIFragmentOutlet = WebUiFragmentOutlet;
 
 /// A mapping of unique fragment identifiers to their corresponding fragment lists.
 pub type WebUIFragmentRecords = HashMap<String, FragmentList>;
@@ -246,6 +247,13 @@ impl WebUiFragment {
             fragment: Some(web_ui_fragment::Fragment::Route(route)),
         }
     }
+
+    /// Create an outlet fragment.
+    pub fn outlet() -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::Outlet(WebUiFragmentOutlet {})),
+        }
+    }
 }
 
 impl ConditionExpr {
@@ -299,12 +307,11 @@ impl ConditionExpr {
 // ── Constructors ────────────────────────────────────────────────────────
 
 impl WebUiProtocol {
-    /// Create a protocol from fragment records with no CSS tokens or routes.
+    /// Create a protocol from fragment records with no CSS tokens.
     pub fn new(fragments: WebUIFragmentRecords) -> Self {
         Self {
             fragments,
             tokens: Vec::new(),
-            routes: HashMap::new(),
             component_templates: HashMap::new(),
         }
     }
@@ -314,21 +321,6 @@ impl WebUiProtocol {
         Self {
             fragments,
             tokens,
-            routes: HashMap::new(),
-            component_templates: HashMap::new(),
-        }
-    }
-
-    /// Create a protocol from fragment records, CSS tokens, and a route registry.
-    pub fn with_routes(
-        fragments: WebUIFragmentRecords,
-        tokens: Vec<String>,
-        routes: HashMap<String, RouteRecord>,
-    ) -> Self {
-        Self {
-            fragments,
-            tokens,
-            routes,
             component_templates: HashMap::new(),
         }
     }
@@ -744,7 +736,6 @@ mod tests {
         let tokens = vec!["color-primary".to_string(), "spacing-m".to_string()];
         let protocol = WebUIProtocol::with_tokens(HashMap::new(), tokens.clone());
         assert_eq!(protocol.tokens, tokens);
-        assert!(protocol.routes.is_empty());
     }
 
     #[test]
@@ -785,7 +776,7 @@ mod tests {
                 path: "/users/:id/posts/:postId".to_string(),
                 fragment_id: "user-posts".to_string(),
                 exact: true,
-                name: "user-posts".to_string(),
+                children: Vec::new(),
             })),
         };
         fragments.insert(
@@ -805,50 +796,6 @@ mod tests {
         let bytes = protocol.to_protobuf().expect("encode failed");
         let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
         assert_eq!(protocol, decoded);
-    }
-
-    #[test]
-    fn test_protobuf_route_registry_roundtrip() {
-        let mut routes = HashMap::new();
-        routes.insert(
-            "home".to_string(),
-            RouteRecord {
-                name: "home".to_string(),
-                path: "/".to_string(),
-                fragment_id: "home-page".to_string(),
-                exact: true,
-            },
-        );
-        routes.insert(
-            "profile".to_string(),
-            RouteRecord {
-                name: "profile".to_string(),
-                path: "/profile/:id".to_string(),
-                fragment_id: "profile-page".to_string(),
-                exact: false,
-            },
-        );
-
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "home-page".into(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("home")],
-            },
-        );
-        fragments.insert(
-            "profile-page".into(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("profile")],
-            },
-        );
-
-        let protocol = WebUIProtocol::with_routes(fragments, Vec::new(), routes);
-        let bytes = protocol.to_protobuf().expect("encode failed");
-        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
-        assert_eq!(protocol.routes.len(), decoded.routes.len());
-        assert_eq!(decoded.routes["home"].path, "/");
-        assert_eq!(decoded.routes["profile"].path, "/profile/:id");
     }
 
     #[test]
@@ -892,11 +839,11 @@ mod tests {
 
     #[test]
     fn test_protobuf_backward_compat_no_routes() {
-        // Protocol without routes field should decode successfully with empty routes map
+        // Protocol without any fragments should decode successfully
         let protocol = WebUIProtocol::new(HashMap::new());
         let bytes = protocol.to_protobuf().expect("encode failed");
         let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
-        assert!(decoded.routes.is_empty());
+        assert!(decoded.fragments.is_empty());
     }
 
     #[test]

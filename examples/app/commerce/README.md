@@ -1,38 +1,87 @@
-# WebUI Store — WebUI Marketplace Demo
+<!-- Copyright (c) Microsoft Corporation. -->
+<!-- Licensed under the MIT license. -->
 
-A blazing-fast, server-rendered marketplace dashboard built with **WebUI** and **actix-web**.
+# Acme Commerce Store
 
-This demo proves WebUI's SSR performance: 1,000+ products rendered server-side in sub-millisecond time, with seamless FAST-HTML client hydration for interactivity.
+A full-featured commerce demo built with WebUI — server-side rendered with client-side navigation, nested routes, and view transitions.
 
-## Architecture
+## What It Demonstrates
 
-- **Server**: actix-web (Rust) with 3 SSR page routes + cart API
-- **Templates**: WebUI binary protocol — compiled once, rendered per-request
-- **Client**: FAST-HTML hydration for cart, search, gallery, variant selection
-- **Design**: Atomic Design (atoms → molecules → organisms → pages)
-- **Theme**: WebUI dark theme inspired by copilot.microsoft.com
+- **Nested routing** with `<route>` and `<outlet />`
+- **Client-side navigation** via `@microsoft/webui-router`
+- **SSR + hydration** with FAST-HTML
+- **View transitions** for smooth page changes
+- **Category filtering** and **sort options**
+- **Product gallery** with thumbnail navigation
+- **Shopping cart** with add/remove/quantity
+- **Mobile responsive** layout with CSS-only breakpoints
+- **Visual regression tests** with Playwright
 
 ## Quick Start
 
 ```bash
-# Install client dependencies
+# From the repository root
+cd examples/app/commerce
+
+# Install dependencies
 pnpm install
 
-# Run the server.
+# Start the dev server (builds + serves on port 3100)
 pnpm start
-
-# Open http://localhost:3100
 ```
 
-## Pages
+Then open http://127.0.0.1:3100
 
-| Page | URL | Description |
-|------|-----|-------------|
-| Homepage | `/` | 3-item hero grid + product carousel |
-| Search | `/search?q=&sort=` | Category sidebar + product grid + sort |
-| Category | `/search/{category}` | Filtered by category |
-| Product | `/product/{handle}` | Gallery + variants + add-to-cart |
+## Running Tests
 
-## Performance
+```bash
+# Start the server first
+pnpm start:server
 
-Templates are compiled to binary protocol at server startup. Per-request rendering only injects state data — no template parsing, no JavaScript execution on the server.
+# In another terminal, run Playwright tests
+pnpm test
+
+# Update visual regression snapshots
+pnpm test:update-snapshots
+```
+
+## Project Structure
+
+```
+commerce/
+├── src/                    # Frontend source
+│   ├── index.html          # Route declarations + global styles
+│   ├── index.ts            # Hydration + router setup
+│   ├── atoms/              # Small reusable elements (icon, price, image)
+│   ├── molecules/          # Composite elements (product-label, search-bar)
+│   ├── organisms/          # Complex components (navbar, cart, gallery)
+│   └── pages/              # Route page components
+├── server/                 # Custom Rust server (marketplace-api)
+│   └── src/
+│       ├── app.rs          # Actix-web app setup
+│       ├── server.rs       # Route handlers (SSR + JSON partials)
+│       ├── frontend.rs     # WebUI protocol rendering
+│       └── state/          # State resolution per route
+├── tests/                  # Playwright E2E tests
+│   └── commerce.spec.ts    # 42 tests (desktop + mobile)
+├── dist/                   # Built client bundle
+└── playwright.config.ts    # Test config (chromium + mobile)
+```
+
+## Route Structure
+
+```html
+<route path="/" component="mp-app">
+  <route path="" component="mp-page-home" exact />
+  <route path="search" component="mp-page-search">
+    <route path="" component="mp-product-grid" exact />
+    <route path=":category" component="mp-product-grid" exact />
+  </route>
+  <route path="product/:handle" component="mp-page-product" exact />
+  <route path="about" component="mp-page-about" exact />
+  <route path="terms-conditions" component="mp-page-terms" exact />
+  <route path="shipping-return-policy" component="mp-page-shipping" exact />
+  <route path="privacy-policy" component="mp-page-privacy" exact />
+  <route path="frequently-asked-questions" component="mp-page-faq" exact />
+</route>
+```

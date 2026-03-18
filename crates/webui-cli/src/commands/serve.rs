@@ -15,7 +15,6 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 use webui::WebUIHandler;
 use webui_handler::plugin::FastHydrationPlugin;
-use webui_handler::route_matcher;
 use webui_handler::{RenderOptions, ResponseWriter};
 use webui_protocol::WebUIProtocol;
 
@@ -565,7 +564,7 @@ async fn render_page_response(
     route_path: &str,
     request_path: &str,
 ) -> HttpResponse {
-    let state = resolve_state(context, request_path).await;
+    let mut state = resolve_state(context, request_path).await;
 
     let (protocol, entry, plugin) = match context.state.lock() {
         Ok(s) => (s.protocol.clone(), s.entry.clone(), context.plugin.clone()),
@@ -575,6 +574,15 @@ async fn render_page_response(
     let Some(proto) = protocol else {
         return HttpResponse::InternalServerError().body("Protocol not available");
     };
+
+    // Inject route params (nested) into state for SSR
+    if let Value::Object(ref mut map) = state {
+        let nested_params =
+            webui_handler::route_handler::collect_nested_route_params(&proto, &entry, route_path);
+        for (k, v) in &nested_params {
+            map.insert(k.clone(), Value::String(v.clone()));
+        }
+    }
 
     let mut writer = MemoryWriter::with_capacity(4096);
     let handler = match plugin.as_deref() {
@@ -726,7 +734,7 @@ async fn spa_fallback(
 
 /// Handle a JSON partial render request for client-side navigation.
 ///
-/// Returns `{ state, templates, inventory, path }` where:
+/// Returns `{ state, templates, inventory, path, chain }` where:
 /// - `templates` only includes f-templates the client doesn't already have
 /// - `inventory` is the updated hex bitmask including the new templates
 async fn handle_json_partial(
@@ -750,14 +758,15 @@ async fn handle_json_partial(
         }
     };
 
-    let matched_route = protocol
-        .as_ref()
-        .and_then(|proto| route_matcher::match_route(&proto.routes, &paths.route_path));
-
-    // Inject route params into state
-    if let Some(rm) = matched_route.as_ref() {
-        if let Value::Object(ref mut map) = state_data {
-            for (k, v) in &rm.params {
+    // Inject route params into state from walking the fragment graph.
+    if let Value::Object(ref mut map) = state_data {
+        if let Some(proto) = &protocol {
+            let nested_params = webui_handler::route_handler::collect_nested_route_params(
+                proto,
+                &entry,
+                &paths.route_path,
+            );
+            for (k, v) in &nested_params {
                 map.insert(k.clone(), Value::String(v.clone()));
             }
         }
@@ -771,12 +780,24 @@ async fn handle_json_partial(
         .unwrap_or_default()
         .to_string();
 
+    // Build the complete partial response (state, templates, inventory, path, chain) in one call
+    let partial = if let Some(proto) = &protocol {
+        webui_handler::route_handler::render_partial(
+            proto,
+            state_data,
+            &entry,
+            &paths.route_path,
+            &client_inv_hex,
+        )
+    } else {
+        Value::Object(serde_json::Map::new())
+    };
+
+    // The partial contains f-template HTML strings; the CLI dev server stores
+    // templates separately in component_templates, so map from names to those.
+    // Re-derive needed names for the template lookup against the local map.
     let (needed_names, inv_hex) = if let Some(proto) = &protocol {
-        if matched_route.is_some() {
-            collect_needed_template_names(proto, &entry, &paths.route_path, &client_inv_hex)
-        } else {
-            (Vec::new(), client_inv_hex)
-        }
+        collect_needed_template_names(proto, &entry, &paths.route_path, &client_inv_hex)
     } else {
         (Vec::new(), client_inv_hex)
     };
@@ -787,10 +808,13 @@ async fn handle_json_partial(
         .map(|t| Value::String(t.clone()))
         .collect();
 
-    let mut resp = serde_json::Map::new();
-    resp.insert("state".into(), state_data);
+    // Start from the partial (which has state, path, chain) and override
+    // templates/inventory with the CLI dev server's local template map.
+    let mut resp = match partial {
+        Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
     resp.insert("templates".into(), Value::Array(templates));
-    resp.insert("path".into(), Value::String(paths.request_path));
     resp.insert("inventory".into(), Value::String(inv_hex));
 
     HttpResponse::Ok()
@@ -1005,9 +1029,7 @@ mod tests {
     use actix_web::http::StatusCode;
     use actix_web::test as actix_test;
     use tempfile::TempDir;
-    use webui_protocol::{
-        FragmentList, RouteRecord, WebUIFragment, WebUIProtocol, WebUiFragmentRoute,
-    };
+    use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol, WebUiFragmentRoute};
 
     fn create_app_dir(files: &[(&str, &str)]) -> TempDir {
         let dir = TempDir::new().unwrap();
@@ -1176,14 +1198,12 @@ mod tests {
                         path: "/search/:category".to_string(),
                         fragment_id: "mp-page-search".to_string(),
                         exact: true,
-                        name: "category".to_string(),
                         ..Default::default()
                     }),
                     WebUIFragment::route_from(WebUiFragmentRoute {
                         path: "/product/:handle".to_string(),
                         fragment_id: "mp-page-product".to_string(),
                         exact: true,
-                        name: "product".to_string(),
                         ..Default::default()
                     }),
                 ],
@@ -1220,27 +1240,7 @@ mod tests {
             },
         );
 
-        let mut routes = HashMap::new();
-        routes.insert(
-            "category".to_string(),
-            RouteRecord {
-                name: "category".to_string(),
-                path: "/search/:category".to_string(),
-                fragment_id: "mp-page-search".to_string(),
-                exact: true,
-            },
-        );
-        routes.insert(
-            "product".to_string(),
-            RouteRecord {
-                name: "product".to_string(),
-                path: "/product/:handle".to_string(),
-                fragment_id: "mp-page-product".to_string(),
-                exact: true,
-            },
-        );
-
-        let mut protocol = WebUIProtocol::with_routes(fragments, Vec::new(), routes);
+        let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
         protocol.component_templates.insert(
             "mp-page-search".to_string(),
             "<f-template id=search></f-template>".to_string(),

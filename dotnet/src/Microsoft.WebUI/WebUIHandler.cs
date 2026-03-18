@@ -73,33 +73,38 @@ public sealed class WebUIHandler : IDisposable
     }
 
     /// <summary>
-    /// Returns the route templates for the active route chain.
+    /// Produces a complete JSON partial response for client-side navigation.
+    /// Combines application state, route templates, inventory, request path, and
+    /// matched route chain in a single call — no assembly required.
     /// </summary>
     /// <param name="protocol">Pre-compiled protocol binary data.</param>
+    /// <param name="stateJson">JSON-encoded application state.</param>
     /// <param name="entryId">The persistent entry identifier.</param>
     /// <param name="requestPath">The current route path.</param>
     /// <param name="inventoryHex">Hex-encoded inventory string.</param>
-    /// <returns>A JSON string containing the route templates.</returns>
+    /// <returns>A JSON string containing state, templates, inventory, path, and chain.</returns>
     /// <exception cref="ObjectDisposedException">Thrown when the handler has been disposed.</exception>
     /// <exception cref="WebUIException">Thrown when the operation fails.</exception>
-    public string GetRouteTemplates(byte[] protocol, string entryId, string requestPath, string inventoryHex)
+    public string RenderPartial(byte[] protocol, string stateJson, string entryId, string requestPath, string inventoryHex)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(protocol);
+        ArgumentNullException.ThrowIfNull(stateJson);
         ArgumentNullException.ThrowIfNull(entryId);
         ArgumentNullException.ThrowIfNull(requestPath);
         ArgumentNullException.ThrowIfNull(inventoryHex);
 
-        IntPtr resultPtr = NativeBindings.webui_get_route_templates(
+        IntPtr resultPtr = NativeBindings.webui_render_partial(
             protocol,
             (nuint)protocol.Length,
+            stateJson,
             entryId,
             requestPath,
             inventoryHex);
 
         if (resultPtr == IntPtr.Zero)
         {
-            string error = NativeBindings.GetLastError() ?? "GetRouteTemplates failed.";
+            string error = NativeBindings.GetLastError() ?? "RenderPartial failed.";
             throw new WebUIException(error);
         }
 

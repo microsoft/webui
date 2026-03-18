@@ -11,11 +11,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use webui::{
-    build, get_route_templates_for_request, BuildOptions, CssStrategy, WebUIHandler, WebUIProtocol,
-};
+use webui::{build, BuildOptions, CssStrategy, WebUIHandler, WebUIProtocol};
 use webui_handler::plugin::FastHydrationPlugin;
-use webui_handler::route_matcher::{self, RouteMatch};
+use webui_handler::route_handler;
 use webui_handler::{RenderOptions, ResponseWriter};
 
 #[derive(Clone)]
@@ -57,8 +55,9 @@ impl FrontendRuntime {
         })
     }
 
-    pub fn match_route(&self, route_path: &str) -> Option<RouteMatch> {
-        route_matcher::match_route(&self.protocol.routes, route_path)
+    /// Collect route params from the nested route tree for a given path.
+    pub fn collect_route_params(&self, route_path: &str) -> HashMap<String, String> {
+        route_handler::collect_nested_route_params(&self.protocol, &self.entry, route_path)
     }
 
     pub fn render_html(&self, route_path: &str, state: &Value) -> Result<String> {
@@ -79,22 +78,17 @@ impl FrontendRuntime {
     pub fn render_partial(
         &self,
         route_path: &str,
-        request_path: &str,
+        _request_path: &str,
         inventory_hex: &str,
-        state: &Value,
+        state: Value,
     ) -> Value {
-        let (templates, inventory) = if self.match_route(route_path).is_some() {
-            get_route_templates_for_request(&self.protocol, &self.entry, route_path, inventory_hex)
-        } else {
-            (Vec::new(), inventory_hex.to_string())
-        };
-
-        serde_json::json!({
-            "state": state,
-            "templates": templates.into_iter().map(|(_, html)| Value::String(html)).collect::<Vec<_>>(),
-            "path": request_path,
-            "inventory": inventory,
-        })
+        route_handler::render_partial(
+            &self.protocol,
+            state,
+            &self.entry,
+            route_path,
+            inventory_hex,
+        )
     }
 
     #[must_use]

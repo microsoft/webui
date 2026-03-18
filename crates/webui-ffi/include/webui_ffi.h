@@ -98,13 +98,10 @@ char *webui_handler_render(void *handler_ptr,
 /// Both `html` and `data_json` must be valid null-terminated UTF-8 strings.
 char *webui_render(const char *html, const char *data_json);
 
-/// Get the f-template HTML strings needed for the active route chain.
+/// Produce a complete JSON partial response for client-side navigation.
 ///
-/// Walks the protocol's fragment graph from the persistent `entry_id` root,
-/// follows only the best-matching nested route chain for `request_path`,
-/// identifies components not in the client's `inventory_hex` bitmask, and
-/// returns a JSON string:
-/// `{"templates":[{"name":"...","html":"..."}...],"inventory":"..."}`.
+/// Combines route templates, inventory, and matched route chain into a single
+/// JSON string: `{"templates":[...],"inventory":"...","chain":[...]}`.
 ///
 /// # Arguments
 ///
@@ -122,13 +119,14 @@ char *webui_render(const char *html, const char *data_json);
 /// # Safety
 ///
 /// * `protocol_data` must point to `protocol_len` bytes of valid memory.
-/// * `entry_id`, `request_path`, and `inventory_hex` must be valid null-terminated UTF-8
-///   strings.
-char *webui_get_route_templates(const uint8_t *protocol_data,
-                                uintptr_t protocol_len,
-                                const char *entry_id,
-                                const char *request_path,
-                                const char *inventory_hex);
+/// * `state_json`, `entry_id`, `request_path`, and `inventory_hex` must be valid
+///   null-terminated UTF-8 strings.
+char *webui_render_partial(const uint8_t *protocol_data,
+                           uintptr_t protocol_len,
+                           const char *state_json,
+                           const char *entry_id,
+                           const char *request_path,
+                           const char *inventory_hex);
 
 /// Free a string returned by a WebUI FFI function.
 ///

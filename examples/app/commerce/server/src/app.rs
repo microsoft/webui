@@ -42,7 +42,7 @@ pub(crate) fn test_state() -> actix_web::web::Data<AppState> {
         .expect("server crate should live under the app directory");
     let state = match AppState::load(app_root) {
         Ok(state) => state,
-        Err(error) => panic!("{error}"),
+        Err(error) => panic!("Failed to build the commerce WebUI protocol: {error:#}"),
     };
     actix_web::web::Data::new(state)
 }

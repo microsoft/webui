@@ -53,6 +53,25 @@ export interface BuildResult {
   stats: BuildStats;
 }
 
+/** Complete JSON partial response from the server for client-side navigation. */
+export interface PartialResponse {
+  /** Application state for the matched route. */
+  state: Record<string, unknown>;
+  /** f-template HTML strings the client doesn't already have. */
+  templates: string[];
+  /** Updated hex bitmask of loaded component templates. */
+  inventory: string;
+  /** The request path. */
+  path: string;
+  /** Matched route chain — one entry per nesting level. */
+  chain: Array<{
+    component: string;
+    path: string;
+    params?: Record<string, string>;
+    exact?: boolean;
+  }>;
+}
+
 // ── Internal: native addon loading ───────────────────────────────────
 
 interface NativeAddon {
@@ -70,6 +89,7 @@ interface NativeAddon {
     components?: string[];
   }): BuildResult;
   inspect(protocolData: Buffer): string;
+  renderPartial(protocolData: Buffer, stateJson: string, entryId: string, requestPath: string, inventoryHex: string): string;
 }
 
 let addon: NativeAddon | null = null;
@@ -215,6 +235,31 @@ export function inspect(protocolData: Buffer): string {
     return native.inspect(protocolData);
   }
   throw new Error("[webui] inspect() requires the native addon.");
+}
+
+/**
+ * Produce a complete JSON partial response for client-side navigation.
+ *
+ * Returns a JSON string with `state`, `templates`, `inventory`, `path`, and `chain`.
+ * Pipe directly to the HTTP response — no post-processing needed.
+ *
+ * If you need to inspect the response, parse it with the exported `PartialResponse` type:
+ * ```ts
+ * const partial: PartialResponse = JSON.parse(renderPartial(...));
+ * ```
+ */
+export function renderPartial(
+  protocolData: Buffer,
+  stateJson: string,
+  entryId: string,
+  requestPath: string,
+  inventoryHex: string,
+): string {
+  const native = loadAddon();
+  if (native?.renderPartial) {
+    return native.renderPartial(protocolData, stateJson, entryId, requestPath, inventoryHex);
+  }
+  throw new Error("[webui] renderPartial() requires the native addon.");
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

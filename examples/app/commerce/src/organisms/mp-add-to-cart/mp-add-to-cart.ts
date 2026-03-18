@@ -38,6 +38,20 @@ export class MpAddToCart extends RenderableFASTElement(FASTElement) {
     }
   }
 
+  setInitialState(state: Record<string, unknown>): void {
+    if (typeof state.handle === 'string') this.handle = state.handle;
+    if (state.productTitle !== undefined) this.productTitle = String(state.productTitle);
+    if (typeof state.price === 'string') this.price = state.price;
+    if (typeof state.gradient === 'string') this.gradient = state.gradient;
+    if (typeof state.imageUrl === 'string') this.imageUrl = state.imageUrl;
+    if (typeof state.defaultColor === 'string') this.defaultColor = state.defaultColor;
+    if (typeof state.defaultSize === 'string') this.defaultSize = state.defaultSize;
+    if (typeof state.currentPath === 'string') this.currentPath = state.currentPath;
+    this.selectedColor = this.defaultColor;
+    this.selectedSize = this.defaultSize;
+    this.updateSelectionState();
+  }
+
   async prepare(): Promise<void> {
     this.handle = this.getAttribute('handle') || '';
     this.productTitle = this.getAttribute('product-title') || '';

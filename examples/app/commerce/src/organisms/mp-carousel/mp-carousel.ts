@@ -16,6 +16,8 @@ export class MpCarousel extends RenderableFASTElement(FASTElement) {
   }[];
 
   async prepare(): Promise<void> {
+    if (Array.isArray(this.products) && this.products.length > 0) return;
+
     const items: {
       handle: string;
       title: string;
@@ -34,6 +36,17 @@ export class MpCarousel extends RenderableFASTElement(FASTElement) {
       });
     });
     this.products = items;
+  }
+
+  setInitialState(state: Record<string, unknown>): void {
+    if (Array.isArray(state.carouselProducts)) {
+      this.products = state.carouselProducts as any[];
+    }
+    const view = this.$fastController?.view;
+    if (view) {
+      view.unbind();
+      view.bind(this, view.context);
+    }
   }
 }
 

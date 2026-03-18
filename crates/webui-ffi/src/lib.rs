@@ -406,16 +406,13 @@ pub unsafe extern "C" fn webui_render(
 }
 
 // ---------------------------------------------------------------------------
-// FFI: route template query
+// FFI: unified partial response
 // ---------------------------------------------------------------------------
 
-/// Get the f-template HTML strings needed for the active route chain.
+/// Produce a complete JSON partial response for client-side navigation.
 ///
-/// Walks the protocol's fragment graph from the persistent `entry_id` root,
-/// follows only the best-matching nested route chain for `request_path`,
-/// identifies components not in the client's `inventory_hex` bitmask, and
-/// returns a JSON string:
-/// `{"templates":[{"name":"...","html":"..."}...],"inventory":"..."}`.
+/// Combines route templates, inventory, and matched route chain into a single
+/// JSON string: `{"templates":[...],"inventory":"...","chain":[...]}`.
 ///
 /// # Arguments
 ///
@@ -433,12 +430,13 @@ pub unsafe extern "C" fn webui_render(
 /// # Safety
 ///
 /// * `protocol_data` must point to `protocol_len` bytes of valid memory.
-/// * `entry_id`, `request_path`, and `inventory_hex` must be valid null-terminated UTF-8
-///   strings.
+/// * `state_json`, `entry_id`, `request_path`, and `inventory_hex` must be valid
+///   null-terminated UTF-8 strings.
 #[no_mangle]
-pub unsafe extern "C" fn webui_get_route_templates(
+pub unsafe extern "C" fn webui_render_partial(
     protocol_data: *const u8,
     protocol_len: usize,
+    state_json: *const c_char,
     entry_id: *const c_char,
     request_path: *const c_char,
     inventory_hex: *const c_char,
@@ -447,6 +445,7 @@ pub unsafe extern "C" fn webui_get_route_templates(
 
     match std::panic::catch_unwind(|| {
         if protocol_data.is_null()
+            || state_json.is_null()
             || entry_id.is_null()
             || request_path.is_null()
             || inventory_hex.is_null()
@@ -457,6 +456,23 @@ pub unsafe extern "C" fn webui_get_route_templates(
 
         // SAFETY: The caller guarantees `protocol_data` points to `protocol_len` readable bytes.
         let protocol_bytes = unsafe { std::slice::from_raw_parts(protocol_data, protocol_len) };
+
+        // SAFETY: The caller guarantees `state_json` is a valid null-terminated string.
+        let state_str = match unsafe { CStr::from_ptr(state_json) }.to_str() {
+            Ok(s) => s,
+            Err(e) => {
+                set_last_error(format!("invalid UTF-8 in state_json: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        let state: Value = match serde_json::from_str(state_str) {
+            Ok(v) => v,
+            Err(e) => {
+                set_last_error(format!("invalid state JSON: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
 
         // SAFETY: The caller guarantees `entry_id` is a valid null-terminated string.
         let entry_str = match unsafe { CStr::from_ptr(entry_id) }.to_str() {
@@ -493,30 +509,15 @@ pub unsafe extern "C" fn webui_get_route_templates(
             }
         };
 
-        let (templates, updated_inv) =
-            webui_handler::route_handler::get_route_templates_for_request(
-                &protocol,
-                entry_str,
-                request_path_str,
-                inv_str,
-            );
+        let result = webui_handler::route_handler::render_partial(
+            &protocol,
+            state,
+            entry_str,
+            request_path_str,
+            inv_str,
+        );
 
-        // Build JSON response without json! macro (which uses unwrap internally)
-        let tmpl_array: Vec<Value> = templates
-            .iter()
-            .map(|(name, html)| {
-                let mut obj = serde_json::Map::with_capacity(2);
-                obj.insert("name".into(), Value::String(name.clone()));
-                obj.insert("html".into(), Value::String(html.clone()));
-                Value::Object(obj)
-            })
-            .collect();
-
-        let mut result = serde_json::Map::with_capacity(2);
-        result.insert("templates".into(), Value::Array(tmpl_array));
-        result.insert("inventory".into(), Value::String(updated_inv));
-
-        match CString::new(Value::Object(result).to_string()) {
+        match CString::new(result.to_string()) {
             Ok(s) => s.into_raw(),
             Err(e) => {
                 set_last_error(format!("JSON output contains interior NUL byte: {e}"));
@@ -526,7 +527,7 @@ pub unsafe extern "C" fn webui_get_route_templates(
     }) {
         Ok(ptr) => ptr,
         Err(_) => {
-            set_last_error("panic in webui_get_route_templates");
+            set_last_error("panic in webui_render_partial");
             std::ptr::null_mut()
         }
     }

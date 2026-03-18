@@ -878,8 +878,11 @@ pub fn extend_product_detail_state(state: &mut Map<String, Value>, product: &Pro
     state.insert("tags".into(), serde_json::json!(product.tags));
     state.insert("optionGroups".into(), Value::Array(option_groups));
     state.insert("images".into(), Value::Array(images));
-    state.insert("defaultColor".into(), Value::String(default_color));
-    state.insert("defaultSize".into(), Value::String(default_size));
+    state.insert("defaultColor".into(), Value::String(default_color.clone()));
+    state.insert("defaultSize".into(), Value::String(default_size.clone()));
+    state.insert("selectedColor".into(), Value::String(default_color));
+    state.insert("selectedSize".into(), Value::String(default_size));
+    state.insert("canSubmit".into(), Value::Bool(true));
 }
 
 pub fn products_to_json(products: &[&Product]) -> Vec<serde_json::Value> {

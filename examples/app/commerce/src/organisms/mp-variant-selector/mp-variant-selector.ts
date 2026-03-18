@@ -62,6 +62,17 @@ export class MpVariantSelector extends RenderableFASTElement(FASTElement) {
     this.optionGroups = groups;
   }
 
+  setInitialState(state: Record<string, unknown>): void {
+    if (Array.isArray(state.optionGroups)) {
+      this.optionGroups = state.optionGroups as OptionGroup[];
+    }
+    const view = this.$fastController?.view;
+    if (view) {
+      view.unbind();
+      view.bind(this, view.context);
+    }
+  }
+
   onClick(e: MouseEvent): void {
     const target = e.composedPath()[0] as HTMLElement;
     const btn = target.closest('[data-action="select-variant"]') as HTMLElement | null;

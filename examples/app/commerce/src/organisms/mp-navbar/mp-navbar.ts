@@ -38,6 +38,13 @@ export class MpNavbar extends RenderableFASTElement(FASTElement) {
     this.shadowRoot?.querySelector('.cart-btn')?.removeEventListener('click', this.cartLinkHandler);
   }
 
+  setInitialState(state: Record<string, unknown>): void {
+    if (typeof state.storeName === 'string') this.storeName = state.storeName;
+    if (typeof state.searchQuery === 'string') this.searchQuery = state.searchQuery;
+    if (state.cartItemCount !== undefined) this.cartItemCount = String(state.cartItemCount);
+    if (typeof state.cartHref === 'string') this.cartHref = state.cartHref;
+  }
+
   async prepare(): Promise<void> {
     this.storeName = this.getAttribute('store-name') || 'Acme Store';
     this.searchQuery = this.getAttribute('search-query') || '';

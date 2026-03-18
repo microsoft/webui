@@ -23,8 +23,8 @@ use std::collections::{HashMap, HashSet};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIteratorMut};
 use tree_sitter_html::LANGUAGE;
 use webui_protocol::{
-    web_ui_fragment, web_ui_fragment::Fragment, ConditionExpr, FragmentList, RouteRecord,
-    WebUIFragment, WebUIFragmentAttribute, WebUIFragmentRecords, WebUiFragmentRoute,
+    web_ui_fragment, web_ui_fragment::Fragment, ConditionExpr, FragmentList, WebUIFragment,
+    WebUIFragmentAttribute, WebUIFragmentRecords, WebUiFragmentRoute,
 };
 
 /// Strategy for how component CSS is delivered in rendered output.
@@ -106,12 +106,6 @@ pub struct HtmlParser {
     /// (e.g., `:root { --color-primary: #0078d4; }`). These are excluded
     /// from the final token set since the app already provides their values.
     token_definitions: HashSet<String>,
-
-    /// Collected route fragments for the top-level registry.
-    route_fragments: Vec<WebUiFragmentRoute>,
-
-    /// Route name uniqueness tracker.
-    route_name_registry: route_parser::RouteNameRegistry,
 }
 
 impl HtmlParser {
@@ -134,8 +128,6 @@ impl HtmlParser {
             plugin: None,
             token_store: HashSet::new(),
             token_definitions: HashSet::new(),
-            route_fragments: Vec::new(),
-            route_name_registry: route_parser::RouteNameRegistry::new(),
             parser,
         }
     }
@@ -160,6 +152,11 @@ impl HtmlParser {
 
     pub fn into_fragment_records(mut self) -> WebUIFragmentRecords {
         std::mem::take(&mut self.fragment_records)
+    }
+
+    /// Check if a fragment ID has been parsed (exists in the fragment records).
+    pub fn has_fragment(&self, fragment_id: &str) -> bool {
+        self.fragment_records.contains_key(fragment_id)
     }
 
     /// Take the parser plugin. Call before `into_fragment_records()` if you need
@@ -189,15 +186,6 @@ impl HtmlParser {
             .collect();
         tokens.sort();
         tokens
-    }
-
-    /// Take the collected route registry as a map keyed by route name (or fragment ID).
-    ///
-    /// Call after parsing is complete.
-    #[must_use]
-    pub fn take_routes(&mut self) -> HashMap<String, RouteRecord> {
-        let routes = std::mem::take(&mut self.route_fragments);
-        route_parser::collect_route_registry(&routes)
     }
 
     /// Parse HTML content to generate WebUI fragments.
@@ -325,7 +313,13 @@ impl HtmlParser {
                     "for" => return self.process_for_directive(node, source, fragments),
                     "if" => return self.process_if_directive(node, source, fragments),
                     "body" => return self.process_body_element(node, source, fragments),
+                    "head" => return self.process_head_element(node, source, fragments),
                     "route" => return self.process_route_directive(node, source, fragments),
+                    "outlet" => {
+                        self.flush_raw_buffer(fragments);
+                        fragments.push(WebUIFragment::outlet());
+                        return Ok(());
+                    }
                     _ => {
                         if self.component_registry.contains(tag_name.as_str()) {
                             return self.process_component_directive(
@@ -496,7 +490,9 @@ impl HtmlParser {
             return Ok(true);
         }
 
-        // Check for boolean (valueless) attributes via tree-sitter query
+        // Check for boolean (valueless) attributes via tree-sitter query.
+        // Only match attributes directly on this element's start_tag/self_closing_tag,
+        // not on nested child elements (cursor.matches descends into subtrees).
         let query_str = r#"
             (element
               [
@@ -513,17 +509,31 @@ impl HtmlParser {
         let query = Query::new(&LANGUAGE.into(), query_str)
             .map_err(|e| ParserError::Html(format!("Failed to create attribute query: {:?}", e)))?;
 
+        // Find the start_tag or self_closing_tag node for this element
+        let tag_node_id = node
+            .named_children(&mut node.walk())
+            .find(|c| c.kind() == "start_tag" || c.kind() == "self_closing_tag")
+            .map(|c| c.id());
+
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&query, node, source.as_bytes());
         while let Some(m) = matches.next_mut() {
             for capture in m.captures.iter() {
                 let capture_name = query.capture_names()[capture.index as usize];
                 if capture_name == "name" {
-                    let name_text = capture.node.utf8_text(source.as_bytes()).map_err(|_| {
-                        ParserError::Html("Invalid UTF-8 for attribute name".to_string())
-                    })?;
-                    if name_text == attr_name {
-                        return Ok(true);
+                    // Only accept attributes whose parent tag belongs to THIS element
+                    let attr_parent = capture.node.parent().and_then(|a| a.parent());
+                    if attr_parent
+                        .map(|p| Some(p.id()) == tag_node_id)
+                        .unwrap_or(false)
+                    {
+                        let name_text =
+                            capture.node.utf8_text(source.as_bytes()).map_err(|_| {
+                                ParserError::Html("Invalid UTF-8 for attribute name".to_string())
+                            })?;
+                        if name_text == attr_name {
+                            return Ok(true);
+                        }
                     }
                 }
             }
@@ -893,6 +903,26 @@ impl HtmlParser {
         Ok(())
     }
 
+    /// Process a `<head>` element, injecting a head_end signal before `</head>`.
+    fn process_head_element(
+        &mut self,
+        node: Node,
+        source: &str,
+        fragments: &mut Vec<WebUIFragment>,
+    ) -> Result<()> {
+        self.add_raw_fragment("<head>");
+        for child in node.named_children(&mut node.walk()) {
+            let kind = child.kind();
+            if kind != "start_tag" && kind != "end_tag" {
+                self.process_child_node(child, source, fragments)?;
+            }
+        }
+        self.flush_raw_buffer(fragments);
+        fragments.push(WebUIFragment::signal("head_end", true));
+        self.add_raw_fragment("</head>");
+        Ok(())
+    }
+
     /// Process a `<body>` element, injecting body_start/body_end signals.
     fn process_body_element(
         &mut self,
@@ -1132,83 +1162,131 @@ impl HtmlParser {
             .get_element_attribute(node, "component", source)?
             .unwrap_or_default();
 
-        let name = self
-            .get_element_attribute(node, "name", source)?
-            .unwrap_or_default();
-
         let exact = self.has_element_attribute(node, "exact", source)?;
 
         let attrs = route_parser::RouteAttributes {
             path: path.clone(),
             component: component.clone(),
-            name: name.clone(),
             exact,
         };
 
         // Validate attributes (component is required)
         route_parser::validate_attributes(&attrs)?;
 
-        // Register route name for uniqueness
-        self.route_name_registry.register(&name)?;
-
         // Extract params from path template (validation only)
         route_parser::extract_params(&path)?;
 
         // Ensure the component's template is parsed and registered
-        if !component.is_empty()
-            && self.component_registry.contains(&component)
-            && !self.fragment_records.contains_key(&component)
-        {
-            if let Some(ref mut p) = self.plugin {
-                if let Some(comp) = self.component_registry.get(&component) {
-                    p.on_parse_component(&component, comp)?;
-                }
-            }
-            let (html_content, css_content, css_tokens) = {
-                let comp = self.component_registry.get(&component).ok_or_else(|| {
-                    crate::error::ParserError::Directive(format!(
-                        "Component not found: {component}"
-                    ))
-                })?;
-                (
-                    comp.html_content.clone(),
-                    comp.css_content.clone(),
-                    comp.css_tokens.clone(),
-                )
-            };
-            self.token_store.extend(css_tokens);
-            let css_injection = match self.css_strategy {
-                CssStrategy::Link => {
-                    if css_content.is_some() {
-                        Some(format!(
-                            "<link rel=\"stylesheet\" href=\"/{component}.css\">"
-                        ))
-                    } else {
-                        None
-                    }
-                }
-                CssStrategy::Style => css_content
-                    .as_ref()
-                    .map(|css| format!("<style>{}</style>", css.trim())),
-            };
-            let processed =
-                self.process_component_template(&html_content, css_injection.as_deref());
-            let saved_buffer = std::mem::take(&mut self.raw_buffer);
-            self.parse(&component, &processed)?;
-            self.raw_buffer = saved_buffer;
-        }
+        self.ensure_route_component_parsed(&component)?;
+
+        // Recursively parse nested <route> children
+        let children = self.parse_child_routes(node, source)?;
 
         // Flush any pending raw content before the route fragment
         self.flush_raw_buffer(fragments);
 
-        // Build route metadata for the registry
-        let route_fragment = route_parser::build_route_fragment(&attrs, component.clone());
+        // Build route fragment with children
+        let route_fragment =
+            route_parser::build_route_fragment(&attrs, component.clone(), children);
 
         // Emit Fragment::Route — the handler renders it as <webui-route>
-        fragments.push(WebUIFragment::route_from(route_fragment.clone()));
+        fragments.push(WebUIFragment::route_from(route_fragment));
 
-        // Track for registry
-        self.route_fragments.push(route_fragment);
+        Ok(())
+    }
+
+    /// Parse nested `<route>` children of a route element.
+    fn parse_child_routes(&mut self, node: Node, source: &str) -> Result<Vec<WebUiFragmentRoute>> {
+        let mut children = Vec::new();
+        let mut cursor = node.walk();
+
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "element" {
+                if let Ok(tag) = self.get_element_tag_name(child, source) {
+                    if tag == "route" {
+                        let child_route = self.parse_route_as_fragment(child, source)?;
+                        children.push(child_route);
+                    }
+                }
+            }
+        }
+
+        Ok(children)
+    }
+
+    /// Parse a `<route>` element into a `WebUiFragmentRoute` (for nesting).
+    fn parse_route_as_fragment(&mut self, node: Node, source: &str) -> Result<WebUiFragmentRoute> {
+        let path = self
+            .get_element_attribute(node, "path", source)?
+            .unwrap_or_default();
+        let component = self
+            .get_element_attribute(node, "component", source)?
+            .unwrap_or_default();
+        let exact = self.has_element_attribute(node, "exact", source)?;
+
+        let attrs = route_parser::RouteAttributes {
+            path: path.clone(),
+            component: component.clone(),
+            exact,
+        };
+
+        route_parser::validate_attributes(&attrs)?;
+        route_parser::extract_params(&path)?;
+
+        // Ensure the component's template is parsed
+        self.ensure_route_component_parsed(&component)?;
+
+        // Recursively parse nested children
+        let children = self.parse_child_routes(node, source)?;
+
+        Ok(route_parser::build_route_fragment(
+            &attrs, component, children,
+        ))
+    }
+
+    /// Ensure a route-referenced component is parsed and registered.
+    fn ensure_route_component_parsed(&mut self, component: &str) -> Result<()> {
+        if component.is_empty()
+            || !self.component_registry.contains(component)
+            || self.fragment_records.contains_key(component)
+        {
+            return Ok(());
+        }
+
+        if let Some(ref mut p) = self.plugin {
+            if let Some(comp) = self.component_registry.get(component) {
+                p.on_parse_component(component, comp)?;
+            }
+        }
+        let (html_content, css_content, css_tokens) = {
+            let comp = self.component_registry.get(component).ok_or_else(|| {
+                crate::error::ParserError::Directive(format!("Component not found: {component}"))
+            })?;
+            (
+                comp.html_content.clone(),
+                comp.css_content.clone(),
+                comp.css_tokens.clone(),
+            )
+        };
+        self.token_store.extend(css_tokens);
+        let css_injection = match self.css_strategy {
+            CssStrategy::Link => {
+                if css_content.is_some() {
+                    Some(format!(
+                        "<link rel=\"stylesheet\" href=\"/{component}.css\">"
+                    ))
+                } else {
+                    None
+                }
+            }
+            CssStrategy::Style => css_content
+                .as_ref()
+                .map(|css| format!("<style>{}</style>", css.trim())),
+        };
+        let processed = self.process_component_template(&html_content, css_injection.as_deref());
+        let saved_buffer = std::mem::take(&mut self.raw_buffer);
+        self.parse(component, &processed)?;
+        self.raw_buffer = saved_buffer;
 
         Ok(())
     }
@@ -1816,7 +1894,7 @@ mod tests {
         let (fragments, _) = parse_and_get_fragments(
             r#"<head><meta charset="utf-8" /><link rel="stylesheet" href="{{cssFile}}" /></head>"#,
         );
-        assert!(fragments.len() >= 3);
+        assert!(fragments.len() >= 5);
         assert!(
             matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("<head><meta charset=\"utf-8\"") && raw.value.contains("<link"))
         );
@@ -1824,7 +1902,13 @@ mod tests {
             matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(a)) if a.name == "href" && a.value == "cssFile")
         );
         assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("/></head>"))
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("/>"))
+        );
+        assert!(
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Signal(s)) if s.value == "head_end" && s.raw)
+        );
+        assert!(
+            matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("</head>"))
         );
     }
 
@@ -2648,26 +2732,34 @@ mod tests {
         let html = r#"<!DOCTYPE HTML><html dir="auto" lang="en"><head><meta charset="utf-8"><title>Test</title><style>html { margin: 0; }</style></head><body><app-shell></app-shell><script type="module" src="./index.js"></script></body></html>"#;
         let (fragments, _) = parse_and_get_fragments(html);
 
-        // DOCTYPE + head + <body>, body_start, body content, body_end, </body></html>
-        assert!(fragments.len() >= 5);
+        // DOCTYPE + head content, head_end, </head><body>, body_start, body content, body_end, </body></html>
+        assert!(fragments.len() >= 7);
         assert!(
             matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
-                raw.value.contains("<!DOCTYPE HTML>") && raw.value.ends_with("<body>"))
+                raw.value.contains("<!DOCTYPE HTML>") && raw.value.contains("<title>Test</title>"))
         );
         assert!(
             matches!(fragments[1].fragment.as_ref(), Some(Fragment::Signal(s)) if
-                s.value == "body_start" && s.raw)
+                s.value == "head_end" && s.raw)
         );
         assert!(
             matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if
-                raw.value.contains("<app-shell>"))
+                raw.value.contains("</head>") && raw.value.ends_with("<body>"))
         );
         assert!(
             matches!(fragments[3].fragment.as_ref(), Some(Fragment::Signal(s)) if
-                s.value == "body_end" && s.raw)
+                s.value == "body_start" && s.raw)
         );
         assert!(
             matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+                raw.value.contains("<app-shell>"))
+        );
+        assert!(
+            matches!(fragments[5].fragment.as_ref(), Some(Fragment::Signal(s)) if
+                s.value == "body_end" && s.raw)
+        );
+        assert!(
+            matches!(fragments[6].fragment.as_ref(), Some(Fragment::Raw(raw)) if
                 raw.value.contains("</body>") && raw.value.contains("</html>"))
         );
     }
@@ -2750,7 +2842,9 @@ mod tests {
         assert_fragments!(
             fragments,
             [
-                raw("<html><head><title>Test</title></head><body>"),
+                raw("<html><head><title>Test</title>"),
+                signal_raw("head_end"),
+                raw("</head><body>"),
                 signal_raw("body_start"),
                 raw("<div>Content</div><p>More</p>"),
                 signal_raw("body_end"),
@@ -2798,15 +2892,15 @@ mod tests {
         );
         let (fragments, _) = parse_and_get_fragments(html);
 
-        // Should have: raw(DOCTYPE+head+<body>), body_start, raw(body content),
-        // body_end, raw(</body></html>)
+        // Should have: raw(DOCTYPE+head content), head_end, raw(</head><body>),
+        // body_start, raw(body content), body_end, raw(</body></html>)
         assert!(
-            fragments.len() >= 5,
-            "Expected at least 5 fragments, got {}",
+            fragments.len() >= 7,
+            "Expected at least 7 fragments, got {}",
             fragments.len()
         );
 
-        // First fragment: DOCTYPE through opening <body>
+        // First fragment: DOCTYPE through head content (before </head>)
         assert!(
             matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
                 raw.value.contains("<!DOCTYPE html>") &&
@@ -2814,39 +2908,52 @@ mod tests {
                 raw.value.contains("<meta name=\"viewport\"") &&
                 raw.value.contains("<title>Complex Page</title>") &&
                 raw.value.contains("<style>") &&
-                raw.value.contains("body { margin: 0; padding: 0; }") &&
-                raw.value.ends_with("<body>")),
-            "First fragment should contain all head content through <body>, got: {:?}",
+                raw.value.contains("body { margin: 0; padding: 0; }")),
+            "First fragment should contain all head content, got: {:?}",
             fragments[0]
+        );
+
+        // head_end signal
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Signal(s)) if
+                s.value == "head_end" && s.raw),
+            "Second fragment should be head_end signal"
+        );
+
+        // </head><body>
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+                raw.value.contains("</head>") && raw.value.ends_with("<body>")),
+            "Third fragment should contain </head><body>"
         );
 
         // body_start signal
         assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Signal(s)) if
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Signal(s)) if
                 s.value == "body_start" && s.raw),
-            "Second fragment should be body_start signal"
+            "Fourth fragment should be body_start signal"
         );
 
         // Body content (h1 and script)
         assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+            matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if
                 raw.value.contains("<h1>Hello World</h1>") &&
                 raw.value.contains("<script")),
-            "Third fragment should contain body content"
+            "Fifth fragment should contain body content"
         );
 
         // body_end signal
         assert!(
-            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Signal(s)) if
+            matches!(fragments[5].fragment.as_ref(), Some(Fragment::Signal(s)) if
                 s.value == "body_end" && s.raw),
-            "Fourth fragment should be body_end signal"
+            "Sixth fragment should be body_end signal"
         );
 
         // Closing tags
         assert!(
-            matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+            matches!(fragments[6].fragment.as_ref(), Some(Fragment::Raw(raw)) if
                 raw.value.contains("</body>") && raw.value.contains("</html>")),
-            "Fifth fragment should contain closing tags"
+            "Seventh fragment should contain closing tags"
         );
     }
 
@@ -3256,7 +3363,7 @@ mod tests {
     #[test]
     fn test_parse_simple_route() {
         let mut parser = HtmlParser::new();
-        let html = r#"<route path="/profile" component="profile-page" name="profile" exact />"#;
+        let html = r#"<route path="/profile" component="profile-page" exact />"#;
         parser.parse("test.html", html).expect("parse failed");
 
         // Routes are emitted as Fragment::Route
@@ -3266,7 +3373,6 @@ mod tests {
         match frags[0].fragment.as_ref() {
             Some(web_ui_fragment::Fragment::Route(r)) => {
                 assert_eq!(r.path, "/profile");
-                assert_eq!(r.name, "profile");
                 assert_eq!(r.fragment_id, "profile-page");
                 assert!(r.exact);
             }
@@ -3277,13 +3383,18 @@ mod tests {
     #[test]
     fn test_parse_route_with_params() {
         let mut parser = HtmlParser::new();
-        let html =
-            r#"<route path="/profile/:id/view/:section" component="detail" name="detail" />"#;
+        let html = r#"<route path="/profile/:id/view/:section" component="detail" />"#;
         parser.parse("test.html", html).expect("parse failed");
 
-        // Route is registered in the route registry
-        let routes = parser.take_routes();
-        assert_eq!(routes["detail"].path, "/profile/:id/view/:section");
+        // Route is emitted as Fragment::Route with correct path
+        let records = parser.into_fragment_records();
+        let frags = &records["test.html"].fragments;
+        match frags[0].fragment.as_ref() {
+            Some(web_ui_fragment::Fragment::Route(r)) => {
+                assert_eq!(r.path, "/profile/:id/view/:section");
+            }
+            other => panic!("expected Fragment::Route, got {:?}", other),
+        }
     }
 
     #[test]
@@ -3297,36 +3408,27 @@ mod tests {
     #[test]
     fn test_parse_multiple_routes() {
         let mut parser = HtmlParser::new();
-        let html = r#"<route path="/" name="app" component="app-layout" />
-            <route path="/dashboard" name="dashboard" component="dash-page" exact />
-            <route path="/contacts" name="contacts" component="contacts-page" exact />"#;
+        let html = r#"<route path="/" component="app-layout" />
+            <route path="/dashboard" component="dash-page" exact />
+            <route path="/contacts" component="contacts-page" exact />"#;
         parser.parse("test.html", html).expect("parse failed");
 
-        let routes = parser.take_routes();
-        // Should have 3 routes
-        assert_eq!(routes.len(), 3);
-        assert!(routes.contains_key("app"));
-        assert!(routes.contains_key("dashboard"));
-        assert!(routes.contains_key("contacts"));
-
-        // App has correct path
-        let app = &routes["app"];
-        assert_eq!(app.path, "/");
-    }
-
-    #[test]
-    fn test_parse_route_duplicate_name_error() {
-        let mut parser = HtmlParser::new();
-        let html = r#"<route path="/a" name="home" component="a" />
-            <route path="/b" name="home" component="b" />"#;
-        let result = parser.parse("test.html", html);
-        assert!(result.is_err());
+        let records = parser.into_fragment_records();
+        let frags = &records["test.html"].fragments;
+        assert_eq!(frags.len(), 3);
+        // All should be Fragment::Route
+        for frag in frags {
+            assert!(matches!(
+                frag.fragment.as_ref(),
+                Some(web_ui_fragment::Fragment::Route(_))
+            ));
+        }
     }
 
     #[test]
     fn test_parse_route_requires_component_with_body() {
         let mut parser = HtmlParser::new();
-        let html = r#"<route path="/error" name="error-page">
+        let html = r#"<route path="/error">
             <div class="error"><h1>Not Found</h1></div>
         </route>"#;
         let result = parser.parse("test.html", html);
@@ -3337,17 +3439,138 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_multiple_routes_with_registry() {
+    fn test_parse_multiple_routes_with_fragments() {
         let mut parser = HtmlParser::new();
-        let html = r#"<route path="/" name="home" component="home-page" exact />
-            <route path="/about" name="about" component="about-page" exact />
-            <route path="/contact/:id" name="contact" component="contact-page" />"#;
+        let html = r#"<route path="/" component="home-page" exact />
+            <route path="/about" component="about-page" exact />
+            <route path="/contact/:id" component="contact-page" />"#;
         parser.parse("test.html", html).expect("parse failed");
 
-        let routes = parser.take_routes();
-        assert_eq!(routes.len(), 3);
-        assert_eq!(routes["home"].path, "/");
-        assert_eq!(routes["about"].path, "/about");
-        assert_eq!(routes["contact"].path, "/contact/:id");
+        let records = parser.into_fragment_records();
+        let frags = &records["test.html"].fragments;
+        assert_eq!(frags.len(), 3);
+
+        // Verify individual routes
+        if let Some(web_ui_fragment::Fragment::Route(r)) = frags[0].fragment.as_ref() {
+            assert_eq!(r.path, "/");
+        }
+        if let Some(web_ui_fragment::Fragment::Route(r)) = frags[1].fragment.as_ref() {
+            assert_eq!(r.path, "/about");
+        }
+        if let Some(web_ui_fragment::Fragment::Route(r)) = frags[2].fragment.as_ref() {
+            assert_eq!(r.path, "/contact/:id");
+        }
+    }
+
+    #[test]
+    fn test_outlet_not_captured_by_for_loop() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<template shadowrootmode="open">
+  <ul>
+    <for each="item in items">
+      <li>{{item.name}}</li>
+    </for>
+  </ul>
+  <main>
+    <outlet />
+  </main>
+</template>"#;
+        parser.parse("comp.html", html).expect("parse failed");
+
+        let records = parser.into_fragment_records();
+        let frags = &records["comp.html"].fragments;
+
+        // Print fragment types for debugging
+        let frag_types: Vec<String> = frags
+            .iter()
+            .map(|f| match f.fragment.as_ref() {
+                Some(web_ui_fragment::Fragment::Raw(r)) => {
+                    format!("Raw({:?})", &r.value[..r.value.len().min(40)])
+                }
+                Some(web_ui_fragment::Fragment::ForLoop(fl)) => {
+                    format!("ForLoop({})", fl.fragment_id)
+                }
+                Some(web_ui_fragment::Fragment::Outlet(_)) => "Outlet".to_string(),
+                other => format!("{:?}", other),
+            })
+            .collect();
+        eprintln!("Fragment order: {:#?}", frag_types);
+
+        // The outlet should be a top-level fragment, NOT inside the for-loop's body
+        let outlet_count = frags
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f.fragment.as_ref(),
+                    Some(web_ui_fragment::Fragment::Outlet(_))
+                )
+            })
+            .count();
+        assert_eq!(
+            outlet_count, 1,
+            "expected exactly 1 outlet in top-level fragments, got {outlet_count}. Fragments: {frag_types:?}"
+        );
+
+        // Verify outlet comes AFTER the raw "</ul>" text
+        let outlet_idx = frags
+            .iter()
+            .position(|f| {
+                matches!(
+                    f.fragment.as_ref(),
+                    Some(web_ui_fragment::Fragment::Outlet(_))
+                )
+            })
+            .expect("no outlet found");
+        let close_ul_idx = frags.iter().position(|f| match f.fragment.as_ref() {
+            Some(web_ui_fragment::Fragment::Raw(r)) => r.value.contains("</ul>"),
+            _ => false,
+        });
+        if let Some(ul_idx) = close_ul_idx {
+            assert!(
+                outlet_idx > ul_idx,
+                "outlet (at {outlet_idx}) should come after </ul> (at {ul_idx}). Fragments: {frag_types:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_outlet_position_after_for_not_inside() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<ul><for each="x in items"><li>ok</li></for></ul><outlet />"#;
+        parser.parse("test.html", html).expect("parse failed");
+
+        let records = parser.into_fragment_records();
+        let frags = &records["test.html"].fragments;
+
+        // Outlet should be its own fragment at top level
+        let has_outlet = frags.iter().any(|f| {
+            matches!(
+                f.fragment.as_ref(),
+                Some(web_ui_fragment::Fragment::Outlet(_))
+            )
+        });
+        assert!(
+            has_outlet,
+            "outlet should be in top-level fragments: {frags:?}"
+        );
+
+        // The for-loop body should NOT contain the outlet
+        let for_id = frags.iter().find_map(|f| match f.fragment.as_ref() {
+            Some(web_ui_fragment::Fragment::ForLoop(fl)) => Some(fl.fragment_id.clone()),
+            _ => None,
+        });
+        if let Some(id) = for_id {
+            let for_frags = &records[&id].fragments;
+            let outlet_in_for = for_frags.iter().any(|f| {
+                matches!(
+                    f.fragment.as_ref(),
+                    Some(web_ui_fragment::Fragment::Outlet(_))
+                )
+            });
+            assert!(
+                !outlet_in_for,
+                "outlet should NOT be inside for-loop body: {for_frags:?}"
+            );
+        }
     }
 }

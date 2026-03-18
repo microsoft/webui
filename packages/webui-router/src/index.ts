@@ -19,5 +19,3 @@
 
 export { Router, WebUIRouter, WebUIRouteElement } from './router.js';
 export type { RouterConfig, NavigationEvent } from './types.js';
-export { matchPath, parseTemplate, specificity } from './matcher.js';
-export type { Segment, PathMatch } from './matcher.js';

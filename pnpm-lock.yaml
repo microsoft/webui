@@ -31,11 +31,20 @@ catalogs:
       specifier: ^6.39.15
       version: 6.39.15
     '@microsoft/fast-element':
-      specifier: ^2.0.1
-      version: 2.10.1
+      specifier: ^2.10.2
+      version: 2.10.2
     '@microsoft/fast-html':
-      specifier: 1.0.0-alpha.38
-      version: 1.0.0-alpha.38
+      specifier: ^1.0.0-alpha.39
+      version: 1.0.0-alpha.39
+    '@playwright/test':
+      specifier: ^1.58.2
+      version: 1.58.2
+    '@types/dom-navigation':
+      specifier: ^1.0.7
+      version: 1.0.7
+    '@types/dom-view-transitions':
+      specifier: ^1.0.6
+      version: 1.0.6
     '@types/node':
       specifier: ^25.3.5
       version: 25.3.5
@@ -99,10 +108,10 @@ importers:
     devDependencies:
       '@microsoft/fast-element':
         specifier: 'catalog:'
-        version: 2.10.1
+        version: 2.10.2
       '@microsoft/fast-html':
         specifier: 'catalog:'
-        version: 1.0.0-alpha.38(@microsoft/fast-element@2.10.1)
+        version: 1.0.0-alpha.39(@microsoft/fast-element@2.10.2)
       esbuild:
         specifier: 'catalog:'
         version: 0.27.3
@@ -117,13 +126,16 @@ importers:
     devDependencies:
       '@microsoft/fast-element':
         specifier: 'catalog:'
-        version: 2.10.1
+        version: 2.10.2
       '@microsoft/fast-html':
         specifier: 'catalog:'
-        version: 1.0.0-alpha.38(@microsoft/fast-element@2.10.1)
+        version: 1.0.0-alpha.39(@microsoft/fast-element@2.10.2)
       '@microsoft/webui-router':
         specifier: workspace:*
         version: link:../../../packages/webui-router
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.2
       esbuild:
         specifier: 'catalog:'
         version: 0.27.3
@@ -145,10 +157,10 @@ importers:
     devDependencies:
       '@microsoft/fast-element':
         specifier: 'catalog:'
-        version: 2.10.1
+        version: 2.10.2
       '@microsoft/fast-html':
         specifier: 'catalog:'
-        version: 1.0.0-alpha.38(@microsoft/fast-element@2.10.1)
+        version: 1.0.0-alpha.39(@microsoft/fast-element@2.10.2)
       '@microsoft/webui-router':
         specifier: workspace:*
         version: link:../../../packages/webui-router
@@ -177,14 +189,54 @@ importers:
         specifier: 'catalog:'
         version: 5.9.3
 
+  examples/app/routes:
+    devDependencies:
+      '@microsoft/fast-element':
+        specifier: 'catalog:'
+        version: 2.10.2
+      '@microsoft/fast-html':
+        specifier: 'catalog:'
+        version: 1.0.0-alpha.39(@microsoft/fast-element@2.10.2)
+      '@microsoft/webui-router':
+        specifier: workspace:*
+        version: link:../../../packages/webui-router
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.2
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.27.3
+      tslib:
+        specifier: 'catalog:'
+        version: 2.8.1
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
+  examples/app/routes/server:
+    dependencies:
+      express:
+        specifier: ^5.1.0
+        version: 5.2.1
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.3
+        version: 5.0.6
+      tsx:
+        specifier: ^4.19.4
+        version: 4.21.0
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   examples/app/todo-fast:
     devDependencies:
       '@microsoft/fast-element':
         specifier: 'catalog:'
-        version: 2.10.1
+        version: 2.10.2
       '@microsoft/fast-html':
         specifier: 'catalog:'
-        version: 1.0.0-alpha.38(@microsoft/fast-element@2.10.1)
+        version: 1.0.0-alpha.39(@microsoft/fast-element@2.10.2)
       esbuild:
         specifier: 'catalog:'
         version: 0.27.3
@@ -208,24 +260,6 @@ importers:
         version: 5.9.3
 
   examples/integration/node: {}
-
-  examples/server/dotnet/bin/Debug/net10.0:
-    devDependencies:
-      '@microsoft/fast-element':
-        specifier: 'catalog:'
-        version: 2.10.1
-      '@microsoft/fast-html':
-        specifier: 'catalog:'
-        version: 1.0.0-alpha.38(@microsoft/fast-element@2.10.1)
-      '@microsoft/webui-router':
-        specifier: workspace:*
-        version: link:../../../../../../packages/webui-router
-      esbuild:
-        specifier: 'catalog:'
-        version: 0.27.3
-      typescript:
-        specifier: 'catalog:'
-        version: 5.9.3
 
   packages/webui:
     devDependencies:
@@ -268,6 +302,12 @@ importers:
 
   packages/webui-router:
     devDependencies:
+      '@types/dom-navigation':
+        specifier: 'catalog:'
+        version: 1.0.7
+      '@types/dom-view-transitions':
+        specifier: 'catalog:'
+        version: 1.0.6
       esbuild:
         specifier: 'catalog:'
         version: 0.27.3
@@ -757,13 +797,18 @@ packages:
   '@marijn/find-cluster-break@1.0.2':
     resolution: {integrity: sha512-l0h88YhZFyKdXIFNfSWpyjStDjGHwZ/U7iobcK1cQQD8sejsONdQtTVU+1wVN1PBw40PiiHB1vA5S7VTfQiP9g==}
 
-  '@microsoft/fast-element@2.10.1':
-    resolution: {integrity: sha512-L3yiSTyTAh0uzmeUL89yvg6wiJA0QM2/kAKReC8j2zuZbyVb9GIbhPgSq2BLP7LL+YKeKWRaiI93CNjyWAAGXA==}
+  '@microsoft/fast-element@2.10.2':
+    resolution: {integrity: sha512-KUhPvoWTPCtlB8Lk8CK97E8nDeIx9i9NXr2Yoz4Er3AxjMFcN5UM4bBcA/3HeVMJfJTE3kSOigSDoxK6QjVr9g==}
 
-  '@microsoft/fast-html@1.0.0-alpha.38':
-    resolution: {integrity: sha512-ikYmD9gUloM5qA4OnxEo/kRw/LUUV3GU/rV6s1FQeg0FQ0USPXqbzlu2s6OLOJxi6HAxcpOZp1oMbcuGOI563Q==}
+  '@microsoft/fast-html@1.0.0-alpha.39':
+    resolution: {integrity: sha512-+P8ol+0p/u1F+deJaFRZywfIO7+CZBGk5F9YuErVjxYgOykMMLVL0yAUfHoxUKhfboxIKW43dYJDvio7l4YW1A==}
     peerDependencies:
-      '@microsoft/fast-element': ^2.10.0
+      '@microsoft/fast-element': ^2.10.2
+
+  '@playwright/test@1.58.2':
+    resolution: {integrity: sha512-akea+6bHYBBfA9uQqSYmlJXn61cTa+jbO87xVLCWbTqbWadRVmhxlXATaOjOgcBaWU4ePo0wB41KMFv3o35IXA==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   '@rollup/rollup-android-arm-eabi@4.36.0':
     resolution: {integrity: sha512-jgrXjjcEwN6XpZXL0HUeOVGfjXhPyxAbbhD0BlXUB+abTOpbPiN5Wb3kOT7yb+uEtATNYF5x5gIfwutmuBA26w==}
@@ -913,6 +958,12 @@ packages:
 
   '@types/cors@2.8.19':
     resolution: {integrity: sha512-mFNylyeyqN93lfe/9CSxOGREz8cpzAhH+E93xJ4xWQf62V8sQ/24reV2nyzUWM6H6Xji+GGHpkbLe7pVoUEskg==}
+
+  '@types/dom-navigation@1.0.7':
+    resolution: {integrity: sha512-Di4W+i2faYquHUnyWUg3bBQp5pTNvjDDA7mIYfD/1WlLgan6sKkeVjGbdL78K0CuNEk5Pfc/c0rfelwkz10mnQ==}
+
+  '@types/dom-view-transitions@1.0.6':
+    resolution: {integrity: sha512-Q5IoDouTOcZKEs4nDpmUti2MXP48MQDBkS2nUQKFrsDeTFIaArVmhWUon28vlDfNkbbaK4EROu4Fv0iKObWjSg==}
 
   '@types/estree@1.0.6':
     resolution: {integrity: sha512-AYnb1nQyY49te+VRAVgmzfcgjYS91mY5P0TKUDCLEM+gNnA+3T6rWITXRLYCpahpqSQbN5cE+gHpnPyXjHWxcw==}
@@ -1301,6 +1352,11 @@ packages:
     resolution: {integrity: sha512-yhlQgA6mnOJUKOsRUFsgJdQCvkKhcz8tlZG5HBQfReYZy46OwLcY+Zia0mtdHsOo9y/hP+CxMN0TU9QxoOtG4g==}
     engines: {node: '>=6 <7 || >=8'}
 
+  fsevents@2.3.2:
+    resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
+    engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
+    os: [darwin]
+
   fsevents@2.3.3:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
@@ -1320,6 +1376,9 @@ packages:
   get-stream@5.2.0:
     resolution: {integrity: sha512-nBF+F1rAZVCu/p7rjzgA+Yb4lfYXrpl7a6VmJrU8wF9I1CKvP/QwPNZHnOlwbTkY6dvtFIzFMSyQXbLoTQPRpA==}
     engines: {node: '>=8'}
+
+  get-tsconfig@4.13.6:
+    resolution: {integrity: sha512-shZT/QMiSHc/YBLxxOkMtgSid5HFoauqCE3/exfsEcwg1WkeqjG+V40yBbBrsD+jW2HDXcs28xOfcbm2jI8Ddw==}
 
   global-agent@3.0.0:
     resolution: {integrity: sha512-PT6XReJ+D07JvGoxQMkT6qji/jVNfX/h364XHZOWeRzy64sSFr+xJ5OX7LI3b4MPQzdL4H8Y8M0xzPpsVMwA8Q==}
@@ -1528,6 +1587,16 @@ packages:
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
 
+  playwright-core@1.58.2:
+    resolution: {integrity: sha512-yZkEtftgwS8CsfYo7nm0KE8jsvm6i/PTgVtB8DL726wNf6H2IMsDuxCpJj59KDaxCtSnrWan2AeDqM7JBaultg==}
+    engines: {node: '>=18'}
+    hasBin: true
+
+  playwright@1.58.2:
+    resolution: {integrity: sha512-vA30H8Nvkq/cPBnNw4Q8TWz1EJyqgpuinBcHET0YVJVFldr8JDNiU9LaWAE1KqSkRYazuaBhTpB5ZzShOezQ6A==}
+    engines: {node: '>=18'}
+    hasBin: true
+
   postcss@8.5.6:
     resolution: {integrity: sha512-3Ybi1tAuwAP9s0r1UQ2J4n5Y0G05bJkpUIO0/bI9MhwmD70S5aTWbXGBwxHrelT+XM1k6dM0pk+SwNkpTRN7Pg==}
     engines: {node: ^10 || ^12 || >=14}
@@ -1576,6 +1645,9 @@ packages:
 
   resolve-alpn@1.2.1:
     resolution: {integrity: sha512-0a1F4l73/ZFZOakJnQ3FvkJ2+gSTQWz/r2KE5OdDY0TxPm5h4GkqkWWfM47T7HsbnOtcJVEF4epCVy6u7Q3K+g==}
+
+  resolve-pkg-maps@1.0.0:
+    resolution: {integrity: sha512-seS2Tj26TBVOC2NIc2rOe2y2ZO7efxITtLZcGSOnHHNOQ7CkiUBfw0Iw2ck6xkIhPwLhKNLS8BO+hEpngQlqzw==}
 
   responselike@2.0.1:
     resolution: {integrity: sha512-4gl03wn3hj1HP3yzgdI7d3lCkF95F21Pz4BPGvKHinyQzALR5CapwC8yIi0Rh58DEMQ/SguC03wFj2k0M/mHhw==}
@@ -1692,6 +1764,11 @@ packages:
 
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
+
+  tsx@4.21.0:
+    resolution: {integrity: sha512-5C1sg4USs1lfG0GFb2RLXsdpXqBSEhAaA/0kPL01wxzpMqLILNxIxIOKiILz+cdg/pLnOUxFYOR5yhHU666wbw==}
+    engines: {node: '>=18.0.0'}
+    hasBin: true
 
   type-fest@0.13.1:
     resolution: {integrity: sha512-34R7HTnG0XIJcBSn5XhDd7nNFPRcXYRZrBB2O2jdKqYODldSzBAqzsWoZYYvduky73toYS/ESqxPvkDf/F0XMg==}
@@ -2239,11 +2316,15 @@ snapshots:
 
   '@marijn/find-cluster-break@1.0.2': {}
 
-  '@microsoft/fast-element@2.10.1': {}
+  '@microsoft/fast-element@2.10.2': {}
 
-  '@microsoft/fast-html@1.0.0-alpha.38(@microsoft/fast-element@2.10.1)':
+  '@microsoft/fast-html@1.0.0-alpha.39(@microsoft/fast-element@2.10.2)':
     dependencies:
-      '@microsoft/fast-element': 2.10.1
+      '@microsoft/fast-element': 2.10.2
+
+  '@playwright/test@1.58.2':
+    dependencies:
+      playwright: 1.58.2
 
   '@rollup/rollup-android-arm-eabi@4.36.0':
     optional: true
@@ -2367,6 +2448,10 @@ snapshots:
   '@types/cors@2.8.19':
     dependencies:
       '@types/node': 25.3.5
+
+  '@types/dom-navigation@1.0.7': {}
+
+  '@types/dom-view-transitions@1.0.6': {}
 
   '@types/estree@1.0.6': {}
 
@@ -2857,6 +2942,9 @@ snapshots:
       jsonfile: 4.0.0
       universalify: 0.1.2
 
+  fsevents@2.3.2:
+    optional: true
+
   fsevents@2.3.3:
     optional: true
 
@@ -2883,6 +2971,10 @@ snapshots:
   get-stream@5.2.0:
     dependencies:
       pump: 3.0.4
+
+  get-tsconfig@4.13.6:
+    dependencies:
+      resolve-pkg-maps: 1.0.0
 
   global-agent@3.0.0:
     dependencies:
@@ -3094,6 +3186,14 @@ snapshots:
 
   picocolors@1.1.1: {}
 
+  playwright-core@1.58.2: {}
+
+  playwright@1.58.2:
+    dependencies:
+      playwright-core: 1.58.2
+    optionalDependencies:
+      fsevents: 2.3.2
+
   postcss@8.5.6:
     dependencies:
       nanoid: 3.3.11
@@ -3142,6 +3242,8 @@ snapshots:
       regex-utilities: 2.3.0
 
   resolve-alpn@1.2.1: {}
+
+  resolve-pkg-maps@1.0.0: {}
 
   responselike@2.0.1:
     dependencies:
@@ -3312,6 +3414,13 @@ snapshots:
   trim-lines@3.0.1: {}
 
   tslib@2.8.1: {}
+
+  tsx@4.21.0:
+    dependencies:
+      esbuild: 0.27.3
+      get-tsconfig: 4.13.6
+    optionalDependencies:
+      fsevents: 2.3.3
 
   type-fest@0.13.1:
     optional: true

@@ -35,11 +35,14 @@ export interface RouterConfig {
    * ```
    */
   loaders?: Record<string, () => Promise<unknown>>;
+
+  /** Enable development mode warnings for common routing mistakes. */
+  dev?: boolean;
 }
 
 /** Detail payload of the `webui:route:navigated` CustomEvent. */
 export interface NavigationEvent {
-  routeName: string;
+  component: string;
   params: Record<string, string>;
   /** The navigated path, including the query string when present. */
   path: string;

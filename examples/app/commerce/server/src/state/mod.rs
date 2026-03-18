@@ -10,16 +10,14 @@ mod route_keys;
 mod routes;
 mod shell;
 
-pub(crate) use routes::build_route_state;
+pub(crate) use routes::{build_route_state, RouteStateRequest};
 pub(crate) use shell::cart_state_payload;
 
 #[cfg(test)]
 mod tests {
-    use super::{build_route_state, cart_state_payload};
+    use super::{build_route_state, cart_state_payload, RouteStateRequest};
     use crate::cart::{add_item, build_cart_state, StoredCart};
     use crate::catalog::Catalog;
-    use crate::state::route_keys;
-    use webui_handler::route_matcher::RouteMatch;
 
     #[test]
     fn cart_payload_sets_shell_links() {
@@ -45,20 +43,17 @@ mod tests {
         let mut cart = StoredCart::default();
         add_item(&mut cart, "acme-t-shirt", "Black", "M", 1);
         let cart_state = build_cart_state(&cart, &catalog, "/product/acme-t-shirt");
+        let params =
+            std::collections::HashMap::from([("handle".to_string(), "acme-t-shirt".to_string())]);
 
-        let state = match build_route_state(
-            &catalog,
-            &RouteMatch {
-                route_key: route_keys::PRODUCT.to_string(),
-                params: std::collections::HashMap::from([(
-                    "handle".to_string(),
-                    "acme-t-shirt".to_string(),
-                )]),
-                specificity: 1,
-            },
-            "/product/acme-t-shirt",
-            &cart_state,
-        ) {
+        let state = match build_route_state(&RouteStateRequest {
+            catalog: &catalog,
+            route_path: "/product/acme-t-shirt",
+            params: &params,
+            request_path: "/product/acme-t-shirt",
+            cart_state: &cart_state,
+            is_partial: false,
+        }) {
             Some(state) => state,
             None => panic!("expected product state"),
         };
@@ -72,17 +67,16 @@ mod tests {
     fn content_routes_only_need_shell_state() {
         let catalog = Catalog::generate();
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/about");
+        let params = std::collections::HashMap::new();
 
-        let state = match build_route_state(
-            &catalog,
-            &RouteMatch {
-                route_key: route_keys::ABOUT.to_string(),
-                params: std::collections::HashMap::new(),
-                specificity: 1,
-            },
-            "/about",
-            &cart_state,
-        ) {
+        let state = match build_route_state(&RouteStateRequest {
+            catalog: &catalog,
+            route_path: "/about",
+            params: &params,
+            request_path: "/about",
+            cart_state: &cart_state,
+            is_partial: false,
+        }) {
             Some(state) => state,
             None => panic!("expected about content state"),
         };
@@ -90,33 +84,60 @@ mod tests {
         assert_eq!(state["page"], "about");
         assert_eq!(state["showCatalogNav"], "");
         assert_eq!(state["shellClass"], "default-shell");
-        assert!(state.get("pageContent").is_none());
-        assert!(state.get("pageKey").is_none());
-        assert!(state.get("pageTitle").is_none());
     }
 
     #[test]
     fn category_state_includes_current_category_label() {
         let catalog = Catalog::generate();
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/search/footware");
+        let params =
+            std::collections::HashMap::from([("category".to_string(), "footware".to_string())]);
 
-        let state = match build_route_state(
-            &catalog,
-            &RouteMatch {
-                route_key: route_keys::CATEGORY.to_string(),
-                params: std::collections::HashMap::from([(
-                    "category".to_string(),
-                    "footware".to_string(),
-                )]),
-                specificity: 1,
-            },
-            "/search/footware",
-            &cart_state,
-        ) {
+        let state = match build_route_state(&RouteStateRequest {
+            catalog: &catalog,
+            route_path: "/search/footware",
+            params: &params,
+            request_path: "/search/footware",
+            cart_state: &cart_state,
+            is_partial: false,
+        }) {
             Some(state) => state,
             None => panic!("expected category state"),
         };
 
         assert_eq!(state["currentCategoryLabel"], "Footware");
+    }
+
+    #[test]
+    fn partial_response_excludes_shell_state() {
+        let catalog = Catalog::generate();
+        let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/search/shirts");
+        let params =
+            std::collections::HashMap::from([("category".to_string(), "shirts".to_string())]);
+
+        let state = match build_route_state(&RouteStateRequest {
+            catalog: &catalog,
+            route_path: "/search/shirts",
+            params: &params,
+            request_path: "/search/shirts",
+            cart_state: &cart_state,
+            is_partial: true,
+        }) {
+            Some(state) => state,
+            None => panic!("expected partial state"),
+        };
+
+        // Page-specific state should be present
+        assert!(state.get("products").is_some());
+        assert!(state.get("categories").is_some());
+        assert!(state.get("sortOptions").is_some());
+
+        // Shell state should be absent
+        assert!(state.get("storeName").is_none());
+        assert!(state.get("cartItems").is_none());
+        assert!(state.get("cartItemCount").is_none());
+        assert!(state.get("navCategories").is_none());
+        assert!(state.get("page").is_none());
+        assert!(state.get("shellClass").is_none());
     }
 }

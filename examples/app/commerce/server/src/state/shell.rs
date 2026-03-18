@@ -49,6 +49,16 @@ pub(crate) fn base_state(context: &ShellContext<'_>) -> Map<String, Value> {
     state
 }
 
+/// Returns `base_state` for full HTML renders, or an empty map for JSON
+/// partial responses (the client already has shell state).
+pub(crate) fn page_state_base(context: &ShellContext<'_>, is_partial: bool) -> Map<String, Value> {
+    if is_partial {
+        Map::new()
+    } else {
+        base_state(context)
+    }
+}
+
 pub(crate) fn apply_page_metadata(
     state: &mut Map<String, Value>,
     page: &str,

@@ -17,6 +17,7 @@ interface GalleryImage {
 export class MpProductGallery extends RenderableFASTElement(FASTElement) {
   @attr({ attribute: 'active-gradient' }) activeGradient!: string;
   @attr({ attribute: 'active-image-url' }) activeImageUrl!: string;
+  @attr handle = '';
   @observable images!: GalleryImage[];
 
   private activeIndex = 0;
@@ -34,6 +35,9 @@ export class MpProductGallery extends RenderableFASTElement(FASTElement) {
   }
 
   async prepare(): Promise<void> {
+    if (Array.isArray(this.images) && this.images.length > 0) return;
+
+    this.handle = this.getAttribute('handle') || '';
     const thumbs = this.shadowRoot!.querySelectorAll('.thumb');
     const images: GalleryImage[] = [];
     thumbs.forEach((el, i) => {
@@ -50,6 +54,36 @@ export class MpProductGallery extends RenderableFASTElement(FASTElement) {
       this.activeGradient = images[0].gradient;
       this.activeImageUrl = images[0].imageUrl;
     }
+    this.applyViewTransitionName();
+  }
+
+  setInitialState(state: Record<string, unknown>): void {
+    if (Array.isArray(state.images)) {
+      this.images = (state.images as any[]).map((img, i) => ({
+        index: i,
+        gradient: String(img.gradient || ''),
+        imageUrl: String(img.imageUrl || ''),
+        activeClass: i === 0 ? 'active' : '',
+      }));
+    }
+    if (typeof state.gradient === 'string') this.activeGradient = state.gradient;
+    if (typeof state.imageUrl === 'string') this.activeImageUrl = state.imageUrl;
+    if (typeof state.handle === 'string') this.handle = state.handle;
+    this.applyViewTransitionName();
+    const view = this.$fastController?.view;
+    if (view) {
+      view.unbind();
+      view.bind(this, view.context);
+    }
+  }
+
+  handleChanged(): void {
+    this.applyViewTransitionName();
+  }
+
+  private applyViewTransitionName(): void {
+    if (!this.handle) return;
+    this.style.viewTransitionName = `product-image-${this.handle}`;
   }
 
   onClick(e: MouseEvent): void {

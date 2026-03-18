@@ -52,6 +52,24 @@ export class MpCategoryNav extends RenderableFASTElement(FASTElement) {
     this.syncCurrentLabel();
   }
 
+  setInitialState(state: Record<string, unknown>): void {
+    if (Array.isArray(state.categories)) {
+      this.categories = state.categories as any[];
+    }
+    if (typeof state.allActiveClass === 'string') {
+      this.allActiveClass = state.allActiveClass;
+    }
+    if (typeof state.currentCategoryLabel === 'string') {
+      this.currentLabel = state.currentCategoryLabel;
+    }
+    this.syncCurrentLabel();
+    const view = this.$fastController?.view;
+    if (view) {
+      view.unbind();
+      view.bind(this, view.context);
+    }
+  }
+
   categoriesChanged(): void {
     this.syncCurrentLabel();
   }

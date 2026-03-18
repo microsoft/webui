@@ -7,27 +7,9 @@
   ></mp-navbar>
   <mp-mobile-menu search-query="{{searchQuery}}"></mp-mobile-menu>
 
-  <div class="content-shell {{shellClass}}">
-    <if condition="showCatalogNav">
-      <aside class="catalog-sidebar">
-        <mp-category-nav
-          all-active-class="{{catalogAllActiveClass}}"
-          current-label="{{catalogCurrentLabel}}"
-          :categories="{{catalogCategories}}"
-        ></mp-category-nav>
-      </aside>
-    </if>
-
+  <div class="content-shell">
     <main class="route-surface">
-      <route path="/" name="home" component="mp-page-home" exact />
-      <route path="/search" name="search" component="mp-page-search" exact />
-      <route path="/search/:category" name="category" component="mp-page-search" exact />
-      <route path="/product/:handle" name="product" component="mp-page-product" exact />
-      <route path="/about" name="about" component="mp-page-about" exact />
-      <route path="/terms-conditions" name="terms" component="mp-page-terms" exact />
-      <route path="/shipping-return-policy" name="shipping" component="mp-page-shipping" exact />
-      <route path="/privacy-policy" name="privacy" component="mp-page-privacy" exact />
-      <route path="/frequently-asked-questions" name="faq" component="mp-page-faq" exact />
+      <outlet />
     </main>
   </div>
 

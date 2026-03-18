@@ -1,0 +1,21 @@
+:host {
+    display: block;
+}
+
+h4 {
+    font-size: var(--font-size-l);
+    color: var(--color-brand-primary);
+    margin-bottom: var(--spacing-s);
+}
+
+.breadcrumb {
+    font-size: var(--font-size-s);
+    color: var(--color-neutral-300);
+    margin-bottom: var(--spacing-m, 12px);
+}
+
+p {
+    line-height: 1.7;
+    color: var(--color-neutral-500);
+    font-size: var(--font-size-base);
+}

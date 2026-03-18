@@ -1,4 +1,7 @@
 <template shadowrootmode="open">
+  <if condition="products.length == 0 && query">
+    <p class="empty-results">There are no products that match "<strong>{{query}}</strong>"</p>
+  </if>
   <div class="grid">
     <for each="product in products">
       <mp-product-card

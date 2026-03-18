@@ -34,8 +34,8 @@ pub struct WebUIProtocol {
     /// Sorted, deduplicated CSS custom property names used across all
     /// components and entry page styles (without `--` prefix).
     pub tokens: Vec<String>,
-    /// Top-level route registry keyed by route name.
-    pub routes: HashMap<String, RouteRecord>,
+    /// Map of component tag names to their template fragment IDs.
+    pub component_templates: HashMap<String, String>,
 }
 
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
@@ -62,6 +62,7 @@ pub enum Fragment {
     Attribute(WebUIFragmentAttribute),
     Plugin(WebUIFragmentPlugin),
     Route(WebUIFragmentRoute),
+    Outlet(WebUIFragmentOutlet),
 }
 ```
 ### Fragment Types
@@ -146,36 +147,83 @@ Route fragments define declarative URL-based routes linking path templates to fr
 The parser emits these from `<route>` elements; the handler uses them for server-side route matching.
 ```rust
 pub struct WebUIFragmentRoute {
-    pub path: String,              // URL path template (e.g., "/profile/:id")
-    pub fragment_id: String,       // Fragment containing the route body
-    pub exact: bool,               // Require exact path match
-    pub name: String,              // Unique route name
+    pub path: String,                          // URL path template (e.g., "sections/:id")
+    pub fragment_id: String,                   // Fragment containing the route body
+    pub exact: bool,                           // Require exact path match
+    pub children: Vec<WebUIFragmentRoute>,     // Nested child routes
 }
+```
 
-pub struct RouteRecord {
-    pub name: String,
-    pub path: String,
-    pub fragment_id: String,
-    pub exact: bool,
-}
-}
+There is no global route registry or route tree — routes are inline in the fragment graph
+via `WebUIFragmentRoute` nesting.
+
+#### Outlet Fragment
+Outlet fragments mark where matched child route content renders inside a parent route component.
+The parser emits these from `<outlet />` elements.
+```rust
+pub struct WebUIFragmentOutlet {}
+```
+
+Components use `<outlet />` in their templates to declare insertion points:
+```html
+<template shadowrootmode="open">
+  <h1>Title</h1>
+  <main><outlet /></main>
+</template>
+```
+
+**Route declaration:** Routes are declared as nested `<route>` elements in the entry HTML.
+Child paths are relative to their parent (no leading `/`). The HTML nesting IS the route tree:
+
+```html
+<route path="/" component="app-shell">
+  <route path="sections/:sectionId" component="section-page">
+    <route path="topics/:topicId" component="topic-page">
+      <route path="lessons/:lessonId" component="lesson-page" exact />
+    </route>
+  </route>
+</route>
 ```
 
 **Route matching:** The handler uses an iterative path template matcher (no regex). Segments are
 compared left-to-right: `:param` binds a value, `*splat` captures remaining segments, `?` marks
 optional parameters. Exact matches (most literal segments) take precedence over parameterized ones.
 
-**Server-side rendering:** When a production server receives a request for `/contacts/42`:
-1. The server resolves state for that path (from its own data layer).
-2. The server calls `handler.handle(protocol, state, RenderOptions::new("index.html", "/contacts/42"), writer)`.
-3. The handler renders the matched route visible with content; all other routes are hidden and empty.
-4. The server returns the rendered HTML.
+**Server-side rendering:** When the handler encounters `Fragment::Route`:
+1. Pre-scan siblings, pick the best match by specificity.
+2. Matched route: emit `<webui-route path="..." component="..." active>`, render component, recurse into children.
+3. Non-matched routes: emit `<webui-route ... style="display:none">`.
 
-**Client-side navigation:** When the client navigates from `/dashboard` to `/contacts/42`:
-1. The client sends a request with `Accept: application/json`.
-2. The server returns `{ state, templates, inventory }` — only the route-specific state and
-   component templates the client doesn't already have.
-3. The client mounts the route component with the received state.
+When the handler encounters `Fragment::Outlet`:
+1. Take children from the currently active route.
+2. Match children against the request path (relative to route base).
+3. Emit `<webui-outlet>` containing matched child `<webui-route>` with component, and hidden stubs for siblings.
+
+The handler also emits `<meta name="webui-inventory">` in `<head>` with the initial component
+inventory bitmask, so the client router can tell the server which templates it already has
+on the first client-side navigation.
+
+**Key elements:**
+- `<webui-route>` — light DOM custom element, structural routing wrapper with no shadow DOM
+- `<webui-outlet>` — light DOM custom element, marks insertion point for child route content
+
+**Client-side navigation:**
+1. On initial load, the router builds the active chain from SSR'd `<webui-route active>` elements.
+2. On navigation, fetches a JSON partial (`Accept: application/json`) from the server.
+3. The server returns the matched route chain — the client does NOT perform route matching.
+4. Reconciles old vs new chain — finds first changed level.
+5. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
+6. Parent components and their state are preserved.
+
+**Partial response:** The server returns `{ state, templates, inventory, path, chain }`:
+- `state`: route params from all nesting levels injected into API state
+- `templates`: `f-template` HTML strings the client doesn't already have (filtered by inventory bitmask)
+- `inventory`: updated hex bitmask of loaded templates
+- `chain`: matched route chain array — each entry has `component`, `path`, optional `params` and `exact`
+
+The `chain` field is produced by `render_partial()` in the handler, which walks the
+fragment graph and matches routes at each nesting level. Host servers call this once per partial
+response. Available via FFI as `webui_render_partial()` for C/.NET/Node hosts.
 
 **Partial-template selection:** During client navigation, servers derive template names from the
 normal render fragment graph starting at the persistent entry fragment. The traversal is
@@ -347,6 +395,10 @@ rendering. When processing `Fragment::Route`, the handler matches the route's pa
 template against `options.request_path`:
 - **Matched route**: rendered visible (`active` attribute) with component content.
 - **Non-matched routes**: rendered hidden (`style="display:none"`) and empty.
+
+When processing `Fragment::Outlet`, the handler takes children from the active route,
+matches them against the request path relative to the current route base, and emits
+`<webui-outlet>` containing the matched child and hidden stubs for siblings.
 
 This eliminates the need for post-render HTML pruning — the handler produces
 correct route output in a single pass.
@@ -830,6 +882,7 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 | `webui_handler_create()` | Create a reusable handler (no plugin). |
 | `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin (e.g. `"fast"`). Returns `NULL` on error. |
 | `webui_handler_render(handler, data, len, json, entry_id, request_path)` | Render a pre-compiled protocol with route matching. `request_path` controls which route is active. Returns heap-allocated string. |
+| `webui_render_partial(protocol_data, len, state_json, entry_id, request_path, inventory_hex)` | Produce a complete JSON partial response (state, templates, inventory, path, and matched route chain) in a single call. Returns heap-allocated JSON string. |
 | `webui_handler_destroy(handler)` | Destroy a handler. `NULL` is a safe no-op. |
 | `webui_free(ptr)` | Free a string returned by any render function. `NULL` is a safe no-op. |
 | `webui_last_error()` | Return per-thread error message. Caller must **not** free. |

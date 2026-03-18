@@ -1,40 +1,49 @@
 :host {
-  display: block;
-}
-
-.search-layout {
   display: flex;
   gap: 2rem;
+  align-items: start;
+  max-width: 96rem;
+  margin: 0 auto;
+  padding: 0 1rem 1rem;
+  width: 100%;
 }
 
-.search-sidebar {
-  width: 7.8125rem;
-  flex-shrink: 0;
-}
-
-.search-main {
+.product-area {
   flex: 1;
   min-width: 0;
+  min-height: 100vh;
 }
 
-.empty-results {
-  color: var(--webui-text-secondary);
-  font-size: 0.875rem;
-  line-height: 1.5;
+mp-category-nav {
+  width: 125px;
+  flex: none;
+}
+
+mp-filter-list {
+  width: 125px;
+  flex: none;
 }
 
 @media (max-width: 767px) {
-  .search-layout {
+  :host {
     flex-direction: column;
+    align-items: stretch;
     gap: 1rem;
+    padding: 0 1rem 1rem;
   }
 
-  .search-sidebar {
+  mp-category-nav {
+    order: -2;
     width: 100%;
-    order: -1;
   }
 
-  .search-main {
+  mp-filter-list {
+    order: -1;
+    width: 100%;
+  }
+
+  .product-area {
     order: 0;
+    width: 100%;
   }
 }

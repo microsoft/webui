@@ -9,6 +9,7 @@
 pub mod plugin;
 pub mod route_handler;
 pub mod route_matcher;
+pub(crate) mod route_renderer;
 
 use plugin::HandlerPlugin;
 use serde_json::Value;
@@ -99,10 +100,18 @@ struct WebUIProcessContext<'a> {
     component_attrs: HashMap<String, Value>,
     /// URL path for server-side route matching.
     request_path: String,
+    /// Base path for resolving relative route paths (`./`).
+    /// Updated as the handler descends into nested matched routes.
+    route_base: String,
     /// Component names visited during rendering (for selective f-template emission).
     rendered_components: HashSet<String>,
     /// Per-render plugin instance created from the handler's factory.
     plugin: Option<Box<dyn HandlerPlugin>>,
+    /// Current position in the route tree for outlet-based rendering.
+    /// Contains the children of the currently matched route fragment.
+    route_children: Vec<webui_protocol::WebUiFragmentRoute>,
+    /// Entry fragment ID — used to compute the initial inventory at head_end.
+    entry_id: String,
 }
 
 /// Convert hyphenated name to camelCase (e.g., "data-title" → "dataTitle").
@@ -138,77 +147,6 @@ fn camel_to_kebab(name: &str) -> String {
     result
 }
 
-/// Emit top-level state values as HTML attributes on a route component element.
-///
-/// This ensures FAST hydration reads the correct values from DOM attributes
-/// instead of using the component's default `@attr` values.
-///
-/// Scalar values (string, number, bool) are emitted as individual kebab-case
-/// attributes. The full state (including arrays/objects) is also emitted as a
-/// `data-state` JSON attribute so components can read complex state during hydration.
-fn emit_state_attributes(state: &Value, writer: &mut dyn ResponseWriter) -> Result<()> {
-    let map = match state.as_object() {
-        Some(m) => m,
-        None => return Ok(()),
-    };
-
-    // Emit scalar values as individual attributes
-    for (key, value) in map {
-        let val_str = match value {
-            Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
-            Value::Number(n) => std::borrow::Cow::Owned(n.to_string()),
-            Value::Bool(true) => std::borrow::Cow::Borrowed("true"),
-            Value::Bool(false) => std::borrow::Cow::Borrowed("false"),
-            _ => continue,
-        };
-        let attr_name = camel_to_kebab(key);
-        writer.write(" ")?;
-        writer.write(&attr_name)?;
-        writer.write("=\"")?;
-        write_escaped_state_attr(writer, val_str.as_ref())?;
-        writer.write("\"")?;
-    }
-
-    // Emit full state as data-state for complex values (arrays, objects)
-    let has_complex = map.values().any(|v| v.is_array() || v.is_object());
-    if has_complex {
-        let json_str = state.to_string();
-        writer.write(" data-state=\"")?;
-        write_escaped_state_attr(writer, &json_str)?;
-        writer.write("\"")?;
-    }
-
-    Ok(())
-}
-
-fn write_escaped_state_attr(writer: &mut dyn ResponseWriter, value: &str) -> Result<()> {
-    let mut last = 0;
-
-    for (index, ch) in value.char_indices() {
-        let escaped = match ch {
-            '&' => Some("&amp;"),
-            '"' => Some("&quot;"),
-            '<' => Some("&lt;"),
-            '>' => Some("&gt;"),
-            _ => None,
-        };
-
-        if let Some(entity) = escaped {
-            if last < index {
-                writer.write(&value[last..index])?;
-            }
-            writer.write(entity)?;
-            last = index + ch.len_utf8();
-        }
-    }
-
-    if last < value.len() {
-        writer.write(&value[last..])?;
-    }
-
-    Ok(())
-}
-
 /// Get the component attribute name, stripping `:` prefix and converting to camelCase.
 fn component_attr_name(name: &str) -> String {
     let stripped = name.strip_prefix(':').unwrap_or(name);
@@ -217,34 +155,6 @@ fn component_attr_name(name: &str) -> String {
     } else {
         stripped.to_string()
     }
-}
-
-/// Pre-scan sibling route fragments and return the name/id of the best match.
-///
-/// Picks the route with the highest specificity (most literal segments).
-/// This ensures `/contacts/add` (2 literals) beats `/contacts/:id` (1 literal + 1 param).
-fn find_best_route_match(fragments: &[WebUIFragment], request_path: &str) -> Option<String> {
-    let mut best_key: Option<String> = None;
-    let mut best_specificity: usize = 0;
-
-    for item in fragments {
-        if let Some(Fragment::Route(route_frag)) = item.fragment.as_ref() {
-            if let Some(m) =
-                route_matcher::match_single_route(&route_frag.path, request_path, route_frag.exact)
-            {
-                if best_key.is_none() || m.specificity > best_specificity {
-                    best_specificity = m.specificity;
-                    best_key = Some(if route_frag.name.is_empty() {
-                        route_frag.fragment_id.clone()
-                    } else {
-                        route_frag.name.clone()
-                    });
-                }
-            }
-        }
-    }
-
-    best_key
 }
 
 impl WebUIHandler {
@@ -288,8 +198,11 @@ impl WebUIHandler {
             local_vars: HashMap::new(),
             component_attrs: HashMap::new(),
             request_path: options.request_path.to_string(),
+            route_base: "/".to_string(),
             rendered_components: HashSet::new(),
             plugin: self.plugin_factory.map(|f| f()),
+            route_children: Vec::new(),
+            entry_id: options.entry_id.to_string(),
         };
         self.process_fragment_id(options.entry_id, &mut context)?;
 
@@ -298,8 +211,6 @@ impl WebUIHandler {
         Ok(())
     }
 
-    /// Render a component fragment with an active plugin scope.
-    ///
     /// Like `handle()`, but pushes a component scope so the plugin emits
     /// binding markers. Use this when rendering a component outside the
     /// normal page render flow (e.g., re-rendering a route component with
@@ -323,8 +234,11 @@ impl WebUIHandler {
             local_vars: HashMap::new(),
             component_attrs: HashMap::new(),
             request_path: String::new(),
+            route_base: "/".to_string(),
             rendered_components: HashSet::new(),
             plugin: self.plugin_factory.map(|f| f()),
+            route_children: Vec::new(),
+            entry_id: entry_id.to_string(),
         };
 
         if let Some(p) = &mut context.plugin {
@@ -369,7 +283,12 @@ impl WebUIHandler {
     ) -> Result<()> {
         // Pre-scan: find the best matching route among sibling routes by specificity.
         // This ensures `/contacts/add` (2 literals) beats `/contacts/:id` (1 literal).
-        let best_route_name = find_best_route_match(fragments, &context.request_path);
+        // Resolves relative paths (`./`) using the current route_base.
+        let best_route = route_renderer::find_best_route_match(
+            fragments,
+            &context.request_path,
+            &context.route_base,
+        );
 
         for item in fragments {
             match item.fragment.as_ref() {
@@ -398,25 +317,16 @@ impl WebUIHandler {
                 }
                 Some(Fragment::Route(route_frag)) => {
                     // Only the best-matching route is active
-                    let route_key = if route_frag.name.is_empty() {
-                        &route_frag.fragment_id
-                    } else {
-                        &route_frag.name
-                    };
-                    let is_matched = best_route_name
+                    let route_key = &route_frag.fragment_id;
+                    let is_matched = best_route
                         .as_ref()
-                        .is_some_and(|best| best == route_key);
+                        .is_some_and(|(best_key, _)| best_key == route_key);
 
-                    // Emit <webui-route> with metadata attributes
+                    // Emit <webui-route> as a web component with declarative shadow DOM
                     context.writer.write("<webui-route")?;
                     if !route_frag.path.is_empty() {
                         context.writer.write(" path=\"")?;
                         context.writer.write(&route_frag.path)?;
-                        context.writer.write("\"")?;
-                    }
-                    if !route_frag.name.is_empty() {
-                        context.writer.write(" name=\"")?;
-                        context.writer.write(&route_frag.name)?;
                         context.writer.write("\"")?;
                     }
                     if !route_frag.fragment_id.is_empty() {
@@ -429,15 +339,24 @@ impl WebUIHandler {
                     }
 
                     if is_matched {
-                        // Matched route: render visible with component content
                         context.writer.write(" active>")?;
 
                         if !route_frag.fragment_id.is_empty() {
-                            // Emit component tag with state values as attributes
-                            // so FAST hydration reads them instead of defaults.
+                            let saved_route_base = context.route_base.clone();
+                            let saved_route_children = std::mem::take(&mut context.route_children);
+                            if let Some((_, ref rm)) = best_route {
+                                context.route_base = route_matcher::compute_route_base(
+                                    &context.request_path,
+                                    rm.consumed_segments,
+                                );
+                            }
+
+                            context.route_children = route_frag.children.clone();
+
+                            // Emit component tag with state attributes
                             context.writer.write("<")?;
                             context.writer.write(&route_frag.fragment_id)?;
-                            emit_state_attributes(context.state, context.writer)?;
+                            route_renderer::emit_state_attributes(context.state, context.writer)?;
                             context.writer.write(">")?;
 
                             self.process_component(
@@ -450,17 +369,134 @@ impl WebUIHandler {
                             context.writer.write("</")?;
                             context.writer.write(&route_frag.fragment_id)?;
                             context.writer.write(">")?;
+
+                            context.route_base = saved_route_base;
+                            context.route_children = saved_route_children;
                         }
                     } else {
-                        // Non-matched route: render hidden and empty
+                        // Non-matched route: hidden, empty
                         context.writer.write(" style=\"display:none\">")?;
                     }
 
                     context.writer.write("</webui-route>")?;
                 }
+                Some(Fragment::Outlet(_)) => {
+                    self.process_outlet(context)?;
+                }
                 None => {}
             }
         }
+        Ok(())
+    }
+
+    /// Process an `<outlet />` directive.
+    ///
+    /// Matches children from the currently active route's `children` field
+    /// against the request path, renders the matched child `<webui-route>`
+    /// elements directly at this position (no wrapper element).
+    fn process_outlet(&self, context: &mut WebUIProcessContext) -> Result<()> {
+        let mut children = std::mem::take(&mut context.route_children);
+        if children.is_empty() {
+            return Ok(());
+        }
+
+        // Find the best matching child route
+        let mut best: Option<(usize, route_matcher::RouteMatch)> = None;
+        for (idx, child) in children.iter().enumerate() {
+            let resolved = route_matcher::resolve_route_path(&child.path, &context.route_base);
+            if let Some(m) =
+                route_matcher::match_single_route(&resolved, &context.request_path, child.exact)
+            {
+                let is_better = best
+                    .as_ref()
+                    .is_none_or(|(_, prev)| m.specificity > prev.specificity);
+                if is_better {
+                    best = Some((idx, m));
+                }
+            }
+        }
+
+        // Extract grandchildren from the matched child to avoid cloning.
+        // We swap out the children vec so we can move it into context without
+        // cloning, then swap an empty vec back for the sibling rendering pass.
+        let grandchildren = if let Some((idx, _)) = &best {
+            std::mem::take(&mut children[*idx].children)
+        } else {
+            Vec::new()
+        };
+
+        if let Some((idx, ref rm)) = best {
+            let matched_child = &children[idx];
+            let comp = &matched_child.fragment_id;
+
+            if !comp.is_empty() {
+                let saved_route_base = context.route_base.clone();
+                let saved_route_children = std::mem::take(&mut context.route_children);
+
+                if rm.consumed_segments > 0 {
+                    context.route_base = route_matcher::compute_route_base(
+                        &context.request_path,
+                        rm.consumed_segments,
+                    );
+                }
+
+                context.route_children = grandchildren;
+
+                // Emit matched <webui-route>
+                context.writer.write("<webui-route")?;
+                if !matched_child.path.is_empty() {
+                    context.writer.write(" path=\"")?;
+                    context.writer.write(&matched_child.path)?;
+                    context.writer.write("\"")?;
+                }
+                context.writer.write(" component=\"")?;
+                context.writer.write(comp)?;
+                context.writer.write("\"")?;
+                if matched_child.exact {
+                    context.writer.write(" exact")?;
+                }
+                context.writer.write(" active>")?;
+
+                context.writer.write("<")?;
+                context.writer.write(comp)?;
+                route_renderer::emit_state_attributes(context.state, context.writer)?;
+                context.writer.write(">")?;
+
+                self.process_component(
+                    &webui_protocol::WebUIFragmentComponent {
+                        fragment_id: comp.clone(),
+                    },
+                    context,
+                )?;
+
+                context.writer.write("</")?;
+                context.writer.write(comp)?;
+                context.writer.write(">")?;
+                context.writer.write("</webui-route>")?;
+
+                context.route_base = saved_route_base;
+                context.route_children = saved_route_children;
+            }
+        }
+
+        // Render non-matched siblings as hidden
+        for (idx, child) in children.iter().enumerate() {
+            let is_matched = best.as_ref().is_some_and(|(bi, _)| *bi == idx);
+            if !is_matched && !child.fragment_id.is_empty() {
+                context.writer.write("<webui-route")?;
+                if !child.path.is_empty() {
+                    context.writer.write(" path=\"")?;
+                    context.writer.write(&child.path)?;
+                    context.writer.write("\"")?;
+                }
+                context.writer.write(" component=\"")?;
+                context.writer.write(&child.fragment_id)?;
+                context
+                    .writer
+                    .write("\" style=\"display:none\"></webui-route>")?;
+            }
+        }
+
         Ok(())
     }
 
@@ -620,6 +656,21 @@ impl WebUIHandler {
         signal: &webui_protocol::WebUIFragmentSignal,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
+        // Hook: emit inventory meta tag before </head>
+        if signal.raw && signal.value == "head_end" {
+            let (_, inventory_hex) = crate::route_handler::get_needed_components_for_request(
+                context.protocol,
+                &context.entry_id,
+                &context.request_path,
+                "",
+            );
+            context
+                .writer
+                .write("<meta name=\"webui-inventory\" content=\"")?;
+            context.writer.write(&inventory_hex)?;
+            context.writer.write("\">")?;
+        }
+
         // Hook: emit plugin content (e.g., f-templates) before body_end
         if signal.raw && signal.value == "body_end" {
             if let Some(p) = &mut context.plugin {
@@ -845,8 +896,11 @@ impl WebUIHandler {
             local_vars: HashMap::new(),
             component_attrs: HashMap::new(),
             request_path: options.request_path.to_string(),
+            route_base: "/".to_string(),
             rendered_components: HashSet::new(),
             plugin: self.plugin_factory.map(|f| f()),
+            route_children: Vec::new(),
+            entry_id: options.entry_id.to_string(),
         };
 
         self.process_fragment_id(options.entry_id, &mut context)?;
@@ -5016,14 +5070,12 @@ mod tests {
                         path: "/".into(),
                         fragment_id: "dash-page".into(),
                         exact: true,
-                        name: "dashboard".into(),
                         ..Default::default()
                     }),
                     WebUIFragment::route_from(WebUiFragmentRoute {
                         path: "/contacts/:id".into(),
                         fragment_id: "detail-page".into(),
                         exact: true,
-                        name: "detail".into(),
                         ..Default::default()
                     }),
                 ],
@@ -5090,11 +5142,11 @@ mod tests {
 
         // Dashboard route should be visible (active, no display:none)
         assert!(
-            html.contains("<webui-route path=\"/\" name=\"dashboard\""),
+            html.contains("<webui-route path=\"/\""),
             "dashboard route should exist"
         );
         assert!(
-            html.contains("active><dash-page>"),
+            html.contains("active>") && html.contains("<dash-page>"),
             "matched route should be active with component tag: {html}"
         );
         assert!(
@@ -5126,8 +5178,16 @@ mod tests {
         let detail_start = html.find("path=\"/contacts/:id\"").expect("detail route");
         let after_detail = &html[detail_start..];
         assert!(
-            after_detail.contains("style=\"display:none\"></webui-route>"),
-            "non-matched route should be empty: {after_detail}"
+            after_detail.contains("style=\"display:none\">")
+                && !after_detail.starts_with(&format!("path=\"/contacts/:id\"{}detail-page>", "")),
+            "non-matched route should be hidden: {after_detail}"
+        );
+        // Should NOT contain the component's rendered content
+        let detail_end = after_detail.find("</webui-route>").expect("closing tag");
+        let detail_body = &after_detail[..detail_end];
+        assert!(
+            !detail_body.contains("<detail-page>"),
+            "non-matched route should not render component content: {detail_body}"
         );
     }
 
@@ -5147,16 +5207,24 @@ mod tests {
 
         // Detail route matches /contacts/42
         assert!(
-            html.contains("active><detail-page>"),
+            html.contains("active>") && html.contains("<detail-page>"),
             "detail route should be active: {html}"
         );
         assert!(html.contains("<p>Detail</p>"), "detail should have content");
         // Dashboard should be hidden + empty
-        let dash_start = html.find("name=\"dashboard\"").expect("dashboard route");
+        let dash_start = html
+            .find("component=\"dash-page\"")
+            .expect("dashboard route");
         let after_dash = &html[dash_start..];
         assert!(
-            after_dash.contains("style=\"display:none\"></webui-route>"),
-            "dashboard should be empty when detail matches"
+            after_dash.contains("style=\"display:none\">"),
+            "dashboard should be hidden when detail matches: {after_dash}"
+        );
+        let dash_end = after_dash.find("</webui-route>").expect("closing tag");
+        let dash_body = &after_dash[..dash_end];
+        assert!(
+            !dash_body.contains("<dash-page>"),
+            "dashboard should not render component content: {dash_body}"
         );
     }
 
@@ -5245,6 +5313,247 @@ mod tests {
         assert!(
             html.contains(r#"&quot;name&quot;:&quot;A&amp;B&quot;"#),
             "complex state values should be escaped inside data-state: {html}"
+        );
+    }
+
+    // ── Nested route + outlet rendering tests ─────────────────────────
+
+    /// Build a protocol with nested routes and outlet-based components.
+    fn make_nested_route_protocol() -> WebUIProtocol {
+        use webui_protocol::WebUiFragmentRoute;
+
+        let mut fragments = HashMap::new();
+
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/".into(),
+                    fragment_id: "app-shell".into(),
+                    exact: false,
+                    children: vec![WebUiFragmentRoute {
+                        path: "sections/:id".into(),
+                        fragment_id: "section-comp".into(),
+                        exact: false,
+                        children: vec![WebUiFragmentRoute {
+                            path: "topics/:topicId".into(),
+                            fragment_id: "topic-comp".into(),
+                            exact: true,
+                            children: vec![],
+                        }],
+                    }],
+                })],
+            },
+        );
+
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<h1>Shell</h1>"),
+                    WebUIFragment::outlet(),
+                ],
+            },
+        );
+
+        fragments.insert(
+            "section-comp".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<h2>Section</h2>"),
+                    WebUIFragment::outlet(),
+                ],
+            },
+        );
+
+        fragments.insert(
+            "topic-comp".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Topic content</p>")],
+            },
+        );
+
+        WebUIProtocol::new(fragments)
+    }
+
+    #[test]
+    fn test_nested_routes_render_webui_route_as_light_dom() {
+        let protocol = make_nested_route_protocol();
+        let state = test_json!({"title": "Test"});
+        let handler = WebUIHandler::new();
+        let mut writer = TestWriter::new();
+
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/sections/frontend"),
+                &mut writer,
+            )
+            .expect("render failed");
+
+        let html = writer.get_content();
+
+        assert!(
+            html.contains("component=\"app-shell\"") && html.contains("active>"),
+            "root route should be active: {html}"
+        );
+        // webui-route should NOT have shadow DOM — it's a light DOM structural element
+        assert!(
+            !html.contains("<webui-route path=\"/\"")
+                || !html
+                    .contains("<webui-route path=\"/\" component=\"app-shell\" active><template shadowrootmode"),
+            "webui-route should be light DOM (no shadow template): {html}"
+        );
+    }
+
+    #[test]
+    fn test_nested_routes_render_outlet_as_light_dom() {
+        let protocol = make_nested_route_protocol();
+        let state = test_json!({"title": "Test"});
+        let handler = WebUIHandler::new();
+        let mut writer = TestWriter::new();
+
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/sections/frontend"),
+                &mut writer,
+            )
+            .expect("render failed");
+
+        let html = writer.get_content();
+
+        // No <webui-outlet> wrapper — routes render directly at outlet position
+        assert!(
+            !html.contains("<webui-outlet>"),
+            "should not contain webui-outlet wrapper: {html}"
+        );
+        // Route elements should be in the output directly
+        assert!(
+            html.contains("<webui-route"),
+            "should contain webui-route elements: {html}"
+        );
+    }
+
+    #[test]
+    fn test_nested_routes_match_child_at_outlet() {
+        let protocol = make_nested_route_protocol();
+        let state = test_json!({"title": "Test"});
+        let handler = WebUIHandler::new();
+        let mut writer = TestWriter::new();
+
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/sections/frontend"),
+                &mut writer,
+            )
+            .expect("render failed");
+
+        let html = writer.get_content();
+
+        assert!(
+            html.contains("component=\"section-comp\"") && html.contains("active>"),
+            "section route should be active: {html}"
+        );
+        assert!(
+            html.contains("<h2>Section</h2>"),
+            "section content should be present: {html}"
+        );
+    }
+
+    #[test]
+    fn test_nested_routes_three_levels_deep() {
+        let protocol = make_nested_route_protocol();
+        let state = test_json!({"title": "Test"});
+        let handler = WebUIHandler::new();
+        let mut writer = TestWriter::new();
+
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/sections/frontend/topics/react"),
+                &mut writer,
+            )
+            .expect("render failed");
+
+        let html = writer.get_content();
+
+        assert!(
+            html.contains("component=\"app-shell\"") && html.contains("active>"),
+            "root active: {html}"
+        );
+        assert!(
+            html.contains("component=\"section-comp\"") && html.contains("active>"),
+            "section active: {html}"
+        );
+        assert!(
+            html.contains("component=\"topic-comp\"") && html.contains("exact active>"),
+            "topic active: {html}"
+        );
+        assert!(
+            html.contains("<p>Topic content</p>"),
+            "leaf content present: {html}"
+        );
+    }
+
+    #[test]
+    fn test_nested_routes_nonmatched_siblings_hidden() {
+        let protocol = make_nested_route_protocol();
+        let state = test_json!({"title": "Test"});
+        let handler = WebUIHandler::new();
+        let mut writer = TestWriter::new();
+
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/sections/frontend"),
+                &mut writer,
+            )
+            .expect("render failed");
+
+        let html = writer.get_content();
+
+        assert!(
+            html.contains(r#"component="topic-comp" style="display:none">"#),
+            "topic should be hidden: {html}"
+        );
+    }
+
+    #[test]
+    fn test_nested_routes_root_only() {
+        let protocol = make_nested_route_protocol();
+        let state = test_json!({"title": "Test"});
+        let handler = WebUIHandler::new();
+        let mut writer = TestWriter::new();
+
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .expect("render failed");
+
+        let html = writer.get_content();
+
+        assert!(
+            html.contains("component=\"app-shell\"") && html.contains("active>"),
+            "root active at /: {html}"
+        );
+        assert!(
+            html.contains("<h1>Shell</h1>"),
+            "shell renders at /: {html}"
+        );
+        assert!(
+            html.contains(r#"component="section-comp" style="display:none">"#),
+            "section hidden at /: {html}"
         );
     }
 }
