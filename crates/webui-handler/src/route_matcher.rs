@@ -70,10 +70,56 @@ fn split_path(path: &str) -> Vec<&str> {
     path.split('/').filter(|s| !s.is_empty()).collect()
 }
 
-/// Sanitize a route parameter value to prevent path traversal.
-/// Removes `..` path traversal sequences and null bytes.
-fn sanitize_param(value: &str) -> String {
-    value.replace('\0', "").replace("..", "")
+/// Convert an ASCII hex digit to its numeric value.
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Percent-decode a URL path segment (e.g. `%2F` → `/`, `%20` → ` `).
+///
+/// Returns `None` if the input contains malformed percent-encoding (a `%` not
+/// followed by two hex digits) or if the decoded bytes are not valid UTF-8.
+fn percent_decode(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    if !bytes.contains(&b'%') {
+        return Some(input.to_owned());
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return None;
+            }
+            let hi = hex_val(bytes[i + 1])?;
+            let lo = hex_val(bytes[i + 2])?;
+            out.push(hi << 4 | lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Validate and percent-decode a single route parameter segment.
+///
+/// Returns `None` (rejecting the match) if the segment:
+/// - contains malformed percent-encoding,
+/// - decodes to `..` (path traversal), or
+/// - contains a NUL byte (`\0`).
+fn validate_param(value: &str) -> Option<String> {
+    let decoded = percent_decode(value)?;
+    if decoded == ".." || decoded.bytes().any(|b| b == 0) {
+        return None;
+    }
+    Some(decoded)
 }
 
 /// Try matching a request path against pre-parsed route template patterns.
@@ -106,20 +152,24 @@ fn try_match(
                 if req_idx >= request_segments.len() {
                     return None;
                 }
-                params.insert(name.clone(), sanitize_param(request_segments[req_idx]));
+                params.insert(name.clone(), validate_param(request_segments[req_idx])?);
                 req_idx += 1;
             }
             SegmentPattern::OptionalParam(name) => {
                 if req_idx < request_segments.len() {
-                    params.insert(name.clone(), sanitize_param(request_segments[req_idx]));
+                    params.insert(name.clone(), validate_param(request_segments[req_idx])?);
                     req_idx += 1;
                 }
                 // Optional — ok to skip
             }
             SegmentPattern::Splat(name) => {
-                // Splat consumes all remaining segments
-                let remaining: Vec<&str> = request_segments[req_idx..].to_vec();
-                params.insert(name.clone(), sanitize_param(&remaining.join("/")));
+                // Splat consumes all remaining segments; validate each individually.
+                let remaining = &request_segments[req_idx..];
+                let mut decoded_parts = Vec::with_capacity(remaining.len());
+                for seg in remaining {
+                    decoded_parts.push(validate_param(seg)?);
+                }
+                params.insert(name.clone(), decoded_parts.join("/"));
                 req_idx = request_segments.len();
             }
         }
@@ -405,21 +455,71 @@ mod tests {
     }
 
     #[test]
-    fn test_param_sanitizes_traversal() {
+    fn test_param_rejects_traversal() {
+        // Exact `..` segment is path traversal — must reject.
+        assert!(match_single_route("/files/:name", "/files/..", true).is_none());
+    }
+
+    #[test]
+    fn test_param_allows_double_dot_prefix() {
+        // `..something` is NOT traversal (not a standalone `..` segment).
         let m = match_single_route("/files/:name", "/files/..something", true).unwrap();
-        assert!(!m.params["name"].contains(".."));
+        assert_eq!(m.params["name"], "..something");
     }
 
     #[test]
-    fn test_param_strips_null_bytes() {
-        let m = match_single_route("/users/:id", "/users/test\0injected", true).unwrap();
-        assert!(!m.params["id"].contains('\0'));
+    fn test_param_rejects_null_bytes() {
+        assert!(match_single_route("/users/:id", "/users/test\0injected", true).is_none());
     }
 
     #[test]
-    fn test_splat_sanitizes_traversal() {
-        let m =
-            match_single_route("/files/*path", "/files/docs/../../../etc/passwd", false).unwrap();
-        assert!(!m.params["path"].contains(".."));
+    fn test_splat_rejects_traversal() {
+        assert!(
+            match_single_route("/files/*path", "/files/docs/../../../etc/passwd", false).is_none()
+        );
+    }
+
+    #[test]
+    fn test_param_rejects_encoded_traversal() {
+        // %2e%2e decodes to `..`
+        assert!(match_single_route("/files/:name", "/files/%2e%2e", true).is_none());
+    }
+
+    #[test]
+    fn test_param_rejects_mixed_encoded_traversal() {
+        // .%2e decodes to `..`
+        assert!(match_single_route("/files/:name", "/files/.%2e", true).is_none());
+        // %2e. decodes to `..`
+        assert!(match_single_route("/files/:name", "/files/%2e.", true).is_none());
+    }
+
+    #[test]
+    fn test_param_rejects_encoded_null() {
+        assert!(match_single_route("/users/:id", "/users/test%00injected", true).is_none());
+    }
+
+    #[test]
+    fn test_param_rejects_malformed_percent() {
+        assert!(match_single_route("/users/:id", "/users/100%", true).is_none());
+        assert!(match_single_route("/users/:id", "/users/100%ZZ", true).is_none());
+    }
+
+    #[test]
+    fn test_param_decodes_valid_percent_encoding() {
+        let m = match_single_route("/files/:name", "/files/hello%20world", true).unwrap();
+        assert_eq!(m.params["name"], "hello world");
+    }
+
+    #[test]
+    fn test_splat_decodes_segments() {
+        let m = match_single_route("/files/*path", "/files/my%20docs/read%20me.md", false).unwrap();
+        assert_eq!(m.params["path"], "my docs/read me.md");
+    }
+
+    #[test]
+    fn test_splat_rejects_encoded_traversal() {
+        assert!(
+            match_single_route("/files/*path", "/files/docs/%2e%2e/etc/passwd", false).is_none()
+        );
     }
 }
