@@ -34,7 +34,7 @@ export class MpApp extends RenderableFASTElement(FASTElement) {
   @attr({ attribute: 'cart-taxes' }) cartTaxes!: string;
   @attr({ attribute: 'cart-empty' }) cartEmptyAttr!: string;
   @attr({ attribute: 'catalog-all-active-class' }) catalogAllActiveClass!: string;
-  @attr({ attribute: 'catalog-current-label' }) catalogCurrentLabel!: string;
+  @attr({ attribute: 'catalog-current-label' }) catalogcurrentCategoryLabel!: string;
   @attr({ attribute: 'show-catalog-nav' }) showCatalogNav!: string;
   @attr({ attribute: 'shell-class' }) shellClass!: string;
   @attr page!: string;
@@ -95,7 +95,7 @@ export class MpApp extends RenderableFASTElement(FASTElement) {
       this.catalogAllActiveClass = String(state.allActiveClass);
     }
     if (state.currentCategoryLabel !== undefined) {
-      this.catalogCurrentLabel = String(state.currentCategoryLabel);
+      this.catalogcurrentCategoryLabel = String(state.currentCategoryLabel);
     }
     if (Array.isArray(state.categories)) {
       this.catalogCategories = state.categories as any[];
@@ -124,7 +124,7 @@ export class MpApp extends RenderableFASTElement(FASTElement) {
     this.cartEmpty = this.cartEmptyAttr === 'true';
     this.page = this.getAttribute('page') || '';
     this.catalogAllActiveClass = this.getAttribute('catalog-all-active-class') || '';
-    this.catalogCurrentLabel = this.getAttribute('catalog-current-label') || 'All';
+    this.catalogcurrentCategoryLabel = this.getAttribute('catalog-current-label') || 'All';
     this.showCatalogNav = this.getAttribute('show-catalog-nav') || '';
     this.shellClass = this.getAttribute('shell-class') || 'default-shell';
     this.setPage(this.page || this.pageFromLocation());

@@ -37,7 +37,7 @@ export class MpPageSearch extends RenderableFASTElement(FASTElement) {
   @observable categories?: any[];
   @observable sortOptions?: any[];
   @attr({ attribute: 'all-active-class' }) allActiveClass = '';
-  @attr({ attribute: 'current-label' }) currentLabel = 'All';
+  @attr({ attribute: 'current-label' }) currentCategoryLabel = 'All';
 
   async prepare(): Promise<void> {
     const raw = this.getAttribute('data-state');
@@ -76,7 +76,7 @@ export class MpPageSearch extends RenderableFASTElement(FASTElement) {
       this.allActiveClass = String(state.allActiveClass ?? 'active');
     }
     if (state.currentCategoryLabel !== undefined) {
-      this.currentLabel = String(state.currentCategoryLabel);
+      this.currentCategoryLabel = String(state.currentCategoryLabel);
     }
   }
 

@@ -6,7 +6,7 @@ import { RenderableFASTElement } from '@microsoft/fast-html';
 
 export class MpCategoryNav extends RenderableFASTElement(FASTElement) {
   @attr({ attribute: 'all-active-class' }) allActiveClass = '';
-  @attr({ attribute: 'current-label' }) currentLabel = 'All';
+  @attr({ attribute: 'current-label' }) currentCategoryLabel = 'All';
   @observable categories?: any[];
   private clickHandler = (e: Event): void => { this.onClick(e as MouseEvent); };
   private routeHandler = (): void => { this.closeMobileDropdown(); };
@@ -25,10 +25,10 @@ export class MpCategoryNav extends RenderableFASTElement(FASTElement) {
 
   async prepare(): Promise<void> {
     this.allActiveClass = this.getAttribute('all-active-class') || '';
-    this.currentLabel = this.getAttribute('current-label') || this.currentLabel || 'All';
+    this.currentCategoryLabel = this.getAttribute('current-label') || this.currentCategoryLabel || 'All';
 
     if (Array.isArray(this.categories)) {
-      this.syncCurrentLabel();
+      this.synccurrentCategoryLabel();
       return;
     }
 
@@ -49,7 +49,7 @@ export class MpCategoryNav extends RenderableFASTElement(FASTElement) {
       });
     });
     this.categories = cats;
-    this.syncCurrentLabel();
+    this.synccurrentCategoryLabel();
   }
 
   setInitialState(state: Record<string, unknown>): void {
@@ -60,9 +60,9 @@ export class MpCategoryNav extends RenderableFASTElement(FASTElement) {
       this.allActiveClass = state.allActiveClass;
     }
     if (typeof state.currentCategoryLabel === 'string') {
-      this.currentLabel = state.currentCategoryLabel;
+      this.currentCategoryLabel = state.currentCategoryLabel;
     }
-    this.syncCurrentLabel();
+    this.synccurrentCategoryLabel();
     const view = this.$fastController?.view;
     if (view) {
       view.unbind();
@@ -71,21 +71,21 @@ export class MpCategoryNav extends RenderableFASTElement(FASTElement) {
   }
 
   categoriesChanged(): void {
-    this.syncCurrentLabel();
+    this.synccurrentCategoryLabel();
   }
 
   allActiveClassChanged(): void {
-    this.syncCurrentLabel();
+    this.synccurrentCategoryLabel();
   }
 
-  private syncCurrentLabel(): void {
+  private synccurrentCategoryLabel(): void {
     if (this.allActiveClass === 'active') {
-      this.currentLabel = 'All';
+      this.currentCategoryLabel = 'All';
       return;
     }
 
     const activeCategory = this.categories?.find((category) => category.activeClass === 'active');
-    this.currentLabel = activeCategory?.title || 'All';
+    this.currentCategoryLabel = activeCategory?.title || 'All';
   }
 
   private onClick(event: MouseEvent): void {
