@@ -4,7 +4,7 @@ WebUI provides two types of signals for inserting dynamic values into your templ
 
 ## Escaped Signals: <code v-pre>{{}}</code>
 
-The double curly braces syntax (`{{}}`) inserts a value from the state object with HTML escaping applied:
+The double curly braces syntax (<code v-pre>{{}}</code>) inserts a value from the state object with HTML escaping applied:
 
 ```html
 <p>Hello, {{user.name}}!</p>

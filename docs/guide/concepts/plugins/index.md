@@ -78,7 +78,7 @@ The plugin converts WebUI template syntax to FAST equivalents inside `<f-templat
 |-------------|-------------|
 | `<if condition="EXPR">` | `<f-when value="{EXPR}">` |
 | `<for each="item in items">` | `<f-repeat value="{items}">` |
-| `{{expr}}` in `:attr` values | `{expr}` |
+| <code v-pre>{{expr}}</code> in `:attr` values | `{expr}` |
 
 ### Handler Side (`FastHydrationPlugin`)
 

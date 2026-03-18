@@ -24,7 +24,7 @@ The result: rendering is fast, predictable, and language-agnostic.
 
 - **Language agnostic** — Native handlers for Rust, Node/Bun/Deno, C#, Python, and Go. Any other language can use the C FFI bindings.
 
-- **Web Components** — Templates are standard HTML with native web components and Shadow DOM. No proprietary syntax beyond a few template directives (`<if>`, `<for>`, `{{}}`).
+- **Web Components** — Templates are standard HTML with native web components and Shadow DOM. No proprietary syntax beyond a few template directives (`<if>`, `<for>`, <code v-pre>{{}}</code>).
 
 - **Routing** — The `<route>` directive defines URL-to-component mappings. The server renders the matched route on first load; the optional [`@microsoft/webui-router`](/guide/concepts/routing) package adds client-side navigation with lazy loading.
 

@@ -11,7 +11,7 @@ WebUI Framework provides the following core directives:
 - [**`<route>` Routing**](./route) - Define client-side routes that map URL paths to components
 - [**<code v-pre>{{}}</code> Signal Binding**](./signals) - Insert dynamic values with automatic HTML escaping
 - [**<code v-pre>{{{}}}</code> Raw Signal Binding**](./signals#raw-signals) - Insert unescaped HTML content
-- [**Attribute Directives**](./attributes) - Bind dynamic data to HTML attributes (`{{}}`, `?`, `:`, and mixed)
+- [**Attribute Directives**](./attributes) - Bind dynamic data to HTML attributes (<code v-pre>{{}}</code>, `?`, `:`, and mixed)
 
 ## How Directives Work
 

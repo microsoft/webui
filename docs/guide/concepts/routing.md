@@ -236,9 +236,9 @@ app.get('/users/:id', (req, res) => {
 
 ## Security
 
-Route parameters (`:id`, `:name`, etc.) are extracted from URLs and injected into component state. They are automatically HTML-escaped when rendered with double braces (`{{param}}`), but **not** when rendered with triple braces (`{{{param}}}`).
+Route parameters (`:id`, `:name`, etc.) are extracted from URLs and injected into component state. They are automatically HTML-escaped when rendered with double braces (<code v-pre>{{param}}</code>), but **not** when rendered with triple braces (<code v-pre>{{{param}}}</code>).
 
-> ⚠️ Never use triple braces (`{{{...}}}`) to render route parameters. An attacker could craft a URL like `/users/<script>alert(1)</script>` to inject arbitrary HTML.
+> ⚠️ Never use triple braces (<code v-pre>{{{...}}}</code>) to render route parameters. An attacker could craft a URL like `/users/<script>alert(1)</script>` to inject arbitrary HTML.
 
 Always validate route parameters on the server before including them in state.
 

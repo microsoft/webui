@@ -35,7 +35,7 @@ MyCounter.defineAsync({
 
 ## Templating
 
-Each component has an HTML template with `shadowrootmode="open"`. Use `{{expr}}` for bindings:
+Each component has an HTML template with `shadowrootmode="open"`. Use <code v-pre>{{expr}}</code> for bindings:
 
 ```html
 <template shadowrootmode="open">

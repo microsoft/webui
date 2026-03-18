@@ -17,7 +17,7 @@ This will generate a div for each item in the `items` array, with the current it
 
 ## Using the Loop Variable
 
-The loop variable (e.g., `item` in the example above) is available within the loop body and can be used with the `{{}}` signal syntax:
+The loop variable (e.g., `item` in the example above) is available within the loop body and can be used with the <code v-pre>{{}}</code> signal syntax:
 
 ```html
 <ul>

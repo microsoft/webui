@@ -68,18 +68,18 @@ To create a placeholder where token values will be injected at render time, use 
 </style>
 ```
 
-The `<!--{{tokens}}-->` comment is parsed as a **Signal fragment** with value `"tokens"`. At render time, the host can replace this signal with actual CSS variable declarations based on the hoisted token list and the active theme.
+The <code v-pre>&lt;!--{{tokens}}--&gt;</code> comment is parsed as a **Signal fragment** with value `"tokens"`. At render time, the host can replace this signal with actual CSS variable declarations based on the hoisted token list and the active theme.
 
 ### Binding Syntax
 
 | Syntax | Result |
 |--------|--------|
-| `<!--{{tokens}}-->` | Signal fragment (escaped) |
-| `<!--{{{tokens}}}-->` | Signal fragment (raw/unescaped) |
-| `<!--{{tokens.light}}-->` | Signal fragment with dotted path |
+| <code v-pre>&lt;!--{{tokens}}--&gt;</code> | Signal fragment (escaped) |
+| <code v-pre>&lt;!--{{{tokens}}}--&gt;</code> | Signal fragment (raw/unescaped) |
+| <code v-pre>&lt;!--{{tokens.light}}--&gt;</code> | Signal fragment with dotted path |
 | `<!-- regular comment -->` | Preserved as raw content |
 
-This mechanism is general-purpose — any `{{identifier}}` inside an HTML comment becomes a signal fragment.
+This mechanism is general-purpose — any <code v-pre>{{identifier}}</code> inside an HTML comment becomes a signal fragment.
 
 </div>
 
