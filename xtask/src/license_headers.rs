@@ -3,11 +3,13 @@
 
 //! License header enforcement for source files.
 //!
-//! Walks the workspace tree and verifies that every source file contains the
-//! required copyright header. Optionally fixes files in-place with `--fix`.
+//! Uses `git ls-files` to enumerate tracked source files, automatically
+//! respecting `.gitignore` rules. Only files with checked extensions that
+//! are not in the skip list are inspected for the required copyright header.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// The two-line copyright header that must appear at the top of every source
 /// file.
@@ -17,21 +19,8 @@ const HEADER_LINE_2: &str = "// Licensed under the MIT license.";
 /// Extensions that require the `//`-style license header.
 const CHECKED_EXTENSIONS: &[&str] = &["rs", "ts", "js", "cs", "h", "proto"];
 
-/// Directories to skip entirely when walking the tree.
-const SKIP_DIRS: &[&str] = &[
-    ".git",
-    "target",
-    "node_modules",
-    "dist",
-    "obj",
-    "bin",
-    ".next",
-    ".turbo",
-    ".history",
-];
-
-/// Individual files to skip (relative to workspace root).
-/// Generated files that are not hand-authored belong here.
+/// Individual tracked files to skip (relative to workspace root).
+/// Generated files that are checked in but not hand-authored belong here.
 const SKIP_FILES: &[&str] = &["crates/webui-ffi/include/webui_ffi.h"];
 
 // ── Public API ──────────────────────────────────────────────────────────
@@ -77,53 +66,41 @@ pub fn fix() -> Result<(), String> {
 /// Collect every source file that is missing the required header.
 fn collect_missing() -> Result<Vec<PathBuf>, String> {
     let mut missing = Vec::new();
-    walk(".", &mut missing)?;
+    for path in git_tracked_files()? {
+        if !is_checked_file(&path) {
+            continue;
+        }
+        if is_skipped_file(&path) {
+            continue;
+        }
+        if !has_header(&path)? {
+            missing.push(path);
+        }
+    }
     missing.sort();
     Ok(missing)
 }
 
-/// Recursively walk `dir`, appending files without the header to `out`.
-fn walk(dir: &str, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    let mut stack: Vec<PathBuf> = vec![PathBuf::from(dir)];
+/// List all tracked files via `git ls-files`, which inherently respects
+/// `.gitignore` and excludes untracked / ignored paths.
+fn git_tracked_files() -> Result<Vec<PathBuf>, String> {
+    let output = Command::new("git")
+        .args(["ls-files", "--cached", "--exclude-standard"])
+        .output()
+        .map_err(|e| format!("failed to run `git ls-files`: {e}"))?;
 
-    while let Some(current) = stack.pop() {
-        let entries = fs::read_dir(&current)
-            .map_err(|e| format!("cannot read {}: {e}", current.display()))?;
-
-        for entry in entries {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                let name = file_name_str(&path);
-                if !SKIP_DIRS.contains(&name.as_str()) {
-                    stack.push(path);
-                }
-                continue;
-            }
-
-            if !is_checked_file(&path) {
-                continue;
-            }
-
-            if is_skipped_file(&path) {
-                continue;
-            }
-
-            if !has_header(&path)? {
-                out.push(path);
-            }
-        }
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("`git ls-files` failed: {stderr}"));
     }
-    Ok(())
-}
 
-/// Return the file name as a `String`, falling back to the full path display.
-fn file_name_str(path: &Path) -> String {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .map(String::from)
-        .unwrap_or_else(|| path.display().to_string())
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let files = stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    Ok(files)
 }
 
 /// Whether a path's extension is in the checked set.
@@ -133,16 +110,11 @@ fn is_checked_file(path: &Path) -> bool {
         .is_some_and(|ext| CHECKED_EXTENSIONS.contains(&ext))
 }
 
-/// Whether a path matches one of the skip-file patterns (relative to the
-/// workspace root, which is the current directory when xtask runs).
+/// Whether a path matches one of the individually skipped files.
+/// Paths from `git ls-files` use forward slashes, matching `SKIP_FILES`.
 fn is_skipped_file(path: &Path) -> bool {
-    let normalized = normalize_path(path);
+    let normalized = path.to_string_lossy().replace('\\', "/");
     SKIP_FILES.iter().any(|skip| normalized.ends_with(skip))
-}
-
-/// Normalize a path to use forward slashes for comparison.
-fn normalize_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
 }
 
 /// Read the first two non-empty lines and check whether they match the header.
@@ -269,9 +241,20 @@ mod tests {
     #[test]
     fn skip_file_detection() {
         assert!(is_skipped_file(Path::new(
-            "./crates/webui-ffi/include/webui_ffi.h"
+            "crates/webui-ffi/include/webui_ffi.h"
         )));
-        assert!(!is_skipped_file(Path::new("./crates/webui/src/lib.rs")));
+        assert!(!is_skipped_file(Path::new("crates/webui/src/lib.rs")));
+    }
+
+    #[test]
+    fn git_tracked_files_returns_files() {
+        let files = git_tracked_files().expect("git ls-files should work in repo");
+        assert!(!files.is_empty(), "should find tracked files");
+        // Cargo.toml is always tracked at the workspace root.
+        assert!(
+            files.iter().any(|f| f == Path::new("Cargo.toml")),
+            "Cargo.toml should be in tracked files"
+        );
     }
 
     #[test]
