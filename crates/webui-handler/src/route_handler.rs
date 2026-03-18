@@ -141,7 +141,7 @@ pub fn filter_needed_components(
 ///
 /// Walks the fragment graph from `entry_id`, identifies needed components (not
 /// in the client's inventory), and returns their f-template HTML from the
-/// protocol's `component_templates` map.
+/// protocol's `components` map.
 ///
 /// Returns `(templates: Vec<(name, html)>, updated_inventory_hex)`.
 pub fn get_route_templates(
@@ -155,9 +155,10 @@ pub fn get_route_templates(
         .iter()
         .filter_map(|name| {
             protocol
-                .component_templates
+                .components
                 .get(name)
-                .map(|tmpl| (name.clone(), tmpl.clone()))
+                .filter(|c| !c.template.is_empty())
+                .map(|c| (name.clone(), prepend_css_module(name, &c.css, &c.template)))
         })
         .collect();
 
@@ -181,13 +182,30 @@ pub fn get_route_templates_for_request(
         .iter()
         .filter_map(|name| {
             protocol
-                .component_templates
+                .components
                 .get(name)
-                .map(|tmpl| (name.clone(), tmpl.clone()))
+                .filter(|c| !c.template.is_empty())
+                .map(|c| (name.clone(), prepend_css_module(name, &c.css, &c.template)))
         })
         .collect();
 
     (templates, updated_inv)
+}
+
+/// Prepend the CSS module `<style type="module">` definition to an f-template
+/// string for partial responses.
+fn prepend_css_module(name: &str, css: &str, tmpl: &str) -> String {
+    if css.is_empty() {
+        return tmpl.to_string();
+    }
+    let mut s = String::with_capacity(40 + name.len() + css.len() + tmpl.len());
+    s.push_str("<style type=\"module\" specifier=\"");
+    s.push_str(name);
+    s.push_str("\">");
+    s.push_str(css);
+    s.push_str("</style>");
+    s.push_str(tmpl);
+    s
 }
 
 #[derive(Debug)]
@@ -205,8 +223,8 @@ struct QueuedFragment {
 /// Without a request path, all route branches are followed conservatively.
 ///
 /// Components are marked `inventoryable` when they have a corresponding entry
-/// in `protocol.component_templates` — these are the components whose f-template
-/// HTML the client may need during navigation.
+/// in `protocol.components` with a non-empty template — these are the components
+/// whose f-template HTML the client may need during navigation.
 fn collect_inventoryable_components(
     protocol: &WebUIProtocol,
     entry_id: &str,
@@ -290,8 +308,9 @@ fn collect_inventoryable_components(
                         stack.push(QueuedFragment {
                             id: route_frag.fragment_id.clone(),
                             inventoryable: protocol
-                                .component_templates
-                                .contains_key(&route_frag.fragment_id),
+                                .components
+                                .get(&route_frag.fragment_id)
+                                .is_some_and(|c| !c.template.is_empty()),
                             route_base: child_route_base.clone(),
                         });
 
@@ -357,8 +376,9 @@ fn walk_route_children(
         stack.push(QueuedFragment {
             id: matched.fragment_id.clone(),
             inventoryable: protocol
-                .component_templates
-                .contains_key(&matched.fragment_id),
+                .components
+                .get(&matched.fragment_id)
+                .is_some_and(|c| !c.template.is_empty()),
             route_base: child_base.clone(),
         });
 
@@ -539,7 +559,9 @@ pub fn render_partial(
     request_path: &str,
     inventory_hex: &str,
 ) -> Value {
-    // Get needed templates (filtered by client inventory)
+    // Get needed templates (filtered by client inventory).
+    // Each template string is prepended with its CSS module definition
+    // (if any) so the client can insert both as a DocumentFragment.
     let (templates, updated_inv) =
         get_route_templates_for_request(protocol, entry_id, request_path, inventory_hex);
 
@@ -810,8 +832,10 @@ mod tests {
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
         protocol
-            .component_templates
-            .insert("my-page".to_string(), "<p>page</p>".to_string());
+            .components
+            .entry("my-page".to_string())
+            .or_default()
+            .template = "<p>page</p>".to_string();
 
         let (templates, _inv) = get_route_templates(&protocol, "my-page", "");
         assert_eq!(templates.len(), 1);
@@ -963,14 +987,16 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
-        protocol.component_templates.insert(
-            "mp-search-page".to_string(),
-            "<mp-search-page></mp-search-page>".to_string(),
-        );
-        protocol.component_templates.insert(
-            "mp-product-page".to_string(),
-            "<mp-product-page></mp-product-page>".to_string(),
-        );
+        protocol
+            .components
+            .entry("mp-search-page".to_string())
+            .or_default()
+            .template = "<mp-search-page></mp-search-page>".to_string();
+        protocol
+            .components
+            .entry("mp-product-page".to_string())
+            .or_default()
+            .template = "<mp-product-page></mp-product-page>".to_string();
 
         let (needed, _inv) =
             get_needed_components_for_request(&protocol, "index.html", "/search/shirts", "");
@@ -1050,18 +1076,21 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
-        protocol.component_templates.insert(
-            "mp-account-shell".to_string(),
-            "<mp-account-shell></mp-account-shell>".to_string(),
-        );
-        protocol.component_templates.insert(
-            "mp-profile-page".to_string(),
-            "<mp-profile-page></mp-profile-page>".to_string(),
-        );
-        protocol.component_templates.insert(
-            "mp-order-page".to_string(),
-            "<mp-order-page></mp-order-page>".to_string(),
-        );
+        protocol
+            .components
+            .entry("mp-account-shell".to_string())
+            .or_default()
+            .template = "<mp-account-shell></mp-account-shell>".to_string();
+        protocol
+            .components
+            .entry("mp-profile-page".to_string())
+            .or_default()
+            .template = "<mp-profile-page></mp-profile-page>".to_string();
+        protocol
+            .components
+            .entry("mp-order-page".to_string())
+            .or_default()
+            .template = "<mp-order-page></mp-order-page>".to_string();
 
         let (needed, _inv) =
             get_needed_components_for_request(&protocol, "index.html", "/account/orders/42", "");
@@ -1133,10 +1162,11 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
-        protocol.component_templates.insert(
-            "mp-search-page".to_string(),
-            "<mp-search-page></mp-search-page>".to_string(),
-        );
+        protocol
+            .components
+            .entry("mp-search-page".to_string())
+            .or_default()
+            .template = "<mp-search-page></mp-search-page>".to_string();
 
         let (needed, _inv) =
             get_needed_components_for_request(&protocol, "index.html", "/search", "");
@@ -1182,10 +1212,11 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
-        protocol.component_templates.insert(
-            "mp-search-page".to_string(),
-            "<mp-search-page></mp-search-page>".to_string(),
-        );
+        protocol
+            .components
+            .entry("mp-search-page".to_string())
+            .or_default()
+            .template = "<mp-search-page></mp-search-page>".to_string();
 
         let (_needed, inventory) =
             get_needed_components_for_request(&protocol, "index.html", "/search", "");
@@ -1228,18 +1259,21 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
-        protocol.component_templates.insert(
-            "mp-app".to_string(),
-            "<f-template id=app></f-template>".to_string(),
-        );
-        protocol.component_templates.insert(
-            "mp-search-page".to_string(),
-            "<f-template id=search></f-template>".to_string(),
-        );
-        protocol.component_templates.insert(
-            "mp-product-grid".to_string(),
-            "<f-template id=grid></f-template>".to_string(),
-        );
+        protocol
+            .components
+            .entry("mp-app".to_string())
+            .or_default()
+            .template = "<f-template id=app></f-template>".to_string();
+        protocol
+            .components
+            .entry("mp-search-page".to_string())
+            .or_default()
+            .template = "<f-template id=search></f-template>".to_string();
+        protocol
+            .components
+            .entry("mp-product-grid".to_string())
+            .or_default()
+            .template = "<f-template id=grid></f-template>".to_string();
 
         let (templates, _inv) =
             get_route_templates_for_request(&protocol, "index.html", "/search", "");

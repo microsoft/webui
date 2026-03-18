@@ -36,6 +36,10 @@ pub enum CssStrategy {
     Link,
     /// Embed CSS content in `<style>` tags within the shadow DOM template.
     Style,
+    /// Emit a `<style type="module" specifier="component">` definition once per
+    /// page and reference it via `shadowrootadoptedstylesheets` on each shadow
+    /// root `<template>`. Based on the Declarative CSS Module Scripts proposal.
+    Module,
 }
 
 /// Counter for generating unique fragment IDs.
@@ -1269,6 +1273,10 @@ impl HtmlParser {
             )
         };
         self.token_store.extend(css_tokens);
+        let adopted_specifier = match self.css_strategy {
+            CssStrategy::Module if css_content.is_some() => Some(component.to_string()),
+            _ => None,
+        };
         let css_injection = match self.css_strategy {
             CssStrategy::Link => {
                 if css_content.is_some() {
@@ -1282,8 +1290,13 @@ impl HtmlParser {
             CssStrategy::Style => css_content
                 .as_ref()
                 .map(|css| format!("<style>{}</style>", css.trim())),
+            CssStrategy::Module => None,
         };
-        let processed = self.process_component_template(&html_content, css_injection.as_deref());
+        let processed = self.process_component_template(
+            &html_content,
+            css_injection.as_deref(),
+            adopted_specifier.as_deref(),
+        );
         let saved_buffer = std::mem::take(&mut self.raw_buffer);
         self.parse(component, &processed)?;
         self.raw_buffer = saved_buffer;
@@ -1368,6 +1381,10 @@ impl HtmlParser {
                 }
             }
 
+            let adopted_specifier = match self.css_strategy {
+                CssStrategy::Module if css_content.is_some() => Some(tag_name.to_string()),
+                _ => None,
+            };
             let css_injection = match self.css_strategy {
                 CssStrategy::Link => {
                     if css_content.is_some() {
@@ -1382,9 +1399,13 @@ impl HtmlParser {
                 CssStrategy::Style => css_content
                     .as_ref()
                     .map(|css| format!("<style>{}</style>", css.trim())),
+                CssStrategy::Module => None,
             };
-            let processed =
-                self.process_component_template(&html_content, css_injection.as_deref());
+            let processed = self.process_component_template(
+                &html_content,
+                css_injection.as_deref(),
+                adopted_specifier.as_deref(),
+            );
             self.parse(tag_name, &processed)?;
         }
 
@@ -1411,28 +1432,56 @@ impl HtmlParser {
 
     /// Process component template HTML: wrap in shadow DOM template if needed,
     /// inject CSS snippet (link or inline style), and strip runtime-only attributes.
-    fn process_component_template(&mut self, html: &str, css_snippet: Option<&str>) -> String {
+    /// When `adopted_specifier` is `Some`, a `shadowrootadoptedstylesheets` attribute
+    /// is added to the `<template>` tag (used by [`CssStrategy::Module`]).
+    fn process_component_template(
+        &mut self,
+        html: &str,
+        css_snippet: Option<&str>,
+        adopted_specifier: Option<&str>,
+    ) -> String {
         let trimmed = html.trim();
         let has_template = trimmed.starts_with("<template");
+
+        // Extra attribute for CSS module adoption (empty str avoids allocation)
+        let adopted_attr = adopted_specifier.map(|spec| {
+            let mut s = String::with_capacity(35 + spec.len());
+            s.push_str(" shadowrootadoptedstylesheets=\"");
+            s.push_str(spec);
+            s.push('"');
+            s
+        });
+        let adopted_ref = adopted_attr.as_deref().unwrap_or_default();
 
         if has_template {
             // Strip @/:/?-prefixed attributes from the template tag
             let stripped = self.strip_runtime_attrs_from_template(trimmed);
-            if let Some(snippet) = css_snippet {
-                // Inject CSS snippet after the first > in the template tag
-                if let Some(pos) = stripped.find('>') {
-                    let mut result = String::with_capacity(stripped.len() + snippet.len() + 16);
-                    result.push_str(&stripped[..=pos]);
-                    result.push_str(snippet);
-                    result.push_str(&stripped[pos + 1..]);
-                    return result;
+            if let Some(pos) = stripped.find('>') {
+                let snippet = css_snippet.unwrap_or_default();
+                if adopted_ref.is_empty() && snippet.is_empty() {
+                    return stripped;
                 }
+                let mut result =
+                    String::with_capacity(stripped.len() + snippet.len() + adopted_ref.len() + 16);
+                result.push_str(&stripped[..pos]);
+                result.push_str(adopted_ref);
+                result.push('>');
+                result.push_str(snippet);
+                result.push_str(&stripped[pos + 1..]);
+                return result;
             }
             stripped
-        } else if let Some(snippet) = css_snippet {
-            format!("<template shadowrootmode=\"open\">{snippet}{trimmed}</template>")
         } else {
-            format!("<template shadowrootmode=\"open\">{trimmed}</template>")
+            let snippet = css_snippet.unwrap_or_default();
+            let mut result =
+                String::with_capacity(45 + adopted_ref.len() + snippet.len() + trimmed.len());
+            result.push_str("<template shadowrootmode=\"open\"");
+            result.push_str(adopted_ref);
+            result.push('>');
+            result.push_str(snippet);
+            result.push_str(trimmed);
+            result.push_str("</template>");
+            result
         }
     }
 
@@ -2815,6 +2864,68 @@ mod tests {
             !raw_text.contains("<link"),
             "Should not have <link> tag in inline mode: {}",
             raw_text
+        );
+    }
+
+    #[test]
+    fn test_css_strategy_module_emits_adopted_stylesheets() {
+        let mut parser = HtmlParser::new();
+        parser.set_css_strategy(CssStrategy::Module);
+        parser
+            .component_registry_mut()
+            .register_component("my-card", "<p><slot></slot></p>", Some("p { color: red; }"))
+            .ok();
+        parser.parse("index.html", "<my-card>Hello</my-card>").ok();
+        let records = parser.into_fragment_records();
+
+        // Component template should have shadowrootadoptedstylesheets, no CSS
+        // module in raw fragments (CSS lives on the component fragment's css field)
+        let my_card = &records["my-card"].fragments;
+        let template_text: String = my_card
+            .iter()
+            .filter_map(|f| match &f.fragment {
+                Some(Fragment::Raw(r)) => Some(r.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            template_text.contains("shadowrootadoptedstylesheets=\"my-card\""),
+            "Expected shadowrootadoptedstylesheets attr in: {template_text}"
+        );
+        assert!(
+            !template_text.contains("<link"),
+            "Should not have <link> in module mode: {template_text}"
+        );
+        // No CSS module baked into raw fragments — CSS is stored in
+        // protocol.components, populated by the build system.
+        assert!(
+            !template_text.contains(r#"<style type="module""#),
+            "CSS module should NOT be in raw fragments: {template_text}"
+        );
+    }
+
+    #[test]
+    fn test_css_strategy_module_no_css_no_adopted_attr() {
+        let mut parser = HtmlParser::new();
+        parser.set_css_strategy(CssStrategy::Module);
+        parser
+            .component_registry_mut()
+            .register_component("my-card", "<p><slot></slot></p>", None)
+            .ok();
+        parser.parse("index.html", "<my-card>Hello</my-card>").ok();
+        let records = parser.into_fragment_records();
+        let my_card = &records["my-card"].fragments;
+        let template_text: String = my_card
+            .iter()
+            .filter_map(|f| match &f.fragment {
+                Some(Fragment::Raw(r)) => Some(r.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        // No CSS → no shadowrootadoptedstylesheets attribute
+        assert!(
+            !template_text.contains("shadowrootadoptedstylesheets"),
+            "Should not have adopted attr without CSS: {template_text}"
         );
     }
 

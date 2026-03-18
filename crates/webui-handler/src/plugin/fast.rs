@@ -201,8 +201,15 @@ impl HandlerPlugin for FastHydrationPlugin {
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
         // Emit f-templates for only the components that were actually rendered.
+        // CSS module definitions are NOT included here — the handler already
+        // emitted them during SSR via process_component().
         for name in rendered_components {
-            if let Some(tmpl) = protocol.component_templates.get(name) {
+            if let Some(tmpl) = protocol
+                .components
+                .get(name)
+                .map(|c| c.template.as_str())
+                .filter(|s| !s.is_empty())
+            {
                 writer.write(tmpl)?;
             }
         }

@@ -35,6 +35,7 @@ pub type WebUIFragmentAttribute = WebUiFragmentAttribute;
 pub type WebUIFragmentPlugin = WebUiFragmentPlugin;
 pub type WebUIFragmentRoute = WebUiFragmentRoute;
 pub type WebUIFragmentOutlet = WebUiFragmentOutlet;
+pub type ComponentData = proto::ComponentData;
 
 /// A mapping of unique fragment identifiers to their corresponding fragment lists.
 pub type WebUIFragmentRecords = HashMap<String, FragmentList>;
@@ -312,7 +313,7 @@ impl WebUiProtocol {
         Self {
             fragments,
             tokens: Vec::new(),
-            component_templates: HashMap::new(),
+            components: HashMap::new(),
         }
     }
 
@@ -321,7 +322,7 @@ impl WebUiProtocol {
         Self {
             fragments,
             tokens,
-            component_templates: HashMap::new(),
+            components: HashMap::new(),
         }
     }
 }

@@ -310,22 +310,26 @@ fn render_partial_returns_templates_inventory_and_chain() {
     );
 
     let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
-    protocol.component_templates.insert(
-        "mp-app".to_string(),
-        "<f-template id=app></f-template>".to_string(),
-    );
-    protocol.component_templates.insert(
-        "mp-search-page".to_string(),
-        "<f-template id=search></f-template>".to_string(),
-    );
-    protocol.component_templates.insert(
-        "mp-product-grid".to_string(),
-        "<f-template id=grid></f-template>".to_string(),
-    );
-    protocol.component_templates.insert(
-        "mp-category-nav".to_string(),
-        "<f-template id=nav></f-template>".to_string(),
-    );
+    protocol
+        .components
+        .entry("mp-app".to_string())
+        .or_default()
+        .template = "<f-template id=app></f-template>".to_string();
+    protocol
+        .components
+        .entry("mp-search-page".to_string())
+        .or_default()
+        .template = "<f-template id=search></f-template>".to_string();
+    protocol
+        .components
+        .entry("mp-product-grid".to_string())
+        .or_default()
+        .template = "<f-template id=grid></f-template>".to_string();
+    protocol
+        .components
+        .entry("mp-category-nav".to_string())
+        .or_default()
+        .template = "<f-template id=nav></f-template>".to_string();
 
     let protocol_bytes = protocol
         .to_protobuf()

@@ -31,13 +31,13 @@ struct CachedAsset {
 }
 
 impl FrontendRuntime {
-    pub fn load(app_root: &Path) -> Result<Self> {
+    pub fn load(app_root: &Path, css: CssStrategy) -> Result<Self> {
         let app_dir = app_root.join("src");
         let assets_dir = canonicalize_dir(&app_root.join("dist"));
         let build_result = build(BuildOptions {
             app_dir,
             entry: "index.html".to_string(),
-            css: CssStrategy::Link,
+            css,
             plugin: Some("fast".to_string()),
             components: Vec::new(),
         })

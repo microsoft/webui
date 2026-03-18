@@ -34,8 +34,8 @@ pub struct WebUIProtocol {
     /// Sorted, deduplicated CSS custom property names used across all
     /// components and entry page styles (without `--` prefix).
     pub tokens: Vec<String>,
-    /// Map of component tag names to their template fragment IDs.
-    pub component_templates: HashMap<String, String>,
+    /// Per-component data keyed by tag name (f-template + CSS).
+    pub components: HashMap<String, ComponentData>,
 }
 
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
@@ -599,13 +599,18 @@ pub enum CssStrategy {
     Link,
     /// Embed CSS content inline in `<style>` tags within the shadow DOM template.
     Style,
+    /// Emit a `<style type="module" specifier="component">` definition once per
+    /// page and reference it via `shadowrootadoptedstylesheets` on each shadow
+    /// root `<template>`.
+    Module,
 }
 ```
 
 - **Link** (default): Emits `<link>` tags referencing external `.css` files. Used by the CLI for production builds where CSS files are served separately.
 - **Style**: Embeds the full CSS content in `<style>` tags inside the shadow DOM template. Used when all files are needed in-memory.
+- **Module**: Uses the [Declarative CSS Module Scripts](https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ShadowDOM/explainer.md) proposal. Emits a `<style type="module" specifier="component-name">` definition in each component's light DOM (once per component) and adds `shadowrootadoptedstylesheets="component-name"` to the `<template>` tag. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. For partial rendering, CSS module definitions are prepended to f-template strings so the client inserts both as a single DocumentFragment.
 
-Set via `parser.set_css_strategy(CssStrategy::Inline)`.
+Set via `parser.set_css_strategy(CssStrategy::Style)`.
 
 #### Primary Method
 ```rust

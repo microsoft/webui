@@ -18,20 +18,33 @@ use clap::Parser;
 
 use crate::app::AppState;
 use crate::server::configure_app;
+use webui::CssStrategy;
 
 #[derive(Debug, Parser)]
 #[command(name = "marketplace-api")]
 struct ApiArgs {
     #[arg(long, default_value_t = 3100)]
     port: u16,
+
+    /// CSS delivery strategy: link, style, or module.
+    #[arg(long, default_value = "link")]
+    css: String,
 }
 
 fn main() -> Result<()> {
     let args = ApiArgs::parse();
     let port = args.port;
+    let css = match args.css.as_str() {
+        "link" => CssStrategy::Link,
+        "style" => CssStrategy::Style,
+        "module" => CssStrategy::Module,
+        other => {
+            anyhow::bail!("Unknown CSS strategy: {other}. Use \"link\", \"style\", or \"module\".")
+        }
+    };
     let app_root = std::env::current_dir().context("Failed to determine commerce app directory")?;
 
-    let app_state = AppState::load(&app_root)?;
+    let app_state = AppState::load(&app_root, css)?;
 
     eprintln!(
         "Commerce server: {} products, listening on :{}",

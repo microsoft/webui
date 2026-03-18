@@ -6,16 +6,27 @@ syntax = "proto3";
 package webui;
 
 // Root protocol containing all fragment records.
+// Per-component metadata keyed by tag name.
+message ComponentData {
+  // f-template HTML string for hydration.
+  // Populated by the FAST parser plugin at build time.
+  // Used by servers to send f-templates to the client during navigation.
+  string template = 1;
+  // Component CSS content for the Module strategy.
+  // Contains the full CSS content when CssStrategy::Module is active.
+  // Empty for Link and Style strategies (CSS is handled via <link> tags
+  // or inline <style> tags baked into raw fragments by the parser).
+  string css = 2;
+}
+
 message WebUIProtocol {
   map<string, FragmentList> fragments = 1;
   // Sorted, deduplicated CSS custom property names used across all components
   // and entry page styles (e.g., "colorBrandBackground", "spacingMedium").
   // Only usage via var(--name) is included; local definitions are excluded.
   repeated string tokens = 2;
-  // Component f-template HTML strings keyed by tag name.
-  // Populated by the FAST parser plugin at build time. Used by servers
-  // to send f-templates to the client during navigation (JSON partials).
-  map<string, string> component_templates = 3;
+  // Per-component data keyed by tag name (f-template + CSS).
+  map<string, ComponentData> components = 3;
 }
 
 // A list of fragments (needed because protobuf maps cannot have repeated values directly).

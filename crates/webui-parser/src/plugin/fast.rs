@@ -106,7 +106,7 @@ impl ParserPlugin for FastParserPlugin {
     }
 
     fn on_body_end(&mut self) -> Option<String> {
-        // f-templates are stored in protocol.component_templates and emitted
+        // f-templates are stored in protocol.components and emitted
         // selectively by the handler based on which components were rendered.
         None
     }
@@ -154,11 +154,18 @@ pub fn generate_f_template(
             s.push_str("</style>");
             s
         }),
+        CssStrategy::Module => None,
     };
 
     if trimmed.starts_with("<template") {
         if let Some(close_pos) = trimmed.find('>') {
-            output.push_str(&trimmed[..=close_pos]);
+            output.push_str(&trimmed[..close_pos]);
+            if css_strategy == CssStrategy::Module && css_content.is_some() {
+                output.push_str(" shadowrootadoptedstylesheets=\"");
+                output.push_str(tag_name);
+                output.push('"');
+            }
+            output.push('>');
             if let Some(ref injection) = css_injection {
                 output.push_str(injection);
             }
@@ -167,7 +174,13 @@ pub fn generate_f_template(
             output.push_str(&trimmed);
         }
     } else {
-        output.push_str("<template>");
+        output.push_str("<template");
+        if css_strategy == CssStrategy::Module && css_content.is_some() {
+            output.push_str(" shadowrootadoptedstylesheets=\"");
+            output.push_str(tag_name);
+            output.push('"');
+        }
+        output.push('>');
         if let Some(ref injection) = css_injection {
             output.push_str(injection);
         }
@@ -745,6 +758,59 @@ mod tests {
         assert!(
             !html.contains("<link"),
             "Style strategy should not emit <link> tags"
+        );
+    }
+
+    #[test]
+    fn component_template_css_strategy_module() {
+        let mut plugin = FastParserPlugin::new();
+        plugin.set_css_strategy(crate::CssStrategy::Module);
+        let comp = make_component("my-comp", "<div>hello</div>", Some("div { color: red; }"));
+        plugin.on_parse_component("my-comp", &comp).unwrap();
+
+        let templates = plugin.take_component_templates();
+        assert_eq!(templates.len(), 1);
+        let (_, html) = &templates[0];
+
+        // f-template should NOT contain the CSS module — that is added
+        // by the handler (SSR) or prepend_css_module (partials).
+        assert!(
+            !html.contains(r#"<style type="module""#),
+            "CSS module should not be baked into f-template: {html}"
+        );
+        // shadowrootadoptedstylesheets on the inner template
+        assert!(
+            html.contains(r#"shadowrootadoptedstylesheets="my-comp""#),
+            "Module strategy should add shadowrootadoptedstylesheets, got: {html}"
+        );
+        // No inline <style> or <link> inside the template
+        assert!(
+            !html.contains("<style>div"),
+            "Module strategy should not have inline <style> inside template"
+        );
+        assert!(
+            !html.contains("<link"),
+            "Module strategy should not emit <link> tags"
+        );
+    }
+
+    #[test]
+    fn component_template_css_strategy_module_no_css() {
+        let mut plugin = FastParserPlugin::new();
+        plugin.set_css_strategy(crate::CssStrategy::Module);
+        let comp = make_component("my-comp", "<div>hello</div>", None);
+        plugin.on_parse_component("my-comp", &comp).unwrap();
+
+        let templates = plugin.take_component_templates();
+        assert_eq!(templates.len(), 1);
+        let (_, html) = &templates[0];
+        assert!(
+            !html.contains("shadowrootadoptedstylesheets"),
+            "No CSS = no shadowrootadoptedstylesheets, got: {html}"
+        );
+        assert!(
+            !html.contains("<style"),
+            "No CSS = no style tag, got: {html}"
         );
     }
 

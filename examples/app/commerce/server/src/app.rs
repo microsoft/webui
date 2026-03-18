@@ -13,8 +13,8 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
-    pub(crate) fn load(app_root: &Path) -> Result<Self> {
-        let frontend = FrontendRuntime::load(app_root)?;
+    pub(crate) fn load(app_root: &Path, css: webui::CssStrategy) -> Result<Self> {
+        let frontend = FrontendRuntime::load(app_root, css)?;
         let catalog = Catalog::generate();
         Ok(Self { catalog, frontend })
     }
@@ -40,7 +40,7 @@ pub(crate) fn test_state() -> actix_web::web::Data<AppState> {
     let app_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("server crate should live under the app directory");
-    let state = match AppState::load(app_root) {
+    let state = match AppState::load(app_root, webui::CssStrategy::Link) {
         Ok(state) => state,
         Err(error) => panic!("Failed to build the commerce WebUI protocol: {error:#}"),
     };

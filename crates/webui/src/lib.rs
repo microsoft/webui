@@ -276,30 +276,42 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     let fragment_records = parser.into_fragment_records();
     let fragment_count: usize = fragment_records.values().map(|v| v.fragments.len()).sum();
 
-    // Filter CSS to only protocol-referenced components.
-    // In Inline mode, CSS is embedded in <style> tags by the parser,
-    // so no external CSS files are produced.
-    // Sanitize filenames: strip path separators to prevent traversal.
-    let css_files: Vec<(String, String)> = if options.css == CssStrategy::Style {
-        Vec::new()
-    } else {
-        css_snapshot
-            .into_iter()
-            .filter(|(tag, _)| fragment_records.contains_key(tag))
-            .map(|(tag, css)| {
-                let safe_tag = tag.replace(['/', '\\'], "-");
-                (format!("{safe_tag}.css"), css)
-            })
-            .collect()
-    };
-
     let mut protocol = WebUIProtocol::with_tokens(fragment_records, tokens);
+
+    // Store component CSS in the protocol keyed by tag name.
+    // Only Module strategy populates this — the handler emits CSS module
+    // <style> tags in <head> and prepends them to partial f-templates.
+    // Link and Style strategies handle CSS via <link> tags and inline
+    // <style> tags baked into raw fragments by the parser.
+    if options.css == CssStrategy::Module {
+        for (tag, css) in &css_snapshot {
+            if protocol.fragments.contains_key(tag) {
+                protocol.components.entry(tag.clone()).or_default().css = css.trim().to_string();
+            }
+        }
+    }
+
+    // Filter CSS to only protocol-referenced components.
+    // In Style mode CSS is embedded in <style> tags; in Module mode CSS is
+    // emitted as <style type="module"> definitions. Neither produces external
+    // CSS files. Sanitize filenames: strip path separators to prevent traversal.
+    let css_files: Vec<(String, String)> =
+        if matches!(options.css, CssStrategy::Style | CssStrategy::Module) {
+            Vec::new()
+        } else {
+            css_snapshot
+                .into_iter()
+                .filter(|(tag, _)| protocol.fragments.contains_key(tag))
+                .map(|(tag, css)| {
+                    let safe_tag = tag.replace(['/', '\\'], "-");
+                    (format!("{safe_tag}.css"), css)
+                })
+                .collect()
+        };
 
     // Store f-templates in the protocol so any host server can query them
     for (tag, tmpl) in &component_templates {
-        protocol
-            .component_templates
-            .insert(tag.clone(), tmpl.clone());
+        protocol.components.entry(tag.clone()).or_default().template = tmpl.clone();
     }
 
     Ok(RawBuildOutput {
@@ -460,6 +472,23 @@ mod tests {
 
         let result = build(options).unwrap();
         // Inline mode embeds CSS in <style> tags — no external CSS files
+        assert!(result.css_files.is_empty());
+        assert_eq!(result.stats.css_file_count, 0);
+        assert!(result.stats.fragment_count > 0);
+    }
+
+    #[test]
+    fn test_build_module_css() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>Hello</my-card>"),
+            ("my-card.html", "<div><slot></slot></div>"),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.css = CssStrategy::Module;
+
+        let result = build(options).unwrap();
+        // Module mode uses <style type="module"> — no external CSS files
         assert!(result.css_files.is_empty());
         assert_eq!(result.stats.css_file_count, 0);
         assert!(result.stats.fragment_count > 0);

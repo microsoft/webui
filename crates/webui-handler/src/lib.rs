@@ -103,7 +103,9 @@ struct WebUIProcessContext<'a> {
     /// Base path for resolving relative route paths (`./`).
     /// Updated as the handler descends into nested matched routes.
     route_base: String,
-    /// Component names visited during rendering (for selective f-template emission).
+    /// Component names visited during rendering (for selective f-template emission
+    /// and CSS module dedup — only the first render of each component emits
+    /// its `<style type="module">` tag).
     rendered_components: HashSet<String>,
     /// Per-render plugin instance created from the handler's factory.
     plugin: Option<Box<dyn HandlerPlugin>>,
@@ -316,69 +318,7 @@ impl WebUIHandler {
                     }
                 }
                 Some(Fragment::Route(route_frag)) => {
-                    // Only the best-matching route is active
-                    let route_key = &route_frag.fragment_id;
-                    let is_matched = best_route
-                        .as_ref()
-                        .is_some_and(|(best_key, _)| best_key == route_key);
-
-                    // Emit <webui-route> as a web component with declarative shadow DOM
-                    context.writer.write("<webui-route")?;
-                    if !route_frag.path.is_empty() {
-                        context.writer.write(" path=\"")?;
-                        context.writer.write(&route_frag.path)?;
-                        context.writer.write("\"")?;
-                    }
-                    if !route_frag.fragment_id.is_empty() {
-                        context.writer.write(" component=\"")?;
-                        context.writer.write(&route_frag.fragment_id)?;
-                        context.writer.write("\"")?;
-                    }
-                    if route_frag.exact {
-                        context.writer.write(" exact")?;
-                    }
-
-                    if is_matched {
-                        context.writer.write(" active>")?;
-
-                        if !route_frag.fragment_id.is_empty() {
-                            let saved_route_base = context.route_base.clone();
-                            let saved_route_children = std::mem::take(&mut context.route_children);
-                            if let Some((_, ref rm)) = best_route {
-                                context.route_base = route_matcher::compute_route_base(
-                                    &context.request_path,
-                                    rm.consumed_segments,
-                                );
-                            }
-
-                            context.route_children = route_frag.children.clone();
-
-                            // Emit component tag with state attributes
-                            context.writer.write("<")?;
-                            context.writer.write(&route_frag.fragment_id)?;
-                            route_renderer::emit_state_attributes(context.state, context.writer)?;
-                            context.writer.write(">")?;
-
-                            self.process_component(
-                                &webui_protocol::WebUIFragmentComponent {
-                                    fragment_id: route_frag.fragment_id.clone(),
-                                },
-                                context,
-                            )?;
-
-                            context.writer.write("</")?;
-                            context.writer.write(&route_frag.fragment_id)?;
-                            context.writer.write(">")?;
-
-                            context.route_base = saved_route_base;
-                            context.route_children = saved_route_children;
-                        }
-                    } else {
-                        // Non-matched route: hidden, empty
-                        context.writer.write(" style=\"display:none\">")?;
-                    }
-
-                    context.writer.write("</webui-route>")?;
+                    self.process_route(route_frag, &best_route, context)?;
                 }
                 Some(Fragment::Outlet(_)) => {
                     self.process_outlet(context)?;
@@ -500,12 +440,113 @@ impl WebUIHandler {
         Ok(())
     }
 
+    /// Emit a `<style type="module">` tag for a component if this is its first
+    /// rendering and it has CSS in `protocol.components` (Module strategy only).
+    fn emit_css_module(
+        &self,
+        component: &webui_protocol::WebUIFragmentComponent,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        if !context.rendered_components.contains(&component.fragment_id) {
+            if let Some(css) = context
+                .protocol
+                .components
+                .get(&component.fragment_id)
+                .map(|c| c.css.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                context
+                    .writer
+                    .write("<style type=\"module\" specifier=\"")?;
+                context.writer.write(&component.fragment_id)?;
+                context.writer.write("\">")?;
+                context.writer.write(css)?;
+                context.writer.write("</style>")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Process a route fragment — renders `<webui-route>` with matched/hidden state.
+    fn process_route(
+        &self,
+        route_frag: &webui_protocol::WebUiFragmentRoute,
+        best_route: &Option<(String, route_matcher::RouteMatch)>,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        let is_matched = best_route
+            .as_ref()
+            .is_some_and(|(best_key, _)| *best_key == route_frag.fragment_id);
+
+        context.writer.write("<webui-route")?;
+        if !route_frag.path.is_empty() {
+            context.writer.write(" path=\"")?;
+            context.writer.write(&route_frag.path)?;
+            context.writer.write("\"")?;
+        }
+        if !route_frag.fragment_id.is_empty() {
+            context.writer.write(" component=\"")?;
+            context.writer.write(&route_frag.fragment_id)?;
+            context.writer.write("\"")?;
+        }
+        if route_frag.exact {
+            context.writer.write(" exact")?;
+        }
+
+        if is_matched {
+            context.writer.write(" active>")?;
+
+            if !route_frag.fragment_id.is_empty() {
+                let saved_route_base = context.route_base.clone();
+                let saved_route_children = std::mem::take(&mut context.route_children);
+                if let Some((_, ref rm)) = best_route {
+                    context.route_base = route_matcher::compute_route_base(
+                        &context.request_path,
+                        rm.consumed_segments,
+                    );
+                }
+
+                context.route_children = route_frag.children.clone();
+
+                let comp = webui_protocol::WebUIFragmentComponent {
+                    fragment_id: route_frag.fragment_id.clone(),
+                };
+
+                context.writer.write("<")?;
+                context.writer.write(&route_frag.fragment_id)?;
+                route_renderer::emit_state_attributes(context.state, context.writer)?;
+                context.writer.write(">")?;
+
+                self.process_component(&comp, context)?;
+
+                context.writer.write("</")?;
+                context.writer.write(&route_frag.fragment_id)?;
+                context.writer.write(">")?;
+
+                context.route_base = saved_route_base;
+                context.route_children = saved_route_children;
+            }
+        } else {
+            context.writer.write(" style=\"display:none\">")?;
+        }
+
+        context.writer.write("</webui-route>")?;
+        Ok(())
+    }
+
     /// Process a component fragment.
     fn process_component(
         &self,
         component: &webui_protocol::WebUIFragmentComponent,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
+        // Emit CSS module into the component's light DOM on first encounter.
+        // Subsequent instances skip — the browser's module map deduplicates.
+        let first_render = !context.rendered_components.contains(&component.fragment_id);
+        if first_render {
+            self.emit_css_module(component, context)?;
+        }
+
         // Track this component as rendered (for selective f-template emission)
         context
             .rendered_components
@@ -5554,6 +5595,279 @@ mod tests {
         assert!(
             html.contains(r#"component="section-comp" style="display:none">"#),
             "section hidden at /: {html}"
+        );
+    }
+
+    // ── CSS Module dedup tests ───────────────────────────────────────
+
+    #[test]
+    fn test_css_module_emitted_once_before_component() {
+        // CSS module definition emitted once, right before the first
+        // component usage — not in <head>.
+        let template = r#"<template shadowrootmode="open" shadowrootadoptedstylesheets="my-card"><p><slot></slot></p></template>"#;
+
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<div>".to_string()),
+                    WebUIFragment::component("my-card"),
+                    WebUIFragment::raw("A".to_string()),
+                    WebUIFragment::component("my-card"),
+                    WebUIFragment::raw("B</div>".to_string()),
+                ],
+            },
+        );
+        fragments.insert(
+            "my-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw(template.to_string())],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol
+            .components
+            .entry("my-card".to_string())
+            .or_default()
+            .css = "p{color:red}".to_string();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        let html = writer.get_content();
+
+        // CSS module should appear exactly once
+        let count = html
+            .matches(r#"<style type="module" specifier="my-card">"#)
+            .count();
+        assert_eq!(
+            count, 1,
+            "CSS module should be emitted once, got {count} in: {html}"
+        );
+
+        // Template should appear twice (once per component instance)
+        let tmpl_count = html
+            .matches(r#"shadowrootadoptedstylesheets="my-card""#)
+            .count();
+        assert_eq!(
+            tmpl_count, 2,
+            "Template should render twice, got {tmpl_count} in: {html}"
+        );
+
+        // CSS module should appear before the first template
+        let css_pos = html
+            .find(r#"<style type="module""#)
+            .expect("CSS module missing");
+        let tmpl_pos = html
+            .find(r#"shadowrootadoptedstylesheets"#)
+            .expect("template missing");
+        assert!(
+            css_pos < tmpl_pos,
+            "CSS module should precede first component: {html}"
+        );
+    }
+
+    #[test]
+    fn test_component_without_css_renders_normally() {
+        // Components without CSS module prefix pass through unchanged
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("my-card")],
+            },
+        );
+        fragments.insert(
+            "my-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw(
+                    r#"<template shadowrootmode="open"><p>hello</p></template>"#.to_string(),
+                )],
+            },
+        );
+
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        let html = writer.get_content();
+        assert!(
+            html.contains("<p>hello</p>"),
+            "Non-module component should render normally: {html}"
+        );
+    }
+
+    #[test]
+    fn test_non_module_strategy_no_css_in_head() {
+        // When component_css is empty (Link/Style strategies), no
+        // <style type="module"> tags should appear in <head>.
+        let template = r#"<template shadowrootmode="open"><p>hello</p></template>"#;
+
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::raw("</head><body>".to_string()),
+                    WebUIFragment::component("my-card"),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        fragments.insert(
+            "my-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw(template.to_string())],
+            },
+        );
+
+        // No component css populated — simulates Link/Style strategy
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        let html = writer.get_content();
+
+        assert!(
+            !html.contains(r#"<style type="module""#),
+            "Non-module strategy should not emit CSS modules in <head>: {html}"
+        );
+        assert!(
+            html.contains("<p>hello</p>"),
+            "Component should still render: {html}"
+        );
+    }
+
+    #[test]
+    fn test_css_module_emitted_in_component_light_dom() {
+        // The CSS module <style> must be inside the component tag (light DOM),
+        // not outside it — e.g. <mp-card><style type="module" ...>CSS</style>
+        // <template shadowrootadoptedstylesheets="mp-card">...</template></mp-card>
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<my-card>".to_string()),
+                    WebUIFragment::component("my-card"),
+                    WebUIFragment::raw("</my-card>".to_string()),
+                ],
+            },
+        );
+        fragments.insert(
+            "my-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw(
+                    r#"<template shadowrootmode="open" shadowrootadoptedstylesheets="my-card"><p>hi</p></template>"#.to_string(),
+                )],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol
+            .components
+            .entry("my-card".to_string())
+            .or_default()
+            .css = "p{color:red}".to_string();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        let html = writer.get_content();
+
+        // CSS module must be INSIDE the component tag (light DOM)
+        let tag_open = html.find("<my-card>").expect("<my-card> missing");
+        let css_pos = html
+            .find(r#"<style type="module""#)
+            .expect("CSS module missing");
+        let tag_close = html.rfind("</my-card>").expect("</my-card> missing");
+        assert!(
+            css_pos > tag_open && css_pos < tag_close,
+            "CSS module should be inside component light DOM: {html}"
+        );
+    }
+
+    #[test]
+    fn test_css_module_emitted_for_route_components() {
+        // Route components also get CSS modules via process_route → process_component.
+        let template = r#"<template shadowrootmode="open" shadowrootadoptedstylesheets="dash-page"><h1>Dashboard</h1></template>"#;
+
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route("/", "dash-page")],
+            },
+        );
+        fragments.insert(
+            "dash-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw(template.to_string())],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol
+            .components
+            .entry("dash-page".to_string())
+            .or_default()
+            .css = "h1{font-size:2rem}".to_string();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        let html = writer.get_content();
+
+        assert!(
+            html.contains(
+                r#"<style type="module" specifier="dash-page">h1{font-size:2rem}</style>"#
+            ),
+            "Route component should have CSS module: {html}"
+        );
+        assert!(
+            html.contains("<h1>Dashboard</h1>"),
+            "Route component should render content: {html}"
         );
     }
 }

@@ -86,10 +86,11 @@ pub struct JsBuildOptions {
 pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
     let css = match options.css.as_deref() {
         Some("style") => webui::CssStrategy::Style,
+        Some("module") => webui::CssStrategy::Module,
         Some("link") | None => webui::CssStrategy::Link,
         Some(unknown) => {
             return Err(NapiError::from_reason(format!(
-                "Unknown CSS mode: {unknown}. Use \"link\" or \"style\"."
+                "Unknown CSS mode: {unknown}. Use \"link\", \"style\", or \"module\"."
             )));
         }
     };

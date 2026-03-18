@@ -151,7 +151,6 @@ struct SharedState {
     css_files: HashMap<String, String>,
     protocol: Option<WebUIProtocol>,
     state_data: Option<Value>,
-    component_templates: HashMap<String, String>,
     /// Entry fragment ID used for rendering (e.g., "index.html").
     entry: String,
 }
@@ -312,7 +311,6 @@ fn run(args: &ServeArgs) -> Result<()> {
         css_files: initial_result.css_files,
         protocol: Some(initial_result.protocol),
         state_data: Some(initial_result.state_data),
-        component_templates: initial_result.component_templates,
         entry: args.app_args.entry.clone(),
     }));
 
@@ -405,7 +403,6 @@ struct BuildRenderResult {
     css_files: HashMap<String, String>,
     protocol: WebUIProtocol,
     state_data: Value,
-    component_templates: HashMap<String, String>,
 }
 
 /// Build the protocol from app templates and render with explicit state data.
@@ -445,15 +442,12 @@ fn build_and_render(
     };
 
     let css_map: HashMap<String, String> = build_result.css_files.into_iter().collect();
-    let template_map: HashMap<String, String> =
-        build_result.component_templates.into_iter().collect();
 
     Ok(BuildRenderResult {
         html,
         css_files: css_map,
         protocol: build_result.protocol,
         state_data: state,
-        component_templates: template_map,
     })
 }
 
@@ -746,13 +740,9 @@ async fn handle_json_partial(
 
     let mut state_data = resolve_state(context, &paths.request_path).await;
 
-    // Clone protocol and templates from shared state (release lock quickly)
-    let (protocol, component_templates, entry) = match context.state.lock() {
-        Ok(s) => (
-            s.protocol.clone(),
-            s.component_templates.clone(),
-            s.entry.clone(),
-        ),
+    // Clone protocol from shared state (release lock quickly)
+    let (protocol, entry) = match context.state.lock() {
+        Ok(s) => (s.protocol.clone(), s.entry.clone()),
         Err(_) => {
             return HttpResponse::InternalServerError().body(r#"{"error":"Internal server error"}"#)
         }
@@ -793,20 +783,28 @@ async fn handle_json_partial(
         Value::Object(serde_json::Map::new())
     };
 
-    // The partial contains f-template HTML strings; the CLI dev server stores
-    // templates separately in component_templates, so map from names to those.
-    // Re-derive needed names for the template lookup against the local map.
+    // Re-derive needed component names and look up templates from the protocol.
     let (needed_names, inv_hex) = if let Some(proto) = &protocol {
         collect_needed_template_names(proto, &entry, &paths.route_path, &client_inv_hex)
     } else {
         (Vec::new(), client_inv_hex)
     };
 
-    let templates: Vec<Value> = needed_names
-        .iter()
-        .filter_map(|name| component_templates.get(name))
-        .map(|t| Value::String(t.clone()))
-        .collect();
+    let templates: Vec<Value> = if let Some(proto) = &protocol {
+        needed_names
+            .iter()
+            .filter_map(|name| {
+                proto
+                    .components
+                    .get(name)
+                    .map(|c| c.template.as_str())
+                    .filter(|s| !s.is_empty())
+            })
+            .map(|t| Value::String(t.to_string()))
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     // Start from the partial (which has state, path, chain) and override
     // templates/inventory with the CLI dev server's local template map.
@@ -1000,7 +998,6 @@ fn start_file_watcher(config: WatcherConfig) {
                             s.css_files = result.css_files;
                             s.protocol = Some(result.protocol);
                             s.state_data = Some(result.state_data);
-                            s.component_templates = result.component_templates;
                             s.bump_version();
                         }
                         eprintln!(
@@ -1241,14 +1238,16 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
-        protocol.component_templates.insert(
-            "mp-page-search".to_string(),
-            "<f-template id=search></f-template>".to_string(),
-        );
-        protocol.component_templates.insert(
-            "mp-page-product".to_string(),
-            "<f-template id=product></f-template>".to_string(),
-        );
+        protocol
+            .components
+            .entry("mp-page-search".to_string())
+            .or_default()
+            .template = "<f-template id=search></f-template>".to_string();
+        protocol
+            .components
+            .entry("mp-page-product".to_string())
+            .or_default()
+            .template = "<f-template id=product></f-template>".to_string();
         let (needed, inventory) =
             collect_needed_template_names(&protocol, "index.html", "/search/shirts", "");
 
@@ -1422,7 +1421,6 @@ mod tests {
             css_files: HashMap::new(),
             protocol: None,
             state_data: None,
-            component_templates: HashMap::new(),
             entry: "index.html".to_string(),
         };
         assert_eq!(backend.version_payload(&state), "42");
@@ -1439,7 +1437,6 @@ mod tests {
                 css_files: HashMap::new(),
                 protocol: None,
                 state_data: None,
-                component_templates: HashMap::new(),
                 entry: "index.html".to_string(),
             })),
             hmr_backend: Some(hmr_backend),

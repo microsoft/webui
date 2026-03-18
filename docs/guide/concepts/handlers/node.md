@@ -80,7 +80,7 @@ Deno.serve({ port: 3000 }, (req) => {
 |-------|------|---------|-------------|
 | `appDir` | `string` | — | Path to app folder |
 | `entry` | `string` | `"index.html"` | Entry file |
-| `css` | `"link" \| "style"` | `"link"` | CSS delivery strategy |
+| `css` | `"link" \| "style" \| "module"` | `"link"` | CSS delivery strategy |
 | `plugin` | `string` | — | Parser plugin (e.g. `"fast"`) |
 | `components` | `string[]` | — | External component sources |
 

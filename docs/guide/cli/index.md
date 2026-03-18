@@ -33,7 +33,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `APP` | Path to the app folder | `.` (current directory) |
 | `--out <OUT>` | Output folder for protocol and assets | *(required)* |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
-| `--css <STRATEGY>` | CSS delivery strategy: `link` or `style` | `link` |
+| `--css <STRATEGY>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
 | `--plugin <NAME>` | Load a parser plugin (e.g., `fast`) | *(none)* |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 
@@ -45,6 +45,7 @@ Path inputs for `APP`, `--state`, and `--servedir` support absolute paths, relat
 |------|----------|
 | `link` | Emits `<link>` tags referencing external `.css` files. CSS files are copied to the output folder. |
 | `style` | Embeds CSS content directly in `<style>` tags inside shadow DOM templates. No separate CSS files are written. |
+| `module` | Emits `<style type="module" specifier="component">` definitions and adds `shadowrootadoptedstylesheets` to `<template>` tags. The browser shares a single `CSSStyleSheet` across all shadow roots that adopt it. No separate CSS files are written. Based on the [Declarative CSS Module Scripts](https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ShadowDOM/explainer.md) proposal. |
 
 **Examples:**
 
@@ -116,7 +117,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--watch` | Enable file watching + HMR | `false` |
 | `--port <PORT>` | Port to bind the development server | `3000` |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
-| `--css <MODE>` | CSS delivery strategy: `link` or `style` | `link` |
+| `--css <MODE>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
 | `--plugin <NAME>` | Load parser + handler plugins (e.g., `fast`) | *(none)* |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 
