@@ -24,6 +24,7 @@
     "@types/dom-navigation": "catalog:",
     "@types/dom-view-transitions": "catalog:",
     "esbuild": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "urlpattern-polyfill": "catalog:"
   }
 }
