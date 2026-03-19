@@ -71,11 +71,7 @@ struct TestResult {
 }
 
 pub fn run() -> ExitCode {
-    eprintln!(
-        "\n{} E2E tests — starting servers for {} apps",
-        console::style("▸").cyan().bold(),
-        APPS.len(),
-    );
+    eprintln!("\n{} E2E tests", console::style("▸").cyan().bold(),);
 
     // Filter to apps that exist on disk
     let apps: Vec<&ExampleApp> = APPS
@@ -87,6 +83,54 @@ pub fn run() -> ExitCode {
         eprintln!("  No example apps with playwright.config.ts found");
         return ExitCode::FAILURE;
     }
+
+    // Build client JS bundles (esbuild, one-shot, no --watch)
+    eprintln!(
+        "\n{} Building client bundles...",
+        console::style("▸").cyan().bold(),
+    );
+    for app in &apps {
+        let dir = PathBuf::from(app.dir);
+        let index_ts = dir.join("src").join("index.ts");
+        if !index_ts.exists() {
+            continue;
+        }
+        let out = dir.join("dist").join("index.js");
+        let out_str = out.to_string_lossy();
+        let src_str = index_ts.to_string_lossy();
+        match util::run_command_quiet(
+            "npx",
+            &[
+                "esbuild",
+                &src_str,
+                "--bundle",
+                "--outfile",
+                &out_str,
+                "--format=esm",
+                "--sourcemap",
+            ],
+            Some(&dir),
+        ) {
+            Ok(()) => {
+                eprintln!("  {} {}", console::style("✔").green(), app.name);
+            }
+            Err(msg) => {
+                eprintln!(
+                    "  {} {} — client build failed",
+                    console::style("✘").red().bold(),
+                    app.name,
+                );
+                eprintln!("    {msg}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    eprintln!(
+        "\n{} Starting servers for {} apps...",
+        console::style("▸").cyan().bold(),
+        apps.len(),
+    );
 
     // Ctrl+C handler
     let ctrlc = Arc::new(AtomicBool::new(false));
