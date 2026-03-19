@@ -5,8 +5,10 @@
   "private": true,
   "scripts": {
     "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
-    "start:server": "cargo run -p marketplace-api -- --port 3100",
-    "start": "cargo xtask dev commerce"
+    "start:server": "cargo run -p marketplace-api -- --port 3004",
+    "start": "cargo xtask dev commerce",
+    "test": "playwright test",
+    "test:update-snapshots": "playwright test --update-snapshots"
   },
   "imports": {
     "#atoms/*": "./src/atoms/*",
@@ -18,8 +20,9 @@
     "@microsoft/fast-element": "catalog:",
     "@microsoft/fast-html": "catalog:",
     "@microsoft/webui-router": "workspace:*",
+    "@playwright/test": "catalog:",
     "esbuild": "catalog:",
-    "typescript": "catalog:",
-    "tslib": "catalog:"
+    "tslib": "catalog:",
+    "typescript": "catalog:"
   }
 }

@@ -22,7 +22,7 @@ use crate::server::configure_app;
 #[derive(Debug, Parser)]
 #[command(name = "marketplace-api")]
 struct ApiArgs {
-    #[arg(long, default_value_t = 3100)]
+    #[arg(long, default_value_t = 3004)]
     port: u16,
 }
 

@@ -26,11 +26,11 @@ cd examples/app/commerce
 # Install dependencies
 pnpm install
 
-# Start the dev server (builds + serves on port 3100)
+# Start the dev server (builds + serves on port 3004)
 pnpm start
 ```
 
-Then open http://127.0.0.1:3100
+Then open http://127.0.0.1:3004
 
 ## Running Tests
 

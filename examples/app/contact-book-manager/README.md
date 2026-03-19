@@ -20,5 +20,5 @@ Or use the xtask shortcut to run from anywhere in the workspace:
 cargo xtask dev contact-book-manager
 ```
 
-Then open [http://localhost:3001](http://localhost:3001).
+Then open [http://localhost:3003](http://localhost:3003).
 

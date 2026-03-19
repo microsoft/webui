@@ -36,6 +36,9 @@ catalogs:
     '@microsoft/fast-html':
       specifier: ^1.0.0-alpha.39
       version: 1.0.0-alpha.39
+    '@playwright/test':
+      specifier: ^1.58.2
+      version: 1.58.2
     '@types/dom-navigation':
       specifier: ^1.0.7
       version: 1.0.7
@@ -112,6 +115,9 @@ importers:
       '@microsoft/fast-html':
         specifier: 'catalog:'
         version: 1.0.0-alpha.39(@microsoft/fast-element@2.10.2)
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.2
       esbuild:
         specifier: 'catalog:'
         version: 0.27.3
@@ -133,6 +139,9 @@ importers:
       '@microsoft/webui-router':
         specifier: workspace:*
         version: link:../../../packages/webui-router
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.2
       esbuild:
         specifier: 'catalog:'
         version: 0.27.3
@@ -161,6 +170,9 @@ importers:
       '@microsoft/webui-router':
         specifier: workspace:*
         version: link:../../../packages/webui-router
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.2
       '@types/cors':
         specifier: ^2.8.17
         version: 2.8.19
@@ -179,6 +191,9 @@ importers:
 
   examples/app/hello-world:
     devDependencies:
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.2
       esbuild:
         specifier: 'catalog:'
         version: 0.27.3
@@ -197,9 +212,15 @@ importers:
       '@microsoft/webui-router':
         specifier: workspace:*
         version: link:../../../packages/webui-router
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.2
       esbuild:
         specifier: 'catalog:'
         version: 0.27.3
+      tslib:
+        specifier: 'catalog:'
+        version: 2.8.1
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
@@ -251,24 +272,6 @@ importers:
         version: 5.9.3
 
   examples/integration/node: {}
-
-  examples/server/dotnet/bin/Debug/net10.0:
-    devDependencies:
-      '@microsoft/fast-element':
-        specifier: 'catalog:'
-        version: 2.10.2
-      '@microsoft/fast-html':
-        specifier: 'catalog:'
-        version: 1.0.0-alpha.39(@microsoft/fast-element@2.10.2)
-      '@microsoft/webui-router':
-        specifier: workspace:*
-        version: link:../../../../../../packages/webui-router
-      esbuild:
-        specifier: 'catalog:'
-        version: 0.27.3
-      typescript:
-        specifier: 'catalog:'
-        version: 5.9.3
 
   packages/webui:
     devDependencies:
@@ -817,6 +820,11 @@ packages:
     peerDependencies:
       '@microsoft/fast-element': ^2.10.2
 
+  '@playwright/test@1.58.2':
+    resolution: {integrity: sha512-akea+6bHYBBfA9uQqSYmlJXn61cTa+jbO87xVLCWbTqbWadRVmhxlXATaOjOgcBaWU4ePo0wB41KMFv3o35IXA==}
+    engines: {node: '>=18'}
+    hasBin: true
+
   '@rollup/rollup-android-arm-eabi@4.36.0':
     resolution: {integrity: sha512-jgrXjjcEwN6XpZXL0HUeOVGfjXhPyxAbbhD0BlXUB+abTOpbPiN5Wb3kOT7yb+uEtATNYF5x5gIfwutmuBA26w==}
     cpu: [arm]
@@ -1359,6 +1367,11 @@ packages:
     resolution: {integrity: sha512-yhlQgA6mnOJUKOsRUFsgJdQCvkKhcz8tlZG5HBQfReYZy46OwLcY+Zia0mtdHsOo9y/hP+CxMN0TU9QxoOtG4g==}
     engines: {node: '>=6 <7 || >=8'}
 
+  fsevents@2.3.2:
+    resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
+    engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
+    os: [darwin]
+
   fsevents@2.3.3:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
@@ -1588,6 +1601,16 @@ packages:
 
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
+
+  playwright-core@1.58.2:
+    resolution: {integrity: sha512-yZkEtftgwS8CsfYo7nm0KE8jsvm6i/PTgVtB8DL726wNf6H2IMsDuxCpJj59KDaxCtSnrWan2AeDqM7JBaultg==}
+    engines: {node: '>=18'}
+    hasBin: true
+
+  playwright@1.58.2:
+    resolution: {integrity: sha512-vA30H8Nvkq/cPBnNw4Q8TWz1EJyqgpuinBcHET0YVJVFldr8JDNiU9LaWAE1KqSkRYazuaBhTpB5ZzShOezQ6A==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   postcss@8.5.6:
     resolution: {integrity: sha512-3Ybi1tAuwAP9s0r1UQ2J4n5Y0G05bJkpUIO0/bI9MhwmD70S5aTWbXGBwxHrelT+XM1k6dM0pk+SwNkpTRN7Pg==}
@@ -2317,6 +2340,10 @@ snapshots:
     dependencies:
       '@microsoft/fast-element': 2.10.2
 
+  '@playwright/test@1.58.2':
+    dependencies:
+      playwright: 1.58.2
+
   '@rollup/rollup-android-arm-eabi@4.36.0':
     optional: true
 
@@ -2933,6 +2960,9 @@ snapshots:
       jsonfile: 4.0.0
       universalify: 0.1.2
 
+  fsevents@2.3.2:
+    optional: true
+
   fsevents@2.3.3:
     optional: true
 
@@ -3173,6 +3203,14 @@ snapshots:
   perfect-debounce@1.0.0: {}
 
   picocolors@1.1.1: {}
+
+  playwright-core@1.58.2: {}
+
+  playwright@1.58.2:
+    dependencies:
+      playwright-core: 1.58.2
+    optionalDependencies:
+      fsevents: 2.3.2
 
   postcss@8.5.6:
     dependencies:

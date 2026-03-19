@@ -5,10 +5,13 @@
   "private": true,
   "scripts": {
     "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
-    "start:server": "cargo run -p webui-cli -- serve ./src --state ./data/state.json --servedir ./dist --port 3001 --watch",
-    "start": "cargo xtask dev hello-world"
+    "start:server": "cargo run -p webui-cli -- serve ./src --state ./data/state.json --servedir ./dist --port 3000 --watch",
+    "start": "cargo xtask dev hello-world",
+    "test": "playwright test",
+    "test:update-snapshots": "playwright test --update-snapshots"
   },
   "devDependencies": {
+    "@playwright/test": "catalog:",
     "esbuild": "catalog:",
     "typescript": "catalog:"
   }

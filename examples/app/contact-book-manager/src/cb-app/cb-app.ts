@@ -84,14 +84,6 @@ export class CbApp extends RenderableFASTElement(FASTElement) {
     await this.refreshStats();
   }
 
-  setInitialState(state: Record<string, unknown>): void {
-    if (state.page !== undefined) this.page = String(state.page);
-    if (state.activeGroup !== undefined) this.activeGroup = String(state.activeGroup);
-    if (state.totalContacts !== undefined) this.totalContacts = String(state.totalContacts);
-    if (state.totalFavorites !== undefined) this.totalFavorites = String(state.totalFavorites);
-    if (state.totalGroups !== undefined) this.totalGroups = String(state.totalGroups);
-  }
-
   /** Called when the router activates a new route. */
   private onRouteChanged(component: string, params: Record<string, string>): void {
     this.page = COMPONENT_TO_PAGE[component] || '';
