@@ -9,7 +9,6 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:3005',
     screenshot: 'only-on-failure',
-    ignoreSnapshots: !!process.env.CI,
   },
   projects: [
     { name: 'chromium', use: { browserName: 'chromium' } },
