@@ -50,29 +50,28 @@ All development tasks go through `cargo xtask`:
 
 ### CI Pipeline
 
-The CI workflow parallelizes across 5 jobs with dependency ordering:
+The CI workflow parallelizes across jobs with dependency ordering:
 
 ```mermaid
 graph LR
     lint["Lint<br/><small>headers → fmt → clippy → deny</small>"]
     test["Test<br/><small>cargo test --workspace</small>"]
-    build["Build<br/><small>workspace + examples + docs</small>"]
+    build["Build<br/><small>Linux + Windows + macOS</small>"]
     wasm["WASM<br/><small>wasm-pack build</small>"]
-    e2e["E2E<br/><small>Playwright (5 apps parallel)</small>"]
+    e2e["E2E<br/><small>Playwright · Windows</small>"]
 
     lint --> test
     lint --> build
     lint --> wasm
-    build --> e2e
+    lint --> e2e
 ```
 
-| Phase | Jobs (parallel) | Estimated |
-|-------|----------------|-----------|
-| 1 | **lint** | ~45s |
-| 2 | **test** + **build** + **wasm** | ~60s |
-| 3 | **e2e** (after build) | ~90s |
+| Phase | Jobs (parallel) | Runner |
+|-------|----------------|--------|
+| 1 | **lint** | Ubuntu |
+| 2 | **test** + **build** (×3) + **wasm** + **e2e** | Ubuntu · matrix · Windows |
 
-Total wall time: **~3 min** (vs ~8 min sequential).
+Build runs on all 3 platforms via matrix. E2E runs on Windows only (screenshots match dev baselines).
 
 Locally, `cargo xtask check` uses the same phased parallelism:
 - Phase 1: `license-headers → fmt → clippy` (sequential, fail-fast)
