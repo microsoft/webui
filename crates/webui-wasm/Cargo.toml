@@ -1,10 +1,11 @@
 [package]
 name = "webui-wasm"
 description = "WebAssembly bindings for WebUI framework — powers the online playground"
+publish = false
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
+license-file = "../../LICENSE"
 repository.workspace = true
 
 [package.metadata.wasm-pack.profile.release]

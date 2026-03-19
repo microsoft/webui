@@ -10,12 +10,17 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# ── Shared setup anchors ─────────────────────────────────────────────
+# Reused across jobs via composite actions would be ideal, but YAML
+# anchors keep it DRY within a single file.
+
 jobs:
-  ci:
-    name: CI
+  # ── Phase 1: Lint (fast, fail-fast) ────────────────────────────────
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install protoc
         run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
@@ -29,38 +34,129 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      - name: License headers
+        run: cargo xtask license-headers
+
       - name: Format
         run: cargo fmt --all --check
 
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
 
+      - name: Deny (licenses & advisories)
+        run: |
+          cargo install --locked cargo-deny || true
+          cargo deny check
+
+  # ── Phase 2: Test (parallel with build) ────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Test
         run: cargo test --workspace
 
-      - name: Build (release)
-        run: cargo build --release
+  # ── Phase 2: Build (parallel with test) ────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@v4
         with:
-          version: latest
           run_install: false
 
-      - name: Install docs dependencies
-        run: pnpm install --filter @webui/docs
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build workspace
+        run: cargo build --workspace --exclude xtask
+
+      - name: Build examples
+        run: cargo xtask build-examples
 
       - name: Build docs
         run: pnpm --filter @webui/docs build
 
+  # ── Phase 2: WASM (parallel with test and build) ───────────────────
   wasm:
-    name: WASM Build
+    name: WASM
     runs-on: ubuntu-latest
+    needs: lint
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-wasm
+
+  # ── Phase 3: E2E (after build — needs compiled servers) ────────────
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build workspace
+        run: cargo build --workspace --exclude xtask
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium
+
+      - name: Run E2E tests
+        run: cargo xtask e2e

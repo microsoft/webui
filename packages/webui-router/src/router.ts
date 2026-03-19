@@ -521,15 +521,17 @@ export class WebUIRouter {
   }
 
   /**
-   * Apply state values as HTML attributes on a component element.
+   * Apply state to a component element — scalars as attributes, complex
+   * values as JS properties (triggering FAST @observable reactivity).
    *
-   * Mirrors the server's `emit_state_attributes` behavior: scalar values
-   * (string, number, boolean) become individual attributes in kebab-case.
-   * Objects and arrays are serialized as a `data-state` JSON attribute.
-   * Route params are also set as attributes.
+   * Mirrors the server's `emit_state_attributes` behavior for scalars.
+   * For arrays and objects, sets them directly as JS properties so FAST's
+   * @observable system detects the change and re-renders the template.
+   * Route params are set as kebab-case attributes.
    *
    * This is the zero-code default — components using FAST-HTML `@attr`
-   * bindings receive state automatically without implementing `setInitialState`.
+   * and `@observable` bindings receive state automatically without
+   * implementing `setInitialState`.
    */
   private applyStateAsAttributes(
     el: HTMLElement,
@@ -537,19 +539,15 @@ export class WebUIRouter {
     params: Record<string, string>,
   ): void {
     const toKebab = (k: string): string => k.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
-    const complex: Record<string, unknown> = {};
 
     for (const [key, value] of Object.entries(state)) {
       if (value == null) continue;
       if (typeof value === 'object') {
-        complex[key] = value;
+        // Set complex values as JS properties — triggers @observable reactivity
+        (el as any)[key] = value;
       } else {
         el.setAttribute(toKebab(key), String(value));
       }
-    }
-
-    if (Object.keys(complex).length > 0) {
-      el.setAttribute('data-state', JSON.stringify(complex));
     }
 
     for (const [key, value] of Object.entries(params)) {

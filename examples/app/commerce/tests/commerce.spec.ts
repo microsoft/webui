@@ -13,6 +13,20 @@
 
 import { test, expect } from '@playwright/test';
 
+// 1×1 grey PNG placeholder — intercepts all remote image requests for
+// deterministic screenshots without network dependency.
+const PLACEHOLDER_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+  'base64',
+);
+
+// Mock all CDN image requests so tests are hermetic (no network, no flakiness)
+test.beforeEach(async ({ page }) => {
+  await page.route('**/cdn.shopify.com/**', (route) =>
+    route.fulfill({ contentType: 'image/png', body: PLACEHOLDER_PNG }),
+  );
+});
+
 // ── SSR Tests (direct page loads) ────────────────────────────────
 
 test.describe('SSR pages', () => {

@@ -35,7 +35,8 @@ All development tasks go through `cargo xtask`:
 
 | Command | Description |
 |---------|-------------|
-| `cargo xtask check` | **Run before every commit.** Runs fmt → clippy → deny → test → build → docs |
+| `cargo xtask check` | **Run before every commit.** Parallel lint → test → build → docs |
+| `cargo xtask e2e` | Run Playwright E2E tests for all example apps in parallel |
 | `cargo xtask fmt` | Check formatting |
 | `cargo xtask clippy` | Run clippy lints |
 | `cargo xtask deny` | License & advisory audit |
@@ -46,6 +47,38 @@ All development tasks go through `cargo xtask`:
 | `cargo xtask bench <crate>` | Run benchmarks (parser, handler, protocol, expressions, state, all) |
 | `cargo xtask dev <app>` | Run example app in dev mode |
 | `cargo xtask version <semver>` | Update version across all Cargo.toml and package.json files |
+
+### CI Pipeline
+
+The CI workflow parallelizes across 5 jobs with dependency ordering:
+
+```mermaid
+graph LR
+    lint["Lint<br/><small>headers → fmt → clippy → deny</small>"]
+    test["Test<br/><small>cargo test --workspace</small>"]
+    build["Build<br/><small>workspace + examples + docs</small>"]
+    wasm["WASM<br/><small>wasm-pack build</small>"]
+    e2e["E2E<br/><small>Playwright (5 apps parallel)</small>"]
+
+    lint --> test
+    lint --> build
+    lint --> wasm
+    build --> e2e
+```
+
+| Phase | Jobs (parallel) | Estimated |
+|-------|----------------|-----------|
+| 1 | **lint** | ~45s |
+| 2 | **test** + **build** + **wasm** | ~60s |
+| 3 | **e2e** (after build) | ~90s |
+
+Total wall time: **~3 min** (vs ~8 min sequential).
+
+Locally, `cargo xtask check` uses the same phased parallelism:
+- Phase 1: `license-headers → fmt → clippy` (sequential, fail-fast)
+- Phase 2: `deny + test` (parallel)
+- Phase 3: `build + build-wasm` (parallel)
+- Phase 4: `build-examples + bench + docs` (parallel, examples built concurrently)
 
 ### Project Structure
 
