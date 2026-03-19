@@ -21,7 +21,7 @@ use crate::process::{self, ManagedChild};
 use crate::util;
 
 /// Maximum time to wait for all server ports to become ready.
-const PORT_TIMEOUT: Duration = Duration::from_secs(60);
+const PORT_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// An example app with its server configuration.
 struct ExampleApp {

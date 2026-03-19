@@ -158,6 +158,9 @@ jobs:
       - name: Build workspace
         run: cargo build --workspace --exclude xtask
 
+      - name: Build example client bundles
+        run: cargo xtask build-examples
+
       - name: Install Playwright browsers
         run: npx playwright install chromium
 
