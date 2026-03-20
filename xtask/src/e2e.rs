@@ -84,6 +84,27 @@ pub fn run() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // Build workspace packages (e.g., @microsoft/webui-router needs dist/index.js)
+    eprintln!(
+        "\n{} Building workspace packages...",
+        console::style("▸").cyan().bold(),
+    );
+    match util::run_command_quiet(
+        "pnpm",
+        &["--filter", "@microsoft/webui-router", "build"],
+        None,
+    ) {
+        Ok(()) => eprintln!("  {} webui-router", console::style("✔").green()),
+        Err(msg) => {
+            eprintln!(
+                "  {} webui-router build failed",
+                console::style("✘").red().bold(),
+            );
+            eprintln!("    {msg}");
+            return ExitCode::FAILURE;
+        }
+    }
+
     // Build client JS bundles (esbuild, one-shot, no --watch)
     eprintln!(
         "\n{} Building client bundles...",
