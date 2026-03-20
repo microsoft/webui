@@ -10,10 +10,6 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
-# ── Shared setup anchors ─────────────────────────────────────────────
-# Reused across jobs via composite actions would be ideal, but YAML
-# anchors keep it DRY within a single file.
-
 jobs:
   # ── Phase 1: Lint (fast, fail-fast) ────────────────────────────────
   lint:
@@ -48,7 +44,7 @@ jobs:
           cargo install --locked cargo-deny || true
           cargo deny check
 
-  # ── Phase 2: Test (parallel with build) ────────────────────────────
+  # ── Phase 2: Test (Ubuntu) ─────────────────────────────────────────
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -70,24 +66,20 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-  # ── Phase 2: Build (matrix: Linux, Windows, macOS) ──────────────────
+  # ── Phase 2: Build (Linux + macOS matrix) ──────────────────────────
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     needs: lint
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
-
-      - name: Install protoc (Windows)
-        if: runner.os == 'Windows'
-        run: choco install protoc -y
 
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
@@ -123,9 +115,9 @@ jobs:
       - name: Build docs
         run: pnpm --filter @webui/docs build
 
-  # ── Phase 2: E2E (Windows only — screenshots match dev baselines) ──
-  e2e:
-    name: E2E Tests
+  # ── Phase 2: Build Windows ─────────────────────────────────────────
+  build-windows:
+    name: Build (Windows)
     runs-on: windows-latest
     needs: lint
     steps:
@@ -158,8 +150,46 @@ jobs:
       - name: Build workspace
         run: cargo build --workspace --exclude xtask
 
-      - name: Build example client bundles
+      - name: Build examples
         run: cargo xtask build-examples
+
+      - name: Build docs
+        run: pnpm --filter @webui/docs build
+
+  # ── Phase 3: E2E (after Windows build — reuses Rust cache) ─────────
+  e2e:
+    name: E2E Tests
+    runs-on: windows-latest
+    needs: build-windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: choco install protoc -y
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build workspace
+        run: cargo build --workspace --exclude xtask
 
       - name: Install Playwright browsers
         run: npx playwright install chromium
@@ -167,7 +197,7 @@ jobs:
       - name: Run E2E tests
         run: cargo xtask e2e
 
-  # ── Phase 2: WASM (parallel with test and build) ───────────────────
+  # ── Phase 2: WASM (Ubuntu) ─────────────────────────────────────────
   wasm:
     name: WASM
     runs-on: ubuntu-latest

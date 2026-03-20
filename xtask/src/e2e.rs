@@ -96,7 +96,7 @@ pub fn run() -> ExitCode {
             continue;
         }
         let out = dir.join("dist").join("index.js");
-        let out_str = out.to_string_lossy();
+        let outfile_arg = format!("--outfile={}", out.to_string_lossy());
         let src_str = index_ts.to_string_lossy();
         match util::run_command_quiet(
             "npx",
@@ -104,8 +104,7 @@ pub fn run() -> ExitCode {
                 "esbuild",
                 &src_str,
                 "--bundle",
-                "--outfile",
-                &out_str,
+                &outfile_arg,
                 "--format=esm",
                 "--sourcemap",
             ],
