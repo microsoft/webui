@@ -123,6 +123,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Exclude build dirs from Windows Defender
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
+          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
+
       - name: Install protoc
         run: choco install protoc -y
 
@@ -163,6 +168,11 @@ jobs:
     needs: build-windows
     steps:
       - uses: actions/checkout@v4
+
+      - name: Exclude build dirs from Windows Defender
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
+          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
 
       - name: Install protoc
         run: choco install protoc -y
