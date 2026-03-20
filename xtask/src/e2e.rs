@@ -91,20 +91,17 @@ pub fn run() -> ExitCode {
     );
     for app in &apps {
         let dir = PathBuf::from(app.dir);
-        let index_ts = dir.join("src").join("index.ts");
-        if !index_ts.exists() {
+        if !dir.join("src").join("index.ts").exists() {
             continue;
         }
-        let out = dir.join("dist").join("index.js");
-        let outfile_arg = format!("--outfile={}", out.to_string_lossy());
-        let src_str = index_ts.to_string_lossy();
+        // Use relative paths — cwd is set to the app dir
         match util::run_command_quiet(
             "npx",
             &[
                 "esbuild",
-                &src_str,
+                "src/index.ts",
                 "--bundle",
-                &outfile_arg,
+                "--outfile=dist/index.js",
                 "--format=esm",
                 "--sourcemap",
             ],
