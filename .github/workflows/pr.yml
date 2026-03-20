@@ -115,9 +115,9 @@ jobs:
       - name: Build docs
         run: pnpm --filter @webui/docs build
 
-  # ── Phase 2: Build Windows ─────────────────────────────────────────
+  # ── Phase 2: Build + E2E (Windows) ──────────────────────────────────
   build-windows:
-    name: Build (Windows)
+    name: Build + E2E (Windows)
     runs-on: windows-latest
     needs: lint
     steps:
@@ -161,48 +161,11 @@ jobs:
       - name: Build docs
         run: pnpm --filter @webui/docs build
 
-  # ── Phase 3: E2E (after Windows build — reuses Rust cache) ─────────
-  e2e:
-    name: E2E Tests
-    runs-on: windows-latest
-    needs: build-windows
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Exclude build dirs from Windows Defender
-        run: |
-          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
-          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
-
-      - name: Install protoc
-        run: choco install protoc -y
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.93
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Build workspace
-        run: cargo build --workspace --exclude xtask
-
       - name: Install Playwright browsers
         run: npx playwright install chromium
+
+      - name: Run E2E tests
+        run: cargo xtask e2e
 
       - name: Run E2E tests
         run: cargo xtask e2e
