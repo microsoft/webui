@@ -11,11 +11,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  ci:
-    name: CI
+  # ── Phase 1: Lint (fast, fail-fast) ────────────────────────────────
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install protoc
         run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
@@ -29,38 +30,151 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      - name: License headers
+        run: cargo xtask license-headers
+
       - name: Format
         run: cargo fmt --all --check
 
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
 
+      - name: Deny (licenses & advisories)
+        run: |
+          cargo install --locked cargo-deny || true
+          cargo deny check
+
+  # ── Phase 2: Test (Ubuntu) ─────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Test
         run: cargo test --workspace
 
-      - name: Build (release)
-        run: cargo build --release
+  # ── Phase 2: Build (Linux + macOS matrix) ──────────────────────────
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: lint
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@v4
         with:
-          version: latest
           run_install: false
 
-      - name: Install docs dependencies
-        run: pnpm install --filter @webui/docs
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build workspace
+        run: cargo build --workspace --exclude xtask
+
+      - name: Build examples
+        run: cargo xtask build-examples
 
       - name: Build docs
         run: pnpm --filter @webui/docs build
 
-  wasm:
-    name: WASM Build
-    runs-on: ubuntu-latest
+  # ── Phase 2: Build + E2E (Windows) ──────────────────────────────────
+  build-windows:
+    name: Build + E2E (Windows)
+    runs-on: windows-latest
+    needs: lint
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+
+      - name: Exclude build dirs from Windows Defender
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
+          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
+
+      - name: Install protoc
+        run: choco install protoc -y
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build workspace
+        run: cargo build --workspace --exclude xtask
+
+      - name: Build examples
+        run: cargo xtask build-examples
+
+      - name: Build docs
+        run: pnpm --filter @webui/docs build
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium
+
+      - name: Run E2E tests
+        run: cargo xtask e2e
+
+      - name: Run E2E tests
+        run: cargo xtask e2e
+
+  # ── Phase 2: WASM (Ubuntu) ─────────────────────────────────────────
+  wasm:
+    name: WASM
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-wasm

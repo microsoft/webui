@@ -1,6 +1,7 @@
 [package]
 name = "webui-node"
 description = "Node.js native addon for WebUI framework via napi-rs"
+publish = false
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

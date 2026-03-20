@@ -49,24 +49,6 @@ pub fn run() -> Result<(), String> {
         )
     })?;
 
-    eprintln!(
-        "  {} CC:   {}",
-        console::style("•").dim(),
-        console::style(&cc).bold()
-    );
-    if !ar.is_empty() {
-        eprintln!(
-            "  {} AR:   {}",
-            console::style("•").dim(),
-            console::style(&ar).bold()
-        );
-    }
-    eprintln!(
-        "  {} WASI: {}",
-        console::style("•").dim(),
-        console::style(&wasi_include).bold()
-    );
-
     // 5. Clean output directory
     if out_dir.exists() {
         fs::remove_dir_all(out_dir)
@@ -96,11 +78,22 @@ pub fn run() -> Result<(), String> {
     }
     cmd.env("RUSTFLAGS", "-C link-arg=--allow-multiple-definition");
 
-    let status = cmd
-        .status()
+    // Suppress wasm-pack's verbose output — show only on failure
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let output = cmd
+        .output()
         .map_err(|e| format!("wasm-pack failed to start: {}", e))?;
-    if !status.success() {
-        return Err(format!("wasm-pack exited with {}", status));
+    if !output.status.success() {
+        let mut msg = String::new();
+        if let Ok(s) = String::from_utf8(output.stdout) {
+            msg.push_str(&s);
+        }
+        if let Ok(s) = String::from_utf8(output.stderr) {
+            msg.push_str(&s);
+        }
+        return Err(format!("wasm-pack failed:\n{msg}"));
     }
 
     // 7. Patch JS glue: replace `import 'env'` with inline C stdlib stubs
@@ -142,12 +135,6 @@ fn patch_wasm_js_glue(js_path: &Path) -> Result<(), String> {
     if !content.contains(env_import) {
         return Ok(()); // Nothing to patch
     }
-
-    eprintln!(
-        "  {} Patching JS glue: replacing {} import with inline stubs",
-        console::style("•").dim(),
-        console::style("'env'").cyan().bold()
-    );
 
     let stub = "const __wbg_star0 = {\n    \
         towupper: (c) => (c >= 97 && c <= 122) ? c - 32 : c,\n    \

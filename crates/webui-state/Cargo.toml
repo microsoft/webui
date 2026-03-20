@@ -1,6 +1,7 @@
 [package]
 name = "webui-state"
 description = "Core state management for WebUI framework"
+publish = false
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

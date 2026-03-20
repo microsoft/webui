@@ -12,7 +12,7 @@
 //! child is a `cmd.exe /c` wrapper.
 
 use std::path::Path;
-use std::process::{Child, ExitCode, Stdio};
+use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -59,45 +59,111 @@ impl ManagedChild {
 // Spawning
 // ---------------------------------------------------------------------------
 
-/// Spawn a labelled child process in its own process group.
-///
-/// The child inherits stdin/stdout/stderr so its output appears inline. Returns
-/// `None` (and prints an error) if the process cannot be started.
-///
-/// On Windows the child is also assigned to a Job Object with
-/// `KILL_ON_JOB_CLOSE`, ensuring the entire process tree is cleaned up when the
-/// returned [`ManagedChild`] is dropped.
-pub fn spawn_child(label: &str, cmd: &str, args: &[&str], cwd: &Path) -> Option<ManagedChild> {
-    eprintln!(
-        "  {} starting {}",
-        console::style("").dim(),
-        console::style(label).cyan().bold(),
-    );
+/// Internal: configure and spawn a command in its own process group with
+/// a Job Object on Windows.
+fn spawn_managed(command: &mut Command) -> Result<ManagedChild, std::io::Error> {
+    sys::configure_process_group(command);
+    let child = command.spawn()?;
 
+    #[cfg(windows)]
+    let _job = sys::JobHandle::attach(&child);
+
+    Ok(ManagedChild {
+        inner: child,
+        #[cfg(windows)]
+        _job,
+    })
+}
+
+/// Shared flag to suppress output during shutdown.
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// Spawn a labelled child process with prefixed output.
+///
+/// Each line of stdout and stderr is printed with a colored `[label]` prefix.
+/// Reader threads handle the prefixing and terminate when the child's pipes close.
+/// Output is suppressed once [`SHUTTING_DOWN`] is set (during Ctrl+C).
+pub fn spawn_child_prefixed(
+    label: &str,
+    cmd: &str,
+    args: &[&str],
+    cwd: &Path,
+    color: console::Color,
+) -> Option<ManagedChild> {
     let mut command = util::build_command(cmd, args);
+    // Use piped stdin (not null) — tools like esbuild --watch exit when stdin closes.
+    // A piped stdin stays open until the parent drops it.
     command
         .current_dir(cwd)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-    sys::configure_process_group(&mut command);
-
-    match command.spawn() {
-        Ok(child) => {
-            #[cfg(windows)]
-            let _job = sys::JobHandle::attach(&child);
-
-            Some(ManagedChild {
-                inner: child,
-                #[cfg(windows)]
-                _job,
-            })
+    match spawn_managed(&mut command) {
+        Ok(mut managed) => {
+            fn pipe_reader<R: std::io::Read + Send + 'static>(
+                pipe: R,
+                tag: String,
+                color: console::Color,
+            ) {
+                thread::spawn(move || {
+                    use std::io::BufRead;
+                    for line in std::io::BufReader::new(pipe).lines() {
+                        let Ok(line) = line else { break };
+                        if SHUTTING_DOWN.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        eprintln!(
+                            "  {} {}",
+                            console::style(format!("[{tag}]")).fg(color).bold(),
+                            line,
+                        );
+                    }
+                });
+            }
+            if let Some(stdout) = managed.inner.stdout.take() {
+                pipe_reader(stdout, label.to_string(), color);
+            }
+            if let Some(stderr) = managed.inner.stderr.take() {
+                pipe_reader(stderr, label.to_string(), color);
+            }
+            Some(managed)
         }
         Err(e) => {
             eprintln!(
                 "  {} [{}] failed to start: {}",
-                console::style("").red().bold(),
+                console::style("✘").red().bold(),
+                label,
+                e
+            );
+            None
+        }
+    }
+}
+
+/// Spawn a labelled child process with suppressed I/O.
+///
+/// All output goes to null — useful for servers whose shutdown noise
+/// (e.g. pnpm printing `STATUS_CONTROL_C_EXIT`) should not appear.
+pub fn spawn_child_quiet(
+    label: &str,
+    cmd: &str,
+    args: &[&str],
+    cwd: &Path,
+) -> Option<ManagedChild> {
+    let mut command = util::build_command(cmd, args);
+    command
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    match spawn_managed(&mut command) {
+        Ok(managed) => Some(managed),
+        Err(e) => {
+            eprintln!(
+                "  {} [{}] failed to start: {}",
+                console::style("✘").red().bold(),
                 label,
                 e
             );
@@ -109,9 +175,6 @@ pub fn spawn_child(label: &str, cmd: &str, args: &[&str], cwd: &Path) -> Option<
 // ---------------------------------------------------------------------------
 // Graceful shutdown
 // ---------------------------------------------------------------------------
-
-/// Send a graceful stop signal, wait up to [`GRACEFUL_TIMEOUT`], then force
-/// kill.
 pub fn terminate_gracefully(managed: &mut ManagedChild) {
     sys::send_graceful_stop(&managed.inner);
 
@@ -143,8 +206,9 @@ pub fn wait_for_group(children: &mut [(&str, ManagedChild)]) -> ExitCode {
 
     loop {
         if ctrlc.load(Ordering::SeqCst) {
+            SHUTTING_DOWN.store(true, Ordering::SeqCst);
             shutdown_group(children);
-            eprintln!("\n  {} stopped", console::style("").green());
+            eprintln!("\n  {} Stopped gracefully", console::style("👋").green(),);
             return ExitCode::SUCCESS;
         }
 
@@ -153,6 +217,8 @@ pub fn wait_for_group(children: &mut [(&str, ManagedChild)]) -> ExitCode {
             .any(|(_, c)| matches!(c.try_wait(), Ok(Some(_))));
 
         if any_done {
+            SHUTTING_DOWN.store(true, Ordering::SeqCst);
+
             // Terminate every child that hasn't exited yet.
             for (_, child) in children.iter_mut() {
                 if matches!(child.try_wait(), Ok(None)) {
@@ -170,7 +236,7 @@ pub fn wait_for_group(children: &mut [(&str, ManagedChild)]) -> ExitCode {
                 .collect();
 
             if ctrlc.load(Ordering::SeqCst) {
-                eprintln!("\n  {} stopped", console::style("").green());
+                eprintln!("\n  {} Stopped gracefully", console::style("👋").green(),);
                 return ExitCode::SUCCESS;
             }
 
@@ -179,8 +245,8 @@ pub fn wait_for_group(children: &mut [(&str, ManagedChild)]) -> ExitCode {
                 .map(|(label, code)| format!("{label}={code}"))
                 .collect();
             eprintln!(
-                "  {} dev processes exited ({})",
-                console::style("").red().bold(),
+                "\n  {} dev processes exited ({})",
+                console::style("✘").red().bold(),
                 summary.join(", "),
             );
             return ExitCode::FAILURE;

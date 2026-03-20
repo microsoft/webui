@@ -14,41 +14,72 @@ use crate::util::{collect_child_dirs, display_name};
 
 pub fn run(app: Option<&str>) -> ExitCode {
     let Some(app_name) = app else {
-        eprintln!(
-            "Usage: cargo xtask dev <app>\n\nAvailable apps: {}",
-            available_apps().unwrap_or_else(|_| "(unable to list)".into()),
-        );
+        print_usage();
         return ExitCode::FAILURE;
     };
 
     let app_dir = Path::new("examples/app").join(app_name);
     if !app_dir.is_dir() {
         eprintln!(
-            "Unknown app '{}'\nAvailable: {}",
-            app_name,
-            available_apps().unwrap_or_else(|_| "(unable to list)".into()),
+            "\n  {} Unknown app {}",
+            console::style("✘").red().bold(),
+            console::style(app_name).bold(),
         );
+        print_usage();
         return ExitCode::FAILURE;
     }
 
+    let port = read_port(&app_dir).unwrap_or_else(|| "?".into());
+    let has_api = has_script(&app_dir, "start:api");
+
+    // Header
+    eprintln!();
     eprintln!(
-        "{} dev mode for {} (Ctrl+C to stop)",
-        console::style("▸").cyan().bold(),
-        console::style(app_name).bold(),
+        "  {} {}",
+        console::style("⚡").cyan(),
+        console::style(format!("WebUI Dev — {app_name}")).bold(),
     );
+    eprintln!(
+        "  {} URL        {}",
+        console::style("▸").dim(),
+        console::style(format!("http://127.0.0.1:{port}/"))
+            .cyan()
+            .bold(),
+    );
+    if has_api {
+        let api_port = read_api_port(&app_dir).unwrap_or_else(|| "?".into());
+        eprintln!(
+            "  {} API        {}",
+            console::style("▸").dim(),
+            console::style(format!("http://127.0.0.1:{api_port}/")).dim(),
+        );
+    }
+    eprintln!();
 
     let mut children: Vec<(&str, ManagedChild)> = Vec::with_capacity(3);
 
-    // If the app defines a start:api script, launch it first so the API is
-    // available by the time the serve command starts fetching state.
-    if has_script(&app_dir, "start:api") {
-        match process::spawn_child("api", "pnpm", &["start:api"], &app_dir) {
+    // Start API server first (if the app has one)
+    if has_api {
+        match process::spawn_child_prefixed(
+            "api",
+            "pnpm",
+            &["start:api"],
+            &app_dir,
+            console::Color::Magenta,
+        ) {
             Some(c) => children.push(("api", c)),
             None => return ExitCode::FAILURE,
         }
     }
 
-    match process::spawn_child("server", "pnpm", &["start:server"], &app_dir) {
+    // Start WebUI server
+    match process::spawn_child_prefixed(
+        "server",
+        "pnpm",
+        &["start:server"],
+        &app_dir,
+        console::Color::Cyan,
+    ) {
         Some(c) => children.push(("server", c)),
         None => {
             kill_all(&mut children);
@@ -56,7 +87,14 @@ pub fn run(app: Option<&str>) -> ExitCode {
         }
     }
 
-    match process::spawn_child("client", "pnpm", &["start:client"], &app_dir) {
+    // Start client bundler (watch mode)
+    match process::spawn_child_prefixed(
+        "client",
+        "pnpm",
+        &["start:client"],
+        &app_dir,
+        console::Color::Green,
+    ) {
         Some(c) => children.push(("client", c)),
         None => {
             kill_all(&mut children);
@@ -64,7 +102,56 @@ pub fn run(app: Option<&str>) -> ExitCode {
         }
     }
 
+    eprintln!(
+        "\n  {} press {} to stop\n",
+        console::style("✨").green(),
+        console::style("Ctrl+C").bold(),
+    );
+
     process::wait_for_group(&mut children)
+}
+
+fn print_usage() {
+    let apps = available_apps().unwrap_or_else(|_| "(unable to list)".into());
+    eprintln!(
+        "\n  {} cargo xtask dev {}\n",
+        console::style("Usage:").dim(),
+        console::style("<app>").cyan(),
+    );
+    eprintln!("  Available apps: {}\n", console::style(apps).bold());
+}
+
+/// Read the server port from package.json start:server script.
+fn read_port(app_dir: &Path) -> Option<String> {
+    let content = fs::read_to_string(app_dir.join("package.json")).ok()?;
+    // Look for --port <number> in start:server script
+    let server_script = serde_json::from_str::<serde_json::Value>(&content)
+        .ok()?
+        .get("scripts")?
+        .get("start:server")?
+        .as_str()?
+        .to_string();
+    server_script
+        .split_whitespace()
+        .zip(server_script.split_whitespace().skip(1))
+        .find(|(flag, _)| *flag == "--port")
+        .map(|(_, port)| port.to_string())
+}
+
+/// Read the API port from package.json start:server script (--api-port).
+fn read_api_port(app_dir: &Path) -> Option<String> {
+    let content = fs::read_to_string(app_dir.join("package.json")).ok()?;
+    let server_script = serde_json::from_str::<serde_json::Value>(&content)
+        .ok()?
+        .get("scripts")?
+        .get("start:server")?
+        .as_str()?
+        .to_string();
+    server_script
+        .split_whitespace()
+        .zip(server_script.split_whitespace().skip(1))
+        .find(|(flag, _)| *flag == "--api-port")
+        .map(|(_, port)| port.to_string())
 }
 
 /// Check whether `package.json` in `app_dir` contains a script with the given

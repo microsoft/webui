@@ -1,110 +1,95 @@
 # webui-cli
 
-`webui-cli` provides the `webui` binary used to build, inspect, and locally serve WebUI apps.
+Command-line tool for the [WebUI](https://github.com/microsoft/webui) framework — build, serve, and inspect WebUI applications.
 
-## Build and run
-
-From the workspace root:
+## Install
 
 ```bash
-cargo run -p webui-cli -- <command> [options]
+cargo install webui-cli
 ```
 
-Or build a release binary:
-
-```bash
-cargo build -p webui-cli --release
-./target/release/webui <command> [options]
-```
+This installs the `webui` binary.
 
 ## Commands
 
 ### `webui build`
 
-Builds protocol output from templates/components.
+Build a WebUI application into a compiled protocol and CSS files.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>]
+webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>]
 ```
 
-- `APP`: template/component directory (default `.`)
-- `--out`: output directory (required)
-- `--entry`: entry HTML file (default `index.html`)
-- `--css`: `external` or `inline` (default `external`)
-
-Examples:
+| Option | Default | Description |
+|--------|---------|-------------|
+| `APP` | `.` | Template/component directory |
+| `--out` | *(required)* | Output directory for protocol.bin + CSS |
+| `--entry` | `index.html` | Entry HTML file |
+| `--css` | `link` | CSS mode: `link` (external files) or `style` (inline) |
+| `--plugin` | *(none)* | Parser plugin (e.g., `fast` for FAST-HTML) |
 
 ```bash
-webui build ./examples/app/hello-world/templates --out ./dist
-webui build ./examples/app/hello-world/templates --out ./dist --entry index.html --css inline
+webui build ./src --out ./dist
+webui build ./src --out ./dist --plugin fast --css style
 ```
+
+### `webui serve`
+
+Start a development server with live rebuild and HMR.
+
+```bash
+webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-port <PORT>] [--plugin <NAME>] [--watch]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `APP` | `.` | Template/component directory |
+| `--state` | *(none)* | JSON state file for rendering |
+| `--servedir` | *(none)* | Static assets directory served at `/*` |
+| `--port` | `3000` | Server port |
+| `--api-port` | *(none)* | Proxy API requests to this port |
+| `--plugin` | *(none)* | Parser plugin (e.g., `fast`) |
+| `--watch` | off | Enable file watching + HMR |
+
+```bash
+webui serve ./src --state ./data/state.json --port 3000 --watch
+webui serve ./src --plugin fast --servedir ./dist --port 3003 --api-port 3013 --watch
+```
+
+Features:
+- Renders HTML at `/` and all route paths
+- Serves static files from `--servedir`
+- JSON partials for client-side navigation (`Accept: application/json`)
+- HMR polling at `/hmr` when `--watch` is enabled
+- API proxy when `--api-port` is set
 
 ### `webui inspect`
 
-Converts a `protocol.bin` file to JSON and prints it to stdout.
+Convert a compiled protocol to JSON for debugging.
 
 ```bash
 webui inspect <FILE>
 ```
 
-Example:
-
 ```bash
 webui inspect ./dist/protocol.bin
 ```
 
-### `webui serve`
+## App Layout
 
-Starts a dev server with build+render. Live reload/HMR is optional via `--watch`.
-
-```bash
-webui-cli serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>]
 ```
-
-- `APP`: template/component directory (default `.`)
-- `--state`: JSON state file (required)
-- `--servedir`: optional static assets directory served at `/*`
-- `--watch`: enable file watching + HMR (disabled by default)
-- `--port`: server port (default `3000`)
-- `--entry`: entry HTML file (default `index.html`)
-- `--css`: `external` or `inline` (default `external`)
-
-Behavior:
-
-- Serves rendered HTML at `/` and `/index.html`
-- Serves static files from `--servedir` at `/*` when provided
-- Exposes HMR polling endpoint at `/hmr` when `--watch` is enabled
-- Watches app/state/assets and rebuilds when changes are detected when `--watch` is enabled
-
-Example:
-
-```bash
-webui-cli serve ./examples/app/hello-world/templates \
-  --state ./examples/app/hello-world/data/state.json \
-  --servedir ./examples/app/hello-world/assets \
-  --watch \
-  --port 3000
-```
-
-## Path handling
-
-`APP` and `--state` support relative paths, absolute paths, and `~/...` expansion. `--servedir` supports the same formats when provided.
-
-## Typical app layout
-
-```text
 my-app/
-├── index.html
-├── my-card.html
-├── my-card.css
-└── state.json
+├── src/
+│   ├── index.html          # entry template
+│   ├── my-card.html         # component template
+│   └── my-card.css          # component styles
+├── data/
+│   └── state.json           # render state
+└── dist/                    # build output
+    ├── protocol.bin
+    └── my-card.css
 ```
 
-## Output
+## License
 
-`webui build` writes:
-
-- `protocol.bin`
-- component CSS files (only when `--css external`)
-
-Use `webui inspect` to view a JSON representation for debugging.
+MIT

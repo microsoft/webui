@@ -36,6 +36,36 @@ pub fn run_command(cmd: &str, args: &[&str], cwd: Option<&Path>) -> Result<(), S
     }
 }
 
+/// Run a command with captured output. Returns Ok on success, Err with the
+/// combined stdout+stderr on failure.
+pub fn run_command_quiet(cmd: &str, args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
+    use std::process::Stdio;
+
+    let mut command = build_command(cmd, args);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if let Some(dir) = cwd {
+        command.current_dir(dir);
+    }
+
+    match command.output() {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let mut msg = String::new();
+            if let Ok(s) = String::from_utf8(output.stdout) {
+                msg.push_str(&s);
+            }
+            if let Ok(s) = String::from_utf8(output.stderr) {
+                msg.push_str(&s);
+            }
+            if msg.is_empty() {
+                msg = format!("exit code {}", output.status.code().unwrap_or(1));
+            }
+            Err(msg)
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// Build a [`Command`] for `cmd` with `args`, resolving `.cmd`/`.bat` scripts
 /// on Windows.
 ///

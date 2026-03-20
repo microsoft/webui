@@ -3,7 +3,7 @@
 
 //! Examples build tasks.
 
-use crate::util::{collect_child_dirs, display_name, run_command};
+use crate::util::{collect_child_dirs, display_name, run_command, run_command_quiet};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -85,7 +85,7 @@ pub fn run_integration_builds() -> Result<(), String> {
         );
         for command in integration.commands {
             let cwd = command.cwd.map(Path::new);
-            run_command(command.cmd, command.args, cwd).map_err(|message| {
+            run_command_quiet(command.cmd, command.args, cwd).map_err(|message| {
                 format!(
                     "integration '{}' command failed: {}",
                     integration.name, message
@@ -100,6 +100,8 @@ pub fn run_integration_builds() -> Result<(), String> {
 // ── App builds ──────────────────────────────────────────────────────────
 
 pub fn run_app_builds() -> Result<(), String> {
+    use std::thread;
+
     let apps_root = Path::new("examples/app");
     let app_dirs = collect_child_dirs(apps_root)?;
 
@@ -111,46 +113,64 @@ pub fn run_app_builds() -> Result<(), String> {
         return Ok(());
     }
 
-    for app_dir in app_dirs {
-        let app_name = display_name(&app_dir);
-        let src_dir = app_dir.join("src");
-        if !src_dir.is_dir() {
-            return Err(format!(
-                "app '{}' is missing src directory at {}",
-                app_name,
-                src_dir.display()
-            ));
+    // Build all apps in parallel — each is independent
+    let handles: Vec<_> = app_dirs
+        .into_iter()
+        .map(|app_dir| {
+            thread::spawn(move || {
+                let app_name = display_name(&app_dir);
+                let src_dir = app_dir.join("src");
+                if !src_dir.is_dir() {
+                    return Err(format!(
+                        "app '{}' is missing src directory at {}",
+                        app_name,
+                        src_dir.display()
+                    ));
+                }
+
+                let output_dir = app_dir.join("dist");
+                let src_str = src_dir.to_string_lossy().to_string();
+                let output_str = output_dir.to_string_lossy().to_string();
+
+                let mut args: Vec<&str> = vec![
+                    "run",
+                    "-p",
+                    "webui-cli",
+                    "--",
+                    "build",
+                    &src_str,
+                    "--out",
+                    &output_str,
+                ];
+
+                if app_name.ends_with("-fast") {
+                    args.push("--plugin");
+                    args.push("fast");
+                }
+
+                run_command_quiet("cargo", &args, None)
+                    .map_err(|message| format!("app '{}' build failed: {}", app_name, message))?;
+
+                eprintln!("  {} app: {}", console::style("•").dim(), app_name);
+                Ok(())
+            })
+        })
+        .collect();
+
+    let mut errors = Vec::new();
+    for handle in handles {
+        match handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => errors.push(e),
+            Err(_) => errors.push("thread panicked during app build".to_string()),
         }
-
-        let output_dir = app_dir.join("dist");
-
-        eprintln!("  {} app: {}", console::style("•").dim(), app_name);
-
-        let src_str = src_dir.to_string_lossy().to_string();
-        let output_str = output_dir.to_string_lossy().to_string();
-
-        // Apps ending in "-fast" use the FAST parser plugin
-        let mut args: Vec<&str> = vec![
-            "run",
-            "-p",
-            "webui-cli",
-            "--",
-            "build",
-            &src_str,
-            "--out",
-            &output_str,
-        ];
-
-        if app_name.ends_with("-fast") {
-            args.push("--plugin");
-            args.push("fast");
-        }
-
-        run_command("cargo", &args, None)
-            .map_err(|message| format!("app '{}' build failed: {}", app_name, message))?;
     }
 
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 pub fn run_example_builds() -> Result<(), String> {

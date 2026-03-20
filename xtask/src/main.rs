@@ -5,13 +5,17 @@ mod build_examples;
 mod build_wasm;
 mod dev;
 mod dotnet;
+mod e2e;
 mod license_headers;
 mod process;
 mod util;
 mod version;
 
 use std::process::ExitCode;
-use util::{ensure_cargo_install, ensure_rustup_component, run_command, workspace_root};
+use std::time::Instant;
+use util::{
+    ensure_cargo_install, ensure_rustup_component, run_command, run_command_quiet, workspace_root,
+};
 
 fn main() -> ExitCode {
     let workspace_root = match workspace_root() {
@@ -58,6 +62,7 @@ fn main() -> ExitCode {
             let app = args.get(2).map(|s| s.as_str());
             dev::run(app)
         }
+        Some("e2e") => e2e::run(),
         Some("version") => {
             let ver = args.get(2).map(|s| s.as_str());
             version::run(ver)
@@ -99,6 +104,7 @@ fn usage() -> ExitCode {
            docs    Build the documentation site\n  \
            bench <name> [-- <criterion args>]  Run benchmarks for a target crate (parser, handler, protocol, expressions, state, webui, all)\n  \
            dev <app>  Run example app in dev mode (server + client watch concurrently)\n  \
+           e2e     Run Playwright E2E tests for all example apps in parallel\n  \
            version <semver>  Update version across all Cargo.toml and package.json files\n  \
            publish-stage [--target <triple|all>] [--profile release]  Stage native binaries for npm + NuGet packaging\n  \
            license-headers [--fix]  Check (or fix) license headers in source files"
@@ -149,18 +155,37 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
 }
 
 fn check() -> ExitCode {
-    run_steps(&[
-        Step::LICENSE_HEADERS,
-        Step::FMT,
-        Step::CLIPPY,
-        Step::DENY,
-        Step::TEST,
-        Step::BUILD,
-        Step::BUILD_EXAMPLES,
-        Step::BUILD_WASM,
-        Step::BENCH_VALIDATE,
-        Step::DOCS,
-    ])
+    let total_start = Instant::now();
+
+    // Phase 1: Sequential lint checks (fail-fast)
+    eprintln!("\n{} Phase 1 — lint", console::style("▸").cyan().bold());
+    if run_steps(&[Step::LICENSE_HEADERS, Step::FMT, Step::CLIPPY]) != ExitCode::SUCCESS {
+        return ExitCode::FAILURE;
+    }
+
+    // Phase 2: Parallel — deny + test
+    if run_parallel(&[Step::DENY, Step::TEST]) != ExitCode::SUCCESS {
+        return ExitCode::FAILURE;
+    }
+
+    // Phase 3: Parallel — build + build-wasm
+    if run_parallel(&[Step::BUILD, Step::BUILD_WASM]) != ExitCode::SUCCESS {
+        return ExitCode::FAILURE;
+    }
+
+    // Phase 4: Parallel — examples (each independent) + bench + docs
+    if run_parallel(&[Step::BUILD_EXAMPLES, Step::BENCH_VALIDATE, Step::DOCS]) != ExitCode::SUCCESS
+    {
+        return ExitCode::FAILURE;
+    }
+
+    let total = total_start.elapsed().as_secs_f64();
+    eprintln!(
+        "\n{} All checks passed {}\n",
+        console::style("✨").green(),
+        console::style(format!("({total:.1}s)")).dim(),
+    );
+    ExitCode::SUCCESS
 }
 
 // ── Step runner ─────────────────────────────────────────────────────────
@@ -179,14 +204,14 @@ impl Step {
         name: "fmt",
         run: || {
             ensure_rustup_component("rustfmt")?;
-            run_command("cargo", &["fmt", "--all", "--check"], None)
+            run_command_quiet("cargo", &["fmt", "--all", "--check"], None)
         },
     };
     const CLIPPY: Self = Self {
         name: "clippy",
         run: || {
             ensure_rustup_component("clippy")?;
-            run_command(
+            run_command_quiet(
                 "cargo",
                 &["clippy", "--workspace", "--", "-D", "warnings"],
                 None,
@@ -197,20 +222,17 @@ impl Step {
         name: "deny",
         run: || {
             ensure_cargo_install("cargo-deny", "cargo-deny")?;
-            run_command("cargo", &["deny", "check"], None)
+            run_command_quiet("cargo", &["deny", "check"], None)
         },
     };
     const TEST: Self = Self {
         name: "test",
-        run: || run_command("cargo", &["test", "--workspace"], None),
+        run: || run_command_quiet("cargo", &["test", "--workspace"], None),
     };
     const BUILD: Self = Self {
         name: "build",
         run: || {
-            // Exclude xtask from the workspace build: it is already compiled
-            // (it is the running process) and on Windows the OS locks the
-            // running executable, causing "Access is denied" (os error 5).
-            run_command(
+            run_command_quiet(
                 "cargo",
                 &["build", "--workspace", "--exclude", "xtask"],
                 None,
@@ -227,12 +249,12 @@ impl Step {
     };
     const DOCS: Self = Self {
         name: "docs",
-        run: || run_command("pnpm", &["--filter", "@webui/docs", "build"], None),
+        run: || run_command_quiet("pnpm", &["--filter", "@webui/docs", "build"], None),
     };
     const BENCH_VALIDATE: Self = Self {
         name: "bench (validate)",
         run: || {
-            run_command(
+            run_command_quiet(
                 "cargo",
                 &[
                     "bench",
@@ -251,21 +273,135 @@ impl Step {
 
 fn run_steps(steps: &[Step]) -> ExitCode {
     for step in steps {
-        eprintln!("\n{} {}", console::style("▸").cyan().bold(), step.name);
+        let start = Instant::now();
         match (step.run)() {
-            Ok(()) => eprintln!("  {} {}", console::style("✔").green(), step.name),
-            Err(message) => {
-                eprintln!("  {} {}", console::style("✘").red().bold(), step.name);
+            Ok(()) => {
+                let elapsed = start.elapsed().as_secs_f64();
                 eprintln!(
-                    "  {} {} — {}",
+                    "  {} {} {}",
+                    console::style("✔").green(),
+                    step.name,
+                    console::style(format!("({elapsed:.1}s)")).dim(),
+                );
+            }
+            Err(message) => {
+                let elapsed = start.elapsed().as_secs_f64();
+                eprintln!(
+                    "  {} {} {}",
                     console::style("✘").red().bold(),
                     step.name,
-                    message
+                    console::style(format!("({elapsed:.1}s)")).dim(),
                 );
+                print_failure_output(&message);
                 return ExitCode::FAILURE;
             }
         }
     }
-    eprintln!("\n{} All checks passed\n", console::style("✨").green());
     ExitCode::SUCCESS
+}
+
+/// Run multiple steps in parallel threads. Waits for all to complete,
+/// then reports results. Fails if any step failed.
+fn run_parallel(steps: &[Step]) -> ExitCode {
+    use std::thread;
+
+    let names: Vec<&str> = steps.iter().map(|s| s.name).collect();
+    eprintln!(
+        "\n{} {}",
+        console::style("▸").cyan().bold(),
+        names.join(" + "),
+    );
+
+    let handles: Vec<_> = steps
+        .iter()
+        .map(|step| {
+            let name = step.name;
+            let run = step.run;
+            thread::spawn(move || {
+                let start = Instant::now();
+                let result = run();
+                let elapsed = start.elapsed().as_secs_f64();
+                (name, result, elapsed)
+            })
+        })
+        .collect();
+
+    let mut all_ok = true;
+    let mut failures: Vec<(&str, String)> = Vec::new();
+
+    for handle in handles {
+        match handle.join() {
+            Ok((name, Ok(()), elapsed)) => {
+                eprintln!(
+                    "  {} {} {}",
+                    console::style("✔").green(),
+                    name,
+                    console::style(format!("({elapsed:.1}s)")).dim(),
+                );
+            }
+            Ok((name, Err(message), elapsed)) => {
+                eprintln!(
+                    "  {} {} {}",
+                    console::style("✘").red().bold(),
+                    name,
+                    console::style(format!("({elapsed:.1}s)")).dim(),
+                );
+                failures.push((name, message));
+                all_ok = false;
+            }
+            Err(_) => {
+                eprintln!("  {} (thread panicked)", console::style("✘").red().bold());
+                all_ok = false;
+            }
+        }
+    }
+
+    for (name, output) in &failures {
+        print_failure_output_with_name(name, output);
+    }
+
+    if all_ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn print_failure_output(output: &str) {
+    let separator = console::style("─".repeat(60)).dim();
+    eprintln!("    {separator}");
+    for line in output.lines().take(30) {
+        eprintln!("    {line}");
+    }
+    let total = output.lines().count();
+    if total > 30 {
+        eprintln!(
+            "    {} ({} more lines)",
+            console::style("...").dim(),
+            total - 30,
+        );
+    }
+    eprintln!("    {separator}");
+}
+
+fn print_failure_output_with_name(name: &str, output: &str) {
+    let separator = console::style("─".repeat(60)).dim();
+    eprintln!(
+        "\n    {} {} output:",
+        console::style("✘").red().bold(),
+        name,
+    );
+    eprintln!("    {separator}");
+    for line in output.lines().take(30) {
+        eprintln!("    {line}");
+    }
+    let total = output.lines().count();
+    if total > 30 {
+        eprintln!(
+            "    {} ({} more lines)",
+            console::style("...").dim(),
+            total - 30,
+        );
+    }
+    eprintln!("    {separator}");
 }
