@@ -4,8 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild main.ts preload.ts --outdir=dist --platform=node --format=esm",
+    "build": "esbuild main.ts preload.ts --outdir=dist --platform=node --format=esm --packages=external",
     "start": "npm run build && electron dist/main.js --"
+  },
+  "dependencies": {
+    "@microsoft/webui": "workspace:*"
   },
   "devDependencies": {
     "electron": "catalog:",

@@ -78,6 +78,8 @@ interface NativeAddon {
   render(
     protocol: Buffer,
     stateJson: string,
+    entry: string,
+    requestPath: string,
     onChunk: (html: string) => void,
     plugin?: string,
   ): void;
@@ -175,14 +177,18 @@ export function build(options: BuildOptions): BuildResult {
 export function render(
   protocol: Buffer,
   state: object | string,
+  plugin?: string,
 ): string {
   const native = loadAddon();
   if (native) {
     let result = "";
     const stateStr = typeof state === "string" ? state : JSON.stringify(state);
-    native.render(protocol, stateStr, (chunk) => {
-      result += chunk;
-    });
+    const collect = (chunk: string) => { result += chunk; };
+    if (plugin) {
+      native.render(protocol, stateStr, collect, plugin);
+    } else {
+      native.render(protocol, stateStr, collect);
+    }
     return result;
   }
 
@@ -200,11 +206,16 @@ export function renderStream(
   protocol: Buffer,
   state: object | string,
   onChunk: (html: string) => void,
+  plugin?: string,
 ): void {
   const native = loadAddon();
   if (native) {
     const stateStr = typeof state === "string" ? state : JSON.stringify(state);
-    native.render(protocol, stateStr, onChunk);
+    if (plugin) {
+      native.render(protocol, stateStr, onChunk, plugin);
+    } else {
+      native.render(protocol, stateStr, onChunk);
+    }
     return;
   }
 
