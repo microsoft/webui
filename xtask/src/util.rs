@@ -210,6 +210,181 @@ pub fn ensure_rustup_target(target: &str) -> Result<(), String> {
         .map_err(|e| format!("failed to add rustup target {target}: {e}"))
 }
 
+/// Ensure Docker is installed and the daemon is running.
+///
+/// Prints friendly, platform-specific installation instructions if Docker
+/// is not found, then returns an error. Follows the same pattern as
+/// [`ensure_cargo_install`] and [`ensure_rustup_component`].
+pub fn ensure_docker() -> Result<(), String> {
+    // Check CLI availability
+    let cli_ok = Command::new("docker")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !cli_ok {
+        eprintln!(
+            "\n  {} Docker is not installed",
+            console::style("✘").red().bold(),
+        );
+        eprintln!();
+        print_docker_install_hint();
+        eprintln!();
+        eprintln!(
+            "    {} Use {} to skip Docker and run tests directly on the host.",
+            console::style("hint:").yellow(),
+            console::style("cargo xtask e2e --no-docker").bold(),
+        );
+        return Err("Docker is not installed — see instructions above".into());
+    }
+
+    // Check daemon is running
+    let daemon_ok = Command::new("docker")
+        .arg("info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !daemon_ok {
+        eprintln!(
+            "\n  {} Docker daemon is not running",
+            console::style("✘").red().bold(),
+        );
+        eprintln!();
+        print_docker_start_hint();
+        eprintln!();
+        eprintln!(
+            "    {} Use {} to skip Docker and run tests directly on the host.",
+            console::style("hint:").yellow(),
+            console::style("cargo xtask e2e --no-docker").bold(),
+        );
+        return Err("Docker daemon is not running — see instructions above".into());
+    }
+
+    Ok(())
+}
+
+/// Print platform-specific Docker installation instructions.
+fn print_docker_install_hint() {
+    #[cfg(target_os = "macos")]
+    {
+        eprintln!("    Install Docker Desktop for macOS:");
+        eprintln!(
+            "      {} {}",
+            console::style("▸").cyan(),
+            console::style("brew install --cask docker").bold(),
+        );
+        eprintln!(
+            "      {} or download from {}",
+            console::style("▸").cyan(),
+            console::style("https://docs.docker.com/desktop/setup/install/mac-install/").bold(),
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        eprintln!("    Install Docker Engine for Linux:");
+        eprintln!(
+            "      {} {}",
+            console::style("▸").cyan(),
+            console::style("curl -fsSL https://get.docker.com | sh").bold(),
+        );
+        eprintln!(
+            "      {} or see {}",
+            console::style("▸").cyan(),
+            console::style("https://docs.docker.com/engine/install/").bold(),
+        );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        eprintln!("    Install Docker Desktop for Windows:");
+        eprintln!(
+            "      {} {}",
+            console::style("▸").cyan(),
+            console::style("winget install Docker.DockerDesktop").bold(),
+        );
+        eprintln!(
+            "      {} or download from {}",
+            console::style("▸").cyan(),
+            console::style("https://docs.docker.com/desktop/setup/install/windows-install/").bold(),
+        );
+    }
+}
+
+/// Print platform-specific hints for starting the Docker daemon.
+fn print_docker_start_hint() {
+    #[cfg(target_os = "macos")]
+    eprintln!(
+        "    {} Open Docker Desktop or run: {}",
+        console::style("▸").cyan(),
+        console::style("open -a Docker").bold(),
+    );
+    #[cfg(target_os = "linux")]
+    eprintln!(
+        "    {} Start the daemon: {}",
+        console::style("▸").cyan(),
+        console::style("sudo systemctl start docker").bold(),
+    );
+    #[cfg(target_os = "windows")]
+    eprintln!(
+        "    {} Open Docker Desktop from the Start menu.",
+        console::style("▸").cyan(),
+    );
+}
+
+/// Read the Playwright version from the `pnpm-workspace.yaml` catalog.
+///
+/// Parses the semver version from a line like `'@playwright/test': ^1.58.2`,
+/// stripping any caret or tilde prefix.
+pub fn playwright_version() -> Result<String, String> {
+    let content = fs::read_to_string("pnpm-workspace.yaml")
+        .map_err(|e| format!("Failed to read pnpm-workspace.yaml: {e}"))?;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !trimmed.contains("@playwright/test") {
+            continue;
+        }
+        // Line format: '@playwright/test': ^1.58.2
+        if let Some((_key, value)) = trimmed.rsplit_once(':') {
+            let version = value.trim().trim_start_matches('^').trim_start_matches('~');
+            let version = version.split_whitespace().next().unwrap_or(version);
+            if !version.is_empty() {
+                return Ok(version.to_string());
+            }
+        }
+    }
+
+    Err("Could not find @playwright/test version in pnpm-workspace.yaml".into())
+}
+
+/// Ensure a Docker image is available locally, pulling it if necessary.
+pub fn ensure_docker_image(image: &str) -> Result<(), String> {
+    let exists = Command::new("docker")
+        .args(["image", "inspect", image])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if exists {
+        return Ok(());
+    }
+
+    eprintln!(
+        "    {} Pulling {} (first time only)…",
+        console::style("▸").dim(),
+        console::style(image).bold(),
+    );
+    run_command("docker", &["pull", image], None)
+        .map_err(|e| format!("Failed to pull Docker image {image}: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::workspace_root;

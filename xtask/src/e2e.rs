@@ -3,10 +3,15 @@
 
 //! E2E test runner: starts example servers and runs Playwright tests in parallel.
 //!
-//! Usage: `cargo xtask e2e`
+//! Usage: `cargo xtask e2e [--no-docker] [--update-snapshots]`
+//!
+//! By default, tests run inside a Docker container using the official
+//! Playwright image for cross-platform screenshot consistency. Use
+//! `--no-docker` to run directly on the host (visual regression results may
+//! differ across platforms).
 //!
 //! Starts all example app servers on their unique ports, waits for them to be
-//! ready, then runs `pnpm test` in parallel across all examples that have
+//! ready, then runs Playwright tests in parallel across all examples that have
 //! Playwright configs. Reports results and cleans up servers on exit.
 
 use std::net::TcpStream;
@@ -70,8 +75,84 @@ struct TestResult {
     output: String,
 }
 
-pub fn run() -> ExitCode {
-    eprintln!("\n{} E2E tests", console::style("▸").cyan().bold(),);
+/// Docker execution context for a test run.
+struct DockerCtx {
+    workspace_root: PathBuf,
+    image: String,
+}
+
+/// E2E configuration parsed from CLI arguments.
+struct E2eConfig {
+    use_docker: bool,
+    update_snapshots: bool,
+}
+
+impl E2eConfig {
+    fn from_args(args: &[String]) -> Self {
+        Self {
+            use_docker: !args.iter().any(|a| a == "--no-docker"),
+            update_snapshots: args.iter().any(|a| a == "--update-snapshots"),
+        }
+    }
+}
+
+pub fn run(args: &[String]) -> ExitCode {
+    let config = E2eConfig::from_args(args);
+
+    let mode_label = if config.use_docker {
+        "Docker"
+    } else {
+        "direct"
+    };
+    eprintln!(
+        "\n{} E2E tests ({})",
+        console::style("▸").cyan().bold(),
+        console::style(mode_label).bold(),
+    );
+
+    // Docker setup: verify Docker availability and pull the Playwright image
+    let docker_image = if config.use_docker {
+        if let Err(_msg) = util::ensure_docker() {
+            return ExitCode::FAILURE;
+        }
+        eprintln!("  {} Docker", console::style("✔").green());
+
+        let pw_version = match util::playwright_version() {
+            Ok(v) => v,
+            Err(msg) => {
+                eprintln!("  {} {msg}", console::style("✘").red().bold());
+                return ExitCode::FAILURE;
+            }
+        };
+        let image = format!("mcr.microsoft.com/playwright:v{pw_version}-noble");
+        if let Err(msg) = util::ensure_docker_image(&image) {
+            eprintln!("  {} {msg}", console::style("✘").red().bold());
+            return ExitCode::FAILURE;
+        }
+        eprintln!(
+            "  {} {}",
+            console::style("✔").green(),
+            console::style(&image).dim(),
+        );
+        Some(image)
+    } else {
+        eprintln!(
+            "  {} Running without Docker — visual regression results may vary across platforms",
+            console::style("⚠").yellow(),
+        );
+        None
+    };
+
+    let workspace_root = match std::env::current_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!(
+                "  {} Failed to get current directory: {e}",
+                console::style("✘").red().bold(),
+            );
+            return ExitCode::FAILURE;
+        }
+    };
 
     // Filter to apps that exist on disk
     let apps: Vec<&ExampleApp> = APPS
@@ -227,8 +308,28 @@ pub fn run() -> ExitCode {
         .map(|app| {
             let name = app.name.to_string();
             let dir = PathBuf::from(app.dir);
+            let update_snapshots = config.update_snapshots;
+            let docker_ctx = docker_image.as_ref().map(|image| DockerCtx {
+                workspace_root: workspace_root.clone(),
+                image: image.clone(),
+            });
             thread::spawn(move || {
-                let (success, output) = run_test(&name, &dir);
+                let start = Instant::now();
+                let (success, output) = match &docker_ctx {
+                    Some(ctx) => run_test_docker(&name, &dir, ctx, update_snapshots),
+                    None => run_test(&name, &dir, update_snapshots),
+                };
+                let elapsed = start.elapsed().as_secs_f64();
+                let icon = if success {
+                    console::style("✔").green().to_string()
+                } else {
+                    console::style("✘").red().bold().to_string()
+                };
+                eprintln!(
+                    "  {icon} {} {}",
+                    console::style(&name).bold(),
+                    console::style(format!("({elapsed:.1}s)")).dim(),
+                );
                 TestResult {
                     name,
                     success,
@@ -252,35 +353,21 @@ pub fn run() -> ExitCode {
         }
     }
 
-    // Print results
+    // Print failure details
     eprintln!();
     let mut all_passed = true;
     for result in &results {
-        if result.success {
-            eprintln!(
-                "  {} {}",
-                console::style("✔").green(),
-                console::style(&result.name).bold(),
-            );
-        } else {
+        if !result.success {
             all_passed = false;
             eprintln!(
-                "  {} {}",
+                "  {} {} — full output:",
                 console::style("✘").red().bold(),
                 console::style(&result.name).bold(),
             );
             let separator = console::style("─".repeat(60)).dim();
             eprintln!("    {separator}");
-            for line in result.output.lines().take(40) {
+            for line in result.output.lines() {
                 eprintln!("    {line}");
-            }
-            let total = result.output.lines().count();
-            if total > 40 {
-                eprintln!(
-                    "    {} ({} more lines)",
-                    console::style("...").dim(),
-                    total - 40,
-                );
             }
             eprintln!("    {separator}");
         }
@@ -308,8 +395,13 @@ pub fn run() -> ExitCode {
     }
 }
 
-fn run_test(name: &str, dir: &Path) -> (bool, String) {
-    let mut cmd = util::build_command("pnpm", &["test"]);
+fn run_test(name: &str, dir: &Path, update_snapshots: bool) -> (bool, String) {
+    let test_args: Vec<&str> = if update_snapshots {
+        vec!["test", "--", "--update-snapshots"]
+    } else {
+        vec!["test"]
+    };
+    let mut cmd = util::build_command("pnpm", &test_args);
     cmd.current_dir(dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -331,6 +423,71 @@ fn run_test(name: &str, dir: &Path) -> (bool, String) {
             (output.status.success(), combined)
         }
         Err(e) => (false, format!("Failed to wait for {name}: {e}")),
+    }
+}
+
+/// Run Playwright tests inside a Docker container for cross-platform consistency.
+///
+/// On Linux, the container uses `--network=host` so `127.0.0.1` reaches the
+/// host directly. On macOS and Windows (Docker Desktop), the container uses
+/// `host.docker.internal` via the `WEBUI_TEST_HOST` env var since
+/// `--network=host` does not expose the real host loopback.
+fn run_test_docker(
+    name: &str,
+    dir: &Path,
+    ctx: &DockerCtx,
+    update_snapshots: bool,
+) -> (bool, String) {
+    let ws = ctx.workspace_root.to_string_lossy();
+    let app_dir = dir.to_string_lossy();
+
+    let volume = format!("{ws}:/workspace");
+    let workdir = format!("/workspace/{app_dir}");
+
+    let mut args = vec!["run", "--rm", "--ipc=host"];
+
+    #[cfg(target_os = "linux")]
+    args.push("--network=host");
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        args.extend(["-e", "WEBUI_TEST_HOST=host.docker.internal"]);
+    }
+
+    args.extend([
+        "-v",
+        &volume,
+        "-w",
+        &workdir,
+        &ctx.image,
+        "npx",
+        "playwright",
+        "test",
+    ]);
+    if update_snapshots {
+        args.push("--update-snapshots");
+    }
+
+    let mut cmd = util::build_command("docker", &args);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return (false, format!("Failed to spawn docker for {name}: {e}")),
+    };
+
+    match child.wait_with_output() {
+        Ok(output) => {
+            let mut combined = String::new();
+            if let Ok(s) = String::from_utf8(output.stdout) {
+                combined.push_str(&s);
+            }
+            if let Ok(s) = String::from_utf8(output.stderr) {
+                combined.push_str(&s);
+            }
+            (output.status.success(), combined)
+        }
+        Err(e) => (false, format!("Failed to wait for docker ({name}): {e}")),
     }
 }
 

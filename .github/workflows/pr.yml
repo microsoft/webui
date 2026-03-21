@@ -115,21 +115,16 @@ jobs:
       - name: Build docs
         run: pnpm --filter @webui/docs build
 
-  # ── Phase 2: Build + E2E (Windows) ──────────────────────────────────
-  build-windows:
-    name: Build + E2E (Windows)
-    runs-on: windows-latest
+  # ── Phase 2: Build + E2E (Linux, Docker) ─────────────────────────
+  build-e2e:
+    name: Build + E2E (Linux)
+    runs-on: ubuntu-latest
     needs: lint
     steps:
       - uses: actions/checkout@v4
 
-      - name: Exclude build dirs from Windows Defender
-        run: |
-          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
-          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
-
       - name: Install protoc
-        run: choco install protoc -y
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -160,12 +155,6 @@ jobs:
 
       - name: Build docs
         run: pnpm --filter @webui/docs build
-
-      - name: Install Playwright browsers
-        run: npx playwright install chromium
-
-      - name: Run E2E tests
-        run: cargo xtask e2e
 
       - name: Run E2E tests
         run: cargo xtask e2e

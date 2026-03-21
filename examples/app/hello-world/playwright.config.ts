@@ -3,11 +3,15 @@
 
 import { defineConfig } from '@playwright/test';
 
+const host = process.env.WEBUI_TEST_HOST || '127.0.0.1';
+
 export default defineConfig({
   testDir: './tests',
+  snapshotPathTemplate:
+    '{snapshotDir}/{testFileDir}/{testFileName}-snapshots/{arg}-{projectName}{ext}',
   timeout: 30_000,
   use: {
-    baseURL: 'http://127.0.0.1:3000',
+    baseURL: `http://${host}:3000`,
     screenshot: 'only-on-failure',
   },
   projects: [

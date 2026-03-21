@@ -62,7 +62,10 @@ fn main() -> ExitCode {
             let app = args.get(2).map(|s| s.as_str());
             dev::run(app)
         }
-        Some("e2e") => e2e::run(),
+        Some("e2e") => {
+            let extra: Vec<String> = args.iter().skip(2).cloned().collect();
+            e2e::run(&extra)
+        }
         Some("version") => {
             let ver = args.get(2).map(|s| s.as_str());
             version::run(ver)
@@ -104,7 +107,7 @@ fn usage() -> ExitCode {
            docs    Build the documentation site\n  \
            bench <name> [-- <criterion args>]  Run benchmarks for a target crate (parser, handler, protocol, expressions, state, webui, all)\n  \
            dev <app>  Run example app in dev mode (server + client watch concurrently)\n  \
-           e2e     Run Playwright E2E tests for all example apps in parallel\n  \
+           e2e [--no-docker] [--update-snapshots]  Run Playwright E2E tests (Docker by default)\n  \
            version <semver>  Update version across all Cargo.toml and package.json files\n  \
            publish-stage [--target <triple|all>] [--profile release]  Stage native binaries for npm + NuGet packaging\n  \
            license-headers [--fix]  Check (or fix) license headers in source files"

@@ -36,7 +36,7 @@ All development tasks go through `cargo xtask`:
 | Command | Description |
 |---------|-------------|
 | `cargo xtask check` | **Run before every commit.** Parallel lint → test → build → docs |
-| `cargo xtask e2e` | Run Playwright E2E tests for all example apps in parallel |
+| `cargo xtask e2e` | Run Playwright E2E tests (Docker by default for cross-platform consistency) |
 | `cargo xtask fmt` | Check formatting |
 | `cargo xtask clippy` | Run clippy lints |
 | `cargo xtask deny` | License & advisory audit |
@@ -56,9 +56,9 @@ The CI workflow parallelizes across jobs with dependency ordering:
 graph LR
     lint["Lint<br/><small>headers → fmt → clippy → deny</small>"]
     test["Test<br/><small>cargo test --workspace</small>"]
-    build["Build<br/><small>Linux + Windows + macOS</small>"]
+    build["Build<br/><small>Linux + macOS</small>"]
     wasm["WASM<br/><small>wasm-pack build</small>"]
-    e2e["E2E<br/><small>Playwright · Windows</small>"]
+    e2e["E2E<br/><small>Playwright · Docker · Linux</small>"]
 
     lint --> test
     lint --> build
@@ -69,9 +69,21 @@ graph LR
 | Phase | Jobs (parallel) | Runner |
 |-------|----------------|--------|
 | 1 | **lint** | Ubuntu |
-| 2 | **test** + **build** (×3) + **wasm** + **e2e** | Ubuntu · matrix · Windows |
+| 2 | **test** + **build** (×2) + **wasm** + **e2e** | Ubuntu · matrix |
 
-Build runs on all 3 platforms via matrix. E2E runs on Windows only (screenshots match dev baselines).
+E2E tests run inside the official Playwright Docker image (`mcr.microsoft.com/playwright`) on Linux, ensuring pixel-identical screenshots regardless of developer OS.
+
+### E2E Testing
+
+E2E tests use [Playwright](https://playwright.dev) running inside Docker for cross-platform visual consistency. Docker is the default; use `--no-docker` to run directly on the host.
+
+| Command | Description |
+|---------|-------------|
+| `cargo xtask e2e` | Run E2E tests in Docker (default) |
+| `cargo xtask e2e --no-docker` | Run E2E tests directly on the host (fast, but screenshots may differ) |
+| `cargo xtask e2e --update-snapshots` | Regenerate screenshot baselines |
+
+**Prerequisites:** Docker Desktop (macOS/Windows) or Docker Engine (Linux). If Docker is not installed, `cargo xtask e2e` prints platform-specific installation instructions.
 
 Locally, `cargo xtask check` uses the same phased parallelism:
 - Phase 1: `license-headers → fmt → clippy` (sequential, fail-fast)
