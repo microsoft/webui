@@ -444,7 +444,7 @@ fn run_test_docker(
     let volume = format!("{ws}:/workspace");
     let workdir = format!("/workspace/{app_dir}");
 
-    let mut args = vec!["run", "--rm", "--ipc=host"];
+    let mut args = vec!["run", "--rm", "--ipc=host", "--platform=linux/arm64"];
 
     #[cfg(target_os = "linux")]
     args.push("--network=host");

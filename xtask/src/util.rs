@@ -381,8 +381,12 @@ pub fn ensure_docker_image(image: &str) -> Result<(), String> {
         console::style("▸").dim(),
         console::style(image).bold(),
     );
-    run_command("docker", &["pull", image], None)
-        .map_err(|e| format!("Failed to pull Docker image {image}: {e}"))
+    run_command(
+        "docker",
+        &["pull", "--platform", "linux/arm64", image],
+        None,
+    )
+    .map_err(|e| format!("Failed to pull Docker image {image}: {e}"))
 }
 
 #[cfg(test)]

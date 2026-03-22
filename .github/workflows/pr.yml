@@ -115,10 +115,10 @@ jobs:
       - name: Build docs
         run: pnpm --filter @webui/docs build
 
-  # ── Phase 2: Build + E2E (Linux, Docker) ─────────────────────────
+  # ── Phase 2: Build + E2E (Linux ARM64, Docker) ──────────────────
   build-e2e:
-    name: Build + E2E (Linux)
-    runs-on: ubuntu-latest
+    name: Build + E2E (Linux ARM64)
+    runs-on: ubuntu-24.04-arm
     needs: lint
     steps:
       - uses: actions/checkout@v4
