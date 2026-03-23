@@ -11,7 +11,7 @@
 //!
 //! Requires the `gh` CLI to be installed and authenticated.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use crate::util;
@@ -208,44 +208,54 @@ fn find_latest_run() -> Result<String, String> {
     Ok(run_id)
 }
 
-/// Recursively copy snapshot PNGs from the downloaded artifact into the workspace.
-fn copy_snapshots(src_dir: &PathBuf, count: &mut u32) -> Result<(), String> {
-    let entries = std::fs::read_dir(src_dir)
-        .map_err(|e| format!("Failed to read {}: {e}", src_dir.display()))?;
+/// Iteratively copy snapshot PNGs from the downloaded artifact into the workspace.
+///
+/// Uses an explicit stack instead of recursion. The download root is stripped
+/// from each file path to produce the workspace-relative destination.
+fn copy_snapshots(download_root: &Path, count: &mut u32) -> Result<(), String> {
+    let mut stack = vec![download_root.to_path_buf()];
 
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("Failed to read entry: {e}"))?;
-        let path = entry.path();
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .map_err(|e| format!("Failed to read {}: {e}", dir.display()))?;
 
-        if path.is_dir() {
-            copy_snapshots(&path, count)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("png") {
-            // The artifact structure mirrors the workspace:
-            //   examples/app/<name>/tests/<spec>-snapshots/<file>.png
-            // Copy directly to the workspace root-relative path
-            let dest = PathBuf::from(
-                path.strip_prefix(src_dir.parent().unwrap_or(src_dir))
-                    .unwrap_or(&path),
-            );
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("Failed to read entry: {e}"))?;
+            let path = entry.path();
 
-            if let Some(parent) = dest.parent() {
-                let _ = std::fs::create_dir_all(parent);
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("png") {
+                // The artifact structure mirrors the workspace layout:
+                //   <download_root>/examples/app/<name>/tests/<spec>-snapshots/<file>.png
+                let relative = path.strip_prefix(download_root).map_err(|_| {
+                    format!(
+                        "Unexpected artifact path: {} is not under {}",
+                        path.display(),
+                        download_root.display(),
+                    )
+                })?;
+                let dest = PathBuf::from(relative);
+
+                if let Some(parent) = dest.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+
+                std::fs::copy(&path, &dest).map_err(|e| {
+                    format!(
+                        "Failed to copy {} → {}: {e}",
+                        path.display(),
+                        dest.display()
+                    )
+                })?;
+
+                eprintln!(
+                    "  {} {}",
+                    console::style("✔").green(),
+                    console::style(dest.display()).dim(),
+                );
+                *count += 1;
             }
-
-            std::fs::copy(&path, &dest).map_err(|e| {
-                format!(
-                    "Failed to copy {} → {}: {e}",
-                    path.display(),
-                    dest.display()
-                )
-            })?;
-
-            eprintln!(
-                "  {} {}",
-                console::style("✔").green(),
-                console::style(dest.display()).dim(),
-            );
-            *count += 1;
         }
     }
 

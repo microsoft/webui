@@ -75,6 +75,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
+      - name: Disable Windows Defender on build dirs
+        if: runner.os == 'Windows'
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
+          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
+
       - uses: actions/checkout@v4
 
       - name: Install protoc (Linux)
@@ -161,7 +167,7 @@ jobs:
         run: pnpm --filter @webui/docs build
 
       - name: Install Playwright browsers
-        run: npx playwright install chromium
+        run: npx playwright install --with-deps chromium
 
       - name: Run E2E tests
         run: cargo xtask e2e

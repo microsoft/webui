@@ -3,15 +3,13 @@
 
 import { defineConfig } from '@playwright/test';
 
-const host = '127.0.0.1';
-
 export default defineConfig({
   testDir: './tests',
   snapshotPathTemplate:
     '{snapshotDir}/{testFileDir}/{testFileName}-snapshots/{arg}-{projectName}{ext}',
   timeout: 30_000,
   use: {
-    baseURL: `http://${host}:3004`,
+    baseURL: 'http://127.0.0.1:3004',
     screenshot: 'only-on-failure',
   },
   projects: [
