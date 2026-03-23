@@ -3,7 +3,7 @@
 
 import { defineConfig } from '@playwright/test';
 
-const host = process.env.WEBUI_TEST_HOST || '127.0.0.1';
+const host = '127.0.0.1';
 
 export default defineConfig({
   testDir: './tests',
