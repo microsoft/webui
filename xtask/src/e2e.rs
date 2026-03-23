@@ -312,12 +312,12 @@ pub fn run(args: &[String]) -> ExitCode {
 }
 
 fn run_test(name: &str, dir: &Path, update_snapshots: bool) -> (bool, String) {
-    let test_args: Vec<&str> = if update_snapshots {
-        vec!["test", "--", "--update-snapshots"]
+    let script = if update_snapshots {
+        "test:update-snapshots"
     } else {
-        vec!["test"]
+        "test"
     };
-    let mut cmd = util::build_command("pnpm", &test_args);
+    let mut cmd = util::build_command("pnpm", &[script]);
     cmd.current_dir(dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
