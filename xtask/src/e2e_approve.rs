@@ -210,8 +210,11 @@ fn find_latest_run() -> Result<String, String> {
 
 /// Iteratively copy snapshot PNGs from the downloaded artifact into the workspace.
 ///
-/// Uses an explicit stack instead of recursion. The download root is stripped
-/// from each file path to produce the workspace-relative destination.
+/// Uses an explicit stack instead of recursion. The upload-artifact action
+/// strips the common prefix (`examples/app/`) from the glob path, so we
+/// prepend it back when computing the workspace destination.
+const SNAPSHOT_PREFIX: &str = "examples/app";
+
 fn copy_snapshots(download_root: &Path, count: &mut u32) -> Result<(), String> {
     let mut stack = vec![download_root.to_path_buf()];
 
@@ -226,8 +229,8 @@ fn copy_snapshots(download_root: &Path, count: &mut u32) -> Result<(), String> {
             if path.is_dir() {
                 stack.push(path);
             } else if path.extension().and_then(|e| e.to_str()) == Some("png") {
-                // The artifact structure mirrors the workspace layout:
-                //   <download_root>/examples/app/<name>/tests/<spec>-snapshots/<file>.png
+                // Artifact structure: <download_root>/<app>/tests/<spec>-snapshots/<file>.png
+                // Workspace target:   examples/app/<app>/tests/<spec>-snapshots/<file>.png
                 let relative = path.strip_prefix(download_root).map_err(|_| {
                     format!(
                         "Unexpected artifact path: {} is not under {}",
@@ -235,7 +238,7 @@ fn copy_snapshots(download_root: &Path, count: &mut u32) -> Result<(), String> {
                         download_root.display(),
                     )
                 })?;
-                let dest = PathBuf::from(relative);
+                let dest = PathBuf::from(SNAPSHOT_PREFIX).join(relative);
 
                 if let Some(parent) = dest.parent() {
                     let _ = std::fs::create_dir_all(parent);
