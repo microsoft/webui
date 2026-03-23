@@ -3,11 +3,15 @@
 
 //! E2E test runner: starts example servers and runs Playwright tests in parallel.
 //!
-//! Usage: `cargo xtask e2e`
+//! Usage: `cargo xtask e2e [--update-snapshots]`
 //!
 //! Starts all example app servers on their unique ports, waits for them to be
-//! ready, then runs `pnpm test` in parallel across all examples that have
+//! ready, then runs Playwright tests in parallel across all examples that have
 //! Playwright configs. Reports results and cleans up servers on exit.
+//!
+//! Screenshot baselines are generated on CI (Ubuntu Linux). Locally, visual
+//! regression tests may fail due to platform font differences — use
+//! `--update-snapshots` to regenerate baselines from your environment.
 
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -70,8 +74,10 @@ struct TestResult {
     output: String,
 }
 
-pub fn run() -> ExitCode {
-    eprintln!("\n{} E2E tests", console::style("▸").cyan().bold(),);
+pub fn run(args: &[String]) -> ExitCode {
+    let update_snapshots = args.iter().any(|a| a == "--update-snapshots");
+
+    eprintln!("\n{} E2E tests", console::style("▸").cyan().bold());
 
     // Filter to apps that exist on disk
     let apps: Vec<&ExampleApp> = APPS
@@ -115,7 +121,6 @@ pub fn run() -> ExitCode {
         if !dir.join("src").join("index.ts").exists() {
             continue;
         }
-        // Use relative paths — cwd is set to the app dir
         match util::run_command_quiet(
             "npx",
             &[
@@ -228,7 +233,19 @@ pub fn run() -> ExitCode {
             let name = app.name.to_string();
             let dir = PathBuf::from(app.dir);
             thread::spawn(move || {
-                let (success, output) = run_test(&name, &dir);
+                let start = Instant::now();
+                let (success, output) = run_test(&name, &dir, update_snapshots);
+                let elapsed = start.elapsed().as_secs_f64();
+                let icon = if success {
+                    console::style("✔").green().to_string()
+                } else {
+                    console::style("✘").red().bold().to_string()
+                };
+                eprintln!(
+                    "  {icon} {} {}",
+                    console::style(&name).bold(),
+                    console::style(format!("({elapsed:.1}s)")).dim(),
+                );
                 TestResult {
                     name,
                     success,
@@ -252,35 +269,21 @@ pub fn run() -> ExitCode {
         }
     }
 
-    // Print results
+    // Print failure details
     eprintln!();
     let mut all_passed = true;
     for result in &results {
-        if result.success {
-            eprintln!(
-                "  {} {}",
-                console::style("✔").green(),
-                console::style(&result.name).bold(),
-            );
-        } else {
+        if !result.success {
             all_passed = false;
             eprintln!(
-                "  {} {}",
+                "  {} {} — full output:",
                 console::style("✘").red().bold(),
                 console::style(&result.name).bold(),
             );
             let separator = console::style("─".repeat(60)).dim();
             eprintln!("    {separator}");
-            for line in result.output.lines().take(40) {
+            for line in result.output.lines() {
                 eprintln!("    {line}");
-            }
-            let total = result.output.lines().count();
-            if total > 40 {
-                eprintln!(
-                    "    {} ({} more lines)",
-                    console::style("...").dim(),
-                    total - 40,
-                );
             }
             eprintln!("    {separator}");
         }
@@ -308,8 +311,13 @@ pub fn run() -> ExitCode {
     }
 }
 
-fn run_test(name: &str, dir: &Path) -> (bool, String) {
-    let mut cmd = util::build_command("pnpm", &["test"]);
+fn run_test(name: &str, dir: &Path, update_snapshots: bool) -> (bool, String) {
+    let script = if update_snapshots {
+        "test:update-snapshots"
+    } else {
+        "test"
+    };
+    let mut cmd = util::build_command("pnpm", &[script]);
     cmd.current_dir(dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

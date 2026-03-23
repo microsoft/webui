@@ -36,7 +36,7 @@ All development tasks go through `cargo xtask`:
 | Command | Description |
 |---------|-------------|
 | `cargo xtask check` | **Run before every commit.** Parallel lint → test → build → docs |
-| `cargo xtask e2e` | Run Playwright E2E tests for all example apps in parallel |
+| `cargo xtask e2e` | Run Playwright E2E tests for all example apps |
 | `cargo xtask fmt` | Check formatting |
 | `cargo xtask clippy` | Run clippy lints |
 | `cargo xtask deny` | License & advisory audit |
@@ -56,22 +56,46 @@ The CI workflow parallelizes across jobs with dependency ordering:
 graph LR
     lint["Lint<br/><small>headers → fmt → clippy → deny</small>"]
     test["Test<br/><small>cargo test --workspace</small>"]
-    build["Build<br/><small>Linux + Windows + macOS</small>"]
+    buildL["Build Linux"]
+    buildM["Build macOS"]
+    buildW["Build Windows"]
     wasm["WASM<br/><small>wasm-pack build</small>"]
-    e2e["E2E<br/><small>Playwright · Windows</small>"]
+    docs["Docs<br/><small>VitePress</small>"]
+    e2e["E2E<br/><small>Playwright</small>"]
 
     lint --> test
-    lint --> build
+    lint --> buildL
+    lint --> buildM
+    lint --> buildW
     lint --> wasm
-    lint --> e2e
+    lint --> docs
+    buildL --> e2e
 ```
 
 | Phase | Jobs (parallel) | Runner |
 |-------|----------------|--------|
 | 1 | **lint** | Ubuntu |
-| 2 | **test** + **build** (×3) + **wasm** + **e2e** | Ubuntu · matrix · Windows |
+| 2 | **test** + **build** (Linux · macOS · Windows) + **wasm** + **docs** | Ubuntu · macOS · Windows |
+| 3 | **e2e** (after Linux build) | Ubuntu (shared Rust cache) |
 
-Build runs on all 3 platforms via matrix. E2E runs on Windows only (screenshots match dev baselines).
+Screenshot baselines are generated on CI (Ubuntu). When e2e fails, CI automatically re-runs with `--update-snapshots` and uploads the corrected baselines as an artifact. Use `cargo xtask e2e-approve` to download and apply them.
+
+### E2E Testing
+
+E2E tests use [Playwright](https://playwright.dev). Screenshot baselines are the CI runner's source of truth — locally, visual regression tests may differ due to platform fonts.
+
+| Command | Description |
+|---------|-------------|
+| `cargo xtask e2e` | Run E2E tests |
+| `cargo xtask e2e --update-snapshots` | Regenerate screenshot baselines locally |
+| `cargo xtask e2e-approve` | Download CI baselines from the latest run on your branch |
+| `cargo xtask e2e-approve <run-id>` | Download CI baselines from a specific run |
+
+**Workflow for visual changes:**
+1. Push your branch → CI runs e2e
+2. If screenshots fail → CI regenerates baselines and uploads `e2e-updated-baselines` artifact
+3. Inspect the `e2e-test-results` artifact to review diffs (actual vs expected)
+4. If the new rendering is correct → run `cargo xtask e2e-approve` → review with `git diff` → commit
 
 Locally, `cargo xtask check` uses the same phased parallelism:
 - Phase 1: `license-headers → fmt → clippy` (sequential, fail-fast)
