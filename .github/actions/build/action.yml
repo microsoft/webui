@@ -1,0 +1,70 @@
+name: Build WebUI
+description: Shared build steps for WebUI — installs protoc, Rust, Node.js, pnpm, and builds the workspace.
+
+inputs:
+  shared-cache-key:
+    description: Rust cache shared key for cross-job cache sharing
+    required: false
+    default: ''
+  cache-on-failure:
+    description: Save Rust cache even when subsequent steps fail
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Disable Windows Defender on build dirs
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
+        Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
+
+    - name: Install protoc (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+
+    - name: Install protoc (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: brew install protobuf
+
+    - name: Install protoc (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: choco install protoc -y
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.93
+
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.shared-cache-key }}
+        cache-on-failure: ${{ inputs.cache-on-failure }}
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        run_install: false
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install
+
+    - name: Build workspace
+      shell: bash
+      run: cargo build --workspace --exclude xtask
+
+    - name: Build examples
+      shell: bash
+      run: cargo xtask build-examples

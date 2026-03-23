@@ -56,21 +56,27 @@ The CI workflow parallelizes across jobs with dependency ordering:
 graph LR
     lint["Lint<br/><small>headers → fmt → clippy → deny</small>"]
     test["Test<br/><small>cargo test --workspace</small>"]
-    build["Build<br/><small>Linux + macOS + Windows</small>"]
+    buildL["Build Linux"]
+    buildM["Build macOS"]
+    buildW["Build Windows"]
     wasm["WASM<br/><small>wasm-pack build</small>"]
-    e2e["E2E<br/><small>Playwright · Ubuntu</small>"]
+    docs["Docs<br/><small>VitePress</small>"]
+    e2e["E2E<br/><small>Playwright</small>"]
 
     lint --> test
-    lint --> build
+    lint --> buildL
+    lint --> buildM
+    lint --> buildW
     lint --> wasm
-    lint --> e2e
+    lint --> docs
+    buildL --> e2e
 ```
 
 | Phase | Jobs (parallel) | Runner |
 |-------|----------------|--------|
 | 1 | **lint** | Ubuntu |
-| 2 | **test** + **build** (×3) + **wasm** | Ubuntu · matrix |
-| 3 | **e2e** | Ubuntu (reuses build cache) |
+| 2 | **test** + **build** (Linux · macOS · Windows) + **wasm** + **docs** | Ubuntu · macOS · Windows |
+| 3 | **e2e** (after Linux build) | Ubuntu (shared Rust cache) |
 
 Screenshot baselines are generated on CI (Ubuntu). When e2e fails, CI automatically re-runs with `--update-snapshots` and uploads the corrected baselines as an artifact. Use `cargo xtask e2e-approve` to download and apply them.
 
