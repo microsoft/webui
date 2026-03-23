@@ -66,14 +66,14 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-  # ── Phase 2: Build (macOS + Windows matrix) ─────────────────────────
+  # ── Phase 2: Build (Linux + macOS + Windows matrix) ─────────────────
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     needs: lint
     strategy:
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Disable Windows Defender on build dirs
         if: runner.os == 'Windows'
@@ -82,6 +82,10 @@ jobs:
           Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
 
       - uses: actions/checkout@v4
+
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
 
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
@@ -98,6 +102,8 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.os }}-build
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -125,7 +131,7 @@ jobs:
   build-e2e:
     name: Build + E2E (ubuntu-latest)
     runs-on: ubuntu-latest
-    needs: lint
+    needs: [lint, build]
     steps:
       - uses: actions/checkout@v4
 
@@ -139,6 +145,9 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ubuntu-latest-build
+          cache-on-failure: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
