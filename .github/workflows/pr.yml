@@ -168,20 +168,24 @@ jobs:
       - name: Run E2E tests
         run: cargo xtask e2e
 
+      - name: Regenerate baselines (on failure)
+        if: failure()
+        run: cargo xtask e2e --update-snapshots
+
+      - name: Upload updated baselines (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-updated-baselines
+          path: examples/app/*/tests/*.spec.ts-snapshots/
+          retention-days: 7
+
       - name: Upload test results (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-test-results
           path: examples/app/*/test-results/
-          retention-days: 7
-
-      - name: Upload snapshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-snapshots
-          path: examples/app/*/tests/*.spec.ts-snapshots/
           retention-days: 7
 
   # ── Phase 2: WASM (Ubuntu) ─────────────────────────────────────────

@@ -5,7 +5,7 @@
 //!
 //! Usage: `cargo xtask e2e-approve [run-id]`
 //!
-//! Downloads the `e2e-snapshots` artifact from the latest CI run on the
+//! Downloads the `e2e-updated-baselines` artifact from the latest CI run on the
 //! current branch (or a specific run if `run-id` is provided), extracts
 //! the PNGs, and copies them into the correct snapshot directories.
 //!
@@ -83,7 +83,7 @@ pub fn run(run_id: Option<&str>) -> ExitCode {
             "download",
             &resolved_run_id,
             "--name",
-            "e2e-snapshots",
+            "e2e-updated-baselines",
             "--dir",
             &tmp_dir,
         ])
@@ -95,11 +95,11 @@ pub fn run(run_id: Option<&str>) -> ExitCode {
         Ok(s) if s.success() => {}
         Ok(_) => {
             eprintln!(
-                "  {} Failed to download e2e-snapshots artifact",
+                "  {} Failed to download e2e-updated-baselines artifact",
                 console::style("✘").red().bold(),
             );
             eprintln!(
-                "    {} The run may not have an e2e-snapshots artifact. \
+                "    {} The run may not have an e2e-updated-baselines artifact. \
                  Check: {}",
                 console::style("hint:").yellow(),
                 console::style(format!("gh run view {resolved_run_id} --json jobs")).dim(),

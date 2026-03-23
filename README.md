@@ -71,7 +71,7 @@ graph LR
 | 1 | **lint** | Ubuntu |
 | 2 | **test** + **build** (×2) + **wasm** + **e2e** | Ubuntu · matrix |
 
-Screenshot baselines are generated on CI (Ubuntu). Use `cargo xtask e2e-approve` to download and apply CI baselines locally.
+Screenshot baselines are generated on CI (Ubuntu). When e2e fails, CI automatically re-runs with `--update-snapshots` and uploads the corrected baselines as an artifact. Use `cargo xtask e2e-approve` to download and apply them.
 
 ### E2E Testing
 
@@ -84,7 +84,11 @@ E2E tests use [Playwright](https://playwright.dev). Screenshot baselines are the
 | `cargo xtask e2e-approve` | Download CI baselines from the latest run on your branch |
 | `cargo xtask e2e-approve <run-id>` | Download CI baselines from a specific run |
 
-**Workflow for visual changes:** Push your branch → CI runs e2e → if screenshots fail, inspect the `e2e-test-results` artifact → if the new rendering is correct, run `cargo xtask e2e-approve` to pull the CI baselines and commit them.
+**Workflow for visual changes:**
+1. Push your branch → CI runs e2e
+2. If screenshots fail → CI regenerates baselines and uploads `e2e-updated-baselines` artifact
+3. Inspect the `e2e-test-results` artifact to review diffs (actual vs expected)
+4. If the new rendering is correct → run `cargo xtask e2e-approve` → review with `git diff` → commit
 
 Locally, `cargo xtask check` uses the same phased parallelism:
 - Phase 1: `license-headers → fmt → clippy` (sequential, fail-fast)
