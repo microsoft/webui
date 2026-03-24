@@ -12,10 +12,10 @@ name = "webui"
 path = "src/main.rs"
 
 [dependencies]
-microsoft-webui = { path = "../webui", version = "0.0.1", features = ["cli"] }
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.1" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.1" }
-microsoft-webui-discovery = { path = "../webui-discovery", version = "0.0.1" }
+microsoft-webui = { path = "../webui", features = ["cli"] }
+microsoft-webui-handler = { path = "../webui-handler" }
+microsoft-webui-protocol = { path = "../webui-protocol" }
+microsoft-webui-discovery = { path = "../webui-discovery" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 console = { workspace = true }
@@ -29,4 +29,4 @@ walkdir = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.1" }
+microsoft-webui-protocol = { path = "../webui-protocol" }
