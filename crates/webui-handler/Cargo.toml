@@ -1,7 +1,6 @@
 [package]
 name = "microsoft-webui-handler"
 description = "Core rust handler for WebUI framework"
-publish = false
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -12,16 +11,16 @@ repository.workspace = true
 name = "webui_handler"
 
 [dependencies]
-microsoft-webui-protocol = { path = "../../crates/webui-protocol" }
-microsoft-webui-expressions = { path = "../../crates/webui-expressions" }
-microsoft-webui-state = { path = "../webui-state" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.1" }
+microsoft-webui-expressions = { path = "../webui-expressions", version = "0.0.1" }
+microsoft-webui-state = { path = "../webui-state", version = "0.0.1" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 html-escape = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-test-utils = { path = "../webui-test-utils" }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.1" }
 tokio = { workspace = true }
 criterion = { workspace = true }
 

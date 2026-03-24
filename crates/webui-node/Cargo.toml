@@ -1,7 +1,6 @@
 [package]
 name = "microsoft-webui-node"
 description = "Node.js native addon for WebUI framework via napi-rs"
-publish = false
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -15,15 +14,15 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { workspace = true }
 napi-derive = { workspace = true }
-microsoft-webui = { path = "../webui" }
-microsoft-webui-handler = { path = "../webui-handler" }
-microsoft-webui-protocol = { path = "../webui-protocol" }
+microsoft-webui = { path = "../webui", version = "0.0.1" }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.1" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.1" }
 serde_json = { workspace = true }
 
 [build-dependencies]
 napi-build = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-parser = { path = "../webui-parser", default-features = false }
-microsoft-webui-test-utils = { path = "../webui-test-utils" }
+microsoft-webui-parser = { path = "../webui-parser", version = "0.0.1", default-features = false }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.1" }
 tempfile = { workspace = true }

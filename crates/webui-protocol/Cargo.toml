@@ -1,7 +1,6 @@
 [package]
 name = "microsoft-webui-protocol"
 description = "Core protocol definitions for WebUI framework"
-publish = false
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

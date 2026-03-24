@@ -1,7 +1,6 @@
 [package]
 name = "microsoft-webui-discovery"
 description = "External component discovery for WebUI framework"
-publish = false
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

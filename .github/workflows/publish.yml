@@ -1,0 +1,360 @@
+name: Publish Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Step 1: Detect version change ─────────────────────────────────────
+  check-version:
+    name: Check Version
+    runs-on: ubuntu-latest
+    outputs:
+      should_publish: ${{ steps.check.outputs.should_publish }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare version with latest tag
+        id: check
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — skipping publish"
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag $TAG not found — will publish"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Step 2: Build native binaries (3 runners, 2 targets each) ────────
+  #
+  # Each runner builds its native target + cross-compiles the other arch.
+  # All crates are pure Rust (no C/C++ deps), so cross-compilation works
+  # out of the box with just the right linker/target installed.
+  #
+  #   ubuntu-latest  (x64) → linux-x64   + linux-arm64
+  #   macos-latest   (arm) → darwin-arm64 + darwin-x64
+  #   windows-latest (x64) → win32-x64   + win32-arm64
+
+  build-linux:
+    name: Build (Linux x64 + arm64)
+    needs: check-version
+    if: needs.check-version.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+
+      - name: Install cross-compilation tools (arm64 linker)
+        run: |
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93
+          targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: publish-linux
+
+      - name: Build x64
+        run: >
+          cargo build --release
+          --target x86_64-unknown-linux-gnu
+          -p microsoft-webui-cli
+          -p microsoft-webui-ffi
+          -p microsoft-webui-node
+
+      - name: Build arm64 (cross)
+        run: >
+          cargo build --release
+          --target aarch64-unknown-linux-gnu
+          -p microsoft-webui-cli
+          -p microsoft-webui-ffi
+          -p microsoft-webui-node
+
+      - name: Stage all Linux artifacts
+        run: cargo xtask publish-stage --target all --profile release
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-linux
+          path: |
+            publish/native/
+            packages/webui-linux-x64/
+            packages/webui-linux-arm64/
+            dotnet/runtimes/
+          retention-days: 1
+
+  build-macos:
+    name: Build (macOS arm64 + x64)
+    needs: check-version
+    if: needs.check-version.outputs.should_publish == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: brew install protobuf
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: publish-macos
+
+      - name: Build arm64 (native)
+        run: >
+          cargo build --release
+          --target aarch64-apple-darwin
+          -p microsoft-webui-cli
+          -p microsoft-webui-ffi
+          -p microsoft-webui-node
+
+      - name: Build x64 (cross)
+        run: >
+          cargo build --release
+          --target x86_64-apple-darwin
+          -p microsoft-webui-cli
+          -p microsoft-webui-ffi
+          -p microsoft-webui-node
+
+      - name: Stage all macOS artifacts
+        run: cargo xtask publish-stage --target all --profile release
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-macos
+          path: |
+            publish/native/
+            packages/webui-darwin-arm64/
+            packages/webui-darwin-x64/
+            dotnet/runtimes/
+          retention-days: 1
+
+  build-windows:
+    name: Build (Windows x64 + arm64)
+    needs: check-version
+    if: needs.check-version.outputs.should_publish == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Disable Windows Defender on build dirs
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
+          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
+
+      - name: Install protoc
+        shell: pwsh
+        run: choco install protoc -y
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93
+          targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: publish-windows
+
+      - name: Build x64 (native)
+        run: >
+          cargo build --release
+          --target x86_64-pc-windows-msvc
+          -p microsoft-webui-cli
+          -p microsoft-webui-ffi
+          -p microsoft-webui-node
+
+      - name: Build arm64 (cross)
+        run: >
+          cargo build --release
+          --target aarch64-pc-windows-msvc
+          -p microsoft-webui-cli
+          -p microsoft-webui-ffi
+          -p microsoft-webui-node
+
+      - name: Stage all Windows artifacts
+        run: cargo xtask publish-stage --target all --profile release
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-windows
+          path: |
+            publish/native/
+            packages/webui-win32-x64/
+            packages/webui-win32-arm64/
+            dotnet/runtimes/
+          retention-days: 1
+
+  # ── Step 3: Assemble all artifacts and create release ─────────────────
+  release:
+    name: Create Release
+    needs: [check-version, build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # Download all platform artifacts (3 uploads → merged into working tree)
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: platform-linux
+          path: .
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: platform-macos
+          path: .
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: platform-windows
+          path: .
+
+      # Build packages that need compilation
+      - name: Build npm packages
+        run: |
+          pnpm --filter @microsoft/webui build
+          pnpm --filter @microsoft/webui-router build
+
+      # Pack npm tarballs
+      - name: Pack npm tarballs
+        run: |
+          mkdir -p publish/npm
+          for dir in packages/*/; do
+            if [ -f "$dir/package.json" ]; then
+              pnpm pack --pack-destination "$(pwd)/publish/npm" "$dir"
+            fi
+          done
+
+      # Pack NuGet packages
+      - name: Pack NuGet packages
+        run: |
+          mkdir -p publish/nuget
+          dotnet pack dotnet/ --configuration Release --output publish/nuget/
+
+      # Pack Rust crates
+      - name: Pack Rust crates
+        run: |
+          mkdir -p publish/crates
+          cargo package \
+            --workspace \
+            --exclude xtask \
+            --exclude webui-rust-example \
+            --exclude ssr-performance-showdown \
+            --exclude marketplace-api \
+            --no-verify --allow-dirty
+          cp target/package/*.crate publish/crates/
+
+      # Build and stage WASM
+      - name: Build WASM
+        uses: ./.github/actions/setup-wasm
+
+      - name: Stage WASM artifacts
+        run: |
+          mkdir -p publish/wasm
+          if [ -f docs/public/wasm/webui_wasm_bg.wasm ]; then
+            cp docs/public/wasm/webui_wasm_bg.wasm publish/wasm/
+            cp docs/public/wasm/webui_wasm.js publish/wasm/
+            echo "WASM artifacts staged"
+          else
+            echo "::error::WASM artifacts not found at docs/public/wasm/"
+            exit 1
+          fi
+
+      # List all artifacts for verification
+      - name: List publish artifacts
+        run: find publish/ -type f | sort
+
+      # Create git tag (re-check to guard against concurrent runs)
+      - name: Create git tag
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          git fetch --tags
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "::warning::Tag v${VERSION} already exists (concurrent run?). Skipping."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "v${VERSION}" -m "Release v${VERSION}"
+            git push origin "v${VERSION}"
+          fi
+
+      # Create GitHub Release with all artifacts
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check-version.outputs.version }}
+          name: v${{ needs.check-version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            publish/native/*
+            publish/npm/*
+            publish/nuget/*
+            publish/crates/*
+            publish/wasm/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,7 +1,6 @@
 [package]
 name = "microsoft-webui-state"
 description = "Core state management for WebUI framework"
-publish = false
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -16,7 +15,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-test-utils = { path = "../webui-test-utils" }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.1" }
 criterion = { workspace = true }
 
 [[bench]]

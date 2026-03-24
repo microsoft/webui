@@ -4,11 +4,11 @@
 mod build_examples;
 mod build_wasm;
 mod dev;
-mod dotnet;
 mod e2e;
 mod e2e_approve;
 mod license_headers;
 mod process;
+mod publish;
 mod util;
 mod version;
 
@@ -77,7 +77,7 @@ fn main() -> ExitCode {
         }
         Some("publish-stage") => {
             let extra: Vec<String> = args.iter().skip(2).cloned().collect();
-            dotnet::run_stage(&extra)
+            publish::run_stage(&extra)
         }
         Some("license-headers") => {
             let fix = args.iter().any(|a| a == "--fix");
@@ -115,7 +115,7 @@ fn usage() -> ExitCode {
            e2e [--update-snapshots]  Run Playwright E2E tests for all example apps\n  \
            e2e-approve [run-id]  Download CI screenshot baselines and apply locally\n  \
            version <semver>  Update version across all Cargo.toml and package.json files\n  \
-           publish-stage [--target <triple|all>] [--profile release]  Stage native binaries for npm + NuGet packaging\n  \
+           publish-stage [--target <triple|all>] [--profile release]  Stage all release artifacts into publish/\n  \
            license-headers [--fix]  Check (or fix) license headers in source files"
     );
     ExitCode::SUCCESS

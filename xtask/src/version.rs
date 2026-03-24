@@ -16,7 +16,7 @@ fn is_valid_semver(version: &str) -> bool {
     parts.iter().all(|p| p.parse::<u64>().is_ok())
 }
 
-/// Update `version = "..."` in workspace.package section of root Cargo.toml.
+/// Update `version = "..."` in `[workspace.package]` of root Cargo.toml.
 fn update_cargo_workspace_version(root: &Path, version: &str) -> Result<(), String> {
     let cargo_path = root.join("Cargo.toml");
     let content =
@@ -28,15 +28,15 @@ fn update_cargo_workspace_version(root: &Path, version: &str) -> Result<(), Stri
 
     for line in content.lines() {
         let trimmed = line.trim();
-
         if trimmed == "[workspace.package]" {
             in_workspace_package = true;
         } else if trimmed.starts_with('[') {
             in_workspace_package = false;
         }
-
         if in_workspace_package && trimmed.starts_with("version") && trimmed.contains('=') {
-            result.push_str(&format!("version = \"{version}\"\n"));
+            result.push_str("version = \"");
+            result.push_str(version);
+            result.push_str("\"\n");
             updated = true;
         } else {
             result.push_str(line);
@@ -50,6 +50,74 @@ fn update_cargo_workspace_version(root: &Path, version: &str) -> Result<(), Stri
 
     fs::write(&cargo_path, result).map_err(|e| format!("Failed to write Cargo.toml: {e}"))?;
     Ok(())
+}
+
+/// Replace the `version = "..."` portion of a dependency line.
+fn replace_inline_version(line: &str, new_version: &str) -> Option<String> {
+    let version_key = "version = \"";
+    let start = line.find(version_key)?;
+    let value_start = start + version_key.len();
+    let end = line[value_start..].find('"')?;
+
+    let mut result = String::with_capacity(line.len());
+    result.push_str(&line[..value_start]);
+    result.push_str(new_version);
+    result.push_str(&line[value_start + end..]);
+    Some(result)
+}
+
+/// Find all `Cargo.toml` files under `crates/`.
+fn find_crate_cargo_tomls(root: &Path) -> Vec<PathBuf> {
+    let crates_dir = root.join("crates");
+    let mut results = Vec::new();
+
+    if !crates_dir.exists() {
+        return results;
+    }
+
+    if let Ok(entries) = fs::read_dir(&crates_dir) {
+        for entry in entries.flatten() {
+            let toml = entry.path().join("Cargo.toml");
+            if toml.is_file() {
+                results.push(toml);
+            }
+        }
+    }
+
+    results.sort();
+    results
+}
+
+/// Update `version = "..."` in inter-crate dependency lines of a crate's Cargo.toml.
+fn update_crate_dep_versions(path: &Path, version: &str) -> Result<bool, String> {
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+
+    let mut result = String::with_capacity(content.len());
+    let mut changed = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("microsoft-webui")
+            && trimmed.contains("path")
+            && trimmed.contains("version")
+        {
+            if let Some(new_line) = replace_inline_version(line, version) {
+                result.push_str(&new_line);
+                result.push('\n');
+                changed = true;
+                continue;
+            }
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    if changed {
+        fs::write(path, result).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
+    }
+
+    Ok(changed)
 }
 
 /// Update version in a package.json file. Also updates optionalDependencies
@@ -159,6 +227,36 @@ fn find_package_jsons(root: &Path) -> Vec<PathBuf> {
     results
 }
 
+/// Read the current workspace version from root `Cargo.toml`.
+///
+/// Parses `[workspace.package].version` and returns the semver string.
+pub fn read_version() -> Result<String, String> {
+    let root = crate::util::workspace_root()?;
+    let cargo_path = root.join("Cargo.toml");
+    let content =
+        fs::read_to_string(&cargo_path).map_err(|e| format!("Failed to read Cargo.toml: {e}"))?;
+
+    let mut in_workspace_package = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[workspace.package]" {
+            in_workspace_package = true;
+        } else if trimmed.starts_with('[') {
+            in_workspace_package = false;
+        }
+        if in_workspace_package && trimmed.starts_with("version") && trimmed.contains('=') {
+            // Extract the version value between quotes
+            if let Some(start) = trimmed.find('"') {
+                if let Some(end) = trimmed[start + 1..].find('"') {
+                    return Ok(trimmed[start + 1..start + 1 + end].to_string());
+                }
+            }
+        }
+    }
+
+    Err("Could not find version in [workspace.package] of Cargo.toml".to_string())
+}
+
 pub fn run(version: Option<&str>) -> ExitCode {
     let Some(version) = version else {
         eprintln!(
@@ -184,7 +282,16 @@ pub fn run(version: Option<&str>) -> ExitCode {
     );
 
     // 1. Update workspace Cargo.toml
-    let root = std::env::current_dir().unwrap_or_default();
+    let root = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "  {} Failed to read current directory: {e}",
+                console::style("✘").red().bold()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
 
     if let Err(e) = update_cargo_workspace_version(&root, version) {
         eprintln!("  {} {e}", console::style("✘").red().bold());
@@ -210,7 +317,25 @@ pub fn run(version: Option<&str>) -> ExitCode {
         0
     };
 
-    // 3. Update all package.json files under packages/
+    // 3. Update inter-crate dependency versions in crates/*/Cargo.toml
+    let crate_tomls = find_crate_cargo_tomls(&root);
+    let mut crate_count = 0;
+    for toml_path in &crate_tomls {
+        match update_crate_dep_versions(toml_path, version) {
+            Ok(true) => {
+                let relative = toml_path.strip_prefix(&root).unwrap_or(toml_path).display();
+                eprintln!("  {} {relative}", console::style("✔").green());
+                crate_count += 1;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                eprintln!("  {} {e}", console::style("✘").red().bold());
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    // 4. Update all package.json files under packages/
     let package_jsons = find_package_jsons(&root);
     let mut count = 0;
     for pkg_path in &package_jsons {
@@ -231,8 +356,12 @@ pub fn run(version: Option<&str>) -> ExitCode {
     eprintln!(
         "\n  {} Updated {} file{}\n",
         console::style("✨").green(),
-        console::style(1 + dotnet_count + count).bold(),
-        if (dotnet_count + count) == 0 { "" } else { "s" }
+        console::style(1 + dotnet_count + crate_count + count).bold(),
+        if (dotnet_count + crate_count + count) == 0 {
+            ""
+        } else {
+            "s"
+        }
     );
 
     ExitCode::SUCCESS
@@ -307,7 +436,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         fs::write(
             dir.path().join("Cargo.toml"),
-            "[workspace]\nmembers = []\n\n[workspace.package]\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "[workspace]\nmembers = []\n\n[workspace.package]\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace.dependencies]\nserde = \"1.0\"\n",
         )
         .unwrap();
 
@@ -316,6 +445,63 @@ mod tests {
         let content = fs::read_to_string(dir.path().join("Cargo.toml")).unwrap();
         assert!(content.contains("version = \"3.0.0\""));
         assert!(content.contains("edition = \"2021\""));
+        // non-webui deps should be untouched
+        assert!(content.contains("serde = \"1.0\""));
+    }
+
+    #[test]
+    fn test_replace_inline_version() {
+        let line =
+            r#"microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.1" }"#;
+        let result = replace_inline_version(line, "1.2.3").unwrap();
+        assert_eq!(
+            result,
+            r#"microsoft-webui-protocol = { path = "../webui-protocol", version = "1.2.3" }"#
+        );
+    }
+
+    #[test]
+    fn test_update_crate_dep_versions() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let toml = dir.path().join("Cargo.toml");
+        fs::write(
+            &toml,
+            r#"[package]
+name = "test"
+version = "0.0.1"
+
+[dependencies]
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.1" }
+serde = { workspace = true }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.1" }
+
+[dev-dependencies]
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.1" }
+"#,
+        )
+        .unwrap();
+
+        let changed = update_crate_dep_versions(&toml, "2.0.0").unwrap();
+        assert!(changed);
+
+        let content = fs::read_to_string(&toml).unwrap();
+        // Package-level version should be untouched
+        assert!(content.contains("version = \"0.0.1\""));
+        // But all microsoft-webui dep versions should be updated
+        assert!(!content.contains(
+            r#"microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.1" }"#
+        ));
+        assert!(content.contains(
+            r#"microsoft-webui-protocol = { path = "../webui-protocol", version = "2.0.0" }"#
+        ));
+        assert!(content.contains(
+            r#"microsoft-webui-handler = { path = "../webui-handler", version = "2.0.0" }"#
+        ));
+        assert!(content.contains(
+            r#"microsoft-webui-test-utils = { path = "../webui-test-utils", version = "2.0.0" }"#
+        ));
+        // workspace deps should be untouched
+        assert!(content.contains("serde = { workspace = true }"));
     }
 
     #[test]
@@ -343,5 +529,14 @@ mod tests {
         // No dotnet dir — should silently succeed
         let result = update_dotnet_version(dir.path(), "1.0.0");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_read_version_from_workspace() {
+        // read_version reads from the real workspace Cargo.toml
+        let version = read_version();
+        assert!(version.is_ok(), "should read version from workspace");
+        let v = version.unwrap();
+        assert!(is_valid_semver(&v), "version '{v}' should be valid semver");
     }
 }

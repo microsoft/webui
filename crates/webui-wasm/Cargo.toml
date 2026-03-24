@@ -1,7 +1,6 @@
 [package]
 name = "microsoft-webui-wasm"
 description = "WebAssembly bindings for WebUI framework — powers the online playground"
-publish = false
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -16,13 +15,13 @@ name = "webui_wasm"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-microsoft-webui-parser = { path = "../webui-parser", default-features = false }
-microsoft-webui-handler = { path = "../webui-handler" }
-microsoft-webui-protocol = { path = "../webui-protocol" }
+microsoft-webui-parser = { path = "../webui-parser", version = "0.0.1", default-features = false }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.1" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.1" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 wasm-bindgen = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-test-utils = { path = "../webui-test-utils" }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.1" }

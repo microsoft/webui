@@ -1,7 +1,6 @@
 [package]
 name = "microsoft-webui-parser"
 description = "Core parser for WebUI framework"
-publish = false
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -17,8 +16,8 @@ fs = ["walkdir"]
 cli = ["clap"]
 
 [dependencies]
-microsoft-webui-expressions = { path = "../webui-expressions" }
-microsoft-webui-protocol = { path = "../webui-protocol" }
+microsoft-webui-expressions = { path = "../webui-expressions", version = "0.0.1" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.1" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -32,7 +31,7 @@ clap = { workspace = true, optional = true }
 [dev-dependencies]
 mockall = { workspace = true }
 tempfile = { workspace = true }
-microsoft-webui-test-utils = { path = "../webui-test-utils" }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.1" }
 criterion = { workspace = true }
 
 [[bench]]
