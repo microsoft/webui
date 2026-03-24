@@ -35,7 +35,7 @@ examples/app/<name>/
   "type": "module",
   "scripts": {
     "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
-    "start:server": "cargo run -p webui-cli -- start ./src --state ./data/state.json --plugin=fast --servedir ./dist --port 3001 --watch",
+    "start:server": "cargo run -p microsoft-webui-cli -- start ./src --state ./data/state.json --plugin=fast --servedir ./dist --port 3001 --watch",
     "start": "cargo xtask dev <name>"
   },
   "devDependencies": {
@@ -384,7 +384,7 @@ cargo xtask dev <app-name>
 
 # Or run client and server separately:
 pnpm start:client    # esbuild watch
-pnpm start:server    # webui-cli dev server
+pnpm start:server    # microsoft-webui-cli dev server
 
 # Production build
 webui build ./src --out ./dist --plugin=fast
