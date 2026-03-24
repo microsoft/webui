@@ -121,6 +121,7 @@ pub fn run_stage(args: &[String]) -> ExitCode {
 
     let mut target_triple: Option<&str> = None;
     let mut profile = "release";
+    let mut native_only = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -135,6 +136,9 @@ pub fn run_stage(args: &[String]) -> ExitCode {
                 if i < args.len() {
                     profile = args[i].as_str();
                 }
+            }
+            "--native-only" => {
+                native_only = true;
             }
             _ => {}
         }
@@ -185,6 +189,16 @@ pub fn run_stage(args: &[String]) -> ExitCode {
 
     if stage_result != ExitCode::SUCCESS {
         return stage_result;
+    }
+
+    // When --native-only is set, skip packaging phases (used by CI build runners
+    // that don't have pnpm/dotnet/wasm toolchains installed).
+    if native_only {
+        eprintln!(
+            "\n{} Native binaries staged (--native-only)\n",
+            console::style("✔").green(),
+        );
+        return ExitCode::SUCCESS;
     }
 
     // Phase 2: Pack npm tarballs
