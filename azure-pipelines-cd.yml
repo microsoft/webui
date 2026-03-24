@@ -1,6 +1,12 @@
 trigger: none
 pr: none
 
+parameters:
+- name: releaseTag
+  displayName: GitHub Release Tag (e.g. v0.0.1)
+  type: string
+  default: ''
+
 # The `resources` specify the location and version of the 1ES PT.
 resources:
   repositories:
@@ -33,187 +39,10 @@ extends:
       networkIsolationPolicy: Permissive
     stages:
 
-    # ── Stage 1: Build native binaries on each OS ──
-    - stage: Build
-      jobs:
-
-      # ── Linux (x64 native + ARM64 cross-compile) ──
-      - job: Build_Linux
-        pool:
-          name: OneESPool
-          image: HostedPoolLinuxImage
-          os: linux
-        variables:
-          rust_config_cache: ~/.cargo/registry
-        templateContext:
-          outputs:
-          - output: pipelineArtifact
-            displayName: Publish Linux x64 binaries
-            targetPath: $(Build.SourcesDirectory)/packages/webui-linux-x64
-            artifactName: webui-linux-x64
-          - output: pipelineArtifact
-            displayName: Publish Linux ARM64 binaries
-            targetPath: $(Build.SourcesDirectory)/packages/webui-linux-arm64
-            artifactName: webui-linux-arm64
-        steps:
-          - checkout: self
-
-          - script: |
-              sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler gcc-aarch64-linux-gnu
-            displayName: Install protoc and cross-compile tools
-
-          - task: UseRust@0
-            inputs:
-              version: 1.93
-            displayName: Setup Rust
-
-          - task: Cache@2
-            inputs:
-              key: 'cargo | "$(Agent.OS)" | Cargo.lock'
-              restoreKeys: |
-                cargo | "$(Agent.OS)"
-              path: $(rust_config_cache)
-            displayName: Cache Rust
-
-          - script: |
-              rustup target add aarch64-unknown-linux-gnu
-            displayName: Add ARM64 target
-
-          - script: |
-              cargo build --release --target x86_64-unknown-linux-gnu \
-                -p microsoft-webui-cli -p microsoft-webui-node -p microsoft-webui-ffi
-            displayName: Build Linux x64
-
-          - script: |
-              CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
-              cargo build --release --target aarch64-unknown-linux-gnu \
-                -p microsoft-webui-cli -p microsoft-webui-node -p microsoft-webui-ffi
-            displayName: Build Linux ARM64
-
-          - script: |
-              cargo xtask publish-stage --target x86_64-unknown-linux-gnu --profile release
-              cargo xtask publish-stage --target aarch64-unknown-linux-gnu --profile release
-            displayName: Stage binaries
-
-      # ── macOS (ARM64 native + x64 cross-compile) ──
-      - job: Build_macOS
-        pool:
-          name: OneESPool
-          image: HostedPoolMacImage
-          os: macOS
-        variables:
-          rust_config_cache: ~/.cargo/registry
-        templateContext:
-          outputs:
-          - output: pipelineArtifact
-            displayName: Publish macOS ARM64 binaries
-            targetPath: $(Build.SourcesDirectory)/packages/webui-darwin-arm64
-            artifactName: webui-darwin-arm64
-          - output: pipelineArtifact
-            displayName: Publish macOS x64 binaries
-            targetPath: $(Build.SourcesDirectory)/packages/webui-darwin-x64
-            artifactName: webui-darwin-x64
-        steps:
-          - checkout: self
-
-          - script: |
-              brew install protobuf
-            displayName: Install protoc
-
-          - task: UseRust@0
-            inputs:
-              version: 1.93
-            displayName: Setup Rust
-
-          - task: Cache@2
-            inputs:
-              key: 'cargo | "$(Agent.OS)" | Cargo.lock'
-              restoreKeys: |
-                cargo | "$(Agent.OS)"
-              path: $(rust_config_cache)
-            displayName: Cache Rust
-
-          - script: |
-              rustup target add x86_64-apple-darwin aarch64-apple-darwin
-            displayName: Add cross targets
-
-          - script: |
-              cargo build --release --target aarch64-apple-darwin \
-                -p microsoft-webui-cli -p microsoft-webui-node -p microsoft-webui-ffi
-            displayName: Build macOS ARM64
-
-          - script: |
-              cargo build --release --target x86_64-apple-darwin \
-                -p microsoft-webui-cli -p microsoft-webui-node -p microsoft-webui-ffi
-            displayName: Build macOS x64
-
-          - script: |
-              cargo xtask publish-stage --target aarch64-apple-darwin --profile release
-              cargo xtask publish-stage --target x86_64-apple-darwin --profile release
-            displayName: Stage binaries
-
-      # ── Windows (x64 native + ARM64 cross-compile) ──
-      - job: Build_Windows
-        pool:
-          name: OneESPool
-          image: HostedPoolWindowsImage
-          os: windows
-        variables:
-          rust_config_cache: $(USERPROFILE)\.cargo\registry
-        templateContext:
-          outputs:
-          - output: pipelineArtifact
-            displayName: Publish Windows x64 binaries
-            targetPath: $(Build.SourcesDirectory)\packages\webui-win32-x64
-            artifactName: webui-win32-x64
-          - output: pipelineArtifact
-            displayName: Publish Windows ARM64 binaries
-            targetPath: $(Build.SourcesDirectory)\packages\webui-win32-arm64
-            artifactName: webui-win32-arm64
-        steps:
-          - checkout: self
-
-          - script: choco install protoc --yes
-            displayName: Install protoc
-
-          - task: UseRust@0
-            inputs:
-              version: 1.93
-            displayName: Setup Rust
-
-          - task: Cache@2
-            inputs:
-              key: 'cargo | "$(Agent.OS)" | Cargo.lock'
-              restoreKeys: |
-                cargo | "$(Agent.OS)"
-              path: $(rust_config_cache)
-            displayName: Cache Rust
-
-          - script: rustup target add aarch64-pc-windows-msvc
-            displayName: Add ARM64 target
-
-          - script: |
-              cargo build --release --target x86_64-pc-windows-msvc -p microsoft-webui-cli -p microsoft-webui-node -p microsoft-webui-ffi
-            displayName: Build Windows x64
-
-          - script: |
-              cargo build --release --target aarch64-pc-windows-msvc -p microsoft-webui-cli -p microsoft-webui-node -p microsoft-webui-ffi
-            displayName: Build Windows ARM64
-
-          - script: |
-              cargo xtask publish-stage --target x86_64-pc-windows-msvc --profile release
-              cargo xtask publish-stage --target aarch64-pc-windows-msvc --profile release
-            displayName: Stage binaries
-
-    # ── Stage 2: Package npm tarballs and crates ──
+    # ── Download pre-built release artifacts and publish ──
     - stage: Package
-      dependsOn: Build
       jobs:
       - job: PackageJob
-
-        variables:
-          pnpm_config_cache: $(Pipeline.Workspace)/.pnpm-store
-          rust_config_cache: ~/.cargo/registry
 
         steps:
           - checkout: self
@@ -223,109 +52,26 @@ extends:
               git config --global user.email webuisvc@microsoft.com
               git config --global user.name "Microsoft WebUI Builds"
               git remote set-url origin https://$(GH_TOKEN)@github.com/microsoft/webui.git
+            displayName: Configure git
 
+          # Download npm tarballs, crate archives, and NuGet packages from the
+          # GitHub release produced by the publish.yml GitHub Actions workflow.
           - script: |
-              sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
-            displayName: "Install protoc (Linux)"
-
-          - task: UseNode@1
-            inputs:
-              version: "22.x"
-            displayName: "Install Node.js"
-
-          - script: |
-              curl -f https://get.pnpm.io/v6.16.js | node - add --global pnpm@7
-              pnpm config set store-dir $(pnpm_config_cache)
-            displayName: "Setup pnpm"
-
-          - task: Cache@2
-            inputs:
-              key: 'pnpm | "$(Agent.OS)" | package-lock.json'
-              restoreKeys: |
-                pnpm | "$(Agent.OS)"
-              path: $(pnpm_config_cache)
-            displayName: "Cache pnpm"
-
-          - task: UseRust@0
-            inputs:
-              version: 1.93
-            displayName: Setup Rust
-
-          - task: Cache@2
-            inputs:
-              key: 'cargo | "$(Agent.OS)" | Cargo.lock'
-              restoreKeys: |
-                cargo | "$(Agent.OS)"
-              path: $(rust_config_cache)
-            displayName: Cache Rust
-
-          - task: DownloadPipelineArtifact@2
-            inputs:
-              artifactName: webui-linux-x64
-              targetPath: $(Build.SourcesDirectory)/packages/webui-linux-x64
-            displayName: Download Linux x64 binaries
-
-          - task: DownloadPipelineArtifact@2
-            inputs:
-              artifactName: webui-linux-arm64
-              targetPath: $(Build.SourcesDirectory)/packages/webui-linux-arm64
-            displayName: Download Linux ARM64 binaries
-
-          - task: DownloadPipelineArtifact@2
-            inputs:
-              artifactName: webui-darwin-arm64
-              targetPath: $(Build.SourcesDirectory)/packages/webui-darwin-arm64
-            displayName: Download macOS ARM64 binaries
-
-          - task: DownloadPipelineArtifact@2
-            inputs:
-              artifactName: webui-darwin-x64
-              targetPath: $(Build.SourcesDirectory)/packages/webui-darwin-x64
-            displayName: Download macOS x64 binaries
-
-          - task: DownloadPipelineArtifact@2
-            inputs:
-              artifactName: webui-win32-x64
-              targetPath: $(Build.SourcesDirectory)/packages/webui-win32-x64
-            displayName: Download Windows x64 binaries
-
-          - task: DownloadPipelineArtifact@2
-            inputs:
-              artifactName: webui-win32-arm64
-              targetPath: $(Build.SourcesDirectory)/packages/webui-win32-arm64
-            displayName: Download Windows ARM64 binaries
-
-          - script: |
-              pnpm install
-            displayName: Install dependencies
-
-          - script: |
-              pnpm --filter "./packages/*" run --if-present build
-            displayName: Build npm packages
-
-          - script: |
-              mkdir -p publish_artifacts_npm
-              ROOT=$(pwd)
-              for dir in packages/*/; do
-                if [ -f "$dir/package.json" ]; then
-                  (cd "$dir" && pnpm pack --pack-destination "$ROOT/publish_artifacts_npm")
-                fi
-              done
-            displayName: Pack npm tarballs
-
-          - script: |
-              mkdir -p publish_artifacts_crates
-              VERSION=$(cargo metadata --no-deps --format-version=1 | node -e "
-                const m = JSON.parse(require('fs').readFileSync('/dev/stdin', 'utf8'));
-                const p = m.packages.find(p => p.name === 'microsoft-webui');
-                console.log(p.version);
-              ")
-              (cd crates/webui && cargo package --list --allow-dirty -p microsoft-webui \
-                | while IFS= read -r f; do [ -f "$f" ] && echo "$f"; done \
-                | tar czf "../../publish_artifacts_crates/microsoft-webui-${VERSION}.crate" -T -)
-              (cd crates/webui-cli && cargo package --list --allow-dirty -p microsoft-webui-cli \
-                | while IFS= read -r f; do [ -f "$f" ] && echo "$f"; done \
-                | tar czf "../../publish_artifacts_crates/microsoft-webui-cli-${VERSION}.crate" -T -)
-            displayName: Package crates
+              mkdir -p publish_artifacts_npm publish_artifacts_crates publish_artifacts_nuget
+              gh release download "${{ parameters.releaseTag }}" \
+                --repo microsoft/webui \
+                --pattern "*.tgz" \
+                --dir publish_artifacts_npm/
+              gh release download "${{ parameters.releaseTag }}" \
+                --repo microsoft/webui \
+                --pattern "*.crate" \
+                --dir publish_artifacts_crates/
+              gh release download "${{ parameters.releaseTag }}" \
+                --repo microsoft/webui \
+                --pattern "*.nupkg" \
+                --dir publish_artifacts_nuget/
+            displayName: Download release artifacts
+            env:
+              GH_TOKEN: $(GH_TOKEN)
 
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
