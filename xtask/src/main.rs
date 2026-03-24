@@ -115,7 +115,7 @@ fn usage() -> ExitCode {
            e2e [--update-snapshots]  Run Playwright E2E tests for all example apps\n  \
            e2e-approve [run-id]  Download CI screenshot baselines and apply locally\n  \
            version <semver>  Update version across all Cargo.toml and package.json files\n  \
-           publish-stage [--target <triple|all>] [--profile release] [--native-only]  Stage all release artifacts into publish/\n  \
+           publish-stage [--target <triple|all>] [--profile release]  Stage all release artifacts into publish/\n  \
            license-headers [--fix]  Check (or fix) license headers in source files"
     );
     ExitCode::SUCCESS
