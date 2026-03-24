@@ -1,5 +1,5 @@
 [package]
-name = "webui-protocol"
+name = "microsoft-webui-protocol"
 description = "Core protocol definitions for WebUI framework"
 publish = false
 version.workspace = true
@@ -7,6 +7,9 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "webui_protocol"
 
 [dependencies]
 serde = { workspace = true }

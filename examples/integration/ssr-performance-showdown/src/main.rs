@@ -9,7 +9,7 @@
 //! ssr-performance-showdown benchmark.
 //!
 //! Prerequisites:
-//!   cargo run -p webui-cli -- build app --out dist
+//!   cargo run -p microsoft-webui-cli -- build app --out dist
 //!
 //! Usage:
 //!   cargo run                     # listen on :3000

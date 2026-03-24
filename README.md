@@ -20,7 +20,7 @@ WebUI is a high-performance server-side rendering framework built in Rust. It co
 npm install @microsoft/webui
 ```
 
-Or with Rust: `cargo install webui-cli`
+Or with Rust: `cargo install microsoft-webui-cli`
 
 ## Development
 

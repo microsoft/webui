@@ -188,7 +188,7 @@ fn run_stage_all(root: &Path, profile: &str) -> ExitCode {
         eprintln!(
             "  {} No build artifacts found. Build first:\n    {}",
             console::style("⚠").yellow(),
-            console::style("cargo build --release -p webui-ffi -p webui-node -p webui-cli").dim(),
+            console::style("cargo build --release -p microsoft-webui-ffi -p microsoft-webui-node -p microsoft-webui-cli").dim(),
         );
         return ExitCode::FAILURE;
     }

@@ -1,5 +1,5 @@
 [package]
-name = "webui-test-utils"
+name = "microsoft-webui-test-utils"
 description = "Test utilities for WebUI framework"
 publish = false
 version.workspace = true
@@ -8,9 +8,12 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "webui_test_utils"
+
 [dependencies]
 serde_json = { workspace = true }
 mockall = { workspace = true }
 tokio-test = { workspace = true }
 tempfile = { workspace = true }
-webui-protocol = { path = "../webui-protocol" }
+microsoft-webui-protocol = { path = "../webui-protocol" }

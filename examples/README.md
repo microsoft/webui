@@ -22,7 +22,7 @@ Current entries:
 
 ```bash
 # Build the protocol
-cargo run -p webui-cli -- build examples/app/hello-world/templates --out examples/app/hello-world/dist
+cargo run -p microsoft-webui-cli -- build examples/app/hello-world/templates --out examples/app/hello-world/dist
 
 # Render with Rust
 cd examples/integration/rust
@@ -36,7 +36,7 @@ cargo run -- ../../app/hello-world/dist/protocol.bin ../../app/hello-world/data/
 pnpm install
 
 # Build the protocol with FAST parser plugin (emits hydration data + <f-template> wrappers)
-cargo run -p webui-cli -- build examples/app/todo-fast/templates --out examples/app/todo-fast/dist --plugin=fast
+cargo run -p microsoft-webui-cli -- build examples/app/todo-fast/templates --out examples/app/todo-fast/dist --plugin=fast
 
 # Bundle the client-side entry point with esbuild
 cd examples/app/todo-fast
@@ -48,7 +48,7 @@ cargo run -- ../../app/todo-fast/dist/protocol.bin ../../app/todo-fast/data/stat
 
 # Or use the dev server with live rendering
 cd ../../app/todo-fast
-cargo run -p webui-cli -- start ./templates --state ./data/state.json --plugin=fast --servedir ./dist --port 3001
+cargo run -p microsoft-webui-cli -- start ./templates --state ./data/state.json --plugin=fast --servedir ./dist --port 3001
 ```
 
 ### Using `--plugin=fast`

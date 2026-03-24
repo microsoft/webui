@@ -1,5 +1,5 @@
 [package]
-name = "webui-expressions"
+name = "microsoft-webui-expressions"
 description = "Core expression evaluation for WebUI framework"
 publish = false
 version.workspace = true
@@ -8,15 +8,18 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "webui_expressions"
+
 [dependencies]
-webui-protocol = { path = "../webui-protocol" }
-webui-state = { path = "../webui-state" }
+microsoft-webui-protocol = { path = "../webui-protocol" }
+microsoft-webui-state = { path = "../webui-state" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-webui-test-utils = { path = "../webui-test-utils" }
+microsoft-webui-test-utils = { path = "../webui-test-utils" }
 criterion = { workspace = true }
 
 [[bench]]

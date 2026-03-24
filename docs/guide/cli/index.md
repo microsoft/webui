@@ -13,7 +13,7 @@ npm install @microsoft/webui
 Or install via Cargo for standalone CLI use:
 
 ```bash
-cargo install webui-cli
+cargo install microsoft-webui-cli
 ```
 
 ## Commands

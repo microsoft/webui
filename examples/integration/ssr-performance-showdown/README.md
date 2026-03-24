@@ -12,7 +12,7 @@ as state to `WebUIHandler`, which streams the final HTML.
 
 ```bash
 # From this folder
-cargo run -p webui-cli --release -- build app --out dist
+cargo run -p microsoft-webui-cli --release -- build app --out dist
 
 # Run the server frrm this location
 cargo run -p ssr-performance-showdown --release                 # listen on :3000

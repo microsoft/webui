@@ -5,9 +5,9 @@
 // and print rendered HTML to stdout using the webui-node native addon.
 //
 // Prerequisites:
-//   1. Build the native addon: cargo build -p webui-node
+//   1. Build the native addon: cargo build -p microsoft-webui-node
 //   2. Build the hello-world app:
-//      cargo run -p webui-cli -- build ../../app/hello-world/templates --out ../../app/hello-world/dist
+//      cargo run -p microsoft-webui-cli -- build ../../app/hello-world/templates --out ../../app/hello-world/dist
 //
 // Usage:
 //   node index.js [protocol.bin] [state.json] [--plugin=fast]
@@ -39,7 +39,7 @@ function loadAddon() {
     }
   }
   throw new Error(
-    `Could not find ${filename} in target/debug or target/release. Run: cargo build -p webui-node`
+    `Could not find ${filename} in target/debug or target/release. Run: cargo build -p microsoft-webui-node`
   );
 }
 

@@ -1,5 +1,5 @@
 [package]
-name = "webui-ffi"
+name = "microsoft-webui-ffi"
 description = "Core FFI bindings for WebUI framework"
 publish = false
 version.workspace = true
@@ -13,9 +13,9 @@ name = "webui_ffi"
 crate-type = ["cdylib", "staticlib", "lib"]
 
 [dependencies]
-webui-handler = { path = "../webui-handler" }
-webui-parser = { path = "../webui-parser" }
-webui-protocol = { path = "../webui-protocol" }
+microsoft-webui-handler = { path = "../webui-handler" }
+microsoft-webui-parser = { path = "../webui-parser" }
+microsoft-webui-protocol = { path = "../webui-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 libc = { workspace = true }

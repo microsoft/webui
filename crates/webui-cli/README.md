@@ -1,11 +1,11 @@
-# webui-cli
+# microsoft-webui-cli
 
 Command-line tool for the [WebUI](https://github.com/microsoft/webui) framework — build, serve, and inspect WebUI applications.
 
 ## Install
 
 ```bash
-cargo install webui-cli
+cargo install microsoft-webui-cli
 ```
 
 This installs the `webui` binary.

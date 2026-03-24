@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 serde_json = { workspace = true }
-webui-protocol = { path = "../../../crates/webui-protocol" }
-webui-handler = { path = "../../../crates/webui-handler" }
+microsoft-webui-protocol = { path = "../../../crates/webui-protocol" }
+microsoft-webui-handler = { path = "../../../crates/webui-handler" }
 actix-web = { workspace = true }
 anyhow = { workspace = true }

@@ -73,7 +73,7 @@ See the [Routing guide](/guide/concepts/routing) for setup and usage.
 Rust users who only need the CLI can install it directly from crates.io:
 
 ```bash
-cargo install webui-cli
+cargo install microsoft-webui-cli
 ```
 
 Then build your app:

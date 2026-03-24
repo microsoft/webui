@@ -125,23 +125,23 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
     let mut args = vec!["bench"];
 
     match target {
-        Some("parser") | Some("webui-parser") => {
-            args.extend(["-p", "webui-parser"]);
+        Some("parser") | Some("webui-parser") | Some("microsoft-webui-parser") => {
+            args.extend(["-p", "microsoft-webui-parser"]);
         }
-        Some("handler") | Some("webui-handler") => {
-            args.extend(["-p", "webui-handler"]);
+        Some("handler") | Some("webui-handler") | Some("microsoft-webui-handler") => {
+            args.extend(["-p", "microsoft-webui-handler"]);
         }
-        Some("protocol") | Some("webui-protocol") => {
-            args.extend(["-p", "webui-protocol"]);
+        Some("protocol") | Some("webui-protocol") | Some("microsoft-webui-protocol") => {
+            args.extend(["-p", "microsoft-webui-protocol"]);
         }
-        Some("expressions") | Some("webui-expressions") => {
-            args.extend(["-p", "webui-expressions"]);
+        Some("expressions") | Some("webui-expressions") | Some("microsoft-webui-expressions") => {
+            args.extend(["-p", "microsoft-webui-expressions"]);
         }
-        Some("state") | Some("webui-state") => {
-            args.extend(["-p", "webui-state"]);
+        Some("state") | Some("webui-state") | Some("microsoft-webui-state") => {
+            args.extend(["-p", "microsoft-webui-state"]);
         }
-        Some("webui") | Some("contact-book") => {
-            args.extend(["-p", "webui", "--bench", "contact_book_bench"]);
+        Some("contact-book") => {
+            args.extend(["-p", "microsoft-webui", "--bench", "contact_book_bench"]);
         }
         Some("all") | None => {
             args.extend(["--workspace"]);
@@ -268,7 +268,7 @@ impl Step {
                 &[
                     "bench",
                     "-p",
-                    "webui",
+                    "microsoft-webui",
                     "--bench",
                     "contact_book_bench",
                     "--",
