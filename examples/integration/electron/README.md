@@ -7,13 +7,13 @@ Wraps any pre-built WebUI app in a frameless Electron desktop window using the `
 1. Build the native addon:
 
 ```bash
-cargo build -p webui-node --release
+cargo build -p microsoft-webui-node --release
 ```
 
 2. Build a WebUI app (e.g. hello-world):
 
 ```bash
-cargo run -p webui-cli -- build ../../app/hello-world/templates --out ../../app/hello-world/dist --css external --plugin=fast
+cargo run -p microsoft-webui-cli -- build ../../app/hello-world/templates --out ../../app/hello-world/dist --css external --plugin=fast
 esbuild ../../app/hello-world/src/index.ts --bundle --outfile=../../app/hello-world/dist/index.js --format=esm
 ```
 

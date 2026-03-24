@@ -13,7 +13,7 @@ WebUI apps can run as native desktop applications using Electron. The Electron i
 
 ```bash
 # 1. Build the native addon
-cargo build -p webui-node --release
+cargo build -p microsoft-webui-node --release
 
 # 2. Build a WebUI app (e.g., contact-book-manager)
 cd examples/app/contact-book-manager

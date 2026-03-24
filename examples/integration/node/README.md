@@ -7,13 +7,13 @@ Minimal example showing how to use the `webui-node` native addon to render a pre
 1. Build the native addon:
 
 ```bash
-cargo build -p webui-node
+cargo build -p microsoft-webui-node
 ```
 
 2. Build the hello-world app:
 
 ```bash
-cargo run -p webui-cli -- build ../../app/hello-world/templates --out ../../app/hello-world/dist
+cargo run -p microsoft-webui-cli -- build ../../app/hello-world/templates --out ../../app/hello-world/dist
 ```
 
 ## Usage

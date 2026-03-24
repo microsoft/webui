@@ -5,9 +5,9 @@
 // frameless desktop window using the webui-node native addon.
 //
 // Prerequisites:
-//   1. Build the native addon: cargo build -p webui-node --release
+//   1. Build the native addon: cargo build -p microsoft-webui-node --release
 //   2. Build a WebUI app:
-//      cargo run -p webui-cli -- build <app>/src --out <app>/dist --css external --plugin=fast
+//      cargo run -p microsoft-webui-cli -- build <app>/src --out <app>/dist --css external --plugin=fast
 //      esbuild <app>/src/index.ts --bundle --outfile=<app>/dist/index.js --format=esm
 //
 // Usage:
@@ -61,7 +61,7 @@ function loadAddon() {
     }
   }
   throw new Error(
-    `Could not find ${filename} in target/release or target/debug.\nRun: cargo build -p webui-node --release`,
+    `Could not find ${filename} in target/release or target/debug.\nRun: cargo build -p microsoft-webui-node --release`,
   );
 }
 
@@ -87,7 +87,7 @@ app.whenReady().then(() => {
 
   if (!existsSync(join(distDir, 'protocol.bin'))) {
     console.error(`protocol.bin not found in ${distDir}`);
-    console.error('Build the app first: cargo run -p webui-cli -- build <app>/src --out <app>/dist');
+    console.error('Build the app first: cargo run -p microsoft-webui-cli -- build <app>/src --out <app>/dist');
     app.quit();
     return;
   }

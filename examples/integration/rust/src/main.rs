@@ -6,7 +6,7 @@
 //!
 //! Usage:
 //!   # First, build the hello-world app
-//!   cargo run -p webui-cli -- build ../../app/hello-world/templates --out ../../app/hello-world/dist
+//!   cargo run -p microsoft-webui-cli -- build ../../app/hello-world/templates --out ../../app/hello-world/dist
 //!
 //!   # Then render it
 //!   cargo run -- ../../app/hello-world/dist/protocol.bin ../../app/hello-world/data/state.json

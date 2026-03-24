@@ -7,7 +7,7 @@ Minimal example showing how to use WebUI as a Rust library to render a pre-built
 Build the hello-world app first:
 
 ```bash
-cargo run -p webui-cli -- build ../../app/hello-world/templates --out ../../app/hello-world/dist
+cargo run -p microsoft-webui-cli -- build ../../app/hello-world/templates --out ../../app/hello-world/dist
 ```
 
 ## Usage
