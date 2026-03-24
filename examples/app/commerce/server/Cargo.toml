@@ -16,5 +16,5 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 mime_guess = { workspace = true }
 thiserror = { workspace = true }
-webui = { path = "../../../../crates/webui" }
-webui-handler = { path = "../../../../crates/webui-handler" }
+microsoft-webui = { path = "../../../../crates/webui" }
+microsoft-webui-handler = { path = "../../../../crates/webui-handler" }

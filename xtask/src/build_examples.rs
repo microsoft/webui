@@ -135,7 +135,7 @@ pub fn run_app_builds() -> Result<(), String> {
                 let mut args: Vec<&str> = vec![
                     "run",
                     "-p",
-                    "webui-cli",
+                    "microsoft-webui-cli",
                     "--",
                     "build",
                     &src_str,

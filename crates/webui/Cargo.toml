@@ -1,5 +1,5 @@
 [package]
-name = "webui"
+name = "microsoft-webui"
 description = "Programmatic API for the WebUI build-time rendering framework"
 version.workspace = true
 edition.workspace = true
@@ -7,14 +7,17 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "webui"
+
 [features]
-cli = ["webui-parser/cli"]
+cli = ["microsoft-webui-parser/cli"]
 
 [dependencies]
-webui-parser = { path = "../webui-parser" }
-webui-protocol = { path = "../webui-protocol" }
-webui-handler = { path = "../webui-handler" }
-webui-discovery = { path = "../webui-discovery" }
+microsoft-webui-parser = { path = "../webui-parser" }
+microsoft-webui-protocol = { path = "../webui-protocol" }
+microsoft-webui-handler = { path = "../webui-handler" }
+microsoft-webui-discovery = { path = "../webui-discovery" }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
 
@@ -22,8 +25,8 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 criterion = { workspace = true }
 serde_json = { workspace = true }
-webui-handler = { path = "../webui-handler" }
-webui-protocol = { path = "../webui-protocol" }
+microsoft-webui-handler = { path = "../webui-handler" }
+microsoft-webui-protocol = { path = "../webui-protocol" }
 
 [[bench]]
 name = "contact_book_bench"

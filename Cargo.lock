@@ -1369,12 +1369,12 @@ dependencies = [
  "actix-web",
  "anyhow",
  "clap",
+ "microsoft-webui",
+ "microsoft-webui-handler",
  "mime_guess",
  "serde",
  "serde_json",
  "thiserror",
- "webui",
- "webui-handler",
 ]
 
 [[package]]
@@ -1382,6 +1382,181 @@ name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
+
+[[package]]
+name = "microsoft-webui"
+version = "0.0.1"
+dependencies = [
+ "criterion",
+ "microsoft-webui-discovery",
+ "microsoft-webui-handler",
+ "microsoft-webui-parser",
+ "microsoft-webui-protocol",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "microsoft-webui-cli"
+version = "0.0.1"
+dependencies = [
+ "actix-web",
+ "anyhow",
+ "awc",
+ "clap",
+ "console",
+ "expand-tilde",
+ "microsoft-webui",
+ "microsoft-webui-discovery",
+ "microsoft-webui-handler",
+ "microsoft-webui-protocol",
+ "mime_guess",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "walkdir",
+]
+
+[[package]]
+name = "microsoft-webui-discovery"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "expand-tilde",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "walkdir",
+]
+
+[[package]]
+name = "microsoft-webui-expressions"
+version = "0.0.1"
+dependencies = [
+ "criterion",
+ "microsoft-webui-protocol",
+ "microsoft-webui-state",
+ "microsoft-webui-test-utils",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "microsoft-webui-ffi"
+version = "0.0.1"
+dependencies = [
+ "cbindgen",
+ "libc",
+ "microsoft-webui-handler",
+ "microsoft-webui-parser",
+ "microsoft-webui-protocol",
+ "serde",
+ "serde_json",
+ "windows",
+]
+
+[[package]]
+name = "microsoft-webui-handler"
+version = "0.0.1"
+dependencies = [
+ "criterion",
+ "html-escape",
+ "microsoft-webui-expressions",
+ "microsoft-webui-protocol",
+ "microsoft-webui-state",
+ "microsoft-webui-test-utils",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "microsoft-webui-node"
+version = "0.0.1"
+dependencies = [
+ "microsoft-webui",
+ "microsoft-webui-handler",
+ "microsoft-webui-parser",
+ "microsoft-webui-protocol",
+ "microsoft-webui-test-utils",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "microsoft-webui-parser"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "criterion",
+ "microsoft-webui-expressions",
+ "microsoft-webui-protocol",
+ "microsoft-webui-test-utils",
+ "mockall",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tree-sitter",
+ "tree-sitter-css",
+ "tree-sitter-html",
+ "tree-sitter-language",
+ "walkdir",
+]
+
+[[package]]
+name = "microsoft-webui-protocol"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "criterion",
+ "prost",
+ "prost-build",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "microsoft-webui-state"
+version = "0.0.1"
+dependencies = [
+ "criterion",
+ "microsoft-webui-test-utils",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "microsoft-webui-test-utils"
+version = "0.0.1"
+dependencies = [
+ "microsoft-webui-protocol",
+ "mockall",
+ "serde_json",
+ "tempfile",
+ "tokio-test",
+]
+
+[[package]]
+name = "microsoft-webui-wasm"
+version = "0.0.1"
+dependencies = [
+ "microsoft-webui-handler",
+ "microsoft-webui-parser",
+ "microsoft-webui-protocol",
+ "microsoft-webui-test-utils",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "mime"
@@ -2108,9 +2283,9 @@ version = "0.1.0"
 dependencies = [
  "actix-web",
  "anyhow",
+ "microsoft-webui-handler",
+ "microsoft-webui-protocol",
  "serde_json",
- "webui-handler",
- "webui-protocol",
 ]
 
 [[package]]
@@ -2626,188 +2801,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "webui"
-version = "0.0.1"
-dependencies = [
- "criterion",
- "serde_json",
- "tempfile",
- "thiserror",
- "webui-discovery",
- "webui-handler",
- "webui-parser",
- "webui-protocol",
-]
-
-[[package]]
-name = "webui-cli"
-version = "0.0.1"
-dependencies = [
- "actix-web",
- "anyhow",
- "awc",
- "clap",
- "console",
- "expand-tilde",
- "mime_guess",
- "serde",
- "serde_json",
- "tempfile",
- "walkdir",
- "webui",
- "webui-discovery",
- "webui-handler",
- "webui-protocol",
-]
-
-[[package]]
-name = "webui-discovery"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "expand-tilde",
- "serde",
- "serde_json",
- "tempfile",
- "walkdir",
-]
-
-[[package]]
-name = "webui-expressions"
-version = "0.0.1"
-dependencies = [
- "criterion",
- "serde",
- "serde_json",
- "thiserror",
- "webui-protocol",
- "webui-state",
- "webui-test-utils",
-]
-
-[[package]]
-name = "webui-ffi"
-version = "0.0.1"
-dependencies = [
- "cbindgen",
- "libc",
- "serde",
- "serde_json",
- "webui-handler",
- "webui-parser",
- "webui-protocol",
- "windows",
-]
-
-[[package]]
-name = "webui-handler"
-version = "0.0.1"
-dependencies = [
- "criterion",
- "html-escape",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "webui-expressions",
- "webui-protocol",
- "webui-state",
- "webui-test-utils",
-]
-
-[[package]]
-name = "webui-node"
-version = "0.0.1"
-dependencies = [
- "napi",
- "napi-build",
- "napi-derive",
- "serde_json",
- "tempfile",
- "webui",
- "webui-handler",
- "webui-parser",
- "webui-protocol",
- "webui-test-utils",
-]
-
-[[package]]
-name = "webui-parser"
-version = "0.0.1"
-dependencies = [
- "clap",
- "criterion",
- "mockall",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tree-sitter",
- "tree-sitter-css",
- "tree-sitter-html",
- "tree-sitter-language",
- "walkdir",
- "webui-expressions",
- "webui-protocol",
- "webui-test-utils",
-]
-
-[[package]]
-name = "webui-protocol"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "criterion",
- "prost",
- "prost-build",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
 name = "webui-rust-example"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "microsoft-webui-handler",
+ "microsoft-webui-protocol",
  "serde_json",
- "webui-handler",
- "webui-protocol",
-]
-
-[[package]]
-name = "webui-state"
-version = "0.0.1"
-dependencies = [
- "criterion",
- "serde",
- "serde_json",
- "webui-test-utils",
-]
-
-[[package]]
-name = "webui-test-utils"
-version = "0.0.1"
-dependencies = [
- "mockall",
- "serde_json",
- "tempfile",
- "tokio-test",
- "webui-protocol",
-]
-
-[[package]]
-name = "webui-wasm"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "wasm-bindgen",
- "webui-handler",
- "webui-parser",
- "webui-protocol",
- "webui-test-utils",
 ]
 
 [[package]]
