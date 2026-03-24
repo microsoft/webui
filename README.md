@@ -47,8 +47,11 @@ All development tasks go through `cargo xtask`:
 | `cargo xtask bench <crate>` | Run benchmarks (parser, handler, protocol, expressions, state, all) |
 | `cargo xtask dev <app>` | Run example app in dev mode |
 | `cargo xtask version <semver>` | Update version across all Cargo.toml and package.json files |
+| `cargo xtask publish-stage` | Stage all release artifacts into `publish/` (npm, NuGet, crates, WASM, native binaries) |
 
-### CI Pipeline
+### CI Pipelines
+
+#### PR Checks (`pr.yml`)
 
 The CI workflow parallelizes across jobs with dependency ordering:
 
@@ -77,6 +80,38 @@ graph LR
 | 1 | **lint** | Ubuntu |
 | 2 | **test** + **build** (Linux · macOS · Windows) + **wasm** + **docs** | Ubuntu · macOS · Windows |
 | 3 | **e2e** (after Linux build) | Ubuntu (shared Rust cache) |
+
+#### Publish (`publish.yml`)
+
+Triggered on push to `main` (and `workflow_dispatch`). Skips if the version hasn't changed.
+
+```mermaid
+graph LR
+    ver["Check Version<br/><small>compare Cargo.toml vs git tag</small>"]
+    buildL["Build Linux<br/><small>x64 + arm64 (cross)</small>"]
+    buildM["Build macOS<br/><small>arm64 + x64 (cross)</small>"]
+    buildW["Build Windows<br/><small>x64 + arm64 (cross)</small>"]
+    release["Release<br/><small>merge → tag → GitHub Release</small>"]
+
+    ver --> buildL
+    ver --> buildM
+    ver --> buildW
+    buildL --> release
+    buildM --> release
+    buildW --> release
+```
+
+Each build runner produces a complete `publish/` folder containing:
+
+| Subfolder | Contents | Target registry |
+|-----------|----------|-----------------|
+| `publish/npm/` | `.tgz` tarballs (8 packages) | npmjs |
+| `publish/nuget/` | `.nupkg` files (2 packages) | NuGet |
+| `publish/crates/` | `.crate` files (12 crates) | crates.io |
+| `publish/wasm/` | `.wasm` + `.js` glue | CDN / static hosting |
+| `publish/native/` | CLI binaries per platform | Direct download |
+
+**Release workflow:** `cargo xtask version 0.2.0` → commit → merge to `main` → CI auto-tags `v0.2.0` → creates GitHub Release with all artifacts.
 
 Screenshot baselines are generated on CI (Ubuntu). When e2e fails, CI automatically re-runs with `--update-snapshots` and uploads the corrected baselines as an artifact. Use `cargo xtask e2e-approve` to download and apply them.
 
