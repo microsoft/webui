@@ -11,26 +11,6 @@
  */
 export function render_partial(protocol_json: string, state_json: string, entry_id: string, request_path: string, inventory_hex: string): string;
 /**
- * Render a pre-built WebUI protocol with state data.
- *
- * # Arguments
- *
- * * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
- * * `state_json` — JSON string of the state data.
- * * `plugin` — Optional plugin identifier (e.g., `"fast"`).
- *
- * # Returns
- *
- * The rendered HTML string, or throws a JS error on failure.
- */
-export function render(protocol_json: string, state_json: string, entry: string, request_path: string, plugin?: string | null): string;
-/**
- * Build the protocol JSON from virtual files without rendering.
- *
- * Returns the serialized `WebUIProtocol` as a JSON string.
- */
-export function build_protocol(files: any, entry: string): string;
-/**
  * Build and render a WebUI application from virtual files.
  *
  * Uses a lightweight pure-Rust parser suitable for the playground.
@@ -48,6 +28,26 @@ export function build_protocol(files: any, entry: string): string;
  * The rendered HTML string, or throws a JS error on failure.
  */
 export function build_and_render(files: any, state_json: string, entry: string, request_path: string): string;
+/**
+ * Build the protocol JSON from virtual files without rendering.
+ *
+ * Returns the serialized `WebUIProtocol` as a JSON string.
+ */
+export function build_protocol(files: any, entry: string): string;
+/**
+ * Render a pre-built WebUI protocol with state data.
+ *
+ * # Arguments
+ *
+ * * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
+ * * `state_json` — JSON string of the state data.
+ * * `plugin` — Optional plugin identifier (e.g., `"fast"`).
+ *
+ * # Returns
+ *
+ * The rendered HTML string, or throws a JS error on failure.
+ */
+export function render(protocol_json: string, state_json: string, entry: string, request_path: string, plugin?: string | null): string;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 

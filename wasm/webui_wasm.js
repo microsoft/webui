@@ -251,6 +251,94 @@ export function render_partial(protocol_json, state_json, entry_id, request_path
 }
 
 /**
+ * Build and render a WebUI application from virtual files.
+ *
+ * Uses a lightweight pure-Rust parser suitable for the playground.
+ * Handles signals, for-loops, if-conditions, components, and dynamic attributes.
+ *
+ * # Arguments
+ *
+ * * `files` — A JS object mapping filenames to their string content.
+ *   Example: `{ "index.html": "<h1>{{title}}</h1>", "my-card.html": "<p><slot></slot></p>" }`
+ * * `state_json` — A JSON string of the state data to render with.
+ * * `entry` — The entry HTML filename (e.g. `"index.html"`).
+ *
+ * # Returns
+ *
+ * The rendered HTML string, or throws a JS error on failure.
+ * @param {any} files
+ * @param {string} state_json
+ * @param {string} entry
+ * @param {string} request_path
+ * @returns {string}
+ */
+export function build_and_render(files, state_json, entry, request_path) {
+    let deferred5_0;
+    let deferred5_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passStringToWasm0(state_json, wasm.__wbindgen_export_0, wasm.__wbindgen_export_1);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(entry, wasm.__wbindgen_export_0, wasm.__wbindgen_export_1);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(request_path, wasm.__wbindgen_export_0, wasm.__wbindgen_export_1);
+        const len2 = WASM_VECTOR_LEN;
+        wasm.build_and_render(retptr, addHeapObject(files), ptr0, len0, ptr1, len1, ptr2, len2);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr4 = r0;
+        var len4 = r1;
+        if (r3) {
+            ptr4 = 0; len4 = 0;
+            throw takeObject(r2);
+        }
+        deferred5_0 = ptr4;
+        deferred5_1 = len4;
+        return getStringFromWasm0(ptr4, len4);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export_3(deferred5_0, deferred5_1, 1);
+    }
+}
+
+/**
+ * Build the protocol JSON from virtual files without rendering.
+ *
+ * Returns the serialized `WebUIProtocol` as a JSON string.
+ * @param {any} files
+ * @param {string} entry
+ * @returns {string}
+ */
+export function build_protocol(files, entry) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passStringToWasm0(entry, wasm.__wbindgen_export_0, wasm.__wbindgen_export_1);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.build_protocol(retptr, addHeapObject(files), ptr0, len0);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+        var ptr2 = r0;
+        var len2 = r1;
+        if (r3) {
+            ptr2 = 0; len2 = 0;
+            throw takeObject(r2);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export_3(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * Render a pre-built WebUI protocol with state data.
  *
  * # Arguments
@@ -301,94 +389,6 @@ export function render(protocol_json, state_json, entry, request_path, plugin) {
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
         wasm.__wbindgen_export_3(deferred7_0, deferred7_1, 1);
-    }
-}
-
-/**
- * Build the protocol JSON from virtual files without rendering.
- *
- * Returns the serialized `WebUIProtocol` as a JSON string.
- * @param {any} files
- * @param {string} entry
- * @returns {string}
- */
-export function build_protocol(files, entry) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passStringToWasm0(entry, wasm.__wbindgen_export_0, wasm.__wbindgen_export_1);
-        const len0 = WASM_VECTOR_LEN;
-        wasm.build_protocol(retptr, addHeapObject(files), ptr0, len0);
-        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
-        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
-        var ptr2 = r0;
-        var len2 = r1;
-        if (r3) {
-            ptr2 = 0; len2 = 0;
-            throw takeObject(r2);
-        }
-        deferred3_0 = ptr2;
-        deferred3_1 = len2;
-        return getStringFromWasm0(ptr2, len2);
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_export_3(deferred3_0, deferred3_1, 1);
-    }
-}
-
-/**
- * Build and render a WebUI application from virtual files.
- *
- * Uses a lightweight pure-Rust parser suitable for the playground.
- * Handles signals, for-loops, if-conditions, components, and dynamic attributes.
- *
- * # Arguments
- *
- * * `files` — A JS object mapping filenames to their string content.
- *   Example: `{ "index.html": "<h1>{{title}}</h1>", "my-card.html": "<p><slot></slot></p>" }`
- * * `state_json` — A JSON string of the state data to render with.
- * * `entry` — The entry HTML filename (e.g. `"index.html"`).
- *
- * # Returns
- *
- * The rendered HTML string, or throws a JS error on failure.
- * @param {any} files
- * @param {string} state_json
- * @param {string} entry
- * @param {string} request_path
- * @returns {string}
- */
-export function build_and_render(files, state_json, entry, request_path) {
-    let deferred5_0;
-    let deferred5_1;
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passStringToWasm0(state_json, wasm.__wbindgen_export_0, wasm.__wbindgen_export_1);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(entry, wasm.__wbindgen_export_0, wasm.__wbindgen_export_1);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(request_path, wasm.__wbindgen_export_0, wasm.__wbindgen_export_1);
-        const len2 = WASM_VECTOR_LEN;
-        wasm.build_and_render(retptr, addHeapObject(files), ptr0, len0, ptr1, len1, ptr2, len2);
-        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
-        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
-        var ptr4 = r0;
-        var len4 = r1;
-        if (r3) {
-            ptr4 = 0; len4 = 0;
-            throw takeObject(r2);
-        }
-        deferred5_0 = ptr4;
-        deferred5_1 = len4;
-        return getStringFromWasm0(ptr4, len4);
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_export_3(deferred5_0, deferred5_1, 1);
     }
 }
 
