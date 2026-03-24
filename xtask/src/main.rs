@@ -140,7 +140,7 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
         Some("state") | Some("webui-state") | Some("microsoft-webui-state") => {
             args.extend(["-p", "microsoft-webui-state"]);
         }
-        Some("webui") | Some("contact-book") | Some("microsoft-webui") => {
+        Some("contact-book") => {
             args.extend(["-p", "microsoft-webui", "--bench", "contact_book_bench"]);
         }
         Some("all") | None => {
@@ -268,7 +268,7 @@ impl Step {
                 &[
                     "bench",
                     "-p",
-                    "webui",
+                    "microsoft-webui",
                     "--bench",
                     "contact_book_bench",
                     "--",
