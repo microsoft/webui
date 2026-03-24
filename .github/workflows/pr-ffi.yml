@@ -26,8 +26,8 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Build webui-ffi
-        run: cargo build -p webui-ffi
+      - name: Build microsoft-webui-ffi
+        run: cargo build -p microsoft-webui-ffi
 
       - name: Setup Python
         uses: actions/setup-python@v5
