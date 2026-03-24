@@ -54,44 +54,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install protoc
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+      - uses: ./.github/actions/build
+        with:
+          shared-cache-key: publish-linux
+          rust-targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+          dotnet: '8.0.x'
+          skip-build: 'true'
 
       - name: Install cross-compilation tools (arm64 linker)
         run: |
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.93
-          targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: publish-linux
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'pnpm'
-
-      - name: Install npm dependencies
-        run: pnpm install
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
 
       - name: Build x64
         run: >
@@ -126,39 +99,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install protoc
-        run: brew install protobuf
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/build
         with:
-          toolchain: 1.93
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: publish-macos
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'pnpm'
-
-      - name: Install npm dependencies
-        run: pnpm install
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
+          shared-cache-key: publish-macos
+          rust-targets: aarch64-apple-darwin, x86_64-apple-darwin
+          dotnet: '8.0.x'
+          skip-build: 'true'
 
       - name: Build arm64 (native)
         run: >
@@ -193,46 +139,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Disable Windows Defender on build dirs
-        shell: pwsh
-        run: |
-          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
-          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
-
-      - name: Install protoc
-        shell: pwsh
-        run: choco install protoc -y
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/build
         with:
-          toolchain: 1.93
-          targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: publish-windows
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'pnpm'
-
-      - name: Install npm dependencies
-        run: pnpm install
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
+          shared-cache-key: publish-windows
+          rust-targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
+          dotnet: '8.0.x'
+          skip-build: 'true'
 
       - name: Build x64 (native)
         run: >
