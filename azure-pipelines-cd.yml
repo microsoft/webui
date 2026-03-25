@@ -1,11 +1,6 @@
 trigger: none
 pr: none
 
-variables:
-- name: releaseTag
-  displayName: GitHub Release Tag (e.g. v0.0.1)
-  value: ''
-
 # The `resources` specify the location and version of the 1ES PT.
 resources:
   repositories:
