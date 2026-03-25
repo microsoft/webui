@@ -36,7 +36,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/nicolo-ribaudo/nicolo-nicolo.git"
+    "url": "https://github.com/microsoft/webui.git"
   },
   "scripts": {
     "build": "esbuild src/index.ts src/platform.ts src/install.ts --outdir=dist --format=esm --platform=node && tsc --emitDeclarationOnly",
