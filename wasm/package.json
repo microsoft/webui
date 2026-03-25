@@ -17,8 +17,16 @@
     "webui_wasm.d.ts"
   ],
   "main": "webui_wasm.js",
+  "homepage": "https://microsoft.github.io/webui",
   "types": "webui_wasm.d.ts",
   "sideEffects": [
     "./snippets/*"
+  ],
+  "keywords": [
+    "webui",
+    "wasm",
+    "webassembly",
+    "ssr",
+    "rendering"
   ]
 }
