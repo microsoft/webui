@@ -79,7 +79,7 @@ jobs:
 
   build-macos:
     name: Build (macOS)
-    runs-on: macos-latest
+    runs-on: macos-latest-large
     needs: lint
     steps:
       - uses: actions/checkout@v4

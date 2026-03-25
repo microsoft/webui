@@ -38,14 +38,15 @@ jobs:
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
 
-  # ── Step 2: Build and stage all artifacts (3 runners, 2 targets each) ─
+  # ── Step 2: Build and stage native artifacts (3 runners, 2 targets each) ─
   #
-  # Each runner builds native + cross targets, then runs full publish-stage
-  # to produce a complete publish/ folder for its platforms.
+  # Each runner builds native + cross targets, then stages only the native files
+  # for its platforms into package/runtime directories. The release job later
+  # merges those staged files and packs npm/NuGet/crates/WASM once on Linux.
   #
-  #   ubuntu-latest  (x64) → linux-x64   + linux-arm64
-  #   macos-latest   (arm) → darwin-arm64 + darwin-x64
-  #   windows-latest (x64) → win32-x64   + win32-arm64
+  #   ubuntu-latest  (x64) → linux-x64    + linux-arm64
+  #   macos-latest-large   (arm) → darwin-arm64 + darwin-x64
+  #   windows-latest (x64) → win32-x64    + win32-arm64
 
   build-linux:
     name: Build (Linux x64 + arm64)
@@ -58,7 +59,6 @@ jobs:
         with:
           shared-cache-key: publish-linux
           rust-targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
-          dotnet: '8.0.x'
           skip-build: 'true'
 
       - name: Install cross-compilation tools (arm64 linker)
@@ -82,28 +82,32 @@ jobs:
           -p microsoft-webui-ffi
           -p microsoft-webui-node
 
-      - name: Stage all artifacts
-        run: cargo xtask publish-stage --target all --profile release
+      - name: Stage native artifacts
+        run: cargo xtask publish-stage --target all --profile release --native-only
 
-      - name: Upload publish folder
+      - name: Upload staged native assets
         uses: actions/upload-artifact@v4
         with:
-          name: publish-linux
-          path: publish/
+          name: stage-linux
+          path: |
+            publish/native/
+            packages/webui-linux-x64/
+            packages/webui-linux-arm64/
+            dotnet/runtimes/linux-x64/
+            dotnet/runtimes/linux-arm64/
           retention-days: 1
 
   build-macos:
     name: Build (macOS arm64 + x64)
     needs: check-version
     if: needs.check-version.outputs.should_publish == 'true'
-    runs-on: macos-latest
+    runs-on: macos-latest-large
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/build
         with:
           shared-cache-key: publish-macos
           rust-targets: aarch64-apple-darwin, x86_64-apple-darwin
-          dotnet: '8.0.x'
           skip-build: 'true'
 
       - name: Build arm64 (native)
@@ -122,14 +126,19 @@ jobs:
           -p microsoft-webui-ffi
           -p microsoft-webui-node
 
-      - name: Stage all artifacts
-        run: cargo xtask publish-stage --target all --profile release
+      - name: Stage native artifacts
+        run: cargo xtask publish-stage --target all --profile release --native-only
 
-      - name: Upload publish folder
+      - name: Upload staged native assets
         uses: actions/upload-artifact@v4
         with:
-          name: publish-macos
-          path: publish/
+          name: stage-macos
+          path: |
+            publish/native/
+            packages/webui-darwin-arm64/
+            packages/webui-darwin-x64/
+            dotnet/runtimes/osx-arm64/
+            dotnet/runtimes/osx-x64/
           retention-days: 1
 
   build-windows:
@@ -143,7 +152,6 @@ jobs:
         with:
           shared-cache-key: publish-windows
           rust-targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
-          dotnet: '8.0.x'
           skip-build: 'true'
 
       - name: Build x64 (native)
@@ -162,17 +170,22 @@ jobs:
           -p microsoft-webui-ffi
           -p microsoft-webui-node
 
-      - name: Stage all artifacts
-        run: cargo xtask publish-stage --target all --profile release
+      - name: Stage native artifacts
+        run: cargo xtask publish-stage --target all --profile release --native-only
 
-      - name: Upload publish folder
+      - name: Upload staged native assets
         uses: actions/upload-artifact@v4
         with:
-          name: publish-windows
-          path: publish/
+          name: stage-windows
+          path: |
+            publish/native/
+            packages/webui-win32-x64/
+            packages/webui-win32-arm64/
+            dotnet/runtimes/win-x64/
+            dotnet/runtimes/win-arm64/
           retention-days: 1
 
-  # ── Step 3: Merge artifacts, tag, and create release ──────────────────
+  # ── Step 3: Merge native assets, pack once, tag, and create release ───
   release:
     name: Create Release
     needs: [check-version, build-linux, build-macos, build-windows]
@@ -182,13 +195,34 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Download and merge all publish/ folders from the 3 runners
-      - name: Download all publish artifacts
+      - uses: ./.github/actions/build
+        with:
+          shared-cache-key: publish-release
+          dotnet: '8.0.x'
+          skip-build: 'true'
+
+      # Download and merge all staged native assets from the 3 runners
+      - name: Download staged native artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: publish-*
-          path: publish/
+          pattern: stage-*
+          path: .
           merge-multiple: true
+
+      - name: Setup WASM C headers
+        shell: bash
+        run: |
+          cargo fetch
+          WASM_HEADERS=$(find $HOME/.cargo/registry/src -path "*/tree-sitter-language-*/wasm/include" -type d | head -1)
+          if [ -n "$WASM_HEADERS" ]; then
+            echo "WASI_INCLUDE=$WASM_HEADERS" >> $GITHUB_ENV
+          else
+            echo "::error::Could not find tree-sitter-language WASM headers after cargo fetch"
+            exit 1
+          fi
+
+      - name: Pack unified release artifacts
+        run: cargo xtask publish-stage --pack-only --profile release
 
       # List all artifacts for verification
       - name: List publish artifacts
