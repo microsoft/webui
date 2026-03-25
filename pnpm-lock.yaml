@@ -260,6 +260,10 @@ importers:
         version: 5.9.3
 
   examples/integration/electron:
+    dependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../../../packages/webui
     devDependencies:
       electron:
         specifier: 'catalog:'
@@ -271,7 +275,11 @@ importers:
         specifier: 'catalog:'
         version: 5.9.3
 
-  examples/integration/node: {}
+  examples/integration/node:
+    dependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../../../packages/webui
 
   packages/webui:
     devDependencies:

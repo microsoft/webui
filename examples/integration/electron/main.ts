@@ -2,12 +2,14 @@
 // Licensed under the MIT license.
 
 // Electron integration for WebUI — renders any pre-built WebUI app in a
-// frameless desktop window using the webui-node native addon.
+// frameless desktop window using the @microsoft/webui package.
 //
 // Prerequisites:
 //   1. Build the native addon: cargo build -p microsoft-webui-node --release
-//   2. Build a WebUI app:
-//      cargo run -p microsoft-webui-cli -- build <app>/src --out <app>/dist --css external --plugin=fast
+//   2. Build the @microsoft/webui package: pnpm --filter @microsoft/webui build
+//   3. Install workspace dependencies: pnpm install
+//   4. Build a WebUI app:
+//      cargo run -p microsoft-webui-cli -- build <app>/src --out <app>/dist --css link --plugin=fast
 //      esbuild <app>/src/index.ts --bundle --outfile=<app>/dist/index.js --format=esm
 //
 // Usage:
@@ -15,8 +17,8 @@
 
 import { app, BrowserWindow, Menu, net, protocol } from 'electron';
 import { existsSync, readFileSync } from 'fs';
-import { platform } from 'os';
 import { resolve, join, basename } from 'path';
+import { renderStream } from '@microsoft/webui';
 
 // ---------------------------------------------------------------------------
 // CLI arguments
@@ -40,32 +42,6 @@ const statePath = resolve(positional[1]);
 
 const pluginArg = flags.find(a => a.startsWith('--plugin='));
 const pluginName = pluginArg ? pluginArg.split('=')[1] : undefined;
-
-// ---------------------------------------------------------------------------
-// Native addon
-// ---------------------------------------------------------------------------
-
-function loadAddon() {
-  const root = resolve(import.meta.dirname, '..', '..', '..', '..');
-  const ext = platform() === 'darwin' ? 'dylib' : platform() === 'win32' ? 'dll' : 'so';
-  const prefix = platform() === 'win32' ? '' : 'lib';
-  const filename = `${prefix}webui_node.${ext}`;
-
-  const mod = { exports: {} } as { exports: Record<string, unknown> };
-  for (const profile of ['release', 'debug']) {
-    try {
-      process.dlopen(mod, join(root, 'target', profile, filename));
-      return mod.exports as { render(protocol: Buffer, state: string, onChunk: (chunk: string) => void, plugin?: string): void };
-    } catch {
-      // try next profile
-    }
-  }
-  throw new Error(
-    `Could not find ${filename} in target/release or target/debug.\nRun: cargo build -p microsoft-webui-node --release`,
-  );
-}
-
-const addon = loadAddon();
 
 // ---------------------------------------------------------------------------
 // Custom protocol
@@ -97,9 +73,9 @@ app.whenReady().then(() => {
 
   // Render SSR HTML
   const chunks: string[] = [];
-  addon.render(protocolBin, stateJson, (chunk: string) => {
+  renderStream(protocolBin, stateJson, (chunk: string) => {
     chunks.push(chunk);
-  }, pluginName);
+  }, { plugin: pluginName });
   const html = chunks.join('');
 
   // Protocol handler — serves rendered HTML + static assets
