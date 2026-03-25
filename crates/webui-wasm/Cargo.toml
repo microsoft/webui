@@ -6,6 +6,10 @@ edition.workspace = true
 authors.workspace = true
 license-file = "../../LICENSE"
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["webui", "wasm", "webassembly", "ssr", "rendering"]
+categories = ["wasm", "web-programming"]
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false

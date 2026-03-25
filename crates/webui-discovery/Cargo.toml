@@ -6,6 +6,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["webui", "discovery", "components", "ssr", "tooling"]
+categories = ["web-programming", "development-tools"]
 
 [lib]
 name = "webui_discovery"

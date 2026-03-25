@@ -5,7 +5,11 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
 description = "CLI tool for building WebUI applications"
+keywords = ["webui", "cli", "build-tool", "ssr", "tooling"]
+categories = ["command-line-utilities", "development-tools", "web-programming"]
 
 [[bin]]
 name = "webui"
