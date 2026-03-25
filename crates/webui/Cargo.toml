@@ -6,6 +6,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["webui", "ssr", "rendering", "templates", "server-side"]
+categories = ["web-programming", "template-engine"]
 
 [lib]
 name = "webui"

@@ -6,6 +6,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["webui", "expressions", "evaluation", "templates", "ssr"]
+categories = ["web-programming", "parser-implementations"]
 
 [lib]
 name = "webui_expressions"

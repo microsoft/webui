@@ -6,6 +6,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["webui", "nodejs", "napi", "ssr", "rendering"]
+categories = ["api-bindings", "web-programming"]
 
 [lib]
 name = "webui_node"
