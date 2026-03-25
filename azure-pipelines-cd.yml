@@ -56,7 +56,7 @@ extends:
           - script: echo "$(GH_TOKEN)" | gh auth login --with-token
             displayName: Authenticate GitHub CLI
             env:
-              GITHUB_TOKEN: $(GH_TOKEN)
+              GH_TOKEN: $(GH_TOKEN)
 
           # Download npm tarballs, crate archives, and NuGet packages from the
           # GitHub release produced by the publish.yml GitHub Actions workflow.
