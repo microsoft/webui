@@ -1,5 +1,5 @@
 name: Build WebUI
-description: Shared build steps for WebUI — installs protoc, Rust, Node.js, pnpm, and builds the workspace.
+description: Shared build steps for WebUI — installs protoc, Rust, Node.js, pnpm, and optionally .NET.
 
 inputs:
   shared-cache-key:
@@ -8,6 +8,18 @@ inputs:
     default: ''
   cache-on-failure:
     description: Save Rust cache even when subsequent steps fail
+    required: false
+    default: 'false'
+  rust-targets:
+    description: Comma-separated list of extra Rust targets to install (e.g. aarch64-unknown-linux-gnu)
+    required: false
+    default: ''
+  dotnet:
+    description: Install .NET SDK (set to version like '8.0.x' to enable)
+    required: false
+    default: ''
+  skip-build:
+    description: Skip cargo build and build-examples steps
     required: false
     default: 'false'
 
@@ -40,6 +52,7 @@ runs:
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: 1.93
+        targets: ${{ inputs.rust-targets }}
 
     - name: Rust Cache
       uses: Swatinem/rust-cache@v2
@@ -62,10 +75,18 @@ runs:
       shell: bash
       run: pnpm install
 
+    - name: Setup .NET
+      if: inputs.dotnet != ''
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ inputs.dotnet }}
+
     - name: Build workspace
+      if: inputs.skip-build != 'true'
       shell: bash
       run: cargo build --workspace --exclude xtask
 
     - name: Build examples
+      if: inputs.skip-build != 'true'
       shell: bash
       run: cargo xtask build-examples

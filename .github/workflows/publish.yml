@@ -38,11 +38,10 @@ jobs:
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
 
-  # ── Step 2: Build native binaries (3 runners, 2 targets each) ────────
+  # ── Step 2: Build and stage all artifacts (3 runners, 2 targets each) ─
   #
-  # Each runner builds its native target + cross-compiles the other arch.
-  # All crates are pure Rust (no C/C++ deps), so cross-compilation works
-  # out of the box with just the right linker/target installed.
+  # Each runner builds native + cross targets, then runs full publish-stage
+  # to produce a complete publish/ folder for its platforms.
   #
   #   ubuntu-latest  (x64) → linux-x64   + linux-arm64
   #   macos-latest   (arm) → darwin-arm64 + darwin-x64
@@ -55,25 +54,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install protoc
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+      - uses: ./.github/actions/build
+        with:
+          shared-cache-key: publish-linux
+          rust-targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+          dotnet: '8.0.x'
+          skip-build: 'true'
 
       - name: Install cross-compilation tools (arm64 linker)
         run: |
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.93
-          targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: publish-linux
 
       - name: Build x64
         run: >
@@ -91,18 +82,14 @@ jobs:
           -p microsoft-webui-ffi
           -p microsoft-webui-node
 
-      - name: Stage all Linux artifacts
+      - name: Stage all artifacts
         run: cargo xtask publish-stage --target all --profile release
 
-      - name: Upload artifacts
+      - name: Upload publish folder
         uses: actions/upload-artifact@v4
         with:
-          name: platform-linux
-          path: |
-            publish/native/
-            packages/webui-linux-x64/
-            packages/webui-linux-arm64/
-            dotnet/runtimes/
+          name: publish-linux
+          path: publish/
           retention-days: 1
 
   build-macos:
@@ -112,20 +99,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install protoc
-        run: brew install protobuf
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/build
         with:
-          toolchain: 1.93
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: publish-macos
+          shared-cache-key: publish-macos
+          rust-targets: aarch64-apple-darwin, x86_64-apple-darwin
+          dotnet: '8.0.x'
+          skip-build: 'true'
 
       - name: Build arm64 (native)
         run: >
@@ -143,18 +122,14 @@ jobs:
           -p microsoft-webui-ffi
           -p microsoft-webui-node
 
-      - name: Stage all macOS artifacts
+      - name: Stage all artifacts
         run: cargo xtask publish-stage --target all --profile release
 
-      - name: Upload artifacts
+      - name: Upload publish folder
         uses: actions/upload-artifact@v4
         with:
-          name: platform-macos
-          path: |
-            publish/native/
-            packages/webui-darwin-arm64/
-            packages/webui-darwin-x64/
-            dotnet/runtimes/
+          name: publish-macos
+          path: publish/
           retention-days: 1
 
   build-windows:
@@ -164,27 +139,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Disable Windows Defender on build dirs
-        shell: pwsh
-        run: |
-          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"
-          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
-
-      - name: Install protoc
-        shell: pwsh
-        run: choco install protoc -y
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/build
         with:
-          toolchain: 1.93
-          targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: publish-windows
+          shared-cache-key: publish-windows
+          rust-targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
+          dotnet: '8.0.x'
+          skip-build: 'true'
 
       - name: Build x64 (native)
         run: >
@@ -202,127 +162,33 @@ jobs:
           -p microsoft-webui-ffi
           -p microsoft-webui-node
 
-      - name: Stage all Windows artifacts
+      - name: Stage all artifacts
         run: cargo xtask publish-stage --target all --profile release
 
-      - name: Upload artifacts
+      - name: Upload publish folder
         uses: actions/upload-artifact@v4
         with:
-          name: platform-windows
-          path: |
-            publish/native/
-            packages/webui-win32-x64/
-            packages/webui-win32-arm64/
-            dotnet/runtimes/
+          name: publish-windows
+          path: publish/
           retention-days: 1
 
-  # ── Step 3: Assemble all artifacts and create release ─────────────────
+  # ── Step 3: Merge artifacts, tag, and create release ──────────────────
   release:
     name: Create Release
     needs: [check-version, build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install protoc
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.93
+          fetch-depth: 0
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-
-      # Download all platform artifacts (3 uploads → merged into working tree)
-      - name: Download Linux artifacts
+      # Download and merge all publish/ folders from the 3 runners
+      - name: Download all publish artifacts
         uses: actions/download-artifact@v4
         with:
-          name: platform-linux
-          path: .
-
-      - name: Download macOS artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: platform-macos
-          path: .
-
-      - name: Download Windows artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: platform-windows
-          path: .
-
-      # Build packages that need compilation
-      - name: Build npm packages
-        run: |
-          pnpm --filter @microsoft/webui build
-          pnpm --filter @microsoft/webui-router build
-
-      # Pack npm tarballs
-      - name: Pack npm tarballs
-        run: |
-          mkdir -p publish/npm
-          for dir in packages/*/; do
-            if [ -f "$dir/package.json" ]; then
-              pnpm pack --pack-destination "$(pwd)/publish/npm" "$dir"
-            fi
-          done
-
-      # Pack NuGet packages
-      - name: Pack NuGet packages
-        run: |
-          mkdir -p publish/nuget
-          dotnet pack dotnet/ --configuration Release --output publish/nuget/
-
-      # Pack Rust crates
-      - name: Pack Rust crates
-        run: |
-          mkdir -p publish/crates
-          cargo package \
-            --workspace \
-            --exclude xtask \
-            --exclude webui-rust-example \
-            --exclude ssr-performance-showdown \
-            --exclude marketplace-api \
-            --no-verify --allow-dirty
-          cp target/package/*.crate publish/crates/
-
-      # Build and stage WASM
-      - name: Build WASM
-        uses: ./.github/actions/setup-wasm
-
-      - name: Stage WASM artifacts
-        run: |
-          mkdir -p publish/wasm
-          if [ -f docs/public/wasm/webui_wasm_bg.wasm ]; then
-            cp docs/public/wasm/webui_wasm_bg.wasm publish/wasm/
-            cp docs/public/wasm/webui_wasm.js publish/wasm/
-            echo "WASM artifacts staged"
-          else
-            echo "::error::WASM artifacts not found at docs/public/wasm/"
-            exit 1
-          fi
+          pattern: publish-*
+          path: publish/
+          merge-multiple: true
 
       # List all artifacts for verification
       - name: List publish artifacts
