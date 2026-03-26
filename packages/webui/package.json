@@ -44,5 +44,5 @@
     "test": "esbuild test/integration.test.ts --outfile=test/integration.test.js --format=esm --platform=node && node --test test/integration.test.js"
   },
   "type": "module",
-  "version": "0.0.1"
+  "version": "0.0.2"
 }

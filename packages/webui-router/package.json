@@ -1,30 +1,30 @@
 {
-  "name": "@microsoft/webui-router",
-  "version": "0.0.1",
-  "type": "module",
   "description": "Lightweight client-side router for WebUI apps. Intercepts navigation, matches routes locally or via server route-data, and hydrates components.",
-  "license": "MIT",
-  "exports": {
-    ".": {
-      "import": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      }
-    }
-  },
-  "files": [
-    "dist/"
-  ],
-  "scripts": {
-    "build": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --platform=browser && tsc --emitDeclarationOnly",
-    "test": "esbuild test/navigation-path.test.ts --bundle --outdir=test/dist --format=esm --platform=node && node --test test/dist/navigation-path.test.js",
-    "typecheck": "tsc --noEmit"
-  },
   "devDependencies": {
     "@types/dom-navigation": "catalog:",
     "@types/dom-view-transitions": "catalog:",
     "esbuild": "catalog:",
     "typescript": "catalog:",
     "urlpattern-polyfill": "catalog:"
-  }
+  },
+  "exports": {
+    ".": {
+      "import": {
+        "default": "./dist/index.js",
+        "types": "./dist/index.d.ts"
+      }
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "license": "MIT",
+  "name": "@microsoft/webui-router",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --platform=browser && tsc --emitDeclarationOnly",
+    "test": "esbuild test/navigation-path.test.ts --bundle --outdir=test/dist --format=esm --platform=node && node --test test/dist/navigation-path.test.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "version": "0.0.2"
 }

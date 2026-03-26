@@ -18,10 +18,10 @@ name = "webui"
 cli = ["microsoft-webui-parser/cli"]
 
 [dependencies]
-microsoft-webui-parser = { path = "../webui-parser", version = "0.0.1" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.1" }
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.1" }
-microsoft-webui-discovery = { path = "../webui-discovery", version = "0.0.1" }
+microsoft-webui-parser = { path = "../webui-parser", version = "0.0.2" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.2" }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.2" }
+microsoft-webui-discovery = { path = "../webui-discovery", version = "0.0.2" }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
 
@@ -29,8 +29,8 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 criterion = { workspace = true }
 serde_json = { workspace = true }
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.1" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.1" }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.2" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.2" }
 
 [[bench]]
 name = "contact_book_bench"
