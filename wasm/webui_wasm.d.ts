@@ -1,15 +1,11 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
- * Produce a complete JSON partial response for client-side navigation.
+ * Build the protocol JSON from virtual files without rendering.
  *
- * Combines application state, route templates, inventory, request path, and
- * matched route chain into a single JSON string:
- * `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
- *
- * Host servers return this directly — no assembly required.
+ * Returns the serialized `WebUIProtocol` as a JSON string.
  */
-export function render_partial(protocol_json: string, state_json: string, entry_id: string, request_path: string, inventory_hex: string): string;
+export function build_protocol(files: any, entry: string): string;
 /**
  * Build and render a WebUI application from virtual files.
  *
@@ -29,12 +25,6 @@ export function render_partial(protocol_json: string, state_json: string, entry_
  */
 export function build_and_render(files: any, state_json: string, entry: string, request_path: string): string;
 /**
- * Build the protocol JSON from virtual files without rendering.
- *
- * Returns the serialized `WebUIProtocol` as a JSON string.
- */
-export function build_protocol(files: any, entry: string): string;
-/**
  * Render a pre-built WebUI protocol with state data.
  *
  * # Arguments
@@ -48,6 +38,16 @@ export function build_protocol(files: any, entry: string): string;
  * The rendered HTML string, or throws a JS error on failure.
  */
 export function render(protocol_json: string, state_json: string, entry: string, request_path: string, plugin?: string | null): string;
+/**
+ * Produce a complete JSON partial response for client-side navigation.
+ *
+ * Combines application state, route templates, inventory, request path, and
+ * matched route chain into a single JSON string:
+ * `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
+ *
+ * Host servers return this directly — no assembly required.
+ */
+export function render_partial(protocol_json: string, state_json: string, entry_id: string, request_path: string, inventory_hex: string): string;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
