@@ -1,6 +1,14 @@
 trigger: none
 pr: none
 
+schedules:
+  - cron: '0 * * * *'
+    displayName: Hourly deployment check
+    branches:
+      include:
+        - main
+    always: true  # run even when there are no new commits — needed since we check an external GitHub release, not repo changes
+
 # The `resources` specify the location and version of the 1ES PT.
 resources:
   repositories:
