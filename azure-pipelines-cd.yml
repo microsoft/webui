@@ -73,4 +73,46 @@ extends:
             env:
               GH_TOKEN: $(GH_TOKEN)
 
+          # Check whether this version is already published to all registries.
+          # Sets needsPublishing=true if any of npm, NuGet, or crates.io do not
+          # yet carry the version — so a partial publish still reruns the template.
+          # The 'v' prefix is stripped from the release tag since registries
+          # expect a bare version number e.g. 1.2.3 not v1.2.3.
+          - script: |
+              VERSION="$(releaseTag)"
+              VERSION="${VERSION#v}"
+              NEEDS_PUBLISHING=false
+
+              # npm
+              if npm view "@microsoft/webui@${VERSION}" version 2>/dev/null | grep -q "^${VERSION}$"; then
+                echo "npm @microsoft/webui@${VERSION} already published"
+              else
+                echo "npm @microsoft/webui@${VERSION} not yet published"
+                NEEDS_PUBLISHING=true
+              fi
+
+              # NuGet
+              NUGET_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                "https://api.nuget.org/v3-flatcontainer/microsoft.webui/${VERSION}/microsoft.webui.${VERSION}.nupkg")
+              if [ "$NUGET_STATUS" = "200" ]; then
+                echo "NuGet Microsoft.WebUI ${VERSION} already published"
+              else
+                echo "NuGet Microsoft.WebUI ${VERSION} not yet published (HTTP ${NUGET_STATUS})"
+                NEEDS_PUBLISHING=true
+              fi
+
+              # crates.io
+              CRATE_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                "https://crates.io/api/v1/crates/microsoft-webui/${VERSION}")
+              if [ "$CRATE_STATUS" = "200" ]; then
+                echo "crates.io microsoft-webui ${VERSION} already published"
+              else
+                echo "crates.io microsoft-webui ${VERSION} not yet published (HTTP ${CRATE_STATUS})"
+                NEEDS_PUBLISHING=true
+              fi
+
+              echo "##vso[task.setvariable variable=needsPublishing]${NEEDS_PUBLISHING}"
+            displayName: Check if already published
+
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
+            condition: eq(variables['needsPublishing'], 'true')
