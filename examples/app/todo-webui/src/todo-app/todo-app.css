@@ -1,0 +1,64 @@
+/* Copyright (c) Microsoft Corporation. */
+/* Licensed under the MIT license. */
+
+:host {
+  display: block;
+}
+
+h1 {
+  font-size: var(--font-size-xxl);
+  font-weight: 600;
+  margin-bottom: var(--spacing-xxl);
+  color: var(--color-brand-primary);
+}
+
+.add-form {
+  display: flex;
+  gap: var(--spacing-s);
+  margin-bottom: var(--spacing-xl);
+}
+
+.add-input {
+  flex: 1;
+  padding: var(--spacing-m) var(--spacing-l);
+  font-size: var(--font-size-ml);
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--border-radius-m);
+  outline: none;
+  font-family: inherit;
+}
+
+.add-input:focus {
+  border-color: var(--color-brand-primary);
+  box-shadow: var(--shadow-focus-ring);
+}
+
+.add-button {
+  padding: var(--spacing-m) var(--spacing-xxl);
+  font-size: var(--font-size-ml);
+  font-family: inherit;
+  background: var(--color-brand-primary);
+  color: var(--color-white);
+  border: none;
+  border-radius: var(--border-radius-m);
+  cursor: pointer;
+}
+
+.add-button:hover {
+  background: var(--color-brand-primary-hover);
+}
+
+.todo-list {
+  background: var(--color-white);
+  border-radius: var(--border-radius-l);
+  box-shadow: var(--shadow-s);
+  overflow: hidden;
+}
+
+.footer {
+  margin-top: var(--spacing-xl);
+  padding: var(--spacing-ml);
+  text-align: center;
+  font-size: var(--font-size-m);
+  color: var(--color-neutral-500);
+}
