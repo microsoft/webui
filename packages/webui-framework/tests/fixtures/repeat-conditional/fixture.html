@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Repeat Conditional Fixture</title>
+</head>
+<body>
+  <test-repeat-conditional>
+    <template shadowrootmode="open">
+      <div class="controls">
+        <button class="load" data-ev="1">Load</button>
+        <button class="switch" data-ev="1">Switch</button>
+      </div>
+      <ul class="items">
+        <!--w-b:start:0:for-1-->
+        <!--w-r:start:0-->
+        <li>
+          <!--w-b:start:0:if-21--><p class="current" data-href="/search/shirts" data-w-b-0><!--w-b:start:0:item.title-->Shirts<!--w-b:end:0:item.title--></p><!--w-b:end:0:if-21-->
+          <!--w-b:start:1:if-22--><!--w-b:end:1:if-22-->
+        </li>
+        <!--w-r:end:0-->
+        <!--w-r:start:1-->
+        <li>
+          <!--w-b:start:0:if-21--><!--w-b:end:0:if-21-->
+          <!--w-b:start:1:if-22--><button class="link" data-href="/search/headwear" data-w-c-0-2><!--w-b:start:1:item.title-->Headwear<!--w-b:end:1:item.title--></button><!--w-b:end:1:if-22-->
+        </li>
+        <!--w-r:end:1-->
+        <!--w-r:start:2-->
+        <li>
+          <!--w-b:start:0:if-21--><!--w-b:end:0:if-21-->
+          <!--w-b:start:1:if-22--><button class="link" data-href="/search/archived" disabled data-w-c-0-2><!--w-b:start:1:item.title-->Archived<!--w-b:end:1:item.title--></button><!--w-b:end:1:if-22-->
+        </li>
+        <!--w-r:end:2-->
+        <!--w-b:end:0:for-1-->
+      </ul>
+    </template>
+  </test-repeat-conditional>
+  <script src="/dist/repeat-conditional/element.js"></script>
+</body>
+</html>

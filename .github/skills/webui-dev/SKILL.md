@@ -1,13 +1,13 @@
 ---
 name: webui-dev
-description: Build interactive WebUI example apps with FAST-HTML hydration, template syntax, and component patterns.
+description: Build interactive WebUI example apps with compiled-template hydration, template syntax, and component patterns.
 ---
 
-# WebUI App Development with FAST-HTML
+# WebUI App Development
 
 Use this skill when building or modifying example apps under `examples/app/`.
 
-WebUI server-renders HTML at request time. FAST-HTML hydrates the pre-rendered DOM on the client, making it interactive without a full re-render.
+WebUI server-renders HTML at request time. The `@microsoft/webui-framework` runtime hydrates the pre-rendered DOM on the client using compiled template metadata and direct DOM binding — no virtual DOM, no runtime template parsing.
 
 ## Project structure
 
@@ -17,7 +17,7 @@ Every example app follows this layout:
 examples/app/<name>/
 ├── src/
 │   ├── index.html              # HTML shell + CSS design tokens
-│   ├── index.ts                # Hydration bootstrap
+│   ├── index.ts                # Component registration
 │   └── <component-name>/      # One directory per component
 │       ├── <component-name>.ts
 │       ├── <component-name>.html
@@ -35,24 +35,22 @@ examples/app/<name>/
   "type": "module",
   "scripts": {
     "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
-    "start:server": "cargo run -p microsoft-webui-cli -- start ./src --state ./data/state.json --plugin=fast --servedir ./dist --port 3001 --watch",
+    "start:server": "cargo run -p microsoft-webui-cli -- start ./src --state ./data/state.json --plugin=webui --servedir ./dist --port 3001 --watch",
     "start": "cargo xtask dev <name>"
   },
   "devDependencies": {
-    "@microsoft/fast-element": "catalog:",
-    "@microsoft/fast-html": "catalog:",
+    "@microsoft/webui-framework": "workspace:*",
     "esbuild": "catalog:",
-    "tslib": "catalog:",
     "typescript": "catalog:"
   }
 }
 ```
 
-Use `catalog:` for all dependency versions — they resolve from `pnpm-workspace.yaml`.
+Use `catalog:` for dependency versions — they resolve from `pnpm-workspace.yaml`.
 
 ### tsconfig.json
 
-Required settings for FAST-HTML:
+Required settings:
 
 ```json
 {
@@ -63,7 +61,7 @@ Required settings for FAST-HTML:
 }
 ```
 
-`useDefineForClassFields: false` is **mandatory** — FAST decorators rely on legacy class field behavior.
+`useDefineForClassFields: false` is **mandatory** — decorators rely on legacy class field behavior.
 
 ## Template syntax (HTML)
 
@@ -148,81 +146,101 @@ For structured data that passes through as-is:
 <my-component :config={{settings}}></my-component>
 ```
 
-## FAST-HTML component patterns
+## Component patterns
 
 ### Component class
 
-Every component extends `RenderableFASTElement(FASTElement)`:
+Every component extends `WebUIElement`:
 
 ```typescript
-import { FASTElement, attr, observable } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement, attr, observable, volatile } from '@microsoft/webui-framework';
 
-export class MyComponent extends RenderableFASTElement(FASTElement) {
-  @attr name!: string;              // HTML attribute (string, reflected)
-  @observable items!: ItemData[];   // Reactive property (triggers re-render)
+export class MyComponent extends WebUIElement {
+  @attr label = 'Default';           // HTML attribute (string, reflected)
+  @observable count = 0;             // Reactive property
+  @observable items: Item[] = [];    // Collection for @for loops
 
-  inputRef!: HTMLInputElement;      // Template ref target (via f-ref)
-
-  async prepare(): Promise<void> {
-    // Hydration hook — read state from pre-rendered DOM
+  @volatile get doubled(): number {  // Computed, re-evaluated on access
+    return this.count * 2;
   }
 
-  connectedCallback(): void {
-    super.connectedCallback();
-    // Post-hydration setup (event listeners, focus, etc.)
+  increment(): void {
+    this.count += 1;
   }
 }
 
-MyComponent.defineAsync({
-  name: 'my-component',
-  templateOptions: 'defer-and-hydrate',
-});
+MyComponent.define('my-component');
 ```
 
 ### `@attr` — HTML attributes
 
 - Reflected to/from the HTML attribute on the element.
-- **Use `!:` (no initializer)** for fields set in `prepare()`. Class field initializers run AFTER `super()`, overwriting values set during hydration.
+- **Use `!:` (no initializer)** for fields seeded from SSR. Class field initializers run AFTER `super()`, overwriting values set during hydration.
 - Hyphenated HTML attributes map via `@attr({ attribute: 'display-value' })`.
+- Attribute values arrive as strings — use `@observable` for non-string state.
 
 ### `@observable` — Reactive properties
 
-- Triggers FAST template re-rendering when changed.
-- Use for data that drives `<for>` loops or conditional display.
-- **Use `!:` (no initializer)** for fields set in `prepare()`.
+- Triggers per-path targeted update when changed — only bindings referencing this property are visited.
+- Use for data that drives `<for>` loops, `<if>` conditionals, or text/attribute bindings.
+- **Use `!:` (no initializer)** for fields seeded from SSR.
 
-### `prepare()` — Hydration hook
+### `@volatile` — Computed getters
 
-Called during hydration to initialize component state from the pre-rendered DOM. This is **the** place to read server-rendered data:
+- Re-evaluated on every access (no caching).
+- Automatically included in targeted updates via a wildcard binding.
+
+### `$emit` — Custom events
 
 ```typescript
-async prepare(): Promise<void> {
-  // Read @attr values from HTML attributes (initializers haven't run yet)
-  this.mode = this.getAttribute('mode') || 'default';
+this.$emit('toggle-item', { id: this.id });
+```
 
-  // Read child elements rendered by SSR
-  const items: ItemData[] = [];
-  for (const el of this.shadowRoot!.querySelectorAll('my-item')) {
-    items.push({
-      id: el.getAttribute('id') || '',
-      title: el.getAttribute('title') || '',
-    });
-  }
-  this.items = items;
+Events bubble through the shadow DOM boundary via `composed: true`.
+
+### `w-ref` — Template refs
+
+Bind a DOM element to a component property for direct access:
+
+```html
+<input w-ref="myInput" @keydown="{onKeydown(e)}" />
+```
+
+```typescript
+myInput!: HTMLInputElement;  // Populated during hydration
+
+onSubmit(): void {
+  const value = this.myInput.value;
+  this.myInput.value = '';
+  this.myInput.focus();
 }
 ```
 
-Rules:
+Use refs only for DOM-only concerns (focus, measurement, selection). Application state belongs in `@observable` / `@attr`.
 
-- Always read `@attr` values from `this.getAttribute()` — decorators initialize AFTER `prepare()`.
-- Read child element data from `this.shadowRoot.querySelectorAll()`.
-- Guard with `if (!this.shadowRoot) return;` when appropriate.
-- Avoid `<for>` loops over `@observable` string arrays — use object arrays or static HTML.
+## Event handling
 
-### Component template (HTML)
+### Template event binding — `@event`
 
-The `<template shadowrootmode="open">` wrapper is **optional** — the framework adds it automatically when absent. Only include it when you need to attach event listeners or other directives to the template root:
+```html
+<!-- Standard DOM events -->
+<button @click="{onClick()}">Click</button>
+<input @keydown="{onKeydown(e)}" />
+
+<!-- Custom events (bubble up from children) -->
+<template shadowrootmode="open"
+  @toggle-item="{onToggleItem(e)}"
+  @delete-item="{onDeleteItem(e)}"
+>
+```
+
+Pass `e` to receive the event object. Omit it when not needed.
+
+Events use delegation internally — one listener per event type on the shadow root, not one closure per element.
+
+## Component template (HTML)
+
+The `<template shadowrootmode="open">` wrapper is **optional** — the framework adds it automatically when absent. Only include it when you need root-level event listeners:
 
 ```html
 <!-- Minimal — no root-level bindings needed -->
@@ -239,7 +257,7 @@ The `<template shadowrootmode="open">` wrapper is **optional** — the framework
 </template>
 ```
 
-### Component styles (CSS)
+## Component styles (CSS)
 
 Scoped to the component via shadow DOM:
 
@@ -259,86 +277,28 @@ Scoped to the component via shadow DOM:
 
 Use `:host([attr="value"])` selectors to style based on attribute state.
 
-## Event handling
+## SSR hydration
 
-### Template event binding — `@event`
+The framework handles two paths automatically:
 
-Bind DOM and custom events to component methods in the template:
+**SSR path** — the server renders a Declarative Shadow Root with hydration markers. On custom element upgrade, the framework:
+1. Walks SSR markers once to connect bindings
+2. Seeds `@observable` / `@attr` values from DOM content inline
+3. Removes markers
+4. DOM is already correct — no `$update()` needed
 
-```html
-<!-- Standard DOM events -->
-<button @click="{onClick()}">Click</button>
-<input @keydown="{onKeydown(e)}" />
+**Client-created path** — for components created dynamically (e.g. inside `@for` loops):
+1. Clones cached template HTML (`cloneNode`, not `innerHTML`)
+2. Resolves binding locators from compiled metadata
+3. Calls `$update()` to flush initial state
 
-<!-- Custom events (bubble up from children) -->
-<template shadowrootmode="open"
-  @toggle-item="{onToggleItem(e)}"
-  @delete-item="{onDeleteItem(e)}"
->
-```
+### State seeding
 
-Pass `e` to receive the event object. Omit it when not needed.
+The framework automatically reconstructs `@observable` state from SSR DOM:
+- `@observable count = 0` + SSR text `"42"` → `this.count = 42` (coerced to number)
+- `@observable active = false` + SSR attr `"true"` → `this.active = true` (coerced to boolean)
 
-### Emitting custom events — `$emit`
-
-Child components emit events to parent components:
-
-```typescript
-// Emit a custom event with detail data
-this.$emit('toggle-item', { id: this.id });
-
-// Parent catches it via @toggle-item="{onToggleItem(e)}" on its <template>
-```
-
-Events bubble through the shadow DOM boundary via `composed: true`.
-
-### Template refs — `f-ref`
-
-Bind a DOM element to a component property for direct access:
-
-```html
-<input f-ref="{myInput}" @keydown="{onKeydown(e)}" />
-```
-
-```typescript
-myInput!: HTMLInputElement;  // Populated after hydration
-
-onSubmit(): void {
-  const value = this.myInput.value;
-  this.myInput.value = '';
-  this.myInput.focus();
-}
-```
-
-## Hydration bootstrap (index.ts)
-
-The entry point registers components and activates hydration:
-
-```typescript
-performance.mark('app-hydration-started');
-
-import { TemplateElement } from '@microsoft/fast-html';
-
-// Side-effect imports register components
-import './my-app/my-app.js';
-import './my-item/my-item.js';
-
-TemplateElement.options({
-  'my-app': { observerMap: 'all' },
-  'my-item': { observerMap: 'all' },
-}).config({
-  hydrationComplete() {
-    performance.measure('app-hydration-completed', 'app-hydration-started');
-    console.log('Hydration complete!');
-  },
-}).define({
-  name: 'f-template',
-});
-```
-
-- List **every** component in `.options()` with `{ observerMap: 'all' }`.
-- `.define({ name: 'f-template' })` triggers hydration.
-- Performance marks measure hydration time.
+Do NOT manually read DOM values in `connectedCallback` — the framework does it for you.
 
 ## State (data/state.json)
 
@@ -355,7 +315,7 @@ Provides initial values for SSR template rendering:
 }
 ```
 
-Top-level keys become template signals (`{{title}}`). Arrays drive `<for>` loops. The state is passed to the WebUI CLI via `--state`.
+Top-level keys become template signals (`{{title}}`). Arrays drive `<for>` loops.
 
 ## CSS design tokens
 
@@ -369,12 +329,10 @@ Define design tokens as CSS custom properties in `index.html`:
     --border-radius-m: 6px;
     --font-family-base: 'Segoe UI', sans-serif;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: var(--font-family-base); }
 </style>
 ```
 
-Components reference tokens via `var(--token-name)`. WebUI hoists `var()` usages at build time into the protocol for host-language token resolution.
+Components reference tokens via `var(--token-name)`.
 
 ## Dev workflow
 
@@ -387,7 +345,7 @@ pnpm start:client    # esbuild watch
 pnpm start:server    # microsoft-webui-cli dev server
 
 # Production build
-webui build ./src --out ./dist --plugin=fast
+webui build ./src --out ./dist --plugin=webui
 ```
 
 The `cargo xtask dev` command auto-discovers apps from `examples/app/` — no registration needed.

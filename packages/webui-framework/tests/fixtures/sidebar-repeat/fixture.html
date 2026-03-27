@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sidebar Repeat Fixture</title>
+</head>
+<body>
+  <test-sidebar-repeat>
+    <template shadowrootmode="open">
+      <link rel="stylesheet" href="/sidebar-repeat/sidebar-repeat.css">
+      <nav class="sidebar">
+        <div class="nav-section">
+          <a class="nav-item" data-active data-nav="Dashboard" href="/" data-w-b-0>Dashboard</a>
+          <a class="nav-item" data-nav="All Contacts" href="/contacts" data-w-b-1>All Contacts</a>
+          <a class="nav-item" data-nav="Favorites" href="/favorites" data-w-b-2>Favorites</a>
+        </div>
+        <div class="nav-divider"></div>
+        <div class="nav-section">
+          <h3 class="nav-heading">Groups</h3>
+          <!--w-b:start:0:for-1-->
+          <!--w-r:start:0--><a class="nav-item nav-item-group" data-nav="work" href="/groups/work" data-w-c-0-3>work</a><!--w-r:end:0-->
+          <!--w-r:start:1--><a class="nav-item nav-item-group" data-nav="family" href="/groups/family" data-w-c-0-3>family</a><!--w-r:end:1-->
+          <!--w-r:start:2--><a class="nav-item nav-item-group" data-nav="friends" href="/groups/friends" data-w-c-0-3>friends</a><!--w-r:end:2-->
+          <!--w-r:start:3--><a class="nav-item nav-item-group" data-nav="other" href="/groups/other" data-w-c-0-3>other</a><!--w-r:end:3-->
+          <!--w-b:end:0:for-1-->
+        </div>
+      </nav>
+    </template>
+  </test-sidebar-repeat>
+  <script src="/dist/sidebar-repeat/element.js"></script>
+</body>
+</html>

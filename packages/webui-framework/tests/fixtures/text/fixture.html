@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Text Fixture</title>
+</head>
+<body>
+  <test-text greeting="Hello">
+    <template shadowrootmode="open">
+      <span class="greeting"><!--w-b:start:0:greeting-->Hello<!--w-b:end:0:greeting--></span>,
+      <span class="name"><!--w-b:start:1:name-->World<!--w-b:end:1:name--></span>!
+    </template>
+  </test-text>
+  <script src="/dist/text/element.js"></script>
+</body>
+</html>
