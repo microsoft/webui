@@ -1,0 +1,21 @@
+{
+  "name": "todo-webui-example",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --metafile=dist/meta.json --minify",
+    "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
+    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --servedir ./dist --port 3006 --watch",
+    "start": "cargo xtask dev todo-webui",
+    "test": "playwright test",
+    "test:update-snapshots": "playwright test --update-snapshots"
+  },
+  "devDependencies": {
+    "@microsoft/webui-framework": "workspace:*",
+    "@playwright/test": "catalog:",
+    "esbuild": "catalog:",
+    "tslib": "catalog:",
+    "typescript": "catalog:"
+  }
+}
