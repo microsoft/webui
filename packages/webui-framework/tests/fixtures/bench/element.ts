@@ -25,7 +25,6 @@ import {
   registerCompiledTemplate,
   repeat,
   slot,
-  when,
 } from '@microsoft/webui-test-support';
 
 // Build a template with many bindings.
