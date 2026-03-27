@@ -12,7 +12,7 @@
 //! child is a `cmd.exe /c` wrapper.
 
 use std::path::Path;
-use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -51,7 +51,7 @@ pub struct ManagedChild {
     #[cfg(windows)]
     _job: sys::JobHandle,
     #[cfg(windows)]
-    pending_exit: Option<ExitStatus>,
+    pending_exit: Option<std::process::ExitStatus>,
 }
 
 impl ManagedChild {
