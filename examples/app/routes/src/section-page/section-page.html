@@ -1,16 +1,14 @@
-<template shadowrootmode="open">
+<div class="section-header">
+  <h2><span class="icon">{{sectionIcon}}</span>{{sectionName}}</h2>
+  <button class="counter" @click={onCounterClick()}>🔢 Section: <span w-ref={counterLabel}>0</span></button>
+</div>
 
-  <div class="section-header">
-    <h2><span class="icon">{{sectionIcon}}</span>{{sectionName}}</h2>
-  </div>
+<div class="topics">
+  <for each="topic in topics">
+    <a href="/sections/{{sectionId}}/topics/{{topic.id}}" ?active="{{topic.id == topicId}}">{{topic.name}}</a>
+  </for>
+</div>
 
-  <div class="topics">
-    <for each="topic in topics">
-      <a href="/sections/{{id}}/topics/{{topic.id}}">{{topic.name}}</a>
-    </for>
-  </div>
-
-  <div class="outlet-area">
-    <outlet />
-  </div>
-</template>
+<div class="outlet-area">
+  <outlet />
+</div>

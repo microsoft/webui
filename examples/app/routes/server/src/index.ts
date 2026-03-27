@@ -11,7 +11,7 @@
 import express from 'express';
 
 const app = express();
-const PORT = 3015;
+const PORT = 3018;
 
 // ── Data ─────────────────────────────────────────────────────────
 
@@ -133,7 +133,7 @@ app.get('/sections/:id', (req, res) => {
   res.json({
     state: {
       ...shellState(),
-      id: section.id,
+      sectionId: section.id,
       sectionName: section.name,
       sectionIcon: section.icon,
       topics: section.topics.map(({ id, name }) => ({ id, name })),
@@ -150,7 +150,7 @@ app.get('/sections/:id/topics/:topicId', (req, res) => {
   res.json({
     state: {
       ...shellState(),
-      id: section.id,
+      sectionId: section.id,
       sectionName: section.name,
       sectionIcon: section.icon,
       topicId: topic.id,
@@ -172,7 +172,7 @@ app.get('/sections/:id/topics/:topicId/lessons/:lessonId', (req, res) => {
   res.json({
     state: {
       ...shellState(),
-      id: section.id,
+      sectionId: section.id,
       sectionName: section.name,
       sectionIcon: section.icon,
       topicId: topic.id,

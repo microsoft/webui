@@ -1,58 +1,85 @@
 :host {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 240px 1fr;
   grid-template-rows: auto 1fr;
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 header {
   grid-column: 1 / -1;
   background: var(--color-brand-primary);
-  color: var(--color-white);
   padding: var(--spacing-l) var(--spacing-3xl);
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
 }
 
 header h1 {
+  margin: 0;
+  font: inherit;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-white);
+  text-decoration: none;
   font-size: var(--font-size-xl);
   font-weight: 600;
 }
 
+.brand:hover { opacity: 0.9; }
+
+.counter {
+  background: color-mix(in srgb, white 15%, transparent);
+  border: 1px solid color-mix(in srgb, white 30%, transparent);
+  color: var(--color-white);
+  padding: 4px 10px;
+  border-radius: var(--border-radius-s);
+  font-size: var(--font-size-s);
+  cursor: pointer;
+}
+.counter:hover { background: color-mix(in srgb, white 25%, transparent); }
+
 nav {
   background: var(--color-white);
-  border-right: 1px solid var(--color-neutral-150);
+  border-inline-end: 1px solid var(--color-neutral-150);
   padding: var(--spacing-xl);
+  overflow-y: auto;
 }
 
 nav h2 {
   font-size: var(--font-size-xs);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.08em;
   color: var(--color-neutral-400);
-  margin-bottom: 10px;
+  margin-block-end: var(--spacing-m);
 }
 
-nav ul {
-  list-style: none;
-}
-
-nav li {
-  margin-bottom: 2px;
-}
+nav ul { list-style: none; }
+nav li { margin-block-end: 2px; }
 
 nav a {
-  display: block;
-  padding: 7px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
   border-radius: var(--border-radius-m);
   color: var(--color-neutral-700);
   font-size: var(--font-size-base);
+  text-decoration: none;
+  transition: background 0.15s;
 }
 
 nav a:hover {
   background: var(--color-neutral-50);
-  text-decoration: none;
+}
+
+nav a[active] {
+  background: var(--color-brand-light);
+  color: var(--color-brand-primary);
+  font-weight: 600;
 }
 
 main {

@@ -1,19 +1,17 @@
-<template shadowrootmode="open">
-  <header>
-    <span>📚</span>
-    <h1>{{appTitle}}</h1>
-  </header>
+<header>
+  <h1><a href="/" class="brand">📚 <span>{{appTitle}}</span></a></h1>
+  <button class="counter" @click={onCounterClick()}>🔢 Shell: <span w-ref={counterLabel}>0</span></button>
+</header>
 
-  <nav>
-    <h2>Sections</h2>
-    <ul>
-      <for each="section in sections">
-        <li><a href="/sections/{{section.id}}">{{section.icon}} {{section.name}}</a></li>
-      </for>
-    </ul>
-  </nav>
+<nav>
+  <h2>Sections</h2>
+  <ul>
+    <for each="section in sections">
+      <li><a href="/sections/{{section.id}}" ?active="{{section.id == sectionId}}">{{section.icon}} {{section.name}}</a></li>
+    </for>
+  </ul>
+</nav>
 
-  <main>
-    <outlet />
-  </main>
-</template>
+<main>
+  <outlet />
+</main>

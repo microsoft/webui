@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 /**
- * Routes example — demonstrates nested routing with FAST-HTML hydration.
+ * Routes example — nested routing with WebUI Framework.
  *
  * Route structure:
  *   / → routes-app (shell with nav)
@@ -11,34 +11,30 @@
  *         ./lessons/:lessonId → lesson-page (lesson content)
  */
 
-performance.mark('routes-hydration-started');
-
-import { TemplateElement } from '@microsoft/fast-html';
 import { Router } from '@microsoft/webui-router';
 
+// Listen for the framework's global hydration-complete event.
+// NOTE: ES module imports are hoisted, so hydration may complete before
+// this listener is registered. Check for the performance mark as a fallback.
+window.addEventListener('webui:hydration-complete', onHydrationComplete);
+
+function onHydrationComplete(): void {
+  const total = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];
+  console.log(`Hydration complete in ${total?.duration.toFixed(1)}ms`);
+
+  Router.start({
+    loaders: {
+      'section-page': () => import('./section-page/section-page.js'),
+      'topic-page': () => import('./topic-page/topic-page.js'),
+      'lesson-page': () => import('./lesson-page/lesson-page.js'),
+    },
+  });
+}
+
+// Side-effect imports — register custom elements and trigger hydration
 import './routes-app/routes-app.js';
-import './section-page/section-page.js';
-import './topic-page/topic-page.js';
-import './lesson-page/lesson-page.js';
 
-TemplateElement.options({
-  'routes-app': { observerMap: 'all' },
-  'section-page': { observerMap: 'all' },
-  'topic-page': { observerMap: 'all' },
-  'lesson-page': { observerMap: 'all' },
-}).config({
-  hydrationComplete() {
-    performance.measure('routes-hydration-completed', 'routes-hydration-started');
-    console.log('Routes example hydration complete!');
-
-    Router.start({
-      loaders: {
-        'section-page': () => import('./section-page/section-page.js'),
-        'topic-page': () => import('./topic-page/topic-page.js'),
-        'lesson-page': () => import('./lesson-page/lesson-page.js'),
-      },
-    });
-  },
-}).define({
-  name: 'f-template',
-});
+// Fallback: if hydration already completed before the listener, log now
+if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {
+  onHydrationComplete();
+}

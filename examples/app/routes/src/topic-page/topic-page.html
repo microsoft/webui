@@ -1,16 +1,17 @@
-<template shadowrootmode="open">
-  <div class="topic-header">
-    <div class="breadcrumb">{{sectionName}} › {{topicName}}</div>
+<div class="topic-header">
+  <div>
+    <nav class="breadcrumb">{{sectionName}} &gt; {{topicName}}</nav>
     <h3>{{topicName}}</h3>
   </div>
+  <button class="counter" @click={onCounterClick()}>🔢 Topic: <span w-ref={counterLabel}>0</span></button>
+</div>
 
-  <div class="lessons">
-    <for each="lesson in lessons">
-      <a href="/sections/{{id}}/topics/{{topicId}}/lessons/{{lesson.id}}">{{lesson.name}}</a>
-    </for>
-  </div>
+<div class="lessons">
+  <for each="lesson in lessons">
+    <a href="/sections/{{sectionId}}/topics/{{topicId}}/lessons/{{lesson.id}}" ?active="{{lesson.id == lessonId}}">{{lesson.name}}</a>
+  </for>
+</div>
 
-  <div class="outlet-area">
-    <outlet />
-  </div>
-</template>
+<div class="outlet-area">
+  <outlet />
+</div>
