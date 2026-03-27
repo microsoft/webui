@@ -12,7 +12,7 @@
 //! child is a `cmd.exe /c` wrapper.
 
 use std::path::Path;
-use std::process::{Child, Command, ExitCode, Stdio};
+use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -23,6 +23,20 @@ use crate::util;
 /// Maximum time to wait for a child to exit after a graceful stop signal before
 /// escalating to a forced kill.
 const GRACEFUL_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// A port that must remain free before starting a managed process group.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReservedPort<'a> {
+    label: &'a str,
+    port: u16,
+}
+
+impl<'a> ReservedPort<'a> {
+    #[must_use]
+    pub const fn new(label: &'a str, port: u16) -> Self {
+        Self { label, port }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // ManagedChild
@@ -36,21 +50,69 @@ pub struct ManagedChild {
     inner: Child,
     #[cfg(windows)]
     _job: sys::JobHandle,
+    #[cfg(windows)]
+    pending_exit: Option<ExitStatus>,
 }
 
 impl ManagedChild {
     /// Check if the child has exited without blocking.
     pub fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
-        self.inner.try_wait()
+        #[cfg(windows)]
+        if self.pending_exit.is_some() {
+            if self._job.has_active_processes() {
+                return Ok(None);
+            }
+            return Ok(self.pending_exit.take());
+        }
+
+        let status = self.inner.try_wait()?;
+
+        #[cfg(windows)]
+        if let Some(status) = status {
+            if self._job.has_active_processes() {
+                self.pending_exit = Some(status);
+                return Ok(None);
+            }
+            return Ok(Some(status));
+        }
+
+        Ok(status)
     }
 
     /// Block until the child exits and return its status.
     pub fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        #[cfg(windows)]
+        loop {
+            if let Some(status) = self.try_wait()? {
+                return Ok(status);
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        #[cfg(not(windows))]
         self.inner.wait()
     }
 
     /// Force-kill the child process.
     pub fn kill(&mut self) -> std::io::Result<()> {
+        #[cfg(windows)]
+        {
+            self._job.terminate_all();
+            match self.inner.kill() {
+                Ok(()) => Ok(()),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::NotFound
+                    ) =>
+                {
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        }
+
+        #[cfg(not(windows))]
         self.inner.kill()
     }
 }
@@ -72,6 +134,8 @@ fn spawn_managed(command: &mut Command) -> Result<ManagedChild, std::io::Error> 
         inner: child,
         #[cfg(windows)]
         _job,
+        #[cfg(windows)]
+        pending_exit: None,
     })
 }
 
@@ -170,6 +234,42 @@ pub fn spawn_child_quiet(
             None
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Port pre-check: shared reserved-port validation
+// ---------------------------------------------------------------------------
+
+/// Return an error when one or more required ports are already occupied.
+pub fn ensure_reserved_ports_available(
+    target: &str,
+    ports: &[ReservedPort<'_>],
+) -> Result<(), String> {
+    let occupied: Vec<String> = ports
+        .iter()
+        .filter(|entry| !is_local_port_available(entry.port))
+        .map(|entry| format!("{}={}", entry.label, entry.port))
+        .collect();
+
+    if occupied.is_empty() {
+        return Ok(());
+    }
+
+    let noun = if occupied.len() == 1 {
+        "port is"
+    } else {
+        "ports are"
+    };
+    Err(format!(
+        "Cannot start {target}: required {noun} already in use ({})",
+        occupied.join(", ")
+    ))
+}
+
+fn is_local_port_available(port: u16) -> bool {
+    std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+        .map(drop)
+        .is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +437,7 @@ mod sys {
     // -- Job Object constants ------------------------------------------------
 
     const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
+    const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION: u32 = 1;
     const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: u32 = 9;
     const PROCESS_SET_QUOTA: u32 = 0x0100;
     const PROCESS_TERMINATE: u32 = 0x0001;
@@ -347,7 +448,15 @@ mod sys {
         fn GenerateConsoleCtrlEvent(dw_ctrl_event: u32, dw_process_group_id: u32) -> i32;
         fn CreateJobObjectW(security_attributes: Handle, name: *const u16) -> Handle;
         fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
+        fn QueryInformationJobObject(
+            job: Handle,
+            class: u32,
+            info: *mut c_void,
+            len: u32,
+            returned_len: *mut u32,
+        ) -> i32;
         fn SetInformationJobObject(job: Handle, class: u32, info: *const c_void, len: u32) -> i32;
+        fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
         fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
         fn CloseHandle(handle: Handle) -> i32;
     }
@@ -380,6 +489,20 @@ mod sys {
         read_transfer_count: u64,
         write_transfer_count: u64,
         other_transfer_count: u64,
+    }
+
+    /// `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`.
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct BasicAccountingInfo {
+        total_user_time: i64,
+        total_kernel_time: i64,
+        this_period_total_user_time: i64,
+        this_period_total_kernel_time: i64,
+        total_page_fault_count: u32,
+        total_processes: u32,
+        active_processes: u32,
+        total_terminated_processes: u32,
     }
 
     /// `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`.
@@ -467,6 +590,58 @@ mod sys {
 
             Self(job)
         }
+
+        pub fn has_active_processes(&self) -> bool {
+            self.active_process_count() > 0
+        }
+
+        pub fn terminate_all(&self) {
+            if self.0.is_null() {
+                return;
+            }
+
+            // SAFETY: `self.0` is a valid job handle and terminating the job is
+            // the intended forced-shutdown path for the managed process tree.
+            unsafe {
+                TerminateJobObject(self.0, 1);
+            }
+        }
+
+        fn active_process_count(&self) -> u32 {
+            if self.0.is_null() {
+                return 0;
+            }
+
+            let mut info = BasicAccountingInfo {
+                total_user_time: 0,
+                total_kernel_time: 0,
+                this_period_total_user_time: 0,
+                this_period_total_kernel_time: 0,
+                total_page_fault_count: 0,
+                total_processes: 0,
+                active_processes: 0,
+                total_terminated_processes: 0,
+            };
+            let mut returned_len = 0u32;
+
+            // SAFETY: `info` points to a valid writable buffer of the requested
+            // type and `self.0` is a valid job handle.
+            let ok = unsafe {
+                QueryInformationJobObject(
+                    self.0,
+                    JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+                    std::ptr::addr_of_mut!(info).cast(),
+                    std::mem::size_of::<BasicAccountingInfo>() as u32,
+                    std::ptr::addr_of_mut!(returned_len),
+                )
+            };
+
+            if ok == 0 {
+                return 0;
+            }
+
+            info.active_processes
+        }
     }
 
     impl Drop for JobHandle {
@@ -495,5 +670,55 @@ mod sys {
         unsafe {
             GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, TcpListener};
+
+    #[test]
+    fn test_ensure_reserved_ports_available_reports_port_conflict() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let error =
+            ensure_reserved_ports_available("demo-app", &[ReservedPort::new("server", port)])
+                .unwrap_err();
+
+        assert!(error.contains("demo-app"));
+        assert!(error.contains(&format!("server={port}")));
+        drop(listener);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_try_wait_ignores_wrapper_exit_while_job_processes_are_alive() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let script_path = dir.path().join("detach.cmd");
+        std::fs::write(
+            &script_path,
+            "@echo off\r\nstart \"\" /b powershell -NoProfile -WindowStyle Hidden -Command \"Start-Sleep -Seconds 2\"\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+
+        let mut command = Command::new("cmd");
+        command
+            .arg("/c")
+            .arg(&script_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let mut managed = spawn_managed(&mut command).unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        assert!(managed.try_wait().unwrap().is_none());
+
+        let status = managed.wait().unwrap();
+        assert_eq!(status.code(), Some(0));
     }
 }
