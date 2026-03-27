@@ -285,8 +285,7 @@ test.describe('category navigation flows', () => {
     // Stickers → All
     await page.locator('mp-category-nav').getByRole('link', { name: 'All' }).first().click();
     await expect(page).toHaveURL('/search');
-    const allCount = await page.locator('mp-product-grid mp-product-card').count();
-    expect(allCount).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => page.locator('mp-product-grid mp-product-card').count()).toBeGreaterThanOrEqual(2);
   });
 
   test('category active state updates in sidebar', async ({ page }) => {
