@@ -1,6 +1,6 @@
 {
   "name": "@microsoft/webui-framework",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "description": "WebUI Framework — lightweight Web Component runtime with SSR hydration. An alternative to @microsoft/fast-element for WebUI apps.",
   "license": "MIT",
