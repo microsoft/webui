@@ -1394,16 +1394,18 @@ export class WebUIElement extends HTMLElement {
     const method = (this as unknown as Record<string, Function>)[handler];
     if (typeof method !== 'function') return;
 
-    // Root-level events (target === this) use a direct listener
-    if (target instanceof Element) {
-      target.setAttribute(`data-eh-${eventName}`, needsEvent ? `${handler}:e` : handler);
-    } else {
+    // Root-level events (target === this) use a direct listener on the host.
+    // The host element lives outside the shadow DOM so it cannot be reached
+    // by the delegated-listener parentElement walk inside the shadow root.
+    if (target === this || !(target instanceof Element)) {
       target.addEventListener(eventName, (e: Event) => {
         if (needsEvent) method.call(this, e);
         else method.call(this);
       });
       return;
     }
+
+    target.setAttribute(`data-eh-${eventName}`, needsEvent ? `${handler}:e` : handler);
 
     // Install one delegated listener per event type on the shadow root
     if (!this.$delegatedEvents) {
