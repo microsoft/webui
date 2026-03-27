@@ -24,8 +24,15 @@ use std::time::{Duration, Instant};
 use crate::process::{self, ManagedChild, ReservedPort};
 use crate::util;
 
-/// Maximum time to wait for all server ports to become ready.
-const PORT_TIMEOUT: Duration = Duration::from_secs(180);
+/// Maximum time to wait for a server port to become ready.
+/// CI environments are slower; local servers should be up almost instantly.
+fn port_timeout() -> Duration {
+    if std::env::var_os("CI").is_some() {
+        Duration::from_secs(60)
+    } else {
+        Duration::from_secs(5)
+    }
+}
 const WORKSPACE_PACKAGES: &[&str] = &["@microsoft/webui-framework", "@microsoft/webui-router"];
 
 /// A Playwright suite with optional long-lived server processes.
@@ -265,18 +272,19 @@ pub fn run(args: &[String]) -> ExitCode {
         .iter()
         .flat_map(|suite| suite.ports.iter().map(|p| (*p, suite.name)))
         .collect();
+    let timeout = port_timeout();
     for (port, app_name) in &all_ports {
         if ctrlc.load(Ordering::SeqCst) {
             kill_servers(&mut servers);
             return ExitCode::SUCCESS;
         }
-        if !wait_for_port(*port, PORT_TIMEOUT, &ctrlc) {
+        if !wait_for_port(*port, timeout, &ctrlc) {
             eprintln!(
                 "  {} Port {} ({}) did not become ready within {}s",
                 console::style("✘").red(),
                 console::style(port).bold(),
                 app_name,
-                PORT_TIMEOUT.as_secs(),
+                timeout.as_secs(),
             );
             kill_servers(&mut servers);
             return ExitCode::FAILURE;
