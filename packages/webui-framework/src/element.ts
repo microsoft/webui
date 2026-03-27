@@ -30,6 +30,7 @@ import {
   deriveConditionSeed,
   evaluateCondition,
 } from './element/conditions.js';
+import { readHydrationEventCounts } from './element/events.js';
 import { seedObservablePath } from './element/seed.js';
 import {
   setupRepeat,
@@ -1333,24 +1334,35 @@ export class WebUIElement extends HTMLElement {
 
     const markerElements = this.$collectHydrationAttrElements(nodes)
       .filter((element) => element.hasAttribute('data-ev'));
-    if (markerElements.length === events.length) {
-      for (let index = 0; index < events.length; index += 1) {
-        const [event, handler, needsEvent] = events[index];
-        const target = markerElements[index];
-        target.removeAttribute('data-ev');
-        this.$wire(target, event, handler, !!needsEvent);
-      }
-      return;
+
+    const eventCounts = readHydrationEventCounts(
+      markerElements.map((element) => element.getAttribute('data-ev')),
+      events.length,
+    );
+    if (!eventCounts) {
+      throw new Error(
+        `Hydration event markers for ${this.tagName.toLowerCase()} must use the count-based data-ev contract.`,
+      );
     }
 
-    const elements = collectElements(nodes);
-    for (let index = 0; index < events.length; index += 1) {
-      const [event, handler, needsEvent] = events[index];
-      const target = elements.find((element) => element.getAttribute('data-ev') === String(index));
-      if (target) {
-        target.removeAttribute('data-ev');
+    let eventIndex = 0;
+    for (let index = 0; index < markerElements.length; index += 1) {
+      const target = markerElements[index];
+      target.removeAttribute('data-ev');
+      for (let offset = 0; offset < eventCounts[index]; offset += 1) {
+        const entry = events[eventIndex];
+        if (!entry) {
+          break;
+        }
+        const [event, handler, needsEvent] = entry;
         this.$wire(target, event, handler, !!needsEvent);
+        eventIndex += 1;
       }
+    }
+    if (eventIndex !== events.length) {
+      throw new Error(
+        `Hydration event marker count mismatch for ${this.tagName.toLowerCase()}: wired ${eventIndex} of ${events.length} events.`,
+      );
     }
   }
 

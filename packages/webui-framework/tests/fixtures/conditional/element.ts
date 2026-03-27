@@ -125,7 +125,7 @@ export class TestConditionalDetached extends WebUIElement {
     }
 
     const template = document.createElement('template');
-    template.innerHTML = '<button class="toggle" data-w-b-0 data-ev="0">Toggle</button><!--w-b:start:0:if-1--><span class="details"><!--w-b:start:0:details-->Details<!--w-b:end:0:details--></span><!--w-b:end:0:if-1-->';
+    template.innerHTML = '<button class="toggle" data-w-b-0 data-ev="1">Toggle</button><!--w-b:start:0:if-1--><span class="details"><!--w-b:start:0:details-->Details<!--w-b:end:0:details--></span><!--w-b:end:0:if-1-->';
 
     const shadowRoot = this.attachShadow({ mode: 'open' });
     const nodes = Array.from(template.content.childNodes);

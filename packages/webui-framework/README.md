@@ -629,7 +629,7 @@ content during the one-time hydration walk:
 | `<!--w-b:start:N:if-M-->...<!--w-b:end:N:if-M-->` | Conditional block — wraps `@if` content |
 | `<!--w-r:start:N-->...<!--w-r:end:N-->` | Repeat boundary — wraps `@for` children |
 | `data-w-b-N` / `data-w-c-N-M` | Attribute binding markers on elements |
-| `data-ev="N"` | Event target marker |
+| `data-ev="COUNT"` | Event target marker for COUNT consecutive handlers on the same element |
 
 After hydration, all markers are removed from the DOM by `$clean()`.  The
 runtime only uses them once — after that, all updates go through direct binding
