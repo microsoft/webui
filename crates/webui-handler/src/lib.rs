@@ -25,6 +25,9 @@ pub enum HandlerError {
     #[error("Rendering error: {0}")]
     Rendering(String),
 
+    #[error("Rendering invariant error: {0}")]
+    Invariant(String),
+
     #[error("Missing fragment: {0}")]
     MissingFragment(String),
 
@@ -45,6 +48,9 @@ pub enum HandlerError {
 
     #[error("Writer error: {0}")]
     Writer(String),
+
+    #[error("Plugin data error: {0}")]
+    PluginData(String),
 }
 
 pub type Result<T> = std::result::Result<T, HandlerError>;
@@ -314,7 +320,7 @@ impl WebUIHandler {
                 }
                 Some(Fragment::Plugin(plugin_frag)) => {
                     if let Some(p) = &mut context.plugin {
-                        p.on_plugin_data(&plugin_frag.data, context.writer)?;
+                        p.on_element_data(&plugin_frag.data, context.writer)?;
                     }
                 }
                 Some(Fragment::Route(route_frag)) => {
@@ -399,7 +405,9 @@ impl WebUIHandler {
 
                 context.writer.write("<")?;
                 context.writer.write(comp)?;
-                route_renderer::emit_state_attributes(context.state, context.writer)?;
+                if let Some(p) = &context.plugin {
+                    p.write_route_component_state(context.state, context.writer)?;
+                }
                 context.writer.write(">")?;
 
                 self.process_component(
@@ -514,7 +522,9 @@ impl WebUIHandler {
 
                 context.writer.write("<")?;
                 context.writer.write(&route_frag.fragment_id)?;
-                route_renderer::emit_state_attributes(context.state, context.writer)?;
+                if let Some(p) = &context.plugin {
+                    p.write_route_component_state(context.state, context.writer)?;
+                }
                 context.writer.write(">")?;
 
                 self.process_component(&comp, context)?;
@@ -712,15 +722,13 @@ impl WebUIHandler {
             context.writer.write("\">")?;
         }
 
-        // Hook: emit plugin content (e.g., f-templates) before body_end
-        if signal.raw && signal.value == "body_end" {
-            if let Some(p) = &mut context.plugin {
-                p.on_render_complete(
-                    context.protocol,
-                    &context.rendered_components,
-                    context.writer,
-                )?;
-            }
+        // Hook: emit rendered component templates before body_end when hydration is enabled
+        if signal.raw && signal.value == "body_end" && context.plugin.is_some() {
+            crate::plugin::emit_rendered_component_templates(
+                context.protocol,
+                &context.rendered_components,
+                context.writer,
+            )?;
         }
 
         if let Some(p) = &mut context.plugin {
@@ -5142,6 +5150,63 @@ mod tests {
         WebUIProtocol::new(fragments)
     }
 
+    fn make_nested_route_protocol() -> WebUIProtocol {
+        use webui_protocol::WebUiFragmentRoute;
+
+        let mut fragments = HashMap::new();
+
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/".into(),
+                    fragment_id: "app-shell".into(),
+                    exact: false,
+                    children: vec![WebUiFragmentRoute {
+                        path: "sections/:id".into(),
+                        fragment_id: "section-comp".into(),
+                        exact: false,
+                        children: vec![WebUiFragmentRoute {
+                            path: "topics/:topicId".into(),
+                            fragment_id: "topic-comp".into(),
+                            exact: true,
+                            children: vec![],
+                        }],
+                    }],
+                })],
+            },
+        );
+
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<h1>Shell</h1>"),
+                    WebUIFragment::outlet(),
+                ],
+            },
+        );
+
+        fragments.insert(
+            "section-comp".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<h2>Section</h2>"),
+                    WebUIFragment::outlet(),
+                ],
+            },
+        );
+
+        fragments.insert(
+            "topic-comp".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Topic content</p>")],
+            },
+        );
+
+        WebUIProtocol::new(fragments)
+    }
+
     #[test]
     fn test_route_renders_shell_always() {
         let protocol = make_route_protocol();
@@ -5321,10 +5386,10 @@ mod tests {
     }
 
     #[test]
-    fn test_route_state_attributes_escape_scalars_and_data_state() {
+    fn test_no_plugin_no_state_attributes() {
         let protocol = make_route_protocol();
         let state = test_json!({
-            "title": "Fish & Chips <\"special\">",
+            "title": "Fish & Chips",
             "cartOpen": true,
             "items": [{"name": "A&B"}]
         });
@@ -5339,82 +5404,15 @@ mod tests {
         .unwrap();
 
         let html = writer.get_content();
+        // Without a plugin, no state attributes at all
         assert!(
-            html.contains(r#"title="Fish &amp; Chips &lt;&quot;special&quot;&gt;""#),
-            "escaped title should be emitted: {html}"
-        );
-        assert!(
-            html.contains(r#"cart-open="true""#),
-            "bool attrs should render: {html}"
+            !html.contains("data-state"),
+            "no data-state without plugin: {html}"
         );
         assert!(
-            html.contains(r#"data-state=""#),
-            "complex state should be emitted as data-state: {html}"
+            !html.contains(r#"title="Fish"#),
+            "no scalar attrs without plugin: {html}"
         );
-        assert!(
-            html.contains(r#"&quot;name&quot;:&quot;A&amp;B&quot;"#),
-            "complex state values should be escaped inside data-state: {html}"
-        );
-    }
-
-    // ── Nested route + outlet rendering tests ─────────────────────────
-
-    /// Build a protocol with nested routes and outlet-based components.
-    fn make_nested_route_protocol() -> WebUIProtocol {
-        use webui_protocol::WebUiFragmentRoute;
-
-        let mut fragments = HashMap::new();
-
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
-                    path: "/".into(),
-                    fragment_id: "app-shell".into(),
-                    exact: false,
-                    children: vec![WebUiFragmentRoute {
-                        path: "sections/:id".into(),
-                        fragment_id: "section-comp".into(),
-                        exact: false,
-                        children: vec![WebUiFragmentRoute {
-                            path: "topics/:topicId".into(),
-                            fragment_id: "topic-comp".into(),
-                            exact: true,
-                            children: vec![],
-                        }],
-                    }],
-                })],
-            },
-        );
-
-        fragments.insert(
-            "app-shell".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<h1>Shell</h1>"),
-                    WebUIFragment::outlet(),
-                ],
-            },
-        );
-
-        fragments.insert(
-            "section-comp".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<h2>Section</h2>"),
-                    WebUIFragment::outlet(),
-                ],
-            },
-        );
-
-        fragments.insert(
-            "topic-comp".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("<p>Topic content</p>")],
-            },
-        );
-
-        WebUIProtocol::new(fragments)
     }
 
     #[test]

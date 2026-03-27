@@ -3,13 +3,14 @@
 
 //! FAST parser plugin for the WebUI parser.
 //!
-//! Tracks component definitions during HTML parsing and generates `<f-template>`
-//! wrappers at body end. Converts WebUI Framework template syntax (`<if>`, `<for>`, `{{}}`)
+//! Tracks component definitions during HTML parsing and returns `<f-template>`
+//! artifacts after parsing. Converts WebUI Framework template syntax (`<if>`, `<for>`, `{{}}`)
 //! into FAST-compatible syntax (`<f-when>`, `<f-repeat>`, `{}`).
 
-use super::ParserPlugin;
+use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use crate::component_registry::Component;
 use crate::{CssStrategy, Result};
+use webui_protocol::FastElementData;
 
 /// Information about a tracked component for `<f-template>` generation.
 struct TrackedComponent {
@@ -23,7 +24,7 @@ struct TrackedComponent {
 /// Implements the `ParserPlugin` trait for the FAST framework:
 /// - Filters FAST-specific runtime binding attributes (`@click`, `f-ref`, etc.)
 /// - Tracks components encountered during parsing
-/// - Generates `<f-template>` wrappers with converted FAST syntax at body end
+/// - Returns `<f-template>` artifacts with converted FAST syntax after parsing
 /// - Emits binding attribute counts as `Plugin` protocol fragment data
 pub struct FastParserPlugin {
     /// Components tracked during parsing, in discovery order.
@@ -76,14 +77,12 @@ impl Default for FastParserPlugin {
 }
 
 impl ParserPlugin for FastParserPlugin {
-    fn should_skip_attribute(&self, attr_name: &str) -> bool {
-        attr_name.starts_with('@')
-            || attr_name == "f-ref"
-            || attr_name == "f-slotted"
-            || attr_name == "f-children"
-    }
-
-    fn on_parse_component(&mut self, tag_name: &str, component: &Component) -> Result<()> {
+    fn register_component_template(
+        &mut self,
+        tag_name: &str,
+        component: &Component,
+        _processed_template: &str,
+    ) -> Result<()> {
         // Only track each component once (avoids duplicate <f-template> blocks
         // when a component is used in multiple parent templates)
         if self.components.iter().any(|c| c.tag_name == tag_name) {
@@ -97,26 +96,34 @@ impl ParserPlugin for FastParserPlugin {
         Ok(())
     }
 
-    fn on_element_parsed(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>> {
+    fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {
+        if attr_name.starts_with('@')
+            || attr_name == "f-ref"
+            || attr_name == "f-slotted"
+            || attr_name == "f-children"
+        {
+            AttributeAction::SkipAndCountBinding
+        } else {
+            AttributeAction::Keep
+        }
+    }
+
+    fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>> {
         if binding_attribute_count > 0 {
-            Some(binding_attribute_count.to_le_bytes().to_vec())
+            Some(
+                FastElementData {
+                    binding_count: binding_attribute_count,
+                }
+                .encode()
+                .to_vec(),
+            )
         } else {
             None
         }
     }
 
-    fn on_body_end(&mut self) -> Option<String> {
-        // f-templates are stored in protocol.components and emitted
-        // selectively by the handler based on which components were rendered.
-        None
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
+    fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts {
+        ParserPluginArtifacts::ComponentTemplates(self.take_component_templates())
     }
 }
 
@@ -636,56 +643,77 @@ mod tests {
         }
     }
 
-    // --- should_skip_attribute ---
+    // --- classify_attribute ---
 
     #[test]
     fn skip_event_binding() {
-        let plugin = FastParserPlugin::new();
-        assert!(plugin.should_skip_attribute("@click"));
-        assert!(plugin.should_skip_attribute("@input"));
-        assert!(plugin.should_skip_attribute("@custom-event"));
+        let mut plugin = FastParserPlugin::new();
+        assert_eq!(
+            plugin.classify_attribute("@click"),
+            AttributeAction::SkipAndCountBinding
+        );
+        assert_eq!(
+            plugin.classify_attribute("@input"),
+            AttributeAction::SkipAndCountBinding
+        );
+        assert_eq!(
+            plugin.classify_attribute("@custom-event"),
+            AttributeAction::SkipAndCountBinding
+        );
     }
 
     #[test]
     fn skip_f_ref() {
-        let plugin = FastParserPlugin::new();
-        assert!(plugin.should_skip_attribute("f-ref"));
+        let mut plugin = FastParserPlugin::new();
+        assert_eq!(
+            plugin.classify_attribute("f-ref"),
+            AttributeAction::SkipAndCountBinding
+        );
     }
 
     #[test]
     fn skip_f_slotted() {
-        let plugin = FastParserPlugin::new();
-        assert!(plugin.should_skip_attribute("f-slotted"));
+        let mut plugin = FastParserPlugin::new();
+        assert_eq!(
+            plugin.classify_attribute("f-slotted"),
+            AttributeAction::SkipAndCountBinding
+        );
     }
 
     #[test]
     fn skip_f_children() {
-        let plugin = FastParserPlugin::new();
-        assert!(plugin.should_skip_attribute("f-children"));
+        let mut plugin = FastParserPlugin::new();
+        assert_eq!(
+            plugin.classify_attribute("f-children"),
+            AttributeAction::SkipAndCountBinding
+        );
     }
 
     #[test]
     fn do_not_skip_normal_attributes() {
-        let plugin = FastParserPlugin::new();
-        assert!(!plugin.should_skip_attribute("class"));
-        assert!(!plugin.should_skip_attribute("id"));
-        assert!(!plugin.should_skip_attribute("data-value"));
-        assert!(!plugin.should_skip_attribute(":title"));
-        assert!(!plugin.should_skip_attribute("f-other"));
+        let mut plugin = FastParserPlugin::new();
+        assert_eq!(plugin.classify_attribute("class"), AttributeAction::Keep);
+        assert_eq!(plugin.classify_attribute("id"), AttributeAction::Keep);
+        assert_eq!(
+            plugin.classify_attribute("data-value"),
+            AttributeAction::Keep
+        );
+        assert_eq!(plugin.classify_attribute(":title"), AttributeAction::Keep);
+        assert_eq!(plugin.classify_attribute("f-other"), AttributeAction::Keep);
     }
 
-    // --- on_element_parsed ---
+    // --- finish_element ---
 
     #[test]
     fn element_parsed_zero_count_returns_none() {
         let mut plugin = FastParserPlugin::new();
-        assert!(plugin.on_element_parsed(0).is_none());
+        assert!(plugin.finish_element(0).is_none());
     }
 
     #[test]
     fn element_parsed_nonzero_count_returns_le_bytes() {
         let mut plugin = FastParserPlugin::new();
-        let data = plugin.on_element_parsed(3);
+        let data = plugin.finish_element(3);
         assert!(data.is_some());
         let bytes = data.as_deref().unwrap_or_default();
         assert_eq!(bytes, &3u32.to_le_bytes());
@@ -694,25 +722,19 @@ mod tests {
     #[test]
     fn element_parsed_large_count() {
         let mut plugin = FastParserPlugin::new();
-        let data = plugin.on_element_parsed(256);
+        let data = plugin.finish_element(256);
         assert!(data.is_some());
         let bytes = data.as_deref().unwrap_or_default();
         assert_eq!(bytes, &256u32.to_le_bytes());
-    }
-
-    // --- on_body_end ---
-
-    #[test]
-    fn body_end_no_components_returns_none() {
-        let mut plugin = FastParserPlugin::new();
-        assert!(plugin.on_body_end().is_none());
     }
 
     #[test]
     fn component_template_simple_component() {
         let mut plugin = FastParserPlugin::new();
         let comp = make_component("my-comp", "<div>hello</div>", Some("div { color: red; }"));
-        plugin.on_parse_component("my-comp", &comp).unwrap();
+        plugin
+            .register_component_template("my-comp", &comp, &comp.html_content)
+            .unwrap();
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
@@ -730,7 +752,9 @@ mod tests {
     fn component_template_without_css() {
         let mut plugin = FastParserPlugin::new();
         let comp = make_component("no-css", "<span>text</span>", None);
-        plugin.on_parse_component("no-css", &comp).unwrap();
+        plugin
+            .register_component_template("no-css", &comp, &comp.html_content)
+            .unwrap();
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
@@ -746,7 +770,9 @@ mod tests {
         let mut plugin = FastParserPlugin::new();
         plugin.set_css_strategy(crate::CssStrategy::Style);
         let comp = make_component("my-comp", "<div>hello</div>", Some("div { color: red; }"));
-        plugin.on_parse_component("my-comp", &comp).unwrap();
+        plugin
+            .register_component_template("my-comp", &comp, &comp.html_content)
+            .unwrap();
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
@@ -766,7 +792,9 @@ mod tests {
         let mut plugin = FastParserPlugin::new();
         plugin.set_css_strategy(crate::CssStrategy::Module);
         let comp = make_component("my-comp", "<div>hello</div>", Some("div { color: red; }"));
-        plugin.on_parse_component("my-comp", &comp).unwrap();
+        plugin
+            .register_component_template("my-comp", &comp, &comp.html_content)
+            .unwrap();
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
@@ -799,7 +827,9 @@ mod tests {
         let mut plugin = FastParserPlugin::new();
         plugin.set_css_strategy(crate::CssStrategy::Module);
         let comp = make_component("my-comp", "<div>hello</div>", None);
-        plugin.on_parse_component("my-comp", &comp).unwrap();
+        plugin
+            .register_component_template("my-comp", &comp, &comp.html_content)
+            .unwrap();
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
@@ -819,8 +849,12 @@ mod tests {
         let mut plugin = FastParserPlugin::new();
         let comp1 = make_component("comp-a", "<div>A</div>", None);
         let comp2 = make_component("comp-b", "<div>B</div>", Some("b { }"));
-        plugin.on_parse_component("comp-a", &comp1).unwrap();
-        plugin.on_parse_component("comp-b", &comp2).unwrap();
+        plugin
+            .register_component_template("comp-a", &comp1, &comp1.html_content)
+            .unwrap();
+        plugin
+            .register_component_template("comp-b", &comp2, &comp2.html_content)
+            .unwrap();
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 2);
@@ -845,9 +879,15 @@ mod tests {
 
         // Simulate the same component encountered multiple times
         // (e.g., <my-button> used in todo-app, todo-item, etc.)
-        plugin.on_parse_component("my-button", &comp).unwrap();
-        plugin.on_parse_component("my-button", &comp).unwrap();
-        plugin.on_parse_component("my-button", &comp).unwrap();
+        plugin
+            .register_component_template("my-button", &comp, &comp.html_content)
+            .unwrap();
+        plugin
+            .register_component_template("my-button", &comp, &comp.html_content)
+            .unwrap();
+        plugin
+            .register_component_template("my-button", &comp, &comp.html_content)
+            .unwrap();
 
         let templates = plugin.take_component_templates();
         assert_eq!(
@@ -866,9 +906,15 @@ mod tests {
         let card = make_component("my-card", "<div><slot></slot></div>", Some(".card{}"));
 
         // my-button used in two different parent templates, my-card used once
-        plugin.on_parse_component("my-button", &btn).unwrap();
-        plugin.on_parse_component("my-card", &card).unwrap();
-        plugin.on_parse_component("my-button", &btn).unwrap();
+        plugin
+            .register_component_template("my-button", &btn, &btn.html_content)
+            .unwrap();
+        plugin
+            .register_component_template("my-card", &card, &card.html_content)
+            .unwrap();
+        plugin
+            .register_component_template("my-button", &btn, &btn.html_content)
+            .unwrap();
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 2);
@@ -946,7 +992,9 @@ mod tests {
         let mut plugin = FastParserPlugin::new();
         let html = r#"<div><if condition="visible"><span>hi</span></if></div>"#;
         let comp = make_component("my-widget", html, None);
-        plugin.on_parse_component("my-widget", &comp).unwrap();
+        plugin
+            .register_component_template("my-widget", &comp, &comp.html_content)
+            .unwrap();
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
@@ -979,7 +1027,9 @@ mod tests {
         let html =
             r#"<template shadowrootmode="open"><h1>Title</h1><main><outlet /></main></template>"#;
         let comp = make_component("my-shell", html, None);
-        plugin.on_parse_component("my-shell", &comp).unwrap();
+        plugin
+            .register_component_template("my-shell", &comp, &comp.html_content)
+            .unwrap();
 
         let templates = plugin.take_component_templates();
         let (_, result) = &templates[0];
@@ -1021,7 +1071,9 @@ mod tests {
             r#"<template shadowrootmode="open" @click="{onClick(e)}"><div>{{title}}</div></template>"#,
             Some("div { color: red; }"),
         );
-        plugin.on_parse_component("my-comp", &comp).unwrap();
+        plugin
+            .register_component_template("my-comp", &comp, &comp.html_content)
+            .unwrap();
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
         let (name, html) = &templates[0];
@@ -1069,7 +1121,9 @@ mod tests {
         // declarative shadow DOM (template with shadowrootmode).
         let html = r#"<div><child-comp><template shadowrootmode="open"><p>inner</p></template></child-comp></div>"#;
         let comp = make_component("parent-comp", html, None);
-        plugin.on_parse_component("parent-comp", &comp).unwrap();
+        plugin
+            .register_component_template("parent-comp", &comp, &comp.html_content)
+            .unwrap();
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);

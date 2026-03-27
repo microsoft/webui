@@ -140,7 +140,7 @@ pub fn filter_needed_components(
 /// already have.
 ///
 /// Walks the fragment graph from `entry_id`, identifies needed components (not
-/// in the client's inventory), and returns their f-template HTML from the
+/// in the client's inventory), and returns their client template HTML from the
 /// protocol's `components` map.
 ///
 /// Returns `(templates: Vec<(name, html)>, updated_inventory_hex)`.
@@ -165,8 +165,8 @@ pub fn get_route_templates(
     (templates, updated_inv)
 }
 
-/// Get the f-template HTML strings needed for the active route chain rooted at
-/// `entry_id` for the current `request_path`.
+/// Get the client template HTML strings needed for the active route chain
+/// rooted at `entry_id` for the current `request_path`.
 ///
 /// Returns `(templates: Vec<(name, html)>, updated_inventory_hex)`.
 pub fn get_route_templates_for_request(
@@ -192,7 +192,7 @@ pub fn get_route_templates_for_request(
     (templates, updated_inv)
 }
 
-/// Prepend the CSS module `<style type="module">` definition to an f-template
+/// Prepend the CSS module `<style type="module">` definition to a client template
 /// string for partial responses.
 fn prepend_css_module(name: &str, css: &str, tmpl: &str) -> String {
     if css.is_empty() {

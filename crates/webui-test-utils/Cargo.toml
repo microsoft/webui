@@ -10,6 +10,7 @@ homepage.workspace = true
 readme = "README.md"
 keywords = ["webui", "testing", "test-utils", "ssr", "mocking"]
 categories = ["development-tools::testing", "web-programming"]
+publish = false
 
 [lib]
 name = "webui_test_utils"

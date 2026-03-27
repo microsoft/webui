@@ -6,7 +6,7 @@ use serde_json::json;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::hint::black_box;
-use webui_handler::plugin::FastHydrationPlugin;
+use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::{
     ComparisonOperator, ConditionExpr, FragmentList, LogicalOperator, WebUIFragment, WebUIProtocol,

@@ -20,7 +20,7 @@ pub struct AppArgs {
     #[arg(long, value_enum, default_value_t = CssStrategy::Link)]
     pub css: CssStrategy,
 
-    /// Parser plugin to load (e.g., "fast" for FAST-HTML hydration support)
+    /// Framework plugin to load
     #[arg(long)]
     pub plugin: Option<String>,
 

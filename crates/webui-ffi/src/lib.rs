@@ -31,7 +31,7 @@ use serde_json::Value;
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
-use webui_handler::plugin::FastHydrationPlugin;
+use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_parser::HtmlParser;
 use webui_protocol::WebUIProtocol;

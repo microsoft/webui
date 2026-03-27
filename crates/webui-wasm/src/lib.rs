@@ -14,7 +14,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
-use webui_handler::plugin::FastHydrationPlugin;
+use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_parser::{CssStrategy, HtmlParser};
 use webui_protocol::WebUIProtocol;

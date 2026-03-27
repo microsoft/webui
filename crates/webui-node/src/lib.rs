@@ -32,7 +32,7 @@ use napi::bindgen_prelude::{Buffer, Function};
 use napi::Error as NapiError;
 use napi_derive::napi;
 use serde_json::Value;
-use webui_handler::plugin::FastHydrationPlugin;
+use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::WebUIProtocol;
 

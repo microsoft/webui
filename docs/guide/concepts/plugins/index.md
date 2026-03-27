@@ -38,7 +38,7 @@ When `--plugin=fast` is specified:
 
 ::: code-group
 ```rust [Rust]
-use webui_handler::plugin::FastHydrationPlugin;
+use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui::WebUIHandler;
 
 let handler = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));

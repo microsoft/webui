@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use webui::{build, BuildOptions, CssStrategy, WebUIHandler, WebUIProtocol};
-use webui_handler::plugin::FastHydrationPlugin;
+use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui_handler::route_handler;
 use webui_handler::{RenderOptions, ResponseWriter};
 

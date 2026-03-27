@@ -39,7 +39,8 @@ pub use webui_protocol::WebUIProtocol;
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
-use webui_parser::plugin::FastParserPlugin;
+use webui_parser::plugin::fast::FastParserPlugin;
+use webui_parser::plugin::ParserPluginArtifacts;
 use webui_parser::HtmlParser;
 
 /// Options for building a WebUI application.
@@ -51,7 +52,7 @@ pub struct BuildOptions {
     pub entry: String,
     /// CSS delivery strategy for component stylesheets.
     pub css: CssStrategy,
-    /// Parser plugin to load (e.g., `"fast"` for FAST-HTML hydration support).
+    /// Framework plugin to load.
     pub plugin: Option<String>,
     /// Additional component sources (npm packages or local paths).
     pub components: Vec<String>,
@@ -261,16 +262,10 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     let tokens = parser.take_tokens();
     let token_count = tokens.len();
 
-    // Extract individual component f-template strings from the FAST plugin
-    // before consuming the parser.
-    let component_templates = parser
-        .take_plugin()
-        .and_then(|p| {
-            p.as_any()
-                .downcast_ref::<FastParserPlugin>()
-                .map(|fast| fast.take_component_templates())
-        })
-        .unwrap_or_default();
+    let component_templates = match parser.take_plugin_artifacts() {
+        ParserPluginArtifacts::None => Vec::new(),
+        ParserPluginArtifacts::ComponentTemplates(templates) => templates,
+    };
 
     // Build protocol (consumes parser)
     let fragment_records = parser.into_fragment_records();
@@ -309,7 +304,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
                 .collect()
         };
 
-    // Store f-templates in the protocol so any host server can query them
+    // Store client templates in the protocol so any host server can query them
     for (tag, tmpl) in &component_templates {
         protocol.components.entry(tag.clone()).or_default().template = tmpl.clone();
     }

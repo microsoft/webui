@@ -15,7 +15,7 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use webui::{build, BuildOptions, CssStrategy, ResponseWriter, WebUIHandler};
-use webui_handler::plugin::FastHydrationPlugin;
+use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui_handler::RenderOptions;
 use webui_protocol::WebUIProtocol;
 

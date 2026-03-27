@@ -3,57 +3,12 @@
 
 //! Route and outlet rendering helpers.
 //!
-//! Free functions for emitting state attributes on route component elements,
-//! escaping HTML attribute values, and selecting the best matching route
-//! among sibling route fragments.
+//! Free functions for escaping HTML attribute values and selecting the best
+//! matching route among sibling route fragments.
 
 use crate::route_matcher;
 use crate::{ResponseWriter, Result};
-use serde_json::Value;
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment};
-
-/// Emit top-level state values as HTML attributes on a route component element.
-///
-/// This ensures FAST hydration reads the correct values from DOM attributes
-/// instead of using the component's default `@attr` values.
-///
-/// Scalar values (string, number, bool) are emitted as individual kebab-case
-/// attributes. The full state (including arrays/objects) is also emitted as a
-/// `data-state` JSON attribute so components can read complex state during hydration.
-pub(crate) fn emit_state_attributes(state: &Value, writer: &mut dyn ResponseWriter) -> Result<()> {
-    let map = match state.as_object() {
-        Some(m) => m,
-        None => return Ok(()),
-    };
-
-    // Emit scalar values as individual attributes
-    for (key, value) in map {
-        let val_str = match value {
-            Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
-            Value::Number(n) => std::borrow::Cow::Owned(n.to_string()),
-            Value::Bool(true) => std::borrow::Cow::Borrowed("true"),
-            Value::Bool(false) => std::borrow::Cow::Borrowed("false"),
-            _ => continue,
-        };
-        let attr_name = super::camel_to_kebab(key);
-        writer.write(" ")?;
-        writer.write(&attr_name)?;
-        writer.write("=\"")?;
-        write_escaped_state_attr(writer, val_str.as_ref())?;
-        writer.write("\"")?;
-    }
-
-    // Emit full state as data-state for complex values (arrays, objects)
-    let has_complex = map.values().any(|v| v.is_array() || v.is_object());
-    if has_complex {
-        let json_str = state.to_string();
-        writer.write(" data-state=\"")?;
-        write_escaped_state_attr(writer, &json_str)?;
-        writer.write("\"")?;
-    }
-
-    Ok(())
-}
 
 /// Escape HTML special characters in an attribute value and write directly to the writer.
 ///

@@ -65,7 +65,7 @@ With the FAST-HTML hydration plugin:
 
 ```rust
 use webui::{WebUIHandler, HandlerPlugin};
-use webui::FastHydrationPlugin;
+use webui_handler::plugin::fast::FastHydrationPlugin;
 
 let handler = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));
 ```

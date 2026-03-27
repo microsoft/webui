@@ -21,8 +21,10 @@
 //! binding counter starting from 0. This matches the C++ prototype behavior.
 
 use super::HandlerPlugin;
-use crate::{ResponseWriter, Result};
+use crate::{HandlerError, ResponseWriter, Result};
+use serde_json::Value;
 use std::fmt::Write;
+use webui_protocol::FastElementData;
 
 // Comment format constants
 const BINDING_START_PREFIX: &str = "<!--fe-b$$start$$";
@@ -178,41 +180,61 @@ impl HandlerPlugin for FastHydrationPlugin {
         writer.write(&self.buffer)
     }
 
-    fn on_plugin_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()> {
+    fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()> {
         if !self.is_active() {
             return Ok(());
         }
-        // FAST hydration protocol: data is a u32 LE attribute count
-        if data.len() >= 4 {
-            let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-            if count > 0 {
-                let binding_index = self.next_index_n(count);
-                self.build_attribute_marker(binding_index, count);
-                writer.write(&self.buffer)?;
-            }
+        let decoded = FastElementData::decode(data).map_err(|error| {
+            HandlerError::PluginData(format!(
+                "FAST hydration plugin expected 4 bytes of element data: {error}"
+            ))
+        })?;
+        if decoded.binding_count > 0 {
+            let binding_index = self.next_index_n(decoded.binding_count);
+            self.build_attribute_marker(binding_index, decoded.binding_count);
+            writer.write(&self.buffer)?;
         }
         Ok(())
     }
 
-    fn on_render_complete(
-        &mut self,
-        protocol: &webui_protocol::WebUIProtocol,
-        rendered_components: &std::collections::HashSet<String>,
+    /// FAST emits scalar attributes + `data-state` JSON on route component elements.
+    /// Components read these via `@attr` and `prepare()`.
+    fn write_route_component_state(
+        &self,
+        state: &Value,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        // Emit f-templates for only the components that were actually rendered.
-        // CSS module definitions are NOT included here — the handler already
-        // emitted them during SSR via process_component().
-        for name in rendered_components {
-            if let Some(tmpl) = protocol
-                .components
-                .get(name)
-                .map(|c| c.template.as_str())
-                .filter(|s| !s.is_empty())
-            {
-                writer.write(tmpl)?;
-            }
+        let map = match state.as_object() {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+
+        // Emit scalar values as individual kebab-case attributes
+        for (key, value) in map {
+            let val_str = match value {
+                Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
+                Value::Number(n) => std::borrow::Cow::Owned(n.to_string()),
+                Value::Bool(true) => std::borrow::Cow::Borrowed("true"),
+                Value::Bool(false) => std::borrow::Cow::Borrowed("false"),
+                _ => continue,
+            };
+            let attr_name = crate::camel_to_kebab(key);
+            writer.write(" ")?;
+            writer.write(&attr_name)?;
+            writer.write("=\"")?;
+            crate::route_renderer::write_escaped_state_attr(writer, val_str.as_ref())?;
+            writer.write("\"")?;
         }
+
+        // Emit data-state JSON for complex values (arrays, objects)
+        let has_complex = map.values().any(|v| v.is_array() || v.is_object());
+        if has_complex {
+            let json_str = state.to_string();
+            writer.write(" data-state=\"")?;
+            crate::route_renderer::write_escaped_state_attr(writer, &json_str)?;
+            writer.write("\"")?;
+        }
+
         Ok(())
     }
 }
@@ -253,7 +275,7 @@ mod tests {
         plugin.on_repeat_item_start(0, &mut writer).unwrap();
         plugin.on_repeat_item_end(0, &mut writer).unwrap();
         let data = 3u32.to_le_bytes();
-        plugin.on_plugin_data(&data, &mut writer).unwrap();
+        plugin.on_element_data(&data, &mut writer).unwrap();
         assert_eq!(writer.output, "");
     }
 
@@ -329,7 +351,7 @@ mod tests {
         plugin.push_scope();
         let mut writer = TestWriter::new();
         let data = 1u32.to_le_bytes();
-        plugin.on_plugin_data(&data, &mut writer).unwrap();
+        plugin.on_element_data(&data, &mut writer).unwrap();
         assert_eq!(writer.output, " data-fe-b-0");
     }
 
@@ -339,7 +361,7 @@ mod tests {
         plugin.push_scope();
         let mut writer = TestWriter::new();
         let data = 3u32.to_le_bytes();
-        plugin.on_plugin_data(&data, &mut writer).unwrap();
+        plugin.on_element_data(&data, &mut writer).unwrap();
         assert_eq!(writer.output, " data-fe-c-0-3");
     }
 
@@ -349,7 +371,7 @@ mod tests {
         plugin.push_scope();
         let mut writer = TestWriter::new();
         let data = 0u32.to_le_bytes();
-        plugin.on_plugin_data(&data, &mut writer).unwrap();
+        plugin.on_element_data(&data, &mut writer).unwrap();
         assert_eq!(writer.output, "");
     }
 
@@ -360,7 +382,7 @@ mod tests {
         let mut writer = TestWriter::new();
         // 3 attributes → counter goes from 0 to 3
         let data = 3u32.to_le_bytes();
-        plugin.on_plugin_data(&data, &mut writer).unwrap();
+        plugin.on_element_data(&data, &mut writer).unwrap();
         // Next binding should be at index 3
         writer.output.clear();
         plugin.on_binding_start("x", &mut writer).unwrap();
@@ -398,21 +420,54 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_plugin_data_ignored() {
+    fn test_empty_element_data_returns_error() {
         let mut plugin = FastHydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        plugin.on_plugin_data(&[], &mut writer).unwrap();
+        let result = plugin.on_element_data(&[], &mut writer);
+        assert!(
+            matches!(result, Err(crate::HandlerError::PluginData(ref msg)) if msg.contains("expected 4 bytes")),
+            "invalid payload length should produce a plugin-data error: {result:?}"
+        );
         assert_eq!(writer.output, "");
     }
 
     #[test]
-    fn test_short_plugin_data_ignored() {
+    fn test_short_element_data_returns_error() {
         let mut plugin = FastHydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        plugin.on_plugin_data(&[1, 2], &mut writer).unwrap();
+        let result = plugin.on_element_data(&[1, 2], &mut writer);
+        assert!(
+            matches!(result, Err(crate::HandlerError::PluginData(ref msg)) if msg.contains("expected 4 bytes")),
+            "invalid payload length should produce a plugin-data error: {result:?}"
+        );
         assert_eq!(writer.output, "");
+    }
+
+    #[test]
+    fn test_write_route_component_state_emits_data_state() {
+        let plugin = FastHydrationPlugin::new();
+        let mut writer = TestWriter::new();
+        let state = serde_json::json!({
+            "title": "Hello",
+            "items": [{"name": "A&B"}]
+        });
+
+        plugin
+            .write_route_component_state(&state, &mut writer)
+            .unwrap();
+
+        assert!(
+            writer.output.contains("data-state="),
+            "FAST plugin should emit data-state: {}",
+            writer.output
+        );
+        assert!(
+            writer.output.contains(r#"title="Hello""#),
+            "FAST plugin should still emit scalar attrs: {}",
+            writer.output
+        );
     }
 
     // ── Integration tests (full render cycles with WebUIHandler) ────────

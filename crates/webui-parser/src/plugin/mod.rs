@@ -3,52 +3,70 @@
 
 //! Parser plugin trait and built-in plugin implementations.
 //!
-//! The plugin system is framework-agnostic — WebUI provides parsing hooks
-//! and plugins decide what to do. Different frameworks (FAST, LIT, etc.)
-//! implement `ParserPlugin` with their own component discovery and
-//! hydration data emission logic.
+//! The plugin system is framework-aware but phase-local — parser plugins
+//! classify framework-owned attributes, capture processed component templates,
+//! and emit per-element hydration metadata for the handler.
 
 pub mod fast;
 
-pub use fast::generate_f_template;
-pub use fast::FastParserPlugin;
-
 use crate::component_registry::Component;
 use crate::Result;
-use std::any::Any;
+
+/// Parser-owned decision about how an attribute should be handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttributeAction {
+    /// Let the parser process the attribute normally.
+    Keep,
+    /// Skip the attribute without incrementing the element binding count.
+    Skip,
+    /// Skip the attribute and count it as a dynamic binding.
+    SkipAndCountBinding,
+}
+
+/// Build artifacts extracted from a parser plugin after parsing completes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParserPluginArtifacts {
+    /// The plugin did not produce any post-parse artifacts.
+    None,
+    /// Client component templates keyed by tag name.
+    ComponentTemplates(Vec<(String, String)>),
+}
 
 /// A parser plugin that can customize template parsing behavior.
 ///
 /// Plugins receive callbacks at key points during HTML parsing:
-/// - **Component discovery**: `on_parse_component` when a custom element is found
-/// - **Attribute filtering**: `should_skip_attribute` to skip framework-specific attrs
-/// - **Body end injection**: `on_body_end` to inject framework content before `</body>`
-/// - **Element completion**: `on_element_parsed` after attributes are processed
+/// - **Fragment lifecycle**: `start_fragment` before a fragment parse begins
+/// - **Component registration**: `register_component_template` when a component template is finalized
+/// - **Attribute classification**: `classify_attribute` for framework-specific attrs
+/// - **Element completion**: `finish_element` after attributes are processed
 ///
 /// WebUI calls these hooks during parsing; plugins decide what (if anything) to do.
-pub trait ParserPlugin: Any {
-    /// Called when a component element is encountered during parsing.
-    /// Use to track components for later template generation.
-    fn on_parse_component(&mut self, tag_name: &str, component: &Component) -> Result<()>;
+pub trait ParserPlugin {
+    /// Called before parsing begins for a fragment.
+    ///
+    /// Plugins can use this to reset fragment-local counters while preserving
+    /// global build-level state such as tracked component templates.
+    fn start_fragment(&mut self, _fragment_id: &str) {}
 
-    /// Return `true` if this attribute should be skipped during parsing.
-    /// Framework-specific client-side bindings (e.g., `@click`, `f-ref`)
-    /// should be skipped since they are only meaningful at runtime.
-    fn should_skip_attribute(&self, attr_name: &str) -> bool;
+    /// Called when a component template has been fully processed for the active
+    /// CSS strategy and wrapped for shadow DOM rendering.
+    fn register_component_template(
+        &mut self,
+        tag_name: &str,
+        component: &Component,
+        processed_template: &str,
+    ) -> Result<()>;
 
-    /// Called when the `</body>` closing tag is encountered.
-    /// Returns optional raw HTML content to inject before `</body>`.
-    /// FAST uses this for `<f-template>` wrappers.
-    fn on_body_end(&mut self) -> Option<String>;
+    /// Decide how a framework-owned attribute should be handled.
+    fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
 
     /// Called after all attributes on an element have been processed.
     /// `binding_attribute_count` is the number of dynamic attribute bindings found.
     /// Returns optional opaque bytes to emit as a `Plugin` protocol fragment.
-    fn on_element_parsed(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
+    fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
 
-    /// Downcast to `Any` for plugin-specific access.
-    fn as_any(&self) -> &dyn Any;
-
-    /// Downcast to mutable `Any` for plugin-specific access.
-    fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// Consume the plugin and return any build artifacts it captured.
+    fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts {
+        ParserPluginArtifacts::None
+    }
 }

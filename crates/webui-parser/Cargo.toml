@@ -29,6 +29,7 @@ tree-sitter = { workspace = true }
 tree-sitter-language = { workspace = true }
 tree-sitter-html = { workspace = true }
 tree-sitter-css = { workspace = true }
+html-escape = { workspace = true }
 walkdir = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 

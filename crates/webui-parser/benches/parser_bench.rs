@@ -3,7 +3,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
-use webui_parser::{plugin::FastParserPlugin, CssStrategy, HtmlParser};
+use webui_parser::{plugin::fast::FastParserPlugin, CssStrategy, HtmlParser};
 
 fn build_simple_template() -> String {
     let mut html = String::with_capacity(256);

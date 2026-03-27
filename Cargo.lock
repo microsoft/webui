@@ -1495,6 +1495,7 @@ version = "0.0.2"
 dependencies = [
  "clap",
  "criterion",
+ "html-escape",
  "microsoft-webui-expressions",
  "microsoft-webui-protocol",
  "microsoft-webui-test-utils",

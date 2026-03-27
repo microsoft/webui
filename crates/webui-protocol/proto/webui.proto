@@ -8,9 +8,9 @@ package webui;
 // Root protocol containing all fragment records.
 // Per-component metadata keyed by tag name.
 message ComponentData {
-  // f-template HTML string for hydration.
-  // Populated by the FAST parser plugin at build time.
-  // Used by servers to send f-templates to the client during navigation.
+  // Client-side template string for hydration.
+  // Populated by the active parser plugin at build time.
+  // Used by servers to send templates to the client during navigation.
   string template = 1;
   // Component CSS content for the Module strategy.
   // Contains the full CSS content when CssStrategy::Module is active.

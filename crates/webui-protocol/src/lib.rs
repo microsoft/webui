@@ -14,12 +14,15 @@ use std::fmt;
 use std::io;
 use thiserror::Error;
 
+pub mod plugin;
+
 /// Generated protobuf types from `proto/webui.proto`.
 pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/webui.rs"));
 }
 
 // Re-export all generated types at the crate root.
+pub use plugin::FastElementData;
 pub use proto::*;
 
 // Type aliases preserving the `WebUI` naming convention.

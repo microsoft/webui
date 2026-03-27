@@ -18,7 +18,7 @@ pub use css_parser::CssParser;
 pub use error::{ParserError, Result};
 pub use handlebars_parser::HandlebarsParser;
 
-use crate::plugin::ParserPlugin;
+use crate::plugin::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use std::collections::{HashMap, HashSet};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIteratorMut};
 use tree_sitter_html::LANGUAGE;
@@ -163,15 +163,14 @@ impl HtmlParser {
         self.fragment_records.contains_key(fragment_id)
     }
 
-    /// Take the parser plugin. Call before `into_fragment_records()` if you need
-    /// access to plugin state (e.g., component templates).
-    pub fn take_plugin(&mut self) -> Option<Box<dyn ParserPlugin>> {
-        self.plugin.take()
-    }
-
-    /// Get a mutable reference to the parser plugin.
-    pub fn plugin_mut(&mut self) -> Option<&mut dyn ParserPlugin> {
-        self.plugin.as_deref_mut()
+    /// Take any post-parse artifacts captured by the parser plugin.
+    #[must_use]
+    pub fn take_plugin_artifacts(&mut self) -> ParserPluginArtifacts {
+        self.plugin
+            .take()
+            .map_or(ParserPluginArtifacts::None, |plugin| {
+                plugin.into_artifacts()
+            })
     }
 
     /// Take the accumulated CSS tokens as a sorted, deduplicated `Vec`.
@@ -196,6 +195,9 @@ impl HtmlParser {
     pub fn parse(&mut self, fragment_id: &str, html_content: &str) -> Result<()> {
         // Reset sub-fragments for new parse
         self.raw_buffer.clear();
+        if let Some(ref mut plugin) = self.plugin {
+            plugin.start_fragment(fragment_id);
+        }
 
         // Parse HTML
         let tree = self
@@ -265,6 +267,77 @@ impl HtmlParser {
         }
     }
 
+    /// Returns true when a text node should be emitted into the fragment stream.
+    ///
+    /// Pure formatting nodes that contain line breaks are still dropped, but
+    /// inline whitespace-only separators such as the spaces around `&gt;` in
+    /// `{{sectionName}} &gt; {{topicName}}` must be preserved. Tree-sitter can
+    /// split those separators into standalone text nodes.
+    fn should_emit_text_content(content: &str) -> bool {
+        if content.is_empty() {
+            return false;
+        }
+
+        if !content.trim().is_empty() {
+            return true;
+        }
+
+        content.chars().all(char::is_whitespace)
+            && !content.contains('\n')
+            && !content.contains('\r')
+    }
+
+    /// Process child nodes while preserving raw source gaps between them.
+    ///
+    /// Tree-sitter HTML treats some authored whitespace as extras rather than
+    /// concrete child nodes. Reconstructing the byte gaps between children keeps
+    /// inline separators like `{{a}} &gt; {{b}}` intact.
+    fn process_children_with_source_gaps(
+        &mut self,
+        node: Node,
+        source: &str,
+        fragments: &mut Vec<WebUIFragment>,
+        skip_structural_tags: bool,
+    ) -> Result<()> {
+        let mut cursor = node.walk();
+        let mut last_end = node.start_byte();
+
+        for child in node.children(&mut cursor) {
+            if child.start_byte() > last_end {
+                let gap = &source[last_end..child.start_byte()];
+                if Self::should_emit_text_content(gap) {
+                    self.add_raw_fragment(gap);
+                }
+            }
+
+            let kind = child.kind();
+            if !skip_structural_tags || (kind != "start_tag" && kind != "end_tag") {
+                self.process_child_node(child, source, fragments)?;
+            }
+
+            last_end = child.end_byte();
+        }
+
+        if node.end_byte() > last_end {
+            let gap = &source[last_end..node.end_byte()];
+            if Self::should_emit_text_content(gap) {
+                self.add_raw_fragment(gap);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Process all non-structural child nodes inside an element-like container.
+    fn process_content_children(
+        &mut self,
+        node: Node,
+        source: &str,
+        fragments: &mut Vec<WebUIFragment>,
+    ) -> Result<()> {
+        self.process_children_with_source_gaps(node, source, fragments, true)
+    }
+
     /// Process an HTML node to generate WebUI fragments.
     fn process_html_node(
         &mut self,
@@ -272,27 +345,12 @@ impl HtmlParser {
         source: &str,
         fragments: &mut Vec<WebUIFragment>,
     ) -> Result<()> {
-        let mut cursor = node.walk();
-
         if node.kind() == "document" || node.kind() == "fragment" || node.kind() == "element" {
-            // Process children
-            if cursor.goto_first_child() {
-                loop {
-                    let child = cursor.node();
-
-                    // Process child node
-                    self.process_child_node(child, source, fragments)?;
-
-                    if !cursor.goto_next_sibling() {
-                        break;
-                    }
-                }
-                cursor.goto_parent();
-            }
+            self.process_children_with_source_gaps(node, source, fragments, false)?;
         } else {
             // Add text content as raw fragment
             let content = &source[node.start_byte()..node.end_byte()];
-            if !content.trim().is_empty() {
+            if Self::should_emit_text_content(content) {
                 self.add_raw_fragment(content);
             }
         }
@@ -365,7 +423,7 @@ impl HtmlParser {
             }
             "text" | "raw_text" => {
                 let content = &source[node.start_byte()..node.end_byte()];
-                if !content.trim().is_empty() {
+                if Self::should_emit_text_content(content) {
                     let handlebars_result = self.handlebars_parser.parse(content);
                     match handlebars_result {
                         Ok(parsed_fragments) => {
@@ -604,7 +662,7 @@ impl HtmlParser {
             // Process attributes on the tag
             let binding_count = self.process_tag_attributes(tag_node, source, fragments, false)?;
             if let Some(ref mut p) = self.plugin {
-                if let Some(data) = p.on_element_parsed(binding_count) {
+                if let Some(data) = p.finish_element(binding_count) {
                     self.add_fragment(WebUIFragment::plugin(data), fragments);
                 }
             }
@@ -623,13 +681,7 @@ impl HtmlParser {
             } else {
                 self.add_raw_fragment(">");
 
-                // Process children (skip start_tag and end_tag nodes)
-                for child in node.named_children(&mut node.walk()) {
-                    let kind = child.kind();
-                    if kind != "start_tag" && kind != "end_tag" && kind != "self_closing_tag" {
-                        self.process_child_node(child, source, fragments)?;
-                    }
-                }
+                self.process_content_children(node, source, fragments)?;
 
                 // Add closing tag
                 self.add_raw_fragment(&format!("</{}>", tag_name));
@@ -663,12 +715,14 @@ impl HtmlParser {
 
             let attr_name = self.get_attr_name(child, source)?;
 
-            // Let plugin skip framework-specific attributes (but still count them
-            // for binding attribute tracking — FAST-HTML creates factories for these)
-            if let Some(ref p) = self.plugin {
-                if p.should_skip_attribute(&attr_name) {
-                    binding_count += 1;
-                    continue;
+            if let Some(ref mut p) = self.plugin {
+                match p.classify_attribute(&attr_name) {
+                    AttributeAction::Keep => {}
+                    AttributeAction::Skip => continue,
+                    AttributeAction::SkipAndCountBinding => {
+                        binding_count += 1;
+                        continue;
+                    }
                 }
             }
 
@@ -677,19 +731,19 @@ impl HtmlParser {
             if let Some(bool_name) = attr_name.strip_prefix('?') {
                 // Boolean attribute: ?disabled={{isDisabled}}
                 if is_component {
-                    if let Some(val) = &attr_value {
-                        if let Some(signal_name) = Self::extract_single_handlebars(val) {
-                            let condition = ConditionExpr::identifier(&signal_name);
-                            let frag = Self::maybe_mark_attr_start(
-                                WebUIFragment::attribute_boolean(bool_name, condition),
-                                &mut first_dynamic_emitted,
-                            );
-                            self.add_fragment(frag, fragments);
-                            binding_count += 1;
-                        }
+                    if let Some(condition) = self.parse_boolean_condition(attr_value.as_deref()) {
+                        let frag = Self::maybe_mark_attr_start(
+                            WebUIFragment::attribute_boolean(bool_name, condition),
+                            &mut first_dynamic_emitted,
+                        );
+                        self.add_fragment(frag, fragments);
+                        binding_count += 1;
                     }
-                } else {
-                    self.process_boolean_attribute(bool_name, attr_value.as_deref(), fragments)?;
+                } else if self.process_boolean_attribute(
+                    bool_name,
+                    attr_value.as_deref(),
+                    fragments,
+                )? {
                     binding_count += 1;
                 }
             } else if attr_name.starts_with(':') {
@@ -839,25 +893,32 @@ impl HtmlParser {
 
     /// Process a boolean attribute (?prefix). Silently drops if value is not a
     /// pure handlebars expression.
+    fn parse_boolean_condition(&self, value: Option<&str>) -> Option<ConditionExpr> {
+        if let Some(val) = value {
+            if let Some(expr_str) = Self::extract_single_handlebars(val) {
+                return Some(
+                    self.condition_parser
+                        .parse(&expr_str)
+                        .unwrap_or_else(|_| ConditionExpr::identifier(&expr_str)),
+                );
+            }
+        }
+
+        None
+    }
+
     fn process_boolean_attribute(
         &mut self,
         name: &str,
         value: Option<&str>,
         fragments: &mut Vec<WebUIFragment>,
-    ) -> Result<()> {
-        if let Some(val) = value {
-            if let Some(expr_str) = Self::extract_single_handlebars(val) {
-                // Parse as a full condition expression (supports predicates like page == 'dashboard')
-                let condition = self
-                    .condition_parser
-                    .parse(&expr_str)
-                    .unwrap_or_else(|_| ConditionExpr::identifier(&expr_str));
-                self.add_fragment(WebUIFragment::attribute_boolean(name, condition), fragments);
-                return Ok(());
-            }
+    ) -> Result<bool> {
+        if let Some(condition) = self.parse_boolean_condition(value) {
+            self.add_fragment(WebUIFragment::attribute_boolean(name, condition), fragments);
+            return Ok(true);
         }
         // Invalid boolean attribute — silently drop (no output at all)
-        Ok(())
+        Ok(false)
     }
 
     /// Process a complex attribute (:prefix).
@@ -915,12 +976,7 @@ impl HtmlParser {
         fragments: &mut Vec<WebUIFragment>,
     ) -> Result<()> {
         self.add_raw_fragment("<head>");
-        for child in node.named_children(&mut node.walk()) {
-            let kind = child.kind();
-            if kind != "start_tag" && kind != "end_tag" {
-                self.process_child_node(child, source, fragments)?;
-            }
-        }
+        self.process_content_children(node, source, fragments)?;
         self.flush_raw_buffer(fragments);
         fragments.push(WebUIFragment::signal("head_end", true));
         self.add_raw_fragment("</head>");
@@ -937,19 +993,8 @@ impl HtmlParser {
         self.add_raw_fragment("<body>");
         self.flush_raw_buffer(fragments);
         fragments.push(WebUIFragment::signal("body_start", true));
-        for child in node.named_children(&mut node.walk()) {
-            let kind = child.kind();
-            if kind != "start_tag" && kind != "end_tag" {
-                self.process_child_node(child, source, fragments)?;
-            }
-        }
+        self.process_content_children(node, source, fragments)?;
         self.flush_raw_buffer(fragments);
-        // Let plugin inject content before body_end
-        if let Some(ref mut p) = self.plugin {
-            if let Some(body_end_content) = p.on_body_end() {
-                fragments.push(WebUIFragment::raw(body_end_content));
-            }
-        }
         fragments.push(WebUIFragment::signal("body_end", true));
         self.add_raw_fragment("</body>");
         Ok(())
@@ -1045,11 +1090,7 @@ impl HtmlParser {
         std::mem::swap(&mut self.raw_buffer, &mut temp_buffer);
 
         // Process the for loop body
-        for child in node.named_children(&mut node.walk()) {
-            if child.kind() != "start_tag" && child.kind() != "end_tag" {
-                self.process_child_node(child, source, &mut for_fragment)?;
-            }
-        }
+        self.process_content_children(node, source, &mut for_fragment)?;
 
         // Ensure any remaining content is flushed to the for loop's fragment
         self.flush_raw_buffer(&mut for_fragment);
@@ -1120,11 +1161,7 @@ impl HtmlParser {
         let parent_buffer = std::mem::take(&mut self.raw_buffer);
 
         // Process the if body - capture all content including closing tags
-        for child in node.named_children(&mut node.walk()) {
-            if child.kind() != "start_tag" && child.kind() != "end_tag" {
-                self.process_child_node(child, source, &mut if_fragment)?;
-            }
-        }
+        self.process_content_children(node, source, &mut if_fragment)?;
 
         // Make sure all content in the if buffer is flushed to the if fragment
         self.flush_raw_buffer(&mut if_fragment);
@@ -1257,46 +1294,27 @@ impl HtmlParser {
             return Ok(());
         }
 
-        if let Some(ref mut p) = self.plugin {
-            if let Some(comp) = self.component_registry.get(component) {
-                p.on_parse_component(component, comp)?;
-            }
-        }
-        let (html_content, css_content, css_tokens) = {
-            let comp = self.component_registry.get(component).ok_or_else(|| {
+        let component_data = self
+            .component_registry
+            .get(component)
+            .ok_or_else(|| {
                 crate::error::ParserError::Directive(format!("Component not found: {component}"))
-            })?;
-            (
-                comp.html_content.clone(),
-                comp.css_content.clone(),
-                comp.css_tokens.clone(),
-            )
-        };
-        self.token_store.extend(css_tokens);
-        let adopted_specifier = match self.css_strategy {
-            CssStrategy::Module if css_content.is_some() => Some(component.to_string()),
-            _ => None,
-        };
-        let css_injection = match self.css_strategy {
-            CssStrategy::Link => {
-                if css_content.is_some() {
-                    Some(format!(
-                        "<link rel=\"stylesheet\" href=\"/{component}.css\">"
-                    ))
-                } else {
-                    None
-                }
-            }
-            CssStrategy::Style => css_content
-                .as_ref()
-                .map(|css| format!("<style>{}</style>", css.trim())),
-            CssStrategy::Module => None,
-        };
-        let processed = self.process_component_template(
-            &html_content,
-            css_injection.as_deref(),
-            adopted_specifier.as_deref(),
+            })?
+            .clone();
+
+        self.token_store
+            .extend(component_data.css_tokens.iter().cloned());
+
+        let processed = self.build_component_template(
+            component,
+            &component_data.html_content,
+            component_data.css_content.as_deref(),
         );
+
+        if let Some(ref mut p) = self.plugin {
+            p.register_component_template(component, &component_data, &processed)?;
+        }
+
         let saved_buffer = std::mem::take(&mut self.raw_buffer);
         self.parse(component, &processed)?;
         self.raw_buffer = saved_buffer;
@@ -1335,7 +1353,7 @@ impl HtmlParser {
         if let Some(tag_node) = tag_node {
             let binding_count = self.process_tag_attributes(tag_node, source, fragments, true)?;
             if let Some(ref mut p) = self.plugin {
-                if let Some(data) = p.on_element_parsed(binding_count) {
+                if let Some(data) = p.finish_element(binding_count) {
                     self.add_fragment(WebUIFragment::plugin(data), fragments);
                 }
             }
@@ -1374,38 +1392,21 @@ impl HtmlParser {
 
         // Parse and register component template if not already done
         if !self.fragment_records.contains_key(tag_name) {
-            // Notify plugin about component (only on first encounter)
+            let component_data = self
+                .component_registry
+                .get(tag_name)
+                .ok_or_else(|| {
+                    ParserError::Directive(format!("Component not found: {}", tag_name))
+                })?
+                .clone();
+            let processed =
+                self.build_component_template(tag_name, &html_content, css_content.as_deref());
+
+            // Notify plugin about the final component template (only on first encounter)
             if let Some(ref mut p) = self.plugin {
-                if let Some(component) = self.component_registry.get(tag_name) {
-                    p.on_parse_component(tag_name, component)?;
-                }
+                p.register_component_template(tag_name, &component_data, &processed)?;
             }
 
-            let adopted_specifier = match self.css_strategy {
-                CssStrategy::Module if css_content.is_some() => Some(tag_name.to_string()),
-                _ => None,
-            };
-            let css_injection = match self.css_strategy {
-                CssStrategy::Link => {
-                    if css_content.is_some() {
-                        Some(format!(
-                            "<link rel=\"stylesheet\" href=\"/{}.css\">",
-                            tag_name
-                        ))
-                    } else {
-                        None
-                    }
-                }
-                CssStrategy::Style => css_content
-                    .as_ref()
-                    .map(|css| format!("<style>{}</style>", css.trim())),
-                CssStrategy::Module => None,
-            };
-            let processed = self.process_component_template(
-                &html_content,
-                css_injection.as_deref(),
-                adopted_specifier.as_deref(),
-            );
             self.parse(tag_name, &processed)?;
         }
 
@@ -1414,12 +1415,7 @@ impl HtmlParser {
 
         // Process slot content (skip start_tag/end_tag/self_closing_tag)
         if !is_self_closing {
-            for child in node.named_children(&mut node.walk()) {
-                let kind = child.kind();
-                if kind != "start_tag" && kind != "end_tag" && kind != "self_closing_tag" {
-                    self.process_child_node(child, source, fragments)?;
-                }
-            }
+            self.process_content_children(node, source, fragments)?;
         }
 
         // Emit closing tag
@@ -1428,6 +1424,41 @@ impl HtmlParser {
         }
 
         Ok(())
+    }
+
+    /// Process component template HTML: wrap in shadow DOM template if needed,
+    /// inject CSS snippet (link or inline style), and strip runtime-only attributes.
+    /// When `adopted_specifier` is `Some`, a `shadowrootadoptedstylesheets` attribute
+    /// is added to the `<template>` tag (used by [`CssStrategy::Module`]).
+    fn build_component_template(
+        &mut self,
+        tag_name: &str,
+        html: &str,
+        css_content: Option<&str>,
+    ) -> String {
+        let adopted_specifier = match self.css_strategy {
+            CssStrategy::Module if css_content.is_some() => Some(tag_name.to_string()),
+            _ => None,
+        };
+        let css_injection = match self.css_strategy {
+            CssStrategy::Link => {
+                if css_content.is_some() {
+                    Some(format!(
+                        "<link rel=\"stylesheet\" href=\"/{tag_name}.css\">"
+                    ))
+                } else {
+                    None
+                }
+            }
+            CssStrategy::Style => css_content.map(|css| format!("<style>{}</style>", css.trim())),
+            CssStrategy::Module => None,
+        };
+
+        self.process_component_template(
+            html,
+            css_injection.as_deref(),
+            adopted_specifier.as_deref(),
+        )
     }
 
     /// Process component template HTML: wrap in shadow DOM template if needed,
@@ -1591,6 +1622,28 @@ mod tests {
             fragment_records,
             "test.html",
             [raw("Hello, "), signal_raw("html_content"), raw("!"),]
+        );
+    }
+
+    #[test]
+    fn test_parse_preserves_inline_spaces_around_entity_between_bindings() {
+        let mut parser = HtmlParser::new();
+        let html = "<nav>{{sectionName}} &gt; {{topicName}}</nav>";
+        let result = parser.parse("test.html", html);
+
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let fragment_records = parser.into_fragment_records();
+
+        assert_stream!(
+            fragment_records,
+            "test.html",
+            [
+                raw("<nav>"),
+                signal("sectionName"),
+                raw(" &gt; "),
+                signal("topicName"),
+                raw("</nav>"),
+            ]
         );
     }
 
@@ -1936,6 +1989,45 @@ mod tests {
                 raw("</custom-element>"),
             ]
         );
+    }
+
+    #[test]
+    fn test_component_boolean_predicate_preserves_condition_tree() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component("custom-element", "<slot></slot>", None)
+            .expect("register");
+        let result = parser.parse(
+            "index.html",
+            r#"<custom-element ?disabled="{{page == 'dashboard'}}"></custom-element>"#,
+        );
+        assert!(result.is_ok());
+
+        let records = parser.into_fragment_records();
+        let fragments = &records["index.html"].fragments;
+        match fragments
+            .get(1)
+            .and_then(|fragment| fragment.fragment.as_ref())
+        {
+            Some(webui_protocol::web_ui_fragment::Fragment::Attribute(attr)) => {
+                assert_eq!(attr.name, "disabled");
+                assert!(attr.attr_start);
+                match attr
+                    .condition_tree
+                    .as_ref()
+                    .and_then(|condition| condition.expr.as_ref())
+                {
+                    Some(webui_protocol::condition_expr::Expr::Predicate(pred)) => {
+                        assert_eq!(pred.left, "page");
+                        assert_eq!(pred.operator, 3);
+                        assert_eq!(pred.right, "'dashboard'");
+                    }
+                    other => panic!("expected predicate condition tree, got {:?}", other),
+                }
+            }
+            other => panic!("expected attribute fragment, got {:?}", other),
+        }
     }
 
     #[test]
@@ -3082,33 +3174,30 @@ mod tests {
     }
 
     impl crate::plugin::ParserPlugin for BindingCountPlugin {
-        fn on_parse_component(&mut self, _tag_name: &str, _component: &Component) -> Result<()> {
+        fn register_component_template(
+            &mut self,
+            _tag_name: &str,
+            _component: &Component,
+            _processed_template: &str,
+        ) -> Result<()> {
             Ok(())
         }
 
-        fn should_skip_attribute(&self, attr_name: &str) -> bool {
-            attr_name.starts_with('@') || attr_name == "f-ref"
+        fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {
+            if attr_name.starts_with('@') || attr_name == "f-ref" {
+                AttributeAction::SkipAndCountBinding
+            } else {
+                AttributeAction::Keep
+            }
         }
 
-        fn on_body_end(&mut self) -> Option<String> {
-            None
-        }
-
-        fn on_element_parsed(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>> {
+        fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>> {
             self.counts.push(binding_attribute_count);
             if binding_attribute_count > 0 {
                 Some(binding_attribute_count.to_le_bytes().to_vec())
             } else {
                 None
             }
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-
-        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-            self
         }
     }
 
