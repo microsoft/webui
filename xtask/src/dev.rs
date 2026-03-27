@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::process::{self, ManagedChild};
+use crate::process::{self, ManagedChild, ReservedPort};
 use crate::util::{collect_child_dirs, display_name};
 
 pub fn run(app: Option<&str>) -> ExitCode {
@@ -29,8 +29,32 @@ pub fn run(app: Option<&str>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let port = read_port(&app_dir).unwrap_or_else(|| "?".into());
     let has_api = has_script(&app_dir, "start:api");
+    let server_port = read_port(&app_dir);
+    let api_port = if has_api {
+        read_api_port(&app_dir)
+    } else {
+        None
+    };
+    let reserved_ports = collect_reserved_ports(server_port, api_port);
+
+    if let Err(message) = process::ensure_reserved_ports_available(app_name, &reserved_ports) {
+        eprintln!("\n  {} {}", console::style("✘").red().bold(), message);
+        eprintln!(
+            "  {} Stop the process using the occupied port, or update {}",
+            console::style("hint:").dim(),
+            console::style(app_dir.join("package.json").display()).bold(),
+        );
+        eprintln!(
+            "  {} Stale dev servers from previous sessions can leave ports occupied.\n",
+            console::style("hint:").dim(),
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let port = server_port
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "?".into());
 
     // Header
     eprintln!();
@@ -47,11 +71,16 @@ pub fn run(app: Option<&str>) -> ExitCode {
             .bold(),
     );
     if has_api {
-        let api_port = read_api_port(&app_dir).unwrap_or_else(|| "?".into());
         eprintln!(
             "  {} API        {}",
             console::style("▸").dim(),
-            console::style(format!("http://127.0.0.1:{api_port}/")).dim(),
+            console::style(format!(
+                "http://127.0.0.1:{}/",
+                api_port
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "?".into())
+            ))
+            .dim(),
         );
     }
     eprintln!();
@@ -122,36 +151,43 @@ fn print_usage() {
 }
 
 /// Read the server port from package.json start:server script.
-fn read_port(app_dir: &Path) -> Option<String> {
-    let content = fs::read_to_string(app_dir.join("package.json")).ok()?;
-    // Look for --port <number> in start:server script
-    let server_script = serde_json::from_str::<serde_json::Value>(&content)
-        .ok()?
-        .get("scripts")?
-        .get("start:server")?
-        .as_str()?
-        .to_string();
-    server_script
-        .split_whitespace()
-        .zip(server_script.split_whitespace().skip(1))
-        .find(|(flag, _)| *flag == "--port")
-        .map(|(_, port)| port.to_string())
+fn read_port(app_dir: &Path) -> Option<u16> {
+    read_script_flag_port(app_dir, "start:server", "--port")
 }
 
 /// Read the API port from package.json start:server script (--api-port).
-fn read_api_port(app_dir: &Path) -> Option<String> {
+fn read_api_port(app_dir: &Path) -> Option<u16> {
+    read_script_flag_port(app_dir, "start:server", "--api-port")
+}
+
+fn read_script_flag_port(app_dir: &Path, script_name: &str, flag: &str) -> Option<u16> {
     let content = fs::read_to_string(app_dir.join("package.json")).ok()?;
-    let server_script = serde_json::from_str::<serde_json::Value>(&content)
+    let script = serde_json::from_str::<serde_json::Value>(&content)
         .ok()?
         .get("scripts")?
-        .get("start:server")?
+        .get(script_name)?
         .as_str()?
         .to_string();
-    server_script
+
+    script
         .split_whitespace()
-        .zip(server_script.split_whitespace().skip(1))
-        .find(|(flag, _)| *flag == "--api-port")
-        .map(|(_, port)| port.to_string())
+        .zip(script.split_whitespace().skip(1))
+        .find(|(candidate_flag, _)| *candidate_flag == flag)
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+}
+
+fn collect_reserved_ports(
+    server_port: Option<u16>,
+    api_port: Option<u16>,
+) -> Vec<ReservedPort<'static>> {
+    let mut ports = Vec::with_capacity(2);
+    if let Some(port) = server_port {
+        ports.push(ReservedPort::new("server", port));
+    }
+    if let Some(port) = api_port {
+        ports.push(ReservedPort::new("api", port));
+    }
+    ports
 }
 
 /// Check whether `package.json` in `app_dir` contains a script with the given
@@ -185,4 +221,31 @@ fn available_apps() -> Result<String, String> {
     let dirs = collect_child_dirs(Path::new("examples/app"))?;
     let names: Vec<String> = dirs.iter().map(|d| display_name(d)).collect();
     Ok(names.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn create_app_dir(package_json: &str) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("package.json"), package_json).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_read_ports_from_start_server_script() {
+        let app = create_app_dir(
+            r#"{
+                "scripts": {
+                    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --port 3003 --api-port 3013 --watch",
+                    "start:api": "node dist/api.js"
+                }
+            }"#,
+        );
+
+        assert_eq!(read_port(app.path()), Some(3003));
+        assert_eq!(read_api_port(app.path()), Some(3013));
+    }
 }

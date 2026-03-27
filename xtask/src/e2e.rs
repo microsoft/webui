@@ -6,8 +6,8 @@
 //! Usage: `cargo xtask e2e [--update-snapshots]`
 //!
 //! Starts all example app servers on their unique ports, waits for them to be
-//! ready, then runs Playwright tests in parallel across all examples that have
-//! Playwright configs. Reports results and cleans up servers on exit.
+//! ready, then runs Playwright tests in parallel across all configured suites
+//! that have Playwright configs. Reports results and cleans up servers on exit.
 //!
 //! Screenshot baselines are generated on CI (Ubuntu Linux). Locally, visual
 //! regression tests may fail due to platform font differences — use
@@ -21,50 +21,78 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::process::{self, ManagedChild};
+use crate::process::{self, ManagedChild, ReservedPort};
 use crate::util;
 
 /// Maximum time to wait for all server ports to become ready.
 const PORT_TIMEOUT: Duration = Duration::from_secs(180);
+const WORKSPACE_PACKAGES: &[&str] = &["@microsoft/webui-framework", "@microsoft/webui-router"];
 
-/// An example app with its server configuration.
-struct ExampleApp {
+/// A Playwright suite with optional long-lived server processes.
+struct PlaywrightSuite {
     name: &'static str,
     dir: &'static str,
     ports: &'static [u16],
     scripts: &'static [&'static str],
+    build_client: bool,
+    test_script: &'static str,
+    update_snapshots_script: &'static str,
 }
 
-const APPS: &[ExampleApp] = &[
-    ExampleApp {
+const SUITES: &[PlaywrightSuite] = &[
+    PlaywrightSuite {
         name: "hello-world",
         dir: "examples/app/hello-world",
         ports: &[3000],
         scripts: &["start:server"],
+        build_client: true,
+        test_script: "test",
+        update_snapshots_script: "test:update-snapshots",
     },
-    ExampleApp {
+    PlaywrightSuite {
         name: "calculator",
         dir: "examples/app/calculator",
         ports: &[3002],
         scripts: &["start:server"],
+        build_client: true,
+        test_script: "test",
+        update_snapshots_script: "test:update-snapshots",
     },
-    ExampleApp {
+    PlaywrightSuite {
         name: "contact-book-manager",
         dir: "examples/app/contact-book-manager",
         ports: &[3003, 3013],
         scripts: &["start:api", "start:server"],
+        build_client: true,
+        test_script: "test",
+        update_snapshots_script: "test:update-snapshots",
     },
-    ExampleApp {
+    PlaywrightSuite {
         name: "commerce",
         dir: "examples/app/commerce",
         ports: &[3004],
         scripts: &["start:server"],
+        build_client: true,
+        test_script: "test",
+        update_snapshots_script: "test:update-snapshots",
     },
-    ExampleApp {
+    PlaywrightSuite {
         name: "routes",
         dir: "examples/app/routes",
-        ports: &[3005, 3015],
+        ports: &[3015, 3005],
         scripts: &["start:api", "start:server"],
+        build_client: true,
+        test_script: "test",
+        update_snapshots_script: "test:update-snapshots",
+    },
+    PlaywrightSuite {
+        name: "todo-webui",
+        dir: "examples/app/todo-webui",
+        ports: &[3006],
+        scripts: &["start:server"],
+        build_client: true,
+        test_script: "test",
+        update_snapshots_script: "test:update-snapshots",
     },
 ];
 
@@ -80,34 +108,53 @@ pub fn run(args: &[String]) -> ExitCode {
     eprintln!("\n{} E2E tests", console::style("▸").cyan().bold());
 
     // Filter to apps that exist on disk
-    let apps: Vec<&ExampleApp> = APPS
+    let suites: Vec<&PlaywrightSuite> = SUITES
         .iter()
-        .filter(|app| Path::new(app.dir).join("playwright.config.ts").exists())
+        .filter(|suite| Path::new(suite.dir).join("playwright.config.ts").exists())
         .collect();
 
-    if apps.is_empty() {
-        eprintln!("  No example apps with playwright.config.ts found");
+    if suites.is_empty() {
+        eprintln!("  No Playwright suites with playwright.config.ts found");
         return ExitCode::FAILURE;
     }
 
-    // Build workspace packages (e.g., @microsoft/webui-router needs dist/index.js)
+    let reserved_ports = collect_reserved_ports(&suites);
+    if let Err(message) = process::ensure_reserved_ports_available("e2e", &reserved_ports) {
+        eprintln!("\n  {} {}", console::style("✘").red().bold(), message);
+        eprintln!(
+            "  {} Stop the process using the occupied port, then rerun cargo xtask e2e.",
+            console::style("hint:").dim(),
+        );
+        eprintln!(
+            "  {} Stale dev servers from previous sessions commonly occupy example ports.\n",
+            console::style("hint:").dim(),
+        );
+        return ExitCode::FAILURE;
+    }
+
+    // Build workspace packages before app bundling so example apps import the
+    // current framework/router runtime rather than stale dist outputs.
     eprintln!(
         "\n{} Building workspace packages...",
         console::style("▸").cyan().bold(),
     );
-    match util::run_command_quiet(
-        "pnpm",
-        &["--filter", "@microsoft/webui-router", "build"],
-        None,
-    ) {
-        Ok(()) => eprintln!("  {} webui-router", console::style("✔").green()),
-        Err(msg) => {
-            eprintln!(
-                "  {} webui-router build failed",
-                console::style("✘").red().bold(),
-            );
-            eprintln!("    {msg}");
-            return ExitCode::FAILURE;
+    for package in WORKSPACE_PACKAGES {
+        match util::run_command_quiet("pnpm", &["--filter", package, "build"], None) {
+            Ok(()) => eprintln!(
+                "  {} {}",
+                console::style("✔").green(),
+                package.strip_prefix("@microsoft/").unwrap_or(package),
+            ),
+            Err(msg) => {
+                let label = package.strip_prefix("@microsoft/").unwrap_or(package);
+                eprintln!(
+                    "  {} {} build failed",
+                    console::style("✘").red().bold(),
+                    label,
+                );
+                eprintln!("    {msg}");
+                return ExitCode::FAILURE;
+            }
         }
     }
 
@@ -116,8 +163,11 @@ pub fn run(args: &[String]) -> ExitCode {
         "\n{} Building client bundles...",
         console::style("▸").cyan().bold(),
     );
-    for app in &apps {
-        let dir = PathBuf::from(app.dir);
+    for suite in &suites {
+        if !suite.build_client {
+            continue;
+        }
+        let dir = PathBuf::from(suite.dir);
         if !dir.join("src").join("index.ts").exists() {
             continue;
         }
@@ -134,13 +184,13 @@ pub fn run(args: &[String]) -> ExitCode {
             Some(&dir),
         ) {
             Ok(()) => {
-                eprintln!("  {} {}", console::style("✔").green(), app.name);
+                eprintln!("  {} {}", console::style("✔").green(), suite.name);
             }
             Err(msg) => {
                 eprintln!(
                     "  {} {} — client build failed",
                     console::style("✘").red().bold(),
-                    app.name,
+                    suite.name,
                 );
                 eprintln!("    {msg}");
                 return ExitCode::FAILURE;
@@ -151,7 +201,7 @@ pub fn run(args: &[String]) -> ExitCode {
     eprintln!(
         "\n{} Starting servers for {} apps...",
         console::style("▸").cyan().bold(),
-        apps.len(),
+        suites.len(),
     );
 
     // Ctrl+C handler
@@ -167,17 +217,17 @@ pub fn run(args: &[String]) -> ExitCode {
 
     // Start all servers
     let mut servers: Vec<ManagedChild> = Vec::new();
-    for app in &apps {
-        let dir = PathBuf::from(app.dir);
-        for script in app.scripts {
+    for suite in &suites {
+        let dir = PathBuf::from(suite.dir);
+        for script in suite.scripts {
             eprintln!(
                 "  {} {} → {}",
                 console::style("▸").dim(),
-                console::style(app.name).cyan(),
+                console::style(suite.name).cyan(),
                 script,
             );
             match process::spawn_child_quiet(
-                &format!("{}/{}", app.name, script),
+                &format!("{}/{}", suite.name, script),
                 "pnpm",
                 &[script],
                 &dir,
@@ -188,7 +238,7 @@ pub fn run(args: &[String]) -> ExitCode {
                         "  {} Failed to start {} for {}",
                         console::style("✘").red(),
                         script,
-                        app.name
+                        suite.name
                     );
                     kill_servers(&mut servers);
                     return ExitCode::FAILURE;
@@ -202,47 +252,67 @@ pub fn run(args: &[String]) -> ExitCode {
         "\n{} Waiting for ports...",
         console::style("▸").cyan().bold(),
     );
-    let all_ports: Vec<u16> = apps.iter().flat_map(|a| a.ports.iter().copied()).collect();
-    for port in &all_ports {
+    let all_ports: Vec<(u16, &str)> = suites
+        .iter()
+        .flat_map(|suite| suite.ports.iter().map(|p| (*p, suite.name)))
+        .collect();
+    for (port, app_name) in &all_ports {
         if ctrlc.load(Ordering::SeqCst) {
             kill_servers(&mut servers);
             return ExitCode::SUCCESS;
         }
         if !wait_for_port(*port, PORT_TIMEOUT, &ctrlc) {
             eprintln!(
-                "  {} Port {} did not become ready within {}s",
+                "  {} Port {} ({}) did not become ready within {}s",
                 console::style("✘").red(),
-                port,
+                console::style(port).bold(),
+                app_name,
                 PORT_TIMEOUT.as_secs(),
             );
             kill_servers(&mut servers);
             return ExitCode::FAILURE;
         }
-        eprintln!("  {} Port {} ready", console::style("✔").green(), port);
+        eprintln!(
+            "  {} Port {} ({})",
+            console::style("✔").green(),
+            console::style(port).bold(),
+            console::style(app_name).cyan(),
+        );
     }
 
-    // Run tests in parallel
+    // Run tests in parallel with progress tracking
+    let total = suites.len();
+    let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     eprintln!(
-        "\n{} Running Playwright tests...\n",
+        "\n{} Running Playwright tests ({} suites in parallel)...\n",
         console::style("▸").cyan().bold(),
+        total,
     );
 
-    let handles: Vec<_> = apps
+    let handles: Vec<_> = suites
         .iter()
-        .map(|app| {
-            let name = app.name.to_string();
-            let dir = PathBuf::from(app.dir);
+        .map(|suite| {
+            let name = suite.name.to_string();
+            let dir = PathBuf::from(suite.dir);
+            let test_script = if update_snapshots {
+                suite.update_snapshots_script
+            } else {
+                suite.test_script
+            };
+            let done = completed.clone();
             thread::spawn(move || {
                 let start = Instant::now();
-                let (success, output) = run_test(&name, &dir, update_snapshots);
+                let (success, output) = run_test(&name, &dir, test_script);
                 let elapsed = start.elapsed().as_secs_f64();
+                let n = done.fetch_add(1, Ordering::SeqCst) + 1;
                 let icon = if success {
                     console::style("✔").green().to_string()
                 } else {
                     console::style("✘").red().bold().to_string()
                 };
+                let progress = console::style(format!("[{n}/{total}]")).dim();
                 eprintln!(
-                    "  {icon} {} {}",
+                    "  {icon} {progress} {} {}",
                     console::style(&name).bold(),
                     console::style(format!("({elapsed:.1}s)")).dim(),
                 );
@@ -294,7 +364,7 @@ pub fn run(args: &[String]) -> ExitCode {
 
     if all_passed {
         eprintln!(
-            "\n{} All E2E tests passed ({} apps)\n",
+            "\n{} All E2E tests passed ({} suites)\n",
             console::style("✨").green(),
             results.len(),
         );
@@ -302,7 +372,7 @@ pub fn run(args: &[String]) -> ExitCode {
     } else {
         let failed = results.iter().filter(|r| !r.success).count();
         eprintln!(
-            "\n{} {} of {} apps failed\n",
+            "\n{} {} of {} suites failed\n",
             console::style("✘").red().bold(),
             failed,
             results.len(),
@@ -311,12 +381,7 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 }
 
-fn run_test(name: &str, dir: &Path, update_snapshots: bool) -> (bool, String) {
-    let script = if update_snapshots {
-        "test:update-snapshots"
-    } else {
-        "test"
-    };
+fn run_test(name: &str, dir: &Path, script: &str) -> (bool, String) {
     let mut cmd = util::build_command("pnpm", &[script]);
     cmd.current_dir(dir)
         .stdout(Stdio::piped())
@@ -340,6 +405,19 @@ fn run_test(name: &str, dir: &Path, update_snapshots: bool) -> (bool, String) {
         }
         Err(e) => (false, format!("Failed to wait for {name}: {e}")),
     }
+}
+
+fn collect_reserved_ports(suites: &[&PlaywrightSuite]) -> Vec<ReservedPort<'static>> {
+    suites
+        .iter()
+        .flat_map(|suite| {
+            suite
+                .ports
+                .iter()
+                .copied()
+                .map(|port| ReservedPort::new(suite.name, port))
+        })
+        .collect()
 }
 
 fn wait_for_port(port: u16, timeout: Duration, ctrlc: &AtomicBool) -> bool {

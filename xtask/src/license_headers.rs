@@ -8,6 +8,7 @@
 //! are not in the skip list are inspected for the required copyright header.
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -119,8 +120,13 @@ fn is_skipped_file(path: &Path) -> bool {
 
 /// Read the first two non-empty lines and check whether they match the header.
 fn has_header(path: &Path) -> Result<bool, String> {
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(true);
+        }
+        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+    };
 
     let mut lines = content.lines();
     let first = match lines.next() {
@@ -219,6 +225,14 @@ mod tests {
 
         let result = fs::read_to_string(&file).expect("read");
         assert_eq!(result, format!("{HEADER_LINE_1}\n{HEADER_LINE_2}\n"));
+    }
+
+    #[test]
+    fn missing_file_is_treated_as_already_satisfied() {
+        let dir = temp_dir();
+        let file = dir.join("deleted.rs");
+
+        assert!(has_header(&file).expect("missing file should be ignored"));
     }
 
     #[test]
