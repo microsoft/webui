@@ -1,5 +1,5 @@
 <template shadowrootmode="open">
-  <a href="/product/{{handle}}" class="card">
+  <a href="/product/{{handle}}" class="card" @click="{onClick(e)}">
     <mp-product-image
       class="media"
       gradient="{{gradient}}"

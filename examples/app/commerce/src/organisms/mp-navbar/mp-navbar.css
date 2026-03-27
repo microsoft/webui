@@ -59,6 +59,7 @@
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--webui-text);
+  white-space: nowrap;
 }
 
 .nav-links {
@@ -132,13 +133,12 @@
 }
 
 .cart-icon,
-.hamburger mp-icon {
-  --icon-size: 1rem;
+.hamburger-icon {
+  width: 1rem;
+  height: 1rem;
 }
 
 .cart-icon {
-  width: 1rem;
-  height: 1rem;
   transition: transform 150ms ease-in-out;
 }
 
@@ -163,10 +163,6 @@
   background: var(--webui-accent);
   border-radius: 0.125rem;
   transform: translate(50%, -50%);
-}
-
-:host([cart-item-count="0"]) .cart-badge {
-  display: none;
 }
 
 @media (min-width: 1024px) {

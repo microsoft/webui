@@ -53,8 +53,9 @@
   }
 }
 
-.nav-btn mp-icon {
-  --icon-size: 1.25rem;
+.nav-btn svg {
+  width: 1.25rem;
+  height: 1.25rem;
 }
 
 .separator {

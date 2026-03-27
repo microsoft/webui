@@ -70,8 +70,9 @@
   border-color: var(--webui-text-secondary);
 }
 
-.close-btn mp-icon {
-  --icon-size: 1rem;
+.close-icon {
+  width: 1rem;
+  height: 1rem;
 }
 
 .mobile-search {

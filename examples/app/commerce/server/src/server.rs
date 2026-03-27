@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn search_with_query_renders_matching_attributes() {
+    async fn search_with_query_renders_empty_results_state() {
         let app =
             test::init_service(App::new().app_data(test_state()).configure(configure_app)).await;
 
@@ -314,7 +314,8 @@ mod tests {
         };
 
         assert!(html.contains(r#"query="bottle""#));
-        assert!(html.contains(r#"results-count="0""#));
+        assert!(html.contains("There are no products that match"));
+        assert!(html.contains(">bottle<"));
     }
 
     #[actix_web::test]

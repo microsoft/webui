@@ -1,118 +1,44 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr, observable } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
+import { Router } from '@microsoft/webui-router';
 
-export class MpCategoryNav extends RenderableFASTElement(FASTElement) {
+export class MpCategoryNav extends WebUIElement {
   @attr({ attribute: 'all-active-class' }) allActiveClass = '';
   @attr({ attribute: 'current-label' }) currentCategoryLabel = 'All';
-  @observable categories?: any[];
-  private clickHandler = (e: Event): void => { this.onClick(e as MouseEvent); };
-  private routeHandler = (): void => { this.closeMobileDropdown(); };
+  @observable categories: any[] = [];
+  mobileDropdown!: HTMLDetailsElement;
 
-  connectedCallback(): void {
-    super.connectedCallback();
-    this.addEventListener('click', this.clickHandler);
-    window.addEventListener('webui:route:navigated', this.routeHandler);
-  }
-
-  disconnectedCallback(): void {
-    super.disconnectedCallback();
-    this.removeEventListener('click', this.clickHandler);
-    window.removeEventListener('webui:route:navigated', this.routeHandler);
-  }
-
-  async prepare(): Promise<void> {
-    this.allActiveClass = this.getAttribute('all-active-class') || '';
-    this.currentCategoryLabel = this.getAttribute('current-label') || this.currentCategoryLabel || 'All';
-
-    if (Array.isArray(this.categories)) {
-      this.synccurrentCategoryLabel();
+  onClick(event: MouseEvent): void {
+    const target = event.target;
+    if (!(target instanceof Element)) {
       return;
     }
 
-    const sr = this.shadowRoot;
-    if (!sr) return;
-    const links = sr.querySelectorAll('.desktop-list .link');
-    if (links.length <= 1) return;
-    const cats: any[] = [];
-    links.forEach((link) => {
-      const element = link as HTMLElement;
-      const handle = element.getAttribute('data-handle') || '';
-      if (!handle) return;
-      cats.push({
-        handle,
-        title: element.textContent?.trim() || '',
-        count: 0,
-        activeClass: element.classList.contains('active') ? 'active' : '',
-      });
-    });
-    this.categories = cats;
-    this.synccurrentCategoryLabel();
-  }
-
-  setInitialState(state: Record<string, unknown>): void {
-    if (Array.isArray(state.categories)) {
-      this.categories = state.categories as any[];
-    }
-    if (typeof state.allActiveClass === 'string') {
-      this.allActiveClass = state.allActiveClass;
-    }
-    if (typeof state.currentCategoryLabel === 'string') {
-      this.currentCategoryLabel = state.currentCategoryLabel;
-    }
-    this.synccurrentCategoryLabel();
-    const view = this.$fastController?.view;
-    if (view) {
-      view.unbind();
-      view.bind(this, view.context);
-    }
-  }
-
-  categoriesChanged(): void {
-    this.synccurrentCategoryLabel();
-  }
-
-  allActiveClassChanged(): void {
-    this.synccurrentCategoryLabel();
-  }
-
-  private synccurrentCategoryLabel(): void {
-    if (this.allActiveClass === 'active') {
-      this.currentCategoryLabel = 'All';
+    const link = target.closest('a[href]');
+    if (link) {
+      const href = link.getAttribute('href');
+      if (href) {
+        event.preventDefault();
+        Router.navigate(href);
+      }
+      if (link.classList.contains('mobile-link')) {
+        this.closeMobileDropdown();
+      }
       return;
     }
 
-    const activeCategory = this.categories?.find((category) => category.activeClass === 'active');
-    this.currentCategoryLabel = activeCategory?.title || 'All';
-  }
-
-  private onClick(event: MouseEvent): void {
-    if (this.findPathElement(event, '.mobile-link')) {
+    if (target.closest('.mobile-link')) {
       this.closeMobileDropdown();
     }
   }
 
   private closeMobileDropdown(): void {
-    const dropdown = this.shadowRoot?.querySelector('.mobile-dropdown');
-    if (dropdown instanceof HTMLDetailsElement) {
-      dropdown.open = false;
+    if (this.mobileDropdown) {
+      this.mobileDropdown.open = false;
     }
-  }
-
-  private findPathElement(event: Event, selector: string): Element | null {
-    for (const target of event.composedPath()) {
-      if (target instanceof Element && target.matches(selector)) {
-        return target;
-      }
-    }
-
-    return null;
   }
 }
 
-MpCategoryNav.defineAsync({
-  name: 'mp-category-nav',
-  templateOptions: 'defer-and-hydrate',
-});
+MpCategoryNav.define('mp-category-nav');

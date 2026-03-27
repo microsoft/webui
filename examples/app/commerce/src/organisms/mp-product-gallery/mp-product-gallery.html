@@ -11,18 +11,22 @@
         fetch-priority="high"
       ></mp-product-image>
       <div class="nav-buttons">
-        <button class="nav-btn" data-action="prev" aria-label="Previous image">
-          <mp-icon name="chevron-left"></mp-icon>
+        <button class="nav-btn" aria-label="Previous image" @click="{onPreviousClick()}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 18l-6-6 6-6"></path>
+          </svg>
         </button>
         <div class="separator"></div>
-        <button class="nav-btn" data-action="next" aria-label="Next image">
-          <mp-icon name="chevron-right"></mp-icon>
+        <button class="nav-btn" aria-label="Next image" @click="{onNextClick()}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 18l6-6-6-6"></path>
+          </svg>
         </button>
       </div>
     </div>
     <div class="thumbnails">
       <for each="img in images">
-        <button class="thumb {{img.activeClass}}" data-action="select" data-index="{{img.index}}">
+        <button class="thumb {{img.activeClass}}" data-index="{{img.index}}" @click="{onThumbnailClick(e)}">
           <mp-product-image gradient="{{img.gradient}}" image-url="{{img.imageUrl}}" alt="" loading="lazy" decoding="async"></mp-product-image>
         </button>
       </for>

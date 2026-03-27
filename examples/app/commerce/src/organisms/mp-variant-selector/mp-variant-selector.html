@@ -1,11 +1,11 @@
 <template shadowrootmode="open">
-  <div class="variants">
+  <div class="variants" @click="{onClick(e)}">
     <for each="group in optionGroups">
       <dl class="option-group">
         <dt class="option-name">{{group.name}}</dt>
         <dd class="option-values">
           <for each="opt in group.values">
-            <button class="pill {{opt.activeClass}}" data-action="select-variant" data-group="{{opt.grp}}" data-value="{{opt.value}}" ?disabled="{{opt.unavailable}}">
+            <button class="pill {{opt.activeClass}}" data-action="select-variant" data-group="{{group.name}}" data-value="{{opt.value}}" ?disabled="{{opt.unavailable}}">
               {{opt.value}}
             </button>
           </for>

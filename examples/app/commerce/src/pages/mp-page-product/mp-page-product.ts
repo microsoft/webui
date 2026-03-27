@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr, observable } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement, observable } from '@microsoft/webui-framework';
 
 import '#atoms/mp-price/mp-price.js';
 import '#organisms/mp-product-gallery/mp-product-gallery.js';
@@ -10,189 +9,146 @@ import '#organisms/mp-variant-selector/mp-variant-selector.js';
 import '#organisms/mp-add-to-cart/mp-add-to-cart.js';
 import '#organisms/mp-product-card/mp-product-card.js';
 
-function waitForView(el: any, maxFrames = 10): Promise<void> {
-  return new Promise<void>((resolve) => {
-    let frame = 0;
-    const check = (): void => {
-      if (el.$fastController?.view) { resolve(); return; }
-      if (++frame >= maxFrames) { resolve(); return; }
-      requestAnimationFrame(check);
-    };
-    check();
-  });
+interface VariantOption {
+  value: string;
+  activeClass: string;
+  unavailable: boolean;
 }
 
-export class MpPageProduct extends RenderableFASTElement(FASTElement) {
-  // Product fields as individual @attr
-  @attr handle = '';
-  @attr({ attribute: 'product-title' }) productTitle = '';
-  @attr price = '';
-  @attr gradient = '';
-  @attr({ attribute: 'gradient-alt' }) gradientAlt = '';
-  @attr({ attribute: 'image-url' }) imageUrl = '';
-  @attr({ attribute: 'image-alt-url' }) imageAltUrl = '';
-  @attr({ attribute: 'compare-at' }) compareAt = '';
-  @attr({ attribute: 'has-compare-at' }) hasCompareAt = '';
-  @attr({ attribute: 'description-html' }) descriptionHtml = '';
-  @attr({ attribute: 'default-color' }) defaultColor = '';
-  @attr({ attribute: 'default-size' }) defaultSize = '';
-  @attr({ attribute: 'current-path' }) currentPath = '';
+interface OptionGroup {
+  name: string;
+  values: VariantOption[];
+}
 
-  // Arrays as optional @observable
-  @observable images?: any[];
-  @observable optionGroups?: any[];
-  @observable relatedProducts?: any[];
-  @observable categories?: any[];
-  @attr({ attribute: 'all-active-class' }) allActiveClass = '';
+interface VariantSelectDetail {
+  group?: string;
+  value?: string;
+}
 
-  async prepare(): Promise<void> {
-    // Read state from data-state attribute (set by SSR handler)
-    const raw = this.getAttribute('data-state');
-    if (raw) {
-      try {
-        const state = JSON.parse(raw);
-        this.handle = String(state.handle ?? '');
-        this.productTitle = String(state.productTitle ?? state.title ?? '');
-        this.price = String(state.price ?? '');
-        this.gradient = String(state.gradient ?? '');
-        this.gradientAlt = String(state.gradientAlt ?? '');
-        this.imageUrl = String(state.imageUrl ?? '');
-        this.imageAltUrl = String(state.imageAltUrl ?? '');
-        this.compareAt = String(state.compareAt ?? '');
-        this.hasCompareAt = state.compareAt ? 'true' : '';
-        this.descriptionHtml = String(state.descriptionHtml ?? '');
-        this.defaultColor = String(state.defaultColor ?? '');
-        this.defaultSize = String(state.defaultSize ?? '');
-        this.currentPath = String(state.currentPath ?? '');
-        if (Array.isArray(state.images)) this.images = state.images;
-        if (Array.isArray(state.optionGroups)) this.optionGroups = state.optionGroups;
-        if (Array.isArray(state.relatedProducts)) this.relatedProducts = state.relatedProducts;
-        if (Array.isArray(state.categories)) this.categories = state.categories;
-        if (state.allActiveClass !== undefined) this.allActiveClass = String(state.allActiveClass);
-        this.emitCatalogNavState();
-        await this.initChildren(state);
-        return;
-      } catch { /* fall through to DOM extraction */ }
+function sameOptionGroups(left: OptionGroup[], right: OptionGroup[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    const leftGroup = left[index];
+    const rightGroup = right[index];
+    if (leftGroup.name !== rightGroup.name || leftGroup.values.length !== rightGroup.values.length) {
+      return false;
     }
 
-    const sr = this.shadowRoot;
-    if (!sr) return;
-
-    const titleEl = sr.querySelector('.product-title');
-    if (!titleEl) return;
-
-    this.productTitle = titleEl.textContent?.trim() || '';
-    this.price = sr.querySelector('mp-price')?.getAttribute('value') || '';
-    const compareEl = sr.querySelector('.product-price-compare');
-    this.compareAt = compareEl?.textContent?.trim() || '';
-    this.hasCompareAt = compareEl ? 'true' : '';
-    const descEl = sr.querySelector('.product-description');
-    this.descriptionHtml = descEl?.innerHTML || '';
-
-    const gallery = sr.querySelector('mp-product-gallery');
-    this.gradient = gallery?.getAttribute('active-gradient') || '';
-    this.imageUrl = gallery?.getAttribute('active-image-url') || '';
-
-    const addToCart = sr.querySelector('mp-add-to-cart');
-    this.handle = addToCart?.getAttribute('handle') || '';
-
-    // Read related products from SSR'd cards
-    const relatedCards = sr.querySelectorAll('.related-scroll mp-product-card');
-    if (relatedCards.length > 0) {
-      const items: any[] = [];
-      relatedCards.forEach((card) => {
-        const el = card as HTMLElement;
-        items.push({
-          handle: el.getAttribute('handle') || '',
-          title: el.getAttribute('title') || '',
-          price: el.getAttribute('price') || '',
-          gradient: el.getAttribute('gradient') || '',
-          imageUrl: el.getAttribute('image-url') || '',
-        });
-      });
-      this.relatedProducts = items;
+    for (let valueIndex = 0; valueIndex < leftGroup.values.length; valueIndex += 1) {
+      const leftValue = leftGroup.values[valueIndex];
+      const rightValue = rightGroup.values[valueIndex];
+      if (leftValue.value !== rightValue.value
+        || leftValue.activeClass !== rightValue.activeClass
+        || leftValue.unavailable !== rightValue.unavailable) {
+        return false;
+      }
     }
   }
 
-  setInitialState(state: Record<string, unknown>): void {
-    this.handle = String(state.handle ?? '');
-    this.productTitle = String(state.productTitle ?? '');
-    this.price = String(state.price ?? '');
-    this.gradient = String(state.gradient ?? '');
-    this.gradientAlt = String(state.gradientAlt ?? '');
-    this.imageUrl = String(state.imageUrl ?? '');
-    this.imageAltUrl = String(state.imageAltUrl ?? '');
-    this.compareAt = String(state.compareAt ?? '');
-    this.hasCompareAt = state.hasCompareAt ? 'true' : '';
-    this.descriptionHtml = String(state.descriptionHtml ?? '');
-    this.defaultColor = String(state.defaultColor ?? '');
-    this.defaultSize = String(state.defaultSize ?? '');
-    this.currentPath = String(state.currentPath ?? '');
+  return true;
+}
 
-    if (Array.isArray(state.images)) {
-      this.images = state.images as any[];
-    }
-    if (Array.isArray(state.optionGroups)) {
-      this.optionGroups = state.optionGroups as any[];
-    }
-    if (Array.isArray(state.relatedProducts)) {
-      this.relatedProducts = state.relatedProducts as any[];
-    }
-    if (Array.isArray(state.categories)) {
-      this.categories = state.categories as any[];
-    }
-    if (state.allActiveClass !== undefined) {
-      this.allActiveClass = String(state.allActiveClass);
+export class MpPageProduct extends WebUIElement {
+  @observable handle!: string;
+  @observable productTitle!: string;
+  @observable price!: string;
+  @observable gradient!: string;
+  @observable gradientAlt!: string;
+  @observable imageUrl!: string;
+  @observable imageAltUrl!: string;
+  @observable compareAt!: string;
+  @observable hasCompareAt!: boolean;
+  @observable descriptionHtml!: string;
+  @observable defaultColor!: string;
+  @observable defaultSize!: string;
+  @observable selectedColor!: string;
+  @observable selectedSize!: string;
+  @observable currentPath!: string;
+
+  @observable images!: any[];
+  @observable optionGroups!: OptionGroup[];
+  @observable relatedProducts!: any[];
+
+  onVariantSelect(event: Event): void {
+    const detail = (event as CustomEvent<VariantSelectDetail>).detail;
+    const group = detail.group?.trim().toLowerCase() ?? '';
+    const value = detail.value ?? '';
+    if (!group || !value) {
+      return;
     }
 
-    this.emitCatalogNavState();
-    void this.initChildren(state);
+    if (group.includes('color')) {
+      this.selectedColor = value;
+      return;
+    }
+
+    if (group.includes('size')) {
+      this.selectedSize = value;
+    }
   }
 
-  private emitCatalogNavState(): void {
-    document.dispatchEvent(new CustomEvent('commerce:catalog-nav-state', {
-      detail: {
-        categories: this.categories,
-        allActiveClass: this.allActiveClass,
-      },
-    }));
+  optionGroupsChanged(): void {
+    this.syncOptionGroups();
   }
 
-  private async initChildren(state: Record<string, unknown>): Promise<void> {
-    const sr = this.shadowRoot;
-    if (!sr) return;
+  selectedColorChanged(): void {
+    this.syncOptionGroups();
+  }
 
-    await Promise.all([
-      customElements.whenDefined('mp-product-gallery'),
-      customElements.whenDefined('mp-variant-selector'),
-      customElements.whenDefined('mp-add-to-cart'),
-    ]);
+  selectedSizeChanged(): void {
+    this.syncOptionGroups();
+  }
 
-    const gallery = sr.querySelector('mp-product-gallery') as any;
-    if (gallery) {
-      await waitForView(gallery);
-      gallery.setInitialState?.(state);
+  defaultColorChanged(): void {
+    this.syncOptionGroups();
+  }
+
+  defaultSizeChanged(): void {
+    this.syncOptionGroups();
+  }
+
+  private syncOptionGroups(): void {
+    const optionGroups = Array.isArray(this.optionGroups) ? this.optionGroups : [];
+    const nextSelectedColor = this.selectedColor || this.defaultColor;
+    const nextSelectedSize = this.selectedSize || this.defaultSize;
+
+    if (this.selectedColor !== nextSelectedColor) {
+      this.selectedColor = nextSelectedColor;
+    }
+    if (this.selectedSize !== nextSelectedSize) {
+      this.selectedSize = nextSelectedSize;
     }
 
-    const selector = sr.querySelector('mp-variant-selector') as any;
-    if (selector) {
-      await waitForView(selector);
-      selector.setInitialState?.(state);
-    }
+    const nextGroups = optionGroups.map((group) => {
+      const activeValue = this.selectionForGroup(group.name, nextSelectedColor, nextSelectedSize);
+      return {
+        name: group.name,
+        values: group.values.map((value) => ({
+          value: value.value,
+          unavailable: value.unavailable,
+          activeClass: activeValue && value.value === activeValue ? 'active' : '',
+        })),
+      };
+    });
 
-    const addToCart = sr.querySelector('mp-add-to-cart') as any;
-    if (addToCart) {
-      await waitForView(addToCart);
-      addToCart.setInitialState?.(state);
-      addToCart.updateSelectionState?.();
+    if (!sameOptionGroups(optionGroups, nextGroups)) {
+      this.optionGroups = nextGroups;
     }
+  }
 
-    const descEl = sr.querySelector('.product-description');
-    if (descEl && this.descriptionHtml) descEl.innerHTML = this.descriptionHtml;
+  private selectionForGroup(name: string, selectedColor: string, selectedSize: string): string {
+    const normalized = name.trim().toLowerCase();
+    if (normalized.includes('color')) {
+      return selectedColor;
+    }
+    if (normalized.includes('size')) {
+      return selectedSize;
+    }
+    return '';
   }
 }
 
-MpPageProduct.defineAsync({
-  name: 'mp-page-product',
-  templateOptions: 'defer-and-hydrate',
-});
+MpPageProduct.define('mp-page-product');

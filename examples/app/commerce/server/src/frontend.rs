@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use webui::{build, BuildOptions, CssStrategy, WebUIHandler, WebUIProtocol};
-use webui_handler::plugin::fast::FastHydrationPlugin;
+use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::route_handler;
 use webui_handler::{RenderOptions, ResponseWriter};
 
@@ -38,7 +38,7 @@ impl FrontendRuntime {
             app_dir,
             entry: "index.html".to_string(),
             css,
-            plugin: Some("fast".to_string()),
+            plugin: Some("webui".to_string()),
             components: Vec::new(),
         })
         .with_context(|| "Failed to build the commerce WebUI protocol")?;
@@ -62,7 +62,7 @@ impl FrontendRuntime {
 
     pub fn render_html(&self, route_path: &str, state: &Value) -> Result<String> {
         let mut writer = MemoryWriter::with_capacity(16_384);
-        let handler = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
         handler
             .handle(
                 &self.protocol,

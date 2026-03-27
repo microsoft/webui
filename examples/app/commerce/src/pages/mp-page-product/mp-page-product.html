@@ -22,11 +22,10 @@
 
         <mp-variant-selector
           :option-groups="{{optionGroups}}"
+          @variant-select="{onVariantSelect(e)}"
         ></mp-variant-selector>
 
-        <div class="product-description">
-          {{{descriptionHtml}}}
-        </div>
+        <div class="product-description" :innerHTML="{{descriptionHtml}}"></div>
 
         <mp-add-to-cart
           handle="{{handle}}"
@@ -36,6 +35,8 @@
           image-url="{{imageUrl}}"
           default-color="{{defaultColor}}"
           default-size="{{defaultSize}}"
+          selected-color="{{selectedColor}}"
+          selected-size="{{selectedSize}}"
           current-path="{{currentPath}}"
         ></mp-add-to-cart>
       </div>

@@ -1,12 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement } from '@microsoft/webui-framework';
 
-export class MpPageTerms extends RenderableFASTElement(FASTElement) {}
+export class MpPageTerms extends WebUIElement {}
 
-MpPageTerms.defineAsync({
-  name: 'mp-page-terms',
-  templateOptions: 'defer-and-hydrate',
-});
+MpPageTerms.define('mp-page-terms');

@@ -139,13 +139,61 @@ test.describe('client-side navigation', () => {
   });
 
   test('product page renders gallery and variants via client nav', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', (error) => {
+      pageErrors.push(error.message);
+    });
+
     await page.goto('/');
     await page.locator('mp-product-card').filter({ hasText: 'Acme Circles T-Shirt' }).first().click();
     await expect(page).toHaveURL('/product/acme-geometric-circles-t-shirt');
     await expect(page.getByRole('heading', { name: 'Acme Circles T-Shirt', level: 1 })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Previous image' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Next image' })).toBeVisible();
+    await expect(page.locator('mp-product-gallery .nav-btn svg')).toHaveCount(2);
     await expect(page.getByText('COLOR')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Black' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Related Products' })).toBeVisible();
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('add to cart opens panel with cart item', async ({ page }) => {
+    await page.goto('/product/acme-geometric-circles-t-shirt');
+    await page.getByRole('button', { name: 'Add To Cart' }).click();
+    const cartPanel = page.locator('mp-cart-panel');
+    const cartButton = page.locator('mp-navbar .cart-btn');
+    await expect(cartPanel.getByText('My Cart')).toBeVisible();
+    await expect(cartPanel.getByText('Your cart is empty.')).toHaveCount(0);
+    const cartLine = cartPanel.locator('.cart-line');
+    await expect(cartLine.getByRole('link', { name: 'Acme Circles T-Shirt' })).toBeVisible();
+    await expect(cartLine.locator('.qty-count')).toHaveText('1');
+    await expect(cartButton.locator('.cart-badge')).toHaveText('1');
+  });
+
+  test('opening empty cart shows empty state', async ({ page }) => {
+    await page.goto('/');
+    const cartButton = page.locator('mp-navbar .cart-btn');
+    await cartButton.click();
+
+    const cartPanel = page.locator('mp-cart-panel');
+    await expect(cartPanel.getByText('My Cart')).toBeVisible();
+    await expect(cartPanel.getByText('Your cart is empty.')).toBeVisible();
+    await expect(cartPanel.locator('.cart-line')).toHaveCount(0);
+    await expect(cartButton.locator('.cart-badge')).toHaveCount(0);
+  });
+
+  test('closing cart keeps ACME logo navigation pointed at home', async ({ page }) => {
+    await page.goto('/product/acme-pacifier');
+    const logo = page.locator('mp-navbar .logo-link');
+    const cartButton = page.locator('mp-navbar .cart-btn');
+
+    await expect(logo).toHaveAttribute('href', '/');
+    await cartButton.click();
+    await page.locator('mp-cart-panel .close-btn').click();
+    await expect(logo).toHaveAttribute('href', '/');
+
+    await logo.click();
+    await expect(page).toHaveURL('/');
   });
 
   test('no full page reload during client navigation', async ({ page }) => {
@@ -375,6 +423,17 @@ test.describe('search', () => {
     await searchInput.fill('mug');
     await searchInput.press('Enter');
     await expect(page).toHaveURL(/\/search\?q=mug/);
+  });
+
+  test('search form submit shows no-results message for invalid query', async ({ page }) => {
+    await page.goto('/');
+    const searchInput = page.locator('mp-search-bar input[name="q"]').first();
+    await searchInput.fill('testsdsd');
+    await searchInput.press('Enter');
+    await expect(page).toHaveURL(/\/search\?q=testsdsd/);
+    await expect(page.locator('mp-product-grid mp-product-card')).toHaveCount(0);
+    await expect(page.locator('mp-product-grid')).toContainText('There are no products that match');
+    await expect(page.locator('mp-product-grid')).toContainText('testsdsd');
   });
 
   test('search results show matching products', async ({ page }) => {

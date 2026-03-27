@@ -1,10 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr, observable } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
 
-import '#atoms/mp-icon/mp-icon.js';
 import '#atoms/mp-price/mp-price.js';
 import '#atoms/mp-product-image/mp-product-image.js';
 
@@ -23,124 +21,32 @@ interface CartItem {
   redirectTo: string;
 }
 
-export class MpCartPanel extends RenderableFASTElement(FASTElement) {
-  @observable cartItems?: CartItem[];
-  @observable cartEmpty!: boolean;
+export class MpCartPanel extends WebUIElement {
+  @observable cartItems!: CartItem[];
   @attr subtotal!: string;
   @attr taxes!: string;
   @attr({ attribute: 'cart-open' }) cartOpen!: string;
   @attr({ attribute: 'cart-close-href' }) cartCloseHref!: string;
   @attr({ attribute: 'current-path' }) currentPath!: string;
-  @observable panelOpenClass!: string;
-  @observable backdropOpenClass!: string;
 
-  private toggleHandler = (): void => { this.openCart(); };
-  private shadowClickHandler = (e: Event): void => { this.onShadowClick(e as MouseEvent); };
-
-  connectedCallback(): void {
-    super.connectedCallback();
-    document.addEventListener('toggle-cart', this.toggleHandler);
-    this.addEventListener('click', this.shadowClickHandler);
+  onCloseClick(e: MouseEvent): void {
+    e.preventDefault();
+    this.closeCart();
   }
 
-  disconnectedCallback(): void {
-    super.disconnectedCallback();
-    document.removeEventListener('toggle-cart', this.toggleHandler);
-    this.removeEventListener('click', this.shadowClickHandler);
+  onBackdropClick(e: MouseEvent): void {
+    e.preventDefault();
+    this.closeCart();
   }
 
-  async prepare(): Promise<void> {
-    this.cartOpen = this.getAttribute('cart-open') || '';
-    this.cartCloseHref = this.getAttribute('cart-close-href') || '/';
-    this.currentPath = this.getAttribute('current-path') || '/';
-    this.subtotal = this.getAttribute('subtotal') || '$0.00';
-    this.taxes = this.getAttribute('taxes') || '$0.00';
-
-    if (Array.isArray(this.cartItems)) {
-      this.cartEmpty = this.cartItems.length === 0;
-      this.syncOpenState();
+  onQuantityClick(e: MouseEvent): void {
+    e.preventDefault();
+    const target = e.currentTarget;
+    if (!(target instanceof HTMLElement)) {
       return;
     }
 
-    const items: CartItem[] = [];
-    this.shadowRoot!.querySelectorAll('.cart-line').forEach(line => {
-      const image = line.querySelector('mp-product-image') as HTMLElement | null;
-      const title = line.querySelector('.item-title') as HTMLAnchorElement;
-      const variant = line.querySelector('.item-variant')?.textContent?.trim() || '';
-      const price = line.querySelector('mp-price')?.getAttribute('value') || '';
-      const qty = line.querySelector('.qty-count')?.textContent?.trim() || '1';
-      const btn = line.querySelector('[data-handle]') as HTMLElement;
-
-      const parts = variant.split('/').map(s => s.trim());
-      items.push({
-        handle: btn?.getAttribute('data-handle') || '',
-        title: title?.textContent?.trim() || '',
-        color: parts[0] || '',
-        size: parts[1] || '',
-        variantLabel: variant,
-        price,
-        quantity: parseInt(qty, 10) || 1,
-        gradient: image?.getAttribute('gradient') || '',
-        imageUrl: image?.getAttribute('image-url') || '',
-        increaseTo: parseInt(btn?.getAttribute('data-quantity') || '2', 10) || 2,
-        decreaseTo: 0,
-        redirectTo: btn?.closest('form')?.querySelector<HTMLInputElement>('input[name="redirectTo"]')?.value || this.currentPath,
-      });
-    });
-
-    this.cartItems = items;
-    this.cartEmpty = items.length === 0;
-    this.syncOpenState();
-  }
-
-  setInitialState(state: Record<string, unknown>): void {
-    if (Array.isArray(state.cartItems)) {
-      this.cartItems = state.cartItems as CartItem[];
-    }
-    if (state.cartEmpty !== undefined) {
-      this.cartEmpty = Boolean(state.cartEmpty);
-    }
-    if (typeof state.subtotal === 'string') this.subtotal = state.subtotal;
-    if (typeof state.cartSubtotal === 'string') this.subtotal = state.cartSubtotal;
-    if (typeof state.taxes === 'string') this.taxes = state.taxes;
-    if (typeof state.cartTaxes === 'string') this.taxes = state.cartTaxes;
-    if (typeof state.cartOpen === 'string') this.cartOpen = state.cartOpen;
-    if (typeof state.cartCloseHref === 'string') this.cartCloseHref = state.cartCloseHref;
-    if (typeof state.currentPath === 'string') this.currentPath = state.currentPath;
-    this.syncOpenState();
-    const view = this.$fastController?.view;
-    if (view) {
-      view.unbind();
-      view.bind(this, view.context);
-    }
-  }
-
-  cartItemsChanged(): void {
-    if (Array.isArray(this.cartItems)) {
-      this.cartEmpty = this.cartItems.length === 0;
-    }
-  }
-
-  cartOpenChanged(): void {
-    this.syncOpenState();
-  }
-
-  onShadowClick(e: MouseEvent): void {
-    if (this.findPathElement(e, '[data-action="close"]') || this.findPathElement(e, '.backdrop')) {
-      e.preventDefault();
-      this.closeCart();
-      return;
-    }
-
-    const btn = this.findPathElement(
-      e,
-      '[data-action="increase"], [data-action="decrease"], [data-action="remove"]',
-    ) as HTMLElement | null;
-    if (btn) {
-      e.preventDefault();
-      void this.handleQuantity(btn);
-      return;
-    }
+    void this.handleQuantity(target);
   }
 
   async handleQuantity(btn: HTMLElement): Promise<void> {
@@ -162,30 +68,9 @@ export class MpCartPanel extends RenderableFASTElement(FASTElement) {
     });
   }
 
-  openCart(): void {
-    this.cartOpen = 'true';
-    this.syncOpenState();
-  }
-
   closeCart(): void {
     this.cartOpen = '';
-    this.syncOpenState();
-  }
-
-  private syncOpenState(): void {
-    const isOpen = this.cartOpen === 'true';
-    this.panelOpenClass = isOpen ? 'is-open' : '';
-    this.backdropOpenClass = isOpen ? 'open' : '';
-    const html = document.documentElement;
-    const { body } = document;
-
-    html.style.overflow = isOpen ? 'hidden' : '';
-    html.style.scrollbarGutter = isOpen ? 'stable' : '';
-    html.style.overscrollBehavior = isOpen ? 'none' : '';
-
-    body.style.overflow = isOpen ? 'hidden' : '';
-    body.style.scrollbarGutter = isOpen ? 'stable' : '';
-    body.style.overscrollBehavior = isOpen ? 'none' : '';
+    this.$emit('cart-closed');
   }
 
   private async submitCartMutation(url: string, payload: Record<string, unknown>): Promise<void> {
@@ -202,21 +87,8 @@ export class MpCartPanel extends RenderableFASTElement(FASTElement) {
       return;
     }
     const state = await response.json() as Record<string, unknown>;
-    document.dispatchEvent(new CustomEvent('commerce:cart-state', { detail: state }));
-  }
-
-  private findPathElement(event: Event, selector: string): Element | null {
-    for (const target of event.composedPath()) {
-      if (target instanceof Element && target.matches(selector)) {
-        return target;
-      }
-    }
-
-    return null;
+    this.$emit('commerce-cart-state', state);
   }
 }
 
-MpCartPanel.defineAsync({
-  name: 'mp-cart-panel',
-  templateOptions: 'defer-and-hydrate',
-});
+MpCartPanel.define('mp-cart-panel');

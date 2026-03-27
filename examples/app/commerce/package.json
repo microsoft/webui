@@ -4,7 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
+    "build": "esbuild src/index.ts --bundle --outdir=dist --format=esm --splitting --sourcemap ",
+    "start:client": "esbuild src/index.ts --bundle --outdir=dist --splitting --format=esm --sourcemap --watch",
     "start:server": "cargo run -p marketplace-api -- --port 3004",
     "start": "cargo xtask dev commerce",
     "test": "playwright test",
@@ -17,8 +18,7 @@
     "#pages/*": "./src/pages/*"
   },
   "devDependencies": {
-    "@microsoft/fast-element": "catalog:",
-    "@microsoft/fast-html": "catalog:",
+    "@microsoft/webui-framework": "workspace:*",
     "@microsoft/webui-router": "workspace:*",
     "@playwright/test": "catalog:",
     "esbuild": "catalog:",

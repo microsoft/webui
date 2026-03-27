@@ -20,6 +20,7 @@ pub(crate) fn cart_state_payload(
 pub(crate) fn base_state(context: &ShellContext<'_>) -> Map<String, Value> {
     let mut state = Map::new();
     state.insert("storeName".into(), Value::String(STORE_NAME.to_string()));
+    state.insert("searchQuery".into(), Value::String(String::new()));
     state.insert(
         "currentCategoryLabel".into(),
         Value::String("All".to_string()),
@@ -53,7 +54,10 @@ pub(crate) fn base_state(context: &ShellContext<'_>) -> Map<String, Value> {
 /// partial responses (the client already has shell state).
 pub(crate) fn page_state_base(context: &ShellContext<'_>, is_partial: bool) -> Map<String, Value> {
     if is_partial {
-        Map::new()
+        let mut state = Map::new();
+        state.insert("searchQuery".into(), Value::String(String::new()));
+        merge_navigation_state(&mut state, &context.stable_path, context.cart_open);
+        state
     } else {
         base_state(context)
     }
@@ -86,13 +90,14 @@ fn merge_cart_state(
     state.insert("cartItems".into(), serde_json::json!(cart_state.cart_items));
     state.insert("cartEmpty".into(), Value::Bool(cart_state.cart_empty));
     state.insert(
-        "cartSubtotal".into(),
+        "subtotal".into(),
         Value::String(cart_state.cart_subtotal.clone()),
     );
-    state.insert(
-        "cartTaxes".into(),
-        Value::String(cart_state.cart_taxes.clone()),
-    );
+    state.insert("taxes".into(), Value::String(cart_state.cart_taxes.clone()));
+    merge_navigation_state(state, stable_path, cart_open);
+}
+
+fn merge_navigation_state(state: &mut Map<String, Value>, stable_path: &str, cart_open: bool) {
     state.insert("currentPath".into(), Value::String(stable_path.to_string()));
     state.insert(
         "cartOpen".into(),

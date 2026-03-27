@@ -1,6 +1,6 @@
 <template shadowrootmode="open">
-  <nav class="filter-list">
-    <details class="mobile-dropdown">
+  <nav class="filter-list" @click="{onClick(e)}">
+    <details class="mobile-dropdown" w-ref="{mobileDropdown}">
       <summary class="mobile-summary">
         <span class="mobile-current">
           <for each="option in sortOptions">

@@ -34,12 +34,6 @@
   pointer-events: none;
 }
 
-.cart-panel.is-open {
-  transform: translateX(0);
-  opacity: 1;
-  pointer-events: auto;
-}
-
 :host([cart-open="true"]) .cart-panel {
   transform: translateX(0);
   opacity: 1;
@@ -56,11 +50,6 @@
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.3s ease;
-}
-
-.backdrop.open {
-  opacity: 1;
-  pointer-events: auto;
 }
 
 :host([cart-open="true"]) .backdrop {
@@ -103,8 +92,9 @@
   background: color-mix(in oklch, var(--webui-surface) 85%, transparent);
 }
 
-.close-btn mp-icon {
-  --icon-size: 1rem;
+.close-icon {
+  width: 1rem;
+  height: 1rem;
 }
 
 .empty-state {
@@ -197,8 +187,9 @@
    border-color: color-mix(in oklch, var(--webui-border) 16%, transparent);
 }
 
-.remove-btn mp-icon {
-   --icon-size: 0.75rem;
+.remove-icon {
+   width: 0.75rem;
+   height: 0.75rem;
    opacity: 0.82;
 }
 
@@ -292,8 +283,14 @@
   background: color-mix(in oklch, white 5%, transparent);
 }
 
-.qty-btn mp-icon {
-  --icon-size: 0.875rem;
+.qty-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.empty-cart-icon {
+  width: 4rem;
+  height: 4rem;
 }
 
 .backdrop {

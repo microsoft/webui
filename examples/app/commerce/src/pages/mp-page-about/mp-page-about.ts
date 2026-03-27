@@ -1,12 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement } from '@microsoft/webui-framework';
 
-export class MpPageAbout extends RenderableFASTElement(FASTElement) {}
+export class MpPageAbout extends WebUIElement {}
 
-MpPageAbout.defineAsync({
-  name: 'mp-page-about',
-  templateOptions: 'defer-and-hydrate',
-});
+MpPageAbout.define('mp-page-about');

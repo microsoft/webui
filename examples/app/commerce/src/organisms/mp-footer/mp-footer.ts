@@ -1,12 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement } from '@microsoft/webui-framework';
 
-export class MpFooter extends RenderableFASTElement(FASTElement) {}
+export class MpFooter extends WebUIElement {}
 
-MpFooter.defineAsync({
-  name: 'mp-footer',
-  templateOptions: 'defer-and-hydrate',
-});
+MpFooter.define('mp-footer');

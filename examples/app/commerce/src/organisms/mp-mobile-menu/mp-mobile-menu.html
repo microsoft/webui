@@ -1,8 +1,11 @@
 <template shadowrootmode="open">
-  <div class="menu-panel" popover="manual" id="mobile-menu">
+  <div class="menu-panel" popover="manual" id="mobile-menu" w-ref="{panelEl}">
     <div class="menu-header">
-      <button class="close-btn" data-action="close" aria-label="Close mobile menu">
-        <mp-icon name="close"></mp-icon>
+      <button class="close-btn" aria-label="Close mobile menu" @click="{onCloseClick()}">
+        <svg class="close-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M18 6L6 18"></path>
+          <path d="M6 6l12 12"></path>
+        </svg>
       </button>
     </div>
     <div class="mobile-search">
@@ -15,11 +18,11 @@
       ></mp-search-bar>
     </div>
     <nav class="menu-nav">
-      <a href="/search" class="menu-link">All</a>
+      <a href="/search" class="menu-link" @click="{onLinkClick(e)}">All</a>
       <for each="cat in navCategories">
-        <a href="/search/{{cat.handle}}" class="menu-link">{{cat.title}}</a>
+        <a href="/search/{{cat.handle}}" class="menu-link" @click="{onLinkClick(e)}">{{cat.title}}</a>
       </for>
     </nav>
   </div>
-  <div class="backdrop" data-action="close"></div>
+  <div class="backdrop" w-ref="{backdropEl}" @click="{onBackdropClick()}"></div>
 </template>

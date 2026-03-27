@@ -1,12 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement } from '@microsoft/webui-framework';
 
-export class MpPagePrivacy extends RenderableFASTElement(FASTElement) {}
+export class MpPagePrivacy extends WebUIElement {}
 
-MpPagePrivacy.defineAsync({
-  name: 'mp-page-privacy',
-  templateOptions: 'defer-and-hydrate',
-});
+MpPagePrivacy.define('mp-page-privacy');

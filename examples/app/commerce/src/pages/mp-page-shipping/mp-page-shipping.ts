@@ -1,12 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement } from '@microsoft/webui-framework';
 
-export class MpPageShipping extends RenderableFASTElement(FASTElement) {}
+export class MpPageShipping extends WebUIElement {}
 
-MpPageShipping.defineAsync({
-  name: 'mp-page-shipping',
-  templateOptions: 'defer-and-hydrate',
-});
+MpPageShipping.define('mp-page-shipping');

@@ -1,28 +1,34 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement, attr } from '@microsoft/webui-framework';
+import { Router } from '@microsoft/webui-router';
 
-import '#atoms/mp-icon/mp-icon.js';
-
-export class MpSearchBar extends RenderableFASTElement(FASTElement) {
+export class MpSearchBar extends WebUIElement {
   @attr action = '/search';
   @attr query = '';
   @attr placeholder = 'Search for products...';
   @attr variant = 'desktop';
   @attr label = 'Search for products';
 
-  async prepare(): Promise<void> {
-    this.action = this.getAttribute('action') || '/search';
-    this.query = this.getAttribute('query') || '';
-    this.placeholder = this.getAttribute('placeholder') || 'Search for products...';
-    this.variant = this.getAttribute('variant') || 'desktop';
-    this.label = this.getAttribute('label') || 'Search for products';
+  onInput(event: Event): void {
+    const target = event.target;
+    if (target instanceof HTMLInputElement) {
+      this.query = target.value;
+    }
+  }
+
+  onSubmit(event: SubmitEvent): void {
+    event.preventDefault();
+
+    const url = new URL(this.action, window.location.origin);
+    const query = this.query.trim();
+    if (query) {
+      url.searchParams.set('q', query);
+    }
+
+    Router.navigate(`${url.pathname}${url.search}`);
   }
 }
 
-MpSearchBar.defineAsync({
-  name: 'mp-search-bar',
-  templateOptions: 'defer-and-hydrate',
-});
+MpSearchBar.define('mp-search-bar');

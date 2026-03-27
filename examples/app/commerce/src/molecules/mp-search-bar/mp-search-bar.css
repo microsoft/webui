@@ -14,14 +14,15 @@
   width: 100%;
 }
 
-.search-form mp-icon {
+.search-icon {
   position: absolute;
   right: 0.75rem;
   top: 50%;
   transform: translateY(-50%);
   color: var(--webui-text-muted);
   pointer-events: none;
-  --icon-size: 1.1rem;
+  width: 1.1rem;
+  height: 1.1rem;
 }
 
 .search-input {
