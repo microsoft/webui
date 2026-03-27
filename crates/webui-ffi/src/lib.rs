@@ -32,6 +32,7 @@ use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use webui_handler::plugin::fast::FastHydrationPlugin;
+use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_parser::HtmlParser;
 use webui_protocol::WebUIProtocol;
@@ -142,7 +143,7 @@ pub extern "C" fn webui_handler_create() -> *mut c_void {
 /// # Arguments
 ///
 /// * `plugin_id` - Null-terminated UTF-8 string identifying the plugin.
-///   Currently supported: `"fast"`. Pass `NULL` for no plugin.
+///   Currently supported: `"fast"`, `"webui"`. Pass `NULL` for no plugin.
 ///
 /// # Returns
 ///
@@ -161,6 +162,7 @@ pub unsafe extern "C" fn webui_handler_create_with_plugin(plugin_id: *const c_ch
     } else {
         match CStr::from_ptr(plugin_id).to_str() {
             Ok("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
+            Ok("webui") => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
             Ok(unknown) => {
                 set_last_error(format!("unknown plugin: {unknown}"));
                 return std::ptr::null_mut();

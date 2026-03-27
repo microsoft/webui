@@ -14,6 +14,7 @@ use std::fmt;
 use std::io;
 use thiserror::Error;
 
+/// Plugin-specific protocol helpers for framework hydration metadata.
 pub mod plugin;
 
 /// Generated protobuf types from `proto/webui.proto`.
@@ -23,6 +24,7 @@ pub mod proto {
 
 // Re-export all generated types at the crate root.
 pub use plugin::FastElementData;
+pub use plugin::WebUIElementData;
 pub use proto::*;
 
 // Type aliases preserving the `WebUI` naming convention.

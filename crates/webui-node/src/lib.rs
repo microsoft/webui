@@ -33,6 +33,7 @@ use napi::Error as NapiError;
 use napi_derive::napi;
 use serde_json::Value;
 use webui_handler::plugin::fast::FastHydrationPlugin;
+use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::WebUIProtocol;
 
@@ -73,7 +74,7 @@ pub struct JsBuildOptions {
     pub entry: Option<String>,
     /// CSS mode: "link" (default) or "style".
     pub css: Option<String>,
-    /// Parser plugin (e.g., "fast").
+    /// Framework plugin.
     pub plugin: Option<String>,
     /// Additional component sources (npm packages or local paths).
     pub components: Option<Vec<String>>,
@@ -231,6 +232,7 @@ pub fn render(
     let mut writer = CallbackWriter::new(&on_chunk);
     let handler = match plugin.as_deref() {
         Some("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
+        Some("webui") => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
         Some(unknown) => {
             return Err(NapiError::from_reason(format!("Unknown plugin: {unknown}")));
         }

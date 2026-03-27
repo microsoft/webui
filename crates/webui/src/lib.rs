@@ -40,6 +40,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 use webui_parser::plugin::fast::FastParserPlugin;
+use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::plugin::ParserPluginArtifacts;
 use webui_parser::HtmlParser;
 
@@ -194,6 +195,11 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     let mut parser = match options.plugin.as_deref() {
         Some("fast") => {
             let mut plugin = FastParserPlugin::new();
+            plugin.set_css_strategy(options.css);
+            HtmlParser::with_plugin(Box::new(plugin))
+        }
+        Some("webui") => {
+            let mut plugin = WebUIParserPlugin::new();
             plugin.set_css_strategy(options.css);
             HtmlParser::with_plugin(Box::new(plugin))
         }

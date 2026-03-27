@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use std::env;
 use std::fs;
 use webui_handler::plugin::fast::FastHydrationPlugin;
+use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::WebUIProtocol;
 
@@ -61,6 +62,7 @@ fn main() -> Result<()> {
 
     let handler = match plugin_name {
         Some("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
+        Some("webui") => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
         Some(unknown) => anyhow::bail!("Unknown plugin: {unknown}"),
         None => WebUIHandler::new(),
     };

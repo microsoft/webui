@@ -15,6 +15,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use webui_handler::plugin::fast::FastHydrationPlugin;
+use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_parser::{CssStrategy, HtmlParser};
 use webui_protocol::WebUIProtocol;
@@ -49,7 +50,7 @@ impl ResponseWriter for StringWriter {
 ///
 /// * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
 /// * `state_json` — JSON string of the state data.
-/// * `plugin` — Optional plugin identifier (e.g., `"fast"`).
+/// * `plugin` — Optional plugin identifier.
 ///
 /// # Returns
 ///
@@ -158,6 +159,9 @@ fn create_handler(plugin: Option<&str>) -> Result<WebUIHandler, BuildError> {
     match plugin {
         Some("fast") => Ok(WebUIHandler::with_plugin(|| {
             Box::new(FastHydrationPlugin::new())
+        })),
+        Some("webui") => Ok(WebUIHandler::with_plugin(|| {
+            Box::new(WebUIHydrationPlugin::new())
         })),
         Some(unknown) => Err(BuildError::Render(format!("Unknown plugin: {unknown}"))),
         None => Ok(WebUIHandler::new()),

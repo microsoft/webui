@@ -9,12 +9,15 @@ use mime_guess::from_path;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
+use std::io::ErrorKind;
+use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use webui::WebUIHandler;
 use webui_handler::plugin::fast::FastHydrationPlugin;
+use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter};
 use webui_protocol::WebUIProtocol;
 
@@ -258,6 +261,10 @@ pub fn execute(args: &ServeArgs) -> Result<()> {
             output::hint("Pass a valid --state path to a JSON file");
         } else if err_msg.contains("Serve directory not found") {
             output::hint("Pass a valid --servedir path for static assets");
+        } else if err_msg.contains("already in use") {
+            output::hint(
+                "Stop the process using that port, or rerun with --port <free-port>. Previous dev sessions may have left a server running.",
+            );
         }
         eprintln!();
         err
@@ -301,6 +308,8 @@ fn run(args: &ServeArgs) -> Result<()> {
     }
     eprintln!();
 
+    ensure_local_port_available(args.port)?;
+
     // Initial build + render
     let initial_result = build_and_render(&render_config, hmr_backend.as_deref())?;
     output::success("Initial build and render complete");
@@ -335,6 +344,7 @@ fn run(args: &ServeArgs) -> Result<()> {
 
     let addr = format!("127.0.0.1:{}", args.port);
     let bind_addr = addr.clone();
+    let server_port = args.port;
 
     output::field("URL", &format!("http://{addr}/"));
     output::finish("Server is running \u{2014} press Ctrl+C to stop");
@@ -380,7 +390,7 @@ fn run(args: &ServeArgs) -> Result<()> {
                 app
             })
             .bind(&bind_addr)
-            .with_context(|| format!("Failed to bind to {bind_addr}"))?
+            .map_err(|error| map_bind_error(server_port, &bind_addr, error))?
             .run()
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
@@ -388,6 +398,22 @@ fn run(args: &ServeArgs) -> Result<()> {
         .with_context(|| format!("Failed to start actix-web server on {addr}"))?;
 
     Ok(())
+}
+
+fn ensure_local_port_available(port: u16) -> Result<()> {
+    let bind_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+    let listener = TcpListener::bind(bind_addr)
+        .map_err(|error| map_bind_error(port, &bind_addr.to_string(), error))?;
+    drop(listener);
+    Ok(())
+}
+
+fn map_bind_error(port: u16, bind_addr: &str, error: std::io::Error) -> anyhow::Error {
+    if error.kind() == ErrorKind::AddrInUse {
+        return anyhow::anyhow!("Port {port} on 127.0.0.1 is already in use");
+    }
+
+    anyhow::anyhow!("Failed to bind to {bind_addr}: {error}")
 }
 
 #[derive(Clone)]
@@ -427,6 +453,7 @@ fn build_and_render(
     let mut writer = MemoryWriter::with_capacity(4096);
     let handler = match config.app_args.plugin.as_deref() {
         Some("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
+        Some("webui") => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
         _ => WebUIHandler::new(),
     };
     handler.handle(
@@ -581,6 +608,7 @@ async fn render_page_response(
     let mut writer = MemoryWriter::with_capacity(4096);
     let handler = match plugin.as_deref() {
         Some("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
+        Some("webui") => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
         _ => WebUIHandler::new(),
     };
 
@@ -1097,6 +1125,19 @@ mod tests {
         };
         let BuildRenderResult { html, .. } = build_and_render(&config, None).unwrap();
         assert!(!html.contains("/hmr"));
+    }
+
+    #[test]
+    fn test_ensure_local_port_available_reports_port_in_use() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let error = ensure_local_port_available(port).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains(&format!("Port {port} on 127.0.0.1 is already in use"))
+        );
+        drop(listener);
     }
 
     #[test]

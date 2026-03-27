@@ -27,7 +27,6 @@ void *webui_handler_create();
 /// # Arguments
 ///
 /// * `plugin_id` - Null-terminated UTF-8 string identifying the plugin.
-///   Currently supported: `"fast"`. Pass `NULL` for no plugin.
 ///
 /// # Returns
 ///

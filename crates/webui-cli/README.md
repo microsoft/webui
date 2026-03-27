@@ -26,11 +26,11 @@ webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>]
 | `--out` | *(required)* | Output directory for protocol.bin + CSS |
 | `--entry` | `index.html` | Entry HTML file |
 | `--css` | `link` | CSS mode: `link` (external files) or `style` (inline) |
-| `--plugin` | *(none)* | Parser plugin (e.g., `fast` for FAST-HTML) |
+| `--plugin` | *(none)* | Framework plugin: `webui` for WebUI Framework compiled templates and hydration markers or `fast` for FAST-HTML hydration |
 
 ```bash
 webui build ./src --out ./dist
-webui build ./src --out ./dist --plugin fast --css style
+webui build ./src --out ./dist --plugin webui --css style
 ```
 
 ### `webui serve`
@@ -48,12 +48,12 @@ webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-por
 | `--servedir` | *(none)* | Static assets directory served at `/*` |
 | `--port` | `3000` | Server port |
 | `--api-port` | *(none)* | Proxy API requests to this port |
-| `--plugin` | *(none)* | Parser plugin (e.g., `fast`) |
+| `--plugin` | *(none)* | Framework plugin: `webui` for WebUI Framework compiled templates and hydration markers or `fast` for FAST-HTML hydration |
 | `--watch` | off | Enable file watching + HMR |
 
 ```bash
 webui serve ./src --state ./data/state.json --port 3000 --watch
-webui serve ./src --plugin fast --servedir ./dist --port 3003 --api-port 3013 --watch
+webui serve ./src --plugin webui --servedir ./dist --port 3004 --api-port 3014 --watch
 ```
 
 Features:

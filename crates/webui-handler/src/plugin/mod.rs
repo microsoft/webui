@@ -7,6 +7,7 @@
 //! completion work, such as component template emission, stays in handler core.
 
 pub mod fast;
+pub mod webui;
 
 use crate::{ResponseWriter, Result};
 use std::collections::HashSet;

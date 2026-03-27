@@ -12,9 +12,12 @@ Current entries:
 | Example | Description |
 |---------|-------------|
 | `app/hello-world` | Basic WebUI app with signals, for-loops, if-conditions |
+| `app/calculator` | Basic WebUI app with calculator that has custom views and events |
 | `app/todo-fast` | FAST-HTML hydration app with components, `@event` bindings, `f-ref`, and `<f-template>` injection |
-| `integration/node` | Node.js integration via native addon (supports `--plugin=fast`) |
-| `integration/rust` | Rust integration via `webui-handler` (supports `--plugin=fast`) |
+| `app/commerce` | FAST-HTML hydration app with a rust backend for commerce demo app, dozens of controls. | 
+| `app/routes` | Nested declaritive routing demo showing 4 level deep routes full server side and client handoff. |
+| `integration/node` | Node.js integration via native addon (supports `--plugin=webui` and `--plugin=fast`) |
+| `integration/rust` | Rust integration via `webui-handler` (supports `--plugin=webui` and `--plugin=fast`) |
 
 ## Quick Start
 

@@ -8,6 +8,7 @@
 //! and emit per-element hydration metadata for the handler.
 
 pub mod fast;
+pub mod webui;
 
 use crate::component_registry::Component;
 use crate::Result;

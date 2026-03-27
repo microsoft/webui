@@ -34,8 +34,20 @@ pub struct WebUIProtocol {
     /// Sorted, deduplicated CSS custom property names used across all
     /// components and entry page styles (without `--` prefix).
     pub tokens: Vec<String>,
-    /// Per-component data keyed by tag name (f-template + CSS).
+    /// Per-component data keyed by tag name (client template + CSS).
     pub components: HashMap<String, ComponentData>,
+}
+
+/// Per-component metadata populated by the active parser plugin at build time.
+/// Framework-neutral: each plugin populates the fields it needs.
+/// Generated from protobuf `message ComponentData`.
+pub struct ComponentData {
+    /// Client-side template string for hydration.
+    /// Populated by the active parser plugin (e.g., f-template HTML for FAST,
+    /// compiled template JS for WebUI Framework).
+    pub template: String,
+    /// Component CSS content for the Module strategy.
+    pub css: String,
 }
 
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
@@ -194,6 +206,11 @@ optional parameters. Exact matches (most literal segments) take precedence over 
 2. Matched route: emit `<webui-route path="..." component="..." active>`, render component, recurse into children.
 3. Non-matched routes: emit `<webui-route ... style="display:none">`.
 
+For the WebUI framework path, matched route components do **not** receive route
+state as scalar attributes or `data-state`. Initial SSR state comes from the
+rendered DOM plus hydration markers, and client-side navigations apply fresh
+state through the partial-response `setInitialState(...)` path.
+
 When the handler encounters `Fragment::Outlet`:
 1. Take children from the currently active route.
 2. Match children against the request path (relative to route base).
@@ -217,7 +234,7 @@ on the first client-side navigation.
 
 **Partial response:** The server returns `{ state, templates, inventory, path, chain }`:
 - `state`: route params from all nesting levels injected into API state
-- `templates`: `f-template` HTML strings the client doesn't already have (filtered by inventory bitmask)
+- `templates`: client template strings the client doesn't already have (filtered by inventory bitmask)
 - `inventory`: updated hex bitmask of loaded templates
 - `chain`: matched route chain array — each entry has `component`, `path`, optional `params` and `exact`
 
@@ -245,7 +262,7 @@ route chain rather than trying to mirror a transient server-side state snapshot.
 **Attribute types:**
 - **Simple dynamic:** `href="{{url}}"` → `{ name: "href", value: "url" }`
 - **Boolean (`?` prefix):** `?disabled={{isDisabled}}` → `{ name: "disabled", condition_tree: identifier("isDisabled") }` — rendered only if condition is truthy; silently dropped if value is not a pure handlebars expression.
-- **Complex (`:` prefix):** `:config="{{settings}}"` → `{ name: ":config", value: "settings", complex: true }`
+- **Pass-through / property (`:` prefix):** `:config="{{settings}}"` or `:value="{{searchQuery}}"` → `{ name: ":config", value: "settings", complex: true }` — reserved for direct pass-through/property bindings, including live form-control values.
 - **Mixed/template:** `value="hello {{world}}"` → `{ name: "value", template: "attr-1" }` with sub-stream `attr-1: [raw("hello "), signal("world")]`
 #### Condition Expressions
 Condition expressions are protobuf messages with a `oneof expr` field:
@@ -413,9 +430,9 @@ pub trait ResponseWriter {
 ```
 
 ### Handler Plugin System
-The handler supports a framework-agnostic plugin system. Plugins receive lifecycle
-callbacks during rendering and can inject arbitrary content. WebUI does not interpret
-what plugins write — each framework defines its own marker format.
+The handler supports framework-specific hydration plugins. Plugins receive lifecycle
+callbacks during rendering and write marker formats for their framework, while shared
+completion work such as rendered-component template emission stays in handler core.
 
 ```rust
 pub trait HandlerPlugin {
@@ -425,7 +442,12 @@ pub trait HandlerPlugin {
     fn on_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_start(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_end(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
-    fn on_plugin_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn write_route_component_state(
+        &self,
+        state: &serde_json::Value,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()>;
 }
 ```
 
@@ -434,7 +456,8 @@ pub trait HandlerPlugin {
 - **For loop**: `on_binding_start/end` around entire loop; `on_repeat_item_start/end` + `push_scope/pop_scope` per item
 - **If condition**: `on_binding_start/end` around condition; `push_scope/pop_scope` if condition is true
 - **Component**: `push_scope/pop_scope` around component body
-- **Plugin fragment**: `on_plugin_data` with opaque bytes from protocol
+- **Plugin fragment**: `on_element_data` with parser-produced hydration bytes from protocol
+- **Matched route component**: `write_route_component_state` before the opening tag closes
 
 **Built-in plugin: `FastHydrationPlugin`**
 Injects FAST-HTML hydration comment markers for client-side re-hydration:
@@ -443,9 +466,32 @@ Injects FAST-HTML hydration comment markers for client-side re-hydration:
 - Attribute (single): ` data-fe-b-INDEX`
 - Attribute (multi): ` data-fe-c-INDEX-COUNT`
 
+FAST template authoring and runtime usage are documented in the canonical
+[FAST HTML README](https://github.com/microsoft/fast/blob/main/packages/fast-html/README.md).
+`DESIGN.md` only specifies the parser/handler integration contracts.
+
+**Built-in plugin: `WebUIHydrationPlugin`**
+Injects WebUI Framework SSR hydration markers and attributes:
+- Binding: `<!--w-b:start:INDEX:NAME-->` / `<!--w-b:end:INDEX:NAME-->`
+- Repeat: `<!--w-r:start:INDEX-->` / `<!--w-r:end:INDEX-->`
+- Attribute (single): ` data-w-b-INDEX`
+- Attribute (multi): ` data-w-c-INDEX-COUNT`
+- Event: ` data-ev="COUNT"` once per element with event handlers
+
+Markers are emitted only in active child scopes; the root page scope stays
+marker-free. During hydration the runtime walks `data-ev` elements in DOM order,
+consumes `COUNT` consecutive entries from metadata `e[]`, then installs delegated
+shadow-root listeners using runtime `data-eh-*` attributes on the target elements.
+See [WebUI Framework Plugin](#webui-framework-plugin) for the protocol details, and
+[packages/webui-framework/README.md](packages/webui-framework/README.md) for the
+public framework API and authoring model.
+
 **Usage:**
 ```rust
+// FAST plugin
 let handler = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));
+// WebUI Framework plugin
+let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
 handler.handle(&protocol, &state, &options, &mut writer)?;
 ```
 ### Fragment Processing
@@ -457,7 +503,7 @@ handler.handle(&protocol, &state, &options, &mut writer)?;
   - **Boolean (with `condition_tree`):** Evaluate condition; if truthy, render attribute name only. If false, omit entirely.
   - **Simple dynamic (with `value`):** Resolve signal from state, render as `name="resolved_value"`.
   - **Template (with `template`):** Render `name="`, process referenced sub-stream, render closing `"`.
-  - **Complex (with `complex: true`):** Same as simple dynamic but for `:` prefixed pass-through attributes.
+  - **Pass-through / property (with `complex: true`):** Same as simple dynamic on the SSR output, but reserved for `:` prefixed direct pass-through/property bindings.
 - **If fragments:**
   - Evaluate condition using `evaluate`
   - If true, process referenced fragment
@@ -474,7 +520,7 @@ handler.handle(&protocol, &state, &options, &mut writer)?;
     the fields of the current item being looped over and the global state. The `Component` fragment doesn't need to use
     the `For` fragment item moniker and can access the fields without the qualification. If the `Component` fragment is
     nested in multiple `For` fragments only the closest enclosing `For` fragment item's state is accessible to it.
-- **Plugin fragments:** Pass opaque `data` bytes to the handler plugin's `on_plugin_data` hook. Skipped silently when no plugin is configured.
+- **Plugin fragments:** Pass opaque `data` bytes to the handler plugin's `on_element_data` hook. Skipped silently when no plugin is configured.
 
 ### State Management
 - Global state refers to the global application state that is available to all fragments at all times.
@@ -595,7 +641,8 @@ pub struct HtmlParser {
 ```rust
 /// Strategy for how component CSS is delivered in rendered output.
 pub enum CssStrategy {
-    /// Emit `<link rel="stylesheet" href="./component.css">` tags (default).
+    /// Emit `<link rel="stylesheet" href="./component.css">` tags for
+    /// components that actually have discovered CSS (default).
     Link,
     /// Embed CSS content inline in `<style>` tags within the shadow DOM template.
     Style,
@@ -606,9 +653,9 @@ pub enum CssStrategy {
 }
 ```
 
-- **Link** (default): Emits `<link>` tags referencing external `.css` files. Used by the CLI for production builds where CSS files are served separately.
+- **Link** (default): Emits `<link>` tags referencing external `.css` files only for components whose discovery/registration data included CSS. Used by the CLI for production builds where CSS files are served separately.
 - **Style**: Embeds the full CSS content in `<style>` tags inside the shadow DOM template. Used when all files are needed in-memory.
-- **Module**: Uses the [Declarative CSS Module Scripts](https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ShadowDOM/explainer.md) proposal. Emits a `<style type="module" specifier="component-name">` definition in each component's light DOM (once per component) and adds `shadowrootadoptedstylesheets="component-name"` to the `<template>` tag. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. For partial rendering, CSS module definitions are prepended to f-template strings so the client inserts both as a single DocumentFragment.
+- **Module**: Uses the [Declarative CSS Module Scripts](https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ShadowDOM/explainer.md) proposal. Emits a `<style type="module" specifier="component-name">` definition in each component's light DOM (once per component) and adds `shadowrootadoptedstylesheets="component-name"` to the `<template>` tag. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. For partial rendering, CSS module definitions are prepended to client template payloads so the client inserts the definition before the companion template/script runs; WebUI Framework compiled metadata also carries the adopted stylesheet specifier so client-created components can reuse the registered stylesheet.
 
 Set via `parser.set_css_strategy(CssStrategy::Style)`.
 
@@ -619,42 +666,69 @@ pub fn into_fragment_records(self) -> WebUIFragmentRecords
 ```
 
 ### Parser Plugin System
-The parser supports a framework-agnostic plugin system. Plugins customize parsing
-behavior for framework-specific needs (component discovery, attribute filtering,
-hydration data emission) without WebUI knowing framework internals.
+The parser supports a framework-aware plugin system. Plugins classify framework-owned
+attributes, capture finalized component templates, and emit per-element hydration
+metadata without requiring the build layer to downcast concrete plugin types.
 
 ```rust
 pub trait ParserPlugin {
-    fn on_parse_component(&mut self, tag_name: &str, component: &Component) -> Result<()>;
-    fn should_skip_attribute(&self, attr_name: &str) -> bool;
-    fn on_body_end(&mut self) -> Option<String>;
-    fn on_element_parsed(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
+    fn start_fragment(&mut self, fragment_id: &str) {}
+    fn register_component_template(
+        &mut self,
+        tag_name: &str,
+        component: &Component,
+        processed_template: &str,
+    ) -> Result<()>;
+    fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
+    fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
+    fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts;
 }
 ```
 
 **Hook invocation points:**
-- **Attribute loop**: `should_skip_attribute` called per attribute; skipped attrs are not parsed
-- **Element completion**: `on_element_parsed` called with binding count after all attrs processed; returned bytes emitted as `Plugin` fragment
-- **Component encounter**: `on_parse_component` called when a custom element is found
-- **Body end**: `on_body_end` called before `body_end` signal; returned HTML injected as raw fragment
+- **Fragment start**: `start_fragment` runs before each `HtmlParser::parse(...)` call so plugins can reset fragment-local counters
+- **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
+- **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
+- **Component registration**: `register_component_template` receives the final processed component template HTML
+- **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts
 
 **Built-in plugin: `FastParserPlugin`**
-- Skips FAST-specific runtime attributes (`@click`, `f-ref`, `f-slotted`, `f-children`)
+- Marks FAST-specific runtime attributes (`@click`, `f-ref`, `f-slotted`, `f-children`) as skipped but still counted bindings
 - Emits `Plugin` fragments with u32 LE attribute binding counts
-- Tracks components and injects `<f-template>` wrappers at body end
+- Tracks components and returns `<f-template>` artifacts after parsing
 - Converts syntax to FAST syntax: `<if>`→`<f-when>`, `<for>`→`<f-repeat>`, `{{expr}}`→`{expr}` in `:attr` values
+- FAST authoring details live in the canonical [FAST HTML README](https://github.com/microsoft/fast/blob/main/packages/fast-html/README.md)
+
+**Built-in plugin: `WebUIParserPlugin`**
+- Skips WebUI Framework runtime attributes (`@click`, `@keydown`, etc.) without counting them as attribute bindings
+- Tracks per-element event count; emits 12-byte `WebUIElementData` `Plugin` fragments encoding `[binding_count, event_start, event_count]`
+- Tracks components and compiles templates into metadata `<script>` blocks registered in `window.__webui_templates`
+- Public framework authoring, decorators, and package entrypoints live in [packages/webui-framework/README.md](packages/webui-framework/README.md)
 
 **Usage:**
 ```rust
+// FAST plugin
 let mut parser = HtmlParser::with_plugin(Box::new(FastParserPlugin::new()));
+// WebUI Framework plugin
+let mut parser = HtmlParser::with_plugin(Box::new(WebUIParserPlugin::new()));
 parser.parse("index.html", &html)?;
 ```
 
 **CLI integration:**
 ```bash
+# FAST plugin
 webui build ./templates --out ./dist --plugin=fast
 webui serve ./templates --state ./data/state.json --plugin=fast
+
+# WebUI Framework plugin
+webui build ./templates --out ./dist --plugin=webui
+webui serve ./templates --state ./data/state.json --plugin=webui
 ```
+
+`webui serve` performs a preflight bind check on its configured HTTP port and
+fails before the initial build if that port is already in use, returning an
+actionable message so stale dev processes can be stopped explicitly.
+
 #### Content Processing
 
 ##### Raw Content
@@ -802,6 +876,133 @@ pub enum ParserError {
     Io(#[from] std::io::Error),
 }
 ```
+## WebUI Framework Plugin
+
+This section specifies only the cross-crate wire contract for `--plugin=webui`: the metadata emitted by `webui-parser`, the SSR markers emitted by `webui-handler`, and the hydration/runtime expectations consumed by `@microsoft/webui-framework`.
+
+It intentionally does **not** duplicate package tutorials or framework API docs. Use the canonical sources instead:
+
+- WebUI Framework public API, decorators, and component authoring: [packages/webui-framework/README.md](packages/webui-framework/README.md)
+- FAST template authoring and runtime reference: [FAST HTML README](https://github.com/microsoft/fast/blob/main/packages/fast-html/README.md)
+
+### Metadata object format
+
+Each component's compiled template is registered in `window.__webui_templates[tagName]` as a marker-free metadata object consumed by the browser runtime:
+
+| Field | Type                              | Description                                        |
+|-------|-----------------------------------|----------------------------------------------------|
+| `h`   | `string`                          | Marker-free static HTML for client-created DOM, including baked-in `<link>` / `<style>` nodes for link/style CSS strategies |
+| `tx`  | `[slot, parts][]`                 | Client text runs inserted at precompiled slots     |
+| `a`   | `CompiledAttrMeta[]`              | Attribute binding metadata                         |
+| `ag`  | `[elementPath, start, count][]`   | Attribute-target groups for `a[]`                  |
+| `c`   | `[ConditionExpr, blockIndex][]`   | Conditional blocks                                 |
+| `cl`  | `SlotPath[]`                      | Conditional anchor slots aligned to `c[]`          |
+| `r`   | `[collection, itemVar, blockIndex][]` | Repeat blocks                                  |
+| `rl`  | `SlotPath[]`                      | Repeat anchor slots aligned to `r[]`               |
+| `e`   | `[event, handler, needsEvent][]`  | Body events                                        |
+| `el`  | `NodePath[]`                      | Event target element paths aligned to `e[]`        |
+| `b`   | `TemplateBlockMeta[]`             | Nested compiled block table referenced by `c` / `r` |
+| `sa`  | `string`                          | Optional module-mode adopted stylesheet specifier copied from `shadowrootadoptedstylesheets` |
+| `re`  | `[event, handler, needsEvent][]`  | Root events, attached to the host element          |
+
+All arrays are optional — omitted from the output when empty to minimize payload.
+
+`ConditionExpr` in compiled framework metadata reuses the protocol condition AST in a compact tuple form:
+
+- `[0, path]` — identifier / truthy path lookup
+- `[1, left, operator, right]` — predicate comparison
+- `[2, condition]` — logical NOT
+- `[3, left, operator, right]` — logical compound (`AND` / `OR`)
+
+Comparison operators match the protocol enum values:
+
+- `1` = `GREATER_THAN`
+- `2` = `LESS_THAN`
+- `3` = `EQUAL`
+- `4` = `NOT_EQUAL`
+- `5` = `GREATER_THAN_OR_EQUAL`
+- `6` = `LESS_THAN_OR_EQUAL`
+
+Logical operators also match the protocol enum values:
+
+- `1` = `AND`
+- `2` = `OR`
+
+`a[]` uses compact tuple forms to avoid runtime parsing:
+
+- `[name, 0, path]` — simple attribute binding, e.g. `href="{{url}}"`
+- `[name, 1, path]` — pass-through/property binding, e.g. `:config="{{settings}}"` or `:value="{{searchQuery}}"`
+- `[name, 2, ConditionExpr]` — boolean attribute binding, e.g. `?disabled="{{expr}}"`
+- `[name, 3, parts]` — mixed/template attribute binding, e.g. `class="item {{state}}"`
+
+### Compilation rules
+
+The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webui.rs`) transforms the HTML template in a single forward pass, then finalizes it into marker-free client HTML plus locator metadata:
+
+| Source syntax                        | Metadata field(s)      | Client `h` result                 |
+|--------------------------------------|------------------------|-----------------------------------|
+| `{{expr}}`, `{{{expr}}}`, mixed text | `tx[]`                 | dynamic text run removed          |
+| `href="{{url}}"`                     | `a[]` + `ag[]`         | element kept marker-free          |
+| `class="item {{state}}"`             | `a[]` + `ag[]`         | element kept marker-free          |
+| `?disabled="{{expr}}"`               | `a[]` + `ag[]`         | element kept marker-free          |
+| `:config="{{settings}}"`, `:value="{{searchQuery}}"` | `a[]` + `ag[]` | element kept marker-free |
+| `<if condition="expr">body</if>`     | `c[]` + `cl[]` + `b[]` | block removed; anchor slot stored |
+| `<for each="v in coll">body</for>`   | `r[]` + `rl[]` + `b[]` | block removed; anchor slot stored |
+| `@event="{handler(e)}"`              | `e[]` + `el[]`         | element kept marker-free          |
+| `@event` on `<template>` wrapper     | `re[N]`                | *(stripped)*                      |
+| `w-ref="name"`                       | *(stays)*              | *(unchanged)*                     |
+| `<outlet />`                         | *(stays)*              | `<outlet></outlet>`               |
+
+`tx[]` stores text runs as `[slot, parts]`, where `parts` reuse the compact attribute-part encoding (`string` for static text, `[path]` for dynamic text). Client-created DOM inserts one runtime `Text` node per run instead of scanning compiled marker comments.
+
+Attribute bindings are recorded in `a[]`, while `ag[]` points at the owning element and the contiguous `[start, count)` range inside `a[]`. The compiled client HTML never embeds `data-w-*` markers; those remain SSR-only handler markers.
+
+Nested `<if>` / `<for>` blocks are recursively compiled into the shared `b[]` block table. The client runtime instantiates compiled child blocks directly and evaluates precompiled condition AST tuples — it does not parse raw template syntax or condition strings from repeat or conditional body content.
+
+The private workspace package `packages/webui-test-support` (`@microsoft/webui-test-support`) exists to build this metadata shape in JS-side tests without duplicating tuple encodings or fixture infrastructure across `webui-framework` and `webui-router`. It centralizes fixture builders such as `buildTemplate`, `registerCompiledTemplate`, and the condition AST helpers, and it also provides shared Node-side fixture bundling/server helpers so browser fixture apps and Playwright servers stay aligned with the runtime/compiler contract as that contract evolves.
+
+### Plugin data and SSR hydration markers
+
+The current WebUI parser emits a 12-byte `Plugin` fragment (`WebUIElementData`) for each element that has attribute bindings or `@event` handlers:
+
+```
+Bytes 0–3:  binding_count   (u32 LE)  — number of dynamic attribute bindings
+Bytes 4–7:  event_start_idx (u32 LE)  — global index into metadata `e[]`
+Bytes 8–11: event_count     (u32 LE)  — number of @event attrs on this element
+```
+
+The handler decodes this in `on_element_data` and emits SSR-only markers:
+
+- `data-w-b-N` for one bound attribute, or `data-w-c-START-COUNT` for multiple `a[]` entries on the same element
+- `data-ev="COUNT"` once per element, where `COUNT` is the number of consecutive entries in the metadata `e[]` array that belong to that element
+
+For compatibility during mixed parser/handler rollouts, the handler also accepts the legacy 4-byte binding-only payload and upgrades it to `event_count = 0`.
+
+WebUI SSR marker formats are:
+
+| Marker | Format | Notes |
+|--------|--------|-------|
+| Binding start | `<!--w-b:start:INDEX:NAME-->` | Used for text bindings and block boundaries |
+| Binding end | `<!--w-b:end:INDEX:NAME-->` | Matches the corresponding start marker |
+| Repeat item start | `<!--w-r:start:INDEX-->` | Wraps one concrete `<for>` iteration |
+| Repeat item end | `<!--w-r:end:INDEX-->` | Closes that iteration |
+| Attribute single | `data-w-b-INDEX` | One dynamic attribute bound to `a[INDEX]` |
+| Attribute multi | `data-w-c-START-COUNT` | `COUNT` consecutive `a[]` entries on the same element |
+| Event count | `data-ev="COUNT"` | `COUNT` consecutive `e[]` entries belong to this element |
+
+For `<if>` and `<for>` blocks, `NAME` in the `w-b:*` marker pair uses block labels such as `if-2` or `for-3`. The handler only emits these markers in active child scopes; the root page scope remains marker-free.
+
+### Runtime contract
+
+`@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`.
+
+- SSR hydration uses one DOM walk to discover `w-b:*`, `w-r:*`, `data-w-*`, and `data-ev` markers, wire the relevant bindings, then remove SSR-only markers.
+- Client-created DOM never reparses template syntax; it clones marker-free `h` and resolves `tx`, `ag`, `cl`, `rl`, and `el` locators directly.
+- Events are mapped from `data-ev="COUNT"` to consecutive `e[]` entries in DOM order. After target discovery, the runtime stores `data-eh-*` attributes on the target elements and installs one delegated listener per event type on the shadow root. Root events from `re[]` attach directly to the host element.
+- The full package entrypoint supports repeat metadata (`r[]` / `rl[]`). The additive `@microsoft/webui-framework/element-no-repeat` entrypoint preserves the same public `WebUIElement` API but must reject compiled templates that contain repeat metadata.
+
+Detailed component examples, decorators, and package entrypoint guidance live in [packages/webui-framework/README.md](packages/webui-framework/README.md) rather than being duplicated in this design spec.
+
 ## Integration and Testing
 ### Test Suite Requirements
 - Unit tests for each module
@@ -826,16 +1027,19 @@ webui/
 │   ├── webui-test-utils/     # Testing utilities
 │   └── webui-wasm/           # WebAssembly bindings
 ├── packages/
-│   └── @microsoft/
-│       ├── webui/            # npm package (CLI + programmatic JS API)
-│       ├── webui-darwin-arm64/   # Platform binary (macOS ARM64)
-│       ├── webui-darwin-x64/     # Platform binary (macOS x64)
-│       ├── webui-linux-x64/      # Platform binary (Linux x64)
-│       ├── webui-linux-arm64/    # Platform binary (Linux ARM64)
-│       ├── webui-win32-x64/      # Platform binary (Windows x64)
-│       └── webui-win32-arm64/    # Platform binary (Windows ARM64)
-├── examples/                 # Example applications
-├── docs/                     # Documentation
+│   ├── @microsoft/
+│   │   ├── webui/            # npm package (CLI + programmatic JS API)
+│   │   ├── webui-darwin-arm64/   # Platform binary (macOS ARM64)
+│   │   ├── webui-darwin-x64/     # Platform binary (macOS x64)
+│   │   ├── webui-linux-x64/      # Platform binary (Linux x64)
+│   │   ├── webui-linux-arm64/    # Platform binary (Linux ARM64)
+│   │   ├── webui-win32-x64/      # Platform binary (Windows x64)
+│   │   └── webui-win32-arm64/    # Platform binary (Windows ARM64)
+│   ├── webui-framework/      # WebUI Framework client runtime (@microsoft/webui-framework)
+│   ├── webui-router/         # SPA router for WebUI Framework (@microsoft/webui-router)
+│   └── webui-test-support/   # Private shared JS test metadata helpers (@microsoft/webui-test-support)
+├── examples/                 # Example applications (todo-fast, todo-webui, routes, …)
+├── docs/                     # Documentation (VitePress)
 ├── tests/                    # Integration tests
 └── benchmarks/               # Performance benchmarks
 ```
@@ -903,3 +1107,4 @@ The CLI specification and usage details are maintained in [crates/webui-cli/READ
 ## Example Workflow
 
 Examples and end-to-end walkthroughs are maintained in [examples/README.md](examples/README.md)
+

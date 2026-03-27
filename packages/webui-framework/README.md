@@ -110,6 +110,11 @@ Base class for framework components.
 
 In most components you do not call `$update()` directly. Property changes through `@observable` and `@attr` trigger updates for you.
 
+### Alternative entrypoints
+
+- `@microsoft/webui-framework` exports the full `WebUIElement` runtime, including repeat (`<for>`) reconciliation.
+- `@microsoft/webui-framework/element-no-repeat` exports the same `WebUIElement` class API without the repeat subsystem. Use it only for components whose compiled templates never include `<for>`.
+
 ### `@observable`
 
 Marks a property as reactive.  When the value changes, the framework
