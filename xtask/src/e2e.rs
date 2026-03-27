@@ -94,6 +94,15 @@ const SUITES: &[PlaywrightSuite] = &[
         test_script: "test",
         update_snapshots_script: "test:update-snapshots",
     },
+    PlaywrightSuite {
+        name: "webui-framework",
+        dir: "packages/webui-framework",
+        ports: &[],
+        scripts: &[],
+        build_client: false,
+        test_script: "test",
+        update_snapshots_script: "test:update-snapshots",
+    },
 ];
 
 struct TestResult {

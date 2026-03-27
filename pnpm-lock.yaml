@@ -259,6 +259,24 @@ importers:
         specifier: 'catalog:'
         version: 5.9.3
 
+  examples/app/todo-webui:
+    devDependencies:
+      '@microsoft/webui-framework':
+        specifier: workspace:*
+        version: link:../../../packages/webui-framework
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.2
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.27.3
+      tslib:
+        specifier: 'catalog:'
+        version: 2.8.1
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   examples/integration/electron:
     dependencies:
       '@microsoft/webui':
@@ -316,6 +334,24 @@ importers:
 
   packages/webui-darwin-x64: {}
 
+  packages/webui-framework:
+    devDependencies:
+      '@microsoft/webui-test-support':
+        specifier: workspace:*
+        version: link:../webui-test-support
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.2
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.3.5
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.27.3
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   packages/webui-linux-arm64: {}
 
   packages/webui-linux-x64: {}
@@ -337,6 +373,12 @@ importers:
       urlpattern-polyfill:
         specifier: 'catalog:'
         version: 10.1.0
+
+  packages/webui-test-support:
+    dependencies:
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.27.3
 
   packages/webui-win32-arm64: {}
 

@@ -1,0 +1,26 @@
+{
+  "name": "@microsoft/webui-test-support",
+  "version": "0.0.1",
+  "type": "module",
+  "private": true,
+  "description": "Private shared test utilities for WebUI workspace packages.",
+  "license": "MIT",
+  "sideEffects": false,
+  "dependencies": {
+    "esbuild": "catalog:"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./fixture-build": {
+      "types": "./src/fixture-build.ts",
+      "default": "./src/fixture-build.ts"
+    },
+    "./fixture-server": {
+      "types": "./src/fixture-server.ts",
+      "default": "./src/fixture-server.ts"
+    }
+  }
+}

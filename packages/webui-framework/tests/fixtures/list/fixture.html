@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>List Fixture</title>
+</head>
+<body>
+  <test-list>
+    <template shadowrootmode="open">
+      <div class="controls">
+        <button class="add" data-ev="0">Add</button>
+        <button class="reverse" data-ev="1">Reverse</button>
+        <button class="clear" data-ev="2">Clear</button>
+      </div>
+      <div class="items">
+        <!--w-b:start:0:for-1-->
+        <!--w-r:start:0-->
+        <test-list-item item-id="1" title="Alpha" state="pending">
+          <template shadowrootmode="open">
+            <article class="item">
+              <span class="title"><!--w-b:start:0:title-->Alpha<!--w-b:end:0:title--></span>
+            </article>
+          </template>
+        </test-list-item>
+        <!--w-r:end:0-->
+        <!--w-r:start:1-->
+        <test-list-item item-id="2" title="Beta" state="done">
+          <template shadowrootmode="open">
+            <article class="item">
+              <span class="title"><!--w-b:start:0:title-->Beta<!--w-b:end:0:title--></span>
+              <!--w-b:start:1:if-1--><span class="done">Done</span><!--w-b:end:1:if-1-->
+            </article>
+          </template>
+        </test-list-item>
+        <!--w-r:end:1-->
+        <!--w-b:end:0:for-1-->
+      </div>
+    </template>
+  </test-list>
+  <script src="/dist/list/element.js"></script>
+</body>
+</html>

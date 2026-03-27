@@ -120,7 +120,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-updated-baselines
-          path: examples/app/*/tests/*.spec.ts-snapshots/
+          path: |
+            examples/app/*/tests/*.spec.ts-snapshots/
+            packages/*/tests/*.spec.ts-snapshots/
           retention-days: 7
 
       - name: Upload test results (on failure)
@@ -128,7 +130,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-test-results
-          path: examples/app/*/test-results/
+          path: |
+            examples/app/*/test-results/
+            packages/*/test-results/
           retention-days: 7
 
   # ── Phase 2: WASM (Ubuntu) ─────────────────────────────────────────

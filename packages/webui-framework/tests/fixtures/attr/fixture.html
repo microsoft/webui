@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Attr Fixture</title>
+</head>
+<body>
+  <test-attr label="Status" display-value="Ready" cta-href="/checkout">
+    <template shadowrootmode="open">
+      <button class="noop" data-w-b-0 data-ev="0">Toggle</button>
+      <a class="logo" href="/" data-w-b-1 data-ev="1">Home</a>
+      <span class="label"><!--w-b:start:0:label-->Status<!--w-b:end:0:label--></span>
+      <span class="display"><!--w-b:start:1:displayValue-->Ready<!--w-b:end:1:displayValue--></span>
+      <a class="cta" href="/checkout" data-w-b-2>Open</a>
+    </template>
+  </test-attr>
+  <script src="/dist/attr/element.js"></script>
+</body>
+</html>

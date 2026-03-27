@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Ref Fixture</title>
+</head>
+<body>
+  <test-ref value="hello">
+    <template shadowrootmode="open">
+      <input class="input" w-ref="inputEl">
+      <span class="display"><!--w-b:start:0:value-->hello<!--w-b:end:0:value--></span>
+      <button class="read" data-ev="0">Read</button>
+      <button class="focus" data-ev="1">Focus</button>
+    </template>
+  </test-ref>
+  <script src="/dist/ref/element.js"></script>
+</body>
+</html>

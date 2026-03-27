@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Nav Fixture</title>
+</head>
+<body>
+  <test-nav>
+    <template shadowrootmode="open">
+      <div class="controls">
+        <button class="sync" data-ev="0">Sync groups</button>
+      </div>
+      <nav class="sidebar">
+        <div class="nav-section primary">
+          <a class="nav-link" data-nav="Dashboard" href="/">Dashboard</a>
+          <a class="nav-link" data-nav="All Contacts" href="/contacts">All Contacts</a>
+          <a class="nav-link" data-nav="Favorites" href="/favorites">Favorites</a>
+        </div>
+        <div class="nav-section groups">
+          <h3>Groups</h3>
+          <!--w-b:start:0:for-1-->
+          <!--w-r:start:0--><a class="nav-link nav-link-group" data-nav="work" href="/groups/work">work</a><!--w-r:end:0-->
+          <!--w-r:start:1--><a class="nav-link nav-link-group" data-nav="family" href="/groups/family">family</a><!--w-r:end:1-->
+          <!--w-r:start:2--><a class="nav-link nav-link-group" data-nav="friends" href="/groups/friends">friends</a><!--w-r:end:2-->
+          <!--w-r:start:3--><a class="nav-link nav-link-group" data-nav="other" href="/groups/other">other</a><!--w-r:end:3-->
+          <!--w-b:end:0:for-1-->
+        </div>
+      </nav>
+    </template>
+  </test-nav>
+  <script src="/dist/nav/element.js"></script>
+</body>
+</html>

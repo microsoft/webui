@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>State Seed Fixture</title>
+</head>
+<body>
+  <test-state-seed>
+    <template shadowrootmode="open">
+      <h1 class="title"><!--w-b:start:0:title-->SSR Title<!--w-b:end:0:title--></h1>
+      <test-state-seed-shell page="dashboard" data-w-c-0-3>
+        <template shadowrootmode="open">
+          <div class="page"><!--w-b:start:0:page-->dashboard<!--w-b:end:0:page--></div>
+          <nav class="groups">
+            <!--w-b:start:0:for-1-->
+            <!--w-r:start:0-->
+            <a class="group-link" data-nav="work" href="/groups/work" data-w-c-0-2><!--w-b:start:0:group-->work<!--w-b:end:0:group--></a>
+            <!--w-r:end:0-->
+            <!--w-r:start:1-->
+            <a class="group-link" data-nav="family" href="/groups/family" data-w-c-0-2><!--w-b:start:0:group-->family<!--w-b:end:0:group--></a>
+            <!--w-r:end:1-->
+            <!--w-b:end:0:for-1-->
+          </nav>
+          <nav class="categories">
+            <!--w-b:start:1:for-2-->
+            <!--w-r:start:0-->
+            <a class="category-link active" href="/search/featured" data-w-c-0-2><!--w-b:start:0:cat.title-->Featured<!--w-b:end:0:cat.title--></a>
+            <!--w-r:end:0-->
+            <!--w-r:start:1-->
+            <a class="category-link " href="/search/sale" data-w-c-0-2><!--w-b:start:0:cat.title-->Sale<!--w-b:end:0:cat.title--></a>
+            <!--w-r:end:1-->
+            <!--w-b:end:1:for-2-->
+          </nav>
+        </template>
+      </test-state-seed-shell>
+      <button class="add-group" data-ev="0">Add Group</button>
+      <button class="add-category" data-ev="1">Add Category</button>
+    </template>
+  </test-state-seed>
+  <script src="/dist/state-seed/element.js"></script>
+</body>
+</html>
