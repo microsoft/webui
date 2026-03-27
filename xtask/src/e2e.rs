@@ -79,7 +79,7 @@ const SUITES: &[PlaywrightSuite] = &[
     PlaywrightSuite {
         name: "routes",
         dir: "examples/app/routes",
-        ports: &[3018, 3008],
+        ports: &[3015, 3005],
         scripts: &["start:api", "start:server"],
         build_client: true,
         test_script: "test",
