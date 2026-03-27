@@ -9,11 +9,12 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 authors = ["Microsoft Edge"]
 license = "MIT"
 repository = "https://github.com/microsoft/webui"
+homepage = "https://microsoft.github.io/webui"
 
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }

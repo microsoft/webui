@@ -1,72 +1,46 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-// Minimal Node.js example: load a pre-built protocol.bin, pass state JSON,
-// and print rendered HTML to stdout using the webui-node native addon.
+// Minimal Node.js example: uses the @microsoft/webui package to build
+// templates into a protocol and render HTML with state data.
 //
 // Prerequisites:
 //   1. Build the native addon: cargo build -p microsoft-webui-node
-//   2. Build the hello-world app:
-//      cargo run -p microsoft-webui-cli -- build ../../app/hello-world/templates --out ../../app/hello-world/dist
+//   2. Build the @microsoft/webui package: pnpm --filter @microsoft/webui build
+//   3. Install workspace dependencies: pnpm install
 //
 // Usage:
-//   node index.js [protocol.bin] [state.json] [--plugin=fast]
+//   node index.js                                  # build + render hello-world app
+//   node index.js <protocol.bin> <state.json>      # render a pre-built protocol
 
 import { readFileSync } from "fs";
-import { createRequire } from "module";
-import { resolve, join } from "path";
-import { platform } from "os";
+import { resolve } from "path";
+import { build, render, renderStream } from "@microsoft/webui";
 
-// Resolve the native addon from the cargo build output
-function loadAddon() {
-  const require = createRequire(import.meta.url);
-  const root = resolve(import.meta.dirname, "../../..");
-  const profiles = ["debug", "release"];
-  const ext =
-    platform() === "darwin"
-      ? "dylib"
-      : platform() === "win32"
-        ? "dll"
-        : "so";
-  const prefix = platform() === "win32" ? "" : "lib";
-  const filename = `${prefix}webui_node.${ext}`;
+const appDir = resolve(import.meta.dirname, "../../app/hello-world/src");
+const stateFile = resolve(import.meta.dirname, "../../app/hello-world/data/state.json");
 
-  for (const profile of profiles) {
-    try {
-      return require(join(root, "target", profile, filename));
-    } catch {
-      // try next profile
-    }
-  }
-  throw new Error(
-    `Could not find ${filename} in target/debug or target/release. Run: cargo build -p microsoft-webui-node`
+if (process.argv[2] && process.argv[3]) {
+  // Pre-built protocol mode: render an existing protocol.bin with state.json
+  const protocolPath = resolve(import.meta.dirname, process.argv[2]);
+  const statePath = resolve(import.meta.dirname, process.argv[3]);
+  const protocolData = readFileSync(protocolPath);
+  const stateJson = readFileSync(statePath, "utf-8");
+
+  renderStream(protocolData, stateJson, (chunk) => process.stdout.write(chunk));
+  process.stdout.write("\n");
+} else {
+  // Build + render mode (default): compile hello-world templates, then render
+  const state = JSON.parse(readFileSync(stateFile, "utf-8"));
+  const result = build({ appDir });
+
+  console.error(
+    `Built: ${result.stats.fragmentCount} fragments, ` +
+    `${result.stats.protocolSizeBytes} bytes protocol, ` +
+    `${result.stats.durationMs}ms`
   );
+
+  const html = render(result.protocol, state);
+  process.stdout.write(html);
+  process.stdout.write("\n");
 }
-
-if (!process.argv[2] || !process.argv[3]) {
-  console.error("Usage: node index.js <protocol.bin> <state.json> [--plugin=fast]");
-  console.error("  protocol.bin  Path to the compiled protocol binary");
-  console.error("  state.json    Path to the JSON state file");
-  process.exit(1);
-}
-
-const protocolPath = process.argv[2];
-const statePath = process.argv[3];
-
-// Check for --plugin=fast flag
-const pluginArg = process.argv.find((a) => a.startsWith("--plugin="));
-const pluginName = pluginArg ? pluginArg.split("=")[1] : undefined;
-
-const addon = loadAddon();
-const protocolData = readFileSync(resolve(import.meta.dirname, protocolPath));
-const stateJson = readFileSync(
-  resolve(import.meta.dirname, statePath),
-  "utf-8"
-);
-
-// Pass plugin name as 4th arg to the native addon
-const handlerPlugin = pluginName === "fast" ? "fast" : undefined;
-
-// Render, streaming each chunk to stdout
-addon.render(protocolData, stateJson, (chunk) => process.stdout.write(chunk), handlerPlugin);
-process.stdout.write("\n");

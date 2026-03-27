@@ -6,19 +6,23 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["webui", "expressions", "evaluation", "templates", "ssr"]
+categories = ["web-programming", "parser-implementations"]
 
 [lib]
 name = "webui_expressions"
 
 [dependencies]
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.1" }
-microsoft-webui-state = { path = "../webui-state", version = "0.0.1" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.2" }
+microsoft-webui-state = { path = "../webui-state", version = "0.0.2" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.1" }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.2" }
 criterion = { workspace = true }
 
 [[bench]]

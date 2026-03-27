@@ -47,7 +47,7 @@ All development tasks go through `cargo xtask`:
 | `cargo xtask bench <crate>` | Run benchmarks (parser, handler, protocol, expressions, state, all) |
 | `cargo xtask dev <app>` | Run example app in dev mode |
 | `cargo xtask version <semver>` | Update version across all Cargo.toml and package.json files |
-| `cargo xtask publish-stage` | Stage all release artifacts into `publish/` (npm, NuGet, crates, WASM, native binaries) |
+| `cargo xtask publish-stage` | Stage release artifacts into `publish/` (supports `--native-only` and `--pack-only`) |
 
 ### CI Pipelines
 
@@ -91,7 +91,7 @@ graph LR
     buildL["Build Linux<br/><small>x64 + arm64 (cross)</small>"]
     buildM["Build macOS<br/><small>arm64 + x64 (cross)</small>"]
     buildW["Build Windows<br/><small>x64 + arm64 (cross)</small>"]
-    release["Release<br/><small>merge → tag → GitHub Release</small>"]
+    release["Release<br/><small>merge staged natives → pack → tag → GitHub Release</small>"]
 
     ver --> buildL
     ver --> buildM
@@ -101,7 +101,14 @@ graph LR
     buildW --> release
 ```
 
-Each build runner produces a complete `publish/` folder containing:
+Each build runner uploads only the platform-native inputs it produced:
+
+- `publish/native/` direct-download CLI binaries
+- `packages/webui-*` directories populated with the platform CLI + Node addon
+- `dotnet/runtimes/*` directories populated with the platform FFI library
+
+The release job merges those staged files and then runs `cargo xtask publish-stage --pack-only`
+once on Linux to build the final `publish/` folder:
 
 | Subfolder | Contents | Target registry |
 |-----------|----------|-----------------|

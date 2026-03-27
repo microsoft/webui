@@ -1,6 +1,6 @@
 # WebUI Electron Integration
 
-Wraps any pre-built WebUI app in a frameless Electron desktop window using the `webui-node` native addon.
+Wraps any pre-built WebUI app in a frameless Electron desktop window using the `@microsoft/webui` package.
 
 ## Prerequisites
 
@@ -10,10 +10,22 @@ Wraps any pre-built WebUI app in a frameless Electron desktop window using the `
 cargo build -p microsoft-webui-node --release
 ```
 
-2. Build a WebUI app (e.g. hello-world):
+2. Build the `@microsoft/webui` package:
 
 ```bash
-cargo run -p microsoft-webui-cli -- build ../../app/hello-world/templates --out ../../app/hello-world/dist --css external --plugin=fast
+pnpm --filter @microsoft/webui build
+```
+
+3. Install workspace dependencies:
+
+```bash
+pnpm install
+```
+
+4. Build a WebUI app (e.g. hello-world):
+
+```bash
+cargo run -p microsoft-webui-cli -- build ../../app/hello-world/src --out ../../app/hello-world/dist --css link --plugin=fast
 esbuild ../../app/hello-world/src/index.ts --bundle --outfile=../../app/hello-world/dist/index.js --format=esm
 ```
 

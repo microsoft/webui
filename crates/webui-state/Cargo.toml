@@ -6,6 +6,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["webui", "state", "ssr", "rendering", "templates"]
+categories = ["web-programming"]
 
 [lib]
 name = "webui_state"
@@ -15,7 +19,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.1" }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.2" }
 criterion = { workspace = true }
 
 [[bench]]

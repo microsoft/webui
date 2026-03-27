@@ -91,11 +91,25 @@ const PLATFORMS: &[PlatformEntry] = &[
 /// Subdirectories created inside `publish/`.
 const PUBLISH_SUBDIRS: &[&str] = &["native", "npm", "nuget", "crates", "wasm"];
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StageMode {
+    Full,
+    NativeOnly,
+    PackOnly,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct StageOptions {
+    target_triple: Option<String>,
+    profile: String,
+    mode: StageMode,
+}
+
 // ── Public entry point ──────────────────────────────────────────────────
 
 /// Stage release artifacts into `publish/` and package directories.
 ///
-/// Usage: `cargo xtask publish-stage [--target <triple|all>] [--profile release]`
+/// Usage: `cargo xtask publish-stage [--target <triple|all>] [--profile release] [--native-only|--pack-only]`
 ///
 /// Pass `--target all` to stage every platform whose build artifacts exist.
 /// If `--target` is omitted, detects the current host platform.
@@ -119,27 +133,13 @@ pub fn run_stage(args: &[String]) -> ExitCode {
         }
     };
 
-    let mut target_triple: Option<&str> = None;
-    let mut profile = "release";
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--target" => {
-                i += 1;
-                if i < args.len() {
-                    target_triple = Some(args[i].as_str());
-                }
-            }
-            "--profile" => {
-                i += 1;
-                if i < args.len() {
-                    profile = args[i].as_str();
-                }
-            }
-            _ => {}
+    let options = match parse_stage_options(args) {
+        Ok(options) => options,
+        Err(e) => {
+            eprintln!("  {} {}", console::style("✘").red().bold(), e,);
+            return ExitCode::FAILURE;
         }
-        i += 1;
-    }
+    };
 
     // Read workspace version
     let ver = match version::read_version() {
@@ -160,7 +160,7 @@ pub fn run_stage(args: &[String]) -> ExitCode {
     );
 
     // Create publish/ directory tree
-    if let Err(e) = create_publish_dirs(&root) {
+    if let Err(e) = prepare_publish_dirs(&root, options.mode) {
         eprintln!(
             "  {} Failed to create publish/ directories: {e}",
             console::style("✘").red().bold(),
@@ -169,22 +169,33 @@ pub fn run_stage(args: &[String]) -> ExitCode {
     }
 
     // Phase 1: Stage native binaries (existing behavior + publish/native/)
-    let stage_result = match target_triple {
-        Some("all") => stage_all_platforms(&root, profile),
-        Some(triple) => stage_one_platform(&root, triple, profile),
-        None => {
-            let host = detect_host_triple();
-            eprintln!(
-                "  {} No --target specified, using host: {}",
-                console::style("▸").cyan().bold(),
-                console::style(&host).bold(),
-            );
-            stage_one_platform(&root, &host, profile)
-        }
-    };
+    if options.mode != StageMode::PackOnly {
+        let stage_result = match options.target_triple.as_deref() {
+            Some("all") => stage_all_platforms(&root, &options.profile),
+            Some(triple) => stage_one_platform(&root, triple, &options.profile),
+            None => {
+                let host = detect_host_triple();
+                eprintln!(
+                    "  {} No --target specified, using host: {}",
+                    console::style("▸").cyan().bold(),
+                    console::style(&host).bold(),
+                );
+                stage_one_platform(&root, &host, &options.profile)
+            }
+        };
 
-    if stage_result != ExitCode::SUCCESS {
-        return stage_result;
+        if stage_result != ExitCode::SUCCESS {
+            return stage_result;
+        }
+
+        if options.mode == StageMode::NativeOnly {
+            eprintln!(
+                "\n{} Native artifacts staged in {}\n",
+                console::style("✨").green(),
+                console::style("publish/native").bold(),
+            );
+            return ExitCode::SUCCESS;
+        }
     }
 
     // Phase 2: Pack npm tarballs
@@ -252,19 +263,86 @@ pub fn run_stage(args: &[String]) -> ExitCode {
 // ── Publish directory setup ─────────────────────────────────────────────
 
 /// Create the `publish/` directory tree, cleaning it first if it exists.
-fn create_publish_dirs(root: &Path) -> Result<(), String> {
+fn prepare_publish_dirs(root: &Path, mode: StageMode) -> Result<(), String> {
     let publish_dir = root.join("publish");
 
-    if publish_dir.exists() {
-        fs::remove_dir_all(&publish_dir).map_err(|e| format!("failed to clean publish/: {e}"))?;
-    }
+    match mode {
+        StageMode::Full | StageMode::NativeOnly => {
+            if publish_dir.exists() {
+                fs::remove_dir_all(&publish_dir)
+                    .map_err(|e| format!("failed to clean publish/: {e}"))?;
+            }
 
-    for subdir in PUBLISH_SUBDIRS {
-        fs::create_dir_all(publish_dir.join(subdir))
-            .map_err(|e| format!("failed to create publish/{subdir}: {e}"))?;
+            for subdir in PUBLISH_SUBDIRS {
+                fs::create_dir_all(publish_dir.join(subdir))
+                    .map_err(|e| format!("failed to create publish/{subdir}: {e}"))?;
+            }
+        }
+        StageMode::PackOnly => {
+            fs::create_dir_all(publish_dir.join("native"))
+                .map_err(|e| format!("failed to create publish/native: {e}"))?;
+
+            for subdir in ["npm", "nuget", "crates", "wasm"] {
+                let path = publish_dir.join(subdir);
+                if path.exists() {
+                    fs::remove_dir_all(&path)
+                        .map_err(|e| format!("failed to clean publish/{subdir}: {e}"))?;
+                }
+                fs::create_dir_all(&path)
+                    .map_err(|e| format!("failed to create publish/{subdir}: {e}"))?;
+            }
+        }
     }
 
     Ok(())
+}
+
+fn parse_stage_options(args: &[String]) -> Result<StageOptions, String> {
+    let mut target_triple = None;
+    let mut profile = String::from("release");
+    let mut mode = StageMode::Full;
+    let mut i = 0;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--target" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing value for --target".to_string());
+                }
+                target_triple = Some(args[i].clone());
+            }
+            "--profile" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("missing value for --profile".to_string());
+                }
+                profile = args[i].clone();
+            }
+            "--native-only" => {
+                mode = set_stage_mode(mode, StageMode::NativeOnly)?;
+            }
+            "--pack-only" => {
+                mode = set_stage_mode(mode, StageMode::PackOnly)?;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    Ok(StageOptions {
+        target_triple,
+        profile,
+        mode,
+    })
+}
+
+fn set_stage_mode(current: StageMode, requested: StageMode) -> Result<StageMode, String> {
+    if current != StageMode::Full && current != requested {
+        return Err("cannot combine --native-only and --pack-only".to_string());
+    }
+
+    Ok(requested)
 }
 
 // ── Phase 1: Native binary staging ──────────────────────────────────────
@@ -825,6 +903,38 @@ fn copy_files_with_extension(src_dir: &Path, dest_dir: &Path, ext: &str) -> Resu
 mod tests {
     use super::*;
 
+    fn parse(args: &[&str]) -> Result<StageOptions, String> {
+        let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        parse_stage_options(&args)
+    }
+
+    #[test]
+    fn parse_stage_options_defaults_to_full_mode() {
+        let options = parse(&[]).expect("default options should parse");
+
+        assert_eq!(options.target_triple, None);
+        assert_eq!(options.profile, "release");
+        assert_eq!(options.mode, StageMode::Full);
+    }
+
+    #[test]
+    fn parse_stage_options_supports_pack_only_mode() {
+        let options = parse(&["--target", "all", "--profile", "debug", "--pack-only"])
+            .expect("pack-only options should parse");
+
+        assert_eq!(options.target_triple.as_deref(), Some("all"));
+        assert_eq!(options.profile, "debug");
+        assert_eq!(options.mode, StageMode::PackOnly);
+    }
+
+    #[test]
+    fn parse_stage_options_rejects_conflicting_modes() {
+        let error =
+            parse(&["--native-only", "--pack-only"]).expect_err("conflicting modes should fail");
+
+        assert!(error.contains("cannot combine"));
+    }
+
     #[test]
     fn test_native_binary_name_unix() {
         let p = PlatformEntry {
@@ -856,7 +966,7 @@ mod tests {
     #[test]
     fn test_create_publish_dirs() {
         let dir = tempfile::TempDir::new().unwrap();
-        create_publish_dirs(dir.path()).unwrap();
+        prepare_publish_dirs(dir.path(), StageMode::Full).unwrap();
 
         for subdir in PUBLISH_SUBDIRS {
             assert!(
@@ -873,12 +983,33 @@ mod tests {
         fs::create_dir_all(publish.join("stale")).unwrap();
         fs::write(publish.join("stale").join("old.txt"), "old").unwrap();
 
-        create_publish_dirs(dir.path()).unwrap();
+        prepare_publish_dirs(dir.path(), StageMode::Full).unwrap();
 
         assert!(!publish.join("stale").exists(), "stale/ should be removed");
         for subdir in PUBLISH_SUBDIRS {
             assert!(publish.join(subdir).is_dir());
         }
+    }
+
+    #[test]
+    fn test_pack_only_preserves_native_outputs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let publish = dir.path().join("publish");
+        let native = publish.join("native");
+        let npm = publish.join("npm");
+
+        fs::create_dir_all(&native).unwrap();
+        fs::create_dir_all(&npm).unwrap();
+        fs::write(native.join("webui-win32-x64.exe"), "bin").unwrap();
+        fs::write(npm.join("stale.tgz"), "stale").unwrap();
+
+        prepare_publish_dirs(dir.path(), StageMode::PackOnly).unwrap();
+
+        assert!(native.join("webui-win32-x64.exe").exists());
+        assert!(!npm.join("stale.tgz").exists());
+        assert!(publish.join("nuget").is_dir());
+        assert!(publish.join("crates").is_dir());
+        assert!(publish.join("wasm").is_dir());
     }
 
     #[test]

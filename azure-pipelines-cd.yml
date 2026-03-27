@@ -1,0 +1,118 @@
+trigger: none
+pr: none
+
+# The `resources` specify the location and version of the 1ES PT.
+resources:
+  repositories:
+  - repository: webuiPipelines
+    type: git
+    name: open-source/WebUIPipelineTemplates
+    ref: main
+  - repository: 1esPipelines
+    type: git
+    name: 1ESPipelineTemplates/1ESPipelineTemplates
+    ref: refs/tags/release
+
+extends:
+  # The pipeline extends the 1ES PT which will inject different SDL and compliance tasks.
+  # For non-production pipelines, use "Unofficial" as defined below.
+  # For productions pipelines, use "Official".
+  template: v1/1ES.Official.PipelineTemplate.yml@1esPipelines
+  parameters:
+    # Update the pool with your team's 1ES hosted pool.
+    pool:
+      name: OneESPool  # Name of your hosted pool
+      image: HostedPoolLinuxImage  # Name of the image in your pool. If not specified, first image of the pool is used
+      os: linux  # OS of the image. This value cannot be a variable. Allowed values: windows, linux, macOS
+    sdl:
+      sourceAnalysisPool:
+        name: OneESPool  # Name of your hosted pool
+        image: HostedPoolWindowsImage  # Name of the image in your pool. If not specified, first image of the pool is used
+        os: windows  # OS of the image. Allowed values: windows, linux, macOS
+    settings:
+      networkIsolationPolicy: Permissive
+    stages:
+
+    # ── Download pre-built release artifacts and publish ──
+    - stage: Package
+      jobs:
+      - job: PackageJob
+
+        steps:
+          - checkout: self
+            persistCredentials: "true"
+
+          - script: |
+              sudo mkdir -p -m 755 /etc/apt/keyrings
+              wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+                | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+              sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+                | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+              sudo apt-get update -qq
+              sudo apt-get install -y gh
+            displayName: Install GitHub CLI
+
+          # Download npm tarballs, crate archives, and NuGet packages from the
+          # GitHub release produced by the publish.yml GitHub Actions workflow.
+          - script: |
+              mkdir -p publish_artifacts_npm publish_artifacts_crates publish_artifacts_nuget
+              gh release download "$(releaseTag)" \
+                --repo microsoft/webui \
+                --pattern "*.tgz" \
+                --dir publish_artifacts_npm/
+              gh release download "$(releaseTag)" \
+                --repo microsoft/webui \
+                --pattern "*.crate" \
+                --dir publish_artifacts_crates/
+              gh release download "$(releaseTag)" \
+                --repo microsoft/webui \
+                --pattern "*.nupkg" \
+                --dir publish_artifacts_nuget/
+            displayName: Download release artifacts
+            env:
+              GH_TOKEN: $(GH_TOKEN)
+
+          # Check whether this version is already published to all registries.
+          # Sets needsPublishing=true if any of npm, NuGet, or crates.io do not
+          # yet carry the version — so a partial publish still reruns the template.
+          # The 'v' prefix is stripped from the release tag since registries
+          # expect a bare version number e.g. 1.2.3 not v1.2.3.
+          - script: |
+              VERSION="$(releaseTag)"
+              VERSION="${VERSION#v}"
+              NEEDS_PUBLISHING=false
+
+              # npm
+              if npm view "@microsoft/webui@${VERSION}" version 2>/dev/null | grep -q "^${VERSION}$"; then
+                echo "npm @microsoft/webui@${VERSION} already published"
+              else
+                echo "npm @microsoft/webui@${VERSION} not yet published"
+                NEEDS_PUBLISHING=true
+              fi
+
+              # NuGet
+              NUGET_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                "https://api.nuget.org/v3-flatcontainer/microsoft.webui/${VERSION}/microsoft.webui.${VERSION}.nupkg")
+              if [ "$NUGET_STATUS" = "200" ]; then
+                echo "NuGet Microsoft.WebUI ${VERSION} already published"
+              else
+                echo "NuGet Microsoft.WebUI ${VERSION} not yet published (HTTP ${NUGET_STATUS})"
+                NEEDS_PUBLISHING=true
+              fi
+
+              # crates.io
+              CRATE_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                "https://crates.io/api/v1/crates/microsoft-webui/${VERSION}")
+              if [ "$CRATE_STATUS" = "200" ]; then
+                echo "crates.io microsoft-webui ${VERSION} already published"
+              else
+                echo "crates.io microsoft-webui ${VERSION} not yet published (HTTP ${CRATE_STATUS})"
+                NEEDS_PUBLISHING=true
+              fi
+
+              echo "##vso[task.setvariable variable=needsPublishing]${NEEDS_PUBLISHING}"
+            displayName: Check if already published
+
+          - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
+            condition: eq(variables['needsPublishing'], 'true')

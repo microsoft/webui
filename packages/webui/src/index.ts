@@ -53,6 +53,16 @@ export interface BuildResult {
   stats: BuildStats;
 }
 
+/** Options for rendering a protocol. */
+export interface RenderOptions {
+  /** Fragment ID to start rendering from (default: "index.html"). */
+  entry?: string;
+  /** URL path to match routes against (default: "/"). */
+  requestPath?: string;
+  /** Parser plugin name (e.g., "fast" for FAST-HTML hydration). */
+  plugin?: string;
+}
+
 /** Complete JSON partial response from the server for client-side navigation. */
 export interface PartialResponse {
   /** Application state for the matched route. */
@@ -78,6 +88,8 @@ interface NativeAddon {
   render(
     protocol: Buffer,
     stateJson: string,
+    entry: string,
+    requestPath: string,
     onChunk: (html: string) => void,
     plugin?: string,
   ): void;
@@ -175,14 +187,17 @@ export function build(options: BuildOptions): BuildResult {
 export function render(
   protocol: Buffer,
   state: object | string,
+  options?: RenderOptions,
 ): string {
   const native = loadAddon();
   if (native) {
     let result = "";
     const stateStr = typeof state === "string" ? state : JSON.stringify(state);
-    native.render(protocol, stateStr, (chunk) => {
+    const entry = options?.entry ?? "index.html";
+    const requestPath = options?.requestPath ?? "/";
+    native.render(protocol, stateStr, entry, requestPath, (chunk) => {
       result += chunk;
-    });
+    }, options?.plugin);
     return result;
   }
 
@@ -200,11 +215,14 @@ export function renderStream(
   protocol: Buffer,
   state: object | string,
   onChunk: (html: string) => void,
+  options?: RenderOptions,
 ): void {
   const native = loadAddon();
   if (native) {
     const stateStr = typeof state === "string" ? state : JSON.stringify(state);
-    native.render(protocol, stateStr, onChunk);
+    const entry = options?.entry ?? "index.html";
+    const requestPath = options?.requestPath ?? "/";
+    native.render(protocol, stateStr, entry, requestPath, onChunk, options?.plugin);
     return;
   }
 
@@ -220,12 +238,13 @@ export function renderStream(
 export function buildAndRender(
   options: BuildOptions,
   state: object | string,
+  renderOpts?: RenderOptions,
 ): string {
   const result = build(options);
   if (!result.protocol || result.protocol.length === 0) {
     throw new Error("[webui] Build did not return protocol data.");
   }
-  return render(result.protocol, state);
+  return render(result.protocol, state, renderOpts);
 }
 
 /** Inspect protocol bytes and return JSON representation. */
