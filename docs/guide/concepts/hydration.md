@@ -2,7 +2,7 @@
 
 ## What is Hydration?
 
-WebUI renders HTML at build time (or server-render time) with **zero JavaScript**. The browser displays the HTML immediately via [Declarative Shadow DOM](https://developer.chrome.com/docs/css-ui/declarative-shadow-dom) — users see content before any script loads.
+WebUI compiles templates at build time and renders HTML at runtime (server-render time) with **zero JavaScript**. The browser displays the HTML immediately via [Declarative Shadow DOM](https://developer.chrome.com/docs/css-ui/declarative-shadow-dom) — users see content before any script loads.
 
 **Hydration** is the process of attaching event listeners and reactive bindings to the already-rendered DOM. This is _not_ re-rendering: the DOM already exists. Hydration makes it interactive.
 

@@ -18,8 +18,9 @@ Five architectural choices keep WebUI fast without any tuning:
 - **Buffer consolidation** — adjacent static content is merged into single
   fragments during compilation, reducing the number of write calls at render
   time.
-- **Protocol Buffers** — state is serialized in a compact binary format that
-  deserializes significantly faster than JSON or other text-based formats.
+- **Protocol Buffers** — templates and the render protocol are serialized to a
+  compact binary format (`protocol.bin`) that decodes static state significantly faster than
+  JSON-based template representations, keeping only dynamic-time state in JSON.
 
 ## SSR Performance Showdown
 
@@ -60,9 +61,10 @@ the rendering work itself.
 Each layer of the architecture contributes to the overall performance profile:
 
 - **Build-time compilation.** Template parsing, component discovery, and
-  expression compilation all happen once during `cargo xtask build`. At
-  runtime, the server only performs state interpolation against a pre-compiled
-  binary protocol — no syntax parsing, no AST walking.
+  expression compilation all happen once during `webui build` (or on the fly
+  with `webui serve` in development). At runtime, the server only performs
+  state interpolation against a pre-compiled binary protocol — no syntax
+  parsing, no AST walking.
 
 - **Protocol Buffers.** The handler deserializes a compact binary payload
   instead of parsing template syntax on every request. Protocol Buffer
