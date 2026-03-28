@@ -1,4 +1,6 @@
-:host { display: block; }
+:host {
+  display: block;
+}
 
 .section-header {
   display: flex;
@@ -27,7 +29,10 @@
   cursor: pointer;
   white-space: nowrap;
 }
-.counter:hover { background: var(--color-neutral-100); }
+
+.counter:hover {
+  background: var(--color-neutral-100);
+}
 
 .topics {
   display: flex;

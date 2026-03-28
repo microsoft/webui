@@ -1,4 +1,6 @@
-:host { display: block; }
+:host {
+  display: block;
+}
 
 .topic-header {
   display: flex;
@@ -19,7 +21,10 @@
   cursor: pointer;
   white-space: nowrap;
 }
-.counter:hover { background: var(--color-neutral-100); }
+
+.counter:hover {
+  background: var(--color-neutral-100);
+}
 
 .breadcrumb {
   font-size: var(--font-size-s);

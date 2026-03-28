@@ -29,7 +29,9 @@ header h1 {
   font-weight: 600;
 }
 
-.brand:hover { opacity: 0.9; }
+.brand:hover {
+  opacity: 0.9;
+}
 
 .counter {
   background: color-mix(in srgb, white 15%, transparent);
@@ -40,7 +42,10 @@ header h1 {
   font-size: var(--font-size-s);
   cursor: pointer;
 }
-.counter:hover { background: color-mix(in srgb, white 25%, transparent); }
+
+.counter:hover {
+  background: color-mix(in srgb, white 25%, transparent);
+}
 
 nav {
   background: var(--color-white);
@@ -57,8 +62,13 @@ nav h2 {
   margin-block-end: var(--spacing-m);
 }
 
-nav ul { list-style: none; }
-nav li { margin-block-end: 2px; }
+nav ul {
+  list-style: none;
+}
+
+nav li {
+  margin-block-end: 2px;
+}
 
 nav a {
   display: flex;
