@@ -14,6 +14,7 @@
  * templates, instantiates the component, and mounts it into the route.
  */
 
+import { clearInventoryBit, encodeInventoryHex, parseInventoryHex } from './inventory.js';
 import { buildNavigationTarget, prependBasePath } from './navigation-path.js';
 import type { RouterConfig, NavigationEvent } from './types.js';
 import type { NavigationTarget } from './navigation-path.js';
@@ -178,6 +179,36 @@ export class WebUIRouter {
     window.navigation.back();
   }
 
+  /**
+   * Release cached templates to free memory. Removes entries from
+   * `window.__webui_templates` and clears their inventory bits so the
+   * server will re-send them on the next navigation that needs them.
+   *
+   * The framework's `templateCache` is a `WeakMap` keyed by the same
+   * meta objects, so those entries become GC-eligible automatically.
+   *
+   * @param tags - Component tag names to release (e.g. `['section-page']`).
+   *               Omit to release all non-active templates.
+   */
+  releaseTemplates(tags?: string[]): void {
+    const registry = window.__webui_templates;
+    if (!registry) return;
+
+    const activeSet = new Set(this.activeChain.map(e => e.component));
+    const toRelease = tags
+      ? tags.filter(t => !activeSet.has(t))
+      : Object.keys(registry).filter(t => !activeSet.has(t));
+
+    if (toRelease.length === 0) return;
+
+    // Parse inventory hex → bytes, clear bits, re-encode
+    const inv = parseInventoryHex(this.inventory);
+    for (const tag of toRelease) {
+      delete registry[tag];
+      clearInventoryBit(inv, tag);
+    }
+    this.inventory = encodeInventoryHex(inv);
+  }
   /** Tear down. */
   destroy(): void {
     this.loaderPromises.clear();
