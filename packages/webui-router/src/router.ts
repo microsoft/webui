@@ -19,6 +19,12 @@ import { buildNavigationTarget, prependBasePath } from './navigation-path.js';
 import type { RouterConfig, NavigationEvent } from './types.js';
 import type { NavigationTarget } from './navigation-path.js';
 
+declare global {
+  interface Window {
+    __webui_templates?: Record<string, unknown>;
+  }
+}
+
 const ROUTE_SELECTOR = 'webui-route';
 
 /** Create a hidden `<webui-route>` stub element. */
