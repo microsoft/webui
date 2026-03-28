@@ -105,16 +105,18 @@ consistent performance:
 Use the built-in benchmark suite to measure performance on your own hardware:
 
 ```bash
-# Full benchmark suite
+# Full benchmark suite (recommended)
 cargo xtask bench all
 
-# Individual crate benchmarks
-cargo bench -p webui --bench contact_book_bench
-cargo bench -p webui-handler
-cargo bench -p webui-parser
-cargo bench -p webui-expressions
-cargo bench -p webui-protocol
-cargo bench -p webui-state
+# Individual crate benchmarks via xtask
+cargo xtask bench parser
+cargo xtask bench handler
+cargo xtask bench expressions
+cargo xtask bench protocol
+cargo xtask bench state
+
+# Contact book end-to-end benchmark
+cargo bench -p microsoft-webui --bench contact_book_bench
 
 # Results with HTML reports
 ls target/criterion/report/index.html
