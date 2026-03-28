@@ -19,9 +19,7 @@ import type {
   CompiledAttrMeta,
   CompiledAttrPart,
   CompiledConditionExpr,
-  TemplateNodePath,
   TemplateSlotPath,
-  CompiledTextRunMeta,
   CompiledAttrGroupMeta,
 } from './template.js';
 import { hydrationStart, hydrationEnd } from './lifecycle.js';
@@ -45,7 +43,6 @@ import type {
   CondBinding,
   RepeatBinding,
   RepeatHost,
-  RepeatItemInstance,
   ResolvedSlot,
   ScopeFrame,
   TemplateInstance,

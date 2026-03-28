@@ -143,7 +143,6 @@ pub extern "C" fn webui_handler_create() -> *mut c_void {
 /// # Arguments
 ///
 /// * `plugin_id` - Null-terminated UTF-8 string identifying the plugin.
-///   Currently supported: `"fast"`, `"webui"`. Pass `NULL` for no plugin.
 ///
 /// # Returns
 ///

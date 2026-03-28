@@ -1,6 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+declare global {
+  interface Window {
+    __webui_templates?: Record<string, unknown>;
+  }
+}
+
 /**
  * Public type definitions for @microsoft/webui-router.
  */
