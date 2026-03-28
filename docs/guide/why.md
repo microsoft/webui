@@ -32,7 +32,7 @@ WebUI builds directly on these platform primitives rather than wrapping them in 
 
 ## Language Agnostic
 
-The compiled protocol is a binary format — just bytes. Any language that can read bytes and write strings can render WebUI templates. Native handler implementations exist for Rust, Node.js (including Bun and Deno), C#, Python, and Go. Any other language can use the C FFI bindings.
+The compiled protocol is a binary format — just bytes. Any language that can read bytes and write strings can render WebUI templates. Native handler implementations exist for Rust, Node.js (including Bun and Deno), and C#. Python and Go use the C FFI bindings, and other languages can integrate via the same interface.
 
 No JavaScript runtime is required on the server. A Go service, a Rust microservice, and a C# API can all render the same compiled templates using the same protocol.
 
