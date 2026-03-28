@@ -17,17 +17,14 @@ interface OptionGroup {
 export class MpVariantSelector extends WebUIElement {
   @observable optionGroups: OptionGroup[] = [];
 
-  onClick(e: MouseEvent): void {
-    const target = e.target;
-    if (!(target instanceof Element)) {
+  onVariantClick(e: MouseEvent): void {
+    const btn = e.currentTarget;
+    if (!(btn instanceof HTMLButtonElement) || btn.disabled) {
       return;
     }
 
-    const btn = target.closest('[data-action="select-variant"]') as HTMLElement | null;
-    if (!btn || (btn as HTMLButtonElement).disabled) return;
-
     const group = btn.getAttribute('data-group') ?? '';
-    const value = btn.getAttribute('data-value') || '';
+    const value = btn.getAttribute('data-value') ?? '';
     if (!group || !value) {
       return;
     }

@@ -2,7 +2,6 @@
 // Licensed under the MIT license.
 
 import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
-import { Router } from '@microsoft/webui-router';
 
 import '#molecules/mp-search-bar/mp-search-bar.js';
 
@@ -31,17 +30,6 @@ export class MpMobileMenu extends WebUIElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     window.removeEventListener('resize', this.resizeHandler);
-  }
-
-  onLinkClick(e: MouseEvent): void {
-    const target = e.currentTarget;
-    if (!(target instanceof HTMLAnchorElement)) {
-      return;
-    }
-
-    e.preventDefault();
-    Router.navigate(target.href);
-    this.closeMenu();
   }
 
   onCloseClick(): void {

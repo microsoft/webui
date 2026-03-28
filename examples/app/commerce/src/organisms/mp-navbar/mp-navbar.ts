@@ -2,7 +2,6 @@
 // Licensed under the MIT license.
 
 import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
-import { Router } from '@microsoft/webui-router';
 
 import '#molecules/mp-search-bar/mp-search-bar.js';
 
@@ -20,16 +19,6 @@ export class MpNavbar extends WebUIElement {
 
   onMenuClick(): void {
     this.$emit('toggle-mobile-menu');
-  }
-
-  onNavigateClick(e: MouseEvent): void {
-    const target = e.currentTarget;
-    if (!(target instanceof HTMLAnchorElement)) {
-      return;
-    }
-
-    e.preventDefault();
-    Router.navigate(target.href);
   }
 
   openCart(): void {
