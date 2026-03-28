@@ -141,6 +141,26 @@ console.log(Router.activeParams); // { id: "42" }
 
 Tear down the router and remove event listeners.
 
+### `Router.releaseTemplates(tags?)`
+
+Release cached component templates to free memory. Removes entries from
+`window.__webui_templates` and clears their inventory bits so the server
+will re-send them on the next navigation that needs them.
+
+Active route components are always skipped — you cannot release a template
+that is currently rendered.
+
+```typescript
+// Release specific templates
+Router.releaseTemplates(['user-detail', 'user-list']);
+
+// Release all non-active templates
+Router.releaseTemplates();
+```
+
+The framework's internal `templateCache` (`WeakMap`) is keyed by the same
+meta objects, so its entries become GC-eligible automatically.
+
 ### Navigation Event
 
 Dispatched on `window` after each navigation:
