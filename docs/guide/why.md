@@ -15,7 +15,7 @@ HTML template structure is static. It does not change between requests — only 
 WebUI applies this principle to HTML rendering. Templates are compiled once into a compact binary protocol. At runtime, a handler reads the protocol sequentially — emitting static fragments as-is and resolving dynamic fragments from a JSON state object. There is no parsing or AST walking at request time; the handler only evaluates precompiled condition expressions against the JSON state.
 
 ```
-HTML + CSS templates → webui build → .webui binary → handler (any lang) + JSON state → rendered HTML
+HTML + CSS templates → webui build → protocol.bin → handler (any lang) + JSON state → rendered HTML
 ```
 
 ## The Web Platform Bet

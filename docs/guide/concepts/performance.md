@@ -142,9 +142,9 @@ window.addEventListener('webui:hydration-complete', () => {
 });
 ```
 
-Each hydrated component produces a `webui:hydrate:<ComponentName>` measure
-entry, making it straightforward to identify slow components and optimize them
-individually.
+Each hydrated component produces a `webui:hydrate:<tag>` measure entry (where
+`<tag>` is the custom element tag name), making it straightforward to identify
+slow components and optimize them individually.
 
 ## Learn More
 

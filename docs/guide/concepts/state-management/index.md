@@ -43,11 +43,11 @@ Paths are resolved at render time. If a path doesn't exist in the state, the Rus
 
 ## State in Loops
 
-Inside a `<for>` directive, each iteration creates a scoped state context. The loop item's properties are accessible directly — no prefix needed:
+Inside a `<for>` directive, each iteration creates a scoped state context. Loop items are accessed via their moniker (e.g. `item.label`, `item.done`):
 
 ```html
 <for each="item in items">
-  <!-- "item.label" resolves to the current item's label -->
+  <!-- Use the moniker to access loop item fields -->
   <p>{{item.label}}</p>
   
   <!-- Global state is still accessible -->
@@ -57,19 +57,19 @@ Inside a `<for>` directive, each iteration creates a scoped state context. The l
 
 ### Scoping Rules
 
-- **Local state** (the current loop item) takes precedence over global state
-- **Global state** is always accessible as a fallback
-- **Nested loops**: only the innermost loop's item is accessible by its moniker. Global state is available as a fallback.
-- **Components inside loops**: access the current item's fields directly without the item moniker. For example, if iterating with `each="contact in contacts"`, a `<contact-card>` component can use `{{name}}` instead of `{{contact.name}}`.
+- **Loop items** are accessed via their moniker (e.g. `item.*`); global state remains accessible alongside them
+- **Global state** is always accessible throughout a template
+- **Nested loops**: all active loop items remain accessible by their monikers (e.g. `{{category.name}}` inside a `product` loop). Inner loop monikers can shadow global state keys but do not hide outer loop monikers.
+- **Components inside loops**: do **not** automatically inherit loop-item fields. Pass the data you need via component attributes (e.g. `<contact-card name="{{contact.name}}">`), and inside the component template use the attribute names (e.g. `{{name}}`).
 
 ```html
 <for each="category in categories">
   <h2>{{category.name}}</h2>
   <for each="product in category.products">
-    <!-- "product.name" is the inner loop item -->
-    <!-- "category.name" is NOT accessible here — only the innermost item -->
-    <!-- "title" still resolves from global state -->
-    <p>{{product.name}} — {{product.price}}</p>
+    <!-- "product.*" is the inner loop item -->
+    <!-- "category.*" is still accessible — outer loop monikers stay in scope -->
+    <!-- "title" resolves from global state -->
+    <p>{{category.name}}: {{product.name}} — {{product.price}}</p>
   </for>
 </for>
 ```
@@ -122,7 +122,7 @@ The `<for>` directive iterates over arrays. Each item should be a self-contained
 
 ### Provide all state upfront
 
-Unlike client-side frameworks that fetch data on mount, WebUI renders in a single pass. The state object must contain everything the template needs for first render. Missing values produce errors, not empty strings.
+Unlike client-side frameworks that fetch data on mount, WebUI renders in a single pass. The state object should contain everything the template needs for first render. Missing values render as empty output (for text and attribute bindings) or evaluate to `false` (for `<if>` conditions) — no error is reported.
 
 ```json
 // ✅ Complete — every binding has data
@@ -133,7 +133,7 @@ Unlike client-side frameworks that fetch data on mount, WebUI renders in a singl
   "emptyMessage": "No contacts found"
 }
 
-// ❌ Missing — "emptyMessage" binding will error
+// ⚠️ Partial — "emptyMessage" renders empty, "showSearch" condition evaluates to false
 {
   "title": "Contacts",
   "contacts": [...]
