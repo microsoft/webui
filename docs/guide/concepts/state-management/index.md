@@ -154,7 +154,7 @@ Unlike client-side frameworks that fetch data on mount, WebUI renders in a singl
 
 ```html
 <if condition="isAdmin">
-  <admin-panel></admin-panel>
+  <div class="admin-panel"></div>
 </if>
 <if condition="!hasItems">
   <p>{{emptyMessage}}</p>
