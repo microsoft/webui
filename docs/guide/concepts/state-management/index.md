@@ -57,7 +57,7 @@ Inside a `<for>` directive, each iteration creates a scoped state context. Loop 
 
 ### Scoping Rules
 
-- **Loop items** are accessed via their moniker (e.g. `item.*`); global state remains accessible alongside them
+- **Loop items** are accessed via their moniker (e.g. `item.label`, `item.id`); global state remains accessible alongside them
 - **Global state** is always accessible throughout a template
 - **Nested loops**: all active loop items remain accessible by their monikers (e.g. `{{category.name}}` inside a `product` loop). Inner loop monikers can shadow global state keys but do not hide outer loop monikers.
 - **Components inside loops**: do **not** automatically inherit loop-item fields. Pass the data you need via component attributes (e.g. `<contact-card name="{{contact.name}}">`), and inside the component template use the attribute names (e.g. `{{name}}`).
