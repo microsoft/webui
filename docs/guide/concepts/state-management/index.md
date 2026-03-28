@@ -39,7 +39,7 @@ The handler resolves paths using `find_value_by_dotted_path`. Supported patterns
 | Array index | `items.0.label` | `"First"` |
 | Array length | `items.length` | `2` |
 
-Paths are resolved at render time. If a path doesn't exist in the state, the handler reports an error with the missing path name.
+Paths are resolved at render time. If a path doesn't exist in the state, the Rust handler treats it as a missing value: text and attribute bindings render as empty, and `<if>` conditions using that path evaluate to `false` (the block is not rendered). No error is reported for missing paths by default.
 
 ## State in Loops
 
