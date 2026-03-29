@@ -4,7 +4,7 @@
 import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
 
 export class MpCategoryNav extends WebUIElement {
-  @attr({ attribute: 'all-active-class' }) allActiveClass = '';
+  @attr({ attribute: 'all-active' }) allActive = '';
   @attr({ attribute: 'current-label' }) currentCategoryLabel = 'All';
   @observable categories: any[] = [];
   mobileDropdown!: HTMLDetailsElement;

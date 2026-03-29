@@ -492,16 +492,25 @@ export class WebUIRouter {
       this.updateInventory(data.inventory);
     }
 
-    // Execute template registration scripts. Each entry is a
-    // "<script>…</script>" wrapper around an IIFE that writes to
-    // window.__webui_templates. Strip the tags and eval the code
-    // directly — no DOM parsing, no persistent allocations.
+    // Register templates delivered by the server. Two formats are supported:
+    //
+    // 1. Script-wrapped IIFE ("<script>…</script>") — the webui compiled-
+    //    template plugin emits these. Strip the tags and eval the inner JS
+    //    directly (no DOM parsing, no persistent allocations).
+    //
+    // 2. HTML custom elements ("<f-template …>…</f-template>") — the FAST
+    //    plugin emits these. Insert into the document so the registered
+    //    custom element's connectedCallback processes and registers them.
     for (const tmpl of data.templates) {
-      const start = tmpl.indexOf('>') + 1;
-      const end = tmpl.lastIndexOf('<');
-      if (start > 0 && end > start) {
-        const run = Function(tmpl.substring(start, end));
-        run();
+      if (tmpl.startsWith('<script')) {
+        const start = tmpl.indexOf('>') + 1;
+        const end = tmpl.lastIndexOf('<');
+        if (start > 0 && end > start) {
+          const run = Function(tmpl.substring(start, end));
+          run();
+        }
+      } else {
+        document.body.appendChild(document.createRange().createContextualFragment(tmpl));
       }
     }
 
@@ -568,19 +577,16 @@ export class WebUIRouter {
     params: Record<string, string>,
   ): void {
     const toKebab = (k: string): string => k.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
-    const complex: Record<string, unknown> = {};
 
     for (const [key, value] of Object.entries(state)) {
       if (value == null) continue;
       if (typeof value === 'object') {
-        complex[key] = value;
+        // Set complex values (arrays, objects) as JS properties directly.
+        // The framework's @observable setter triggers reactivity.
+        (el as unknown as Record<string, unknown>)[key] = value;
       } else {
         el.setAttribute(toKebab(key), String(value));
       }
-    }
-
-    if (Object.keys(complex).length > 0) {
-      el.setAttribute('data-state', JSON.stringify(complex));
     }
 
     for (const [key, value] of Object.entries(params)) {

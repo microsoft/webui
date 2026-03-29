@@ -720,23 +720,41 @@ export function setupRepeat(
   let container: (ParentNode & Node) | null = null;
   let loopStart: Comment | null = null;
   let loopEnd: Comment | null = null;
-  const loopName = `for-${markerId + 1}`;
 
-  // Find the outer block boundary (w-b:start/end:N:for-M) and
-  // per-item SSR markers (w-r:start/end:N).
+  // SSR emits globally-scoped for-loop marker IDs (for-8, for-9, for-10)
+  // while setup calls use local repeat indices (0, 1, 2). Re-map by
+  // finding the Nth for-* start marker at the top repeat depth.
+  let forStartIndex = 0;
+  let targetForName: string | null = null;
+  let rDepth = 0;
   for (const c of comments) {
-    if (c.data.startsWith('w-b:start:')) {
-      const parts = c.data.slice('w-b:start:'.length).split(':');
-      if (parts.length >= 2 && parts.slice(1).join(':') === loopName) {
-        loopStart = c;
-        container = parentNode(c);
+    const d = c.data;
+    if (d.startsWith('w-r:start:')) { rDepth++; continue; }
+    if (d.startsWith('w-r:end:')) { rDepth--; continue; }
+    if (rDepth > 0) continue;
+
+    if (d.startsWith('w-b:start:')) {
+      const parts = d.slice('w-b:start:'.length).split(':');
+      if (parts.length >= 2) {
+        const name = parts.slice(1).join(':');
+        if (name.startsWith('for-')) {
+          if (forStartIndex === markerId) {
+            targetForName = name;
+            loopStart = c;
+            container = parentNode(c);
+          }
+          forStartIndex++;
+        }
       }
-      continue;
     }
-    if (c.data.startsWith('w-b:end:')) {
-      const parts = c.data.slice('w-b:end:'.length).split(':');
-      if (parts.length >= 2 && parts.slice(1).join(':') === loopName) {
-        loopEnd = c;
+    if (d.startsWith('w-b:end:') && targetForName) {
+      const parts = d.slice('w-b:end:'.length).split(':');
+      if (parts.length >= 2) {
+        const name = parts.slice(1).join(':');
+        if (name === targetForName) {
+          loopEnd = c;
+          break;
+        }
       }
     }
   }

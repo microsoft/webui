@@ -5,7 +5,7 @@ import { WebUIElement, observable } from '@microsoft/webui-framework';
 
 interface VariantOption {
   value: string;
-  activeClass: string;
+  active: boolean;
   unavailable: boolean;
 }
 

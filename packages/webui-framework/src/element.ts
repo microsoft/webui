@@ -534,7 +534,7 @@ export class WebUIElement extends HTMLElement {
       }
     }
 
-    this.$wireTemplateEvents(nodes, meta.e);
+    this.$wireTemplateEvents(nodes, meta.e, meta.el);
     return instance;
   }
 
@@ -1054,6 +1054,14 @@ export class WebUIElement extends HTMLElement {
       }
 
       elements.push(node);
+      // Stop at custom element boundaries — nested components hydrate
+      // their own shadow roots independently, so their children (and
+      // any data-ev / data-w-* markers inside) must not leak into
+      // the parent component's hydration walk.
+      const tag = node.localName;
+      if (tag.indexOf('-') !== -1 && tag !== this.localName) {
+        continue;
+      }
       if (node.childNodes.length > 0) {
         stack.push({
           nodes: Array.from(node.childNodes),
@@ -1324,6 +1332,7 @@ export class WebUIElement extends HTMLElement {
   private $wireTemplateEvents(
     nodes: Node[],
     events?: [string, string, number][],
+    eventTargetPaths?: number[][],
   ): void {
     if (!events || events.length === 0) {
       return;
@@ -1331,6 +1340,28 @@ export class WebUIElement extends HTMLElement {
 
     const markerElements = this.$collectHydrationAttrElements(nodes)
       .filter((element) => element.hasAttribute('data-ev'));
+
+    // When no data-ev markers are found (e.g. SSR omitted them or a
+    // nested component boundary hid them), fall back to the compiled
+    // eventTargets paths which mirror the client-created wiring.
+    // This fallback is only reachable from the root hydration path
+    // ($createTemplateInstance for the top-level shadow root), never
+    // from repeat-item instances which receive their own scoped nodes.
+    if (markerElements.length === 0 && eventTargetPaths) {
+      const sr = this.shadowRoot;
+      if (sr) {
+        for (let index = 0; index < events.length; index += 1) {
+          const path = eventTargetPaths[index];
+          const target = path ? resolveElementPath(sr, path) : null;
+          if (!target) {
+            continue;
+          }
+          const [event, handler, needsEvent] = events[index];
+          this.$wire(target, event, handler, !!needsEvent);
+        }
+      }
+      return;
+    }
 
     const eventCounts = readHydrationEventCounts(
       markerElements.map((element) => element.getAttribute('data-ev')),
@@ -1422,8 +1453,19 @@ export class WebUIElement extends HTMLElement {
             const name = needsE ? attr.slice(0, -2) : attr;
             const fn = (this as unknown as Record<string, Function>)[name];
             if (typeof fn === 'function') {
-              if (needsE) fn.call(this, e);
-              else fn.call(this);
+              if (needsE) {
+                // Set currentTarget as an expando on the short-lived event
+                // so handlers see the attributed element instead of the
+                // ShadowRoot.  Avoids Proxy/bind allocation overhead.
+                Object.defineProperty(e, 'currentTarget', {
+                  value: el,
+                  configurable: true,
+                  writable: true,
+                });
+                fn.call(this, e);
+              } else {
+                fn.call(this);
+              }
             }
             return;
           }

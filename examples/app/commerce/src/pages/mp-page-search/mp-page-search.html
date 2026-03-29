@@ -1,6 +1,6 @@
 <template shadowrootmode="open">
   <mp-category-nav
-    all-active-class="{{allActiveClass}}"
+    ?all-active="{{allActive}}"
     current-label="{{currentCategoryLabel}}"
     :categories="{{categories}}"
   ></mp-category-nav>

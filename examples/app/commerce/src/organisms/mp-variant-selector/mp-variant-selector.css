@@ -47,7 +47,7 @@
   cursor: pointer;
   transition: box-shadow 0.15s, opacity 0.15s;
 
-  &.active {
+  &[active] {
     box-shadow: 0 0 0 1px var(--webui-accent);
     cursor: default;
   }
@@ -69,7 +69,7 @@
     }
   }
 
-  &:not(:disabled):not(.active):hover {
+  &:not(:disabled):not([active]):hover {
     box-shadow: 0 0 0 1px var(--webui-accent);
   }
 }

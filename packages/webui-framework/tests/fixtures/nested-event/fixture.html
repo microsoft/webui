@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Nested Event Fixture</title>
+</head>
+<body>
+  <test-nested-event>
+    <template shadowrootmode="open">
+      <span class="count"><!--w-b:start:0:parentClicks-->0<!--w-b:end:0:parentClicks--></span>
+      <button class="parent-btn" data-ev="1">Parent</button>
+      <test-nested-child>
+        <template shadowrootmode="open">
+          <button class="child-btn" data-ev="1">Child</button>
+        </template>
+      </test-nested-child>
+    </template>
+  </test-nested-event>
+  <script src="/dist/nested-event/element.js"></script>
+</body>
+</html>

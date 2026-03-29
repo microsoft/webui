@@ -2,15 +2,14 @@
 // Licensed under the MIT license.
 
 import { WebUIElement, observable } from '@microsoft/webui-framework';
+import { Router } from '@microsoft/webui-router';
 
 export class MpFilterList extends WebUIElement {
   @observable sortOptions: any[] = [];
   mobileDropdown!: HTMLDetailsElement;
 
   closeMobileDropdown(): void {
-    if (this.mobileDropdown) {
-      this.mobileDropdown.open = false;
-    }
+    this.mobileDropdown.open = false;
   }
 }
 

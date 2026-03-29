@@ -1607,7 +1607,17 @@ fn parse_event_attr(input: &str, pos: usize) -> Option<(String, String, bool, us
         .trim();
 
     // Extract method name from "handler()" or "handler(e)"
-    let paren = inner.find('(')?;
+    if inner.is_empty() {
+        return None;
+    }
+    let paren = match inner.find('(') {
+        Some(p) => p,
+        None => panic!(
+            "Invalid @{event_name} handler: \"{inner}\". \
+             Use @{event_name}=\"{{handler()}}\" or \
+             @{event_name}=\"{{handler(e)}}\" to pass the event.",
+        ),
+    };
     let handler_name = inner[..paren].to_string();
     let needs_event = inner.contains("(e)");
 
@@ -1717,9 +1727,19 @@ fn parse_regular_tag(input: &str, meta: &mut TemplateSectionMeta) -> Option<(Str
             let Some(raw_value) = value else {
                 continue;
             };
-            if let Some((handler_name, needs_event)) = parse_event_handler(raw_value) {
-                meta.events
-                    .push((event_name.to_string(), handler_name, needs_event));
+            match parse_event_handler(raw_value) {
+                EventHandler::Valid(handler_name, needs_event) => {
+                    meta.events
+                        .push((event_name.to_string(), handler_name, needs_event));
+                }
+                EventHandler::Invalid(raw) => {
+                    panic!(
+                        "Invalid @{event_name} handler: \"{raw}\". \
+                         Use @{event_name}=\"{{handler()}}\" or \
+                         @{event_name}=\"{{handler(e)}}\" to pass the event.",
+                    );
+                }
+                EventHandler::Empty => {}
             }
             continue;
         }
@@ -1826,15 +1846,29 @@ fn find_tag_end(input: &str) -> Option<usize> {
     None
 }
 
-fn parse_event_handler(raw_value: &str) -> Option<(String, bool)> {
+enum EventHandler {
+    Valid(String, bool),
+    Invalid(String),
+    Empty,
+}
+
+fn parse_event_handler(raw_value: &str) -> EventHandler {
     let inner = raw_value
         .trim()
         .strip_prefix('{')
         .and_then(|s| s.strip_suffix('}'))
         .unwrap_or(raw_value)
         .trim();
-    let paren = inner.find('(')?;
-    Some((inner[..paren].trim().to_string(), inner.contains("(e)")))
+    if inner.is_empty() {
+        return EventHandler::Empty;
+    }
+    // `handler(e)` → needs event, `handler()` → no event
+    match inner.find('(') {
+        Some(paren) => {
+            EventHandler::Valid(inner[..paren].trim().to_string(), inner.contains("(e)"))
+        }
+        None => EventHandler::Invalid(inner.to_string()),
+    }
 }
 
 fn extract_single_handlebars(value: &str) -> Option<String> {
@@ -2747,5 +2781,41 @@ mod tests {
             "static text run part should not contain raw '&gt;': {}",
             result
         );
+    }
+
+    #[test]
+    fn test_parse_event_handler_bare_name_is_invalid() {
+        assert!(matches!(
+            parse_event_handler("{closeMenu}"),
+            EventHandler::Invalid(ref name) if name == "closeMenu"
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid @click handler")]
+    fn test_parse_event_attr_bare_name_panics() {
+        let input = r#"<button @click="{closeMenu}">Click</button>"#;
+        parse_event_attr(input, 8);
+    }
+
+    #[test]
+    fn test_parse_event_handler_with_parens() {
+        assert!(matches!(
+            parse_event_handler("{onClick()}"),
+            EventHandler::Valid(ref name, false) if name == "onClick"
+        ));
+    }
+
+    #[test]
+    fn test_parse_event_handler_with_event_arg() {
+        assert!(matches!(
+            parse_event_handler("{onClick(e)}"),
+            EventHandler::Valid(ref name, true) if name == "onClick"
+        ));
+    }
+
+    #[test]
+    fn test_parse_event_handler_empty_value() {
+        assert!(matches!(parse_event_handler("{}"), EventHandler::Empty));
     }
 }

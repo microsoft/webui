@@ -87,7 +87,7 @@
     box-shadow: 0 0 0 1px var(--webui-accent);
   }
 
-  &.active {
+  &[active] {
     box-shadow: 0 0 0 2px var(--webui-accent);
   }
 }

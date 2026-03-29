@@ -26,7 +26,7 @@
     </div>
     <div class="thumbnails">
       <for each="img in images">
-        <button class="thumb {{img.activeClass}}" data-index="{{img.index}}" @click="{onThumbnailClick(e)}">
+        <button class="thumb" ?active="{{img.active}}" data-index="{{img.index}}" @click="{onThumbnailClick(e)}">
           <mp-product-image gradient="{{img.gradient}}" image-url="{{img.imageUrl}}" alt="" loading="lazy" decoding="async"></mp-product-image>
         </button>
       </for>

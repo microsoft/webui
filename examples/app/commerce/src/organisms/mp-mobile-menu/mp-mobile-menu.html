@@ -13,9 +13,9 @@
       label="Search for products"></mp-search-bar>
   </div>
   <nav class="menu-nav">
-    <a href="/search" class="menu-link" @click="{closeMenu}">All</a>
+    <a href="/search" class="menu-link" @click="{closeMenu()}">All</a>
     <for each="cat in navCategories">
-      <a href="/search/{{cat.handle}}" class="menu-link" @click="{closeMenu}">{{cat.title}}</a>
+      <a href="/search/{{cat.handle}}" class="menu-link" @click="{closeMenu()}">{{cat.title}}</a>
     </for>
   </nav>
 </div>

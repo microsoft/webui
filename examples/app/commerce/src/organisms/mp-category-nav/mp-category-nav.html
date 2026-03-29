@@ -5,21 +5,21 @@
     </summary>
     <ul class="mobile-list">
       <li>
-        <if condition="allActiveClass == 'active'">
-          <p class="mobile-link {{allActiveClass}}" @click="{closeMobileDropdown}">All</p>
+        <if condition="allActive">
+          <p class="mobile-link" ?active="{{allActive}}" @click="{closeMobileDropdown()}">All</p>
         </if>
-        <if condition="allActiveClass != 'active'">
-          <a href="/search" class="mobile-link {{allActiveClass}}" @click="{closeMobileDropdown}">All</a>
+        <if condition="!allActive">
+          <a href="/search" class="mobile-link" @click="{closeMobileDropdown()}">All</a>
         </if>
       </li>
       <for each="cat in categories">
         <li>
-          <if condition="cat.activeClass == 'active'">
-            <p class="mobile-link {{cat.activeClass}}" @click="{closeMobileDropdown}">{{cat.title}}</p>
+          <if condition="cat.active">
+            <p class="mobile-link" ?active="{{cat.active}}" @click="{closeMobileDropdown()}">{{cat.title}}</p>
           </if>
-          <if condition="cat.activeClass != 'active'">
-            <a href="/search/{{cat.handle}}" class="mobile-link {{cat.activeClass}}"
-              @click="{closeMobileDropdown}">{{cat.title}}</a>
+          <if condition="!cat.active">
+            <a href="/search/{{cat.handle}}" class="mobile-link"
+              @click="{closeMobileDropdown()}">{{cat.title}}</a>
           </if>
         </li>
       </for>
@@ -28,20 +28,20 @@
   <h3 class="heading">Collections</h3>
   <ul class="list desktop-list">
     <li>
-      <if condition="allActiveClass == 'active'">
-        <p class="link active current" data-handle="" data-href="/search">All</p>
+      <if condition="allActive">
+        <p class="link" ?active="{{allActive}}" data-handle="" data-href="/search">All</p>
       </if>
-      <if condition="allActiveClass != 'active'">
+      <if condition="!allActive">
         <a href="/search" class="link" data-handle="" data-href="/search">All</a>
       </if>
     </li>
     <for each="cat in categories">
       <li>
-        <if condition="cat.activeClass == 'active'">
-          <p class="link active current" data-handle="{{cat.handle}}" data-href="/search/{{cat.handle}}">{{cat.title}}
+        <if condition="cat.active">
+          <p class="link" ?active="{{cat.active}}" data-handle="{{cat.handle}}" data-href="/search/{{cat.handle}}">{{cat.title}}
           </p>
         </if>
-        <if condition="cat.activeClass != 'active'">
+        <if condition="!cat.active">
           <a href="/search/{{cat.handle}}" class="link" data-handle="{{cat.handle}}"
             data-href="/search/{{cat.handle}}">{{cat.title}}</a>
         </if>

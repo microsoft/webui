@@ -823,7 +823,7 @@ pub fn extend_product_detail_state(state: &mut Map<String, Value>, product: &Pro
             "name": "Color",
             "values": product.colors.iter().map(|color| serde_json::json!({
                 "value": color.value,
-                "activeClass": "",
+                "active": false,
                 "unavailable": !color.available,
             })).collect::<Vec<_>>(),
         }));
@@ -834,7 +834,7 @@ pub fn extend_product_detail_state(state: &mut Map<String, Value>, product: &Pro
             "name": "Size",
             "values": product.sizes.iter().map(|size| serde_json::json!({
                 "value": size.value,
-                "activeClass": "",
+                "active": false,
                 "unavailable": !size.available,
             })).collect::<Vec<_>>(),
         }));
@@ -903,7 +903,7 @@ pub fn categories_with_active_json(
                 "handle": category.handle,
                 "title": category.title,
                 "count": category.count,
-                "activeClass": if category.handle == active { "active" } else { "" },
+                "active": category.handle == active,
             })
         })
         .collect()
@@ -931,7 +931,7 @@ pub fn sort_options_json(active: &str, base_path: &str, query: &str) -> Vec<serd
                 "value": value,
                 "title": title,
                 "href": href,
-                "activeClass": if *value == active { "active" } else { "" },
+                "active": *value == active,
             })
         })
         .collect()
@@ -1042,7 +1042,7 @@ fn gallery_images_json(product: &Product) -> Vec<serde_json::Value> {
                 "index": index,
                 "imageUrl": image_url,
                 "gradient": gradients[index % gradients.len()],
-                "activeClass": if index == 0 { "active" } else { "" },
+                "active": index == 0,
             })
         })
         .collect()

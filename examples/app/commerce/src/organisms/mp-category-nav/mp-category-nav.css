@@ -48,13 +48,13 @@
     color: var(--webui-text);
   }
 
-  &.active {
+  &[active] {
     color: var(--webui-text);
     text-decoration: underline;
   }
 }
 
-.current {
+.link[active] {
   cursor: default;
 }
 
@@ -129,7 +129,7 @@
   color: var(--webui-text-secondary);
 }
 
-.mobile-link.active {
+.mobile-link[active] {
   color: var(--webui-text-secondary);
 }
 

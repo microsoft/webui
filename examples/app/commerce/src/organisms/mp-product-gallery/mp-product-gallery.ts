@@ -9,7 +9,7 @@ interface GalleryImage {
   index: number;
   gradient: string;
   imageUrl: string;
-  activeClass: string;
+  active: boolean;
 }
 
 export class MpProductGallery extends WebUIElement {
@@ -96,11 +96,11 @@ export class MpProductGallery extends WebUIElement {
       index: img.index,
       gradient: img.gradient,
       imageUrl: img.imageUrl,
-      activeClass: i === this.activeIndex ? 'active' : '',
+      active: i === this.activeIndex,
     }));
 
-    const activeClassChanged = nextImages.some((image, index) => image.activeClass !== images[index]?.activeClass);
-    if (activeClassChanged) {
+    const activeChanged = nextImages.some((image, index) => image.active !== images[index]?.active);
+    if (activeChanged) {
       this.images = nextImages;
     }
   }

@@ -9,7 +9,7 @@ import '#organisms/mp-filter-list/mp-filter-list.js';
 export class MpPageSearch extends WebUIElement {
   @observable categories!: any[];
   @observable sortOptions!: any[];
-  @observable allActiveClass!: string;
+  @observable allActive!: boolean;
   @observable currentCategoryLabel!: string;
 }
 
