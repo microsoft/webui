@@ -2,7 +2,6 @@
 // Licensed under the MIT license.
 
 import { WebUIElement, observable } from '@microsoft/webui-framework';
-import { Router } from '@microsoft/webui-router';
 
 export class MpFilterList extends WebUIElement {
   @observable sortOptions: any[] = [];
