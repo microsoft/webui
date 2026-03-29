@@ -46,7 +46,9 @@ export class CbApp extends WebUIElement {
   async onToggleFavoriteEvent(e: ContactEvent): Promise<void> {
     const id = e.detail.id;
     try {
-      await api.contacts.toggleFavorite(id);
+      const updated = await api.contacts.toggleFavorite(id);
+      const count = Number.parseInt(this.totalFavorites, 10) || 0;
+      this.totalFavorites = String(count + (updated.favorite ? 1 : -1));
     } catch {
       console.error(`Failed to toggle favorite for contact with id ${id}`);
     }
