@@ -158,12 +158,9 @@ importers:
         specifier: ^5.1.0
         version: 5.2.1
     devDependencies:
-      '@microsoft/fast-element':
-        specifier: 'catalog:'
-        version: 2.10.2
-      '@microsoft/fast-html':
-        specifier: 'catalog:'
-        version: 1.0.0-alpha.39(@microsoft/fast-element@2.10.2)
+      '@microsoft/webui-framework':
+        specifier: workspace:*
+        version: link:../../../packages/webui-framework
       '@microsoft/webui-router':
         specifier: workspace:*
         version: link:../../../packages/webui-router

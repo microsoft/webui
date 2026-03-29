@@ -1,10 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement, attr } from '@microsoft/webui-framework';
 
-export class CbFormField extends RenderableFASTElement(FASTElement) {
+export class CbFormField extends WebUIElement {
   @attr label = '';
   @attr name = '';
   @attr value = '';
@@ -13,7 +12,4 @@ export class CbFormField extends RenderableFASTElement(FASTElement) {
   @attr error = '';
 }
 
-CbFormField.defineAsync({
-  name: 'cb-form-field',
-  templateOptions: 'defer-and-hydrate',
-});
+CbFormField.define('cb-form-field');

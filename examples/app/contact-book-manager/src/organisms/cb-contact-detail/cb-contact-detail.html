@@ -1,53 +1,60 @@
-<template shadowrootmode="open">
-  <div class="detail">
-    <div class="detail-header">
-      <div class="avatar avatar-lg" style="background-color: {{avatarColor}}"><span class="avatar-initials">{{initials}}</span></div>
-      <div class="detail-name">
-        <h2>{{firstName}} {{lastName}}</h2>
-        <if condition="company">
+<div class="detail" data-contact-id="{{id}}">
+  <div class="detail-header">
+    <div class="avatar avatar-lg" style="background-color: {{avatarColor}}"><span
+        class="avatar-initials">{{initials}}</span></div>
+    <div class="detail-name">
+      <h2>{{firstName}} {{lastName}}</h2>
+      <if condition="company">
         <span class="company">{{company}}</span>
-        </if>
-      </div>
-      <div class="detail-actions">
-        <button class="icon-btn icon-edit" data-action="edit" title="Edit"></button>
-        <button class="icon-btn icon-star" data-action="toggle-favorite" title="Toggle favorite"></button>
-        <button class="icon-btn icon-btn-danger icon-trash" data-action="delete" title="Delete"></button>
-      </div>
+      </if>
     </div>
-    <div class="detail-body">
-      <div class="detail-section">
-        <h3>Contact Information</h3>
-        <div class="detail-field">
-          <span class="field-label label-email">Email</span>
-          <span class="field-value">{{email}}</span>
-        </div>
-        <div class="detail-field">
-          <span class="field-label label-phone">Phone</span>
-          <span class="field-value">{{phone}}</span>
-        </div>
-        <if condition="address">
+    <div class="detail-actions">
+      <button class="icon-btn icon-edit" type="button" title="Edit" @click="{onEdit()}"></button>
+      <button
+        class="icon-btn favorite-btn"
+        ?data-favorite="{{favorite}}"
+        type="button"
+        title="Toggle favorite"
+        aria-label="Toggle favorite"
+        aria-pressed="{{favorite}}"
+        @click="{onToggleFavorite()}"
+      ></button>
+      <button class="icon-btn icon-btn-danger icon-trash" type="button" title="Delete" @click="{onDelete()}"></button>
+    </div>
+  </div>
+  <div class="detail-body">
+    <div class="detail-section">
+      <h3>Contact Information</h3>
+      <div class="detail-field">
+        <span class="field-label label-email">Email</span>
+        <span class="field-value">{{email}}</span>
+      </div>
+      <div class="detail-field">
+        <span class="field-label label-phone">Phone</span>
+        <span class="field-value">{{phone}}</span>
+      </div>
+      <if condition="address">
         <div class="detail-field">
           <span class="field-label label-address">Address</span>
           <span class="field-value">{{address}}</span>
         </div>
-        </if>
+      </if>
+    </div>
+    <div class="detail-section">
+      <h3>Details</h3>
+      <div class="detail-field">
+        <span class="field-label label-group">Group</span>
+        <span class="badge">{{group}}</span>
       </div>
-      <div class="detail-section">
-        <h3>Details</h3>
-        <div class="detail-field">
-          <span class="field-label label-group">Group</span>
-          <span class="badge">{{group}}</span>
-        </div>
-        <if condition="notes">
+      <if condition="notes">
         <div class="detail-field">
           <span class="field-label label-notes">Notes</span>
           <span class="field-value notes">{{notes}}</span>
         </div>
-        </if>
-      </div>
-    </div>
-    <div class="detail-footer">
-      <a class="back-btn" data-action="back">&larr; Back to list</a>
+      </if>
     </div>
   </div>
-</template>
+  <div class="detail-footer">
+    <a class="back-btn" @click="{onGoBack()}">&larr; Back to list</a>
+  </div>
+</div>

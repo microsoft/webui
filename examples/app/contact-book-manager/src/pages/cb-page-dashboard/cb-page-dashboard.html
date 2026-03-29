@@ -1,47 +1,33 @@
-<template shadowrootmode="open">
-  <div class="dashboard">
-    <h2 class="page-title">Dashboard</h2>
-    <div class="stats-row">
-      <div class="stat-card">
-        <span class="stat-icon stat-icon-contacts"></span>
-        <div class="stat-content">
-          <span class="stat-value">{{totalContacts}}</span>
-          <span class="stat-label">Total Contacts</span>
-        </div>
-      </div>
-      <div class="stat-card">
-        <span class="stat-icon stat-icon-favorites"></span>
-        <div class="stat-content">
-          <span class="stat-value">{{totalFavorites}}</span>
-          <span class="stat-label">Favorites</span>
-        </div>
-      </div>
-      <div class="stat-card">
-        <span class="stat-icon stat-icon-groups"></span>
-        <div class="stat-content">
-          <span class="stat-value">{{totalGroups}}</span>
-          <span class="stat-label">Groups</span>
-        </div>
-      </div>
-    </div>
-    <h3 class="section-title">Recent Contacts</h3>
-    <div class="contact-list-container">
-      <for each="contact in recentContacts">
-        <cb-contact-card
-          id="{{contact.id}}"
-          first-name="{{contact.firstName}}"
-          last-name="{{contact.lastName}}"
-          email="{{contact.email}}"
-          phone="{{contact.phone}}"
-          company="{{contact.company}}"
-          group="{{contact.group}}"
-          favorite="{{contact.favorite}}"
-          initials="{{contact.initials}}"
-          avatar-color="{{contact.avatarColor}}"
-          notes="{{contact.notes}}"
-          address="{{contact.address}}"
-        ></cb-contact-card>
-      </for>
+<h2 class="page-title">Dashboard</h2>
+<div class="stats-row">
+  <div class="stat-card">
+    <span class="stat-icon stat-icon-contacts"></span>
+    <div class="stat-content">
+      <span class="stat-value">{{totalContacts}}</span>
+      <span class="stat-label">Total Contacts</span>
     </div>
   </div>
-</template>
+  <div class="stat-card">
+    <span class="stat-icon stat-icon-favorites"></span>
+    <div class="stat-content">
+      <span class="stat-value">{{totalFavorites}}</span>
+      <span class="stat-label">Favorites</span>
+    </div>
+  </div>
+  <div class="stat-card">
+    <span class="stat-icon stat-icon-groups"></span>
+    <div class="stat-content">
+      <span class="stat-value">{{totalGroups}}</span>
+      <span class="stat-label">Groups</span>
+    </div>
+  </div>
+</div>
+<h3 class="section-title">Recent Contacts</h3>
+<div class="contact-list-container">
+  <for each="contact in recentContacts">
+    <cb-contact-card id="{{contact.id}}" first-name="{{contact.firstName}}" last-name="{{contact.lastName}}"
+      email="{{contact.email}}" phone="{{contact.phone}}" company="{{contact.company}}" group="{{contact.group}}"
+      favorite="{{contact.favorite}}" initials="{{contact.initials}}" avatar-color="{{contact.avatarColor}}"
+      notes="{{contact.notes}}" address="{{contact.address}}"></cb-contact-card>
+  </for>
+</div>

@@ -1,15 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement, attr } from '@microsoft/webui-framework';
 
-export class CbBadge extends RenderableFASTElement(FASTElement) {
+export class CbBadge extends WebUIElement {
   @attr label = '';
   @attr variant = 'default';
 }
 
-CbBadge.defineAsync({
-  name: 'cb-badge',
-  templateOptions: 'defer-and-hydrate',
-});
+CbBadge.define('cb-badge');

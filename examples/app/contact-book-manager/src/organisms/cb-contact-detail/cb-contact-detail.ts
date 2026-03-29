@@ -1,114 +1,38 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement, observable } from '@microsoft/webui-framework';
 
-export class CbContactDetail extends RenderableFASTElement(FASTElement) {
-  @attr id = '';
-  @attr({ attribute: 'first-name' }) firstName = '';
-  @attr({ attribute: 'last-name' }) lastName = '';
-  @attr email = '';
-  @attr phone = '';
-  @attr company = '';
-  @attr group = '';
-  @attr favorite = '';
-  @attr initials = '';
-  @attr({ attribute: 'avatar-color' }) avatarColor = '';
-  @attr notes = '';
-  @attr address = '';
+export class CbContactDetail extends WebUIElement {
+  @observable id!: string;
+  @observable firstName!: string;
+  @observable lastName!: string;
+  @observable email!: string;
+  @observable phone!: string;
+  @observable company!: string;
+  @observable group!: string;
+  @observable favorite!: boolean;
+  @observable initials!: string;
+  @observable avatarColor!: string;
+  @observable notes!: string;
+  @observable address!: string;
 
-  private listenersAttached!: boolean;
-
-  connectedCallback(): void {
-    super.connectedCallback();
-    if (this.listenersAttached) return;
-    this.listenersAttached = true;
-    this.addEventListener('click', (e: Event) => {
-      this.onClick(e as MouseEvent);
-    });
+  onEdit(): void {
+    this.$emit('edit-contact', { id: this.id });
   }
 
-  async prepare(): Promise<void> {
-    const sr = this.shadowRoot;
-    if (!sr) return;
-
-    // Read SSR'd values from the shadow DOM before FAST overwrites them
-    const avatar = sr.querySelector('.avatar') as HTMLElement | null;
-    if (avatar) {
-      const bg = avatar.style.backgroundColor;
-      if (bg) this.avatarColor = bg;
-    }
-    const initialsEl = sr.querySelector('.avatar-initials');
-    if (initialsEl?.textContent) this.initials = initialsEl.textContent.trim();
-
-    const h2 = sr.querySelector('h2');
-    if (h2?.textContent) {
-      const parts = h2.textContent.trim().split(' ');
-      this.firstName = parts[0] || '';
-      this.lastName = parts.slice(1).join(' ') || '';
-    }
-
-    const companyEl = sr.querySelector('.company');
-    if (companyEl?.textContent) this.company = companyEl.textContent.trim();
-
-    const fields = sr.querySelectorAll('.field-value');
-    if (fields[0]?.textContent) this.email = fields[0].textContent.trim();
-    if (fields[1]?.textContent) this.phone = fields[1].textContent.trim();
-    if (fields[2]?.textContent) this.address = fields[2].textContent.trim();
-    if (fields[3]?.textContent) this.notes = fields[3].textContent.trim();
-
-    const badge = sr.querySelector('.badge');
-    if (badge?.textContent) this.group = badge.textContent.trim();
+  onToggleFavorite(): void {
+    this.favorite = !this.favorite;
+    this.$emit('toggle-favorite', { id: this.id });
   }
 
-  setInitialState(state: Record<string, unknown>): void {
-    // The API spreads contact fields at top level and also includes selectedContact
-    const c = (state.selectedContact as Record<string, unknown>) ?? state;
-    if (!c.id) return;
-    this.id = String(c.id ?? '');
-    this.firstName = String(c.firstName ?? '');
-    this.lastName = String(c.lastName ?? '');
-    this.email = String(c.email ?? '');
-    this.phone = String(c.phone ?? '');
-    this.company = String(c.company ?? '');
-    this.group = String(c.group ?? '');
-    this.favorite = String(c.favorite ?? '');
-    this.initials = String(c.initials ?? '');
-    this.avatarColor = String(c.avatarColor ?? '');
-    this.notes = String(c.notes ?? '');
-    this.address = String(c.address ?? '');
+  onDelete(): void {
+    this.$emit('delete-contact', { id: this.id });
   }
 
-  private emit(type: string, detail?: unknown): void {
-    this.dispatchEvent(new CustomEvent(type, { bubbles: true, composed: true, detail }));
-  }
-
-  onClick(e: MouseEvent): void {
-    const target = e.composedPath()[0] as HTMLElement;
-    const actionEl = target.closest('[data-action]');
-    if (!actionEl) return;
-
-    const action = actionEl.getAttribute('data-action');
-
-    switch (action) {
-      case 'edit':
-        this.emit('edit-contact', { id: this.id });
-        break;
-      case 'toggle-favorite':
-        this.emit('toggle-favorite', { id: this.id });
-        break;
-      case 'delete':
-        this.emit('delete-contact', { id: this.id });
-        break;
-      case 'back':
-        this.emit('back');
-        break;
-    }
+  onGoBack(): void {
+    this.$emit('go-back');
   }
 }
 
-CbContactDetail.defineAsync({
-  name: 'cb-contact-detail',
-  templateOptions: 'defer-and-hydrate',
-});
+CbContactDetail.define('cb-contact-detail');

@@ -1,23 +1,9 @@
-<template shadowrootmode="open">
-  <div class="contacts-page">
-    <h2 class="page-title">All Contacts</h2>
-    <div class="contact-list-container">
-      <for each="contact in contacts">
-        <cb-contact-card
-          id="{{contact.id}}"
-          first-name="{{contact.firstName}}"
-          last-name="{{contact.lastName}}"
-          email="{{contact.email}}"
-          phone="{{contact.phone}}"
-          company="{{contact.company}}"
-          group="{{contact.group}}"
-          favorite="{{contact.favorite}}"
-          initials="{{contact.initials}}"
-          avatar-color="{{contact.avatarColor}}"
-          notes="{{contact.notes}}"
-          address="{{contact.address}}"
-        ></cb-contact-card>
-      </for>
-    </div>
-  </div>
-</template>
+<h2 class="page-title">All Contacts</h2>
+<div class="contact-list-container">
+  <for each="contact in contacts">
+    <cb-contact-card id="{{contact.id}}" first-name="{{contact.firstName}}" last-name="{{contact.lastName}}"
+      email="{{contact.email}}" phone="{{contact.phone}}" company="{{contact.company}}" group="{{contact.group}}"
+      favorite="{{contact.favorite}}" initials="{{contact.initials}}" avatar-color="{{contact.avatarColor}}"
+      notes="{{contact.notes}}" address="{{contact.address}}"></cb-contact-card>
+  </for>
+</div>

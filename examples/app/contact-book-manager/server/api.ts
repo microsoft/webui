@@ -139,7 +139,7 @@ function sidebarState() {
     totalContacts: contacts.length,
     totalFavorites: favoriteContacts().length,
     totalGroups: uniqueGroups().length,
-    groups: uniqueGroups().map(g => g.toLowerCase()),
+    groups: uniqueGroups(),
   };
 }
 
@@ -161,19 +161,29 @@ ssr.get('/contacts', (_req: Request, res: Response) => {
 
 // Add contact form — must be before /contacts/:id to avoid matching "add" as an id
 ssr.get('/contacts/add', (_req: Request, res: Response) => {
-  res.json({ state: { page: 'contacts', ...sidebarState(), formTitle: 'Add Contact' } });
+  const sidebar = sidebarState();
+  res.json({
+    state: {
+      page: 'contacts',
+      ...sidebar,
+      selectedGroup: sidebar.groups[0] ?? '',
+      formTitle: 'Add Contact',
+    },
+  });
 });
 
 // Edit contact form — must be before /contacts/:id to avoid conflicts
 ssr.get('/contacts/:id/edit', (req: Request, res: Response) => {
   const contact = findContact(req.params.id);
   if (!contact) { res.status(404).json({ error: 'Contact not found' }); return; }
+  const { id, ...contactState } = contact;
   res.json({
     state: {
       page: 'contacts',
       ...sidebarState(),
-      ...contact,
-      selectedGroup: contact.group.toLowerCase(),
+      ...contactState,
+      editId: id,
+      selectedGroup: contact.group,
       formTitle: 'Edit Contact',
     },
   });
@@ -195,11 +205,11 @@ ssr.get('/favorites', (_req: Request, res: Response) => {
 ssr.get('/groups/:group', (req: Request, res: Response) => {
   const groupSlug = req.params.group;
   const filtered = contacts.filter(c => c.group.toLowerCase() === groupSlug.toLowerCase());
-  const displayName = groupSlug.charAt(0).toUpperCase() + groupSlug.slice(1);
+  const displayName = filtered[0]?.group ?? groupSlug;
   res.json({
     state: {
       page: 'group',
-      activeGroup: groupSlug.toLowerCase(),
+      activeGroup: displayName,
       ...sidebarState(),
       contacts: filtered,
       groupName: displayName,

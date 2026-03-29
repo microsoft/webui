@@ -1,8 +1,4 @@
 :host {
-  display: block;
-}
-
-.header {
   display: flex;
   align-items: center;
   gap: var(--spacing-l);

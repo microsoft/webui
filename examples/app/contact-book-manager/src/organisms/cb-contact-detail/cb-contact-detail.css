@@ -163,8 +163,21 @@
 }
 
 /* Icon classes using CSS content to avoid emoji encoding issues */
+.favorite-btn::before {
+  content: '\2606';
+  font-size: var(--font-size-xxl);
+  line-height: 1;
+}
+
+.favorite-btn[data-favorite] {
+  color: var(--color-brand-primary);
+}
+
+.favorite-btn[data-favorite]::before {
+  content: '\2605';
+}
+
 .icon-edit::before { content: '\270F\FE0F'; }
-.icon-star::before { content: '\2B50'; }
 .icon-trash::before { content: '\1F5D1\FE0F'; }
 .label-email::before { content: '\1F4E7 '; }
 .label-phone::before { content: '\1F4F1 '; }

@@ -1,8 +1,5 @@
 :host {
   display: block;
-}
-
-.form-container {
   background: var(--color-white);
   border-radius: var(--border-radius-xl);
   box-shadow: var(--shadow-s);
