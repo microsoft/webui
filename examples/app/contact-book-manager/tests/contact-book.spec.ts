@@ -8,7 +8,33 @@
  * The app uses shadow DOM components (cb-*) with FAST-HTML templating.
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+
+async function expectSidebarGroupsStable(page: Page): Promise<void> {
+  await expect(page.locator('cb-sidebar [data-nav="Dashboard"]')).toHaveCount(1);
+  await expect(page.locator('cb-sidebar [data-nav="All Contacts"]')).toHaveCount(1);
+  await expect(page.locator('cb-sidebar [data-nav="Favorites"]')).toHaveCount(1);
+  await expect(page.locator('cb-sidebar .nav-item-group')).toHaveCount(4);
+  await expect(page.locator('cb-sidebar .nav-item-group .nav-label')).toHaveText([
+    'Work',
+    'Family',
+    'Friends',
+    'Other',
+  ]);
+}
+
+async function expectActiveSidebarNav(page: Page, nav: string): Promise<void> {
+  const active = page.locator('cb-sidebar [data-active]');
+  await expect(active).toHaveCount(1);
+  await expect(active).toHaveAttribute('data-nav', nav);
+}
+
+async function expectContactDetailFieldsStable(page: Page): Promise<void> {
+  await expect(page.locator('cb-contact-detail .detail-field').filter({ hasText: 'Address' }))
+    .toContainText('123 Innovation Dr, Seattle, WA 98101');
+  await expect(page.locator('cb-contact-detail .detail-field').filter({ hasText: 'Notes' }))
+    .toContainText('Met at the tech conference in Seattle');
+}
 
 // ── SSR Tests (direct page loads) ────────────────────────────────
 
@@ -64,10 +90,43 @@ test.describe('client-side navigation', () => {
     await expect(page.locator('cb-page-favorites .page-title')).toHaveText('Favorites');
   });
 
+  test('sidebar groups do not duplicate across SPA navigation', async ({ page }) => {
+    await page.goto('/');
+    await expectSidebarGroupsStable(page);
+
+    await page.locator('cb-sidebar').getByRole('link', { name: /All Contacts/ }).click();
+    await expect(page).toHaveURL('/contacts');
+    await expectSidebarGroupsStable(page);
+
+    await page.locator('cb-sidebar').getByRole('link', { name: /Favorites/ }).click();
+    await expect(page).toHaveURL('/favorites');
+    await expectSidebarGroupsStable(page);
+  });
+
+  test('sidebar active state updates across SPA navigation', async ({ page }) => {
+    await page.goto('/');
+    await expectActiveSidebarNav(page, 'Dashboard');
+
+    await page.locator('cb-sidebar').getByRole('link', { name: /Favorites/ }).click();
+    await expect(page).toHaveURL('/favorites');
+    await expect(page.locator('cb-page-favorites .page-title')).toHaveText('Favorites');
+    await expectActiveSidebarNav(page, 'Favorites');
+
+    await page.locator('cb-sidebar').getByRole('link', { name: 'Work' }).click();
+    await expect(page).toHaveURL('/groups/Work');
+    await expect(page.locator('cb-page-group .page-title')).toContainText('Work');
+    await expectActiveSidebarNav(page, 'Work');
+
+    await page.locator('cb-sidebar').getByRole('link', { name: /All Contacts/ }).click();
+    await expect(page).toHaveURL('/contacts');
+    await expect(page.locator('cb-page-contacts .page-title')).toHaveText('All Contacts');
+    await expectActiveSidebarNav(page, 'All Contacts');
+  });
+
   test('navigate to group via sidebar', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('link', { name: 'Work' }).first().click();
-    await expect(page).toHaveURL('/groups/work');
+    await expect(page).toHaveURL('/groups/Work');
     await expect(page.locator('cb-page-group .page-title')).toContainText('Work');
   });
 
@@ -87,6 +146,41 @@ test.describe('client-side navigation', () => {
     await page.locator('cb-sidebar').getByRole('link', { name: /All Contacts/ }).click();
     await expect(page).toHaveURL('/contacts');
     await expect(page.locator('cb-page-contacts .page-title')).toHaveText('All Contacts');
+  });
+
+  test('contact detail favorite action toggles state and sidebar count', async ({ page }) => {
+    await page.goto('/contacts/1');
+
+    const favoriteButton = page.locator('cb-contact-detail .favorite-btn');
+    const favoritesCount = page.locator('cb-sidebar [data-nav="Favorites"] .nav-count');
+    const initialPressed = await favoriteButton.getAttribute('aria-pressed');
+    const initialCount = Number.parseInt((await favoritesCount.textContent()) ?? '', 10);
+
+    expect(initialPressed === 'true' || initialPressed === 'false').toBe(true);
+    expect(Number.isNaN(initialCount)).toBe(false);
+
+    const toggledPressed = initialPressed === 'true' ? 'false' : 'true';
+    const toggledCount = String(initialCount + (initialPressed === 'true' ? -1 : 1));
+    const restoredCount = String(initialCount);
+
+    await expect(page).toHaveURL('/contacts/1');
+    await expect(favoriteButton).toHaveAttribute('aria-pressed', initialPressed!);
+    await expect(favoritesCount).toHaveText(restoredCount);
+    await expectSidebarGroupsStable(page);
+    await expectContactDetailFieldsStable(page);
+
+    await favoriteButton.click();
+    await expect(page).toHaveURL('/contacts/1');
+    await expect(favoriteButton).toHaveAttribute('aria-pressed', toggledPressed);
+    await expect(favoritesCount).toHaveText(toggledCount);
+    await expectSidebarGroupsStable(page);
+    await expectContactDetailFieldsStable(page);
+
+    await favoriteButton.click();
+    await expect(favoriteButton).toHaveAttribute('aria-pressed', initialPressed!);
+    await expect(favoritesCount).toHaveText(restoredCount);
+    await expectSidebarGroupsStable(page);
+    await expectContactDetailFieldsStable(page);
   });
 
   test('no full page reload during navigation', async ({ page }) => {

@@ -1,17 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement, attr } from '@microsoft/webui-framework';
 
-export class CbInput extends RenderableFASTElement(FASTElement) {
+export class CbInput extends WebUIElement {
   @attr placeholder = '';
   @attr value = '';
   @attr type = 'text';
   @attr name = '';
 }
 
-CbInput.defineAsync({
-  name: 'cb-input',
-  templateOptions: 'defer-and-hydrate',
-});
+CbInput.define('cb-input');

@@ -4,8 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
-    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=fast --servedir ./dist --port 3003 --api-port 3013 --watch",
+    "build": "esbuild src/index.ts --bundle --outdir=dist --splitting --format=esm --sourcemap ",
+    "start:client": "esbuild src/index.ts --bundle --outdir=dist --splitting --format=esm --sourcemap --watch",
+    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --servedir ./dist --port 3003 --api-port 3013 --watch",
     "start:api": "esbuild server/api.ts --bundle --platform=node --format=esm --outfile=dist/api.js --packages=external && node dist/api.js",
     "start": "cargo xtask dev contact-book-manager",
     "test": "playwright test",
@@ -24,8 +25,7 @@
     "express": "^5.1.0"
   },
   "devDependencies": {
-    "@microsoft/fast-element": "catalog:",
-    "@microsoft/fast-html": "catalog:",
+    "@microsoft/webui-framework": "workspace:*",
     "@microsoft/webui-router": "workspace:*",
     "@playwright/test": "catalog:",
     "@types/cors": "^2.8.17",

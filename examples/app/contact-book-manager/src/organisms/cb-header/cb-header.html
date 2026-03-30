@@ -1,19 +1,15 @@
-<template shadowrootmode="open">
-  <header class="header">
-    <div class="header-left">
-      <h1 class="title">Contacts</h1>
-    </div>
-    <div class="header-center">
-      <div class="search-container">
-        <span class="search-icon"></span>
-        <input class="search-input" type="text" placeholder="Search contacts..." value="{{searchQuery}}" />
-      </div>
-    </div>
-    <div class="header-right">
-      <a class="add-btn" href="/contacts/add">
-        <span class="add-icon">+</span>
-        <span class="add-label">Add Contact</span>
-      </a>
-    </div>
-  </header>
-</template>
+<div class="header-left">
+  <h1 class="title">Contacts</h1>
+</div>
+<div class="header-center">
+  <div class="search-container">
+    <span class="search-icon"></span>
+    <input class="search-input" type="text" placeholder="Search contacts..." :value="{{searchQuery}}" @input="{onInput(e)}" />
+  </div>
+</div>
+<div class="header-right">
+  <a class="add-btn" href="/contacts/add">
+    <span class="add-icon">+</span>
+    <span class="add-label">Add Contact</span>
+  </a>
+</div>

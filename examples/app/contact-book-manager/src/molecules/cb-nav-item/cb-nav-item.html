@@ -1,9 +1,7 @@
-<template shadowrootmode="open">
-  <div class="nav-item">
-    <span class="nav-icon">{{icon}}</span>
-    <span class="nav-label">{{label}}</span>
-    <if condition="count">
-      <span class="nav-count">{{count}}</span>
-    </if>
-  </div>
-</template>
+<div class="nav-item" @click="{onClick(e)}">
+  <span class="nav-icon">{{icon}}</span>
+  <span class="nav-label">{{label}}</span>
+  <if condition="count">
+    <span class="nav-count">{{count}}</span>
+  </if>
+</div>

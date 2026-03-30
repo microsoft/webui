@@ -1,29 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement, attr } from '@microsoft/webui-framework';
 
-export class CbNavItem extends RenderableFASTElement(FASTElement) {
+export class CbNavItem extends WebUIElement {
   @attr icon = '';
   @attr label = '';
   @attr count = '';
-  @attr({ mode: 'boolean' }) active = false;
-  private listenersAttached!: boolean;
-
-  connectedCallback(): void {
-    super.connectedCallback();
-    if (this.listenersAttached) return;
-    this.listenersAttached = true;
-    this.addEventListener('click', () => this.onClick());
-  }
+  @attr active = '';
 
   onClick(): void {
-    this.dispatchEvent(new CustomEvent('nav-select', { bubbles: true, composed: true, detail: { label: this.label } }));
+    this.$emit('nav-select', { label: this.label });
   }
 }
 
-CbNavItem.defineAsync({
-  name: 'cb-nav-item',
-  templateOptions: 'defer-and-hydrate',
-});
+CbNavItem.define('cb-nav-item');

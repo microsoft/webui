@@ -1,40 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement, attr } from '@microsoft/webui-framework';
 
-export class CbContactCard extends RenderableFASTElement(FASTElement) {
+export class CbContactCard extends WebUIElement {
   @attr id = '';
-  @attr({ attribute: 'first-name' }) firstName = '';
-  @attr({ attribute: 'last-name' }) lastName = '';
+  @attr firstName = '';
+  @attr lastName = '';
   @attr email = '';
   @attr phone = '';
   @attr company = '';
   @attr group = '';
   @attr favorite = 'false';
   @attr initials = '';
-  @attr({ attribute: 'avatar-color' }) avatarColor = '';
+  @attr avatarColor = '';
   @attr notes = '';
   @attr address = '';
 
-  private listenersAttached!: boolean;
-
-  connectedCallback(): void {
-    super.connectedCallback();
-    if (this.listenersAttached) return;
-    this.listenersAttached = true;
-    this.addEventListener('click', () => {
-      this.onClick();
-    });
-  }
-
   onClick(): void {
-    this.dispatchEvent(new CustomEvent('select-contact', { bubbles: true, composed: true, detail: { id: this.id } }));
+    this.$emit('select-contact', { id: this.id });
   }
 }
 
-CbContactCard.defineAsync({
-  name: 'cb-contact-card',
-  templateOptions: 'defer-and-hydrate',
-});
+CbContactCard.define('cb-contact-card');

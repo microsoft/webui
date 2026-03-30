@@ -1,16 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement, attr } from '@microsoft/webui-framework';
 
-export class CbAvatar extends RenderableFASTElement(FASTElement) {
+export class CbAvatar extends WebUIElement {
   @attr initials = '';
   @attr color = '#6B7280';
   @attr size = 'md';
 }
 
-CbAvatar.defineAsync({
-  name: 'cb-avatar',
-  templateOptions: 'defer-and-hydrate',
-});
+CbAvatar.define('cb-avatar');

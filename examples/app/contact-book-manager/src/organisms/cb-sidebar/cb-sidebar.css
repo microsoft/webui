@@ -1,8 +1,5 @@
 :host {
   display: block;
-}
-
-.sidebar {
   width: 260px;
   min-height: calc(100vh - 65px);
   background: var(--color-white);

@@ -1,46 +1,24 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement, attr } from '@microsoft/webui-framework';
 
-export class CbSearchBar extends RenderableFASTElement(FASTElement) {
+export class CbSearchBar extends WebUIElement {
   @attr placeholder = 'Search contacts...';
   @attr value = '';
-  private listenersAttached!: boolean;
-
-  connectedCallback(): void {
-    super.connectedCallback();
-    if (this.listenersAttached) return;
-    this.listenersAttached = true;
-    this.addEventListener('input', (e: Event) => this.onInput(e));
-    this.addEventListener('click', (e: Event) => this.onClick(e as MouseEvent));
-  }
-
-  private emit(type: string, detail?: unknown): void {
-    this.dispatchEvent(new CustomEvent(type, { bubbles: true, composed: true, detail }));
-  }
 
   onInput(e: Event): void {
-    const input = e.composedPath().find(el => (el as HTMLElement).tagName === 'INPUT') as HTMLInputElement;
-    if (input) {
-      this.value = input.value;
-      this.emit('search', { value: this.value });
-    }
+    const input = e.currentTarget;
+    if (!(input instanceof HTMLInputElement)) return;
+
+    this.value = input.value;
+    this.$emit('search-change', { value: this.value });
   }
 
-  onClick(e: MouseEvent): void {
-    const target = (e.composedPath()[0] as HTMLElement);
-    if (target.closest('[data-action="clear"]')) {
-      this.value = '';
-      const input = this.shadowRoot?.querySelector('input');
-      if (input) input.value = '';
-      this.emit('search', { value: '' });
-    }
+  onClear(): void {
+    this.value = '';
+    this.$emit('search-change', { value: '' });
   }
 }
 
-CbSearchBar.defineAsync({
-  name: 'cb-search-bar',
-  templateOptions: 'defer-and-hydrate',
-});
+CbSearchBar.define('cb-search-bar');

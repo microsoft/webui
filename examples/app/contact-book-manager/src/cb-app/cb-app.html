@@ -1,4 +1,13 @@
-<template shadowrootmode="open">
+<template shadowrootmode="open"
+  @search-change="{onSearch(e)}"
+  @select-contact="{onSelectContact(e)}"
+  @edit-contact="{onEditContact(e)}"
+  @delete-contact="{onDeleteContactEvent(e)}"
+  @toggle-favorite="{onToggleFavoriteEvent(e)}"
+  @go-back="{onBack()}"
+  @form-save="{onFormSaveEvent(e)}"
+  @form-cancel="{onFormCancel()}"
+>
   <cb-header search-query="{{searchQuery}}"></cb-header>
 
   <div class="layout">
@@ -7,6 +16,7 @@
       active-group="{{activeGroup}}"
       total-contacts="{{totalContacts}}"
       total-favorites="{{totalFavorites}}"
+      :groups="{{groups}}"
     ></cb-sidebar>
 
     <main class="content">

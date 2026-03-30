@@ -1,16 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { WebUIElement, attr } from '@microsoft/webui-framework';
 
-export class CbStatCard extends RenderableFASTElement(FASTElement) {
+export class CbStatCard extends WebUIElement {
   @attr icon = '';
   @attr value = '';
   @attr label = '';
 }
 
-CbStatCard.defineAsync({
-  name: 'cb-stat-card',
-  templateOptions: 'defer-and-hydrate',
-});
+CbStatCard.define('cb-stat-card');
