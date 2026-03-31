@@ -400,11 +400,12 @@ impl HtmlParser {
                 }
             }
             "style_element" => {
-                // Process inline CSS
+                // Process inline CSS — extract tokens and parse handlebars
+                // expressions (e.g. {{{tokens.light}}}) into signal fragments.
+                self.add_raw_fragment("<style>");
                 for child in node.named_children(&mut node.walk()) {
                     if child.kind() == "raw_text" {
                         let style_content = &source[child.start_byte()..child.end_byte()];
-                        let processed_css = self.css_parser.parse_inline_css(style_content)?;
 
                         // Single parse: extract both token usages and definitions
                         if let Ok((tokens, defs)) = self
@@ -415,11 +416,22 @@ impl HtmlParser {
                             self.token_definitions.extend(defs);
                         }
 
-                        // Add the style tag with processed CSS
-                        let style_tag = format!("<style>{}</style>", processed_css);
-                        self.add_raw_fragment(&style_tag);
+                        // Parse handlebars expressions within the CSS content
+                        // so that {{{tokens.light}}} becomes a signal fragment
+                        // rather than raw text.
+                        let parsed = self.handlebars_parser.parse(style_content)?;
+                        for fragment in parsed {
+                            if matches!(fragment.fragment.as_ref(), Some(Fragment::Raw(_))) {
+                                if let Some(Fragment::Raw(raw)) = fragment.fragment.as_ref() {
+                                    self.add_raw_fragment(&raw.value);
+                                }
+                            } else {
+                                self.add_fragment(fragment, fragments);
+                            }
+                        }
                     }
                 }
+                self.add_raw_fragment("</style>");
             }
             "text" | "raw_text" => {
                 let content = &source[node.start_byte()..node.end_byte()];
@@ -3772,5 +3784,87 @@ mod tests {
                 "outlet should NOT be inside for-loop body: {for_frags:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_style_element_with_handlebars_signal() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<html><head><style>
+:root {
+    /*{{{tokens.light}}}*/
+}
+</style></head><body></body></html>"#;
+
+        let result = parser.parse("test.html", html);
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let fragment_records = parser.into_fragment_records();
+
+        // The style block should contain signal fragments for triple-brace
+        // expressions, not raw text with the literal {{{tokens.light}}}.
+        assert_stream!(
+            fragment_records,
+            "test.html",
+            [
+                raw("<html><head><style>\n:root {\n    /*"),
+                signal_raw("tokens.light"),
+                raw("*/\n}\n</style>"),
+                signal_raw("head_end"),
+                raw("</head><body>"),
+                signal_raw("body_start"),
+                signal_raw("body_end"),
+                raw("</body></html>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_style_element_with_double_brace_signal() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<html><head><style>
+body { color: {{textColor}}; }
+</style></head><body></body></html>"#;
+
+        let result = parser.parse("test.html", html);
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let fragment_records = parser.into_fragment_records();
+
+        assert_stream!(
+            fragment_records,
+            "test.html",
+            [
+                raw("<html><head><style>\nbody { color: "),
+                signal("textColor"),
+                raw("; }\n</style>"),
+                signal_raw("head_end"),
+                raw("</head><body>"),
+                signal_raw("body_start"),
+                signal_raw("body_end"),
+                raw("</body></html>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_style_element_plain_css_unchanged() {
+        let mut parser = HtmlParser::new();
+        let html = "<html><head><style>body { margin: 0; }</style></head><body></body></html>";
+
+        let result = parser.parse("test.html", html);
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let fragment_records = parser.into_fragment_records();
+
+        // Plain CSS with no handlebars should remain as a single raw fragment.
+        assert_stream!(
+            fragment_records,
+            "test.html",
+            [
+                raw("<html><head><style>body { margin: 0; }</style>"),
+                signal_raw("head_end"),
+                raw("</head><body>"),
+                signal_raw("body_start"),
+                signal_raw("body_end"),
+                raw("</body></html>"),
+            ]
+        );
     }
 }
