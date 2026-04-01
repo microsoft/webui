@@ -106,7 +106,7 @@ jobs:
           cache-on-failure: 'true'
 
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+        run: pnpm exec playwright install --with-deps chromium
 
       - name: Run E2E tests
         run: cargo xtask e2e
