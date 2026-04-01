@@ -7,68 +7,13 @@
   <title>Contact Book</title>
   <style>
     :root {
-      /* Brand */
-      --color-brand-primary: #0078d4;
-      --color-brand-primary-hover: #106ebe;
-      --color-brand-primary-active: #005a9e;
-      --color-brand-light: #e0f2fe;
-      --color-brand-lighter: #dbeafe;
-      --color-brand-accent: #bfdbfe;
-
-      /* Neutral */
-      --color-neutral-950: #111827;
-      --color-neutral-800: #1a1a1a;
-      --color-neutral-700: #374151;
-      --color-neutral-500: #6b7280;
-      --color-neutral-400: #9ca3af;
-      --color-neutral-300: #d1d5db;
-      --color-neutral-200: #e5e7eb;
-      --color-neutral-150: #f3f4f6;
-      --color-neutral-100: #f9fafb;
-      --color-neutral-50: #f0f2f5;
-      --color-white: #fff;
-
-      /* Semantic */
-      --color-danger: #dc2626;
-      --color-danger-hover: #b91c1c;
-      --color-danger-light: #fee2e2;
-      --color-success-light: #dcfce7;
-      --color-success-text: #15803d;
-      --color-purple-light: #f3e8ff;
-      --color-purple-text: #7e22ce;
-      --color-blue-text: #1d4ed8;
-
-      /* Spacing */
-      --spacing-xs: 4px;
-      --spacing-s: 8px;
-      --spacing-m: 12px;
-      --spacing-l: 16px;
-      --spacing-xl: 20px;
-      --spacing-xxl: 24px;
-      --spacing-3xl: 32px;
-      --spacing-4xl: 48px;
-
-      /* Border Radius */
-      --border-radius-s: 4px;
-      --border-radius-m: 6px;
-      --border-radius-l: 8px;
-      --border-radius-xl: 12px;
-      --border-radius-round: 50%;
-      --border-radius-pill: 10px;
-
-      /* Shadows */
-      --shadow-s: 0 1px 3px rgba(0, 0, 0, 0.08);
-      --shadow-focus-ring: 0 0 0 3px rgba(0, 120, 212, 0.15);
-
-      /* Typography */
-      --font-family-base: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      --font-size-xs: 12px;
-      --font-size-s: 13px;
-      --font-size-m: 14px;
-      --font-size-l: 16px;
-      --font-size-xl: 18px;
-      --font-size-xxl: 24px;
-      --font-size-3xl: 28px;
+      /*{{{tokens.light}}}*/
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        /*{{{tokens.dark}}}*/
+      }
     }
 
     * {

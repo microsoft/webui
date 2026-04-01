@@ -48,6 +48,18 @@ pub struct ServeArgs {
     /// Port of the user's API server to proxy route requests to
     #[arg(long)]
     pub api_port: Option<u16>,
+
+    /// Path to a multi-theme token JSON file (contains "themes" object)
+    #[arg(long)]
+    pub tokens: Option<PathBuf>,
+
+    /// Path to a light-theme token JSON file (flat key→value)
+    #[arg(long)]
+    pub tokens_light: Option<PathBuf>,
+
+    /// Path to a dark-theme token JSON file (flat key→value)
+    #[arg(long)]
+    pub tokens_dark: Option<PathBuf>,
 }
 
 /// Resolved paths for `webui serve`.
@@ -283,6 +295,7 @@ fn run(args: &ServeArgs) -> Result<()> {
         app_args: args.app_args.clone(),
         app_dir: paths.app_dir.clone(),
         state_file: paths.state_file.clone(),
+        token_file: load_token_config(args)?,
     };
 
     output::header("WebUI Dev Server");
@@ -294,6 +307,17 @@ fn run(args: &ServeArgs) -> Result<()> {
     match &paths.serve_dir {
         Some(serve_dir) => output::field("ServeDir", &serve_dir.display()),
         None => output::field("ServeDir", &"(disabled)"),
+    }
+    if render_config.token_file.is_some() {
+        output::field(
+            "Tokens",
+            &args.tokens.as_ref().map_or_else(
+                || "(light/dark files)".to_string(),
+                |p| p.display().to_string(),
+            ),
+        );
+    } else {
+        output::field("Tokens", &"(none)");
     }
     output::field("Entry", &args.app_args.entry);
     output::field("Port", &args.port);
@@ -313,6 +337,24 @@ fn run(args: &ServeArgs) -> Result<()> {
     // Initial build + render
     let initial_result = build_and_render(&render_config, hmr_backend.as_deref())?;
     output::success("Initial build and render complete");
+
+    // Pre-resolve token CSS once at startup (reused for every request)
+    let token_css = match &render_config.token_file {
+        Some(token_file) => {
+            let resolved =
+                webui_tokens::resolve_tokens(&initial_result.protocol.tokens, token_file)
+                    .with_context(|| "Token resolution failed")?;
+            for warning in &resolved.warnings {
+                eprintln!(
+                    "  {} {}",
+                    console::style("⚠").yellow(),
+                    console::style(warning).dim()
+                );
+            }
+            Some(resolved.css)
+        }
+        None => None,
+    };
 
     let state = Arc::new(Mutex::new(SharedState {
         rendered_html: initial_result.html,
@@ -355,6 +397,7 @@ fn run(args: &ServeArgs) -> Result<()> {
         assets_dir: paths.serve_dir,
         api_port: args.api_port,
         plugin: args.app_args.plugin.clone(),
+        token_css,
     });
 
     let has_api_proxy = server_context.api_port.is_some();
@@ -416,11 +459,56 @@ fn map_bind_error(port: u16, bind_addr: &str, error: std::io::Error) -> anyhow::
     anyhow::anyhow!("Failed to bind to {bind_addr}: {error}")
 }
 
+/// Load token configuration from CLI args. Precomputed once at startup.
+fn load_token_config(args: &ServeArgs) -> Result<Option<webui_tokens::TokenFile>> {
+    if let Some(ref path) = args.tokens {
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("Token file not found: {}", path.display()))?;
+        let file = webui_tokens::load_token_file(&canonical)
+            .with_context(|| format!("Failed to load token file: {}", canonical.display()))?;
+        return Ok(Some(file));
+    }
+
+    let has_light = args.tokens_light.is_some();
+    let has_dark = args.tokens_dark.is_some();
+
+    if !has_light && !has_dark {
+        return Ok(None);
+    }
+
+    let mut canonical_paths: Vec<(String, PathBuf)> = Vec::with_capacity(2);
+
+    if let Some(ref path) = args.tokens_light {
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("Light token file not found: {}", path.display()))?;
+        canonical_paths.push(("light".into(), canonical));
+    }
+
+    if let Some(ref path) = args.tokens_dark {
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("Dark token file not found: {}", path.display()))?;
+        canonical_paths.push(("dark".into(), canonical));
+    }
+
+    let files: Vec<(String, &Path)> = canonical_paths
+        .iter()
+        .map(|(name, path)| (name.clone(), path.as_path()))
+        .collect();
+
+    let file = webui_tokens::load_separate_theme_files(&files)
+        .with_context(|| "Failed to load separate token files")?;
+    Ok(Some(file))
+}
+
 #[derive(Clone)]
 struct RenderConfig {
     app_args: AppArgs,
     app_dir: PathBuf,
     state_file: Option<PathBuf>,
+    token_file: Option<webui_tokens::TokenFile>,
 }
 
 /// Result of a build-and-render cycle.
@@ -439,7 +527,7 @@ fn build_and_render(
     let build_options = config.app_args.to_build_options(&config.app_dir);
     let build_result = webui::build(build_options).with_context(|| "Build failed")?;
 
-    let state: Value = match &config.state_file {
+    let mut state: Value = match &config.state_file {
         Some(path) => {
             let json = fs::read_to_string(path)
                 .with_context(|| format!("Failed to read {}", path.display()))?;
@@ -448,6 +536,22 @@ fn build_and_render(
         }
         None => Value::Object(serde_json::Map::new()),
     };
+
+    // Resolve and inject design tokens into state
+    if let Some(ref token_file) = config.token_file {
+        let resolved = webui_tokens::resolve_tokens(&build_result.protocol.tokens, token_file)
+            .with_context(|| "Token resolution failed")?;
+
+        for warning in &resolved.warnings {
+            eprintln!(
+                "  {} {}",
+                console::style("⚠").yellow(),
+                console::style(warning).dim()
+            );
+        }
+
+        webui_tokens::inject_into_state(&mut state, &resolved);
+    }
 
     // Render to memory
     let mut writer = MemoryWriter::with_capacity(4096);
@@ -504,6 +608,8 @@ struct ServerContext {
     assets_dir: Option<PathBuf>,
     api_port: Option<u16>,
     plugin: Option<String>,
+    /// Pre-resolved token CSS keyed by theme name, injected into state at render time.
+    token_css: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -561,21 +667,45 @@ async fn fetch_api_state(api_port: u16, path: &str) -> Result<Value, String> {
 
 /// Resolve state for a request: try API proxy first, then fall back to file state.
 async fn resolve_state(context: &ServerContext, request_path: &str) -> Value {
-    if let Some(api_port) = context.api_port {
+    let mut state = if let Some(api_port) = context.api_port {
         match fetch_api_state(api_port, request_path).await {
-            Ok(state) => return state,
+            Ok(state) => state,
             Err(e) => {
                 eprintln!("  {} {e}", console::style("\u{26a0}").yellow());
+                context
+                    .state
+                    .lock()
+                    .ok()
+                    .and_then(|s| s.state_data.clone())
+                    .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+            }
+        }
+    } else {
+        context
+            .state
+            .lock()
+            .ok()
+            .and_then(|s| s.state_data.clone())
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+    };
+
+    // Inject pre-resolved token CSS into state so signals like
+    // /*{{{tokens.light}}}*/ resolve at render time, regardless of
+    // whether state came from a static file or the API server.
+    if let Some(ref token_css) = context.token_css {
+        if let Some(map) = state.as_object_mut() {
+            let tokens_obj = map
+                .entry("tokens")
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Some(tokens_map) = tokens_obj.as_object_mut() {
+                for (theme, css) in token_css {
+                    tokens_map.insert(theme.clone(), Value::String(css.clone()));
+                }
             }
         }
     }
 
-    context
-        .state
-        .lock()
-        .ok()
-        .and_then(|s| s.state_data.clone())
-        .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+    state
 }
 
 /// Render a full HTML page using route matching from `route_path` and state lookup from
@@ -1082,6 +1212,7 @@ mod tests {
             },
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
+            token_file: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
@@ -1105,6 +1236,7 @@ mod tests {
             },
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
+            token_file: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
@@ -1125,6 +1257,7 @@ mod tests {
             },
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
+            token_file: None,
         };
         let BuildRenderResult { html, .. } = build_and_render(&config, None).unwrap();
         assert!(!html.contains("/hmr"));
@@ -1157,6 +1290,7 @@ mod tests {
             },
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
+            token_file: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let result = build_and_render(&config, Some(&hmr));
@@ -1177,6 +1311,7 @@ mod tests {
             },
             app_dir: app.path().to_path_buf(),
             state_file: None,
+            token_file: None,
         };
         let result = build_and_render(&config, None).unwrap();
         assert!(result.html.contains("<h1>Hello</h1>"));
@@ -1196,6 +1331,7 @@ mod tests {
             },
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
+            token_file: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let result = build_and_render(&config, Some(&hmr));
@@ -1450,6 +1586,7 @@ mod tests {
             },
             app_dir,
             state_file: Some(manifest_dir.join("../../examples/app/hello-world/data/state.json")),
+            token_file: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
@@ -1491,6 +1628,7 @@ mod tests {
             assets_dir: None,
             api_port: None,
             plugin: None,
+            token_css: None,
         });
 
         let app = actix_test::init_service(

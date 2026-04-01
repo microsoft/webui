@@ -1,0 +1,22 @@
+[package]
+name = "microsoft-webui-tokens"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Design token loading, filtering, and CSS generation for WebUI"
+keywords = ["webui", "design-tokens", "css", "theming"]
+categories = ["web-programming"]
+
+[lib]
+name = "webui_tokens"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

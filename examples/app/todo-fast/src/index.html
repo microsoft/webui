@@ -6,49 +6,13 @@
   <title>{{title}}</title>
   <style>
     :root {
-      /* Brand */
-      --color-brand-primary: #0078d4;
-      --color-brand-primary-hover: #106ebe;
-
-      /* Neutral */
-      --color-neutral-800: #1a1a1a;
-      --color-neutral-500: #666;
-      --color-neutral-400: #999;
-      --color-neutral-300: #ccc;
-      --color-neutral-200: #eee;
-      --color-neutral-100: #f5f5f5;
-      --color-white: #fff;
-
-      /* Semantic */
-      --color-success: #4caf50;
-      --color-success-light: #e8f5e9;
-      --color-danger: #e53935;
-      --color-danger-light: #ffebee;
-
-      /* Spacing */
-      --spacing-s: 8px;
-      --spacing-m: 10px;
-      --spacing-ml: 12px;
-      --spacing-l: 14px;
-      --spacing-xl: 16px;
-      --spacing-xxl: 20px;
-      --spacing-xxxl: 24px;
-
-      /* Border Radius */
-      --border-radius-s: 4px;
-      --border-radius-m: 6px;
-      --border-radius-l: 8px;
-      --border-radius-round: 50%;
-
-      /* Shadows */
-      --shadow-s: 0 1px 3px rgba(0, 0, 0, 0.12);
-      --shadow-focus-ring: 0 0 0 2px rgba(0, 120, 212, 0.2);
-
-      /* Typography */
-      --font-family-base: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      --font-size-m: 14px;
-      --font-size-ml: 15px;
-      --font-size-xxl: 28px;
+      /*{{{tokens.light}}}*/
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        /*{{{tokens.dark}}}*/
+      }
     }
 
     * {

@@ -1411,6 +1411,7 @@ dependencies = [
  "microsoft-webui-discovery",
  "microsoft-webui-handler",
  "microsoft-webui-protocol",
+ "microsoft-webui-tokens",
  "mime_guess",
  "serde",
  "serde_json",
@@ -1543,6 +1544,16 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio-test",
+]
+
+[[package]]
+name = "microsoft-webui-tokens"
+version = "0.0.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

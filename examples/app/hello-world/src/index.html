@@ -7,25 +7,13 @@
   <title>WebUI Hello World</title>
   <style>
     :root {
-      /* Colors */
-      --color-neutral-900: #333;
-      --color-neutral-200: #eee;
-      --color-neutral-100: #f9f9f9;
-      --color-brand-primary: #0078d7;
-      --color-brand-light: #e9f5ff;
-      --color-success-light: #eafff4;
-
-      /* Spacing */
-      --spacing-xl: 20px;
-      --spacing-l: 15px;
-      --spacing-m: 10px;
-
-      /* Border Radius */
-      --border-radius-m: 5px;
-
-      /* Typography */
-      --font-family-base: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      --line-height-base: 1.6;
+      /*{{{tokens.light}}}*/
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        /*{{{tokens.dark}}}*/
+      }
     }
 
     body {
