@@ -3,10 +3,16 @@
 
 import { expect, test } from '@playwright/test';
 
-test.describe('text fixture', () => {
+for (const mode of ['light', 'shadow'] as const) {
+test.describe(`text fixture [${mode} DOM]`, () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/text/fixture.html');
+    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
+    await page.goto(`/text/${file}`);
     await page.waitForSelector('test-text');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-text');
+      return el && (el as any).$ready === true;
+    });
   });
 
   test('renders SSR text content', async ({ page }) => {
@@ -17,10 +23,11 @@ test.describe('text fixture', () => {
   test('removes SSR markers after hydration', async ({ page }) => {
     const result = await page.evaluate(() => {
       const host = document.querySelector('test-text');
-      const root = host?.shadowRoot;
-      if (!root) {
-        return { comments: ['missing-shadow-root'], attrs: ['missing-shadow-root'] };
+      if (!host) {
+        return { comments: ['missing-host'], attrs: ['missing-host'] };
       }
+
+      const root = host.shadowRoot ?? host;
 
       const comments = [];
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
@@ -81,3 +88,4 @@ test.describe('text fixture', () => {
     expect(duration).toBeGreaterThanOrEqual(0);
   });
 });
+}

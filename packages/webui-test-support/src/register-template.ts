@@ -5,16 +5,14 @@ import type {
   CompiledAttrGroupMeta,
   CompiledAttrMeta,
   CompiledAttrPart,
-  CompiledComparisonOperator,
-  CompiledConditionExpr,
+  CompiledCondition,
   CompiledConditionalMeta,
-  CompiledLogicalOperator,
   CompiledTextRunMeta,
   TemplateBlockMeta,
   TemplateMeta,
   TemplateNodePath,
   TemplateSlotPath,
-} from '../../webui-framework/src/template.js';
+} from '../../webui-framework/src/template-types.js';
 
 export type FixtureNodePath = TemplateNodePath;
 
@@ -37,7 +35,7 @@ export interface FixtureAttrGroup {
 }
 
 export interface FixtureCondition {
-  when: CompiledConditionExpr;
+  when: CompiledCondition;
   blockIndex: number;
 }
 
@@ -70,6 +68,8 @@ export interface FixtureCompiledTemplateMeta extends FixtureCompiledBlockMeta {
   blocks?: FixtureCompiledBlockMeta[];
   adoptedStylesheet?: string;
   rootEvents?: FixtureEvent[];
+  /** Shadow DOM flag — when true, client-created components use shadow root. */
+  shadowDom?: boolean;
 }
 
 /** Builds a zero-based child path from the current block root. */
@@ -87,28 +87,79 @@ export function dynamic(path: string): [path: string] {
   return [path];
 }
 
-export function identifier(path: string): CompiledConditionExpr {
-  return [0, path];
+function parseLiteral(value: string): unknown {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  const num = Number(value);
+  if (!Number.isNaN(num)) return num;
+  return undefined; // not a literal — it's an identifier
+}
+
+function makeComparator(op: number): (a: unknown, b: unknown) => boolean {
+  switch (op) {
+    case 1:
+      return (a, b) => (a as number) > (b as number);
+    case 2:
+      return (a, b) => (a as number) < (b as number);
+    case 3:
+      return (a, b) => Object.is(a, b);
+    case 4:
+      return (a, b) => !Object.is(a, b);
+    case 5:
+      return (a, b) => (a as number) >= (b as number);
+    case 6:
+      return (a, b) => (a as number) <= (b as number);
+    default:
+      return () => false;
+  }
+}
+
+export function identifier(path: string): CompiledCondition {
+  return [(v, s) => !!v(path, s), [path]];
 }
 
 export function predicate(
   left: string,
-  operator: CompiledComparisonOperator,
+  operator: number,
   right: string,
-): CompiledConditionExpr {
-  return [1, left, operator, right];
+): CompiledCondition {
+  const literal = parseLiteral(right);
+  const paths = [left];
+  if (literal === undefined) paths.push(right); // right is also an identifier
+  const cmp = makeComparator(operator);
+  return [
+    (v, s) => cmp(v(left, s), literal !== undefined ? literal : v(right, s)),
+    paths,
+  ];
 }
 
-export function not(condition: CompiledConditionExpr): CompiledConditionExpr {
-  return [2, condition];
+export function not(condition: CompiledCondition): CompiledCondition {
+  return [(v, s) => !condition[0](v, s), condition[1]];
 }
 
 export function compound(
-  left: CompiledConditionExpr,
-  operator: CompiledLogicalOperator,
-  right: CompiledConditionExpr,
-): CompiledConditionExpr {
-  return [3, left, operator, right];
+  left: CompiledCondition,
+  operator: number,
+  right: CompiledCondition,
+): CompiledCondition {
+  if (operator === 1) {
+    // AND
+    return [
+      (v, s) => left[0](v, s) && right[0](v, s),
+      [...left[1], ...right[1]],
+    ];
+  }
+  // OR
+  return [
+    (v, s) => left[0](v, s) || right[0](v, s),
+    [...left[1], ...right[1]],
+  ];
 }
 
 export function stringLiteral(value: string): string {
@@ -123,41 +174,41 @@ export function booleanLiteral(value: boolean): string {
   return value ? 'true' : 'false';
 }
 
-export function eq(left: string, right: string): CompiledConditionExpr {
+export function eq(left: string, right: string): CompiledCondition {
   return predicate(left, 3, right);
 }
 
-export function neq(left: string, right: string): CompiledConditionExpr {
+export function neq(left: string, right: string): CompiledCondition {
   return predicate(left, 4, right);
 }
 
-export function gt(left: string, right: string): CompiledConditionExpr {
+export function gt(left: string, right: string): CompiledCondition {
   return predicate(left, 1, right);
 }
 
-export function lt(left: string, right: string): CompiledConditionExpr {
+export function lt(left: string, right: string): CompiledCondition {
   return predicate(left, 2, right);
 }
 
-export function gte(left: string, right: string): CompiledConditionExpr {
+export function gte(left: string, right: string): CompiledCondition {
   return predicate(left, 5, right);
 }
 
-export function lte(left: string, right: string): CompiledConditionExpr {
+export function lte(left: string, right: string): CompiledCondition {
   return predicate(left, 6, right);
 }
 
 export function and(
-  left: CompiledConditionExpr,
-  right: CompiledConditionExpr,
-): CompiledConditionExpr {
+  left: CompiledCondition,
+  right: CompiledCondition,
+): CompiledCondition {
   return compound(left, 1, right);
 }
 
 export function or(
-  left: CompiledConditionExpr,
-  right: CompiledConditionExpr,
-): CompiledConditionExpr {
+  left: CompiledCondition,
+  right: CompiledCondition,
+): CompiledCondition {
   return compound(left, 2, right);
 }
 
@@ -174,13 +225,13 @@ export function bindAttr(name: string, path: string): CompiledAttrMeta {
   return [name, 0, path];
 }
 
-/** Binds a property (`:${name}` in compiled metadata) to a state path. */
+/** Binds a property to a state path (complex binding, kind=1). */
 export function bindProp(name: string, path: string): CompiledAttrMeta {
-  return [`:${name}`, 1, path];
+  return [name, 1, path];
 }
 
 /** Binds a boolean attribute that toggles from a condition expression. */
-export function bindBoolAttr(name: string, condition: CompiledConditionExpr): CompiledAttrMeta {
+export function bindBoolAttr(name: string, condition: CompiledCondition): CompiledAttrMeta {
   return [name, 2, condition];
 }
 
@@ -205,7 +256,7 @@ export function attrTarget(
 
 /** Render `blocks[blockIndex]` when `condition` is truthy. */
 export function when(
-  condition: CompiledConditionExpr,
+  condition: CompiledCondition,
   options: {
     blockIndex: number;
   },
@@ -319,6 +370,10 @@ export function buildTemplate(meta: FixtureCompiledTemplateMeta): TemplateMeta {
     template.re = meta.rootEvents.map(normalizeEvent);
   }
 
+  if (meta.shadowDom) {
+    template.sd = true;
+  }
+
   return template;
 }
 
@@ -353,7 +408,10 @@ export function registerCompiledTemplate(
   name: string,
   meta: FixtureCompiledTemplateMeta | TemplateMeta,
 ): void {
-  const templates = window.__webui_templates ?? (window.__webui_templates = {});
+  // Use a local cast so the assignment works regardless of which framework
+  // package provides the global Window augmentation for __webui_templates.
+  const w = window as unknown as { __webui_templates?: Record<string, TemplateMeta> };
+  const templates = w.__webui_templates ?? (w.__webui_templates = {});
   templates[name] = normalizeTemplateMeta(meta);
 }
 

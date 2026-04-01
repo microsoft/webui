@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sidebar Repeat Fixture</title>
+</head>
+<body>
+  <test-sidebar-repeat><template shadowrootmode="open"><link rel="stylesheet" href="/sidebar-repeat/sidebar-repeat.css">
+      <nav class="sidebar">
+        <div class="nav-section">
+          <a class="nav-item" data-active data-nav="Dashboard" href="/">Dashboard</a>
+          <a class="nav-item" data-nav="All Contacts" href="/contacts">All Contacts</a>
+          <a class="nav-item" data-nav="Favorites" href="/favorites">Favorites</a>
+        </div>
+        <div class="nav-divider"></div>
+        <div class="nav-section">
+          <h3 class="nav-heading">Groups</h3>
+          
+          <a class="nav-item nav-item-group" data-nav="work" href="/groups/work">work</a>
+          <a class="nav-item nav-item-group" data-nav="family" href="/groups/family">family</a>
+          <a class="nav-item nav-item-group" data-nav="friends" href="/groups/friends">friends</a>
+          <a class="nav-item nav-item-group" data-nav="other" href="/groups/other">other</a>
+          
+        </div>
+      </nav>
+</template></test-sidebar-repeat>
+  <script>window.__webui_shadow=true;</script><script src="/dist/sidebar-repeat/element.js"></script>
+</body>
+</html>

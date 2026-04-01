@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>State Seed Fixture</title>
+</head>
+<body>
+  <test-state-seed><template shadowrootmode="open"><h1 class="title">SSR Title</h1>
+      <test-state-seed-shell page="dashboard"><div class="page">dashboard</div>
+          <nav class="groups">
+            
+            
+            <a class="group-link" data-nav="work" href="/groups/work">work</a>
+            
+            
+            <a class="group-link" data-nav="family" href="/groups/family">family</a>
+            
+            
+          </nav>
+          <nav class="categories">
+            
+            
+            <a class="category-link active" href="/search/featured">Featured</a>
+            
+            
+            <a class="category-link " href="/search/sale">Sale</a>
+            
+            
+          </nav>
+</test-state-seed-shell>
+      <button class="add-group">Add Group</button>
+      <button class="add-category">Add Category</button>
+</template></test-state-seed>
+  <script>window.__webui_shadow=true;</script><script src="/dist/state-seed/element.js"></script>
+</body>
+</html>

@@ -3,11 +3,20 @@
 
 import { expect, test } from '@playwright/test';
 
-test.describe('list fixture', () => {
+for (const mode of ['light', 'shadow'] as const) {
+test.describe(`list fixture [${mode} DOM]`, () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/list/fixture.html');
+    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
+    await page.goto(`/list/${file}`);
     await page.waitForSelector('test-list');
     await expect(page.locator('test-list-item .title')).toHaveCount(2);
+    // Wait for hydration to complete (events wired)
+    await page.waitForFunction(() => {
+      const host = document.querySelector('test-list');
+      const root = host?.shadowRoot ?? host;
+      const item = root?.querySelector('test-list-item');
+      return host && (host as any).$ready === true && item && (item as any).$ready === true;
+    });
   });
 
   test('renders SSR repeat content and nested child conditionals', async ({ page }) => {
@@ -25,8 +34,7 @@ test.describe('list fixture', () => {
   test('preserves keyed nodes when reversing the collection', async ({ page }) => {
     const initial = await page.evaluate(() => {
       const host = document.querySelector('test-list');
-      const root = host?.shadowRoot;
-      const item = root?.querySelector('test-list-item[item-id="2"]');
+      const item = (host?.shadowRoot ?? host)?.querySelector('test-list-item[item-id="2"]');
       const win = window as unknown as { __preservedNode?: Element | null };
       win.__preservedNode = item;
       return item instanceof HTMLElement;
@@ -38,9 +46,8 @@ test.describe('list fixture', () => {
 
     const preserved = await page.evaluate(() => {
       const host = document.querySelector('test-list');
-      const root = host?.shadowRoot;
       const win = window as unknown as { __preservedNode?: Element | null };
-      return win.__preservedNode === root?.querySelector('test-list-item[item-id="2"]');
+      return win.__preservedNode === (host?.shadowRoot ?? host)?.querySelector('test-list-item[item-id="2"]');
     });
 
     expect(preserved).toBe(true);
@@ -51,4 +58,53 @@ test.describe('list fixture', () => {
     await page.locator('test-list .clear').click();
     await expect(page.locator('test-list-item')).toHaveCount(0);
   });
+
+  test('prepend: inserts new item at top without recreating existing nodes', async ({ page }) => {
+    // Save references to existing nodes
+    const saved = await page.evaluate(() => {
+      const host = document.querySelector('test-list');
+      const root = host?.shadowRoot ?? host;
+      const win = window as unknown as { __item1?: Element | null; __item2?: Element | null };
+      win.__item1 = root?.querySelector('test-list-item[item-id="1"]');
+      win.__item2 = root?.querySelector('test-list-item[item-id="2"]');
+      return !!(win.__item1 && win.__item2);
+    });
+    expect(saved).toBe(true);
+
+    await page.locator('test-list .prepend').click();
+
+    // Existing nodes must be the same instances (not recreated)
+    const preserved = await page.evaluate(() => {
+      const host = document.querySelector('test-list');
+      const root = host?.shadowRoot ?? host;
+      const win = window as unknown as { __item1?: Element | null; __item2?: Element | null };
+      return {
+        item1Same: win.__item1 === root?.querySelector('test-list-item[item-id="1"]'),
+        item2Same: win.__item2 === root?.querySelector('test-list-item[item-id="2"]'),
+      };
+    });
+    expect(preserved.item1Same).toBe(true);
+    expect(preserved.item2Same).toBe(true);
+
+    // New item at top, existing items preserved in order
+    await expect(page.locator('test-list-item').first().locator('.title')).toHaveText('Item 3');
+    await expect(page.locator('test-list-item')).toHaveCount(3);
+  });
+
+  test('toggle via child event: zero DOM moves in container', async ({ page }) => {
+    // Wait for test-list-item to fully hydrate (events wired)
+    await page.waitForFunction(() => {
+      const host = document.querySelector('test-list');
+      const root = host?.shadowRoot ?? host;
+      const item = root?.querySelector('test-list-item');
+      return item && (item as any).$ready === true;
+    });
+
+    // Click toggle on first item via Playwright (pierces shadow DOM)
+    await page.locator('test-list-item .toggle').first().click();
+
+    // Item 1 should now be 'done' — 2 "Done" labels total
+    await expect(page.locator('test-list-item .done')).toHaveCount(2);
+  });
 });
+}

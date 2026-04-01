@@ -37,7 +37,7 @@ registerCompiledTemplate('test-nav', {
 });
 
 export class TestNav extends WebUIElement {
-  @observable groups: string[] = [];
+  @observable groups: string[] = ['work', 'family', 'friends', 'other'];
 
   syncGroups(): void {
     this.groups = ['work', 'family', 'friends', 'other'];

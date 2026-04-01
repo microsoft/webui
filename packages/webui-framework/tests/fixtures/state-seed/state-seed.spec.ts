@@ -3,10 +3,16 @@
 
 import { expect, test } from '@playwright/test';
 
-test.describe('state-seed fixture', () => {
+for (const mode of ['light', 'shadow'] as const) {
+test.describe(`state-seed fixture [${mode} DOM]`, () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/state-seed/fixture.html');
+    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
+    await page.goto(`/state-seed/${file}`);
     await page.waitForSelector('test-state-seed');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-state-seed');
+      return el && (el as any).$ready === true;
+    });
   });
 
   test('reconstructs observable state from SSR DOM', async ({ page }) => {
@@ -56,3 +62,4 @@ test.describe('state-seed fixture', () => {
     await expect(page.locator('test-state-seed-shell .category-link').first()).toHaveClass(/active/);
   });
 });
+}

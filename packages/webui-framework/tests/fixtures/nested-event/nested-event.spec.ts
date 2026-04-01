@@ -3,20 +3,24 @@
 
 import { expect, test } from '@playwright/test';
 
-test.describe('nested event fixture', () => {
+for (const mode of ['light', 'shadow'] as const) {
+test.describe(`nested event fixture [${mode} DOM]`, () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/nested-event/fixture.html');
+    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
+    await page.goto(`/nested-event/${file}`);
     await page.waitForSelector('test-nested-event');
   });
 
-  test('parent hydrates without errors when child has data-ev markers', async ({ page }) => {
+  test('parent hydrates events correctly with nested child component', async ({ page }) => {
     const errors: string[] = [];
     page.on('pageerror', (err) => errors.push(err.message));
 
     const result = await page.evaluate(() => {
       const host = document.querySelector('test-nested-event') as any;
-      const btn = host?.shadowRoot?.querySelector('.parent-btn');
+      const root = host?.shadowRoot ?? host;
+      const btn = root?.querySelector('.parent-btn');
       btn?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      host?.$flushUpdates();
       return host?.parentClicks ?? -1;
     });
 
@@ -24,3 +28,4 @@ test.describe('nested event fixture', () => {
     expect(errors).toEqual([]);
   });
 });
+}

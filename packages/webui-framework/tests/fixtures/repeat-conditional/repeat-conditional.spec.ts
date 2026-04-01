@@ -3,10 +3,16 @@
 
 import { expect, test } from '@playwright/test';
 
-test.describe('repeat conditional fixture', () => {
+for (const mode of ['light', 'shadow'] as const) {
+test.describe(`repeat conditional fixture [${mode} DOM]`, () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/repeat-conditional/fixture.html');
+    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
+    await page.goto(`/repeat-conditional/${file}`);
     await page.waitForSelector('test-repeat-conditional');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-repeat-conditional');
+      return el && (el as any).$ready === true;
+    });
   });
 
   test('expands conditional branches inside client repeat updates', async ({ page }) => {
@@ -18,7 +24,7 @@ test.describe('repeat conditional fixture', () => {
 
     const ifCount = await page.evaluate(() => {
       const host = document.querySelector('test-repeat-conditional');
-      return host?.shadowRoot?.querySelectorAll('if').length ?? -1;
+      return (host?.shadowRoot ?? host)?.querySelectorAll('if').length ?? -1;
     });
 
     expect(ifCount).toBe(0);
@@ -47,3 +53,4 @@ test.describe('repeat conditional fixture', () => {
     await expect(page.locator('test-repeat-conditional .link').first()).toHaveAttribute('data-href', '/search/shirts');
   });
 });
+}

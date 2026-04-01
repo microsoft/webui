@@ -14,10 +14,6 @@
  * class MyCounter extends WebUIElement {
  *   @attr count = 0;
  *   @observable label = 'Count';
- *
- *   $update() {
- *     // re-render when observables change
- *   }
  * }
  * MyCounter.define('my-counter');
  * ```
@@ -26,7 +22,7 @@
  */
 
 export { WebUIElement } from './element.js';
-export { observable, attr, volatile } from './decorators.js';
+export { observable, attr } from './decorators.js';
 export { getTemplate } from './template.js';
 export type { TemplateMeta } from './template.js';
 export { hydrationStart, hydrationEnd } from './lifecycle.js';

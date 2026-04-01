@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { WebUIElement, attr, observable, volatile } from '../../../src/index.js';
+import { WebUIElement, attr, observable } from '../../../src/index.js';
 import {
   bindEvent,
   bindText,
@@ -28,17 +28,16 @@ registerCompiledTemplate('test-counter', {
 export class TestCounter extends WebUIElement {
   @attr label = 'Clicks';
   @observable count = 0;
-
-  @volatile get doubled(): number {
-    return this.count * 2;
-  }
+  @observable doubled = 0;
 
   increment(): void {
     this.count += 1;
+    this.doubled = this.count * 2;
   }
 
   decrement(): void {
     this.count -= 1;
+    this.doubled = this.count * 2;
   }
 }
 

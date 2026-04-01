@@ -3,10 +3,16 @@
 
 import { expect, test } from '@playwright/test';
 
-test.describe('counter fixture', () => {
+for (const mode of ['light', 'shadow'] as const) {
+test.describe(`counter fixture [${mode} DOM]`, () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/counter/fixture.html');
+    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
+    await page.goto(`/counter/${file}`);
     await page.waitForSelector('test-counter');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-counter');
+      return el && (el as any).$ready === true;
+    });
   });
 
   test('renders SSR content', async ({ page }) => {
@@ -23,7 +29,7 @@ test.describe('counter fixture', () => {
     await expect(page.locator('test-counter .count')).toHaveText('1');
   });
 
-  test('recomputes @volatile getters reactively', async ({ page }) => {
+  test('updates derived @observable reactively', async ({ page }) => {
     await page.locator('test-counter .inc').click();
     await page.locator('test-counter .inc').click();
 
@@ -38,3 +44,4 @@ test.describe('counter fixture', () => {
     await expect(page.locator('test-counter .label')).toHaveText('Count');
   });
 });
+}

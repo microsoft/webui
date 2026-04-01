@@ -3,10 +3,16 @@
 
 import { expect, test } from '@playwright/test';
 
-test.describe('root-event fixture', () => {
+for (const mode of ['light', 'shadow'] as const) {
+test.describe(`root-event fixture [${mode} DOM]`, () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/root-event/fixture.html');
+    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
+    await page.goto(`/root-event/${file}`);
     await page.waitForSelector('test-root-event');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-root-event');
+      return el && (el as any).$ready === true;
+    });
   });
 
   test('root @click fires when clicking a child button', async ({ page }) => {
@@ -40,3 +46,4 @@ test.describe('root-event fixture', () => {
     expect(action).toBe('pong');
   });
 });
+}

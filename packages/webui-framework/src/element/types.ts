@@ -6,8 +6,8 @@
  *
  * These types define the binding data structures that are created once during
  * hydration and then read on every reactive update.  Each binding holds a
- * direct DOM node reference so that `$updateInstance` can patch the DOM in
- * O(1) per binding without any tree walking or selector queries.
+ * direct DOM node reference so that updates can patch the DOM in O(1) per
+ * binding without any tree walking or selector queries.
  *
  * ## Key concepts
  *
@@ -18,15 +18,12 @@
  * - **ScopeFrame** — a linked-list frame for repeat variable scoping.
  *   `@for(item of items)` creates a frame `{ name: 'item', value, parent }`.
  *   Nested repeats chain frames so inner bindings can resolve outer variables.
- *
- * - **RepeatHost** — the minimal interface that the repeat module needs from
- *   the host `WebUIElement`, avoiding a circular class dependency.
  */
 
 import type {
   CompiledAttrMeta,
   CompiledAttrPart,
-  CompiledConditionExpr,
+  CompiledCondition,
 } from '../template.js';
 
 /** Direct reference to a text node bound to a property path. */
@@ -35,15 +32,21 @@ export interface TextBinding {
   path?: string;
   parts?: CompiledAttrPart[];
   scope?: ScopeFrame;
+  /** When true, the binding renders unescaped HTML via innerHTML on the
+   *  parent element instead of setting Text.data. Corresponds to the
+   *  triple-brace `{{{expr}}}` template syntax. */
+  raw?: boolean;
+  /** The parent element for raw bindings — innerHTML is set here. */
+  rawParent?: Element;
 }
 
-/** Direct reference to an attribute binding with optional static prefix/suffix. */
+/** Direct reference to an attribute binding. */
 export interface AttrBinding {
   element: Element;
   name: string;
   kind: 'attribute' | 'complex' | 'boolean' | 'template';
   path?: string;
-  condition?: CompiledConditionExpr;
+  condition?: CompiledCondition;
   parts?: CompiledAttrPart[];
   scope?: ScopeFrame;
 }
@@ -65,7 +68,7 @@ export interface TemplateInstance {
 
 /** Direct reference to a conditional block with anchor + nested compiled block. */
 export interface CondBinding {
-  condition: CompiledConditionExpr;
+  condition: CompiledCondition;
   blockIndex: number;
   anchor: Comment;
   scope?: ScopeFrame;
@@ -97,12 +100,6 @@ export interface RepeatItemInstance {
   instance: TemplateInstance;
 }
 
-export interface ResolvedSlot {
-  parent: ParentNode & Node;
-  nextSibling: Node | null;
-  order: number;
-}
-
 /**
  * Minimal host interface for repeat operations.
  *
@@ -112,17 +109,23 @@ export interface ResolvedSlot {
  */
 export interface RepeatHost {
   $resolveValue(path: string, scope?: ScopeFrame): unknown;
-  $block(blockIndex: number): import('../template.js').TemplateBlockMeta | undefined;
   $createBlockInstance(blockIndex: number, scope?: ScopeFrame): TemplateInstance | null;
-  $hydrateExistingBlockInstance(blockIndex: number, nodes: Node[], scope?: ScopeFrame): TemplateInstance | null;
   $updateInstance(instance: TemplateInstance): void;
   $removeInstance(instance: TemplateInstance): void;
   $insertInstanceAfter(cursor: Node | null, container: ParentNode & Node, instance: TemplateInstance): Node | null;
-  $singleDynamicAttrPart(parts: CompiledAttrPart[]): { path: string; prefix: string; suffix: string } | null;
-  $stripAffixes(raw: string, prefix: string, suffix: string): string | undefined;
-  $readAttrBindingRange(el: Element): [number, number] | null;
 }
 
 export function toCamelCase(str: string): string {
-  return str.replace(/-([a-z])/g, (_m, ch: string) => ch.toUpperCase());
+  let result = '';
+  let capitalize = false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (ch === '-') {
+      capitalize = true;
+    } else {
+      result += capitalize ? ch.toUpperCase() : ch;
+      capitalize = false;
+    }
+  }
+  return result;
 }

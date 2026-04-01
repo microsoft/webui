@@ -5,42 +5,23 @@
   <title>Multi Repeat Fixture</title>
 </head>
 <body>
-  <test-multi-repeat>
-    <template shadowrootmode="open">
-      <ul class="list-a">
-        <!--w-b:start:0:for-5-->
-        <!--w-r:start:0-->
+  <test-multi-repeat><ul class="list-a">
         <li>
-          <!--w-b:start:0:if-10--><p class="current"><!--w-b:start:0:item.title-->Alpha<!--w-b:end:0:item.title--></p><!--w-b:end:0:if-10-->
-          <!--w-b:start:1:if-11--><!--w-b:end:1:if-11-->
+          <p class="current">Alpha</p>
         </li>
-        <!--w-r:end:0-->
-        <!--w-r:start:1-->
         <li>
-          <!--w-b:start:0:if-10--><!--w-b:end:0:if-10-->
-          <!--w-b:start:1:if-11--><a class="link" href="/beta" data-w-b-0><!--w-b:start:1:item.title-->Beta<!--w-b:end:1:item.title--></a><!--w-b:end:1:if-11-->
+          <a class="link" href="/beta">Beta</a>
         </li>
-        <!--w-r:end:1-->
-        <!--w-b:end:0:for-5-->
       </ul>
       <ul class="list-b">
-        <!--w-b:start:1:for-6-->
-        <!--w-r:start:0-->
         <li>
-          <!--w-b:start:0:if-12--><p class="current"><!--w-b:start:0:item.title-->Alpha<!--w-b:end:0:item.title--></p><!--w-b:end:0:if-12-->
-          <!--w-b:start:1:if-13--><!--w-b:end:1:if-13-->
+          <p class="current">Alpha</p>
         </li>
-        <!--w-r:end:0-->
-        <!--w-r:start:1-->
         <li>
-          <!--w-b:start:0:if-12--><!--w-b:end:0:if-12-->
-          <!--w-b:start:1:if-13--><a class="link" href="/beta" data-w-b-0><!--w-b:start:1:item.title-->Beta<!--w-b:end:1:item.title--></a><!--w-b:end:1:if-13-->
+          <a class="link" href="/beta">Beta</a>
         </li>
-        <!--w-r:end:1-->
-        <!--w-b:end:1:for-6-->
       </ul>
-    </template>
-  </test-multi-repeat>
+</test-multi-repeat>
   <script src="/dist/multi-repeat/element.js"></script>
 </body>
 </html>

@@ -66,7 +66,7 @@ registerCompiledTemplate('test-sidebar-repeat', {
 export class TestSidebarRepeat extends WebUIElement {
   @observable page = 'dashboard';
   @observable activeGroup = '';
-  @observable groups: string[] = [];
+  @observable groups: string[] = ['work', 'family', 'friends', 'other'];
 
   syncGroups(): void {
     this.groups = ['work', 'family', 'friends', 'other'];

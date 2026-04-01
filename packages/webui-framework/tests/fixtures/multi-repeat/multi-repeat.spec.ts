@@ -3,10 +3,16 @@
 
 import { expect, test } from '@playwright/test';
 
-test.describe('multi repeat fixture', () => {
+for (const mode of ['light', 'shadow'] as const) {
+test.describe(`multi repeat fixture [${mode} DOM]`, () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/multi-repeat/fixture.html');
+    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
+    await page.goto(`/multi-repeat/${file}`);
     await page.waitForSelector('test-multi-repeat');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-multi-repeat');
+      return el && (el as any).$ready === true;
+    });
   });
 
   test('second list conditionals update when items change', async ({ page }) => {
@@ -16,9 +22,9 @@ test.describe('multi repeat fixture', () => {
     // Verify initial SSR state — Alpha is <p>, Beta is <a> in both lists
     const initial = await page.evaluate(() => {
       const host = document.querySelector('test-multi-repeat') as any;
-      const sr = host?.shadowRoot;
-      const listA = sr?.querySelector('.list-a');
-      const listB = sr?.querySelector('.list-b');
+      const root = host?.shadowRoot ?? host;
+      const listA = root?.querySelector('.list-a');
+      const listB = root?.querySelector('.list-b');
       return {
         listALinks: listA?.querySelectorAll('a.link')?.length,
         listBLinks: listB?.querySelectorAll('a.link')?.length,
@@ -39,9 +45,10 @@ test.describe('multi repeat fixture', () => {
         { title: 'Alpha', href: '/alpha', active: 'false' },
         { title: 'Beta', href: '/beta', active: 'true' },
       ];
+      host.$flushUpdates();
 
-      const sr = host.shadowRoot;
-      const listB = sr?.querySelector('.list-b');
+      const root = host?.shadowRoot ?? host;
+      const listB = root?.querySelector('.list-b');
       const betaCurrent = listB?.querySelector('p.current');
       const alphaLink = listB?.querySelector('a.link');
       return {
@@ -58,3 +65,4 @@ test.describe('multi repeat fixture', () => {
     expect(errors).toEqual([]);
   });
 });
+}

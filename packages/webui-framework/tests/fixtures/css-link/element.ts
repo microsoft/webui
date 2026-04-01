@@ -20,7 +20,8 @@ registerCompiledTemplate('test-link-child', {
 
 export class TestLinkHost extends WebUIElement {
   spawnChild(): void {
-    const slot = this.shadowRoot?.querySelector('.slot');
+    const root = this.shadowRoot ?? this;
+    const slot = root.querySelector('.slot');
     if (!(slot instanceof HTMLDivElement)) {
       throw new Error('Missing .slot container');
     }

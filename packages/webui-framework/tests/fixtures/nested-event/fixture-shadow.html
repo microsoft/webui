@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Nested Event Fixture</title>
+</head>
+<body>
+  <test-nested-event><template shadowrootmode="open"><span class="count">0</span>
+      <button class="parent-btn">Parent</button>
+      <test-nested-child><template shadowrootmode="open"><button class="child-btn">Child</button>
+</template></test-nested-child>
+</template></test-nested-event>
+  <script>window.__webui_shadow=true;</script><script src="/dist/nested-event/element.js"></script>
+</body>
+</html>

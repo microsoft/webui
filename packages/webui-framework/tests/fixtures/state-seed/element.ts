@@ -81,17 +81,23 @@ registerCompiledTemplate('test-state-seed', {
 
 export class TestStateSeedShell extends WebUIElement {
   @attr page = '';
-  @observable groups: string[] = [];
-  @observable navCategories: NavCategory[] = [];
+  @observable groups: string[] = ['work', 'family'];
+  @observable navCategories: NavCategory[] = [
+    { handle: 'featured', title: 'Featured', activeClass: 'active' },
+    { handle: 'sale', title: 'Sale', activeClass: '' },
+  ];
 }
 
 TestStateSeedShell.define('test-state-seed-shell');
 
 export class TestStateSeed extends WebUIElement {
-  @observable title = '';
-  @observable page = '';
-  @observable groups: string[] = [];
-  @observable navCategories: NavCategory[] = [];
+  @observable title = 'SSR Title';
+  @observable page = 'dashboard';
+  @observable groups: string[] = ['work', 'family'];
+  @observable navCategories: NavCategory[] = [
+    { handle: 'featured', title: 'Featured', activeClass: 'active' },
+    { handle: 'sale', title: 'Sale', activeClass: '' },
+  ];
 
   addGroup(): void {
     this.groups = [...this.groups, 'travel'];

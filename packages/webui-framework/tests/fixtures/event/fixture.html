@@ -5,14 +5,11 @@
   <title>Event Fixture</title>
 </head>
 <body>
-  <test-event>
-    <template shadowrootmode="open">
-      <span class="count"><!--w-b:start:0:count-->0<!--w-b:end:0:count--></span>
-      <button class="inc" data-ev="1">+</button>
-      <button class="dec" data-ev="1">-</button>
-      <button class="reset" data-ev="1">Reset</button>
-    </template>
-  </test-event>
+  <test-event><span class="count">0</span>
+      <button class="inc">+</button>
+      <button class="dec">-</button>
+      <button class="reset">Reset</button>
+</test-event>
   <script src="/dist/event/element.js"></script>
 </body>
 </html>
