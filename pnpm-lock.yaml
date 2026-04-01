@@ -72,7 +72,11 @@ catalogs:
 
 importers:
 
-  .: {}
+  .:
+    devDependencies:
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.2
 
   docs:
     devDependencies:
