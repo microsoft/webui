@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>List Fixture</title>
+</head>
+
+<body>
+  <test-list>
+    <template shadowrootmode="open">
+      <div class="controls">
+        <button class="add">Add</button>
+        <button class="prepend">Prepend</button>
+        <button class="reverse">Reverse</button>
+        <button class="clear">Clear</button>
+      </div>
+      <div class="items">
+        
+        <test-list-item item-id="1" title="Alpha" state="pending">
+          <article class="item">
+            <button class="toggle">Toggle</button>
+            <span class="title">Alpha</span>
+          </article>
+        </test-list-item>
+
+        <test-list-item item-id="2" title="Beta" state="done">
+          <article class="item">
+            <button class="toggle">Toggle</button>
+            <span class="title">Beta</span>
+            <span class="done">Done</span>
+          </article>
+        </test-list-item>
+
+      </div>
+    </template>
+  </test-list>
+  <script>window.__webui_shadow = true;</script>
+  <script src="/dist/list/element.js"></script>
+</body>
+
+</html>

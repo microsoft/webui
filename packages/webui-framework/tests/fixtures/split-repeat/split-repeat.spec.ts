@@ -3,10 +3,16 @@
 
 import { expect, test } from '@playwright/test';
 
-test.describe('split repeat fixture', () => {
+for (const mode of ['light', 'shadow'] as const) {
+test.describe(`split repeat fixture [${mode} DOM]`, () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/split-repeat/fixture.html');
+    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
+    await page.goto(`/split-repeat/${file}`);
     await page.waitForSelector('test-split-repeat');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-split-repeat');
+      return el && (el as any).$ready === true;
+    });
   });
 
   test('keeps multiple SSR-hydrated repeats in their own containers', async ({ page }) => {
@@ -51,3 +57,4 @@ test.describe('split repeat fixture', () => {
     });
   });
 });
+}

@@ -5,13 +5,10 @@
   <title>Root Event Fixture</title>
 </head>
 <body>
-  <test-root-event>
-    <template shadowrootmode="open">
-      <span class="total"><!--w-b:start:0:totalClicks-->0<!--w-b:end:0:totalClicks--></span>
+  <test-root-event><span class="total">0</span>
       <button class="action" data-action="ping">Ping</button>
       <button class="other" data-action="pong">Pong</button>
-    </template>
-  </test-root-event>
+</test-root-event>
   <script src="/dist/root-event/element.js"></script>
 </body>
 </html>

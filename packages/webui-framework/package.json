@@ -2,7 +2,7 @@
   "name": "@microsoft/webui-framework",
   "version": "0.0.2",
   "type": "module",
-  "description": "WebUI Framework — lightweight Web Component runtime with SSR hydration. An alternative to @microsoft/fast-element for WebUI apps.",
+  "description": "WebUI Framework Next — Preact-inspired lightweight Web Component runtime with SSR hydration. 15KB minified, compiled-template path mapping, no hydration markers.",
   "license": "MIT",
   "exports": {
     ".": {

@@ -3,9 +3,11 @@
 
 import { expect, test } from '@playwright/test';
 
-test.describe('nav fixture', () => {
+for (const mode of ['light', 'shadow'] as const) {
+test.describe(`nav fixture [${mode} DOM]`, () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/nav/fixture.html');
+    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
+    await page.goto(`/nav/${file}`);
     await page.waitForSelector('test-nav');
   });
 
@@ -37,3 +39,4 @@ test.describe('nav fixture', () => {
     ]);
   });
 });
+}

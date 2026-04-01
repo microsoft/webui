@@ -3,15 +3,17 @@
 
 import { expect, test } from '@playwright/test';
 
-test.describe('optional css link fixture', () => {
+for (const mode of ['light', 'shadow'] as const) {
+test.describe(`optional css link fixture [${mode} DOM]`, () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/optional-css-link/fixture.html');
+    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
+    await page.goto(`/optional-css-link/${file}`);
     await page.waitForSelector('test-no-css-host .spawn');
   });
 
   test('client-created components skip stylesheet links when no CSS was discovered', async ({ page }) => {
     const before = await page.locator('test-no-css-host').evaluate((host) => ({
-      hostHref: host.shadowRoot?.querySelector('link[rel="stylesheet"]')?.getAttribute('href') ?? null,
+      hostHref: (host.shadowRoot ?? host).querySelector('link[rel="stylesheet"]')?.getAttribute('href') ?? null,
     }));
 
     expect(before.hostHref).toBeNull();
@@ -19,12 +21,12 @@ test.describe('optional css link fixture', () => {
     await page.locator('test-no-css-host .spawn').click();
 
     const after = await page.locator('test-no-css-host').evaluate((host) => {
-      const child = host.shadowRoot?.querySelector('test-no-css-child');
+      const child = (host.shadowRoot ?? host).querySelector('test-no-css-child');
       return {
-        hostHref: host.shadowRoot?.querySelector('link[rel="stylesheet"]')?.getAttribute('href') ?? null,
+        hostHref: (host.shadowRoot ?? host).querySelector('link[rel="stylesheet"]')?.getAttribute('href') ?? null,
         childExists: !!child,
-        childHref: child?.shadowRoot?.querySelector('link[rel="stylesheet"]')?.getAttribute('href') ?? null,
-        childText: child?.shadowRoot?.querySelector('.child-label')?.textContent ?? null,
+        childHref: (child?.shadowRoot ?? child)?.querySelector('link[rel="stylesheet"]')?.getAttribute('href') ?? null,
+        childText: (child?.shadowRoot ?? child)?.querySelector('.child-label')?.textContent ?? null,
       };
     });
 
@@ -36,3 +38,4 @@ test.describe('optional css link fixture', () => {
     });
   });
 });
+}

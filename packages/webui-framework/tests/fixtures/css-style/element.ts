@@ -20,7 +20,7 @@ registerCompiledTemplate('test-style-child', {
 
 export class TestStyleHost extends WebUIElement {
   spawnChild(): void {
-    const slot = this.shadowRoot?.querySelector('.slot');
+    const slot = (this.shadowRoot ?? this).querySelector('.slot');
     if (!(slot instanceof HTMLDivElement)) {
       throw new Error('Missing .slot container');
     }

@@ -4,16 +4,11 @@
 /**
  * Hydration lifecycle tracker.
  *
- * Tracks per-component hydration timing via the Performance API and fires a
+ * Tracks aggregate hydration timing via the Performance API and fires a
  * global `webui:hydration-complete` event on `window` once every registered
  * component has finished hydrating.
  *
  * ## Performance marks
- *
- * Per component instance:
- * - `webui:hydrate:<tag>:start`
- * - `webui:hydrate:<tag>:end`
- * - measure `webui:hydrate:<tag>` between the two
  *
  * Global:
  * - `webui:hydrate:total:start`  — first component begins hydrating
@@ -37,30 +32,21 @@ let completed = false;
 
 /**
  * Call before a component begins hydration.
- * Places per-component and (once) global start marks.
+ * Increments the pending counter and (once) places the global start mark.
  */
-export function hydrationStart(tagName: string): void {
+export function hydrationStart(_tagName: string): void {
   if (!started) {
     performance.mark('webui:hydrate:total:start');
     started = true;
   }
   pendingCount++;
-  performance.mark(`webui:hydrate:${tagName}:start`);
 }
 
 /**
  * Call after a component has finished hydration.
- * Places per-component marks/measures and, when the last component
- * finishes, fires the global event + measure.
+ * When the last component finishes, fires the global event + measure.
  */
-export function hydrationEnd(tagName: string): void {
-  performance.mark(`webui:hydrate:${tagName}:end`);
-  performance.measure(
-    `webui:hydrate:${tagName}`,
-    `webui:hydrate:${tagName}:start`,
-    `webui:hydrate:${tagName}:end`,
-  );
-
+export function hydrationEnd(_tagName: string): void {
   pendingCount--;
 
   if (pendingCount <= 0 && !completed) {

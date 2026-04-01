@@ -12,7 +12,7 @@ import {
 } from '@microsoft/webui-test-support';
 
 registerCompiledTemplate('test-ref', {
-  h: '<input class="input" w-ref="inputEl"><span class="display"></span><button class="read">Read</button><button class="focus">Focus</button>',
+  h: '<input class="input" w-ref="{inputEl}"><span class="display"></span><button class="read">Read</button><button class="focus">Focus</button>',
   text: [
     bindText(slot({ parent: nodePath(1), before: 0 }), dynamic('value')),
   ],

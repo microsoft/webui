@@ -3,10 +3,16 @@
 
 import { expect, test } from '@playwright/test';
 
-test.describe('event fixture', () => {
+for (const mode of ['light', 'shadow'] as const) {
+test.describe(`event fixture [${mode} DOM]`, () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/event/fixture.html');
+    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
+    await page.goto(`/event/${file}`);
     await page.waitForSelector('test-event');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-event');
+      return el && (el as any).$ready === true;
+    });
   });
 
   test('renders the initial count', async ({ page }) => {
@@ -42,3 +48,4 @@ test.describe('event fixture', () => {
     await expect(page.locator('test-event .count')).toHaveText('0');
   });
 });
+}

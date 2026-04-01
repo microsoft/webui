@@ -41,8 +41,8 @@ interface SplitRepeatItem {
 }
 
 export class TestSplitRepeat extends WebUIElement {
-  @observable primaryItems: SplitRepeatItem[] = [];
-  @observable secondaryItems: SplitRepeatItem[] = [];
+  @observable primaryItems: SplitRepeatItem[] = [{ label: 'Seed Alpha' }, { label: 'Seed Beta' }];
+  @observable secondaryItems: SplitRepeatItem[] = [{ label: 'Seed One' }, { label: 'Seed Two' }];
 
   loadItems(): void {
     this.primaryItems = [{ label: 'Alpha' }, { label: 'Beta' }];

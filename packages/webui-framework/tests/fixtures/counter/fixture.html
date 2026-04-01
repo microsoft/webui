@@ -5,15 +5,12 @@
   <title>Counter Fixture</title>
 </head>
 <body>
-  <test-counter label="Clicks">
-    <template shadowrootmode="open">
-      <span class="label"><!--w-b:start:0:label-->Clicks<!--w-b:end:0:label--></span>:
-      <span class="count"><!--w-b:start:1:count-->0<!--w-b:end:1:count--></span>
-      (<span class="doubled"><!--w-b:start:2:doubled-->0<!--w-b:end:2:doubled--></span>)
-      <button class="inc" data-ev="1">+</button>
-      <button class="dec" data-ev="1">-</button>
-    </template>
-  </test-counter>
+  <test-counter label="Clicks"><span class="label">Clicks</span>:
+      <span class="count">0</span>
+      (<span class="doubled">0</span>)
+      <button class="inc">+</button>
+      <button class="dec">-</button>
+</test-counter>
   <script src="/dist/counter/element.js"></script>
 </body>
 </html>

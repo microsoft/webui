@@ -31,8 +31,8 @@ export class TestNestedChild extends WebUIElement {
 TestNestedChild.define('test-nested-child');
 
 // Parent component — has its own event binding AND contains test-nested-child.
-// During SSR hydration the parent's data-ev walk must NOT collect
-// the child's data-ev markers.
+// Verifies that event wiring during SSR hydration correctly scopes to
+// the parent's own event targets without interfering with the child.
 registerCompiledTemplate('test-nested-event', {
   h: '<span class="count"></span><button class="parent-btn">Parent</button><test-nested-child></test-nested-child>',
   text: [

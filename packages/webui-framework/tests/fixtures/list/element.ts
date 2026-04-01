@@ -18,21 +18,25 @@ import {
 } from '@microsoft/webui-test-support';
 
 registerCompiledTemplate('test-list-item', {
-  h: '<article class="item"><span class="title"></span></article>',
+  h: '<article class="item"><button class="toggle">Toggle</button><span class="title"></span></article>',
   text: [
-    bindText(slot({ parent: nodePath(0, 0), before: 0 }), dynamic('title')),
+    bindText(slot({ parent: nodePath(0, 1), before: 0 }), dynamic('title')),
   ],
   conditionals: [when(eq('state', stringLiteral('done')), { blockIndex: 0 })],
   conditionSlots: [
-    slot({ parent: nodePath(0), before: 1 }),
+    slot({ parent: nodePath(0), before: 2 }),
   ],
   blocks: [{
     h: '<span class="done">Done</span>',
   }],
+  events: [
+    bindEvent('click', 'onToggle'),
+  ],
+  eventTargets: [nodePath(0, 0)],
 });
 
 registerCompiledTemplate('test-list', {
-  h: '<div class="controls"><button class="add">Add</button><button class="reverse">Reverse</button><button class="clear">Clear</button></div><div class="items"></div>',
+  h: '<div class="controls"><button class="add">Add</button><button class="prepend">Prepend</button><button class="reverse">Reverse</button><button class="clear">Clear</button></div><div class="items"></div>',
   repeats: [repeat('items', 'item', { blockIndex: 0 })],
   repeatSlots: [slot({ parent: nodePath(1), before: 0 })],
   blocks: [{
@@ -46,16 +50,24 @@ registerCompiledTemplate('test-list', {
   }],
   events: [
     bindEvent('click', 'addItem'),
+    bindEvent('click', 'prependItem'),
     bindEvent('click', 'reverseItems'),
     bindEvent('click', 'clearItems'),
   ],
-  eventTargets: [nodePath(0, 0), nodePath(0, 1), nodePath(0, 2)],
+  eventTargets: [nodePath(0, 0), nodePath(0, 1), nodePath(0, 2), nodePath(0, 3)],
+  rootEvents: [
+    bindEvent('toggle-item', 'toggleItem', true),
+  ],
 });
 
 export class TestListItem extends WebUIElement {
   @attr({ attribute: 'item-id' }) itemId = '';
   @attr title = '';
   @attr state = 'pending';
+
+  onToggle(): void {
+    this.$emit('toggle-item', { id: this.itemId });
+  }
 }
 
 TestListItem.define('test-list-item');
@@ -67,7 +79,10 @@ interface ListItem {
 }
 
 export class TestList extends WebUIElement {
-  @observable items: ListItem[] = [];
+  @observable items: ListItem[] = [
+    { id: '1', title: 'Alpha', state: 'pending' },
+    { id: '2', title: 'Beta', state: 'done' },
+  ];
   nextId = 3;
 
   addItem(): void {
@@ -78,6 +93,24 @@ export class TestList extends WebUIElement {
       title: `Item ${id}`,
       state: id === '3' ? 'done' : 'pending',
     }];
+  }
+
+  prependItem(): void {
+    const id = String(this.nextId);
+    this.nextId += 1;
+    this.items = [{
+      id,
+      title: `Item ${id}`,
+      state: 'pending',
+    }, ...this.items];
+  }
+
+  toggleItem(e: CustomEvent<{ id: string }>): void {
+    const item = this.items.find(i => i.id === e.detail.id);
+    if (item) {
+      item.state = item.state === 'done' ? 'pending' : 'done';
+      this.items = [...this.items];
+    }
   }
 
   reverseItems(): void {

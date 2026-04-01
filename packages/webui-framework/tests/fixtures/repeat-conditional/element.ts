@@ -71,7 +71,26 @@ interface RepeatConditionalItem {
 }
 
 export class TestRepeatConditional extends WebUIElement {
-  @observable items: RepeatConditionalItem[] = [];
+  @observable items: RepeatConditionalItem[] = [
+    {
+      title: 'Shirts',
+      href: '/search/shirts',
+      activeClass: 'active',
+      disabled: false,
+    },
+    {
+      title: 'Headwear',
+      href: '/search/headwear',
+      activeClass: '',
+      disabled: false,
+    },
+    {
+      title: 'Archived',
+      href: '/search/archived',
+      activeClass: '',
+      disabled: true,
+    },
+  ];
 
   loadItems(): void {
     this.items = [

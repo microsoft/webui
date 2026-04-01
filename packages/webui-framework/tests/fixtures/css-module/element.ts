@@ -22,7 +22,7 @@ registerCompiledTemplate('test-module-child', {
 
 export class TestModuleHost extends WebUIElement {
   spawnChild(): void {
-    const slot = this.shadowRoot?.querySelector('.slot');
+    const slot = (this.shadowRoot ?? this).querySelector('.slot');
     if (!(slot instanceof HTMLDivElement)) {
       throw new Error('Missing .slot container');
     }

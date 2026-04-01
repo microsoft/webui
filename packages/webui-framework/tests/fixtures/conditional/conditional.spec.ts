@@ -3,10 +3,16 @@
 
 import { expect, test } from '@playwright/test';
 
-test.describe('conditional fixture', () => {
+for (const mode of ['light', 'shadow'] as const) {
+test.describe(`conditional fixture [${mode} DOM]`, () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/conditional/fixture.html');
+    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
+    await page.goto(`/conditional/${file}`);
     await page.waitForSelector('test-conditional');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-conditional');
+      return el && (el as any).$ready === true;
+    });
   });
 
   test('renders the SSR conditional body', async ({ page }) => {
@@ -29,19 +35,6 @@ test.describe('conditional fixture', () => {
 
     await page.locator('test-conditional-client .toggle').click();
     await expect(page.locator('test-conditional-client .details')).toHaveText('Details');
-  });
-
-  test('hydrates detached-fragment conditional body before mount', async ({ page }) => {
-    await expect(page.locator('test-conditional-detached .details')).toHaveText('Details');
-    const comments = await page.evaluate(() => {
-      const host = document.querySelector('test-conditional-detached');
-      return Array.from(host?.shadowRoot?.childNodes ?? [])
-        .filter((node): node is Comment => node.nodeType === Node.COMMENT_NODE)
-        .map((node) => node.data);
-    });
-
-    expect(comments).toContain('c:0');
-    expect(comments.some((comment) => comment.startsWith('w-b:'))).toBe(false);
   });
 
   test('toggles boolean attributes reactively', async ({ page }) => {
@@ -76,3 +69,4 @@ test.describe('conditional fixture', () => {
     await expect(page.locator('test-conditional .toggle')).toBeDisabled();
   });
 });
+}

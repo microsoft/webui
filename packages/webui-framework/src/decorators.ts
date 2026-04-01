@@ -93,6 +93,9 @@ export function observable(target: object, name: string): void {
  */
 const attrMap = new WeakMap<Function, Map<string, string>>();
 
+/** Registry of boolean-mode attribute names per constructor. */
+const boolAttrs = new WeakMap<Function, Set<string>>();
+
 /**
  * Like {@link observable} but also reflects to/from an HTML attribute
  * (kebab-case). The decorator patches `observedAttributes` and
@@ -108,6 +111,10 @@ const attrMap = new WeakMap<Function, Map<string, string>>();
  */
 export interface AttrOptions {
   attribute?: string;
+  /** When `'boolean'`, the property is `true` when the attribute is present
+   *  and `false` when absent — matching native HTML boolean attribute semantics.
+   *  Default is string mode (property receives the attribute string value). */
+  mode?: 'boolean';
 }
 
 function applyAttr(
@@ -129,6 +136,14 @@ function applyAttr(
     attrMap.set(ctor, new Map());
   }
   attrMap.get(ctor)!.set(attrName, name);
+
+  // Track boolean-mode attrs.
+  if (options?.mode === 'boolean') {
+    if (!boolAttrs.has(ctor)) {
+      boolAttrs.set(ctor, new Set());
+    }
+    boolAttrs.get(ctor)!.add(attrName);
+  }
 
   // 3. Accumulate observed attributes on the constructor.
   if (!ctor._observedAttrs) {
@@ -157,7 +172,8 @@ function applyAttr(
       const map = attrMap.get(this.constructor as Function);
       const propName = map?.get(attribute);
       if (propName !== undefined) {
-        (this as Record<string, unknown>)[propName] = newVal;
+        const isBool = boolAttrs.get(this.constructor as Function)?.has(attribute);
+        (this as Record<string, unknown>)[propName] = isBool ? newVal !== null : newVal;
       }
 
       // Preserve any pre-existing attributeChangedCallback.
@@ -186,23 +202,3 @@ export function attr(
     applyAttr(target, propName, options);
   };
 }
-
-// ---------------------------------------------------------------------------
-// @volatile
-// ---------------------------------------------------------------------------
-
-/**
- * Marks a getter as volatile — re-evaluated every time it is accessed.
- */
-export function volatile(
-  target: object,
-  name: string,
-  descriptor: PropertyDescriptor,
-): PropertyDescriptor {
-  return {
-    ...descriptor,
-    enumerable: false,
-    configurable: true,
-  };
-}
-
