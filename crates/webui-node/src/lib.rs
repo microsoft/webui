@@ -100,6 +100,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         app_dir: std::path::PathBuf::from(&options.app_dir),
         entry: options.entry.unwrap_or_else(|| "index.html".to_string()),
         css,
+        dom: webui::DomStrategy::Shadow,
         plugin: options.plugin,
         components: options.components.unwrap_or_default(),
     };

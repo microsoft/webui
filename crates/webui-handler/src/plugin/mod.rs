@@ -10,6 +10,7 @@ pub mod fast;
 pub mod webui;
 
 use crate::{ResponseWriter, Result};
+#[cfg(test)]
 use std::collections::HashSet;
 use webui_protocol::WebUIProtocol;
 
@@ -61,9 +62,11 @@ pub trait HandlerPlugin {
 }
 
 /// Emit client component templates for only the components rendered in this response.
+#[cfg(test)]
 pub(crate) fn emit_rendered_component_templates(
     protocol: &WebUIProtocol,
     rendered_components: &HashSet<String>,
+    nonce: Option<&str>,
     writer: &mut dyn ResponseWriter,
 ) -> Result<()> {
     for name in rendered_components {
@@ -73,9 +76,50 @@ pub(crate) fn emit_rendered_component_templates(
             .map(|component| component.template.as_str())
             .filter(|template| !template.is_empty())
         {
-            writer.write(template)?;
+            emit_template_script(template, nonce, writer)?;
         }
     }
 
+    Ok(())
+}
+
+/// Emit client component templates for all compiled components in the protocol.
+///
+/// Components inside initially-false `<if>` blocks are not traversed during
+/// render, but their templates must still be available client-side so the
+/// framework can create them dynamically when the condition becomes true.
+pub(crate) fn emit_all_component_templates(
+    protocol: &WebUIProtocol,
+    nonce: Option<&str>,
+    writer: &mut dyn ResponseWriter,
+) -> Result<()> {
+    for component in protocol.components.values() {
+        let template = component.template.as_str();
+        if template.is_empty() {
+            continue;
+        }
+        emit_template_script(template, nonce, writer)?;
+    }
+
+    Ok(())
+}
+
+fn emit_template_script(
+    template: &str,
+    nonce: Option<&str>,
+    writer: &mut dyn ResponseWriter,
+) -> Result<()> {
+    if let Some(nonce) = nonce {
+        if let Some(rest) = template.strip_prefix("<script>") {
+            writer.write("<script nonce=\"")?;
+            writer.write(nonce)?;
+            writer.write("\">")?;
+            writer.write(rest)?;
+        } else {
+            writer.write(template)?;
+        }
+    } else {
+        writer.write(template)?;
+    }
     Ok(())
 }

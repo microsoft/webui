@@ -4,6 +4,7 @@
 use clap::Args;
 use std::path::PathBuf;
 pub use webui::CssStrategy;
+pub use webui::DomStrategy;
 
 /// Shared CLI arguments used by both `build` and `serve` commands.
 #[derive(Args, Clone)]
@@ -19,6 +20,10 @@ pub struct AppArgs {
     /// CSS delivery strategy for component stylesheets
     #[arg(long, value_enum, default_value_t = CssStrategy::Link)]
     pub css: CssStrategy,
+
+    /// DOM strategy for component rendering (shadow or light)
+    #[arg(long, value_enum, default_value_t = DomStrategy::Shadow)]
+    pub dom: DomStrategy,
 
     /// Framework plugin to load
     #[arg(long)]
@@ -36,6 +41,7 @@ impl AppArgs {
             app_dir: app_dir.to_path_buf(),
             entry: self.entry.clone(),
             css: self.css,
+            dom: self.dom,
             plugin: self.plugin.clone(),
             components: self.components.clone(),
         }

@@ -73,6 +73,10 @@ pub struct RenderOptions<'a> {
     pub entry_id: &'a str,
     /// The URL path to match routes against (e.g., `"/contacts/42"`).
     pub request_path: &'a str,
+    /// Optional CSP nonce for inline `<script>` tags.
+    /// When set, all inline scripts include `nonce="VALUE"` and a
+    /// `<meta name="webui-nonce">` tag is emitted for the client router.
+    pub nonce: Option<&'a str>,
 }
 
 impl<'a> RenderOptions<'a> {
@@ -82,7 +86,15 @@ impl<'a> RenderOptions<'a> {
         Self {
             entry_id,
             request_path,
+            nonce: None,
         }
+    }
+
+    /// Set the CSP nonce for inline scripts.
+    #[must_use]
+    pub fn with_nonce(mut self, nonce: &'a str) -> Self {
+        self.nonce = Some(nonce);
+        self
     }
 }
 
@@ -120,6 +132,8 @@ struct WebUIProcessContext<'a> {
     route_children: Vec<webui_protocol::WebUiFragmentRoute>,
     /// Entry fragment ID — used to compute the initial inventory at head_end.
     entry_id: String,
+    /// CSP nonce for inline `<script>` tags (None = no nonce attribute).
+    nonce: Option<String>,
 }
 
 /// Convert hyphenated name to camelCase (e.g., "data-title" → "dataTitle").
@@ -211,6 +225,7 @@ impl WebUIHandler {
             plugin: self.plugin_factory.map(|f| f()),
             route_children: Vec::new(),
             entry_id: options.entry_id.to_string(),
+            nonce: options.nonce.map(String::from),
         };
         self.process_fragment_id(options.entry_id, &mut context)?;
 
@@ -247,6 +262,7 @@ impl WebUIHandler {
             plugin: self.plugin_factory.map(|f| f()),
             route_children: Vec::new(),
             entry_id: entry_id.to_string(),
+            nonce: None,
         };
 
         if let Some(p) = &mut context.plugin {
@@ -709,26 +725,64 @@ impl WebUIHandler {
     ) -> Result<()> {
         // Hook: emit inventory meta tag before </head>
         if signal.raw && signal.value == "head_end" {
-            let (_, inventory_hex) = crate::route_handler::get_needed_components_for_request(
-                context.protocol,
-                &context.entry_id,
-                &context.request_path,
-                "",
-            );
+            let (needed_components, inventory_hex) =
+                crate::route_handler::get_needed_components_for_request(
+                    context.protocol,
+                    &context.entry_id,
+                    &context.request_path,
+                    "",
+                );
             context
                 .writer
                 .write("<meta name=\"webui-inventory\" content=\"")?;
             context.writer.write(&inventory_hex)?;
             context.writer.write("\">")?;
+
+            if let Some(ref nonce) = context.nonce {
+                context
+                    .writer
+                    .write("<meta name=\"webui-nonce\" content=\"")?;
+                context.writer.write(&html_escape::encode_safe(nonce))?;
+                context.writer.write("\">")?;
+            }
+
+            // Emit CSS <link> tags in <head> for all needed components.
+            // In light DOM mode the parser does NOT embed links inside each
+            // component template, so we emit them once here instead.
+            // Components without CSS files simply won't have a matching static
+            // file on the server — the link is harmless.
+            for name in &needed_components {
+                context.writer.write("<link rel=\"stylesheet\" href=\"/")?;
+                context.writer.write(name)?;
+                context.writer.write(".css\">")?;
+            }
         }
 
-        // Hook: emit rendered component templates before body_end when hydration is enabled
+        // Hook: emit all component templates before body_end when hydration is enabled.
+        // All compiled components are emitted (not just rendered ones) so that
+        // components inside initially-false <if> blocks can be created client-side.
         if signal.raw && signal.value == "body_end" && context.plugin.is_some() {
-            crate::plugin::emit_rendered_component_templates(
+            crate::plugin::emit_all_component_templates(
                 context.protocol,
-                &context.rendered_components,
+                context.nonce.as_deref(),
                 context.writer,
             )?;
+
+            // Emit initial state as JSON for client-side hydration.
+            // Like Preact/Next.js, we pass the same state used for SSR
+            // so the client doesn't need to reconstruct it from the DOM.
+            if let Some(ref nonce) = context.nonce {
+                context.writer.write("<script nonce=\"")?;
+                context.writer.write(nonce)?;
+                context.writer.write("\">window.__webui_state=")?;
+            } else {
+                context.writer.write("<script>window.__webui_state=")?;
+            }
+            let state_json = serde_json::to_string(context.state).unwrap_or_default();
+            // Escape </script> inside JSON to prevent premature tag closure
+            let safe_json = state_json.replace("</", "<\\/");
+            context.writer.write(&safe_json)?;
+            context.writer.write("</script>\n")?;
         }
 
         if let Some(p) = &mut context.plugin {
@@ -950,6 +1004,7 @@ impl WebUIHandler {
             plugin: self.plugin_factory.map(|f| f()),
             route_children: Vec::new(),
             entry_id: options.entry_id.to_string(),
+            nonce: options.nonce.map(String::from),
         };
 
         self.process_fragment_id(options.entry_id, &mut context)?;
@@ -3100,14 +3155,13 @@ mod tests {
             "my-component".to_string(),
             FragmentList {
                 fragments: vec![
-                    WebUIFragment::raw("<template shadowrootmode=\"open\">"),
                     WebUIFragment::if_cond(
                         ConditionExpr::identifier("disabled"),
                         "disabledTemplate",
                     ),
                     WebUIFragment::raw("<span>"),
                     WebUIFragment::signal("label", false),
-                    WebUIFragment::raw("</span></template>"),
+                    WebUIFragment::raw("</span>"),
                 ],
             },
         );
@@ -3129,7 +3183,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             writer.get_content(),
-            "<my-component disabled label=\"Component Label\"><template shadowrootmode=\"open\"><div>Disabled</div><span>Component Label</span></template></my-component>"
+            "<my-component disabled label=\"Component Label\"><div>Disabled</div><span>Component Label</span></my-component>"
         );
     }
 
@@ -3271,7 +3325,7 @@ mod tests {
             "test-component".to_string(),
             FragmentList {
                 fragments: vec![
-                    WebUIFragment::raw("<template shadowrootmode=\"open\"><span>"),
+                    WebUIFragment::raw("<span>"),
                     WebUIFragment::signal("title", false),
                     WebUIFragment::raw("-"),
                     WebUIFragment::signal("class", false),
@@ -3283,7 +3337,7 @@ mod tests {
                     WebUIFragment::signal("dataTestid", false),
                     WebUIFragment::raw("-"),
                     WebUIFragment::signal("ariaLabel", false),
-                    WebUIFragment::raw("</span></template>"),
+                    WebUIFragment::raw("</span>"),
                 ],
             },
         );
@@ -3309,7 +3363,7 @@ mod tests {
         // Only "title" (non-skipped) is accessible.
         assert_eq!(
             writer.get_content(),
-            "<test-component class=\"my-class\" style=\"color:red\" role=\"button\" data-testid=\"test-id\" aria-label=\"label-text\" title=\"Hello\"><template shadowrootmode=\"open\"><span>Hello-----</span></template></test-component>"
+            "<test-component class=\"my-class\" style=\"color:red\" role=\"button\" data-testid=\"test-id\" aria-label=\"label-text\" title=\"Hello\"><span>Hello-----</span></test-component>"
         );
     }
 
@@ -3979,9 +4033,7 @@ mod tests {
         fragments.insert(
             "custom-element".to_string(),
             FragmentList {
-                fragments: vec![WebUIFragment::raw(
-                    "<template shadowrootmode=\"open\"><div>Custom Element</div></template>",
-                )],
+                fragments: vec![WebUIFragment::raw("<div>Custom Element</div>")],
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3996,7 +4048,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             writer.get_content(),
-            "<custom-element><template shadowrootmode=\"open\"><div>Custom Element</div></template></custom-element>"
+            "<custom-element><div>Custom Element</div></custom-element>"
         );
         assert!(writer.is_ended());
     }
@@ -4017,9 +4069,7 @@ mod tests {
         fragments.insert(
             "custom-element".to_string(),
             FragmentList {
-                fragments: vec![WebUIFragment::raw(
-                    "<template shadowrootmode=\"open\"><slot></slot></template>",
-                )],
+                fragments: vec![WebUIFragment::raw("<slot></slot>")],
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4034,7 +4084,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             writer.get_content(),
-            "<custom-element appearance=\"subtle\"><template shadowrootmode=\"open\"><slot></slot></template>Hello World</custom-element>"
+            "<custom-element appearance=\"subtle\"><slot></slot>Hello World</custom-element>"
         );
         assert!(writer.is_ended());
     }
@@ -4055,27 +4105,23 @@ mod tests {
         fragments.insert(
             "custom-button".to_string(),
             FragmentList {
-                fragments: vec![WebUIFragment::raw(
-                    "<template shadowrootmode=\"open\"><slot></slot></template>",
-                )],
+                fragments: vec![WebUIFragment::raw("<slot></slot>")],
             },
         );
         fragments.insert(
             "custom-element".to_string(),
             FragmentList {
                 fragments: vec![
-                    WebUIFragment::raw("<template shadowrootmode=\"open\"><custom-child>"),
+                    WebUIFragment::raw("<custom-child>"),
                     WebUIFragment::component("custom-child"),
-                    WebUIFragment::raw("</custom-child><slot></slot></template>"),
+                    WebUIFragment::raw("</custom-child><slot></slot>"),
                 ],
             },
         );
         fragments.insert(
             "custom-child".to_string(),
             FragmentList {
-                fragments: vec![WebUIFragment::raw(
-                    "<template shadowrootmode=\"open\"><h1>Hello World!</h1></template>",
-                )],
+                fragments: vec![WebUIFragment::raw("<h1>Hello World!</h1>")],
             },
         );
         fragments.insert(
@@ -4102,7 +4148,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             writer.get_content(),
-            "<div><custom-element><template shadowrootmode=\"open\"><custom-child><template shadowrootmode=\"open\"><h1>Hello World!</h1></template></custom-child><slot></slot></template><custom-button><template shadowrootmode=\"open\"><slot></slot></template>Ok</custom-button></custom-element></div>"
+            "<div><custom-element><custom-child><h1>Hello World!</h1></custom-child><slot></slot><custom-button><slot></slot>Ok</custom-button></custom-element></div>"
         );
         assert!(writer.is_ended());
     }
@@ -5439,9 +5485,7 @@ mod tests {
         );
         // webui-route should NOT have shadow DOM — it's a light DOM structural element
         assert!(
-            !html.contains("<webui-route path=\"/\"")
-                || !html
-                    .contains("<webui-route path=\"/\" component=\"app-shell\" active><template shadowrootmode"),
+            !html.contains("<template shadowrootmode"),
             "webui-route should be light DOM (no shadow template): {html}"
         );
     }
@@ -5602,7 +5646,7 @@ mod tests {
     fn test_css_module_emitted_once_before_component() {
         // CSS module definition emitted once, right before the first
         // component usage — not in <head>.
-        let template = r#"<template shadowrootmode="open" shadowrootadoptedstylesheets="my-card"><p><slot></slot></p></template>"#;
+        let template = r#"<p><slot></slot></p>"#;
 
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -5652,21 +5696,19 @@ mod tests {
             "CSS module should be emitted once, got {count} in: {html}"
         );
 
-        // Template should appear twice (once per component instance)
-        let tmpl_count = html
-            .matches(r#"shadowrootadoptedstylesheets="my-card""#)
-            .count();
+        // Template content should appear twice (once per component instance)
+        let tmpl_count = html.matches(r#"<p><slot></slot></p>"#).count();
         assert_eq!(
             tmpl_count, 2,
             "Template should render twice, got {tmpl_count} in: {html}"
         );
 
-        // CSS module should appear before the first template
+        // CSS module should appear before the first template content
         let css_pos = html
             .find(r#"<style type="module""#)
             .expect("CSS module missing");
         let tmpl_pos = html
-            .find(r#"shadowrootadoptedstylesheets"#)
+            .find(r#"<p><slot></slot></p>"#)
             .expect("template missing");
         assert!(
             css_pos < tmpl_pos,
@@ -5687,9 +5729,7 @@ mod tests {
         fragments.insert(
             "my-card".to_string(),
             FragmentList {
-                fragments: vec![WebUIFragment::raw(
-                    r#"<template shadowrootmode="open"><p>hello</p></template>"#.to_string(),
-                )],
+                fragments: vec![WebUIFragment::raw(r#"<p>hello</p>"#.to_string())],
             },
         );
 
@@ -5716,7 +5756,7 @@ mod tests {
     fn test_non_module_strategy_no_css_in_head() {
         // When component_css is empty (Link/Style strategies), no
         // <style type="module"> tags should appear in <head>.
-        let template = r#"<template shadowrootmode="open"><p>hello</p></template>"#;
+        let template = r#"<p>hello</p>"#;
 
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -5767,7 +5807,7 @@ mod tests {
     fn test_css_module_emitted_in_component_light_dom() {
         // The CSS module <style> must be inside the component tag (light DOM),
         // not outside it — e.g. <mp-card><style type="module" ...>CSS</style>
-        // <template shadowrootadoptedstylesheets="mp-card">...</template></mp-card>
+        // <p>hi</p></mp-card>
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -5782,9 +5822,7 @@ mod tests {
         fragments.insert(
             "my-card".to_string(),
             FragmentList {
-                fragments: vec![WebUIFragment::raw(
-                    r#"<template shadowrootmode="open" shadowrootadoptedstylesheets="my-card"><p>hi</p></template>"#.to_string(),
-                )],
+                fragments: vec![WebUIFragment::raw(r#"<p>hi</p>"#.to_string())],
             },
         );
 
@@ -5822,7 +5860,7 @@ mod tests {
     #[test]
     fn test_css_module_emitted_for_route_components() {
         // Route components also get CSS modules via process_route → process_component.
-        let template = r#"<template shadowrootmode="open" shadowrootadoptedstylesheets="dash-page"><h1>Dashboard</h1></template>"#;
+        let template = r#"<h1>Dashboard</h1>"#;
 
         let mut fragments = HashMap::new();
         fragments.insert(

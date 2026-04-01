@@ -9,13 +9,14 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use webui::{build, BuildOptions, CssStrategy};
+//! use webui::{build, BuildOptions, CssStrategy, DomStrategy};
 //! use std::path::PathBuf;
 //!
 //! let result = build(BuildOptions {
 //!     app_dir: PathBuf::from("./src"),
 //!     entry: "index.html".to_string(),
 //!     css: CssStrategy::Link,
+//!     dom: DomStrategy::Shadow,
 //!     plugin: None,
 //!     components: Vec::new(),
 //! }).unwrap();
@@ -24,6 +25,7 @@
 //! ```
 
 mod error;
+pub mod server;
 
 pub use error::WebUIError;
 
@@ -34,6 +36,7 @@ pub use webui_handler::route_handler::{
 };
 pub use webui_handler::{plugin::HandlerPlugin, HandlerError, ResponseWriter, WebUIHandler};
 pub use webui_parser::CssStrategy;
+pub use webui_parser::DomStrategy;
 pub use webui_protocol::WebUIProtocol;
 
 use std::fs;
@@ -53,6 +56,8 @@ pub struct BuildOptions {
     pub entry: String,
     /// CSS delivery strategy for component stylesheets.
     pub css: CssStrategy,
+    /// DOM strategy for component rendering (shadow or light).
+    pub dom: DomStrategy,
     /// Framework plugin to load.
     pub plugin: Option<String>,
     /// Additional component sources (npm packages or local paths).
@@ -201,12 +206,14 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         Some("webui") => {
             let mut plugin = WebUIParserPlugin::new();
             plugin.set_css_strategy(options.css);
+            plugin.set_dom_strategy(options.dom);
             HtmlParser::with_plugin(Box::new(plugin))
         }
         Some(unknown) => return Err(WebUIError::InvalidPlugin(unknown.to_string())),
         None => HtmlParser::new(),
     };
     parser.set_css_strategy(options.css);
+    parser.set_dom_strategy(options.dom);
 
     // Register app directory components
     parser
@@ -350,6 +357,7 @@ mod tests {
             app_dir: app_dir.to_path_buf(),
             entry: "index.html".to_string(),
             css: CssStrategy::Link,
+            dom: DomStrategy::Shadow,
             plugin: None,
             components: Vec::new(),
         }
@@ -583,6 +591,7 @@ mod tests {
             app_dir,
             entry: "index.html".to_string(),
             css: CssStrategy::Link,
+            dom: DomStrategy::Shadow,
             plugin: None,
             components: Vec::new(),
         })
@@ -752,6 +761,7 @@ mod tests {
             app_dir: PathBuf::from("/nonexistent/path/that/does/not/exist"),
             entry: "index.html".to_string(),
             css: CssStrategy::Link,
+            dom: DomStrategy::Shadow,
             plugin: None,
             components: Vec::new(),
         };

@@ -60,7 +60,7 @@
 
 use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use crate::component_registry::Component;
-use crate::{ConditionParser, CssStrategy, Result};
+use crate::{ConditionParser, CssStrategy, DomStrategy, Result};
 use std::cell::Cell;
 use std::fmt::Write;
 use webui_protocol::{condition_expr, ConditionExpr, WebUIElementData};
@@ -92,6 +92,8 @@ pub struct WebUIParserPlugin {
     element_events: Cell<u32>,
     /// Global event index, incremented across all elements in a component.
     next_event_idx: Cell<u32>,
+    /// DOM strategy — shadow or light.
+    dom_strategy: DomStrategy,
 }
 
 impl WebUIParserPlugin {
@@ -101,11 +103,16 @@ impl WebUIParserPlugin {
             components: Vec::new(),
             element_events: Cell::new(0),
             next_event_idx: Cell::new(0),
+            dom_strategy: DomStrategy::default(),
         }
     }
 
     pub fn set_css_strategy(&mut self, strategy: CssStrategy) {
         let _ = strategy;
+    }
+
+    pub fn set_dom_strategy(&mut self, strategy: DomStrategy) {
+        self.dom_strategy = strategy;
     }
 
     /// Compile all tracked components and return `(tag_name, script_block)` pairs.
@@ -115,6 +122,7 @@ impl WebUIParserPlugin {
     /// HTML parsing is complete.
     #[must_use]
     pub fn take_component_templates(&self) -> Vec<(String, String)> {
+        let use_shadow = matches!(self.dom_strategy, DomStrategy::Shadow);
         self.components
             .iter()
             .map(|c| {
@@ -122,6 +130,7 @@ impl WebUIParserPlugin {
                     &c.tag_name,
                     &c.template_html,
                     &c.root_event_source,
+                    use_shadow,
                 );
                 (c.tag_name.clone(), script)
             })
@@ -224,9 +233,11 @@ struct TemplateSectionMeta {
     html: String,
     /// Intermediate text binding paths collected during compilation.
     /// These are resolved into `text_runs` during finalization.
-    text_bindings: Vec<String>,
-    /// Client text-run metadata: `(slot, parts)`.
-    text_runs: Vec<(SlotLocator, Vec<CompiledAttrPart>)>,
+    /// Each entry is `(path, raw)` where raw indicates triple-brace `{{{...}}}`.
+    text_bindings: Vec<(String, bool)>,
+    /// Client text-run metadata: `(slot, parts, raw)`.
+    /// `raw` is true when the binding uses triple-brace `{{{...}}}` syntax.
+    text_runs: Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
     /// Attribute bindings in source order, shared by SSR markers and client `ag[]` locators.
     attr_bindings: Vec<CompiledAttrBinding>,
     /// Client attribute groups: `(element_path, start, count)`.
@@ -314,13 +325,14 @@ enum CompiledAttrPart {
 /// | `w-ref="name"` / `w-ref={name}`       | *(stays in HTML)*          | *(unchanged)*                     |
 /// | `<outlet />` / `<outlet>`             | *(stays in HTML)*          | `<outlet></outlet>`               |
 pub fn generate_compiled_template(tag_name: &str, html_content: &str) -> String {
-    generate_compiled_template_with_root_source(tag_name, html_content, html_content)
+    generate_compiled_template_with_root_source(tag_name, html_content, html_content, false)
 }
 
 fn generate_compiled_template_with_root_source(
     tag_name: &str,
     html_content: &str,
     root_event_source: &str,
+    shadow_dom: bool,
 ) -> String {
     let trimmed = html_content.trim();
     let root_events = extract_root_events(root_event_source.trim());
@@ -339,6 +351,11 @@ fn generate_compiled_template_with_root_source(
     if let Some(adopted_stylesheet) = adopted_stylesheet.as_deref() {
         out.push_str(",sa:");
         emit_js_string(adopted_stylesheet, &mut out);
+    }
+
+    // sd: shadow DOM flag — tells the client runtime to use shadow root
+    if shadow_dom {
+        out.push_str(",sd:1");
     }
 
     // re: root events
@@ -379,6 +396,23 @@ fn generate_compiled_template_with_root_source(
 }
 
 /// Emit a JS string literal with script-safe escaping.
+/// Convert a kebab-case string to camelCase. `"my-prop"` → `"myProp"`.
+fn kebab_to_camel(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut capitalize = false;
+    for ch in s.chars() {
+        if ch == '-' {
+            capitalize = true;
+        } else if capitalize {
+            result.push(ch.to_ascii_uppercase());
+            capitalize = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
 fn emit_js_string(s: &str, out: &mut String) {
     out.push('"');
     let mut index = 0usize;
@@ -399,6 +433,7 @@ fn emit_js_string(s: &str, out: &mut String) {
             break;
         };
         match ch {
+            '\0' => out.push_str("\\0"),
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
@@ -452,49 +487,148 @@ fn emit_js_attr_binding(binding: &CompiledAttrBinding, out: &mut String) {
     out.push(']');
 }
 
+/// Emit a compiled condition as `[function(v,s){return EXPR},["path1",...]]`.
+/// The function evaluates the condition using `v(path,s)` for value resolution.
+/// The paths array lists all referenced identifiers for the reactive path index.
 fn emit_js_condition(condition: &ConditionExpr, out: &mut String) {
+    out.push_str("[function(v,s){return ");
+    emit_js_condition_expr(condition, out);
+    out.push_str("},[");
+    let mut paths = Vec::new();
+    collect_condition_paths(condition, &mut paths);
+    for (i, path) in paths.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        emit_js_string(path, out);
+    }
+    out.push_str("]]");
+}
+
+/// Emit the JS expression body for a condition (no wrapping).
+fn emit_js_condition_expr(condition: &ConditionExpr, out: &mut String) {
     match &condition.expr {
-        Some(condition_expr::Expr::Identifier(identifier)) => {
-            out.push_str("[0,");
-            emit_js_string(&identifier.value, out);
-            out.push(']');
+        Some(condition_expr::Expr::Identifier(id)) => {
+            // Truthiness check: !!v("path",s)
+            out.push_str("!!v(");
+            emit_js_string(&id.value, out);
+            out.push_str(",s)");
         }
-        Some(condition_expr::Expr::Predicate(predicate)) => {
-            out.push_str("[1,");
-            emit_js_string(&predicate.left, out);
-            out.push(',');
-            let _ = write!(out, "{}", predicate.operator);
-            out.push(',');
-            emit_js_string(&predicate.right, out);
-            out.push(']');
-        }
-        Some(condition_expr::Expr::Not(not_condition)) => {
-            out.push_str("[2,");
-            if let Some(inner) = not_condition.condition.as_ref() {
-                emit_js_condition(inner, out);
-            } else {
-                out.push_str("[0,\"\"]");
+        Some(condition_expr::Expr::Predicate(pred)) => {
+            // Comparison: resolve left, compare with right
+            out.push_str("v(");
+            emit_js_string(&pred.left, out);
+            out.push_str(",s)");
+            match pred.operator {
+                1 => out.push('>'),      // GT
+                2 => out.push('<'),      // LT
+                3 => out.push_str("=="), // EQ (use == for loose comparison like Object.is)
+                4 => out.push_str("!="), // NEQ
+                5 => out.push_str(">="), // GTE
+                6 => out.push_str("<="), // LTE
+                _ => out.push_str("=="),
             }
-            out.push(']');
+            // Right side: resolve as value or emit literal
+            emit_js_predicate_right(&pred.right, out);
+        }
+        Some(condition_expr::Expr::Not(not_cond)) => {
+            out.push('!');
+            if let Some(inner) = not_cond.condition.as_ref() {
+                out.push('(');
+                emit_js_condition_expr(inner, out);
+                out.push(')');
+            } else {
+                out.push_str("false");
+            }
         }
         Some(condition_expr::Expr::Compound(compound)) => {
-            out.push_str("[3,");
+            out.push('(');
             if let Some(left) = compound.left.as_ref() {
-                emit_js_condition(left, out);
+                emit_js_condition_expr(left, out);
             } else {
-                out.push_str("[0,\"\"]");
+                out.push_str("false");
             }
-            out.push(',');
-            let _ = write!(out, "{}", compound.op);
-            out.push(',');
+            match compound.op {
+                1 => out.push_str("&&"), // AND
+                2 => out.push_str("||"), // OR
+                _ => out.push_str("&&"),
+            }
             if let Some(right) = compound.right.as_ref() {
-                emit_js_condition(right, out);
+                emit_js_condition_expr(right, out);
             } else {
-                out.push_str("[0,\"\"]");
+                out.push_str("false");
             }
-            out.push(']');
+            out.push(')');
         }
-        None => out.push_str("[0,\"\"]"),
+        None => out.push_str("false"),
+    }
+}
+
+/// Emit the right-hand side of a predicate comparison.
+/// Literals are emitted directly; identifiers are resolved via v().
+fn emit_js_predicate_right(value: &str, out: &mut String) {
+    // Check for string literals: "..." or '...'
+    if (value.starts_with('"') && value.ends_with('"'))
+        || (value.starts_with('\'') && value.ends_with('\''))
+    {
+        // Emit as JS string (strip outer quotes, re-emit as double-quoted)
+        emit_js_string(&value[1..value.len() - 1], out);
+        return;
+    }
+    // Boolean literals
+    if value == "true" || value == "false" {
+        out.push_str(value);
+        return;
+    }
+    // Numeric literals
+    if value
+        .bytes()
+        .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-')
+        && !value.is_empty()
+    {
+        out.push_str(value);
+        return;
+    }
+    // Otherwise it's an identifier — resolve it
+    out.push_str("v(");
+    emit_js_string(value, out);
+    out.push_str(",s)");
+}
+
+/// Collect all identifier paths referenced by a condition.
+fn collect_condition_paths(condition: &ConditionExpr, paths: &mut Vec<String>) {
+    match &condition.expr {
+        Some(condition_expr::Expr::Identifier(id)) => {
+            paths.push(id.value.clone());
+        }
+        Some(condition_expr::Expr::Predicate(pred)) => {
+            paths.push(pred.left.clone());
+            // Right side might also be an identifier (not a literal)
+            let r = &pred.right;
+            if !((r.starts_with('"') && r.ends_with('"'))
+                || (r.starts_with('\'') && r.ends_with('\''))
+                || r == "true"
+                || r == "false"
+                || r.bytes()
+                    .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-'))
+            {
+                paths.push(r.clone());
+            }
+        }
+        Some(condition_expr::Expr::Not(not_cond)) => {
+            if let Some(inner) = not_cond.condition.as_ref() {
+                collect_condition_paths(inner, paths);
+            }
+        }
+        Some(condition_expr::Expr::Compound(compound)) => {
+            if let Some(left) = compound.left.as_ref() {
+                collect_condition_paths(left, paths);
+            }
+            if let Some(right) = compound.right.as_ref() {
+                collect_condition_paths(right, paths);
+            }
+        }
+        None => {}
     }
 }
 
@@ -545,7 +679,7 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
 
     if !meta.text_runs.is_empty() {
         out.push_str(",tx:[");
-        for (i, (slot, parts)) in meta.text_runs.iter().enumerate() {
+        for (i, (slot, parts, raw)) in meta.text_runs.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
@@ -553,6 +687,9 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
             emit_js_slot(slot, out);
             out.push(',');
             emit_js_text_parts(parts, out);
+            if *raw {
+                out.push_str(",1");
+            }
             out.push(']');
         }
         out.push(']');
@@ -727,24 +864,24 @@ fn compile_section(input: &str, blocks: &mut Vec<TemplateSectionMeta>) -> Templa
             continue;
         }
 
-        // Triple-brace {{{expr}}} → marker + text binding
+        // Triple-brace {{{expr}}} → marker + text binding (raw/unescaped)
         if i + 4 < len && bytes[i] == b'{' && bytes[i + 1] == b'{' && bytes[i + 2] == b'{' {
             if let Some(end) = find_brace_end(input, i + 3, 3) {
                 let expr = input[i + 3..end].trim();
                 let idx = meta.text_bindings.len();
-                meta.text_bindings.push(expr.to_string());
+                meta.text_bindings.push((expr.to_string(), true));
                 meta.html.push_str(&format!("<!--t:{idx}-->"));
                 i = end + 3;
                 continue;
             }
         }
 
-        // Double-brace {{expr}} → marker + text binding
+        // Double-brace {{expr}} → marker + text binding (escaped)
         if i + 3 < len && bytes[i] == b'{' && bytes[i + 1] == b'{' {
             if let Some(end) = find_brace_end(input, i + 2, 2) {
                 let expr = input[i + 2..end].trim();
                 let idx = meta.text_bindings.len();
-                meta.text_bindings.push(expr.to_string());
+                meta.text_bindings.push((expr.to_string(), false));
                 meta.html.push_str(&format!("<!--t:{idx}-->"));
                 i = end + 2;
                 continue;
@@ -884,9 +1021,9 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
 fn process_fragment_children(
     nodes: &[FragmentNode],
     parent_path: &[usize],
-    text_bindings: &[String],
+    text_bindings: &[(String, bool)],
     out: &mut String,
-    text_runs: &mut Vec<(SlotLocator, Vec<CompiledAttrPart>)>,
+    text_runs: &mut Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
     attr_groups: &mut Vec<(Vec<usize>, usize, usize)>,
     condition_slots: &mut [Option<SlotLocator>],
     repeat_slots: &mut [Option<SlotLocator>],
@@ -901,7 +1038,7 @@ fn process_fragment_children(
     let mut slot_orders = std::collections::BTreeMap::<usize, usize>::new();
 
     while index < nodes.len() {
-        if let Some((parts, consumed, has_dynamic)) =
+        if let Some((parts, consumed, has_dynamic, is_raw)) =
             collect_text_run(&nodes[index..], text_bindings)
         {
             if has_dynamic {
@@ -929,6 +1066,7 @@ fn process_fragment_children(
                         order,
                     },
                     decoded_parts,
+                    is_raw,
                 ));
             } else {
                 let static_text = collect_static_text(&parts);
@@ -1011,9 +1149,9 @@ fn process_fragment_children(
 fn serialize_fragment_element(
     element: &FragmentElement,
     element_path: &[usize],
-    text_bindings: &[String],
+    text_bindings: &[(String, bool)],
     out: &mut String,
-    text_runs: &mut Vec<(SlotLocator, Vec<CompiledAttrPart>)>,
+    text_runs: &mut Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
     attr_groups: &mut Vec<(Vec<usize>, usize, usize)>,
     condition_slots: &mut [Option<SlotLocator>],
     repeat_slots: &mut [Option<SlotLocator>],
@@ -1074,11 +1212,12 @@ fn serialize_fragment_element(
 
 fn collect_text_run(
     nodes: &[FragmentNode],
-    text_bindings: &[String],
-) -> Option<(Vec<CompiledAttrPart>, usize, bool)> {
+    text_bindings: &[(String, bool)],
+) -> Option<(Vec<CompiledAttrPart>, usize, bool, bool)> {
     let mut parts = Vec::new();
     let mut consumed = 0usize;
     let mut has_dynamic = false;
+    let mut is_raw = false;
 
     for node in nodes {
         match node {
@@ -1090,9 +1229,12 @@ fn collect_text_run(
             }
             FragmentNode::Comment(data) => {
                 if let Some(index) = parse_marker_index(data, "t:") {
-                    if let Some(path) = text_bindings.get(index) {
+                    if let Some((path, raw)) = text_bindings.get(index) {
                         parts.push(CompiledAttrPart::Dynamic(path.clone()));
                         has_dynamic = true;
+                        if *raw {
+                            is_raw = true;
+                        }
                     }
                     consumed += 1;
                 } else {
@@ -1107,7 +1249,7 @@ fn collect_text_run(
         return None;
     }
 
-    Some((parts, consumed, has_dynamic))
+    Some((parts, consumed, has_dynamic, is_raw))
 }
 
 fn collect_static_text(parts: &[CompiledAttrPart]) -> String {
@@ -1745,6 +1887,17 @@ fn parse_regular_tag(input: &str, meta: &mut TemplateSectionMeta) -> Option<(Str
         }
 
         if name == "w-ref" {
+            // Validate: w-ref must use {braces} to bind to a component property.
+            // This is a build-time check — the runtime also validates.
+            if let Some(val) = value {
+                if !val.starts_with('{') || !val.ends_with('}') {
+                    eprintln!(
+                        "\x1b[1;31merror\x1b[0m: invalid w-ref=\"{}\" in <{}> — \
+                         use w-ref={{{}}} with braces to bind to a component property",
+                        val, tag_name, val
+                    );
+                }
+            }
             out.push(' ');
             out.push_str(raw_attr);
             continue;
@@ -1763,8 +1916,11 @@ fn parse_regular_tag(input: &str, meta: &mut TemplateSectionMeta) -> Option<(Str
 
         if name.starts_with(':') {
             if let Some(raw_value) = value.and_then(extract_single_handlebars) {
+                // Strip the ':' prefix and convert to camelCase for the JS property name.
+                // The runtime uses el[name] = value directly — no conversion needed.
+                let prop_name = kebab_to_camel(name.strip_prefix(':').unwrap_or(name));
                 meta.attr_bindings.push(CompiledAttrBinding::Complex {
-                    name: name.to_string(),
+                    name: prop_name,
                     value: raw_value,
                 });
                 binding_count += 1;
@@ -2033,7 +2189,9 @@ mod tests {
             r#"<if condition="state == 'done'"><span>yes</span></if>"#,
         );
         assert_no_client_markers(&result);
-        assert!(result.contains(r#"c:[[[1,"state",3,"'done'"],0]]"#));
+        assert!(
+            result.contains(r#"c:[[[function(v,s){return v("state",s)=="done"},["state"]],0]]"#)
+        );
         assert!(result.contains("<span>yes</span>"));
         assert!(result.contains(",cl:[[[],0]]"));
         assert!(!result.contains("<if"));
@@ -2165,7 +2323,9 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains(",a:["));
         assert!(result.contains(",ag:[[[0],0,1]]"));
-        assert!(result.contains(r#"["data-active",2,[1,"page",3,"'dashboard'"]]"#));
+        assert!(result.contains(
+            r#"["data-active",2,[function(v,s){return v("page",s)=="dashboard"},["page"]]]"#
+        ));
     }
 
     #[test]
@@ -2177,12 +2337,12 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains(",a:["));
         assert!(result.contains(",ag:[[[0],0,1]]"));
-        assert!(result.contains(r#"":config",1,"settings""#));
+        assert!(result.contains(r#""config",1,"settings""#));
     }
 
     #[test]
     fn test_w_ref_stays_in_html() {
-        let result = generate_compiled_template("my-comp", r#"<input w-ref="myInput" />"#);
+        let result = generate_compiled_template("my-comp", r#"<input w-ref="{myInput}" />"#);
         // w-ref stays in the static HTML — runtime binds from the DOM directly
         assert!(result.contains("w-ref"));
         assert!(result.contains("myInput"));
@@ -2250,7 +2410,7 @@ mod tests {
         );
         assert_no_client_markers(&result);
         assert!(result.contains(",rl:[[[],0]]"));
-        assert!(result.contains(r#"["active",2,[1,"s.id",3,"sectionId"]]"#));
+        assert!(result.contains(r#"["active",2,[function(v,s){return v("s.id",s)==v("sectionId",s)},["s.id","sectionId"]]]"#));
         assert!(!result.contains("?active"));
     }
 
@@ -2398,7 +2558,7 @@ mod tests {
             "repeat block index expected"
         );
         assert!(
-            result.contains(r#"[[0,"item.active"],1]"#),
+            result.contains(r#"[[function(v,s){return !!v("item.active",s)},["item.active"]],1]"#),
             "nested conditional block index expected"
         );
         assert!(!result.contains("<if"), "nested if should be compiled");
@@ -2419,7 +2579,7 @@ mod tests {
         );
         assert!(result.contains(",b:["), "compiled block table expected");
         assert!(
-            result.contains(r#"[[0,"showList"],0]"#),
+            result.contains(r#"[[function(v,s){return !!v("showList",s)},["showList"]],0]"#),
             "conditional block index expected"
         );
         assert!(
@@ -2571,7 +2731,7 @@ mod tests {
     fn test_mixed_bindings_events_refs() {
         let result = generate_compiled_template(
             "my-comp",
-            r#"<button w-ref="myBtn" @click="{onClick()}">{{label}}</button>"#,
+            r#"<button w-ref="{myBtn}" @click="{onClick()}">{{label}}</button>"#,
         );
         // w-ref stays in HTML (quotes escaped inside JS string)
         assert_no_client_markers(&result);
@@ -2610,8 +2770,8 @@ mod tests {
         let result = generate_compiled_template("my-comp", r#"<div>{{{rawHtml}}}</div>"#);
         assert_no_client_markers(&result);
         assert!(
-            result.contains(r#",tx:[[[[0],0],[["rawHtml"]]]]"#),
-            "triple brace produces text locator"
+            result.contains(r#",tx:[[[[0],0],[["rawHtml"]],1]]"#),
+            "triple brace produces text locator with raw flag: {result}"
         );
         assert!(
             result.contains("\"rawHtml\""),
@@ -2657,8 +2817,8 @@ mod tests {
         assert!(result.contains(",c:["), "conditional array present");
         // The right-side literal should remain properly escaped in the AST payload.
         assert!(
-            result.contains(r#"[1,"name",3,"&quot;test&quot;"]"#),
-            "condition AST with escaped quotes should be present: {}",
+            result.contains(r#"function(v,s){return v("name",s)==v("&quot;test&quot;",s)}"#),
+            "condition function with escaped quotes should be present: {}",
             result
         );
     }

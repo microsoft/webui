@@ -11,12 +11,13 @@ cargo add webui
 ## Quick Start
 
 ```rust
-use webui::{build, BuildOptions};
+use webui::{build, BuildOptions, DomStrategy};
 
 // Build a WebUI application from an app directory
 let result = build(BuildOptions {
     app_dir: "my-app/src".into(),
     entry: "index.html".into(),
+    dom: DomStrategy::Shadow,
     ..Default::default()
 })?;
 
@@ -35,13 +36,14 @@ let result = build(BuildOptions {
 | `build_to_disk(options, out_dir)` | Build and write `protocol.bin` + CSS to disk |
 
 ```rust
-use webui::{build_to_disk, BuildOptions, CssStrategy};
+use webui::{build_to_disk, BuildOptions, CssStrategy, DomStrategy};
 
 build_to_disk(
     BuildOptions {
         app_dir: "src".into(),
         entry: "index.html".into(),
         css: CssStrategy::Link,        // or CssStrategy::Style for inline
+        dom: DomStrategy::Shadow,      // or DomStrategy::Light for light DOM
         plugin: Some("fast".into()),    // FAST-HTML hydration plugin
         components: vec![],             // additional component sources
     },
