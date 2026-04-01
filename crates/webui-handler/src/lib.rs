@@ -758,12 +758,32 @@ impl WebUIHandler {
             }
         }
 
-        // Hook: emit all component templates before body_end when hydration is enabled.
-        // All compiled components are emitted (not just rendered ones) so that
-        // components inside initially-false <if> blocks can be created client-side.
+        // Hook: emit component templates before body_end when hydration is enabled.
+        // Emit templates for rendered components AND components inside conditional
+        // blocks on the active route (they may be needed if conditions toggle client-side).
+        // Templates for other routes' components are delivered via partial navigation.
         if signal.raw && signal.value == "body_end" && context.plugin.is_some() {
-            crate::plugin::emit_all_component_templates(
+            // Collect all components reachable from rendered fragments, including
+            // those inside conditional blocks that weren't rendered.
+            let mut reachable = context.rendered_components.clone();
+            let mut stack: Vec<&str> = context
+                .rendered_components
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+            while let Some(fid) = stack.pop() {
+                if let Some(fragment_list) = context.protocol.fragments.get(fid) {
+                    collect_reachable_components(
+                        &fragment_list.fragments,
+                        &mut reachable,
+                        &mut stack,
+                    );
+                }
+            }
+
+            crate::plugin::emit_rendered_component_templates(
                 context.protocol,
+                &reachable,
                 context.nonce.as_deref(),
                 context.writer,
             )?;
@@ -1020,6 +1040,41 @@ impl Default for WebUIHandler {
 }
 
 /// Write ` name="value"` to the writer without allocating a format string.
+/// Walk a fragment list's children to find all component references, including
+/// those inside conditional blocks that may not have been rendered during SSR.
+/// This ensures templates for components on the active route are available
+/// client-side even when their parent `<if>` condition was false.
+fn collect_reachable_components<'a>(
+    fragments: &'a [WebUIFragment],
+    reachable: &mut HashSet<String>,
+    stack: &mut Vec<&'a str>,
+) {
+    for node in fragments {
+        match &node.fragment {
+            Some(Fragment::Component(comp)) => {
+                if reachable.insert(comp.fragment_id.clone()) {
+                    stack.push(&comp.fragment_id);
+                }
+            }
+            Some(Fragment::IfCond(ic)) => {
+                // Walk into conditional blocks even if they weren't rendered
+                if reachable.insert(ic.fragment_id.clone()) {
+                    stack.push(&ic.fragment_id);
+                }
+            }
+            Some(Fragment::ForLoop(fl)) => {
+                if reachable.insert(fl.fragment_id.clone()) {
+                    stack.push(&fl.fragment_id);
+                }
+            }
+            Some(Fragment::Route(_)) => {
+                // Don't walk into other routes — their templates come via partial nav
+            }
+            _ => {}
+        }
+    }
+}
+
 fn write_attr(writer: &mut dyn ResponseWriter, name: &str, value: &str) -> Result<()> {
     writer.write(" ")?;
     writer.write(name)?;
