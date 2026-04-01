@@ -9,7 +9,6 @@ interface GalleryImage {
   index: number;
   gradient: string;
   imageUrl: string;
-  active: boolean;
 }
 
 export class MpProductGallery extends WebUIElement {
@@ -23,20 +22,13 @@ export class MpProductGallery extends WebUIElement {
     this.applyViewTransitionName();
   }
 
-  imagesChanged(): void {
-    const images = this.galleryImages();
-    if (images.length === 0 && this.activeIndex !== 0) {
-      this.activeIndex = 0;
-      return;
-    }
-
-    if (this.activeIndex >= images.length) {
-      this.activeIndex = 0;
-    }
-  }
-
   activeIndexChanged(): void {
-    this.applyActiveState();
+    const images = this.galleryImages();
+    const active = images[this.activeIndex];
+    if (active) {
+      this.activeGradient = active.gradient;
+      this.activeImageUrl = active.imageUrl;
+    }
   }
 
   onPreviousClick(): void {
@@ -81,28 +73,6 @@ export class MpProductGallery extends WebUIElement {
 
   private galleryImages(): GalleryImage[] {
     return Array.isArray(this.images) ? this.images : [];
-  }
-
-  private applyActiveState(): void {
-    const images = this.galleryImages();
-    const active = images[this.activeIndex];
-    if (!active) {
-      return;
-    }
-
-    this.activeGradient = active.gradient;
-    this.activeImageUrl = active.imageUrl;
-    const nextImages = images.map((img, i) => ({
-      index: img.index,
-      gradient: img.gradient,
-      imageUrl: img.imageUrl,
-      active: i === this.activeIndex,
-    }));
-
-    const activeChanged = nextImages.some((image, index) => image.active !== images[index]?.active);
-    if (activeChanged) {
-      this.images = nextImages;
-    }
   }
 
   private applyViewTransitionName(): void {

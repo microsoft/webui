@@ -230,4 +230,43 @@ describe('WebUIRouter', () => {
       assert.equal(start > 0 && end > start, false, 'guard should reject malformed input');
     });
   });
+
+  describe('view transition timing', () => {
+    test('startViewTransition callback does not contain async fetch or import', () => {
+      // Regression: the view transition callback must complete synchronously
+      // (DOM swap only). Async work (fetch, module load) must happen BEFORE
+      // startViewTransition is called. If the callback contains awaits for
+      // network or import(), the browser's view transition will timeout.
+      //
+      // This test verifies the architectural contract by inspecting the
+      // handleNavigation source code — the commitNavigation callback passed
+      // to startViewTransition must not reference fetchPartial or
+      // ensureComponentLoaded.
+
+      const router = new WebUIRouter();
+      const source = (router as any).handleNavigation.toString() as string;
+
+      // Find the commitNavigation function body
+      const commitStart = source.indexOf('commitNavigation');
+      assert.ok(commitStart > -1, 'handleNavigation should define commitNavigation');
+
+      // Find ensureComponentLoaded — it must appear BEFORE commitNavigation
+      const ensureIdx = source.indexOf('ensureComponentLoaded');
+      assert.ok(ensureIdx > -1, 'ensureComponentLoaded should be called');
+      assert.ok(
+        ensureIdx < commitStart,
+        'ensureComponentLoaded (async import) must be called BEFORE commitNavigation is defined — ' +
+        'async work must not be inside the view transition callback',
+      );
+
+      // fetchPartial must also appear before commitNavigation
+      const fetchIdx = source.indexOf('fetchPartial');
+      assert.ok(fetchIdx > -1, 'fetchPartial should be called');
+      assert.ok(
+        fetchIdx < commitStart,
+        'fetchPartial (async network) must be called BEFORE commitNavigation — ' +
+        'async work must not be inside the view transition callback',
+      );
+    });
+  });
 });

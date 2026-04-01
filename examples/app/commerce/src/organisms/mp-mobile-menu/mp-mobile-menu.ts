@@ -13,8 +13,8 @@ interface Category {
 export class MpMobileMenu extends WebUIElement {
   @attr({ attribute: 'search-query' }) searchQuery = '';
   @observable navCategories: Category[] = [];
+  @observable open = false;
   panelEl!: HTMLElement;
-  backdropEl!: HTMLElement;
 
   private resizeHandler = (): void => {
     if (window.innerWidth >= 768) {
@@ -41,13 +41,13 @@ export class MpMobileMenu extends WebUIElement {
   }
 
   openMenu(): void {
+    this.open = true;
     this.panelEl.showPopover();
-    this.backdropEl.classList.add('open');
   }
 
   closeMenu(): void {
+    this.open = false;
     this.panelEl.hidePopover();
-    this.backdropEl.classList.remove('open');
   }
 }
 

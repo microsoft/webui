@@ -42,7 +42,7 @@
   display: none;
 }
 
-.backdrop.open {
+.backdrop[data-open] {
   display: block;
 }
 

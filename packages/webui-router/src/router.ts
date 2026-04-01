@@ -21,6 +21,15 @@ import type { NavigationTarget } from './navigation-path.js';
 
 const ROUTE_SELECTOR = 'webui-route';
 
+/**
+ * Get the render root of a component element.
+ * Returns shadowRoot if present, otherwise the element itself.
+ * This allows the router to work in both shadow and light DOM modes.
+ */
+function renderRoot(el: Element): Element | ShadowRoot {
+  return (el as HTMLElement).shadowRoot ?? el;
+}
+
 /** Create a hidden `<webui-route>` stub element. */
 function createRouteStub(entry: { path?: string; component?: string; exact?: boolean }): HTMLElement {
   const el = document.createElement(ROUTE_SELECTOR);
@@ -108,6 +117,8 @@ export class WebUIRouter {
   private isInitialNavigation = true;
   /** Hex string tracking which component templates are loaded. */
   private inventory = '';
+  /** CSP nonce read from `<meta name="webui-nonce">` — used for dynamic script creation. */
+  private nonce = '';
   /** Opt-in lazy loaders: component tag → async import function. */
   private loaders: Record<string, () => Promise<unknown>> = {};
   /** Deduplication cache for in-flight / completed loader promises. */
@@ -139,6 +150,7 @@ export class WebUIRouter {
     }
 
     this.inventory = document.querySelector('meta[name="webui-inventory"]')?.getAttribute('content') ?? '';
+    this.nonce = document.querySelector('meta[name="webui-nonce"]')?.getAttribute('content') ?? '';
 
     const nav = window.navigation;
     const handler = (event: NavigateEvent) => {
@@ -147,17 +159,10 @@ export class WebUIRouter {
       if (url.origin !== location.origin) return;
       event.intercept({
         handler: async () => {
-          const navigate = async (): Promise<void> => {
-            try {
-              await this.handleNavigation(buildNavigationTarget(url, this.config.basePath ?? ''));
-            } catch (err) {
-              console.error('[Router] Navigation error:', err);
-            }
-          };
-          if (document.startViewTransition) {
-            await document.startViewTransition(navigate).finished;
-          } else {
-            await navigate();
+          try {
+            await this.handleNavigation(buildNavigationTarget(url, this.config.basePath ?? ''));
+          } catch (err) {
+            console.error('[Router] Navigation error:', err);
           }
         },
       });
@@ -260,6 +265,12 @@ export class WebUIRouter {
         return;
       }
 
+      // Pre-load all component modules before the DOM swap so the
+      // view transition only covers the synchronous mount.
+      for (const entry of newChain) {
+        if (entry.component) await this.ensureComponentLoaded(entry.component);
+      }
+
       const changeLevel = this.findChangeLevel(this.activeChain, newChain);
 
       // When only query params change (same route, different ?sort= etc.),
@@ -268,44 +279,69 @@ export class WebUIRouter {
       // fresh partial response.
       const isQueryOnlyChange = changeLevel === newChain.length && newChain.length > 0;
 
-      // Deactivate old chain from leaf up
-      for (let i = this.activeChain.length - 1; i >= changeLevel; i--) {
-        if (this.activeChain[i].el) {
-          deactivateRoute(this.activeChain[i].el!);
-        }
-      }
-
-      // Transfer DOM elements to retained levels
-      for (let i = 0; i < changeLevel; i++) {
-        newChain[i].el = this.activeChain[i].el;
-      }
-
-      // Re-apply state to retained (non-remounted) parent components.
-      if (changeLevel > 0 || isQueryOnlyChange) {
-        const end = isQueryOnlyChange ? newChain.length : changeLevel;
-        for (let i = 0; i < end; i++) {
-          this.applyState(newChain[i], partialData);
-        }
-      }
-
-      // Mount from the change level down — everything above is preserved.
-      // Each level finds or creates its <webui-route> element, loads the
-      // component JS if lazy, and mounts the component into the route.
-      for (let i = changeLevel; i < newChain.length; i++) {
-        const entry = newChain[i];
-        const parent = i > 0 ? newChain[i - 1] : null;
-        const routeEl = this.findOrCreateRouteElement(parent, entry);
-        entry.el = routeEl;
-
-        if (entry.component && partialData) {
-          await this.ensureComponentLoaded(entry.component);
-          await this.mountComponent(routeEl, entry.component, partialData, entry.params);
+      // DOM swap — wrapped in a view transition when available.
+      // DOM swap — synchronous, safe inside view transitions.
+      // All async work (fetch, import) is done above.
+      const commitNavigation = (): void => {
+        // Deactivate old chain from leaf up
+        for (let i = this.activeChain.length - 1; i >= changeLevel; i--) {
+          if (this.activeChain[i].el) {
+            deactivateRoute(this.activeChain[i].el!);
+          }
         }
 
-        activateRoute(routeEl, entry.params);
-      }
+        // Transfer DOM elements to retained levels
+        for (let i = 0; i < changeLevel; i++) {
+          newChain[i].el = this.activeChain[i].el;
+        }
 
-      this.activeChain = newChain;
+        // Re-apply state to retained (non-remounted) parent components.
+        if (changeLevel > 0 || isQueryOnlyChange) {
+          const end = isQueryOnlyChange ? newChain.length : changeLevel;
+          for (let i = 0; i < end; i++) {
+            this.applyState(newChain[i], partialData);
+          }
+        }
+
+        // Mount from the change level down
+        for (let i = changeLevel; i < newChain.length; i++) {
+          const entry = newChain[i];
+          const oldEntry = i < this.activeChain.length ? this.activeChain[i] : null;
+          const parent = i > 0 ? newChain[i - 1] : null;
+
+          // Same component tag at this level → reuse instance, update state
+          if (
+            oldEntry &&
+            oldEntry.component === entry.component &&
+            oldEntry.el
+          ) {
+            entry.el = oldEntry.el;
+            if (entry.component && partialData) {
+              this.applyState(entry, partialData);
+            }
+            activateRoute(entry.el, entry.params);
+            continue;
+          }
+
+          // Different component (or no old entry) → full mount
+          const routeEl = this.findOrCreateRouteElement(parent, entry);
+          entry.el = routeEl;
+
+          if (entry.component && partialData) {
+            this.mountComponent(routeEl, entry.component, partialData, entry.params);
+          }
+
+          activateRoute(routeEl, entry.params);
+        }
+
+        this.activeChain = newChain;
+      };
+
+      if (document.startViewTransition) {
+        await document.startViewTransition(commitNavigation).finished;
+      } else {
+        commitNavigation();
+      }
     }
 
     const leaf = this.activeChain[this.activeChain.length - 1];
@@ -320,8 +356,8 @@ export class WebUIRouter {
   /**
    * Find or create a `<webui-route>` DOM element for a chain entry.
    * For top-level routes, searches direct children of `<body>`.
-   * For nested routes, searches the parent component's shadow DOM.
-   * Creates the element if not found.
+   * For nested routes, searches the parent component's render root
+   * (shadow root or light DOM).
    */
   private findOrCreateRouteElement(
     parent: RouteChainEntry | null,
@@ -340,23 +376,24 @@ export class WebUIRouter {
       return el;
     }
 
-    // For nested routes, search in parent component's shadow root
+    // For nested routes, search in parent component's render root
     if (parent.el) {
       const compEl = parent.el.querySelector(parent.component);
-      if (compEl?.shadowRoot) {
-        for (const child of compEl.shadowRoot.querySelectorAll(ROUTE_SELECTOR)) {
+      if (compEl) {
+        const root = renderRoot(compEl);
+        for (const child of root.querySelectorAll(ROUTE_SELECTOR)) {
           if (child.getAttribute('component') === entry.component) {
             return child as HTMLElement;
           }
         }
 
-        // Not found — create in the outlet area of parent's shadow root
+        // Not found — create in the outlet area of parent component
         const stub = createRouteStub(entry);
-        const outletMarker = compEl.shadowRoot.querySelector('outlet');
+        const outletMarker = root.querySelector('outlet');
         if (outletMarker?.parentElement) {
           outletMarker.parentElement.insertBefore(stub, outletMarker.nextSibling);
         } else {
-          compEl.shadowRoot.appendChild(stub);
+          root.appendChild(stub);
         }
         return stub;
       }
@@ -492,55 +529,52 @@ export class WebUIRouter {
       this.updateInventory(data.inventory);
     }
 
-    // Register templates delivered by the server. Two formats are supported:
-    //
-    // 1. Script-wrapped IIFE ("<script>…</script>") — the webui compiled-
-    //    template plugin emits these. Strip the tags and eval the inner JS
-    //    directly (no DOM parsing, no persistent allocations).
-    //
-    // 2. HTML custom elements ("<f-template …>…</f-template>") — the FAST
-    //    plugin emits these. Insert into the document so the registered
-    //    custom element's connectedCallback processes and registers them.
+    // Execute template registration. Each entry is either:
+    // - "<script>…</script>" (WebUI plugin) — execute JS via a nonced script element
+    // - "<f-template …>…</f-template>" (FAST plugin) — insert as DOM element
     for (const tmpl of data.templates) {
       if (tmpl.startsWith('<script')) {
         const start = tmpl.indexOf('>') + 1;
         const end = tmpl.lastIndexOf('<');
         if (start > 0 && end > start) {
-          const run = Function(tmpl.substring(start, end));
-          run();
+          const script = document.createElement('script');
+          if (this.nonce) script.nonce = this.nonce;
+          script.textContent = tmpl.substring(start, end);
+          document.head.appendChild(script);
+          document.head.removeChild(script);
         }
       } else {
-        document.body.appendChild(document.createRange().createContextualFragment(tmpl));
+        // FAST / DOM-based templates — insert into document for processing
+        const container = document.createDocumentFragment();
+        const temp = document.createElement('div');
+        temp.innerHTML = tmpl;
+        while (temp.firstChild) {
+          container.appendChild(temp.firstChild);
+        }
+        document.body.appendChild(container);
       }
     }
 
     return data;
   }
 
-  private async mountComponent(
+  private mountComponent(
     routeEl: HTMLElement,
     componentTag: string,
     data: PartialResponse,
     params: Record<string, string>,
-  ): Promise<void> {
+  ): void {
     const component = document.createElement(componentTag);
     routeEl.textContent = '';
     routeEl.appendChild(component);
 
-    await this.ensureComponentLoaded(componentTag);
-    await customElements.whenDefined(componentTag);
-
-    // Wait for the component's template to render (defer-and-hydrate
-    // components render asynchronously via prepare()). The shadow root
-    // must be populated before we can find <outlet> markers or call
-    // setInitialState on children that live in the shadow DOM.
-    await this.waitForShadowReady(component);
+    // Component module is pre-loaded and defined before commitNavigation.
+    // connectedCallback fires synchronously on appendChild, populating
+    // the component's light DOM immediately.
 
     if (typeof (component as any).setInitialState === 'function') {
-      // Component defines custom state handler — use it
       (component as any).setInitialState(data.state, params);
     } else {
-      // Auto-set: apply state as attributes (mirrors SSR emit_state_attributes)
       this.applyStateAsAttributes(component, data.state, params);
     }
   }
@@ -577,16 +611,19 @@ export class WebUIRouter {
     params: Record<string, string>,
   ): void {
     const toKebab = (k: string): string => k.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
+    const complex: Record<string, unknown> = {};
 
     for (const [key, value] of Object.entries(state)) {
       if (value == null) continue;
       if (typeof value === 'object') {
-        // Set complex values (arrays, objects) as JS properties directly.
-        // The framework's @observable setter triggers reactivity.
-        (el as unknown as Record<string, unknown>)[key] = value;
+        complex[key] = value;
       } else {
         el.setAttribute(toKebab(key), String(value));
       }
+    }
+
+    if (Object.keys(complex).length > 0) {
+      el.setAttribute('data-state', JSON.stringify(complex));
     }
 
     for (const [key, value] of Object.entries(params)) {
@@ -595,13 +632,13 @@ export class WebUIRouter {
   }
 
   /**
-   * Wait for an element's shadow root to be populated with template content.
+   * Wait for an element's light DOM to be populated with template content.
    * defer-and-hydrate components render their template asynchronously after
    * connectedCallback. After `whenDefined` resolves, a single animation frame
-   * is sufficient for the shadow root to populate.
+   * is sufficient for the content to populate.
    */
-  private waitForShadowReady(el: HTMLElement): Promise<void> {
-    if (el.shadowRoot && el.shadowRoot.children.length > 0) {
+  private waitForRenderReady(el: HTMLElement): Promise<void> {
+    if (el.children.length > 0) {
       return Promise.resolve();
     }
     return new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
@@ -640,11 +677,11 @@ export class WebUIRouter {
       if (!el) continue;
       const comp = routeComponent(el);
       if (!comp) continue;
-      const sr = el.querySelector(comp)?.shadowRoot;
-      if (!sr) continue;
+      const compEl = el.querySelector(comp);
+      if (!compEl) continue;
 
-      const hasOutlet = sr.querySelector('outlet') !== null;
-      const hasChildren = sr.querySelector(ROUTE_SELECTOR) !== null;
+      const hasOutlet = renderRoot(compEl).querySelector('outlet') !== null;
+      const hasChildren = renderRoot(compEl).querySelector(ROUTE_SELECTOR) !== null;
       const path = routePath(el);
 
       if (!hasChildren && !hasOutlet && !isExact(el) && path !== '/') {
@@ -681,8 +718,8 @@ export class WebUIRouter {
   }
 
   /**
-   * Find child route elements inside a parent route's component shadow DOM.
-   * Traverses: parent route → component → component's shadow DOM → <webui-route> elements.
+   * Find child route elements inside a parent route's component light DOM.
+   * Traverses: parent route → component → component's children → <webui-route> elements.
    */
   private discoverChildRoutes(parentRoute: HTMLElement): HTMLElement[] {
     const results: HTMLElement[] = [];
@@ -690,10 +727,11 @@ export class WebUIRouter {
     if (!comp) return results;
 
     const compEl = parentRoute.querySelector(comp);
-    if (!compEl?.shadowRoot) return results;
+    if (!compEl) return results;
 
-    // Child <webui-route> elements are directly in the component's shadow root
-    for (const child of compEl.shadowRoot.querySelectorAll(ROUTE_SELECTOR)) {
+    // Child <webui-route> elements are in the component's render root
+    const root = renderRoot(compEl);
+    for (const child of root.querySelectorAll(ROUTE_SELECTOR)) {
       results.push(child as HTMLElement);
     }
 

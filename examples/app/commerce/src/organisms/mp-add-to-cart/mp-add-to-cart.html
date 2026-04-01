@@ -4,10 +4,5 @@
   <input type="hidden" name="size" value="{{selectedSize}}" />
   <input type="hidden" name="redirectTo" value="{{currentPath}}" />
   <input type="hidden" name="openCart" value="true" />
-  <if condition="canSubmit">
-    <button class="add-to-cart-btn" type="submit">Add To Cart</button>
-  </if>
-  <if condition="!canSubmit">
-    <button class="add-to-cart-btn" type="submit" disabled>Add To Cart</button>
-  </if>
+  <button class="add-to-cart-btn" type="submit">Add To Cart</button>
 </form>

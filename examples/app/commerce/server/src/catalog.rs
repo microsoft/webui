@@ -821,9 +821,9 @@ pub fn extend_product_detail_state(state: &mut Map<String, Value>, product: &Pro
     if !product.colors.is_empty() {
         option_groups.push(serde_json::json!({
             "name": "Color",
+            "selected": "",
             "values": product.colors.iter().map(|color| serde_json::json!({
                 "value": color.value,
-                "active": false,
                 "unavailable": !color.available,
             })).collect::<Vec<_>>(),
         }));
@@ -832,9 +832,9 @@ pub fn extend_product_detail_state(state: &mut Map<String, Value>, product: &Pro
     if !product.sizes.is_empty() {
         option_groups.push(serde_json::json!({
             "name": "Size",
+            "selected": "",
             "values": product.sizes.iter().map(|size| serde_json::json!({
                 "value": size.value,
-                "active": false,
                 "unavailable": !size.available,
             })).collect::<Vec<_>>(),
         }));

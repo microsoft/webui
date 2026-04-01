@@ -4,6 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "build": "pnpm -r --parallel run build",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "engines": {

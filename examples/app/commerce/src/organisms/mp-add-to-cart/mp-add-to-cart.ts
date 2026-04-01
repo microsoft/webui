@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
+import { WebUIElement, attr } from '@microsoft/webui-framework';
 
 export class MpAddToCart extends WebUIElement {
   @attr handle = '';
@@ -14,27 +14,11 @@ export class MpAddToCart extends WebUIElement {
   @attr({ attribute: 'selected-color' }) selectedColor = '';
   @attr({ attribute: 'selected-size' }) selectedSize = '';
   @attr({ attribute: 'current-path' }) currentPath = '/';
-  @observable canSubmit = true;
 
   connectedCallback(): void {
     super.connectedCallback();
-    this.syncSelectionState();
-  }
-
-  selectedColorChanged(): void {
-    this.syncSelectionState();
-  }
-
-  selectedSizeChanged(): void {
-    this.syncSelectionState();
-  }
-
-  defaultColorChanged(): void {
-    this.syncSelectionState();
-  }
-
-  defaultSizeChanged(): void {
-    this.syncSelectionState();
+    if (!this.selectedColor) this.selectedColor = this.defaultColor;
+    if (!this.selectedSize) this.selectedSize = this.defaultSize;
   }
 
   async onSubmit(e: SubmitEvent): Promise<void> {
@@ -43,11 +27,6 @@ export class MpAddToCart extends WebUIElement {
   }
 
   private async submitCart(): Promise<void> {
-    this.syncSelectionState();
-    if (!this.canSubmit) {
-      return;
-    }
-
     const response = await fetch('/cart/add', {
       method: 'POST',
       headers: {
@@ -69,18 +48,6 @@ export class MpAddToCart extends WebUIElement {
 
     const state = await response.json() as Record<string, unknown>;
     this.$emit('commerce-cart-state', state);
-  }
-
-  private syncSelectionState(): void {
-    if (!this.selectedColor) {
-      this.selectedColor = this.defaultColor;
-    }
-    if (!this.selectedSize) {
-      this.selectedSize = this.defaultSize;
-    }
-
-    this.canSubmit = (!this.defaultColor || this.selectedColor !== '')
-      && (!this.defaultSize || this.selectedSize !== '');
   }
 }
 
