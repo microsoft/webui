@@ -22,12 +22,16 @@ function asParent(node: Node | null): (ParentNode & Node) | null {
   return 'childNodes' in node ? (node as ParentNode & Node) : null;
 }
 
-/** Resolve a dotted path against a value object. */
+/** Resolve a dotted path against a value object without allocating. */
 function resolvePath(value: unknown, path: string): unknown {
   let cursor = value;
-  for (const segment of path.split('.')) {
-    if (cursor == null || typeof cursor !== 'object') return undefined;
-    cursor = (cursor as Record<string, unknown>)[segment];
+  let start = 0;
+  for (let i = 0; i <= path.length; i++) {
+    if (i === path.length || path.charCodeAt(i) === 46 /* . */) {
+      if (cursor == null || typeof cursor !== 'object') return undefined;
+      cursor = (cursor as Record<string, unknown>)[path.slice(start, i)];
+      start = i + 1;
+    }
   }
   return cursor;
 }
@@ -48,9 +52,8 @@ export function resolveRepeatValue(
   return resolvePath(scope, path.slice(scopeVar.length + 1));
 }
 
-/** Compute a key for an item using the first attr-map entry, or null. */
-function itemKey(item: unknown, attrMap: Record<string, string>): string | null {
-  const keyPath = Object.values(attrMap)[0];
+/** Compute a key for an item using the cached key path, or null. */
+function itemKey(item: unknown, keyPath: string | undefined): string | null {
   if (keyPath === undefined || keyPath === '') return null;
   const v = resolvePath(item, keyPath);
   return v != null ? String(v) : '';
@@ -99,14 +102,57 @@ export function syncRepeat(
     return;
   }
 
-  const hasKeys = Object.keys(rep.attrMap).length > 0;
+  const keyPath = Object.values(rep.attrMap)[0];
+  const hasKeys = keyPath !== undefined && keyPath !== '';
   const oldInstances = rep.instances;
+
+  // ── Fast path for unkeyed (index-based) repeats ────────────────
+  if (!hasKeys) {
+    const next: RepeatItemInstance[] = [];
+    const reuseCount = Math.min(oldInstances.length, items.length);
+
+    // Reuse existing instances by index
+    for (let i = 0; i < reuseCount; i += 1) {
+      const entry = oldInstances[i];
+      entry.value = items[i];
+      if (entry.instance.scope) entry.instance.scope.value = items[i];
+      next.push(entry);
+    }
+
+    // Create new instances for items beyond old length
+    for (let i = reuseCount; i < items.length; i += 1) {
+      const scope = itemScope(rep, items[i]);
+      const instance = host.$createBlockInstance(rep.blockIndex, scope);
+      if (instance) {
+        next.push({ key: null, value: items[i], instance });
+      }
+    }
+
+    // Remove excess old instances
+    for (let i = reuseCount; i < oldInstances.length; i += 1) {
+      host.$removeInstance(oldInstances[i].instance);
+    }
+
+    rep.instances = next;
+
+    // Reorder + update
+    let cursor: Node | null = rep.start;
+    for (let i = 0; i < next.length; i += 1) {
+      cursor = host.$insertInstanceAfter(cursor, container, next[i].instance);
+    }
+    for (let i = 0; i < next.length; i += 1) {
+      host.$updateInstance(next[i].instance);
+    }
+    return;
+  }
+
+  // ── Keyed diff ─────────────────────────────────────────────────
 
   // ── Build old-key → instance map ────────────────────────────────
   const oldByKey = new Map<string, RepeatItemInstance>();
   for (let i = 0; i < oldInstances.length; i += 1) {
     const entry = oldInstances[i];
-    const k = hasKeys ? entry.key : String(i);
+    const k = entry.key;
     if (k != null) oldByKey.set(k, entry);
   }
 
@@ -114,7 +160,7 @@ export function syncRepeat(
   const next: RepeatItemInstance[] = [];
   for (let i = 0; i < items.length; i += 1) {
     const item = items[i];
-    const key = hasKeys ? itemKey(item, rep.attrMap) : String(i);
+    const key = itemKey(item, keyPath);
     const existing = key != null ? oldByKey.get(key) : undefined;
 
     if (existing) {

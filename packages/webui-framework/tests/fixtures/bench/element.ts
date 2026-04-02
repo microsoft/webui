@@ -78,8 +78,7 @@ registerCompiledTemplate('test-bench', {
     startIndex: g.startIndex,
     bindingCount: g.bindingCount,
   })),
-  events: [bindEvent('click', 'runBenchmark')],
-  eventTargets: [nodePath(65)],
+  events: [bindEvent('click', 'runBenchmark', false, nodePath(65))],
 });
 
 export class TestBench extends WebUIElement {
@@ -157,8 +156,7 @@ registerCompiledTemplate('test-bench-item', {
 
 registerCompiledTemplate('test-bench-repeat', {
   h: '<button class="run-repeat"></button><ul class="list"></ul>',
-  repeats: [repeat('items', 'item', { blockIndex: 0 })],
-  repeatSlots: [slot({ parent: nodePath(1), before: 0 })],
+  repeats: [repeat('items', 'item', { blockIndex: 0, slot: { parent: nodePath(1), before: 0 } })],
   blocks: [{
     h: '<li class="bench-item"><span class="label"></span> — <span class="value"></span></li>',
     text: [
@@ -166,8 +164,7 @@ registerCompiledTemplate('test-bench-repeat', {
       bindText(slot({ parent: nodePath(0, 2), before: 0 }), dynamic('item.value')),
     ],
   }],
-  events: [bindEvent('click', 'runRepeatBench')],
-  eventTargets: [nodePath(0)],
+  events: [bindEvent('click', 'runRepeatBench', false, nodePath(0))],
 });
 
 interface BenchItem {
@@ -227,21 +224,18 @@ TestBenchRepeat.define('test-bench-repeat');
 
 registerCompiledTemplate('test-bench-events', {
   h: '<button class="run-events"></button><div class="event-list"></div>',
-  repeats: [repeat('items', 'item', { blockIndex: 0 })],
-  repeatSlots: [slot({ parent: nodePath(1), before: 0 })],
+  repeats: [repeat('items', 'item', { blockIndex: 0, slot: { parent: nodePath(1), before: 0 } })],
   blocks: [{
     h: '<div class="event-item"><button class="a"></button><button class="b"></button><button class="c"></button><button class="d"></button><button class="e"></button></div>',
     events: [
-      bindEvent('click', 'onA'),
-      bindEvent('click', 'onB'),
-      bindEvent('click', 'onC'),
-      bindEvent('click', 'onD'),
-      bindEvent('click', 'onE'),
+      bindEvent('click', 'onA', false, nodePath(0, 0)),
+      bindEvent('click', 'onB', false, nodePath(0, 1)),
+      bindEvent('click', 'onC', false, nodePath(0, 2)),
+      bindEvent('click', 'onD', false, nodePath(0, 3)),
+      bindEvent('click', 'onE', false, nodePath(0, 4)),
     ],
-    eventTargets: [nodePath(0, 0), nodePath(0, 1), nodePath(0, 2), nodePath(0, 3), nodePath(0, 4)],
   }],
-  events: [bindEvent('click', 'runEventBench')],
-  eventTargets: [nodePath(0)],
+  events: [bindEvent('click', 'runEventBench', false, nodePath(0))],
 });
 
 export class TestBenchEvents extends WebUIElement {

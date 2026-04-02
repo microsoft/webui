@@ -32,10 +32,9 @@ registerCompiledTemplate('test-attr', {
     attrTarget(nodePath(6), { startIndex: 2, bindingCount: 1 }),
   ],
   events: [
-    bindEvent('click', 'noop'),
-    bindEvent('click', 'noop'),
+    bindEvent('click', 'noop', false, nodePath(0)),
+    bindEvent('click', 'noop', false, nodePath(1)),
   ],
-  eventTargets: [nodePath(0), nodePath(1)],
 });
 
 export class TestAttr extends WebUIElement {

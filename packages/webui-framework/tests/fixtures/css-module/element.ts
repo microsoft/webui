@@ -11,8 +11,7 @@ import {
 registerCompiledTemplate('test-module-host', {
   h: '<button class="spawn">Spawn</button><p class="host-label">Host</p><div class="slot"></div>',
   adoptedStylesheet: 'test-module-host',
-  events: [bindEvent('click', 'spawnChild')],
-  eventTargets: [nodePath(0)],
+  events: [bindEvent('click', 'spawnChild', false, nodePath(0))],
 });
 
 registerCompiledTemplate('test-module-child', {

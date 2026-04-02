@@ -15,9 +15,8 @@ import {
 registerCompiledTemplate('test-nested-child', {
   h: '<button class="child-btn">Child</button>',
   events: [
-    bindEvent('click', 'onChildClick'),
+    bindEvent('click', 'onChildClick', false, nodePath(0)),
   ],
-  eventTargets: [nodePath(0)],
 });
 
 export class TestNestedChild extends WebUIElement {
@@ -39,9 +38,8 @@ registerCompiledTemplate('test-nested-event', {
     bindText(slot({ parent: nodePath(0), before: 0 }), dynamic('parentClicks')),
   ],
   events: [
-    bindEvent('click', 'onParentClick'),
+    bindEvent('click', 'onParentClick', false, nodePath(1)),
   ],
-  eventTargets: [nodePath(1)],
 });
 
 export class TestNestedEvent extends WebUIElement {

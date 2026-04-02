@@ -19,10 +19,9 @@ registerCompiledTemplate('test-counter', {
     bindText(slot({ parent: nodePath(4), before: 0 }), dynamic('doubled')),
   ],
   events: [
-    bindEvent('click', 'increment'),
-    bindEvent('click', 'decrement'),
+    bindEvent('click', 'increment', false, nodePath(6)),
+    bindEvent('click', 'decrement', false, nodePath(7)),
   ],
-  eventTargets: [nodePath(6), nodePath(7)],
 });
 
 export class TestCounter extends WebUIElement {

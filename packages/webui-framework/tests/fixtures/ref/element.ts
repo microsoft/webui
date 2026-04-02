@@ -17,10 +17,9 @@ registerCompiledTemplate('test-ref', {
     bindText(slot({ parent: nodePath(1), before: 0 }), dynamic('value')),
   ],
   events: [
-    bindEvent('click', 'readInput'),
-    bindEvent('click', 'focusInput'),
+    bindEvent('click', 'readInput', false, nodePath(2)),
+    bindEvent('click', 'focusInput', false, nodePath(3)),
   ],
-  eventTargets: [nodePath(2), nodePath(3)],
 });
 
 export class TestRef extends WebUIElement {

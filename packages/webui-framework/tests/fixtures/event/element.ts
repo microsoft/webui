@@ -17,11 +17,10 @@ registerCompiledTemplate('test-event', {
     bindText(slot({ parent: nodePath(0), before: 0 }), dynamic('count')),
   ],
   events: [
-    bindEvent('click', 'onIncrement'),
-    bindEvent('click', 'onDecrement'),
-    bindEvent('click', 'onReset'),
+    bindEvent('click', 'onIncrement', false, nodePath(1)),
+    bindEvent('click', 'onDecrement', false, nodePath(2)),
+    bindEvent('click', 'onReset', false, nodePath(3)),
   ],
-  eventTargets: [nodePath(1), nodePath(2), nodePath(3)],
 });
 
 export class TestEvent extends WebUIElement {

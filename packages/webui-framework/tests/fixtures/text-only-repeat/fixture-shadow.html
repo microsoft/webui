@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Text-Only Repeat Fixture (Shadow)</title>
+</head>
+<body>
+  <test-text-only-repeat><template shadowrootmode="open"><span class="label"><span class="active-label">Relevance</span></span><button class="update">Update</button></template></test-text-only-repeat>
+  <script>window.__webui_shadow=true;</script>
+  <script>
+    window.__webui_state = {
+      options: [
+        { title: 'Relevance', active: true },
+        { title: 'Trending', active: false },
+        { title: 'Price', active: false }
+      ]
+    };
+  </script>
+  <script src="/dist/text-only-repeat/element.js"></script>
+</body>
+</html>

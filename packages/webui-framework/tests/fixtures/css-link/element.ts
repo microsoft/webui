@@ -10,8 +10,7 @@ import {
 
 registerCompiledTemplate('test-link-host', {
   h: '<link rel="stylesheet" href="/css-link/host.css"><button class="spawn">Spawn</button><p class="host-label">Host</p><div class="slot"></div>',
-  events: [bindEvent('click', 'spawnChild')],
-  eventTargets: [nodePath(1)],
+  events: [bindEvent('click', 'spawnChild', false, nodePath(1))],
 });
 
 registerCompiledTemplate('test-link-child', {

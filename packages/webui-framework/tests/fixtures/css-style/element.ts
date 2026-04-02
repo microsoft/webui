@@ -10,8 +10,7 @@ import {
 
 registerCompiledTemplate('test-style-host', {
   h: '<style>.host-label{color:rgb(12, 34, 56);}</style><button class="spawn">Spawn</button><p class="host-label">Host</p><div class="slot"></div>',
-  events: [bindEvent('click', 'spawnChild')],
-  eventTargets: [nodePath(1)],
+  events: [bindEvent('click', 'spawnChild', false, nodePath(1))],
 });
 
 registerCompiledTemplate('test-style-child', {

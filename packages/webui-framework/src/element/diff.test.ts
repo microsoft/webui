@@ -55,3 +55,26 @@ describe('itemKey edge cases', () => {
     assert.equal(unique.size, items.length, 'all keys must be unique');
   });
 });
+
+describe('resolvePath (allocation-free dotted path)', () => {
+  test('resolves single-segment path', () => {
+    assert.equal(resolveRepeatValue('item', { name: 'A' }, 'item.name'), 'A');
+  });
+
+  test('resolves multi-segment path', () => {
+    const item = { user: { address: { city: 'Seattle' } } };
+    assert.equal(resolveRepeatValue('item', item, 'item.user.address.city'), 'Seattle');
+  });
+
+  test('returns undefined for missing intermediate segment', () => {
+    assert.equal(resolveRepeatValue('item', { user: null }, 'item.user.name'), undefined);
+  });
+
+  test('returns undefined for missing leaf', () => {
+    assert.equal(resolveRepeatValue('item', { user: {} }, 'item.user.name'), undefined);
+  });
+
+  test('handles numeric-like keys', () => {
+    assert.equal(resolveRepeatValue('item', { '0': 'first' }, 'item.0'), 'first');
+  });
+});

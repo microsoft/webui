@@ -26,6 +26,7 @@ function createReactiveProperty(
   name: string,
 ): void {
   const backingKey = `_${name}`;
+  const changedKey = `${name}Changed`;
 
   Object.defineProperty(proto, name, {
     get(this: Record<string, unknown>) {
@@ -36,17 +37,14 @@ function createReactiveProperty(
       if (oldValue === newValue) return;
       this[backingKey] = newValue;
 
-      // Notify the class-level change callback if it exists.
-      const cb = (this as Record<string, unknown>)[`${name}Changed`];
+      const cb = this[changedKey];
       if (typeof cb === 'function') {
         (cb as (old: unknown, next: unknown) => void).call(this, oldValue, newValue);
       }
 
-      // Trigger a reactive update when the element is connected.
-      if (typeof (this as Record<string, unknown>)['$update'] === 'function') {
-        if ((this as unknown as HTMLElement).isConnected) {
-          (this as { $update(path?: string): void }).$update(name);
-        }
+      if ((this as unknown as HTMLElement).isConnected) {
+        const upd = this['$update'] as ((path?: string) => void) | undefined;
+        if (upd) upd.call(this, name);
       }
     },
     enumerable: true,

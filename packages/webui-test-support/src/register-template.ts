@@ -37,18 +37,21 @@ export interface FixtureAttrGroup {
 export interface FixtureCondition {
   when: CompiledCondition;
   blockIndex: number;
+  slot: FixtureSlot;
 }
 
 export interface FixtureRepeat {
   each: string;
   as: string;
   blockIndex: number;
+  slot: FixtureSlot;
 }
 
 export interface FixtureEvent {
   type: string;
   handler: string;
   needsEvent?: boolean;
+  target: FixtureNodePath;
 }
 
 export interface FixtureCompiledBlockMeta {
@@ -57,11 +60,8 @@ export interface FixtureCompiledBlockMeta {
   attrs?: CompiledAttrMeta[];
   attrGroups?: FixtureAttrGroup[];
   conditionals?: FixtureCondition[];
-  conditionSlots?: FixtureSlot[];
   repeats?: FixtureRepeat[];
-  repeatSlots?: FixtureSlot[];
   events?: FixtureEvent[];
-  eventTargets?: FixtureNodePath[];
 }
 
 export interface FixtureCompiledTemplateMeta extends FixtureCompiledBlockMeta {
@@ -259,9 +259,10 @@ export function when(
   condition: CompiledCondition,
   options: {
     blockIndex: number;
+    slot?: FixtureSlot;
   },
 ): FixtureCondition {
-  return { when: condition, ...options };
+  return { when: condition, blockIndex: options.blockIndex, slot: options.slot ?? { before: 0 } };
 }
 
 /** Repeat `blocks[blockIndex]` for each item in `each`, exposed as `as`. */
@@ -270,18 +271,20 @@ export function repeat(
   as: string,
   options: {
     blockIndex: number;
+    slot?: FixtureSlot;
   },
 ): FixtureRepeat {
-  return { each, as, ...options };
+  return { each, as, blockIndex: options.blockIndex, slot: options.slot ?? { before: 0 } };
 }
 
-/** Attach an event listener to the node at the matching `eventTargets` path. */
+/** Attach an event listener to the node at `target`. */
 export function bindEvent(
   type: string,
   handler: string,
-  needsEvent = false,
+  needsEvent: boolean | number = false,
+  target: FixtureNodePath = [],
 ): FixtureEvent {
-  return { type, handler, needsEvent };
+  return { type, handler, needsEvent: !!needsEvent, target };
 }
 
 function normalizeSlot(entry: FixtureSlot): TemplateSlotPath {
@@ -302,15 +305,15 @@ function normalizeAttrGroup(entry: FixtureAttrGroup): CompiledAttrGroupMeta {
 }
 
 function normalizeCondition(entry: FixtureCondition): CompiledConditionalMeta {
-  return [entry.when, entry.blockIndex];
+  return [entry.when, entry.blockIndex, normalizeSlot(entry.slot)];
 }
 
-function normalizeRepeat(entry: FixtureRepeat): [string, string, number] {
-  return [entry.each, entry.as, entry.blockIndex];
+function normalizeRepeat(entry: FixtureRepeat): [string, string, number, TemplateSlotPath] {
+  return [entry.each, entry.as, entry.blockIndex, normalizeSlot(entry.slot)];
 }
 
-function normalizeEvent(entry: FixtureEvent): [string, string, number] {
-  return [entry.type, entry.handler, entry.needsEvent ? 1 : 0];
+function normalizeEvent(entry: FixtureEvent): [string, string, number, TemplateNodePath] {
+  return [entry.type, entry.handler, entry.needsEvent ? 1 : 0, entry.target];
 }
 
 function normalizeBlock(meta: FixtureCompiledBlockMeta): TemplateBlockMeta {
@@ -332,24 +335,12 @@ function normalizeBlock(meta: FixtureCompiledBlockMeta): TemplateBlockMeta {
     block.c = meta.conditionals.map(normalizeCondition);
   }
 
-  if (meta.conditionSlots?.length) {
-    block.cl = meta.conditionSlots.map(normalizeSlot);
-  }
-
   if (meta.repeats?.length) {
     block.r = meta.repeats.map(normalizeRepeat);
   }
 
-  if (meta.repeatSlots?.length) {
-    block.rl = meta.repeatSlots.map(normalizeSlot);
-  }
-
   if (meta.events?.length) {
     block.e = meta.events.map(normalizeEvent);
-  }
-
-  if (meta.eventTargets?.length) {
-    block.el = meta.eventTargets;
   }
 
   return block;
@@ -367,7 +358,7 @@ export function buildTemplate(meta: FixtureCompiledTemplateMeta): TemplateMeta {
   }
 
   if (meta.rootEvents?.length) {
-    template.re = meta.rootEvents.map(normalizeEvent);
+    template.re = meta.rootEvents.map(e => [e.type, e.handler, e.needsEvent ? 1 : 0] as [string, string, number]);
   }
 
   if (meta.shadowDom) {
@@ -387,11 +378,8 @@ function isFixtureCompiledTemplateMeta(
     'attrs' in meta ||
     'attrGroups' in meta ||
     'conditionals' in meta ||
-    'conditionSlots' in meta ||
     'repeats' in meta ||
-    'repeatSlots' in meta ||
     'events' in meta ||
-    'eventTargets' in meta ||
     'blocks' in meta ||
     'adoptedStylesheet' in meta ||
     'rootEvents' in meta

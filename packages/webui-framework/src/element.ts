@@ -40,6 +40,13 @@ import type {
 import { hydrationStart, hydrationEnd } from './lifecycle.js';
 import { getObservableNames } from './decorators.js';
 import { syncRepeat } from './element/diff.js';
+import {
+  stripLinkTags,
+  adoptSSRStyles,
+  adoptCachedStyles,
+  allSheetsCached,
+  injectModuleStyle,
+} from './element/styles.js';
 import type {
   AttrBinding,
   CondBinding,
@@ -55,131 +62,30 @@ import type {
 /** Parsed template cache — cloneNode(true) is faster than re-parsing. */
 const templateCache = new WeakMap<TemplateBlockMeta, DocumentFragment>();
 
+/** Parsed template cache for stripped HTML (keyed by string). */
+const strippedParseCache = new Map<string, DocumentFragment>();
+
 /** Parsed template DOM for SSR path mapping, keyed by meta.h string. */
 const templateDOMCache = new Map<string, Element>();
 
-/** CSS modules already injected into the document head. */
-const injectedStyles = new Set<string>();
+/** Pre-computed ordinals for template nodes: childIndex → [nodeType, ordinal].
+ *  Avoids re-counting element/text siblings on every $resolveSSR call. */
+const tplOrdinalCache = new WeakMap<Node, Map<number, [nodeType: number, ordinal: number]>>();
 
-/** Shared constructable stylesheets keyed by href — avoids per-instance
- *  `<link>` elements and duplicate style recalculations in shadow DOM.
- *  Only used for `link` and `style` CSS modes (not `module`). */
-const sheetCache = new Map<string, CSSStyleSheet>();
-
-/** Pre-processed template HTML with `<link>` tags stripped, keyed by
- *  original `meta.h`. Used for client-created shadow DOM components. */
-const strippedTemplateCache = new Map<string, { html: string; hrefs: string[] }>();
-
-/**
- * Strip `<link rel="stylesheet" href="...">` tags from template HTML
- * iteratively (no regex). Returns the cleaned HTML and extracted hrefs.
- */
-function stripLinkTags(html: string): { html: string; hrefs: string[] } {
-  const cached = strippedTemplateCache.get(html);
-  if (cached) return cached;
-
-  const hrefs: string[] = [];
-  let result = '';
-  let i = 0;
-  while (i < html.length) {
-    // Look for <link
-    if (html.charCodeAt(i) === 60 && html.substring(i, i + 5) === '<link') {
-      // Find the end of this tag
-      const tagEnd = html.indexOf('>', i);
-      if (tagEnd === -1) { result += html[i]; i++; continue; }
-      const tag = html.substring(i, tagEnd + 1);
-      // Check if it's a stylesheet link
-      if (tag.indexOf('rel="stylesheet"') !== -1) {
-        // Extract href
-        const hrefStart = tag.indexOf('href="');
-        if (hrefStart !== -1) {
-          const hrefValStart = hrefStart + 6;
-          const hrefEnd = tag.indexOf('"', hrefValStart);
-          if (hrefEnd !== -1) {
-            hrefs.push(tag.substring(hrefValStart, hrefEnd));
-          }
-        }
-        // Skip this tag (strip it)
-        i = tagEnd + 1;
-        continue;
-      }
-    }
-    result += html[i];
-    i++;
+function getTplOrdinals(tplNode: Node): Map<number, [number, number]> {
+  let map = tplOrdinalCache.get(tplNode);
+  if (map) return map;
+  map = new Map();
+  let elemOrd = 0;
+  let textOrd = 0;
+  const children = tplNode.childNodes;
+  for (let k = 0; k < children.length; k++) {
+    const type = children[k].nodeType;
+    if (type === 1) { map.set(k, [1, elemOrd]); elemOrd++; }
+    else if (type === 3) { map.set(k, [3, textOrd]); textOrd++; }
   }
-
-  const entry = { html: result, hrefs };
-  strippedTemplateCache.set(html, entry);
-  return entry;
-}
-
-/**
- * Adopt shared stylesheets on a shadow root during SSR hydration.
- * Extracts the already-parsed CSSStyleSheet from each `<link>` element,
- * caches it for reuse by future instances, and removes the `<link>` node.
- * This is safe because the browser has already applied the styles.
- */
-function adoptSSRStyles(shadowRoot: ShadowRoot): void {
-  const links = shadowRoot.querySelectorAll('link[rel="stylesheet"]');
-  if (links.length === 0) return;
-
-  const sheets: CSSStyleSheet[] = [];
-  for (let i = 0; i < links.length; i++) {
-    const link = links[i] as HTMLLinkElement;
-    const href = link.href;
-
-    let cached = sheetCache.get(href);
-    if (!cached && link.sheet) {
-      // Steal the browser-parsed sheet from the SSR <link>
-      cached = new CSSStyleSheet();
-      const rules: string[] = [];
-      for (let r = 0; r < link.sheet.cssRules.length; r++) {
-        rules.push(link.sheet.cssRules[r].cssText);
-      }
-      try { cached.replaceSync(rules.join('\n')); } catch { /* security */ }
-      sheetCache.set(href, cached);
-    }
-    if (cached) {
-      sheets.push(cached);
-      link.remove();
-    }
-  }
-
-  if (sheets.length > 0) {
-    shadowRoot.adoptedStyleSheets = [
-      ...shadowRoot.adoptedStyleSheets,
-      ...sheets,
-    ];
-  }
-}
-
-/**
- * Adopt pre-cached stylesheets on a newly created shadow root.
- * Called for client-created components where `<link>` tags have been
- * stripped from the template HTML.
- */
-function adoptCachedStyles(shadowRoot: ShadowRoot, hrefs: string[]): void {
-  if (hrefs.length === 0) return;
-
-  const sheets: CSSStyleSheet[] = [];
-  for (let i = 0; i < hrefs.length; i++) {
-    let cached = sheetCache.get(hrefs[i]);
-    if (!cached) {
-      // Not yet cached (first dynamic instance before any SSR instance).
-      // Create sheet and fetch CSS asynchronously.
-      cached = new CSSStyleSheet();
-      sheetCache.set(hrefs[i], cached);
-      fetch(hrefs[i]).then(r => r.text()).then(css => {
-        try { cached!.replaceSync(css); } catch { /* ignore */ }
-      });
-    }
-    sheets.push(cached);
-  }
-
-  shadowRoot.adoptedStyleSheets = [
-    ...shadowRoot.adoptedStyleSheets,
-    ...sheets,
-  ];
+  tplOrdinalCache.set(tplNode, map);
+  return map;
 }
 
 // ── Sentinels ───────────────────────────────────────────────────
@@ -313,11 +219,16 @@ export class WebUIElement extends HTMLElement {
         // instances, strip <link> tags and adopt shared sheets instead.
         // Otherwise keep <link> tags (first instance loads CSS normally).
         const { html: strippedHtml, hrefs } = stripLinkTags(meta.h);
-        const allCached = hrefs.length > 0 && hrefs.every(h => sheetCache.has(h));
+        const allCached = allSheetsCached(hrefs);
         if (allCached) {
-          const strippedMeta = { ...meta, h: strippedHtml };
-          const fragment = this.$parseTemplate(strippedMeta);
-          root.appendChild(fragment);
+          let cached = strippedParseCache.get(strippedHtml);
+          if (!cached) {
+            const tpl = document.createElement('template');
+            tpl.innerHTML = strippedHtml;
+            cached = tpl.content;
+            strippedParseCache.set(strippedHtml, cached);
+          }
+          root.appendChild(cached.cloneNode(true));
           adoptCachedStyles(root as ShadowRoot, hrefs);
         } else {
           const fragment = this.$parseTemplate(meta);
@@ -338,7 +249,7 @@ export class WebUIElement extends HTMLElement {
     }
 
     // Inject CSS module stylesheet after root is determined
-    if (meta.sa) this.$injectModuleStyle(meta.sa);
+    if (meta.sa) injectModuleStyle(meta.sa, this.shadowRoot);
 
     if (isSSR) {
       // Apply the same state that was used for SSR rendering
@@ -356,7 +267,7 @@ export class WebUIElement extends HTMLElement {
       this.$root = this.$wire(root, meta);
     }
 
-    this.$buildPathIndex();
+    this.$meta = meta;
     this.$hydrated = true;
     this.$ready = true;
 
@@ -413,6 +324,9 @@ export class WebUIElement extends HTMLElement {
   /** Reactive update — called by @observable/@attr setters. */
   $update(path?: string): void {
     if (!this.$ready || !this.$root) return;
+
+    // Lazy-build path index on first update (deferred from hydration)
+    if (!this.$pathIndex) this.$buildPathIndex();
 
     if (path && this.$pathIndex) {
       const entry = this.$pathIndex.get(path);
@@ -491,42 +405,22 @@ export class WebUIElement extends HTMLElement {
       const tplChild = tpl.childNodes[idx];
       if (!tplChild) return null;
 
-      if (tplChild.nodeType === 1) {
-        // Count how many element siblings precede this index in the template
-        let elemOrd = 0;
-        for (let k = 0; k < idx; k++) {
-          if (tpl.childNodes[k] && tpl.childNodes[k].nodeType === 1) elemOrd++;
+      const ordinals = getTplOrdinals(tpl);
+      const entry = ordinals.get(idx);
+      if (!entry) return null;
+
+      const [nodeType, ordinal] = entry;
+      let count = 0;
+      let child = ssr.firstChild;
+      while (child) {
+        if (child.nodeType === nodeType) {
+          if (count === ordinal) break;
+          count++;
         }
-        // Find the element at that ordinal in the SSR DOM
-        let count = 0;
-        let child = ssr.firstChild;
-        while (child) {
-          if (child.nodeType === 1) {
-            if (count === elemOrd) break;
-            count++;
-          }
-          child = child.nextSibling;
-        }
-        if (!child) return null;
-        ssr = child;
-      } else {
-        // Text node — count text node ordinal in template, find in SSR
-        let textOrd = 0;
-        for (let k = 0; k < idx; k++) {
-          if (tpl.childNodes[k] && tpl.childNodes[k].nodeType === 3) textOrd++;
-        }
-        let count = 0;
-        let child = ssr.firstChild;
-        while (child) {
-          if (child.nodeType === 3) {
-            if (count === textOrd) break;
-            count++;
-          }
-          child = child.nextSibling;
-        }
-        if (!child) return null;
-        ssr = child;
+        child = child.nextSibling;
       }
+      if (!child) return null;
+      ssr = child;
       tpl = tplChild;
     }
     return ssr;
@@ -541,49 +435,6 @@ export class WebUIElement extends HTMLElement {
     tpl.innerHTML = meta.h;
     templateCache.set(meta, tpl.content);
     return tpl.content.cloneNode(true) as DocumentFragment;
-  }
-
-  /**
-   * Apply a CSS module stylesheet.
-   *
-   * - **Shadow DOM**: creates a constructable CSSStyleSheet and adopts it
-   *   on this element's shadow root.
-   * - **Light DOM**: activates the SSR `<style type="module" specifier="...">` tag
-   *   by cloning its text into a regular `<style>` in the document head.
-   *   The style type="module" is intentionally ignored by browsers until activated.
-   *
-   * Each specifier is processed once per page — subsequent components share
-   * the same stylesheet.
-   */
-  private $injectModuleStyle(specifier: string): void {
-    if (injectedStyles.has(specifier)) return;
-    injectedStyles.add(specifier);
-
-    // Find the definition element
-    const defs = document.querySelectorAll('style[type="module"][specifier]');
-    let cssText: string | null = null;
-    for (let i = 0; i < defs.length; i++) {
-      if (defs[i].getAttribute('specifier') === specifier) {
-        cssText = defs[i].textContent;
-        break;
-      }
-    }
-    if (!cssText) return;
-
-    if (this.shadowRoot) {
-      // Shadow DOM: adopt on shadow root via constructable stylesheet
-      const sheet = new CSSStyleSheet();
-      sheet.replaceSync(cssText);
-      this.shadowRoot.adoptedStyleSheets = [
-        ...this.shadowRoot.adoptedStyleSheets,
-        sheet,
-      ];
-    } else {
-      // Light DOM: inject a regular <style> into the document head
-      const style = document.createElement('style');
-      style.textContent = cssText;
-      document.head.appendChild(style);
-    }
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -617,11 +468,9 @@ export class WebUIElement extends HTMLElement {
     // Pre-resolve conditional slots
     type CondRef = { parent: Node; ref: Node | null; condition: CompiledCondition; blockIndex: number };
     const condRefs: CondRef[] = [];
-    if (meta.c && meta.cl) {
+    if (meta.c) {
       for (let i = 0; i < meta.c.length; i++) {
-        const [condition, blockIndex] = meta.c[i];
-        const slotMeta = meta.cl![i];
-        if (!slotMeta) continue;
+        const [condition, blockIndex, slotMeta] = meta.c[i];
         const [parentPath, beforeIndex] = slotMeta;
         const parent = parentPath.length > 0 ? this.$resolve(root, parentPath) : root;
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
@@ -632,11 +481,9 @@ export class WebUIElement extends HTMLElement {
     // Pre-resolve repeat slots
     type RepRef = { parent: Node; ref: Node | null; collection: string; itemVar: string; blockIndex: number };
     const repRefs: RepRef[] = [];
-    if (meta.r && meta.rl) {
+    if (meta.r) {
       for (let i = 0; i < meta.r.length; i++) {
-        const [collection, itemVar, blockIndex] = meta.r[i];
-        const slotMeta = meta.rl![i];
-        if (!slotMeta) continue;
+        const [collection, itemVar, blockIndex, slotMeta] = meta.r[i];
         const [parentPath, beforeIndex] = slotMeta;
         const parent = parentPath.length > 0 ? this.$resolve(root, parentPath) : root;
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
@@ -748,11 +595,9 @@ export class WebUIElement extends HTMLElement {
     this.$wireAttrs(instance, meta, scope, (p) => this.$resolveSSR(ssrRoot, tplDom, p) as Element);
 
     // Conditional bindings
-    if (meta.c && meta.cl) {
+    if (meta.c) {
       for (let i = 0; i < meta.c.length; i++) {
-        const [condition, blockIndex] = meta.c[i];
-        const slotMeta = meta.cl![i];
-        if (!slotMeta) continue;
+        const [condition, blockIndex, slotMeta] = meta.c[i];
         const [parentPath] = slotMeta;
         const ssrParent = parentPath.length > 0
           ? this.$resolveSSR(ssrRoot, tplDom, parentPath)
@@ -815,11 +660,9 @@ export class WebUIElement extends HTMLElement {
     }
 
     // Repeat bindings — recognize existing repeated children
-    if (meta.r && meta.rl) {
+    if (meta.r) {
       for (let i = 0; i < meta.r.length; i++) {
-        const [collection, itemVar, blockIndex] = meta.r[i];
-        const slotMeta = meta.rl![i];
-        if (!slotMeta) continue;
+        const [collection, itemVar, blockIndex, slotMeta] = meta.r[i];
         const [parentPath] = slotMeta;
         const ssrParent = parentPath.length > 0
           ? this.$resolveSSR(ssrRoot, tplDom, parentPath)
@@ -856,42 +699,114 @@ export class WebUIElement extends HTMLElement {
         const anchor = document.createComment('');
         if (groups.length > 0) {
           ssrParent.insertBefore(anchor, groups[0]);
+        } else if (!rootTag) {
+          // Text-only blocks: anchor goes at the repeat slot position.
+          const staticCount = tplParent ? tplParent.childNodes.length : 0;
+          const insertBefore = ssrParent.childNodes[staticCount] ?? null;
+          ssrParent.insertBefore(anchor, insertBefore);
         } else {
           ssrParent.appendChild(anchor);
         }
 
         // Hydrate each existing child as a repeat instance.
-        // State already applied from __webui_state via $applySSRState.
         const repeatInsts: RepeatItemInstance[] = [];
         const itemsArr = this.$resolveValue(collection, scope);
         const items = Array.isArray(itemsArr) ? itemsArr as unknown[] : [];
         const blockTplDom = blockMeta ? getTemplateDom(blockMeta) : null;
 
-        for (let j = 0; j < groups.length && j < items.length; j++) {
-          const childEl = groups[j];
-          const itemValue = items[j];
-          const itemScope: ScopeFrame = { name: itemVar, value: itemValue, parent: scope };
-          const key = Object.keys(attrMap).length > 0
-            ? (childEl as Element).getAttribute(Object.keys(attrMap)[0])
-            : String(j);
+        if (rootTag) {
+          // Element-based blocks: hydrate by matching SSR elements by tag.
+          const firstKey = Object.keys(attrMap)[0];
+          const hydrateWrapper = blockMeta && blockTplDom ? document.createElement('div') : null;
+          for (let j = 0; j < groups.length && j < items.length; j++) {
+            const childEl = groups[j];
+            const itemValue = items[j];
+            const itemScope: ScopeFrame = { name: itemVar, value: itemValue, parent: scope };
+            const key = firstKey !== undefined
+              ? (childEl as Element).getAttribute(firstKey)
+              : String(j);
 
-          let childInstance: TemplateInstance;
-          if (blockMeta && blockTplDom) {
-            // Create a wrapper that contains the SSR element for path resolution,
-            // but avoid DOM mutations by cloning a reference-only container.
-            const wrapper = document.createElement('div');
-            wrapper.appendChild(childEl);
-            childInstance = this.$hydrate(wrapper, blockMeta, blockTplDom, itemScope);
-            childInstance.nodes = childNodesArray(wrapper);
-            // Restore element to its original parent
-            ssrParent.insertBefore(childEl, anchor.nextSibling);
-          } else {
-            childInstance = {
-              scope: itemScope, nodes: [childEl],
-              texts: [], attrs: [], conds: [], repeats: [],
-            };
+            let childInstance: TemplateInstance;
+            if (hydrateWrapper) {
+              hydrateWrapper.appendChild(childEl);
+              childInstance = this.$hydrate(hydrateWrapper, blockMeta!, blockTplDom!, itemScope);
+              childInstance.nodes = [childEl]; // single root element — skip childNodesArray
+              ssrParent.insertBefore(childEl, anchor.nextSibling);
+            } else {
+              childInstance = {
+                scope: itemScope, nodes: [childEl],
+                texts: EMPTY_ARR as unknown as TextBinding[],
+                attrs: EMPTY_ARR as unknown as AttrBinding[],
+                conds: EMPTY_ARR as unknown as CondBinding[],
+                repeats: EMPTY_ARR as unknown as RepeatBinding[],
+              };
+            }
+            repeatInsts.push({ key, value: itemValue, instance: childInstance });
           }
-          repeatInsts.push({ key, value: itemValue, instance: childInstance });
+        } else if (blockMeta) {
+          // Text-only blocks: no root element, so SSR children can't be
+          // matched by tag. Walk items and for each one, evaluate its
+          // conditionals to claim SSR nodes or create empty instances.
+          let ssrCursor: Node | null = anchor.nextSibling;
+
+          for (let j = 0; j < items.length; j++) {
+            const itemValue = items[j];
+            const itemScope: ScopeFrame = { name: itemVar, value: itemValue, parent: scope };
+            const inst: TemplateInstance = {
+              scope: itemScope, nodes: [],
+              texts: EMPTY_ARR as unknown as TextBinding[],
+              attrs: EMPTY_ARR as unknown as AttrBinding[],
+              conds: [],
+              repeats: EMPTY_ARR as unknown as RepeatBinding[],
+            };
+
+            if (blockMeta.c) {
+              for (let ci = 0; ci < blockMeta.c.length; ci++) {
+                const [condition, condBlockIndex] = blockMeta.c[ci];
+                const condAnchor = document.createComment('');
+                ssrParent.insertBefore(condAnchor, ssrCursor);
+
+                const condMet = condition[0](this.$resolver, itemScope);
+                let condInstance: TemplateInstance | null = null;
+
+                if (condMet && ssrCursor) {
+                  const condBlockMeta = this.$block(condBlockIndex);
+                  const condTplDom = condBlockMeta ? getTemplateDom(condBlockMeta) : null;
+
+                  if (condBlockMeta && condTplDom) {
+                    const condRootTag = this.$rootTag(condBlockMeta);
+                    const wrapper = document.createElement('div');
+                    if (condRootTag && ssrCursor.nodeType === 1
+                        && (ssrCursor as Element).tagName.toLowerCase() === condRootTag) {
+                      const claimed = ssrCursor;
+                      ssrCursor = ssrCursor.nextSibling;
+                      wrapper.appendChild(claimed);
+                      condInstance = this.$hydrate(wrapper, condBlockMeta, condTplDom, itemScope);
+                      condInstance.nodes = childNodesArray(wrapper);
+                      for (const n of condInstance.nodes) {
+                        ssrParent.insertBefore(n, ssrCursor);
+                      }
+                    } else {
+                      condInstance = this.$createBlockInstance(condBlockIndex, itemScope);
+                      if (condInstance) {
+                        for (const n of condInstance.nodes) {
+                          ssrParent.insertBefore(n, ssrCursor);
+                        }
+                      }
+                    }
+                  }
+                }
+
+                inst.conds.push({
+                  condition, blockIndex: condBlockIndex,
+                  anchor: condAnchor, scope: itemScope,
+                  instance: condInstance,
+                });
+              }
+            }
+
+            repeatInsts.push({ key: String(j), value: itemValue, instance: inst });
+          }
         }
 
         // Re-insert all nodes in correct order after anchor
@@ -924,10 +839,12 @@ export class WebUIElement extends HTMLElement {
 
   /** Find existing SSR text node by mapping template text-node ordinal. */
   private $findSSRText(ssrParent: Node, tplParent: Node, beforeIndex: number): Text | null {
-    // Count how many text nodes precede beforeIndex in the template
+    // Use pre-computed ordinals from template cache
+    const ordinals = getTplOrdinals(tplParent);
     let textOrd = 0;
-    for (let k = 0; k < beforeIndex && k < tplParent.childNodes.length; k++) {
-      if (tplParent.childNodes[k].nodeType === 3) textOrd++;
+    for (let k = 0; k < beforeIndex; k++) {
+      const entry = ordinals.get(k);
+      if (entry && entry[0] === 3) textOrd++;
     }
 
     // Find the text node at that ordinal in SSR DOM
@@ -1031,17 +948,12 @@ export class WebUIElement extends HTMLElement {
     meta: TemplateBlockMeta,
     resolver: (root: Node, path: TemplateNodePath) => Node | null,
   ): void {
-    if (!meta.e || !meta.el) return;
-    let eventIdx = 0;
-    for (let i = 0; i < meta.el.length; i++) {
-      const el = resolver(root, meta.el[i]);
+    if (!meta.e) return;
+    for (let i = 0; i < meta.e.length; i++) {
+      const [eventName, handlerName, needsEvent, target] = meta.e[i];
+      const el = resolver(root, target);
       if (!el || el.nodeType !== 1) continue;
-      while (eventIdx < meta.e.length) {
-        const [eventName, handlerName, needsEvent] = meta.e[eventIdx];
-        this.$addEvent(el as Element, eventName, handlerName, needsEvent);
-        eventIdx++;
-        if (eventIdx < meta.e.length && i + 1 < meta.el.length) break;
-      }
+      this.$addEvent(el as Element, eventName, handlerName, needsEvent);
     }
   }
 

@@ -28,12 +28,8 @@ registerCompiledTemplate('test-state-seed-shell', {
     bindText(slot({ parent: nodePath(0), before: 0 }), dynamic('page')),
   ],
   repeats: [
-    repeat('groups', 'group', { blockIndex: 0 }),
-    repeat('navCategories', 'cat', { blockIndex: 1 }),
-  ],
-  repeatSlots: [
-    slot({ parent: nodePath(1), before: 0 }),
-    slot({ parent: nodePath(2), before: 0 }),
+    repeat('groups', 'group', { blockIndex: 0, slot: { parent: nodePath(1), before: 0 } }),
+    repeat('navCategories', 'cat', { blockIndex: 1, slot: { parent: nodePath(2), before: 0 } }),
   ],
   blocks: [
     {
@@ -73,10 +69,9 @@ registerCompiledTemplate('test-state-seed', {
   ],
   attrGroups: [attrTarget(nodePath(1), { startIndex: 0, bindingCount: 3 })],
   events: [
-    bindEvent('click', 'addGroup'),
-    bindEvent('click', 'addCategory'),
+    bindEvent('click', 'addGroup', false, nodePath(2)),
+    bindEvent('click', 'addCategory', false, nodePath(3)),
   ],
-  eventTargets: [nodePath(2), nodePath(3)],
 });
 
 export class TestStateSeedShell extends WebUIElement {

@@ -32,7 +32,7 @@ export type CompiledCondition = [
   fn: (v: (path: string, s?: unknown) => unknown, s?: unknown) => boolean,
   paths: string[],
 ];
-export type CompiledConditionalMeta = [condition: CompiledCondition, blockIndex: number];
+export type CompiledConditionalMeta = [condition: CompiledCondition, blockIndex: number, slot: TemplateSlotPath];
 
 export type CompiledAttrMeta =
   | [name: string, kind: 0, value: string]
@@ -40,17 +40,17 @@ export type CompiledAttrMeta =
   | [name: string, kind: 2, condition: CompiledCondition]
   | [name: string, kind: 3, parts: CompiledAttrPart[]];
 
+export type CompiledRepeatMeta = [collection: string, itemVar: string, blockIndex: number, slot: TemplateSlotPath];
+export type CompiledEventMeta = [name: string, handler: string, needsEvent: number, target: TemplateNodePath];
+
 export interface TemplateBlockMeta {
   h: string;
   tx?: CompiledTextRunMeta[];
   a?: CompiledAttrMeta[];
   ag?: CompiledAttrGroupMeta[];
   c?: CompiledConditionalMeta[];
-  cl?: TemplateSlotPath[];
-  r?: [string, string, number][];
-  rl?: TemplateSlotPath[];
-  e?: [string, string, number][];
-  el?: TemplateNodePath[];
+  r?: CompiledRepeatMeta[];
+  e?: CompiledEventMeta[];
 }
 
 export interface TemplateMeta extends TemplateBlockMeta {

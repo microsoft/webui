@@ -42,10 +42,7 @@ registerCompiledTemplate('test-sidebar-repeat', {
     attrTarget(nodePath(2, 1, 3), { startIndex: 1, bindingCount: 1 }),
     attrTarget(nodePath(2, 1, 5), { startIndex: 2, bindingCount: 1 }),
   ],
-  repeats: [repeat('groups', 'group', { blockIndex: 0 })],
-  repeatSlots: [
-    slot({ parent: nodePath(2, 5), before: 3 }),
-  ],
+  repeats: [repeat('groups', 'group', { blockIndex: 0, slot: { parent: nodePath(2, 5), before: 3 } })],
   blocks: [{
     h: '<a class="nav-item nav-item-group"></a>',
     text: [

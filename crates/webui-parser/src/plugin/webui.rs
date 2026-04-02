@@ -725,7 +725,12 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
 
     if !meta.conditionals.is_empty() {
         out.push_str(",c:[");
-        for (i, (cond, block_index)) in meta.conditionals.iter().enumerate() {
+        for (i, ((cond, block_index), slot)) in meta
+            .conditionals
+            .iter()
+            .zip(meta.condition_slots.iter())
+            .enumerate()
+        {
             if i > 0 {
                 out.push(',');
             }
@@ -733,25 +738,21 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
             emit_js_condition(cond, out);
             out.push(',');
             let _ = write!(out, "{}", block_index);
-            out.push(']');
-        }
-        out.push(']');
-    }
-
-    if !meta.condition_slots.is_empty() {
-        out.push_str(",cl:[");
-        for (i, slot) in meta.condition_slots.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
+            out.push(',');
             emit_js_slot(slot, out);
+            out.push(']');
         }
         out.push(']');
     }
 
     if !meta.repeats.is_empty() {
         out.push_str(",r:[");
-        for (i, (collection, item_var, block_index)) in meta.repeats.iter().enumerate() {
+        for (i, ((collection, item_var, block_index), slot)) in meta
+            .repeats
+            .iter()
+            .zip(meta.repeat_slots.iter())
+            .enumerate()
+        {
             if i > 0 {
                 out.push(',');
             }
@@ -761,25 +762,21 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
             emit_js_string(item_var, out);
             out.push(',');
             let _ = write!(out, "{}", block_index);
-            out.push(']');
-        }
-        out.push(']');
-    }
-
-    if !meta.repeat_slots.is_empty() {
-        out.push_str(",rl:[");
-        for (i, slot) in meta.repeat_slots.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
+            out.push(',');
             emit_js_slot(slot, out);
+            out.push(']');
         }
         out.push(']');
     }
 
     if !meta.events.is_empty() {
         out.push_str(",e:[");
-        for (i, (event, handler, needs_event)) in meta.events.iter().enumerate() {
+        for (i, ((event, handler, needs_event), target)) in meta
+            .events
+            .iter()
+            .zip(meta.event_targets.iter())
+            .enumerate()
+        {
             if i > 0 {
                 out.push(',');
             }
@@ -789,18 +786,9 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
             emit_js_string(handler, out);
             out.push(',');
             out.push(if *needs_event { '1' } else { '0' });
+            out.push(',');
+            emit_js_node_path(target, out);
             out.push(']');
-        }
-        out.push(']');
-    }
-
-    if !meta.event_targets.is_empty() {
-        out.push_str(",el:[");
-        for (i, path) in meta.event_targets.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            emit_js_node_path(path, out);
         }
         out.push(']');
     }
@@ -2190,10 +2178,9 @@ mod tests {
         );
         assert_no_client_markers(&result);
         assert!(
-            result.contains(r#"c:[[[function(v,s){return v("state",s)=="done"},["state"]],0]]"#)
+            result.contains(r#"c:[[[function(v,s){return v("state",s)=="done"},["state"]],0,[[],0]]]"#)
         );
         assert!(result.contains("<span>yes</span>"));
-        assert!(result.contains(",cl:[[[],0]]"));
         assert!(!result.contains("<if"));
     }
 
@@ -2206,7 +2193,6 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains(",c:["), "conditional metadata expected");
         assert!(result.contains("<span>yes</span>"));
-        assert!(result.contains(",cl:[[[],0]]"));
         assert!(!result.contains("<if"));
     }
 
@@ -2228,7 +2214,6 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains("\"items\""));
         assert!(result.contains("\"item\""));
-        assert!(result.contains(",rl:[[[],0]]"));
         assert!(!result.contains("<for"));
     }
 
@@ -2254,7 +2239,6 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains("\"items\""));
         assert!(result.contains("\"item\""));
-        assert!(result.contains(",rl:[[[],0]]"));
         assert!(!result.contains("<for"));
         assert!(!result.contains("{{item.name}}"));
     }
@@ -2266,7 +2250,6 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains("\"click\""));
         assert!(result.contains("\"onClick\""));
-        assert!(result.contains(",el:[[0]]"));
         assert!(!result.contains("@click"));
     }
 
@@ -2277,7 +2260,6 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains("\"click\""));
         assert!(result.contains("\"onClick\""));
-        assert!(result.contains(",el:[[0]]"));
     }
 
     #[test]
@@ -2286,7 +2268,6 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains("\"keydown\""));
         assert!(result.contains("\"onKey\""));
-        assert!(result.contains(",el:[[0]]"));
         assert!(result.contains(",1")); // needs_event = true
     }
 
@@ -2409,7 +2390,6 @@ mod tests {
             r#"<for each="s in sections"><a ?active="{{s.id == sectionId}}">{{s.name}}</a></for>"#,
         );
         assert_no_client_markers(&result);
-        assert!(result.contains(",rl:[[[],0]]"));
         assert!(result.contains(r#"["active",2,[function(v,s){return v("s.id",s)==v("sectionId",s)},["s.id","sectionId"]]]"#));
         assert!(!result.contains("?active"));
     }
@@ -2551,14 +2531,13 @@ mod tests {
         );
 
         assert_no_client_markers(&result);
-        assert!(result.contains(",rl:[[[],0]]"), "repeat locator expected");
         assert!(result.contains(",b:["), "compiled block table expected");
         assert!(
-            result.contains(r#"["items","item",0]"#),
+            result.contains(r#"["items","item",0,[[],0]]"#),
             "repeat block index expected"
         );
         assert!(
-            result.contains(r#"[[function(v,s){return !!v("item.active",s)},["item.active"]],1]"#),
+            result.contains(r#"[[function(v,s){return !!v("item.active",s)},["item.active"]],1,[[],0]]"#),
             "nested conditional block index expected"
         );
         assert!(!result.contains("<if"), "nested if should be compiled");
@@ -2573,17 +2552,13 @@ mod tests {
         );
 
         assert_no_client_markers(&result);
-        assert!(
-            result.contains(",cl:[[[],0]]"),
-            "conditional locator expected"
-        );
         assert!(result.contains(",b:["), "compiled block table expected");
         assert!(
-            result.contains(r#"[[function(v,s){return !!v("showList",s)},["showList"]],0]"#),
+            result.contains(r#"[[function(v,s){return !!v("showList",s)},["showList"]],0,[[],0]]"#),
             "conditional block index expected"
         );
         assert!(
-            result.contains(r#"["items","item",1]"#),
+            result.contains(r#"["items","item",1,[[],0]]"#),
             "nested repeat block index expected"
         );
         assert!(!result.contains("<for"), "nested for should be compiled");
@@ -2598,17 +2573,13 @@ mod tests {
         );
 
         assert_no_client_markers(&result);
-        assert!(
-            result.contains(",rl:[[[],0]]"),
-            "outer repeat locator expected"
-        );
         assert!(result.contains(",b:["), "compiled block table expected");
         assert!(
-            result.contains(r#"["groups","group",0]"#),
+            result.contains(r#"["groups","group",0,[[],0]]"#),
             "outer repeat block index expected"
         );
         assert!(
-            result.contains(r#"["group.items","item",1]"#),
+            result.contains(r#"["group.items","item",1,[[0],0]]"#),
             "inner repeat block index expected"
         );
         assert!(!result.contains("<for"), "nested for should be compiled");
@@ -2630,10 +2601,6 @@ mod tests {
         assert!(result.contains("\"onKey\""), "onKey handler expected");
         assert!(result.contains("\"focus\""), "focus event expected");
         assert!(result.contains("\"onFocus\""), "onFocus handler expected");
-        assert!(
-            result.contains(",el:[[0],[0]]"),
-            "shared event target expected"
-        );
     }
 
     #[test]
@@ -2693,7 +2660,6 @@ mod tests {
             r#"<if condition="a"><span>A</span></if><if condition="b"><span>B</span></if>"#,
         );
         assert_no_client_markers(&result);
-        assert!(result.contains(",cl:[[[],0],[[],0,1]]"));
     }
 
     #[test]
@@ -2723,8 +2689,6 @@ mod tests {
         );
 
         assert_no_client_markers(&result);
-        assert!(result.contains(",cl:[[[],1]]"));
-        assert!(result.contains(",rl:[[[1],1]]"));
     }
 
     #[test]
@@ -2740,7 +2704,6 @@ mod tests {
         // event compiled
         assert!(result.contains("\"click\""));
         assert!(result.contains("\"onClick\""));
-        assert!(result.contains(",el:[[0]]"));
         // text binding compiled
         assert!(result.contains(r#",tx:[[[[0],0],[["label"]]]]"#));
         assert!(result.contains("\"label\""));
@@ -2750,7 +2713,10 @@ mod tests {
     fn test_event_without_e_arg() {
         let result =
             generate_compiled_template("my-comp", r#"<button @click="{onClick()}">Go</button>"#);
-        assert!(result.contains(",0]"), "needs_event should be 0");
+        assert!(
+            result.contains(r#"["click","onClick",0,[0]]"#),
+            "needs_event should be 0"
+        );
     }
 
     #[test]

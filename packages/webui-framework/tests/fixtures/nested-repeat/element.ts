@@ -18,18 +18,14 @@ import {
 
 registerCompiledTemplate('test-nested-repeat', {
   h: '<div class="controls"><button class="load">Load</button></div><div class="groups"></div>',
-  repeats: [repeat('groups', 'group', { blockIndex: 0 })],
-  repeatSlots: [slot({ parent: nodePath(1), before: 0 })],
+  repeats: [repeat('groups', 'group', { blockIndex: 0, slot: { parent: nodePath(1), before: 0 } })],
   blocks: [
     {
       h: '<section class="group"><h2></h2><div class="values"></div></section>',
       text: [
         bindText(slot({ parent: nodePath(0, 0), before: 0 }), dynamic('group.name')),
       ],
-      repeats: [repeat('group.values', 'item', { blockIndex: 1 })],
-      repeatSlots: [
-        slot({ parent: nodePath(0, 1), before: 0 }),
-      ],
+      repeats: [repeat('group.values', 'item', { blockIndex: 1, slot: { parent: nodePath(0, 1), before: 0 } })],
     },
     {
       h: '<button class="value"></button>',
@@ -44,8 +40,7 @@ registerCompiledTemplate('test-nested-repeat', {
       attrGroups: [attrTarget(nodePath(0), { startIndex: 0, bindingCount: 3 })],
     },
   ],
-  events: [bindEvent('click', 'loadGroups')],
-  eventTargets: [nodePath(0, 0)],
+  events: [bindEvent('click', 'loadGroups', false, nodePath(0, 0))],
 });
 
 interface NestedRepeatValue {

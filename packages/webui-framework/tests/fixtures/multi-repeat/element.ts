@@ -23,23 +23,15 @@ import {
 registerCompiledTemplate('test-multi-repeat', {
   h: '<ul class="list-a"></ul><ul class="list-b"></ul>',
   repeats: [
-    repeat('items', 'item', { blockIndex: 0 }),
-    repeat('items', 'item', { blockIndex: 0 }),
-  ],
-  repeatSlots: [
-    slot({ parent: nodePath(0), before: 0 }),
-    slot({ parent: nodePath(1), before: 0 }),
+    repeat('items', 'item', { blockIndex: 0, slot: { parent: nodePath(0), before: 0 } }),
+    repeat('items', 'item', { blockIndex: 0, slot: { parent: nodePath(1), before: 0 } }),
   ],
   blocks: [
     {
       h: '<li></li>',
       conditionals: [
-        when(eq('item.active', stringLiteral('true')), { blockIndex: 1 }),
-        when(neq('item.active', stringLiteral('true')), { blockIndex: 2 }),
-      ],
-      conditionSlots: [
-        slot({ parent: nodePath(0), before: 0, order: 0 }),
-        slot({ parent: nodePath(0), before: 0, order: 1 }),
+        when(eq('item.active', stringLiteral('true')), { blockIndex: 1, slot: { parent: nodePath(0), before: 0, order: 0 } }),
+        when(neq('item.active', stringLiteral('true')), { blockIndex: 2, slot: { parent: nodePath(0), before: 0, order: 1 } }),
       ],
     },
     {
