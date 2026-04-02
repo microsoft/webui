@@ -2177,9 +2177,8 @@ mod tests {
             r#"<if condition="state == 'done'"><span>yes</span></if>"#,
         );
         assert_no_client_markers(&result);
-        assert!(
-            result.contains(r#"c:[[[function(v,s){return v("state",s)=="done"},["state"]],0,[[],0]]]"#)
-        );
+        assert!(result
+            .contains(r#"c:[[[function(v,s){return v("state",s)=="done"},["state"]],0,[[],0]]]"#));
         assert!(result.contains("<span>yes</span>"));
         assert!(!result.contains("<if"));
     }
@@ -2537,7 +2536,9 @@ mod tests {
             "repeat block index expected"
         );
         assert!(
-            result.contains(r#"[[function(v,s){return !!v("item.active",s)},["item.active"]],1,[[],0]]"#),
+            result.contains(
+                r#"[[function(v,s){return !!v("item.active",s)},["item.active"]],1,[[],0]]"#
+            ),
             "nested conditional block index expected"
         );
         assert!(!result.contains("<if"), "nested if should be compiled");
