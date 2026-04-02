@@ -49,9 +49,11 @@ pub struct ServeArgs {
     #[arg(long)]
     pub api_port: Option<u16>,
 
-    /// Path to a multi-theme token JSON file (contains "themes" object)
+    /// Design token theme: a path to a JSON file or an npm package name
+    /// (e.g., `@microsoft/webui-examples-theme`). Resolved from node_modules
+    /// when the value doesn't point to a file on disk.
     #[arg(long)]
-    pub tokens: Option<PathBuf>,
+    pub theme: Option<String>,
 
     /// Path to a light-theme token JSON file (flat key→value)
     #[arg(long)]
@@ -310,14 +312,11 @@ fn run(args: &ServeArgs) -> Result<()> {
     }
     if render_config.token_file.is_some() {
         output::field(
-            "Tokens",
-            &args.tokens.as_ref().map_or_else(
-                || "(light/dark files)".to_string(),
-                |p| p.display().to_string(),
-            ),
+            "Theme",
+            &args.theme.as_deref().unwrap_or("(light/dark files)"),
         );
     } else {
-        output::field("Tokens", &"(none)");
+        output::field("Theme", &"(none)");
     }
     output::field("Entry", &args.app_args.entry);
     output::field("Port", &args.port);
@@ -461,12 +460,11 @@ fn map_bind_error(port: u16, bind_addr: &str, error: std::io::Error) -> anyhow::
 
 /// Load token configuration from CLI args. Precomputed once at startup.
 fn load_token_config(args: &ServeArgs) -> Result<Option<webui_tokens::TokenFile>> {
-    if let Some(ref path) = args.tokens {
-        let canonical = path
-            .canonicalize()
-            .with_context(|| format!("Token file not found: {}", path.display()))?;
-        let file = webui_tokens::load_token_file(&canonical)
-            .with_context(|| format!("Failed to load token file: {}", canonical.display()))?;
+    if let Some(ref theme) = args.theme {
+        let resolved = resolve_theme_path(theme)
+            .with_context(|| format!("Failed to resolve theme: {theme}"))?;
+        let file = webui_tokens::load_token_file(&resolved)
+            .with_context(|| format!("Failed to load theme file: {}", resolved.display()))?;
         return Ok(Some(file));
     }
 
@@ -501,6 +499,68 @@ fn load_token_config(args: &ServeArgs) -> Result<Option<webui_tokens::TokenFile>
     let file = webui_tokens::load_separate_theme_files(&files)
         .with_context(|| "Failed to load separate token files")?;
     Ok(Some(file))
+}
+
+/// Resolve a `--theme` value to a file path.
+///
+/// If the value is a path to an existing file, use it directly.
+/// Otherwise, try to resolve it as an npm package from `node_modules`:
+/// - `@scope/pkg` → `node_modules/@scope/pkg/tokens.json`
+/// - `@scope/pkg/custom.json` → `node_modules/@scope/pkg/custom.json`
+///
+/// Walks up parent directories to find `node_modules` (standard Node resolution).
+fn resolve_theme_path(theme: &str) -> Result<PathBuf> {
+    // Direct file path?
+    let as_path = PathBuf::from(theme);
+    if as_path.exists() {
+        return as_path
+            .canonicalize()
+            .with_context(|| format!("Failed to canonicalize theme path: {theme}"));
+    }
+
+    // Package name resolution: split into (package, subpath)
+    let (pkg, subpath) = if theme.starts_with('@') {
+        let parts: Vec<&str> = theme.splitn(3, '/').collect();
+        if parts.len() >= 3 {
+            let pkg = format!("{}/{}", parts[0], parts[1]);
+            (pkg, parts[2].to_string())
+        } else if parts.len() == 2 {
+            (theme.to_string(), "tokens.json".to_string())
+        } else {
+            anyhow::bail!("Invalid scoped package name: {theme}");
+        }
+    } else if let Some((pkg, sub)) = theme.split_once('/') {
+        (pkg.to_string(), sub.to_string())
+    } else {
+        (theme.to_string(), "tokens.json".to_string())
+    };
+
+    // Walk up directories looking for node_modules (standard Node resolution)
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mut dir = cwd.as_path();
+    loop {
+        let candidate = dir.join("node_modules").join(&pkg).join(&subpath);
+        if candidate.exists() {
+            return candidate.canonicalize().with_context(|| {
+                format!(
+                    "Failed to canonicalize resolved theme: {}",
+                    candidate.display()
+                )
+            });
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => break,
+        }
+    }
+
+    anyhow::bail!(
+        "Theme '{theme}' not found. Looked for:\n  \
+         1. File: {theme}\n  \
+         2. Package: node_modules/{pkg}/{subpath} (walked up from {cwd})\n\n  \
+         Make sure the package is installed (pnpm install) or the path is correct.",
+        cwd = cwd.display()
+    )
 }
 
 #[derive(Clone)]

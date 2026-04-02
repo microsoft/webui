@@ -6,10 +6,11 @@
   "scripts": {
     "build": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --metafile=dist/meta.json",
     "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
-    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --tokens ./tokens.json --plugin=fast --servedir ./dist --port 3001 --watch",
+    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --theme=@microsoft/webui-examples-theme --plugin=fast --servedir ./dist --port 3001 --watch",
     "start": "cargo xtask dev todo-fast"
   },
   "devDependencies": {
+    "@microsoft/webui-examples-theme": "workspace:*",
     "@microsoft/fast-element": "catalog:",
     "@microsoft/fast-html": "catalog:",
     "esbuild": "catalog:",
