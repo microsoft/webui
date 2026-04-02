@@ -108,6 +108,8 @@ interface PartialResponse {
   templates: string[];
   path: string;
   chain?: RouteChainEntry[];
+  /** CSS stylesheet URLs to inject into `<head>` for this route's components. */
+  css?: string[];
 }
 
 export class WebUIRouter {
@@ -552,6 +554,20 @@ export class WebUIRouter {
           container.appendChild(temp.firstChild);
         }
         document.body.appendChild(container);
+      }
+    }
+
+    // Inject CSS stylesheets provided by the server for this route's
+    // components.  The server decides which URLs to include based on
+    // the active CSS strategy (link / style / module).
+    if (data.css) {
+      for (const href of data.css) {
+        if (!document.querySelector(`link[href="${href}"]`)) {
+          const link = document.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = href;
+          document.head.appendChild(link);
+        }
       }
     }
 

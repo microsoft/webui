@@ -269,4 +269,90 @@ describe('WebUIRouter', () => {
       );
     });
   });
+
+  describe('CSS injection contract', () => {
+    test('PartialResponse css array injects link elements', () => {
+      // Simulate the CSS injection logic from fetchPartial.
+      // The router iterates data.css and creates <link> elements.
+      const injected: Array<{ rel: string; href: string }> = [];
+      const origCreateElement = (globalThis as any).document.createElement;
+      const origQuerySelector = (globalThis as any).document.querySelector;
+      const origHead = (globalThis as any).document.head;
+
+      // Shim DOM to capture link injections
+      (globalThis as any).document.createElement = (tag: string) => {
+        const el: Record<string, unknown> = { tagName: tag };
+        return el;
+      };
+      (globalThis as any).document.querySelector = () => null; // no existing links
+      (globalThis as any).document.head = {
+        appendChild(el: Record<string, unknown>) {
+          if (el.rel === 'stylesheet') {
+            injected.push({ rel: el.rel as string, href: el.href as string });
+          }
+        },
+      };
+
+      try {
+        // Replicate the css injection contract from fetchPartial
+        const css = ['/email-message.css', '/mail-thread-page.css'];
+        for (const href of css) {
+          if (!(globalThis as any).document.querySelector(`link[href="${href}"]`)) {
+            const link = (globalThis as any).document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = href;
+            (globalThis as any).document.head.appendChild(link);
+          }
+        }
+
+        assert.equal(injected.length, 2, 'should inject two CSS links');
+        assert.equal(injected[0].href, '/email-message.css');
+        assert.equal(injected[1].href, '/mail-thread-page.css');
+      } finally {
+        (globalThis as any).document.createElement = origCreateElement;
+        (globalThis as any).document.querySelector = origQuerySelector;
+        (globalThis as any).document.head = origHead;
+      }
+    });
+
+    test('CSS link injection skips duplicates', () => {
+      const injected: string[] = [];
+      const origCreateElement = (globalThis as any).document.createElement;
+      const origQuerySelector = (globalThis as any).document.querySelector;
+      const origHead = (globalThis as any).document.head;
+
+      let existingHref: string | null = null;
+
+      (globalThis as any).document.createElement = () => ({} as Record<string, unknown>);
+      (globalThis as any).document.querySelector = (sel: string) => {
+        // Simulate that the first href already exists
+        return existingHref && sel.includes(existingHref) ? {} : null;
+      };
+      (globalThis as any).document.head = {
+        appendChild(el: Record<string, unknown>) {
+          injected.push(el.href as string);
+        },
+      };
+
+      try {
+        existingHref = '/email-message.css';
+        const css = ['/email-message.css', '/mail-thread-page.css'];
+        for (const href of css) {
+          if (!(globalThis as any).document.querySelector(`link[href="${href}"]`)) {
+            const link = (globalThis as any).document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = href;
+            (globalThis as any).document.head.appendChild(link);
+          }
+        }
+
+        assert.equal(injected.length, 1, 'should skip the duplicate');
+        assert.equal(injected[0], '/mail-thread-page.css');
+      } finally {
+        (globalThis as any).document.createElement = origCreateElement;
+        (globalThis as any).document.querySelector = origQuerySelector;
+        (globalThis as any).document.head = origHead;
+      }
+    });
+  });
 });

@@ -19,6 +19,7 @@ interface BrowserGlobals {
     body: { children: never[]; appendChild(): void };
     createDocumentFragment(): { appendChild(): void };
     startViewTransition: undefined;
+    head: { appendChild(): void };
   };
   window: typeof globalThis;
   navigation: {
@@ -52,6 +53,7 @@ if (typeof document === 'undefined') {
     body: { children: [], appendChild() {} },
     createDocumentFragment: () => ({ appendChild() {} }),
     startViewTransition: undefined,
+    head: { appendChild() {} },
   };
 }
 if (typeof window === 'undefined') {
