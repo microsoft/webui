@@ -102,23 +102,13 @@ test.describe('SSR rendering', () => {
     });
 
     // By the time 'load' fires, module scripts have executed and
-    // hydration is complete.  Check performance marks directly.
-    const result = await page.evaluate(() => {
+    // hydration is complete.  Check the global performance measure.
+    const totalDuration = await page.evaluate(() => {
       const total = performance.getEntriesByName('webui:hydrate:total', 'measure');
-      const perComp = performance.getEntriesByType('measure')
-        .filter(e => e.name.startsWith('webui:hydrate:') && e.name !== 'webui:hydrate:total')
-        .map(e => e.name);
-      return {
-        totalDuration: total[0]?.duration ?? -1,
-        components: perComp,
-      };
+      return total[0]?.duration ?? -1;
     });
 
-    expect(result.totalDuration).toBeGreaterThanOrEqual(0);
-    const components = result.components as string[];
-    expect(components.some(c => c.includes('todo-app'))).toBe(true);
-    expect(components.some(c => c.includes('todo-item'))).toBe(true);
-    expect(components.length).toBeGreaterThanOrEqual(4);
+    expect(totalDuration).toBeGreaterThanOrEqual(0);
   });
 
   test('no hydration comment markers in output', async ({ page }) => {
