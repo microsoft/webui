@@ -21,7 +21,7 @@
 //! }
 //! ```
 //!
-//! Or flat single-theme JSON (used with `--tokens-light` / `--tokens-dark`):
+//! Or flat single-theme JSON (treated as a single `"default"` theme):
 //!
 //! ```json
 //! { "surface-page": "#ffffff", "text-primary": "#111827" }
@@ -111,25 +111,6 @@ pub fn parse_token_content(content: &str, source_path: &Path) -> Result<TokenFil
     }
     let mut themes = HashMap::with_capacity(1);
     themes.insert("default".into(), tokens);
-    Ok(TokenFile { themes })
-}
-
-/// Load separate per-theme token files into a single [`TokenFile`].
-///
-/// Each entry is `(theme_name, file_path)`. Files must be flat JSON objects
-/// mapping token names to CSS values.
-///
-/// # Errors
-///
-/// Returns [`TokenError::Io`] or [`TokenError::InvalidJson`] on failure.
-pub fn load_separate_theme_files(files: &[(String, &Path)]) -> Result<TokenFile> {
-    let mut themes = HashMap::with_capacity(files.len());
-    for (theme_name, path) in files {
-        let content = std::fs::read_to_string(path).map_err(|e| TokenError::io(path, e))?;
-        let value: Value = serde_json::from_str(&content).map_err(|e| TokenError::json(path, e))?;
-        let tokens = parse_flat_token_map(&value, theme_name)?;
-        themes.insert(theme_name.clone(), tokens);
-    }
     Ok(TokenFile { themes })
 }
 
@@ -598,24 +579,6 @@ mod tests {
 
         let result = load_token_file(file.path());
         assert!(matches!(result, Err(TokenError::InvalidJson { .. })));
-    }
-
-    #[test]
-    fn load_separate_theme_files() {
-        let light_json = serde_json::json!({ "surface-page": "#ffffff" });
-        let dark_json = serde_json::json!({ "surface-page": "#171717" });
-        let light = write_json_file(&light_json);
-        let dark = write_json_file(&dark_json);
-
-        let tokens = super::load_separate_theme_files(&[
-            ("light".into(), light.path()),
-            ("dark".into(), dark.path()),
-        ])
-        .unwrap();
-
-        assert_eq!(tokens.themes.len(), 2);
-        assert_eq!(tokens.themes["light"]["surface-page"], "#ffffff");
-        assert_eq!(tokens.themes["dark"]["surface-page"], "#171717");
     }
 
     // ── Resolution tests ─────────────────────────────────────────────

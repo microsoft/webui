@@ -54,14 +54,6 @@ pub struct ServeArgs {
     /// when the value doesn't point to a file on disk.
     #[arg(long)]
     pub theme: Option<String>,
-
-    /// Path to a light-theme token JSON file (flat key→value)
-    #[arg(long)]
-    pub tokens_light: Option<PathBuf>,
-
-    /// Path to a dark-theme token JSON file (flat key→value)
-    #[arg(long)]
-    pub tokens_dark: Option<PathBuf>,
 }
 
 /// Resolved paths for `webui serve`.
@@ -459,45 +451,16 @@ fn map_bind_error(port: u16, bind_addr: &str, error: std::io::Error) -> anyhow::
 }
 
 /// Load token configuration from CLI args. Precomputed once at startup.
+/// Load token configuration from CLI args.
 fn load_token_config(args: &ServeArgs) -> Result<Option<webui_tokens::TokenFile>> {
-    if let Some(ref theme) = args.theme {
-        let resolved = resolve_theme_path(theme)
-            .with_context(|| format!("Failed to resolve theme: {theme}"))?;
-        let file = webui_tokens::load_token_file(&resolved)
-            .with_context(|| format!("Failed to load theme file: {}", resolved.display()))?;
-        return Ok(Some(file));
-    }
-
-    let has_light = args.tokens_light.is_some();
-    let has_dark = args.tokens_dark.is_some();
-
-    if !has_light && !has_dark {
+    let Some(ref theme) = args.theme else {
         return Ok(None);
-    }
+    };
 
-    let mut canonical_paths: Vec<(String, PathBuf)> = Vec::with_capacity(2);
-
-    if let Some(ref path) = args.tokens_light {
-        let canonical = path
-            .canonicalize()
-            .with_context(|| format!("Light token file not found: {}", path.display()))?;
-        canonical_paths.push(("light".into(), canonical));
-    }
-
-    if let Some(ref path) = args.tokens_dark {
-        let canonical = path
-            .canonicalize()
-            .with_context(|| format!("Dark token file not found: {}", path.display()))?;
-        canonical_paths.push(("dark".into(), canonical));
-    }
-
-    let files: Vec<(String, &Path)> = canonical_paths
-        .iter()
-        .map(|(name, path)| (name.clone(), path.as_path()))
-        .collect();
-
-    let file = webui_tokens::load_separate_theme_files(&files)
-        .with_context(|| "Failed to load separate token files")?;
+    let resolved =
+        resolve_theme_path(theme).with_context(|| format!("Failed to resolve theme: {theme}"))?;
+    let file = webui_tokens::load_token_file(&resolved)
+        .with_context(|| format!("Failed to load theme file: {}", resolved.display()))?;
     Ok(Some(file))
 }
 
