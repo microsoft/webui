@@ -58,9 +58,9 @@ test.describe('SSR rendering', () => {
         h: template?.h ?? '',
         textPaths,
         repeat: template?.r?.[0] ?? null,
-        hasRepeatSlots: Array.isArray(template?.rl),
+        hasRepeatSlot: Array.isArray(template?.r?.[0]) && template.r[0].length >= 4,
         eventCount: template?.e?.length ?? 0,
-        hasEventTargets: Array.isArray(template?.el),
+        hasEvents: Array.isArray(template?.e),
       };
     });
 
@@ -77,10 +77,10 @@ test.describe('SSR rendering', () => {
     expect(meta.repeat).not.toBeNull();
     expect(meta.repeat[0]).toBe('items');
     expect(meta.repeat[1]).toBe('item');
-    expect(meta.hasRepeatSlots).toBe(true);
+    expect(meta.hasRepeatSlot).toBe(true);
 
     expect(meta.eventCount).toBeGreaterThan(0);
-    expect(meta.hasEventTargets).toBe(true);
+    expect(meta.hasEvents).toBe(true);
   });
 
   test('no console errors on page load', async ({ page }) => {
