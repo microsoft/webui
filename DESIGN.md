@@ -853,6 +853,51 @@ HTML comments containing handlebars expressions are parsed as signal fragments:
 
 This mechanism is general-purpose (not limited to `tokens`) and enables comment-based placeholders for runtime value injection in HTML files. The existing handlebars parser is reused for expression parsing within comment delimiters.
 
+### Design Token Resolution (`webui-tokens`)
+
+The `webui-tokens` crate provides serve-time resolution of design token values. While the parser extracts token **names** into the protocol at build time, the token resolver loads token **values** from a theme file and generates CSS declarations for injection into state.
+
+#### Theme File Format
+
+A multi-theme JSON file maps theme names to flat token-name → CSS-value objects:
+
+```json
+{
+  "themes": {
+    "light": { "surface-page": "#ffffff", "text-primary": "#111827" },
+    "dark":  { "surface-page": "#171717", "text-primary": "#fafafa" }
+  }
+}
+```
+
+Token names omit the `--` prefix (matching the `protocol.tokens` format). Flat single-theme files (without the `"themes"` wrapper) are also supported.
+
+#### Resolution Pipeline
+
+```
+load_token_file(path) → TokenFile
+    ↓
+resolve_tokens(protocol.tokens, token_file) → ResolvedTokens { css, warnings }
+    ↓
+inject_token_css(state, css) → state["tokens"]["light"] = "..."
+```
+
+1. **Filter**: Only tokens in `protocol.tokens` are kept.
+2. **Dependency closure**: Token values referencing other tokens via `var(--x)` trigger transitive inclusion. Uses an iterative BFS expansion followed by DFS cycle detection.
+3. **CSS generation**: Sorted `--name: value;` declarations. Output is deterministic.
+4. **State injection**: Per-theme CSS strings are set on `state.tokens.<theme>`, where `/*{{{tokens.<theme>}}}*/` signals resolve them during rendering.
+
+#### Package Resolution (`resolve_theme_path`)
+
+The CLI `--theme` flag accepts a file path or an npm package name:
+
+```bash
+webui serve ./src --theme=@microsoft/webui-examples-theme
+webui serve ./src --theme=./my-theme.json
+```
+
+Package names are resolved by walking up from `search_root` looking for `node_modules/<pkg>/tokens.json`. Scoped packages (`@scope/name`) and explicit subpaths (`@scope/name/custom.json`) are supported.
+
 ### Error Handling
 ```rust
 #[derive(Debug, Error)]

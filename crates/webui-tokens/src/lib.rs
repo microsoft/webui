@@ -33,7 +33,7 @@ pub use error::{Result, TokenError, TokenWarning};
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Loaded token themes — maps theme name → (token name → CSS value).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +155,76 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::Array(_) => "array",
         Value::Object(_) => "object",
     }
+}
+
+// ── Theme resolution ─────────────────────────────────────────────────
+
+/// Resolve a `--theme` value to a file path on disk.
+///
+/// Resolution order:
+/// 1. If `theme` is a path to an existing file, use it directly.
+/// 2. Otherwise, treat it as an npm package name and walk up from
+///    `search_root` looking for `node_modules/<pkg>/tokens.json`:
+///    - `@scope/pkg` → `node_modules/@scope/pkg/tokens.json`
+///    - `@scope/pkg/custom.json` → `node_modules/@scope/pkg/custom.json`
+///    - `pkg` → `node_modules/pkg/tokens.json`
+///
+/// # Errors
+///
+/// Returns [`TokenError::Schema`] if the theme cannot be resolved.
+pub fn resolve_theme_path(theme: &str, search_root: &Path) -> Result<PathBuf> {
+    // Direct file path?
+    let as_path = PathBuf::from(theme);
+    if as_path.exists() {
+        return as_path
+            .canonicalize()
+            .map_err(|e| TokenError::Schema(format!("Failed to canonicalize {theme}: {e}")));
+    }
+
+    // Package name resolution: split into (package, subpath)
+    let (pkg, subpath) = if theme.starts_with('@') {
+        let parts: Vec<&str> = theme.splitn(3, '/').collect();
+        if parts.len() >= 3 {
+            let pkg = format!("{}/{}", parts[0], parts[1]);
+            (pkg, parts[2].to_string())
+        } else if parts.len() == 2 {
+            (theme.to_string(), "tokens.json".to_string())
+        } else {
+            return Err(TokenError::Schema(format!(
+                "Invalid scoped package name: {theme}"
+            )));
+        }
+    } else if let Some((pkg, sub)) = theme.split_once('/') {
+        (pkg.to_string(), sub.to_string())
+    } else {
+        (theme.to_string(), "tokens.json".to_string())
+    };
+
+    // Walk up directories looking for node_modules (standard Node resolution)
+    let mut dir = search_root;
+    loop {
+        let candidate = dir.join("node_modules").join(&pkg).join(&subpath);
+        if candidate.exists() {
+            return candidate.canonicalize().map_err(|e| {
+                TokenError::Schema(format!(
+                    "Failed to canonicalize {}: {e}",
+                    candidate.display()
+                ))
+            });
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => break,
+        }
+    }
+
+    Err(TokenError::Schema(format!(
+        "Theme '{theme}' not found. Looked for:\n  \
+         1. File: {theme}\n  \
+         2. Package: node_modules/{pkg}/{subpath} (walked up from {})\n\n  \
+         Make sure the package is installed (pnpm install) or the path is correct.",
+        search_root.display()
+    )))
 }
 
 // ── Resolution ───────────────────────────────────────────────────────
@@ -407,16 +477,43 @@ fn generate_css_declarations(closure: &[String], theme_tokens: &HashMap<String, 
 ///
 /// Sets `state["tokens"]["<theme>"] = "<css string>"` for each theme.
 /// Creates the `"tokens"` object if it doesn't exist.
+///
+/// Silently returns without modification if `state` is not a JSON object.
 pub fn inject_into_state(state: &mut Value, resolved: &ResolvedTokens) {
-    let tokens_obj = state
-        .as_object_mut()
-        .expect("state must be a JSON object")
+    let Some(state_map) = state.as_object_mut() else {
+        return;
+    };
+
+    let tokens_obj = state_map
         .entry("tokens")
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
 
     if let Some(map) = tokens_obj.as_object_mut() {
         for (theme_name, css_string) in &resolved.css {
             map.insert(theme_name.clone(), Value::String(css_string.clone()));
+        }
+    }
+}
+
+/// Inject pre-resolved per-theme CSS strings into a JSON state value.
+///
+/// This is the render-time equivalent of [`inject_into_state`] that works
+/// with the pre-resolved `HashMap<String, String>` stored in server context
+/// rather than re-resolving from a [`TokenFile`] each time.
+///
+/// Silently returns without modification if `state` is not a JSON object.
+pub fn inject_token_css(state: &mut Value, token_css: &HashMap<String, String>) {
+    let Some(state_map) = state.as_object_mut() else {
+        return;
+    };
+
+    let tokens_obj = state_map
+        .entry("tokens")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+
+    if let Some(map) = tokens_obj.as_object_mut() {
+        for (theme, css) in token_css {
+            map.insert(theme.clone(), Value::String(css.clone()));
         }
     }
 }
