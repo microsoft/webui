@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Repeat Append SSR Fixture</title>
+</head>
+<body>
+  <test-repeat-parent>
+    <button class="add">Add</button>
+    <button class="prepend">Prepend</button>
+    <button class="remove">Remove</button>
+    <div class="list">
+      <!--wr--><!--wi--><test-repeat-child label="Item 1"><span class="label">Item 1</span></test-repeat-child>
+      <!--wi--><test-repeat-child label="Item 2"><span class="label">Item 2</span></test-repeat-child>
+      <!--wi--><test-repeat-child label="Item 3"><span class="label">Item 3</span></test-repeat-child>
+      <!--wi--><test-repeat-child label="Item 4"><span class="label">Item 4</span></test-repeat-child>
+      <!--wi--><test-repeat-child label="Item 5"><span class="label">Item 5</span></test-repeat-child><!--/wr-->
+    </div>
+  </test-repeat-parent>
+  <script>
+    window.__webui_state = {
+      nextId: 6,
+      items: [
+        { id: "1", title: "Item 1" },
+        { id: "2", title: "Item 2" },
+        { id: "3", title: "Item 3" },
+        { id: "4", title: "Item 4" },
+        { id: "5", title: "Item 5" }
+      ]
+    };
+  </script>
+  <script src="/dist/repeat-append/element.js"></script>
+</body>
+</html>

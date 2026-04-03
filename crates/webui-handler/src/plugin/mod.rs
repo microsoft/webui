@@ -17,7 +17,9 @@ use webui_protocol::WebUIProtocol;
 ///
 /// Plugins receive callbacks at key points in the rendering lifecycle:
 /// - **Scope management**: `push_scope` / `pop_scope` for component and loop boundaries
-/// - **Binding lifecycle**: `on_binding_start` / `on_binding_end` around signals, for-loops, if-conditions
+/// - **Binding lifecycle**: `on_binding_start` / `on_binding_end` around signals
+/// - **For-loop lifecycle**: `on_for_start` / `on_for_end` around for-loop blocks
+/// - **If-condition lifecycle**: `on_if_start` / `on_if_end` around if-condition blocks
 /// - **Repeat items**: `on_repeat_item_start` / `on_repeat_item_end` per for-loop item
 /// - **Element data**: `on_element_data` for parser-produced hydration metadata
 /// - **Route state**: `write_route_component_state` for framework-specific opening-tag attributes
@@ -32,11 +34,35 @@ pub trait HandlerPlugin {
     /// Exit the current scope, restoring the parent scope state.
     fn pop_scope(&mut self);
 
-    /// Called before rendering a binding (signal, for-loop, or if-condition).
+    /// Called before rendering a signal binding.
     fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
 
-    /// Called after rendering a binding.
+    /// Called after rendering a signal binding.
     fn on_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+
+    /// Called before rendering a for-loop block.
+    /// Defaults to [`on_binding_start`](HandlerPlugin::on_binding_start).
+    fn on_for_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+        self.on_binding_start(name, writer)
+    }
+
+    /// Called after rendering a for-loop block.
+    /// Defaults to [`on_binding_end`](HandlerPlugin::on_binding_end).
+    fn on_for_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+        self.on_binding_end(name, writer)
+    }
+
+    /// Called before rendering an if-condition block.
+    /// Defaults to [`on_binding_start`](HandlerPlugin::on_binding_start).
+    fn on_if_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+        self.on_binding_start(name, writer)
+    }
+
+    /// Called after rendering an if-condition block.
+    /// Defaults to [`on_binding_end`](HandlerPlugin::on_binding_end).
+    fn on_if_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+        self.on_binding_end(name, writer)
+    }
 
     /// Called before rendering a repeat item in a for loop.
     fn on_repeat_item_start(&mut self, index: usize, writer: &mut dyn ResponseWriter)

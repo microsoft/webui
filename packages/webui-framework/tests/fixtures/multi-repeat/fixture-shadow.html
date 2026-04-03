@@ -6,20 +6,24 @@
 </head>
 <body>
   <test-multi-repeat><template shadowrootmode="open"><ul class="list-a">
-        <li>
-          <p class="current">Alpha</p>
+        <!--wr--><!--wi--><li>
+          <!--wc--><p class="current">Alpha</p><!--/wc-->
+          <!--wc--><!--/wc-->
         </li>
-        <li>
-          <a class="link" href="/beta">Beta</a>
-        </li>
+        <!--wi--><li>
+          <!--wc--><!--/wc-->
+          <!--wc--><a class="link" href="/beta">Beta</a><!--/wc-->
+        </li><!--/wr-->
       </ul>
       <ul class="list-b">
-        <li>
-          <p class="current">Alpha</p>
+        <!--wr--><!--wi--><li>
+          <!--wc--><p class="current">Alpha</p><!--/wc-->
+          <!--wc--><!--/wc-->
         </li>
-        <li>
-          <a class="link" href="/beta">Beta</a>
-        </li>
+        <!--wi--><li>
+          <!--wc--><!--/wc-->
+          <!--wc--><a class="link" href="/beta">Beta</a><!--/wc-->
+        </li><!--/wr-->
       </ul>
 </template></test-multi-repeat>
   <script>window.__webui_shadow=true;</script><script src="/dist/multi-repeat/element.js"></script>

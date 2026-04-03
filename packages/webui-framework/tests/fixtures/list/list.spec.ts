@@ -24,6 +24,27 @@ test.describe(`list fixture [${mode} DOM]`, () => {
     await expect(page.locator('test-list-item .done')).toHaveText(['Done']);
   });
 
+  test('boolean attr on repeat item root reflects item state', async ({ page }) => {
+    // SSR: Beta (state=done) should have data-done, Alpha (pending) should not
+    await expect(page.locator('test-list-item[data-done]')).toHaveCount(1);
+    await expect(page.locator('test-list-item[data-done]')).toHaveAttribute('item-id', '2');
+
+    // Toggle Alpha to done
+    await page.locator('test-list-item[item-id="1"] .toggle').click();
+    await expect(page.locator('test-list-item[data-done]')).toHaveCount(2);
+
+    // Toggle Beta back to pending
+    await page.locator('test-list-item[item-id="2"] .toggle').click();
+    await expect(page.locator('test-list-item[data-done]')).toHaveCount(1);
+    await expect(page.locator('test-list-item[data-done]')).toHaveAttribute('item-id', '1');
+  });
+
+  test('identifier boolean attr on repeat item root reflects truthy value', async ({ page }) => {
+    // SSR: Beta (flagged=true) should have data-flagged, Alpha should not
+    await expect(page.locator('test-list-item[data-flagged]')).toHaveCount(1);
+    await expect(page.locator('test-list-item[data-flagged]')).toHaveAttribute('item-id', '2');
+  });
+
   test('adds nested children through repeat reconciliation', async ({ page }) => {
     await page.locator('test-list .add').click();
 

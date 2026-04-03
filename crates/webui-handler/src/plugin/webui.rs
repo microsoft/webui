@@ -1,25 +1,32 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Lightweight no-op WebUI handler plugin.
+//! WebUI handler plugin that emits lightweight hydration markers.
 //!
-//! Hydration now uses compiled template paths instead of comment markers or
-//! data attributes. This plugin satisfies the [`HandlerPlugin`] trait with
-//! no-op implementations — no markers are emitted, no scope tracking is
-//! performed, and element data is silently ignored.
+//! Emits comment markers around for-loop blocks (`<!--wr-->` / `<!--/wr-->`),
+//! before each repeat item (`<!--wi-->`), and around if-condition blocks
+//! (`<!--wc-->` / `<!--/wc-->`). These markers enable zero-DOM-mutation
+//! in-place hydration on the client: the framework reuses the SSR comment
+//! nodes as runtime anchors instead of creating temporary wrappers.
 
 use super::HandlerPlugin;
 use crate::{ResponseWriter, Result};
 
-/// No-op WebUI handler plugin.
+const REPEAT_START: &str = "<!--wr-->";
+const REPEAT_END: &str = "<!--/wr-->";
+const REPEAT_ITEM: &str = "<!--wi-->";
+const COND_START: &str = "<!--wc-->";
+const COND_END: &str = "<!--/wc-->";
+
+/// WebUI handler plugin that emits hydration markers.
 ///
-/// All trait methods return immediately without writing any output.
-/// Retained for API compatibility with callers that construct a plugin
-/// instance via [`WebUIHydrationPlugin::new`].
+/// Emits lightweight HTML comment markers around structural boundaries
+/// (for-loops and if-conditions) so the client can hydrate in-place
+/// without reparenting DOM nodes.
 pub struct WebUIHydrationPlugin;
 
 impl WebUIHydrationPlugin {
-    /// Create a new (no-op) WebUI handler plugin.
+    /// Create a new WebUI handler plugin.
     #[must_use]
     pub fn new() -> Self {
         Self
@@ -45,14 +52,31 @@ impl HandlerPlugin for WebUIHydrationPlugin {
         Ok(())
     }
 
+    fn on_for_start(&mut self, _name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+        writer.write(REPEAT_START)
+    }
+
+    fn on_for_end(&mut self, _name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+        writer.write(REPEAT_END)
+    }
+
+    fn on_if_start(&mut self, _name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+        writer.write(COND_START)
+    }
+
+    fn on_if_end(&mut self, _name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+        writer.write(COND_END)
+    }
+
     fn on_repeat_item_start(
         &mut self,
         _index: usize,
-        _writer: &mut dyn ResponseWriter,
+        writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        Ok(())
+        writer.write(REPEAT_ITEM)
     }
 
+    // No end marker needed — the next <!--wi--> or <!--/wr--> serves as the boundary.
     fn on_repeat_item_end(
         &mut self,
         _index: usize,
@@ -98,36 +122,89 @@ mod tests {
     }
 
     #[test]
-    fn test_binding_emits_no_output() {
+    fn test_signal_binding_emits_no_output() {
         let mut plugin = WebUIHydrationPlugin::new();
         let mut writer = TestWriter::new();
         plugin.on_binding_start("x", &mut writer).unwrap();
         plugin.on_binding_end("x", &mut writer).unwrap();
-        assert_eq!(writer.output, "", "binding hooks must not emit output");
-    }
-
-    #[test]
-    fn test_binding_in_child_scope_emits_no_output() {
-        let mut plugin = WebUIHydrationPlugin::new();
-        let mut writer = TestWriter::new();
-        plugin.push_scope();
-        plugin.on_binding_start("userName", &mut writer).unwrap();
-        plugin.on_binding_end("userName", &mut writer).unwrap();
-        plugin.pop_scope();
         assert_eq!(
             writer.output, "",
-            "binding hooks must not emit output even in child scopes"
+            "signal binding hooks must not emit output"
         );
     }
 
     #[test]
-    fn test_repeat_emits_no_output() {
+    fn test_for_loop_emits_repeat_markers() {
         let mut plugin = WebUIHydrationPlugin::new();
         let mut writer = TestWriter::new();
-        plugin.push_scope();
+        plugin.on_for_start("items", &mut writer).unwrap();
         plugin.on_repeat_item_start(0, &mut writer).unwrap();
+        plugin.push_scope();
+        writer.write("<div>A</div>").unwrap();
+        plugin.pop_scope();
         plugin.on_repeat_item_end(0, &mut writer).unwrap();
-        assert_eq!(writer.output, "", "repeat hooks must not emit output");
+        plugin.on_repeat_item_start(1, &mut writer).unwrap();
+        plugin.push_scope();
+        writer.write("<div>B</div>").unwrap();
+        plugin.pop_scope();
+        plugin.on_repeat_item_end(1, &mut writer).unwrap();
+        plugin.on_for_end("items", &mut writer).unwrap();
+        assert_eq!(
+            writer.output,
+            "<!--wr--><!--wi--><div>A</div><!--wi--><div>B</div><!--/wr-->"
+        );
+    }
+
+    #[test]
+    fn test_empty_for_loop_emits_boundary_markers() {
+        let mut plugin = WebUIHydrationPlugin::new();
+        let mut writer = TestWriter::new();
+        plugin.on_for_start("items", &mut writer).unwrap();
+        plugin.on_for_end("items", &mut writer).unwrap();
+        assert_eq!(writer.output, "<!--wr--><!--/wr-->");
+    }
+
+    #[test]
+    fn test_if_true_emits_cond_markers() {
+        let mut plugin = WebUIHydrationPlugin::new();
+        let mut writer = TestWriter::new();
+        plugin.on_if_start("show", &mut writer).unwrap();
+        plugin.push_scope();
+        writer.write("<p>visible</p>").unwrap();
+        plugin.pop_scope();
+        plugin.on_if_end("show", &mut writer).unwrap();
+        assert_eq!(writer.output, "<!--wc--><p>visible</p><!--/wc-->");
+    }
+
+    #[test]
+    fn test_if_false_emits_empty_cond_markers() {
+        let mut plugin = WebUIHydrationPlugin::new();
+        let mut writer = TestWriter::new();
+        plugin.on_if_start("show", &mut writer).unwrap();
+        // condition is false — no content rendered
+        plugin.on_if_end("show", &mut writer).unwrap();
+        assert_eq!(writer.output, "<!--wc--><!--/wc-->");
+    }
+
+    #[test]
+    fn test_nested_repeat_inside_conditional() {
+        let mut plugin = WebUIHydrationPlugin::new();
+        let mut writer = TestWriter::new();
+        plugin.on_if_start("show", &mut writer).unwrap();
+        plugin.push_scope();
+        plugin.on_for_start("items", &mut writer).unwrap();
+        plugin.on_repeat_item_start(0, &mut writer).unwrap();
+        plugin.push_scope();
+        writer.write("<li>X</li>").unwrap();
+        plugin.pop_scope();
+        plugin.on_repeat_item_end(0, &mut writer).unwrap();
+        plugin.on_for_end("items", &mut writer).unwrap();
+        plugin.pop_scope();
+        plugin.on_if_end("show", &mut writer).unwrap();
+        assert_eq!(
+            writer.output,
+            "<!--wc--><!--wr--><!--wi--><li>X</li><!--/wr--><!--/wc-->"
+        );
     }
 
     #[test]
@@ -141,24 +218,8 @@ mod tests {
     }
 
     #[test]
-    fn test_element_data_arbitrary_bytes_emits_no_output() {
-        let mut plugin = WebUIHydrationPlugin::new();
-        let mut writer = TestWriter::new();
-        plugin.push_scope();
-        // Any byte sequence is accepted — the no-op ignores the payload.
-        plugin.on_element_data(&[0u8; 12], &mut writer).unwrap();
-        plugin.on_element_data(&[0u8; 2], &mut writer).unwrap();
-        plugin.on_element_data(&[], &mut writer).unwrap();
-        assert_eq!(
-            writer.output, "",
-            "element data must not emit output regardless of payload"
-        );
-    }
-
-    #[test]
     fn test_scope_push_pop_is_noop() {
         let mut plugin = WebUIHydrationPlugin::new();
-        // Should not panic or affect subsequent calls.
         plugin.push_scope();
         plugin.push_scope();
         plugin.pop_scope();
@@ -184,33 +245,42 @@ mod tests {
     }
 
     #[test]
-    fn test_full_lifecycle_emits_no_output() {
+    fn test_full_lifecycle_with_markers() {
         let mut plugin = WebUIHydrationPlugin::new();
         let mut writer = TestWriter::new();
 
-        // Simulate a complete component render lifecycle.
+        // Simulate a component with a signal, repeat, and conditional.
         plugin.push_scope();
+        // Signal binding — no markers
         plugin.on_binding_start("a", &mut writer).unwrap();
+        writer.write("hello").unwrap();
         plugin.on_binding_end("a", &mut writer).unwrap();
-        plugin.push_scope();
+        // For-loop — markers
+        plugin.on_for_start("list", &mut writer).unwrap();
         plugin.on_repeat_item_start(0, &mut writer).unwrap();
-        plugin.on_binding_start("b", &mut writer).unwrap();
-        plugin
-            .on_element_data(&1u32.to_le_bytes(), &mut writer)
-            .unwrap();
-        plugin.on_binding_end("b", &mut writer).unwrap();
-        plugin.on_repeat_item_end(0, &mut writer).unwrap();
+        plugin.push_scope();
+        writer.write("<x-item>1</x-item>").unwrap();
         plugin.pop_scope();
+        plugin.on_repeat_item_end(0, &mut writer).unwrap();
+        plugin.on_for_end("list", &mut writer).unwrap();
+        // Conditional — markers
+        plugin.on_if_start("flag", &mut writer).unwrap();
+        plugin.push_scope();
+        writer.write("<p>yes</p>").unwrap();
+        plugin.pop_scope();
+        plugin.on_if_end("flag", &mut writer).unwrap();
         plugin.pop_scope();
 
-        assert_eq!(writer.output, "", "full lifecycle must produce zero output");
+        assert_eq!(
+            writer.output,
+            "hello<!--wr--><!--wi--><x-item>1</x-item><!--/wr--><!--wc--><p>yes</p><!--/wc-->"
+        );
     }
 
     #[test]
     fn test_on_render_complete_only_emits_rendered_components() {
         let mut writer = TestWriter::new();
 
-        // Build a protocol with 3 components — only 1 was rendered
         let mut protocol = webui_protocol::WebUIProtocol::new(std::collections::HashMap::new());
         protocol
             .components
@@ -228,14 +298,12 @@ mod tests {
             .or_default()
             .template = "<script>/*comp-c*/</script>".to_string();
 
-        // Only comp-a was rendered
         let mut rendered = std::collections::HashSet::new();
         rendered.insert("comp-a".to_string());
 
         crate::plugin::emit_rendered_component_templates(&protocol, &rendered, None, &mut writer)
             .unwrap();
 
-        // Should contain only comp-a's template
         assert!(
             writer.output.contains("comp-a"),
             "rendered component should be emitted: {}",
@@ -295,6 +363,102 @@ mod tests {
         assert_eq!(
             writer.output, "",
             "unknown component should not cause error"
+        );
+    }
+
+    // ── Integration test (full render cycle with WebUIHandler) ──────────
+
+    use std::collections::HashMap;
+    use webui_protocol::{ConditionExpr, FragmentList, WebUIFragment, WebUIProtocol};
+    use webui_test_utils::test_json;
+
+    use crate::{RenderOptions, WebUIHandler};
+
+    fn render_with_webui_plugin(protocol: &WebUIProtocol, state: &serde_json::Value) -> String {
+        let mut writer = TestWriter::new();
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        handler
+            .handle(
+                protocol,
+                state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        writer.output
+    }
+
+    #[test]
+    fn test_handler_emits_hydration_markers_for_loop_and_if() {
+        // Build a protocol with a for-loop (2 items) and an if-condition.
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::for_loop("item", "items", "for-body"),
+                    WebUIFragment::if_cond(ConditionExpr::identifier("show"), "if-body"),
+                ],
+            },
+        );
+        fragments.insert(
+            "for-body".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::signal("item", false)],
+            },
+        );
+        fragments.insert(
+            "if-body".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<span>yes</span>")],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({"items": ["a", "b"], "show": true});
+        let output = render_with_webui_plugin(&protocol, &state);
+
+        // For-loop markers
+        assert!(
+            output.contains("<!--wr-->"),
+            "Expected repeat-start marker, got: {output}"
+        );
+        assert!(
+            output.contains("<!--/wr-->"),
+            "Expected repeat-end marker, got: {output}"
+        );
+        assert!(
+            output.contains("<!--wi-->"),
+            "Expected repeat-item marker, got: {output}"
+        );
+        // Each item should produce a <!--wi--> marker
+        assert_eq!(
+            output.matches("<!--wi-->").count(),
+            2,
+            "Expected 2 repeat-item markers, got: {output}"
+        );
+
+        // If-condition markers
+        assert!(
+            output.contains("<!--wc-->"),
+            "Expected cond-start marker, got: {output}"
+        );
+        assert!(
+            output.contains("<!--/wc-->"),
+            "Expected cond-end marker, got: {output}"
+        );
+
+        // Content is rendered
+        assert!(
+            output.contains("a"),
+            "Expected for-loop items in output, got: {output}"
+        );
+        assert!(
+            output.contains("b"),
+            "Expected for-loop items in output, got: {output}"
+        );
+        assert!(
+            output.contains("<span>yes</span>"),
+            "Expected if-condition body, got: {output}"
         );
     }
 }

@@ -9,20 +9,26 @@
  * template path mapping.  Client-created components use exact childNode
  * indices from the compiled template HTML.
  *
- * ## Comment anchors
+ * ## SSR hydration markers
  *
- * The framework inserts empty comment nodes (`document.createComment('')`)
- * as stable DOM anchors for conditional (`<if>`) and repeat (`<for>`) blocks.
- * This framework hydrates compiled templates against real DOM, so it needs
- * lightweight markers to know WHERE to insert or remove dynamic content.
+ * The server-side handler plugin emits lightweight HTML comment markers
+ * around structural boundaries so the client can hydrate in-place:
  *
- * - **Condition anchors** mark the insertion point for `<if>` block content.
- *   When the condition becomes true, nodes are inserted after the anchor;
- *   when false, they are removed.  The anchor itself stays in the DOM.
+ *   - `<!--wr-->` / `<!--/wr-->` — repeat (for-loop) block boundaries
+ *   - `<!--wi-->` — repeat item boundary (one per item)
+ *   - `<!--wc-->` / `<!--/wc-->` — conditional (if) block boundaries
  *
- * - **Repeat anchors** mark the start of a `<for>` block's item list.
- *   New items are inserted after the anchor; the keyed diff algorithm
- *   uses `$insertInstanceAfter` to reorder items relative to this anchor.
+ * During hydration these markers are consumed: `<!--wi-->`, `<!--/wr-->`,
+ * and `<!--/wc-->` are removed from the DOM.  The `<!--wr-->` start
+ * marker is kept as the runtime repeat anchor, and `<!--wc-->` is kept
+ * as the runtime condition anchor.
+ *
+ * ## Comment anchors (client-created)
+ *
+ * For client-created components (no SSR), the framework inserts empty
+ * comment nodes (`document.createComment('')`) as stable DOM anchors
+ * for conditional and repeat blocks.  When SSR markers are absent,
+ * the same fallback anchors are used.
  *
  * These comments are invisible to the user, weigh ~0 bytes, and are the
  * minimum DOM structure needed for the framework to operate.
@@ -40,6 +46,13 @@ import type {
 import { hydrationStart, hydrationEnd } from './lifecycle.js';
 import { getObservableNames } from './decorators.js';
 import { syncRepeat } from './element/diff.js';
+import {
+  collectItemMarkers,
+  nextElement,
+  MARKER_COND_START,
+  MARKER_COND_END,
+  MARKER_REPEAT_START,
+} from './element/markers.js';
 import {
   injectModuleStyle,
 } from './element/styles.js';
@@ -346,9 +359,9 @@ export class WebUIElement extends HTMLElement {
   // Compiled paths are childNode indices in meta.h parsed by the browser.
   // For client-created components the DOM matches meta.h exactly.
 
-  private $resolve(root: Node, path: TemplateNodePath): Node | null {
+  private $resolve(root: Node, path: TemplateNodePath, pathStart = 0): Node | null {
     let cur: Node = root;
-    for (let i = 0; i < path.length; i++) {
+    for (let i = pathStart; i < path.length; i++) {
       const child = cur.childNodes[path[i]];
       if (!child) return null;
       cur = child;
@@ -360,12 +373,13 @@ export class WebUIElement extends HTMLElement {
   // SSR DOM may lack whitespace text nodes the compiled template has.
   // We walk the template DOM in parallel to translate each childNode
   // index into an element-ordinal lookup in the SSR DOM.
+  // pathStart: skip leading path segments for in-place block hydration.
 
-  private $resolveSSR(ssrRoot: Node, tplRoot: Node, path: TemplateNodePath): Node | null {
+  private $resolveSSR(ssrRoot: Node, tplRoot: Node, path: TemplateNodePath, pathStart = 0): Node | null {
     let ssr: Node = ssrRoot;
     let tpl: Node = tplRoot;
 
-    for (let i = 0; i < path.length; i++) {
+    for (let i = pathStart; i < path.length; i++) {
       const idx = path[i];
       const tplChild = tpl.childNodes[idx];
       if (!tplChild) return null;
@@ -512,17 +526,29 @@ export class WebUIElement extends HTMLElement {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  //  SSR hydration — DOM matching
+  //  SSR hydration — marker-based in-place DOM matching
   // ═══════════════════════════════════════════════════════════════
 
+  /**
+   * Hydrate SSR-rendered DOM against compiled template metadata.
+   *
+   * When pathStart=0 (default): ssrRoot is a container with children
+   * (top-level component hydration).
+   *
+   * When pathStart=1: ssrRoot is a block element itself (repeat item
+   * in-place hydration). The leading [0] wrapper segment is skipped
+   * so compiled paths resolve directly against the element.
+   */
   private $hydrate(
     ssrRoot: Node,
     meta: TemplateBlockMeta,
     tplDom: Element,
     scope?: ScopeFrame,
+    pathStart = 0,
   ): TemplateInstance {
     const instance: TemplateInstance = {
-      scope, nodes: childNodesArray(ssrRoot),
+      scope,
+      nodes: pathStart > 0 ? [ssrRoot] : childNodesArray(ssrRoot),
       texts: [], attrs: [], conds: [], repeats: [],
     };
 
@@ -533,19 +559,11 @@ export class WebUIElement extends HTMLElement {
         const [slot, parts] = entry;
         const raw = entry[2] === 1;
         const [parentPath, beforeIndex] = slot;
-        // Resolve parent in SSR DOM
-        const ssrParent = parentPath.length > 0
-          ? this.$resolveSSR(ssrRoot, tplDom, parentPath)
-          : ssrRoot;
+        const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart);
         if (!ssrParent) continue;
-        // Resolve parent in template DOM to map the text node position
-        const tplParent = parentPath.length > 0
-          ? this.$resolve(tplDom, parentPath)
-          : tplDom;
+        const tplParent = this.$resolve(tplDom, parentPath, pathStart);
         if (!tplParent) continue;
         if (raw) {
-          // Raw binding: the SSR rendered HTML directly into the element.
-          // Find the parent element and use it for innerHTML updates.
           const rawParent = ssrParent as Element;
           const textNode = document.createTextNode('');
           instance.texts.push({ node: textNode, parts, scope, raw: true, rawParent });
@@ -557,237 +575,254 @@ export class WebUIElement extends HTMLElement {
     }
 
     // Attribute bindings
-    this.$wireAttrs(instance, meta, scope, (p) => this.$resolveSSR(ssrRoot, tplDom, p) as Element);
+    this.$wireAttrs(instance, meta, scope, (p) =>
+      this.$resolveSSR(ssrRoot, tplDom, p, pathStart) as Element,
+    );
 
-    // Conditional bindings
+    // Conditional bindings — use <!--wc--> markers as anchors
     if (meta.c) {
+      let lastCondMarker: Node | null = null;
+      let lastCondParent: Node | null = null;
       for (let i = 0; i < meta.c.length; i++) {
         const [condition, blockIndex, slotMeta] = meta.c[i];
         const [parentPath] = slotMeta;
-        const ssrParent = parentPath.length > 0
-          ? this.$resolveSSR(ssrRoot, tplDom, parentPath)
-          : ssrRoot;
-        if (!ssrParent) continue;
-
+        const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart) ?? ssrRoot;
         const blockMeta = this.$block(blockIndex);
         const shown = condition[0](this.$resolver, scope);
         let condInstance: TemplateInstance | null = null;
 
-        // Insert anchor; if condition is true, collect existing block nodes
-        const anchor = document.createComment('');
-        if (shown && blockMeta) {
-          const rootTag = this.$rootTag(blockMeta);
-
-          // Use the slot's beforeIndex to skip static siblings that precede
-          // the conditional block — same approach used by repeat bindings.
-          const slotBeforeIndex = slotMeta[1] ?? 0;
-          const tplParent = parentPath.length > 0
-            ? this.$resolve(tplDom, parentPath)
-            : tplDom;
-          let skipCount = 0;
-          if (tplParent && rootTag) {
-            for (let k = 0; k < slotBeforeIndex && k < tplParent.childNodes.length; k++) {
-              const n = tplParent.childNodes[k];
-              if (n.nodeType === 1 && (n as Element).tagName.toLowerCase() === rootTag) {
-                skipCount++;
-              }
-            }
-          }
-
-          const allMatches = rootTag
-            ? this.$collectByTag(ssrParent, rootTag)
-            : this.$collectTextChildren(ssrParent);
-          const blockNodes = allMatches.slice(skipCount);
-          if (blockNodes.length > 0) {
-            ssrParent.insertBefore(anchor, blockNodes[0]);
-            const wrapper = document.createElement('div');
-            for (const n of blockNodes) wrapper.appendChild(n);
-            condInstance = this.$hydrate(wrapper, blockMeta, getTemplateDom(blockMeta), scope);
-            condInstance.nodes = childNodesArray(wrapper);
-            // Put nodes back in place
-            let after: Node = anchor;
-            for (const n of condInstance.nodes) {
-              ssrParent.insertBefore(n, after.nextSibling);
-              after = n;
-            }
-            // Flush the block instance's bindings inline so nested
-            // conditionals/repeats are fully evaluated during hydration.
-            // This eliminates the need for a post-hydration $update() flush.
-            this.$updateInstance(condInstance);
-          } else {
-            ssrParent.appendChild(anchor);
-          }
-        } else {
-          ssrParent.appendChild(anchor);
+        // Reset cursor when parent changes between iterations
+        if (ssrParent !== lastCondParent) {
+          lastCondMarker = null;
+          lastCondParent = ssrParent;
         }
-        instance.conds.push({ condition, blockIndex, anchor, scope, instance: condInstance });
+
+        // Find the next <!--wc--> marker in ssrParent (after any previously found one)
+        const marker = this.$findMarker(ssrParent, MARKER_COND_START, lastCondMarker);
+        let condAnchor: Comment;
+        if (marker) {
+          condAnchor = marker;
+        } else {
+          // No marker — insert anchor at the slot position
+          condAnchor = document.createComment('');
+          const [, beforeIndex] = slotMeta;
+          const insertRef = ssrParent.childNodes[beforeIndex ?? ssrParent.childNodes.length] ?? null;
+          ssrParent.insertBefore(condAnchor, insertRef);
+        }
+        if (marker) lastCondMarker = marker;
+
+        if (shown && blockMeta && marker) {
+          const rootTag = this.$rootTag(blockMeta);
+          if (rootTag) {
+            const el = nextElement(condAnchor);
+            if (el) {
+              const blockTplDom = getTemplateDom(blockMeta);
+              condInstance = this.$hydrate(el, blockMeta, blockTplDom, scope, 1);
+              this.$updateInstance(condInstance);
+            }
+          } else {
+            // Text-only conditional: collect nodes between <!--wc--> and <!--/wc-->
+            const condNodes = this.$collectBetween(condAnchor, MARKER_COND_END);
+            if (condNodes.length > 0) {
+              const wrapper = document.createElement('div');
+              for (let cn = 0; cn < condNodes.length; cn++) wrapper.appendChild(condNodes[cn]);
+              condInstance = this.$hydrate(wrapper, blockMeta, getTemplateDom(blockMeta), scope);
+              condInstance.nodes = childNodesArray(wrapper);
+              let afterNode: Node = condAnchor;
+              for (let cn = 0; cn < condInstance.nodes.length; cn++) {
+                ssrParent.insertBefore(condInstance.nodes[cn], afterNode.nextSibling);
+                afterNode = condInstance.nodes[cn];
+              }
+              this.$updateInstance(condInstance);
+            }
+          }
+        }
+
+        // Remove the <!--/wc--> end marker — it's no longer needed after hydration.
+        if (marker) {
+          const lastNode = condInstance ? condInstance.nodes[condInstance.nodes.length - 1] : condAnchor;
+          const endMarker = lastNode?.nextSibling;
+          if (endMarker && endMarker.nodeType === 8 && (endMarker as Comment).data === MARKER_COND_END) {
+            endMarker.parentNode?.removeChild(endMarker);
+          }
+        }
+
+        instance.conds.push({
+          condition, blockIndex,
+          anchor: condAnchor,
+          scope, instance: condInstance,
+        });
       }
     }
 
-    // Repeat bindings — recognize existing repeated children
+    // Repeat bindings — use <!--wr--> markers as anchors, <!--wi--> for items
     if (meta.r) {
+      let lastRepMarker: Node | null = null;
+      let lastRepParent: Node | null = null;
       for (let i = 0; i < meta.r.length; i++) {
         const [collection, itemVar, blockIndex, slotMeta] = meta.r[i];
         const [parentPath] = slotMeta;
-        const ssrParent = parentPath.length > 0
-          ? this.$resolveSSR(ssrRoot, tplDom, parentPath)
-          : ssrRoot;
-        if (!ssrParent) continue;
+        const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart) ?? ssrRoot;
+
+        // Reset cursor when parent changes between iterations
+        if (ssrParent !== lastRepParent) {
+          lastRepMarker = null;
+          lastRepParent = ssrParent;
+        }
 
         const blockMeta = this.$block(blockIndex);
         const { attrMap, rootBindings } = this.$repeatMaps(blockIndex, itemVar);
         const rootTag = blockMeta ? this.$rootTag(blockMeta) : null;
 
-        // Collect existing repeated elements by tag name, starting AFTER
-        // any static siblings that precede the repeat slot position.
-        // The slot's beforeIndex tells us where repeats start in the template;
-        // count how many same-tag static elements precede that position.
-        const [, beforeIndex] = slotMeta;
-        const tplParent = parentPath.length > 0
-          ? this.$resolve(tplDom, parentPath) : tplDom;
-        let skipCount = 0;
-        if (tplParent && rootTag) {
-          for (let k = 0; k < beforeIndex && k < tplParent.childNodes.length; k++) {
-            const n = tplParent.childNodes[k];
-            if (n.nodeType === 1 && (n as Element).tagName.toLowerCase() === rootTag) {
-              skipCount++;
-            }
-          }
-        }
-
-        const allMatches = rootTag
-          ? this.$collectByTag(ssrParent, rootTag)
-          : [];
-        const groups = allMatches.slice(skipCount);
-
-        // Insert anchor before first repeat child
-        const anchor = document.createComment('');
-        if (groups.length > 0) {
-          ssrParent.insertBefore(anchor, groups[0]);
-        } else if (!rootTag) {
-          // Text-only blocks: anchor goes at the repeat slot position.
-          const staticCount = tplParent ? tplParent.childNodes.length : 0;
-          const insertBefore = ssrParent.childNodes[staticCount] ?? null;
-          ssrParent.insertBefore(anchor, insertBefore);
+        // Find the next <!--wr--> marker in ssrParent (after any previously found one)
+        const marker = this.$findMarker(ssrParent, MARKER_REPEAT_START, lastRepMarker);
+        let anchor: Comment;
+        if (marker) {
+          anchor = marker;
         } else {
-          ssrParent.appendChild(anchor);
+          // No marker — insert anchor at the slot position for client-created content
+          anchor = document.createComment('');
+          const [, beforeIndex] = slotMeta;
+          const tplParent = this.$resolve(tplDom, parentPath, pathStart);
+          const staticCount = tplParent ? tplParent.childNodes.length : 0;
+          const insertRef = ssrParent.childNodes[Math.min(beforeIndex ?? staticCount, ssrParent.childNodes.length)] ?? null;
+          ssrParent.insertBefore(anchor, insertRef);
         }
+        lastRepMarker = anchor;
 
-        // Hydrate each existing child as a repeat instance.
         const repeatInsts: RepeatItemInstance[] = [];
         const itemsArr = this.$resolveValue(collection, scope);
         const items = Array.isArray(itemsArr) ? itemsArr as unknown[] : [];
-        const blockTplDom = blockMeta ? getTemplateDom(blockMeta) : null;
 
-        if (rootTag) {
-          // Element-based blocks: hydrate by matching SSR elements by tag.
+        // Collect SSR markers — single walk captures items + end boundary
+        const { items: itemMarkers, end: endMarker } = marker
+          ? collectItemMarkers(anchor)
+          : { items: [] as Comment[], end: null as Comment | null };
+
+        if (blockMeta && items.length > 0 && anchor.parentNode && itemMarkers.length > 0) {
+          if (itemMarkers.length !== items.length) {
+            console.warn(
+              `[webui] hydration: repeat marker count (${itemMarkers.length}) ≠ data length (${items.length}) for "${collection}"`,
+            );
+          }
           const firstKey = Object.keys(attrMap)[0];
-          const hydrateWrapper = blockMeta && blockTplDom ? document.createElement('div') : null;
-          for (let j = 0; j < groups.length && j < items.length; j++) {
-            const childEl = groups[j];
+          const blockTplDom = getTemplateDom(blockMeta);
+
+          const limit = Math.min(itemMarkers.length, items.length);
+          for (let j = 0; j < limit; j++) {
             const itemValue = items[j];
             const itemScope: ScopeFrame = { name: itemVar, value: itemValue, parent: scope };
-            const key = firstKey !== undefined
-              ? (childEl as Element).getAttribute(firstKey)
-              : String(j);
 
-            let childInstance: TemplateInstance;
-            if (hydrateWrapper) {
-              hydrateWrapper.appendChild(childEl);
-              childInstance = this.$hydrate(hydrateWrapper, blockMeta!, blockTplDom!, itemScope);
-              childInstance.nodes = [childEl]; // single root element — skip childNodesArray
-              ssrParent.insertBefore(childEl, anchor.nextSibling);
+            if (rootTag) {
+              const itemEl = nextElement(itemMarkers[j]);
+              if (itemEl) {
+                const key = firstKey !== undefined
+                  ? itemEl.getAttribute(firstKey)
+                  : String(j);
+                const childInstance = this.$hydrate(itemEl, blockMeta, blockTplDom, itemScope, 1);
+                repeatInsts.push({ key, value: itemValue, instance: childInstance });
+              }
             } else {
-              childInstance = {
-                scope: itemScope, nodes: [childEl],
+              // Text-only repeat item — wire nested conditionals from markers
+              const inst: TemplateInstance = {
+                scope: itemScope, nodes: [],
                 texts: EMPTY_ARR as unknown as TextBinding[],
                 attrs: EMPTY_ARR as unknown as AttrBinding[],
-                conds: EMPTY_ARR as unknown as CondBinding[],
+                conds: [],
                 repeats: EMPTY_ARR as unknown as RepeatBinding[],
               };
-            }
-            repeatInsts.push({ key, value: itemValue, instance: childInstance });
-          }
-        } else if (blockMeta) {
-          // Text-only blocks: no root element, so SSR children can't be
-          // matched by tag. Walk items and for each one, evaluate its
-          // conditionals to claim SSR nodes or create empty instances.
-          let ssrCursor: Node | null = anchor.nextSibling;
 
-          for (let j = 0; j < items.length; j++) {
-            const itemValue = items[j];
-            const itemScope: ScopeFrame = { name: itemVar, value: itemValue, parent: scope };
-            const inst: TemplateInstance = {
-              scope: itemScope, nodes: [],
-              texts: EMPTY_ARR as unknown as TextBinding[],
-              attrs: EMPTY_ARR as unknown as AttrBinding[],
-              conds: [],
-              repeats: EMPTY_ARR as unknown as RepeatBinding[],
-            };
+              if (blockMeta.c) {
+                // Walk between this <!--wi--> and the next boundary to find <!--wc--> markers
+                let cursor: Node | null = itemMarkers[j].nextSibling;
+                const nextBound = j + 1 < itemMarkers.length ? itemMarkers[j + 1] : endMarker;
+                const itemParent = itemMarkers[j].parentNode;
 
-            if (blockMeta.c) {
-              for (let ci = 0; ci < blockMeta.c.length; ci++) {
-                const [condition, condBlockIndex] = blockMeta.c[ci];
-                const condAnchor = document.createComment('');
-                ssrParent.insertBefore(condAnchor, ssrCursor);
+                for (let ci = 0; ci < blockMeta.c.length; ci++) {
+                  const [condCond, condBlockIndex] = blockMeta.c[ci];
 
-                const condMet = condition[0](this.$resolver, itemScope);
-                let condInstance: TemplateInstance | null = null;
+                  // Find <!--wc--> within this item's range
+                  let condAnchor: Comment | null = null;
+                  while (cursor && cursor !== nextBound) {
+                    if (cursor.nodeType === 8 && (cursor as Comment).data === MARKER_COND_START) {
+                      condAnchor = cursor as Comment;
+                      cursor = cursor.nextSibling;
+                      break;
+                    }
+                    cursor = cursor.nextSibling;
+                  }
+                  if (!condAnchor) {
+                    condAnchor = document.createComment('');
+                    if (itemParent) itemParent.insertBefore(condAnchor, cursor ?? null);
+                  }
 
-                if (condMet && ssrCursor) {
-                  const condBlockMeta = this.$block(condBlockIndex);
-                  const condTplDom = condBlockMeta ? getTemplateDom(condBlockMeta) : null;
+                  const condMet = condCond[0](this.$resolver, itemScope);
+                  let condInstance: TemplateInstance | null = null;
 
-                  if (condBlockMeta && condTplDom) {
-                    const condRootTag = this.$rootTag(condBlockMeta);
-                    const wrapper = document.createElement('div');
-                    if (condRootTag && ssrCursor.nodeType === 1
-                        && (ssrCursor as Element).tagName.toLowerCase() === condRootTag) {
-                      const claimed = ssrCursor;
-                      ssrCursor = ssrCursor.nextSibling;
-                      wrapper.appendChild(claimed);
-                      condInstance = this.$hydrate(wrapper, condBlockMeta, condTplDom, itemScope);
-                      condInstance.nodes = childNodesArray(wrapper);
-                      for (const n of condInstance.nodes) {
-                        ssrParent.insertBefore(n, ssrCursor);
-                      }
-                    } else {
-                      condInstance = this.$createBlockInstance(condBlockIndex, itemScope);
-                      if (condInstance) {
-                        for (const n of condInstance.nodes) {
-                          ssrParent.insertBefore(n, ssrCursor);
+                  if (condMet) {
+                    const condBlockMeta = this.$block(condBlockIndex);
+                    if (condBlockMeta) {
+                      const condRootTag = this.$rootTag(condBlockMeta);
+                      if (condRootTag) {
+                        const el = nextElement(condAnchor);
+                        if (el) {
+                          condInstance = this.$hydrate(el, condBlockMeta, getTemplateDom(condBlockMeta), itemScope, 1);
+                          this.$updateInstance(condInstance);
+                        }
+                      } else {
+                        // Text-only conditional: collect nodes between <!--wc--> and <!--/wc-->
+                        const condNodes = this.$collectBetween(condAnchor, MARKER_COND_END);
+                        if (condNodes.length > 0) {
+                          const wrapper = document.createElement('div');
+                          for (let cn = 0; cn < condNodes.length; cn++) wrapper.appendChild(condNodes[cn]);
+                          condInstance = this.$hydrate(wrapper, condBlockMeta, getTemplateDom(condBlockMeta), itemScope);
+                          condInstance.nodes = childNodesArray(wrapper);
+                          let afterNode: Node = condAnchor;
+                          for (let cn = 0; cn < condInstance.nodes.length; cn++) {
+                            condAnchor.parentNode?.insertBefore(condInstance.nodes[cn], afterNode.nextSibling);
+                            afterNode = condInstance.nodes[cn];
+                          }
+                          this.$updateInstance(condInstance);
                         }
                       }
                     }
                   }
+
+                  // Remove <!--/wc--> end marker and advance cursor past it
+                  const lastNode = condInstance ? condInstance.nodes[condInstance.nodes.length - 1] : condAnchor;
+                  const endM = lastNode?.nextSibling;
+                  if (endM && endM.nodeType === 8 && (endM as Comment).data === MARKER_COND_END) {
+                    cursor = endM.nextSibling;
+                    endM.parentNode?.removeChild(endM);
+                  } else {
+                    cursor = lastNode?.nextSibling ?? null;
+                  }
+
+                  inst.conds.push({
+                    condition: condCond, blockIndex: condBlockIndex,
+                    anchor: condAnchor, scope: itemScope,
+                    instance: condInstance,
+                  });
                 }
-
-                inst.conds.push({
-                  condition, blockIndex: condBlockIndex,
-                  anchor: condAnchor, scope: itemScope,
-                  instance: condInstance,
-                });
               }
-            }
 
-            repeatInsts.push({ key: String(j), value: itemValue, instance: inst });
+              repeatInsts.push({ key: String(j), value: itemValue, instance: inst });
+            }
+          }
+
+          // Strip SSR item markers — single pass (anchor <!--wr--> stays)
+          for (let m = 0; m < itemMarkers.length; m++) {
+            itemMarkers[m].parentNode?.removeChild(itemMarkers[m]);
           }
         }
 
-        // Re-insert all nodes in correct order after anchor
-        let cursor: Node = anchor;
-        for (const ri of repeatInsts) {
-          for (const n of ri.instance.nodes) {
-            if (n.parentNode !== ssrParent || n.previousSibling !== cursor) {
-              ssrParent.insertBefore(n, cursor.nextSibling);
-            }
-            cursor = n;
-          }
-        }
+        // Always clean up end marker (including empty repeats)
+        if (endMarker) endMarker.parentNode?.removeChild(endMarker);
 
         instance.repeats.push({
           markerId: i, collection, itemVar, blockIndex,
-          container: ssrParent as ParentNode & Node, start: anchor, end: null,
+          container: (anchor.parentNode ?? ssrRoot) as ParentNode & Node,
+          start: anchor, end: null,
           scope, owner: instance, instances: repeatInsts, rootTag,
           attrMap, rootBindings, synced: true,
         });
@@ -795,12 +830,39 @@ export class WebUIElement extends HTMLElement {
     }
 
     // Events + refs
-    this.$finalize(ssrRoot, meta, (r, p) => this.$resolveSSR(r, tplDom, p));
+    this.$finalize(ssrRoot, meta, (r, p) => this.$resolveSSR(r, tplDom, p, pathStart));
 
     return instance;
   }
 
   // ── SSR helpers ───────────────────────────────────────────────
+
+  /** Collect sibling nodes between a start marker and an end marker comment. */
+  private $collectBetween(start: Comment, endData: string): Node[] {
+    const nodes: Node[] = [];
+    let node: Node | null = start.nextSibling;
+    while (node) {
+      if (node.nodeType === 8 && (node as Comment).data === endData) break;
+      nodes.push(node);
+      node = node.nextSibling;
+    }
+    return nodes;
+  }
+
+  /**
+   * Find the next marker comment with the given data among a parent's children.
+   * Starts searching from `after` (exclusive) if provided, or from firstChild.
+   */
+  private $findMarker(parent: Node, data: string, after?: Node | null): Comment | null {
+    let child = after ? after.nextSibling : parent.firstChild;
+    while (child) {
+      if (child.nodeType === 8 && (child as Comment).data === data) {
+        return child as Comment;
+      }
+      child = child.nextSibling;
+    }
+    return null;
+  }
 
   /** Find existing SSR text node by mapping template text-node ordinal. */
   private $findSSRText(ssrParent: Node, tplParent: Node, beforeIndex: number): Text | null {
@@ -832,32 +894,6 @@ export class WebUIElement extends HTMLElement {
       child = child.nextSibling;
     }
     return null;
-  }
-
-  /** Collect child elements matching a tag name. */
-  private $collectByTag(parent: Node, tag: string): Node[] {
-    const result: Node[] = [];
-    let child = parent.firstChild;
-    while (child) {
-      if (child.nodeType === 1 && (child as Element).tagName.toLowerCase() === tag) {
-        result.push(child);
-      }
-      child = child.nextSibling;
-    }
-    return result;
-  }
-
-  /** Collect non-empty text child nodes (for text-only condition blocks). */
-  private $collectTextChildren(parent: Node): Node[] {
-    const result: Node[] = [];
-    let child = parent.firstChild;
-    while (child) {
-      if (child.nodeType === 3 && (child as Text).data && (child as Text).data.trim()) {
-        result.push(child);
-      }
-      child = child.nextSibling;
-    }
-    return result;
   }
 
   /** Extract root tag name from block metadata. */
