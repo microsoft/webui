@@ -14,10 +14,18 @@ inputs:
     description: Comma-separated list of extra Rust targets to install (e.g. aarch64-unknown-linux-gnu)
     required: false
     default: ''
+  rust-components:
+    description: Comma-separated list of extra Rust components to install (e.g. clippy, rustfmt)
+    required: false
+    default: ''
   dotnet:
     description: Install .NET SDK (set to version like '8.0.x' to enable)
     required: false
     default: ''
+  protoc-version:
+    description: Protobuf compiler version to install
+    required: false
+    default: '29.5'
   skip-build:
     description: Skip cargo build and build-examples steps
     required: false
@@ -46,13 +54,22 @@ runs:
     - name: Install protoc (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
-      run: choco install protoc -y
+      run: |
+        $version = "${{ inputs.protoc-version }}"
+        $url = "https://github.com/protocolbuffers/protobuf/releases/download/v$version/protoc-$version-win64.zip"
+        $zip = "$env:RUNNER_TEMP\protoc.zip"
+        $dest = "$env:RUNNER_TEMP\protoc"
+        Invoke-WebRequest -Uri $url -OutFile $zip
+        Expand-Archive -Path $zip -DestinationPath $dest -Force
+        echo "$dest\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+        echo "PROTOC=$dest\bin\protoc.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
 
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: 1.93
         targets: ${{ inputs.rust-targets }}
+        components: ${{ inputs.rust-components }}
 
     - name: Rust Cache
       uses: Swatinem/rust-cache@v2
