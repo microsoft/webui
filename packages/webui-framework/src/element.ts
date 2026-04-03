@@ -41,10 +41,6 @@ import { hydrationStart, hydrationEnd } from './lifecycle.js';
 import { getObservableNames } from './decorators.js';
 import { syncRepeat } from './element/diff.js';
 import {
-  stripLinkTags,
-  adoptSSRStyles,
-  adoptCachedStyles,
-  allSheetsCached,
   injectModuleStyle,
 } from './element/styles.js';
 import type {
@@ -61,9 +57,6 @@ import type {
 
 /** Parsed template cache — cloneNode(true) is faster than re-parsing. */
 const templateCache = new WeakMap<TemplateBlockMeta, DocumentFragment>();
-
-/** Parsed template cache for stripped HTML (keyed by string). */
-const strippedParseCache = new Map<string, DocumentFragment>();
 
 /** Parsed template DOM for SSR path mapping, keyed by meta.h string. */
 const templateDOMCache = new Map<string, Element>();
@@ -214,31 +207,9 @@ export class WebUIElement extends HTMLElement {
     } else if (wantShadow) {
       // Shadow DOM client-created
       root = this.attachShadow({ mode: 'open' });
-      if (!meta.sa) {
-        // link/style CSS mode — if all sheets are cached from prior SSR
-        // instances, strip <link> tags and adopt shared sheets instead.
-        // Otherwise keep <link> tags (first instance loads CSS normally).
-        const { html: strippedHtml, hrefs } = stripLinkTags(meta.h);
-        const allCached = allSheetsCached(hrefs);
-        if (allCached) {
-          let cached = strippedParseCache.get(strippedHtml);
-          if (!cached) {
-            const tpl = document.createElement('template');
-            tpl.innerHTML = strippedHtml;
-            cached = tpl.content;
-            strippedParseCache.set(strippedHtml, cached);
-          }
-          root.appendChild(cached.cloneNode(true));
-          adoptCachedStyles(root as ShadowRoot, hrefs);
-        } else {
-          const fragment = this.$parseTemplate(meta);
-          root.appendChild(fragment);
-        }
-      } else {
-        // module CSS mode — already optimized, no link stripping needed
-        const fragment = this.$parseTemplate(meta);
-        root.appendChild(fragment);
-      }
+      const fragment = this.$parseTemplate(meta);
+      root.appendChild(fragment);
+      isSSR = false;
       isSSR = false;
     } else {
       // Light DOM client-created — populate from template (no shadow = no link issue)
@@ -257,12 +228,6 @@ export class WebUIElement extends HTMLElement {
       this.$applySSRState();
       this.$root = this.$hydrate(root, meta, getTemplateDom(meta));
 
-      // For shadow DOM SSR: replace <link> elements with shared
-      // adoptedStyleSheets. This is safe because styles are already
-      // applied, and it enables future instances to reuse the sheet.
-      if (hasShadow && !meta.sa) {
-        adoptSSRStyles(this.shadowRoot!);
-      }
     } else {
       this.$root = this.$wire(root, meta);
     }
