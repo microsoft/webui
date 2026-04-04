@@ -15,19 +15,6 @@ interface MockNode {
   nextSibling: MockNode | null;
 }
 
-/** Build a singly-linked list of mock DOM nodes. */
-function buildChain(specs: Array<{ type: number; data?: string }>): MockNode {
-  const nodes: MockNode[] = specs.map((s) => ({
-    nodeType: s.type,
-    data: s.data,
-    nextSibling: null,
-  }));
-  for (let i = 0; i < nodes.length - 1; i++) {
-    nodes[i].nextSibling = nodes[i + 1];
-  }
-  return nodes[0];
-}
-
 const ELEMENT = 1;
 const TEXT = 3;
 const COMMENT = 8;
