@@ -1050,4 +1050,57 @@ mod tests {
             "Expected binding end marker for empty collection, got: {output}"
         );
     }
+
+    #[test]
+    fn test_for_if_hooks_delegate_to_binding_hooks() {
+        // on_for_start/on_for_end should produce the same output as
+        // on_binding_start/on_binding_end because the trait defaults delegate.
+        {
+            let mut plugin_for = FastHydrationPlugin::new();
+            plugin_for.push_scope();
+            let mut writer_for = TestWriter::new();
+            plugin_for.on_for_start("items", &mut writer_for).unwrap();
+            plugin_for.on_for_end("items", &mut writer_for).unwrap();
+
+            let mut plugin_bind = FastHydrationPlugin::new();
+            plugin_bind.push_scope();
+            let mut writer_bind = TestWriter::new();
+            plugin_bind
+                .on_binding_start("items", &mut writer_bind)
+                .unwrap();
+            plugin_bind
+                .on_binding_end("items", &mut writer_bind)
+                .unwrap();
+
+            assert_eq!(
+                writer_for.output, writer_bind.output,
+                "on_for_* should delegate to on_binding_*"
+            );
+        }
+
+        // on_if_start/on_if_end should produce the same output as
+        // on_binding_start/on_binding_end.
+        {
+            let mut plugin_if = FastHydrationPlugin::new();
+            plugin_if.push_scope();
+            let mut writer_if = TestWriter::new();
+            plugin_if.on_if_start("visible", &mut writer_if).unwrap();
+            plugin_if.on_if_end("visible", &mut writer_if).unwrap();
+
+            let mut plugin_bind = FastHydrationPlugin::new();
+            plugin_bind.push_scope();
+            let mut writer_bind = TestWriter::new();
+            plugin_bind
+                .on_binding_start("visible", &mut writer_bind)
+                .unwrap();
+            plugin_bind
+                .on_binding_end("visible", &mut writer_bind)
+                .unwrap();
+
+            assert_eq!(
+                writer_if.output, writer_bind.output,
+                "on_if_* should delegate to on_binding_*"
+            );
+        }
+    }
 }

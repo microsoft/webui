@@ -678,7 +678,7 @@ impl WebUIHandler {
         };
 
         if let Some(p) = &mut context.plugin {
-            p.on_binding_start(&for_loop.fragment_id, context.writer)?;
+            p.on_for_start(&for_loop.fragment_id, context.writer)?;
         }
 
         let item_name = &for_loop.item;
@@ -707,7 +707,7 @@ impl WebUIHandler {
         }
 
         if let Some(p) = &mut context.plugin {
-            p.on_binding_end(&for_loop.fragment_id, context.writer)?;
+            p.on_for_end(&for_loop.fragment_id, context.writer)?;
         }
 
         Ok(())
@@ -856,7 +856,7 @@ impl WebUIHandler {
         let condition_met = self.evaluate_condition(condition, context)?;
 
         if let Some(p) = &mut context.plugin {
-            p.on_binding_start(&if_cond.fragment_id, context.writer)?;
+            p.on_if_start(&if_cond.fragment_id, context.writer)?;
         }
 
         if condition_met {
@@ -872,7 +872,7 @@ impl WebUIHandler {
         }
 
         if let Some(p) = &mut context.plugin {
-            p.on_binding_end(&if_cond.fragment_id, context.writer)?;
+            p.on_if_end(&if_cond.fragment_id, context.writer)?;
         }
 
         Ok(())

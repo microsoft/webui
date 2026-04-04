@@ -5,10 +5,12 @@ import { WebUIElement, attr, observable } from '../../../src/index.js';
 import {
   attrTarget,
   bindAttr,
+  bindBoolAttr,
   bindEvent,
   bindText,
   dynamic,
   eq,
+  identifier,
   nodePath,
   registerCompiledTemplate,
   repeat,
@@ -40,8 +42,10 @@ registerCompiledTemplate('test-list', {
       bindAttr('item-id', 'item.id'),
       bindAttr('title', 'item.title'),
       bindAttr('state', 'item.state'),
+      bindBoolAttr('data-done', eq('item.state', stringLiteral('done'))),
+      bindBoolAttr('data-flagged', identifier('item.flagged')),
     ],
-    attrGroups: [attrTarget(nodePath(0), { startIndex: 0, bindingCount: 3 })],
+    attrGroups: [attrTarget(nodePath(0), { startIndex: 0, bindingCount: 5 })],
   }],
   events: [
     bindEvent('click', 'addItem', false, nodePath(0, 0)),
@@ -70,12 +74,13 @@ interface ListItem {
   id: string;
   title: string;
   state: string;
+  flagged?: boolean;
 }
 
 export class TestList extends WebUIElement {
   @observable items: ListItem[] = [
-    { id: '1', title: 'Alpha', state: 'pending' },
-    { id: '2', title: 'Beta', state: 'done' },
+    { id: '1', title: 'Alpha', state: 'pending', flagged: false },
+    { id: '2', title: 'Beta', state: 'done', flagged: true },
   ];
   nextId = 3;
 
