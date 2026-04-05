@@ -8,6 +8,8 @@ WebUI is a server-side rendering framework that compiles HTML templates into a b
 
 Traditional server-side rendering re-parses and re-evaluates templates on every request. JavaScript-based SSR frameworks require a Node.js runtime on the server. Both approaches add latency and complexity that scales poorly.
 
+For a deeper look at the motivation behind WebUI, see [Why WebUI?](./why).
+
 ## How WebUI Works
 
 WebUI splits the work into two phases:
