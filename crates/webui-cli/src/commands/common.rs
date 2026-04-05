@@ -5,6 +5,7 @@ use clap::Args;
 use std::path::PathBuf;
 pub use webui::CssStrategy;
 pub use webui::DomStrategy;
+pub use webui::Plugin;
 
 /// Shared CLI arguments used by both `build` and `serve` commands.
 #[derive(Args, Clone)]
@@ -26,8 +27,8 @@ pub struct AppArgs {
     pub dom: DomStrategy,
 
     /// Framework plugin to load
-    #[arg(long)]
-    pub plugin: Option<String>,
+    #[arg(long, value_enum)]
+    pub plugin: Option<Plugin>,
 
     /// Additional component sources (npm packages or local paths, repeatable)
     #[arg(long, value_name = "SOURCE")]
@@ -42,7 +43,7 @@ impl AppArgs {
             entry: self.entry.clone(),
             css: self.css,
             dom: self.dom,
-            plugin: self.plugin.clone(),
+            plugin: self.plugin,
             components: self.components.clone(),
         }
     }

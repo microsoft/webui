@@ -85,23 +85,25 @@ pub struct JsBuildOptions {
 /// Returns the compiled protocol bytes, CSS files, and build statistics.
 #[napi]
 pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
-    let css = match options.css.as_deref() {
-        Some("style") => webui::CssStrategy::Style,
-        Some("module") => webui::CssStrategy::Module,
-        Some("link") | None => webui::CssStrategy::Link,
-        Some(unknown) => {
-            return Err(NapiError::from_reason(format!(
-                "Unknown CSS mode: {unknown}. Use \"link\", \"style\", or \"module\"."
-            )));
-        }
-    };
+    let css = options
+        .css
+        .map(|s| s.parse::<webui::CssStrategy>())
+        .transpose()
+        .map_err(NapiError::from_reason)?
+        .unwrap_or_default();
+
+    let plugin = options
+        .plugin
+        .map(|s| s.parse::<webui::Plugin>())
+        .transpose()
+        .map_err(NapiError::from_reason)?;
 
     let build_options = webui::BuildOptions {
         app_dir: std::path::PathBuf::from(&options.app_dir),
         entry: options.entry.unwrap_or_else(|| "index.html".to_string()),
         css,
         dom: webui::DomStrategy::Shadow,
-        plugin: options.plugin,
+        plugin,
         components: options.components.unwrap_or_default(),
     };
 
@@ -231,11 +233,16 @@ pub fn render(
         .map_err(|e| NapiError::from_reason(format!("State JSON error: {e}")))?;
 
     let mut writer = CallbackWriter::new(&on_chunk);
-    let handler = match plugin.as_deref() {
-        Some("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
-        Some("webui") => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
-        Some(unknown) => {
-            return Err(NapiError::from_reason(format!("Unknown plugin: {unknown}")));
+    let plugin = plugin
+        .map(|s| s.parse::<webui::Plugin>())
+        .transpose()
+        .map_err(NapiError::from_reason)?;
+    let handler = match plugin {
+        Some(webui::Plugin::Fast) => {
+            WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()))
+        }
+        Some(webui::Plugin::WebUI) => {
+            WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()))
         }
         None => WebUIHandler::new(),
     };

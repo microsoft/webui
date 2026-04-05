@@ -50,7 +50,7 @@ fn run(args: &BuildArgs) -> Result<()> {
     output::field("App", &app.display());
     output::field("Entry", &args.app_args.entry);
     output::field("Output", &out.display());
-    output::field("CSS", &format!("{:?}", args.app_args.css));
+    output::field("CSS", &args.app_args.css);
     if let Some(ref plugin_name) = args.app_args.plugin {
         output::field("Plugin", plugin_name);
     }

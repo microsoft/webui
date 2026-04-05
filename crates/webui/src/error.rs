@@ -12,10 +12,6 @@ pub enum WebUIError {
     #[error("I/O error: {0}")]
     Io(String),
 
-    /// Invalid or unknown parser plugin.
-    #[error("Unknown plugin: {0}")]
-    InvalidPlugin(String),
-
     /// Component registration failure.
     #[error("Component registration error: {0}")]
     ComponentRegistration(String),

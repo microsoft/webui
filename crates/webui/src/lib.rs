@@ -37,6 +37,7 @@ pub use webui_handler::route_handler::{
 pub use webui_handler::{plugin::HandlerPlugin, HandlerError, ResponseWriter, WebUIHandler};
 pub use webui_parser::CssStrategy;
 pub use webui_parser::DomStrategy;
+pub use webui_parser::Plugin;
 pub use webui_protocol::WebUIProtocol;
 
 use std::fs;
@@ -59,7 +60,7 @@ pub struct BuildOptions {
     /// DOM strategy for component rendering (shadow or light).
     pub dom: DomStrategy,
     /// Framework plugin to load.
-    pub plugin: Option<String>,
+    pub plugin: Option<Plugin>,
     /// Additional component sources (npm packages or local paths).
     pub components: Vec<String>,
 }
@@ -197,19 +198,18 @@ struct RawBuildOutput {
 
 /// Internal build logic shared by `build()` and `build_to_disk()`.
 fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIError> {
-    let mut parser = match options.plugin.as_deref() {
-        Some("fast") => {
+    let mut parser = match options.plugin {
+        Some(Plugin::Fast) => {
             let mut plugin = FastParserPlugin::new();
             plugin.set_css_strategy(options.css);
             HtmlParser::with_plugin(Box::new(plugin))
         }
-        Some("webui") => {
+        Some(Plugin::WebUI) => {
             let mut plugin = WebUIParserPlugin::new();
             plugin.set_css_strategy(options.css);
             plugin.set_dom_strategy(options.dom);
             HtmlParser::with_plugin(Box::new(plugin))
         }
-        Some(unknown) => return Err(WebUIError::InvalidPlugin(unknown.to_string())),
         None => HtmlParser::new(),
     };
     parser.set_css_strategy(options.css);
@@ -449,17 +449,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_invalid_plugin() {
-        let app = create_app_dir(&[("index.html", "<h1>Hello</h1>")]);
-        let mut options = default_options(app.path());
-        options.plugin = Some("nonexistent".to_string());
-
-        let result = build(options);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), WebUIError::InvalidPlugin(_)));
-    }
-
-    #[test]
     fn test_build_stats_populated() {
         let app = create_app_dir(&[("index.html", "<h1>{{title}}</h1>")]);
         let result = build(default_options(app.path())).unwrap();
@@ -676,7 +665,7 @@ mod tests {
     fn test_build_with_fast_plugin() {
         let app = create_app_dir(&[("index.html", "<h1>Hello</h1>")]);
         let mut options = default_options(app.path());
-        options.plugin = Some("fast".to_string());
+        options.plugin = Some(Plugin::Fast);
 
         let result = build(options).unwrap();
         assert!(result.protocol.fragments.contains_key("index.html"));
