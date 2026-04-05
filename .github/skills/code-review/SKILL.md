@@ -1,17 +1,17 @@
 ---
 name: code-review
-description: Framework code review checklist — correctness, performance, concurrency, design, and style.
+description: Framework code review checklist - correctness, performance, concurrency, design, and style.
 ---
 
 # Framework Code Review
 
-Use this skill when reviewing or writing framework-level code: handler, parser, protocol, router, CLI runtime, FFI, or state management. The checklist is generic — apply every section to every PR that touches core logic.
+Use this skill when reviewing or writing framework-level code: handler, parser, protocol, router, CLI runtime, FFI, or state management. The checklist is generic - apply every section to every PR that touches core logic.
 
-> **Complements**: `handler-perf` (hot-path micro-optimizations), `quality-gate` (automated checks), `ffi` (C ABI boundary safety).
+> **Complements**: `perf` (speed and memory optimization), `quality-gate` (automated checks), `ffi` (C ABI boundary safety).
 
 ---
 
-## 1 — Cross-layer contract parity
+## 1 - Cross-layer contract parity
 
 Every behavioral contract that spans more than one layer (parser → protocol → handler → client) must be **identical** in semantics. Mismatches cause silent divergence between SSR and client rendering.
 
@@ -21,7 +21,7 @@ Every behavioral contract that spans more than one layer (parser → protocol �
 | **Matching semantics** | Optional, splat, exact, and wildcard rules must produce the same result on server and client for the same input. |
 | **Tie-breaking determinism** | When multiple candidates match with equal rank, the selection rule must be documented and identical across layers. |
 | **Edge values** | Empty strings, `/`, encoded slashes (`%2F`), Unicode, and values containing delimiters (`.`, `:`, `*`) must be tested at every boundary. |
-| **Error representation** | When one layer returns an error, the other layers must handle or propagate it consistently — no silent swallowing. |
+| **Error representation** | When one layer returns an error, the other layers must handle or propagate it consistently - no silent swallowing. |
 | **Spec-vs-code parity** | If `DESIGN.md` specifies behavior (e.g., array indexing `items.0.name`, string `.length` semantics), the implementation must match. Tests that lock in spec-violating behavior are bugs, not proof of correctness. |
 | **Binding surface parity** | Node, WASM, and CLI bindings must expose the same logical API. If one uses protobuf bytes and another uses JSON strings, transparent fallback is impossible. |
 | **Type coercion consistency** | If `==` uses strict equality but `>` coerces strings to numbers, document the coercion matrix. Operators on the same pair of operands should not produce contradictory outcomes. |
@@ -32,12 +32,12 @@ Every behavioral contract that spans more than one layer (parser → protocol �
 
 - Write a table: "Input X → Layer A produces Y₁, Layer B produces Y₂". If Y₁ ≠ Y₂, file a parity bug.
 - Ensure tests exist that exercise the same input through all layers.
-- Diff the function signatures between Node/WASM/TS bindings — arguments and return types must match logically.
-- Search for tests that assert spec-violating behavior (e.g., `test_array_index_not_resolved`) — these are bugs masquerading as tests.
+- Diff the function signatures between Node/WASM/TS bindings - arguments and return types must match logically.
+- Search for tests that assert spec-violating behavior (e.g., `test_array_index_not_resolved`) - these are bugs masquerading as tests.
 
 ---
 
-## 2 — Determinism
+## 2 - Determinism
 
 Non-deterministic behavior is a correctness bug, even if it "usually works."
 
@@ -51,11 +51,11 @@ Non-deterministic behavior is a correctness bug, even if it "usually works."
 ### How to check
 
 - Search for `HashMap` or `HashSet` usage where iteration order affects output.
-- Run the same input twice in different process instances — output must be identical.
+- Run the same input twice in different process instances - output must be identical.
 
 ---
 
-## 3 — Concurrency and race safety
+## 3 - Concurrency and race safety
 
 ### Rust (server / CLI)
 
@@ -65,7 +65,7 @@ Non-deterministic behavior is a correctness bug, even if it "usually works."
 | **Snapshot consistency** | If a request reads multiple fields from shared state, read them all under **one** lock acquisition. Two separate locks can produce mixed old/new data if a writer updates between them. |
 | **`std::sync::Mutex` on async paths** | Blocking mutexes on async paths can starve the executor. Prefer `tokio::sync::RwLock` or `Arc<ArcSwap<T>>` for read-heavy shared state. |
 | **Atomics** | Use `AtomicU64` for simple counters/versions instead of locking. |
-| **File watcher error recovery** | If a rebuild fails, the watcher must NOT update its "last seen" timestamps — otherwise it won't retry when the error is transient. Keep a retry/backoff path. |
+| **File watcher error recovery** | If a rebuild fails, the watcher must NOT update its "last seen" timestamps - otherwise it won't retry when the error is transient. Keep a retry/backoff path. |
 | **Cache concurrent writes** | Temp files used for atomic-replace must have unique names (PID + random suffix). Two writers using the same `{key}.tmp` will clobber each other. |
 | **Event-driven vs polling** | Polling every N ms scales poorly. Prefer event-driven file notifications (`notify` crate) or at least directory-level mtime checks before deep scans. |
 
@@ -93,7 +93,7 @@ Non-deterministic behavior is a correctness bug, even if it "usually works."
 
 ---
 
-## 4 — Allocation and clone discipline
+## 4 - Allocation and clone discipline
 
 Every unnecessary allocation is CPU time and GC pressure. Apply these rules in hot paths (request handling, rendering, matching, serialization).
 
@@ -128,14 +128,14 @@ Every unnecessary allocation is CPU time and GC pressure. Apply these rules in h
 
 ---
 
-## 5 — Data structure selection
+## 5 - Data structure selection
 
 Choose the structure that matches the access pattern. A wrong choice is a design bug.
 
 | Access pattern | Preferred structure |
 |---------------|-------------------|
 | Order-dependent iteration (ranking, priority) | `BTreeMap`, `Vec` sorted by key, `IndexMap` |
-| Membership test only | `HashSet`, bloom filter (but beware false positives — see below) |
+| Membership test only | `HashSet`, bloom filter (but beware false positives - see below) |
 | Frequent insert + lookup by key | `HashMap` (if order doesn't matter) |
 | Small fixed-size collections (< 16 elements) | Stack array, `SmallVec`, `ArrayVec` |
 | Append-only log | `Vec` with `push` |
@@ -149,7 +149,7 @@ Choose the structure that matches the access pattern. A wrong choice is a design
 
 ---
 
-## 6 — API surface and design deduplication
+## 6 - API surface and design deduplication
 
 | Check | Why |
 |-------|-----|
@@ -162,9 +162,9 @@ Choose the structure that matches the access pattern. A wrong choice is a design
 
 ---
 
-## 7 — Type safety, correctness idioms, and architectural rules
+## 7 - Type safety, correctness idioms, and architectural rules
 
-### Rust — banned patterns
+### Rust - banned patterns
 
 | Pattern | Preference |
 |---------|-----------|
@@ -174,14 +174,14 @@ Choose the structure that matches the access pattern. A wrong choice is a design
 | `as any` casts (in FFI or interop) | Minimize. Use typed wrappers or trait objects. |
 | Raw pointer arithmetic | Prefer safe abstractions. Use `unsafe` only when necessary, with safety proof. |
 
-### Rust — required annotations
+### Rust - required annotations
 
 | Pattern | Preference |
 |---------|-----------|
 | `#[must_use]` | Add to all public constructors, serialization/deserialization methods, and functions returning `Option`/`Result` whose value should not be silently discarded. |
 | `#[allow(dead_code)]` | Remove the annotation AND the dead code. If the field/function is planned for future use, delete it now and re-add when needed (with a TODO referencing an issue). |
 
-### Rust — error handling precision
+### Rust - error handling precision
 
 | Pattern | Preference |
 |---------|-----------|
@@ -190,17 +190,17 @@ Choose the structure that matches the access pattern. A wrong choice is a design
 | Error variants that abuse a generic `Validation(String)` | Add dedicated variants (`Decode`, `Encode`, `MissingField`) so callers can match programmatically. |
 | Byte vs char index confusion | When scanning strings with `chars()` but slicing with byte indices, panics occur on non-ASCII input. Always use `char_indices()` or work exclusively with byte offsets. |
 
-### Rust — numeric precision
+### Rust - numeric precision
 
 | Pattern | Preference |
 |---------|-----------|
 | Forcing all numbers through `f64` for comparisons | Preserve exact integer comparisons (`i64`/`u64`) when both operands are integral. Only fall back to `f64` for genuine floats. Large integers above 2^53 lose precision in `f64`. |
 
-### Rust — build-time validation
+### Rust - build-time validation
 
 | Pattern | Preference |
 |---------|-----------|
-| Deferring validation to render-time | Validate at parse/build time and fail fast. If a route references a component that doesn't exist, or a path is empty, catch it during parsing — not when a user hits the route. |
+| Deferring validation to render-time | Validate at parse/build time and fail fast. If a route references a component that doesn't exist, or a path is empty, catch it during parsing - not when a user hits the route. |
 | Accepting invalid inputs that pass through | If a `<route>` element is missing `path` or references an unknown component, the parser must reject it with an actionable error. |
 | `bytes[i] as char` on UTF-8 strings | This silently corrupts multi-byte characters. Use `str` slicing or `char_indices()` to preserve UTF-8 correctness. |
 
@@ -218,7 +218,7 @@ Choose the structure that matches the access pattern. A wrong choice is a design
 
 ---
 
-## 8 — Style, comments, and documentation
+## 8 - Style, comments, and documentation
 
 | Check | Rule |
 |-------|------|
@@ -231,13 +231,13 @@ Choose the structure that matches the access pattern. A wrong choice is a design
 | **Magic numbers** | Extract to named constants with a doc comment. |
 | **File length** | When a file exceeds ~400 lines, split by concern. |
 | **Function arguments** | Max 5 parameters. Use a config/options struct beyond that. |
-| **Unused dependencies** | Remove deps listed in `Cargo.toml` that are never imported. `anyhow` is for binary crates only — library crates use `thiserror`. |
+| **Unused dependencies** | Remove deps listed in `Cargo.toml` that are never imported. `anyhow` is for binary crates only - library crates use `thiserror`. |
 | **Placeholder / no-op APIs** | If a public function always returns empty/default, either implement it or remove it behind a feature gate. Silent no-ops mislead callers. |
 | **Tests that lock in wrong behavior** | A test named `test_feature_not_supported` that asserts `None` for spec-required behavior is a bug, not a test. Delete or fix it. |
 
 ---
 
-## 9 — Server runtime, proxy, and discovery correctness
+## 9 - Server runtime, proxy, and discovery correctness
 
 When the change touches dev-server, API proxy, request handling, or package discovery:
 
@@ -250,14 +250,14 @@ When the change touches dev-server, API proxy, request handling, or package disc
 | **Resource reuse** | HTTP clients, TLS contexts, and connection pools are expensive to create. Reuse them across requests. |
 | **HMR injection** | Search for closing tags case-insensitively. `</BODY>` and `</body>` are both valid HTML. |
 | **Input validation** | CLI commands must validate that input paths are directories (not files) before proceeding. Actionable error early beats cryptic failure later. |
-| **Cache invalidation scope** | Cache keys must include hashes/mtimes of ALL files that affect the cached result — not just `package.json`. If template HTML or CSS changes, the cache must invalidate. |
+| **Cache invalidation scope** | Cache keys must include hashes/mtimes of ALL files that affect the cached result - not just `package.json`. If template HTML or CSS changes, the cache must invalidate. |
 | **Cache write safety** | Use per-write unique temp file names (PID + random suffix) and atomic rename. Concurrent writers must not clobber each other's temp files. |
 | **Symlink policy** | Package resolvers must allow workspace-linked packages (symlinks outside `node_modules`). Blocking all external symlinks breaks common monorepo patterns. |
 | **File-size guardrails** | Discovery that reads arbitrary files must cap read sizes. A 100MB HTML file shouldn't cause OOM during component scanning. |
 
 ---
 
-## 10 — Protocol and schema hygiene
+## 10 - Protocol and schema hygiene
 
 When the change touches `.proto` files, serialization, or the binary protocol:
 
@@ -268,6 +268,42 @@ When the change touches `.proto` files, serialization, or the binary protocol:
 | **Enum variants are exhaustive** | Match arms must handle unknown variants (use a default/unknown variant or `_` with a log). |
 | **No unnecessary nesting** | Flat structures decode faster than deeply nested ones. |
 | **Measure payload size** | Before/after byte counts for representative inputs. Extra fields add decode overhead even when empty. |
+| **Prioritize decode speed** | Breaking field changes are allowed when they improve performance measurably. Remove unused fields and message shapes that add decode overhead. |
+| **Cascade all layers** | Schema changes affect the whole stack: protocol -> handler -> FFI -> CLI. Update all in the same change. Run `cargo xtask build && cargo xtask test` to validate. |
+| **Update DESIGN.md** | Protocol behavior changes must update the protocol sections of `DESIGN.md` in the same commit. |
+
+---
+
+## 10b - FFI boundary safety
+
+When the change touches `crates/webui-ffi` or C ABI signatures:
+
+| Check | Why |
+|-------|-----|
+| **`# Safety` doc on every `extern "C" fn`** | Documents the invariants the caller must uphold. |
+| **`// SAFETY:` on every `unsafe` block** | Explains why the unsafe operation is sound. |
+| **`catch_unwind` wraps all FFI bodies** | Panics from transitive deps (serde, prost) crossing the boundary are UB in unwind mode. On panic, set last-error and return null. |
+| **Validate all foreign inputs** | Null pointers, invalid UTF-8, out-of-range values - check before dereferencing. |
+| **No `unwrap()` or `expect()`** | Anywhere in the FFI code path, including error-handling helpers. |
+| **Minimal stable surface** | Prefer opaque pointers and integer error codes over exposing Rust layouts. |
+| **Header sync** | If any `#[no_mangle]` signature changes, verify `crates/webui-ffi/include/webui_ffi.h`. |
+
+---
+
+## 11 - Documentation sync
+
+Every behavioral change must include corresponding documentation updates. Missing docs are a review finding.
+
+| Check | Why |
+|-------|-----|
+| **DESIGN.md updated** | If the change modifies public APIs, protocol fields, behavioral contracts, error variants, or SSR markers, `DESIGN.md` must be updated in the same commit. |
+| **User-facing docs updated** | If the change affects CLI flags, template syntax, component authoring, routing, or integration behavior, `docs/` must be updated. |
+| **AI reference updated** | If the change affects anything a code-generation AI would need to know, `docs/guide/ai.md` must be updated. |
+| **README links to docs portal** | Package READMEs should defer to the docs portal, not duplicate content. |
+| **No stale examples** | Code examples in docs must use current API signatures, flag names, and marker formats. |
+| **docs build passes** | `cd docs && pnpm build` must succeed (catches broken links, unescaped `{{`, missing pages). |
+
+See `docs-sync` skill for the full file mapping of what-changed to which-docs-to-update.
 
 ---
 
@@ -285,4 +321,4 @@ When producing a code review, report findings as:
 **Fix**: Concrete suggestion, with a code snippet when helpful.
 ```
 
-Each finding must be **self-contained** — readable without context from other findings. This allows direct conversion to GitHub issues.
+Each finding must be **self-contained** - readable without context from other findings. This allows direct conversion to GitHub issues.

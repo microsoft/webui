@@ -4,25 +4,25 @@ CSS Token Hoisting is a build-time optimization that discovers which CSS custom 
 
 ## How It Works
 
-During the build process, WebUI extracts CSS custom property **usages** — names referenced via `var(--name)` — from two sources:
+During the build process, WebUI extracts CSS custom property **usages** - names referenced via `var(--name)` - from two sources:
 
-1. **Component CSS files** — tokens are extracted when components are registered and cached in the component registry.
-2. **Inline `<style>` tags** — tokens are extracted from `<style>` elements in the entry HTML file and component templates.
+1. **Component CSS files** - tokens are extracted when components are registered and cached in the component registry.
+2. **Inline `<style>` tags** - tokens are extracted from `<style>` elements in the entry HTML file and component templates.
 
 The resulting set of tokens is sorted, deduplicated, and included in the protocol's `tokens` field.
 
 ### What Gets Hoisted
 
-Only `var()` **usages** are hoisted — not custom property **definitions**:
+Only `var()` **usages** are hoisted - not custom property **definitions**:
 
 ```css
-/* ✅ HOISTED — usage via var() */
+/* ✅ HOISTED - usage via var() */
 .button {
   color: var(--colorPrimary);           /* → "colorPrimary" */
   background: var(--bgColor);           /* → "bgColor" */
 }
 
-/* ❌ NOT hoisted — this is a definition */
+/* ❌ NOT hoisted - this is a definition */
 :root {
   --colorPrimary: #0078d4;
 }
@@ -39,7 +39,7 @@ Fallback variables in `var()` calls are also extracted:
 }
 ```
 
-Literal fallback values (like `16px`) are ignored — only variable references are extracted.
+Literal fallback values (like `16px`) are ignored - only variable references are extracted.
 
 ### Local Definition Exclusion
 
@@ -79,7 +79,7 @@ The <code v-pre>&lt;!--{{tokens}}--&gt;</code> comment is parsed as a **Signal f
 | <code v-pre>&lt;!--{{tokens.light}}--&gt;</code> | Signal fragment with dotted path |
 | `<!-- regular comment -->` | Preserved as raw content |
 
-This mechanism is general-purpose — any <code v-pre>{{identifier}}</code> inside an HTML comment becomes a signal fragment.
+This mechanism is general-purpose - any <code v-pre>{{identifier}}</code> inside an HTML comment becomes a signal fragment.
 
 </div>
 

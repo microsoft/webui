@@ -1,6 +1,6 @@
 # Performance
 
-WebUI is designed for performance at every layer of the stack — from build-time
+WebUI is designed for performance at every layer of the stack - from build-time
 compilation to binary serialization to streaming output. This page explains the
 design decisions, shares real benchmark data, and shows you how to measure
 performance in your own applications.
@@ -9,16 +9,16 @@ performance in your own applications.
 
 Five architectural choices keep WebUI fast without any tuning:
 
-- **No recursion** — all algorithms are iterative, making them stack-safe even
+- **No recursion** - all algorithms are iterative, making them stack-safe even
   for large documents with deeply nested components.
-- **No regular expressions** — tree-sitter handles parsing and iterative
+- **No regular expressions** - tree-sitter handles parsing and iterative
   matchers handle route resolution, avoiding backtracking overhead entirely.
-- **Minimal runtime computation** — templates are compiled to a binary protocol
+- **Minimal runtime computation** - templates are compiled to a binary protocol
   at build time. The server never parses template syntax on a live request.
-- **Buffer consolidation** — adjacent static content is merged into single
+- **Buffer consolidation** - adjacent static content is merged into single
   fragments during compilation, reducing the number of write calls at render
   time.
-- **Protocol Buffers** — templates and the render protocol are serialized to a
+- **Protocol Buffers** - templates and the render protocol are serialized to a
   compact binary format (`protocol.bin`) that decodes static state significantly faster than
   JSON-based template representations, keeping only dynamic-time state in JSON.
 
@@ -26,7 +26,7 @@ Five architectural choices keep WebUI fast without any tuning:
 
 **Methodology:** [autocannon](https://github.com/mcollina/autocannon), 100
 concurrent connections, 10-second duration, 2-second warmup. The workload
-renders ~2,400 tiles per request — a realistic stress test that exercises
+renders ~2,400 tiles per request - a realistic stress test that exercises
 loops, conditionals, and component composition.
 
 | Framework           | Avg Latency | p50    | p99    | Req/Sec   | Throughput   |
@@ -63,7 +63,7 @@ Each layer of the architecture contributes to the overall performance profile:
 - **Build-time compilation.** Template parsing, component discovery, and
   expression compilation all happen once during `webui build` (or on the fly
   with `webui serve` in development). At runtime, the server only performs
-  state interpolation against a pre-compiled binary protocol — no syntax
+  state interpolation against a pre-compiled binary protocol - no syntax
   parsing, no AST walking.
 
 - **Protocol Buffers.** The handler deserializes a compact binary payload
@@ -80,24 +80,65 @@ Each layer of the architecture contributes to the overall performance profile:
   latency execution.
 
 - **Targeted updates.** On the client side, path-indexed binding updates touch
-  only the affected DOM nodes — not entire subtrees. This keeps hydration and
+  only the affected DOM nodes - not entire subtrees. This keeps hydration and
   reactive updates fast even in large documents.
+
+## Light DOM vs Shadow DOM
+
+Shadow DOM provides style encapsulation but has a performance cost. Benchmark
+data from a 2,400-component email client:
+
+| Metric | Shadow DOM | Light DOM | Improvement |
+|--------|-----------|-----------|-------------|
+| First Contentful Paint | baseline | **26% faster** | fewer shadow root constructions |
+| Layout Operations | baseline | **60% fewer** | no shadow boundary recalculations |
+
+### When to Use Each
+
+**Shadow DOM** (default) - use when:
+- Style encapsulation is important (shared component libraries)
+- Components are used in contexts where CSS conflicts are likely
+- You need slot-based composition
+
+**Light DOM** - use when:
+- Performance is critical (high-component-count pages)
+- Components are leaf nodes (list items, cards, badges)
+- You control the full page CSS and don't need encapsulation
+
+### Switching to Light DOM
+
+Build with the `--dom=light` flag:
+
+```bash
+webui build ./src --out ./dist --dom=light
+```
+
+In Rust handlers, use `DomStrategy::Light`:
+
+```rust
+let options = RenderOptions::new("index.html", "/")
+    .with_dom_strategy(DomStrategy::Light);
+```
+
+CSS differences:
+- Shadow DOM: `:host { display: block; }`
+- Light DOM: `my-component { display: block; }` (use the tag name)
 
 ## Performance Rules
 
 The following rules are enforced throughout the WebUI codebase to maintain
 consistent performance:
 
-- **No cloning large state trees** — pass by reference and capture borrows.
+- **No cloning large state trees** - pass by reference and capture borrows.
   Cloning a state tree duplicates memory and adds allocation pressure.
-- **No `format!()` in writer output** — use sequential `writer.write()` calls.
+- **No `format!()` in writer output** - use sequential `writer.write()` calls.
   `format!()` allocates a temporary `String` on every invocation.
-- **No `.collect::<Vec<_>>()` on splits** — iterate directly over the iterator.
+- **No `.collect::<Vec<_>>()` on splits** - iterate directly over the iterator.
   Collecting into a `Vec` allocates heap memory unnecessarily.
-- **No `String::from(ch)` in escape loops** — use stack-allocated buffers.
+- **No `String::from(ch)` in escape loops** - use stack-allocated buffers.
   Converting a single character to a `String` is a heap allocation per
   character.
-- **No per-request template re-parsing** — load the compiled protocol once at
+- **No per-request template re-parsing** - load the compiled protocol once at
   startup and reuse it for every request.
 
 ## Running Benchmarks
@@ -123,7 +164,7 @@ ls target/criterion/report/index.html
 ```
 
 Each benchmark uses [Criterion.rs](https://github.com/bheisler/criterion.rs)
-for statistical rigor — results include confidence intervals, outlier
+for statistical rigor - results include confidence intervals, outlier
 detection, and comparison against previous runs.
 
 ## Measuring Hydration Performance
@@ -148,6 +189,6 @@ slow components and optimize them individually.
 
 ## Learn More
 
-- [SSR showdown source](https://github.com/microsoft/webui/tree/main/examples/integration/ssr-performance-showdown) — full benchmark harness and reproduction steps
-- [Contact book benchmark](https://github.com/microsoft/webui/tree/main/crates/webui/benches) — real-world application benchmark
-- [DESIGN.md](https://github.com/microsoft/webui/blob/main/DESIGN.md) — architectural performance principles
+- [SSR showdown source](https://github.com/microsoft/webui/tree/main/examples/integration/ssr-performance-showdown) - full benchmark harness and reproduction steps
+- [Contact book benchmark](https://github.com/microsoft/webui/tree/main/crates/webui/benches) - real-world application benchmark
+- [DESIGN.md](https://github.com/microsoft/webui/blob/main/DESIGN.md) - architectural performance principles

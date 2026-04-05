@@ -1,4 +1,4 @@
-# WebUI — Copilot Instructions
+# WebUI - Copilot Instructions
 
 You are working on **WebUI**, a high-performance server-side rendering framework written in Rust that operates without JavaScript runtimes. It separates static and dynamic content at build time into a binary protocol that enables fast rendering in any host language.
 
@@ -8,12 +8,12 @@ Read and internalize these instructions at the start of every session. They are 
 
 ## Context you must load first
 
-Before suggesting or applying **any** change, read these files — they are the ground truth:
+Before suggesting or applying **any** change, read these files - they are the ground truth:
 
-1. **`DESIGN.md`** — The living technical specification. Architecture, protocol schema, module contracts, and behavioral rules all live here. Treat every constraint in it as mandatory unless the user explicitly asks to change one.
-2. **`Cargo.toml`** (workspace root) — Workspace members, dependency versions, and release profile.
-3. **`clippy.toml`** — Lint policy (bans `unwrap`/`expect`, caps cognitive complexity at 20, limits function arguments to 5).
-4. **`deny.toml`** — Allowed licenses and advisory ignore-list.
+1. **`DESIGN.md`** - The living technical specification. Architecture, protocol schema, module contracts, and behavioral rules all live here. Treat every constraint in it as mandatory unless the user explicitly asks to change one.
+2. **`Cargo.toml`** (workspace root) - Workspace members, dependency versions, and release profile.
+3. **`clippy.toml`** - Lint policy (bans `unwrap`/`expect`, caps cognitive complexity at 20, limits function arguments to 5).
+4. **`deny.toml`** - Allowed licenses and advisory ignore-list.
 5. The specific crate(s) under `crates/` that are relevant to the task at hand.
 
 ---
@@ -32,7 +32,7 @@ This executes, in order: `license-headers → fmt → clippy → deny → test �
 
 ## Performance is the top priority
 
-Every decision — API design, data structure choice, algorithm, error path — must be evaluated through a performance lens first. WebUI's value proposition is speed; nothing else matters if it is slow.
+Every decision - API design, data structure choice, algorithm, error path - must be evaluated through a performance lens first. WebUI's value proposition is speed; nothing else matters if it is slow.
 
 ### Hard constraints
 
@@ -47,14 +47,14 @@ Every decision — API design, data structure choice, algorithm, error path — 
 ### Allocation discipline
 
 - `Vec::with_capacity` / `String::with_capacity` when size is known or estimable.
-- `push_str` / `write!` into existing buffers — never `format!` in hot paths.
-- No unnecessary `.clone()` — pass `&str`, `&[T]`, or slices. Use `Cow<'_, str>` when a value is sometimes borrowed, sometimes owned.
+- `push_str` / `write!` into existing buffers - never `format!` in hot paths.
+- No unnecessary `.clone()` - pass `&str`, `&[T]`, or slices. Use `Cow<'_, str>` when a value is sometimes borrowed, sometimes owned.
 - Prefer explicit state machines and stack-based traversal over recursive AST walking.
-- Never clone large state trees for read-only lookups — use resolver closures or borrowed references.
-- Never clone a `HashMap` to save/restore scope — save/restore only the overwritten key.
-- Never call `.to_string()` on a `Cow` — write it directly to avoid defeating zero-copy.
-- Iterate `split()` directly — never `collect::<Vec<_>>()` when sequential access suffices.
-- For handler-specific patterns, see: `skills/handler-perf/SKILL.md`.
+- Never clone large state trees for read-only lookups - use resolver closures or borrowed references.
+- Never clone a `HashMap` to save/restore scope - save/restore only the overwritten key.
+- Never call `.to_string()` on a `Cow` - write it directly to avoid defeating zero-copy.
+- Iterate `split()` directly - never `collect::<Vec<_>>()` when sequential access suffices.
+- For performance patterns (speed and memory), see: `skills/perf/SKILL.md`.
 
 ### Measurement
 
@@ -70,7 +70,7 @@ Every decision — API design, data structure choice, algorithm, error path — 
 ### Error handling
 - Library crates (`webui-parser`, `webui-handler`, `webui-expressions`, `webui-state`, `webui-protocol`, `webui-ffi`) use **custom error enums** via `thiserror`.
 - Binary crates (`webui-cli`, `xtask`) may use `anyhow`.
-- **No `unwrap()` or `expect()`** in library code — `clippy.toml` enforces this.
+- **No `unwrap()` or `expect()`** in library code - `clippy.toml` enforces this.
 - Errors must be **actionable**: tell the caller what went wrong *and* what they can do about it.
 
 ### Public API surface
@@ -81,7 +81,7 @@ Every decision — API design, data structure choice, algorithm, error path — 
 ### Code organization
 - One concern per module. When a file approaches ~400 lines, split it.
 - Types are `PascalCase`, functions are `snake_case`, constants are `SCREAMING_SNAKE_CASE`.
-- `cargo fmt --all` is the sole formatting authority — never override or disable it.
+- `cargo fmt --all` is the sole formatting authority - never override or disable it.
 
 ### License header
 
@@ -133,12 +133,12 @@ Every code change ships with tests. No exceptions.
 
 ## DESIGN.md is the living specification
 
-`DESIGN.md` is not documentation — it **is** the specification. Code implements what `DESIGN.md` describes.
+`DESIGN.md` is not documentation - it **is** the specification. Code implements what `DESIGN.md` describes.
 
 - **Read it** before any architectural or API change.
 - **Update it** in the same commit whenever you add, remove, or modify a public API, protocol field, fragment type, error variant, or behavioral contract.
 - Keep its Rust code examples conceptually compilable and in sync with real code.
-- If `DESIGN.md` and the code disagree, that is a bug — fix both.
+- If `DESIGN.md` and the code disagree, that is a bug - fix both.
 
 ---
 
@@ -153,13 +153,13 @@ The `docs/` directory is a VitePress site for external developers consuming WebU
 
 ## Skills
 
-- **Pull request** — `skills/pr/SKILL.md`
-- **Code review** — `skills/code-review/SKILL.md`
-- **Quality gate** — `skills/quality-gate/SKILL.md`
-- **FFI boundary** — `skills/ffi/SKILL.md`
-- **Protobuf schema evolution** — `skills/protobuf/SKILL.md`
-- **Docs synchronization** — `skills/docs-sync/SKILL.md`
-- **Handler performance** — `skills/handler-perf/SKILL.md`
+- **Pull request** - `skills/pr/SKILL.md`
+- **Code review** - `skills/code-review/SKILL.md` (includes FFI safety and protobuf hygiene)
+- **Quality gate** - `skills/quality-gate/SKILL.md`
+- **Docs synchronization** - `skills/docs-sync/SKILL.md`
+- **Performance (speed + memory)** - `skills/perf/SKILL.md`
+- **WebUI app development** - `skills/webui-dev/SKILL.md`
+- **Testing** - `skills/testing/SKILL.md`
 
 ---
 
@@ -187,7 +187,7 @@ The `docs/` directory is a VitePress site for external developers consuming WebU
 The FFI crate exposes WebUI to many host languages via a C-compatible ABI and remains a high-sensitivity surface.
 
 - Treat all FFI changes as safety- and compatibility-critical.
-- Use the full workflow and checklist in: `skills/ffi/SKILL.md`.
+- Use the FFI boundary checklist in: `skills/code-review/SKILL.md` (section 10b).
 
 ---
 
@@ -195,7 +195,7 @@ The FFI crate exposes WebUI to many host languages via a C-compatible ABI and re
 
 Schema changes cascade through protocol → handler → FFI → CLI and should optimize runtime performance first.
 
-- Use the protocol evolution workflow in: `skills/protobuf/SKILL.md`.
+- Use the protocol evolution checklist in: `skills/code-review/SKILL.md` (section 10).
 
 ---
 
@@ -217,11 +217,11 @@ The workspace ships with an aggressive release profile (`Cargo.toml`):
 [profile.release]
 lto = true            # Full link-time optimization
 codegen-units = 1     # Maximum optimization (slower compile)
-panic = "abort"       # No unwinding — smaller binary, but panics terminate immediately
+panic = "abort"       # No unwinding - smaller binary, but panics terminate immediately
 strip = true          # Strip debug symbols
 ```
 
-- **`panic = "abort"` means panics kill the process instantly** — reinforcing why `unwrap`/`expect` are banned in library code.
+- **`panic = "abort"` means panics kill the process instantly** - reinforcing why `unwrap`/`expect` are banned in library code.
 - Always validate performance claims in `--release` mode. Debug builds are not representative.
 - Be aware that LTO + single codegen unit makes release builds slow. Use `cargo test` (debug) for iteration, `cargo build --release` for final validation.
 
@@ -247,7 +247,7 @@ All terminal output uses `console::style()` from the `console` crate. This is th
 - Use `console::style(text).yellow()` for warnings and hints.
 - Use `console::style(text).dim()` for secondary/contextual info.
 - Use `console::style(text).bold()` for values (file names, counts, paths).
-- **Do not** create `Style` structs or `Printer` wrappers — use `console::style()` inline.
+- **Do not** create `Style` structs or `Printer` wrappers - use `console::style()` inline.
 - Semantic output helpers live as **free functions** in `webui-cli/src/utils/output.rs` (`header`, `field`, `success`, `finish`, `error`, `hint`).
 
 ---
@@ -256,14 +256,14 @@ All terminal output uses `console::style()` from the `console` crate. This is th
 
 `cargo xtask check` automatically installs missing Rust ecosystem tools:
 
-- **Rustup components** (`clippy`, `rustfmt`) — via `rustup component add`.
-- **Rustup targets** (`wasm32-unknown-unknown`) — via `rustup target add`.
-- **Cargo tools** (`cargo-deny`, `wasm-pack`) — via `cargo install`.
+- **Rustup components** (`clippy`, `rustfmt`) - via `rustup component add`.
+- **Rustup targets** (`wasm32-unknown-unknown`) - via `rustup target add`.
+- **Cargo tools** (`cargo-deny`, `wasm-pack`) - via `cargo install`.
 
 Use the helpers in `xtask/src/util.rs`:
-- `ensure_rustup_component(name)` — for rustup components.
-- `ensure_rustup_target(name)` — for compilation targets.
-- `ensure_cargo_install(crate_name, binary)` — for cargo-installed tools.
+- `ensure_rustup_component(name)` - for rustup components.
+- `ensure_rustup_target(name)` - for compilation targets.
+- `ensure_cargo_install(crate_name, binary)` - for cargo-installed tools.
 
 System-level tools (LLVM, wasi-sdk) cannot be auto-installed; show actionable per-platform hints using `console::style()` formatting.
 

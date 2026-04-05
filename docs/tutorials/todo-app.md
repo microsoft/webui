@@ -3,14 +3,14 @@
 This tutorial walks through the
 [`todo-webui`](https://github.com/microsoft/webui/tree/main/examples/app/todo-webui)
 example application. It uses the WebUI Framework to create two Web
-Components — `<todo-app>` and `<todo-item>` — with reactive state, event
+Components - `<todo-app>` and `<todo-item>` - with reactive state, event
 handling, and hydration from server-rendered HTML.
 
 By the end you will know how to:
 
 - Structure a WebUI project with components and static state
 - Author templates that use WebUI directives (`<for>`, `<if>`, `{{}}`, `@click`, `w-ref`)
-- Write TypeScript component classes with `@attr`, `@observable`, and `@volatile`
+- Write TypeScript component classes with `@attr` and `@observable`
 - Hydrate the page so the server-rendered markup becomes interactive
 
 ---
@@ -62,8 +62,9 @@ reads this file and uses it to populate every `{{expression}}` in your templates
 ```
 
 The `items` array drives the `<for>` loop inside the app component.
-`remainingCount` provides the initial value for the volatile computed property —
-after hydration, the client recomputes it reactively.
+`remainingCount` is provided by the server so the initial render shows the
+correct count. After hydration, the client keeps this value in sync by
+updating the `@observable` in event handlers.
 
 ---
 
@@ -246,7 +247,7 @@ hydration.
 ### `src/todo-app/todo-app.ts`
 
 ```typescript
-import { WebUIElement, attr, observable, volatile } from '@microsoft/webui-framework';
+import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
 
 export class TodoApp extends WebUIElement {
   // Reflected attribute – kept in sync with the DOM attribute
@@ -255,9 +256,11 @@ export class TodoApp extends WebUIElement {
   // Observable array – changes trigger a re-render of the <for> loop
   @observable items: Array<{ id: string; title: string; state: string }> = [];
 
-  // Volatile computed – recalculated on every access, never cached
-  @volatile get remainingCount(): number {
-    return (this.items ?? []).filter(i => i.state !== 'done').length;
+  // Remaining count – kept in sync by event handlers
+  @observable remainingCount = 0;
+
+  private updateRemaining(): void {
+    this.remainingCount = (this.items ?? []).filter(i => i.state !== 'done').length;
   }
 
   // DOM reference populated by w-ref="addInput" in the template
@@ -342,7 +345,7 @@ up to the parent `<todo-app>`, where they are caught by the `@toggle-item` and
 |-----------|---------|
 | `@attr` | Reflects a class property to/from the element's HTML attribute. |
 | `@observable` | Tracks changes and triggers template updates when the value is reassigned. |
-| `@volatile` | Marks a getter as non-cacheable — re-evaluated every time the template reads it. |
+
 
 ---
 
@@ -358,14 +361,9 @@ function logHydrationTiming(): void {
   const total = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];
   console.log(`Hydration complete in ${total?.duration.toFixed(1)}ms`);
 
-  for (const entry of performance.getEntriesByType('measure')) {
-    if (entry.name.startsWith('webui:hydrate:') && entry.name !== 'webui:hydrate:total') {
-      console.log(`  ${entry.name}: ${entry.duration.toFixed(1)}ms`);
-    }
-  }
 }
 
-// Side-effect imports — register custom elements and trigger hydration
+// Side-effect imports - register custom elements and trigger hydration
 import './todo-app/todo-app.js';
 import './todo-item/todo-item.js';
 
@@ -424,8 +422,8 @@ In this tutorial you:
 - **Created Web Components** using declarative shadow roots
   (`shadowrootmode="open"`) and WebUI template directives (`<for>`, `<if>`,
   `{{}}`).
-- **Used `@attr`, `@observable`, and `@volatile`** decorators to manage reactive
-  state inside component classes.
+- **Used `@attr` and `@observable`** decorators to manage reactive state in
+  component classes.
 - **Bound events** with `@click` and `@keydown` directives that map directly to
   class methods, and used `$emit()` for child-to-parent communication.
 - **Referenced DOM elements** with `w-ref` to read input values without manual
@@ -438,9 +436,9 @@ In this tutorial you:
 
 ## 10. Next Steps
 
-- [Hydration Guide](/guide/concepts/hydration/) – deep dive into how the
+- [Hydration Guide](/guide/concepts/hydration) – deep dive into how the
   framework re-attaches to server-rendered markup.
-- [Routing](/guide/concepts/routing/) – add multi-page navigation to your app.
+- [Routing](/guide/concepts/routing) – add multi-page navigation to your app.
 - [Commerce Example](https://github.com/microsoft/webui/tree/main/examples/app/commerce) –
   a more complex app with product listings, search, cart, and nested routing.
 - [FAST-HTML Variant](/guide/concepts/plugins/) – swap in FAST-HTML components

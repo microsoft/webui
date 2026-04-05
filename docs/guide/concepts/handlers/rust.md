@@ -153,7 +153,7 @@ async fn main() {
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `app_dir` | `PathBuf` | — | Path to app folder |
+| `app_dir` | `PathBuf` | - | Path to app folder |
 | `entry` | `String` | `"index.html"` | Entry file |
 | `css` | `CssStrategy` | `Link` | CSS delivery: `Link`, `Style`, or `Module` |
 | `plugin` | `Option<String>` | `None` | Parser plugin (e.g. `"fast"`) |

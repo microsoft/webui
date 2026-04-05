@@ -17,7 +17,7 @@ Routes are declared in `index.html` as nested elements. The HTML nesting defines
 </body>
 ```
 
-Child route paths are **relative to their parent** — no leading `/` needed.
+Child route paths are **relative to their parent** - no leading `/` needed.
 
 ## The `<outlet />` Directive
 
@@ -61,7 +61,7 @@ Routes can be nested to any depth. Each level's component uses `<outlet />` for 
 </template>
 ```
 
-Navigating from `/contacts/1` to `/contacts/2` preserves the contacts list — only the detail view at `<outlet />` changes.
+Navigating from `/contacts/1` to `/contacts/2` preserves the contacts list - only the detail view at `<outlet />` changes.
 
 ## Attributes
 
@@ -125,6 +125,6 @@ Without `exact`, a route matches any URL that starts with its path. Parent route
 ## SSR Behavior
 
 On the server:
-1. **Matched routes** — rendered visible with full component content
-2. **Non-matched siblings** — rendered hidden (`style="display:none"`) with no content
+1. **Matched routes** - rendered visible with full component content
+2. **Non-matched siblings** - rendered hidden (`style="display:none"`) with no content
 3. The browser displays the correct page instantly, before JavaScript loads

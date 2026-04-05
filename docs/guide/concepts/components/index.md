@@ -24,6 +24,35 @@ Components must follow these naming conventions:
 - **Hyphen required**: All component names must contain at least one hyphen (e.g., `user-card`, `nav-menu`, `data-table`)
 - **File name = component name**: The HTML file name determines the component's tag name
 
+### The `<template>` Tag
+
+The `<template shadowrootmode="open">` wrapper is **optional** in component HTML files. The build tool auto-injects it when it is not present.
+
+Most components omit it and write just the content:
+
+```html
+<!-- user-card.html -->
+<img src="{{avatar}}" alt="{{name}}" />
+<h3>{{name}}</h3>
+<p>{{email}}</p>
+```
+
+Include it explicitly when you need **root host events** - event listeners on the shadow root that catch events bubbling up from children:
+
+```html
+<!-- task-list.html -->
+<template shadowrootmode="open"
+  @task-complete="{onTaskComplete(e)}"
+  @task-delete="{onTaskDelete(e)}"
+>
+  <for each="task in tasks">
+    <task-item id="{{task.id}}" title="{{task.title}}"></task-item>
+  </for>
+</template>
+```
+
+When you include the `<template>` tag, the framework uses yours instead of auto-injecting one.
+
 ## How Components Work
 
 When WebUI discovers components:
@@ -98,6 +127,50 @@ example we have `profile-page.html`, `user-card.html`, and `admin-controls.html`
 </div>
 ```
 
+## Component TypeScript Classes
+
+Interactive components have a TypeScript class that defines their behavior.
+The class extends `WebUIElement` from `@microsoft/webui-framework`:
+
+```typescript
+import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
+
+export class UserCard extends WebUIElement {
+  @attr name = '';
+  @attr email = '';
+  @observable isExpanded = false;
+
+  toggle(): void {
+    this.isExpanded = !this.isExpanded;
+  }
+}
+
+UserCard.define('user-card');
+```
+
+The TypeScript file lives alongside the HTML and CSS:
+
+```
+user-card/
+├── user-card.html   ← Template (declarative)
+├── user-card.css    ← Styles (scoped via Shadow DOM)
+└── user-card.ts     ← Behavior (TypeScript class)
+```
+
+### Separation of Concerns
+
+WebUI intentionally keeps HTML, CSS, and TypeScript in separate files:
+
+- **HTML** defines structure and data bindings (`{{expr}}`, `<if>`, `<for>`)
+- **CSS** defines visual presentation (scoped via Shadow DOM)
+- **TypeScript** defines interactive behavior (event handlers, state mutations)
+
+There is no JSX, no CSS-in-JS, and no template literals. This separation
+is a performance decision: the HTML template is compiled to binary at build
+time, and only the TypeScript ships to the browser for interactive components.
+
+For the full interactivity guide, see [Interactivity](/guide/concepts/interactivity).
+
 ## External Component Sources
 
 In addition to discovering components in your app directory, WebUI can load components from **npm packages** and **local paths** using the `--components` CLI flag.
@@ -108,9 +181,9 @@ Components published as npm packages can be discovered automatically. The packag
 
 1. Be installed via npm, pnpm, or yarn (present in `node_modules/`)
 2. Include a `package.json` with:
-   - `exports["./template-webui.html"]` — the component's HTML template
-   - `exports["./styles.css"]` — the component's CSS (optional)
-   - `customElements` — path to a [Custom Elements Manifest](https://github.com/webcomponents/custom-elements-manifest) JSON file
+   - `exports["./template-webui.html"]` - the component's HTML template
+   - `exports["./styles.css"]` - the component's CSS (optional)
+   - `customElements` - path to a [Custom Elements Manifest](https://github.com/webcomponents/custom-elements-manifest) JSON file
 
 The Custom Elements Manifest provides the component's tag name:
 
@@ -152,7 +225,7 @@ You can also point to directories outside your app folder:
 webui build ./my-app --out ./dist --components ./shared/components
 ```
 
-Local path discovery works identically to app directory scanning — HTML files with hyphenated names are registered as components, with matching CSS files auto-paired.
+Local path discovery works identically to app directory scanning - HTML files with hyphenated names are registered as components, with matching CSS files auto-paired.
 
 ### Caching
 

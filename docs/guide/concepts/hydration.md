@@ -1,153 +1,195 @@
-# Hydration & Interactivity
+# Hydration
 
 ## What is Hydration?
 
-WebUI compiles templates at build time and renders HTML at runtime (server-render time) with **zero JavaScript**. The browser displays the HTML immediately via [Declarative Shadow DOM](https://developer.chrome.com/docs/css-ui/declarative-shadow-dom) — users see content before any script loads.
+WebUI compiles templates at build time and renders HTML at runtime (server-render time) with **zero JavaScript**. The browser displays content immediately via [Declarative Shadow DOM](https://developer.chrome.com/docs/css-ui/declarative-shadow-dom) - users see a fully rendered page before any script loads.
 
-**Hydration** is the process of attaching event listeners and reactive bindings to the already-rendered DOM. This is _not_ re-rendering: the DOM already exists. Hydration makes it interactive.
+**Hydration** is the process of attaching event listeners and reactive bindings to that already-rendered DOM. This is _not_ re-rendering: the DOM already exists. Hydration makes it interactive.
 
-WebUI uses an **islands architecture**: only interactive components ship JavaScript. Static content stays static and never loads a framework.
+WebUI uses an **islands architecture**: only interactive components ship JavaScript. If a page has ten components but only two need click handlers, only those two ship a framework. Everything else stays as static HTML with zero runtime cost.
+
+::: tip Authoring vs. mechanism
+This page explains **how hydration works** under the hood - markers, DOM walks, and metadata. For how to _write_ interactive components (decorators, events, refs, template syntax), see [Interactivity](/guide/concepts/interactivity).
+:::
+
+## How Hydration Works
 
 ```
-Build time          Server render          Client hydration
-─────────────       ───────────────        ─────────────────
-Parse HTML    →     Render with state  →   Framework reconnects
-with WebUI          + inject hydration     event handlers &
-directives          markers                reactive bindings
+Build time              Server render              Client hydration
+──────────────          ────────────────           ──────────────────
+Parse templates   →     Render with state    →     Framework reconnects
+Compile metadata        Inject SSR markers         bindings & events
+                        Emit Declarative           Remove markers
+                        Shadow DOM
 ```
 
-## When to Hydrate
+The lifecycle in detail:
 
-The default is **zero JavaScript**. You opt in to interactivity per-component.
+1. **Server renders HTML** - the handler evaluates templates with application state, emitting Declarative Shadow DOM with SSR markers (binding indices, event counts).
+2. **Browser parses HTML** - the parser creates shadow roots inline. Content is visible immediately, with no layout shift.
+3. **JavaScript loads** - `<script>` tags deliver the component class and its compiled template metadata.
+4. **Custom elements upgrade** - the browser calls `connectedCallback`. The framework detects the _existing_ shadow root instead of creating a new one.
+5. **Single DOM walk** - the framework walks the shadow DOM once, using path-indexed markers to reconnect text bindings, attribute bindings, conditionals, repeats, and event listeners.
+6. **State seeded automatically** - observable properties are restored from the SSR markers during the walk. No manual DOM reading required.
+7. **Markers removed** - SSR-only markers are stripped from the DOM. The component is fully interactive.
 
-- **Don't hydrate** pages that are purely informational — about pages, static content, read-only lists. These work with no JavaScript at all.
-- **Hydrate** components that need: event handlers, reactive state updates, user input, or real-time data from the browser process.
+No flash of content - HTML is already visible from step 2, and hydration silently wires up reactive state behind it.
 
-If a page has ten components but only two need click handlers, only those two ship JavaScript.
+## Template Metadata
 
-## Two Hydration Paths
+At build time, the WebUI compiler produces a metadata object for each component and registers it on the page:
 
-WebUI supports two hydration frameworks, chosen at build time:
+```javascript
+(function () {
+  var w = window.__webui_templates || (window.__webui_templates = {});
+  w['todo-app'] = {
+    h:  '<div class="todo"><ul></ul></div>',  // Marker-free HTML for client-created DOM
+    tx: [/* text binding runs */],
+    a:  [/* attribute bindings */],
+    ag: [/* attribute group targets */],
+    c:  [/* conditional blocks */],
+    cl: [/* conditional anchor slots */],
+    r:  [/* repeat blocks */],
+    rl: [/* repeat anchor slots */],
+    e:  [/* event bindings */],
+    el: [/* event target paths */],
+    b:  [/* nested block table (conditional/repeat bodies) */],
+    sa: 'todo-app',   // Adopted stylesheet specifier
+    re: [/* root-level host events */],
+  };
+})();
+```
+
+| Field | Purpose |
+|-------|---------|
+| `h` | Static HTML string - **marker-free** - used when creating components on the client (not during hydration) |
+| `tx` | Text binding runs: maps each `{{expression}}` to a DOM path and property references |
+| `a` / `ag` | Attribute bindings and their element targets |
+| `c` / `cl` | Conditional blocks (`<if>`) and their anchor positions |
+| `r` / `rl` | Repeat blocks (`<for>`) and their anchor positions |
+| `e` / `el` | Event bindings (`@click`, etc.) and the DOM paths to their target elements |
+| `b` | Nested block table - sub-templates for conditional and repeat bodies |
+| `re` | Root events - attached to the host element, not the shadow root |
+
+The same metadata serves two purposes:
+
+- **SSR hydration** - reconnect bindings to the existing DOM using markers
+- **Client-side creation** - clone `h` and resolve binding paths directly (no markers needed)
+
+## SSR Markers
+
+The handler injects lightweight markers into rendered HTML so the framework knows where to attach bindings. Markers appear **only inside component shadow roots** - the root page scope stays marker-free.
+
+### Marker reference
+
+| Marker | Format | Purpose |
+|--------|--------|---------|
+| Repeat block start | `<!--wr-->` | Opens a `<for>` loop region |
+| Repeat block end | `<!--/wr-->` | Closes the `<for>` loop region |
+| Repeat item | `<!--wi-->` | Marks each iteration boundary |
+| Conditional start | `<!--wc-->` | Opens an `<if>` block |
+| Conditional end | `<!--/wc-->` | Closes the `<if>` block |
+
+The WebUI Framework plugin emits only these five comment markers. Text bindings, attribute bindings, and event handlers are resolved from compiled metadata path indices - no DOM markers needed for those.
+
+### Example: rendered HTML with markers
+
+Given this template:
+
+```html
+<template shadowrootmode="open">
+  <h1>{{title}}</h1>
+  <button @click="{toggle()}">Toggle</button>
+  <if condition="visible">
+    <p>Now you see me</p>
+  </if>
+  <for each="item in items">
+    <span data-id="{{item.id}}">{{item.name}}</span>
+  </for>
+</template>
+```
+
+The server renders something like:
+
+```html
+<template shadowrootmode="open">
+  <h1>My List</h1>
+  <button>Toggle</button>
+  <!--wc--><p>Now you see me</p><!--/wc-->
+  <!--wr-->
+    <!--wi--><span>Alice</span>
+    <!--wi--><span>Bob</span>
+  <!--/wr-->
+</template>
+```
+
+### How the framework uses markers
+
+During the single DOM walk:
+
+1. **Text bindings** - the framework resolves template node paths to SSR text nodes and attaches reactive subscriptions. No SSR markers needed - path indices from compiled metadata locate the nodes directly.
+2. **Event handlers** - the framework uses compiled metadata event entries (`e[]`) and element paths (`el[]`) to locate event targets and install delegated listeners on the shadow root.
+3. **Conditional markers** - `<!--wc-->` / `<!--/wc-->` pairs delimit `<if>` blocks. The framework evaluates the condition, hydrates the inner content if active, and keeps `<!--wc-->` as a runtime anchor.
+4. **Repeat markers** - `<!--wr-->` / `<!--/wr-->` wrap the entire `<for>` range; `<!--wi-->` marks each item boundary. The framework hydrates each item with a scoped variable, keeps `<!--wr-->` as the anchor, and strips `<!--wi-->` and `<!--/wr-->` markers.
+
+After wiring, SSR-only markers (end comments, item boundaries) are removed. Start comments for conditionals and repeats are kept as runtime anchors for future DOM updates.
+
+## Choosing a Hydration Plugin
+
+WebUI supports two hydration frameworks, selected at build time:
 
 ```bash
-webui build src --plugin=webui   # WebUI Framework
+webui build src --plugin=webui   # WebUI Framework (recommended)
 webui build src --plugin=fast    # FAST-HTML
 ```
 
-### WebUI Framework (`--plugin=webui`)
+| | WebUI Framework (`--plugin=webui`) | FAST-HTML (`--plugin=fast`) |
+|---|---|---|
+| **Package** | `@microsoft/webui-framework` | `@microsoft/fast-html` + `@microsoft/fast-element` |
+| **Base class** | `WebUIElement` | `RenderableFASTElement(FASTElement)` |
+| **State seeding** | Automatic from SSR markers | Manual in `prepare()` |
+| **Update model** | Targeted path-indexed | Full observable chain |
+| **Best for** | SSR-first apps, minimal JS | Complex client interactivity |
 
-The WebUI Framework provides automatic state seeding and targeted path-indexed updates. State is restored from SSR markers during the hydration walk — no manual DOM reading required.
+**WebUI Framework** is the recommended path. State is restored automatically during the hydration walk - you write a component class, and the framework handles the rest.
 
-```typescript
-import { WebUIElement, attr, observable, volatile } from '@microsoft/webui-framework';
+**FAST-HTML** is an alternative for teams already invested in the [FAST](https://fast.design/) ecosystem. It requires manually reading state from the pre-rendered DOM in a `prepare()` method. See the [FAST-HTML README](https://github.com/microsoft/fast/blob/main/packages/fast-html/README.md) for details.
 
-export class TodoApp extends WebUIElement {
-  @attr title = '';
-  @observable items: TodoItemData[] = [];
+## Performance
 
-  @volatile get remainingCount(): number {
-    return this.items.filter(i => i.state !== 'done').length;
-  }
+WebUI tracks hydration timing through the [Performance API](https://developer.mozilla.org/en-US/docs/Web/API/Performance_API) and a custom completion event.
 
-  addInput!: HTMLInputElement;
-
-  onAddKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Enter') {
-      const text = this.addInput.value.trim();
-      if (!text) return;
-      this.items = [...this.items, { id: String(Date.now()), title: text, state: 'pending' }];
-      this.addInput.value = '';
-    }
-  }
-}
-
-TodoApp.define('todo-app');
-```
-
-Key characteristics:
-
-- **Base class:** `WebUIElement` from `@microsoft/webui-framework`
-- **Decorators:** `@attr`, `@observable`, `@volatile`
-- **Refs:** `w-ref="name"`
-- **State seeding:** automatic during hydration walk (no manual DOM reading)
-- **Update model:** targeted path-indexed updates — only bindings referencing the changed property update
-- **Registration:** `MyComponent.define('my-component')`
-
-### FAST-HTML (`--plugin=fast`)
-
-FAST-HTML builds on the [FAST](https://fast.design/) framework. State is restored manually in the `prepare()` method by reading the pre-rendered shadow DOM.
-
-```typescript
-import { FASTElement, attr, observable } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
-
-export class TodoApp extends RenderableFASTElement(FASTElement) {
-  @attr title = '';
-  @observable items!: TodoItemData[];
-
-  async prepare(): Promise<void> {
-    const items: TodoItemData[] = [];
-    for (const el of this.shadowRoot!.querySelectorAll('todo-item')) {
-      items.push({
-        id: el.getAttribute('id') || '',
-        title: el.getAttribute('title') || '',
-        state: el.getAttribute('state') || 'pending',
-      });
-    }
-    this.items = items;
-  }
-}
-
-TodoApp.defineAsync({ name: 'todo-app', templateOptions: 'defer-and-hydrate' });
-```
-
-Key characteristics:
-
-- **Base class:** `RenderableFASTElement(FASTElement)` from `@microsoft/fast-html`
-- **Decorators:** `@attr`, `@observable` (from `@microsoft/fast-element`)
-- **Refs:** `f-ref="{name}"`
-- **State seeding:** manual via `prepare()` method — read state from the pre-rendered DOM
-- **Registration:** `MyComponent.defineAsync({ name: '...', templateOptions: 'defer-and-hydrate' })`
-
-## Comparison
-
-| Aspect | WebUI Framework | FAST-HTML |
-|--------|----------------|-----------|
-| Package | `@microsoft/webui-framework` | `@microsoft/fast-html` + `@microsoft/fast-element` |
-| Base class | `WebUIElement` | `RenderableFASTElement(FASTElement)` |
-| State seeding | Automatic from SSR markers | Manual in `prepare()` |
-| Ref binding | `w-ref="name"` | `f-ref="{name}"` |
-| Update model | Targeted path-indexed | Full observable chain |
-| Best for | SSR-first, minimal JS | Complex client interactivity |
-
-## Hydration Lifecycle
-
-Both frameworks follow the same high-level lifecycle:
-
-1. **Server renders HTML** with Declarative Shadow DOM
-2. **Browser parses HTML** and creates shadow roots — content is visible immediately
-3. **JavaScript loads** and custom elements upgrade
-4. **Framework detects** the existing shadow root (instead of creating a new one)
-5. **Walks DOM once** to connect bindings to SSR markers
-6. **State is seeded** — automatically (WebUI Framework) or via `prepare()` (FAST-HTML)
-7. **Markers are removed**, component is interactive
-
-No flash of content — HTML is already visible from SSR, and hydration silently wires up the reactive state behind it.
-
-## Performance Measurement
-
-WebUI emits performance marks during hydration. Use them to verify that hydration is fast:
+### Measuring total hydration time
 
 ```typescript
 window.addEventListener('webui:hydration-complete', () => {
-  const total = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];
-  console.log(`Hydration complete in ${total?.duration.toFixed(1)}ms`);
+  const entry = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];
+  if (entry) {
+    console.log(`Hydration complete in ${entry.duration.toFixed(1)}ms`);
+  }
 });
 ```
 
+### Performance marks emitted
+
+| Mark | Timing |
+|------|--------|
+| `webui:hydrate:total:start` | First component begins hydrating |
+| `webui:hydrate:total:end` | Last component finishes hydrating |
+| **Measure:** `webui:hydrate:total` | Total wall-clock hydration time |
+
+The `webui:hydration-complete` event fires once after every component on the page has finished hydrating. Use it to gate post-hydration logic or report metrics.
+
+### What makes hydration fast
+
+- **Single DOM walk** - each shadow root is traversed exactly once, not per-binding.
+- **Path-indexed updates** - after hydration, only bindings referencing a changed property re-evaluate. No diffing.
+- **No re-render** - the DOM from SSR is reused in place. The framework never recreates it.
+- **Islands architecture** - components without interactivity never load JavaScript at all.
+
 ## Template Syntax
 
-Both frameworks use the same template syntax in component HTML files:
+Both plugins use the **same template syntax** - the difference is in the TypeScript component class, not the template:
 
 ```html
 <template shadowrootmode="open">
@@ -162,10 +204,10 @@ Both frameworks use the same template syntax in component HTML files:
 </template>
 ```
 
-Event binding, interpolation, conditionals, and loops work identically regardless of which framework you choose. The difference is in the TypeScript component class, not the template.
+Event binding, interpolation, conditionals, and loops are compiled identically regardless of the hydration plugin. For a complete syntax reference, see [Interactivity](/guide/concepts/interactivity).
 
 ## Learn More
 
-- [WebUI Framework examples](https://github.com/microsoft/webui/tree/main/examples/app/todo-webui)
-- [FAST-HTML examples](https://github.com/microsoft/webui/tree/main/examples/app/todo-fast)
-- [Plugins](/guide/concepts/plugins/) — How parser and handler plugins work
+- [Interactivity](/guide/concepts/interactivity) - Component authoring model (decorators, events, refs)
+- [Plugins](/guide/concepts/plugins/) - How parser and handler plugins work
+- [Performance](/guide/concepts/performance) - Optimization techniques beyond hydration

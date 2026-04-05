@@ -59,17 +59,17 @@ Inside a `<for>` directive, each iteration creates a scoped state context. Loop 
 
 - **Loop items** are accessed via their moniker (e.g. `item.label`, `item.id`); global state remains accessible alongside them
 - **Global state** is always accessible throughout a template
-- **Nested loops**: all active loop items remain accessible by their monikers (e.g. `{{category.name}}` inside a `product` loop). Inner loop monikers can shadow global state keys but do not hide outer loop monikers.
-- **Components inside loops**: do **not** automatically inherit loop-item fields. Pass the data you need via component attributes (e.g. `<contact-card name="{{contact.name}}">`), and inside the component template use the attribute names (e.g. `{{name}}`).
+- **Nested loops**: all active loop items remain accessible by their monikers (e.g. <code v-pre>{{category.name}}</code> inside a `product` loop). Inner loop monikers can shadow global state keys but do not hide outer loop monikers.
+- **Components inside loops**: do **not** automatically inherit loop-item fields. Pass the data you need via component attributes (e.g. <code v-pre>&lt;contact-card name="{{contact.name}}"&gt;</code>), and inside the component template use the attribute names (e.g. <code v-pre>{{name}}</code>).
 
 ```html
 <for each="category in categories">
   <h2>{{category.name}}</h2>
   <for each="product in category.products">
     <!-- "product.*" is the inner loop item -->
-    <!-- "category.*" is still accessible — outer loop monikers stay in scope -->
+    <!-- "category.*" is still accessible - outer loop monikers stay in scope -->
     <!-- "title" resolves from global state -->
-    <p>{{category.name}}: {{product.name}} — {{product.price}}</p>
+    <p>{{category.name}}: {{product.name}} - {{product.price}}</p>
   </for>
 </for>
 ```
@@ -95,7 +95,7 @@ Here, `item.done` comes from the loop item and `showCompleted` comes from global
 Deeply nested state works, but adds path traversal cost. Prefer flat structures for frequently accessed values:
 
 ```json
-// ✅ Preferred — flat access
+// ✅ Preferred - flat access
 {
   "userName": "Alice",
   "userRole": "admin"
@@ -122,10 +122,10 @@ The `<for>` directive iterates over arrays. Each item should be a self-contained
 
 ### Provide all state upfront
 
-Unlike client-side frameworks that fetch data on mount, WebUI renders in a single pass. The state object should contain everything the template needs for first render. Missing values render as empty output (for text and attribute bindings) or evaluate to `false` (for `<if>` conditions) — no error is reported.
+Unlike client-side frameworks that fetch data on mount, WebUI renders in a single pass. The state object should contain everything the template needs for first render. Missing values render as empty output (for text and attribute bindings) or evaluate to `false` (for `<if>` conditions) - no error is reported.
 
 ```json
-// ✅ Complete — every binding has data
+// ✅ Complete - every binding has data
 {
   "title": "Contacts",
   "contacts": [...],
@@ -133,12 +133,46 @@ Unlike client-side frameworks that fetch data on mount, WebUI renders in a singl
   "emptyMessage": "No contacts found"
 }
 
-// ⚠️ Partial — "emptyMessage" renders empty, "showSearch" condition evaluates to false
+// ⚠️ Partial - "emptyMessage" renders empty, "showSearch" condition evaluates to false
 {
   "title": "Contacts",
   "contacts": [...]
 }
 ```
+
+### SSR State Completeness for Route Pages
+
+When using routing, each route page template has its own bindings. Every
+`<for>`, `<if>`, and <code v-pre>{{binding}}</code> in the page template must have its key
+populated in the server state JSON.
+
+```html
+<!-- email-detail.html -->
+<h2>{{subject}}</h2>
+<for each="msg in messages">
+  <email-message body="{{msg.body}}"></email-message>
+</for>
+```
+
+The server must provide both `subject` and `messages`:
+
+```json
+{
+  "subject": "Q4 Budget Review",
+  "messages": [
+    { "body": "Please review the attached spreadsheet..." }
+  ]
+}
+```
+
+If `messages` is an empty array `[]`, the `<for>` loop correctly renders
+zero items - even if the client would populate it later. The server is
+the source of truth for the initial render.
+
+::: tip Rule of thumb
+Check every `<for>`, `<if>`, and <code v-pre>{{binding}}</code> in your route page template.
+Every key must be present in the server state JSON.
+:::
 
 ### Use boolean flags for conditionals
 
@@ -167,14 +201,14 @@ By default, signal values are HTML-escaped to prevent XSS:
 
 | Syntax | Escaping | Use case |
 |--------|----------|----------|
-| `{{value}}` | Escaped | User-provided text, names, labels |
-| `{{{value}}}` | Raw (unescaped) | Pre-sanitized HTML content |
+| <code v-pre>{{value}}</code> | Escaped | User-provided text, names, labels |
+| <code v-pre>{{{value}}}</code> | Raw (unescaped) | Pre-sanitized HTML content |
 
 > ⚠️ Never use triple braces for user input or URL parameters. An attacker could inject `<script>` tags.
 
 ## Learn More
 
-- [Signals](/guide/concepts/directives/signals) — Template binding syntax
-- [For loops](/guide/concepts/directives/for) — Iterating over collections
-- [If conditions](/guide/concepts/directives/if) — Conditional rendering
-- [Handlers](/guide/concepts/handlers/) — Passing state to the renderer
+- [Signals](/guide/concepts/directives/signals) - Template binding syntax
+- [For loops](/guide/concepts/directives/for) - Iterating over collections
+- [If conditions](/guide/concepts/directives/if) - Conditional rendering
+- [Handlers](/guide/concepts/handlers/) - Passing state to the renderer

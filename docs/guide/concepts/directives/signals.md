@@ -75,8 +75,8 @@ Example:
 
 WebUI automatically injects two special signals around `<body>` content:
 
-- **`body_start`** — injected immediately after the `<body>` opening tag
-- **`body_end`** — injected immediately before the `</body>` closing tag
+- **`body_start`** - injected immediately after the `<body>` opening tag
+- **`body_end`** - injected immediately before the `</body>` closing tag
 
 These enable handlers to inject content at the start and end of the document body (e.g., hydration scripts, analytics tags).
 

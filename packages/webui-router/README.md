@@ -2,6 +2,8 @@
 
 Client-side router for [WebUI](https://github.com/microsoft/webui) apps with nested route support. Uses the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navigation_API) to intercept link clicks and loads components on demand — preserving server-rendered content on initial load and fetching JSON partials for subsequent navigations. The server provides the matched route chain; the client does not perform route matching.
 
+> 📖 **Full documentation at [microsoft.github.io/webui](https://microsoft.github.io/webui)** — see the [Routing Guide](https://microsoft.github.io/webui/guide/concepts/routing) for setup and usage.
+
 ## How It Works
 
 1. **Server renders the full page** — the matched route chain is SSR'd with declarative shadow roots. The page is interactive before JavaScript loads.

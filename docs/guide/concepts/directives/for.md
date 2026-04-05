@@ -60,4 +60,43 @@ Where:
 - The item variable is only available within the loop body
 - You can access nested properties of the item using dot notation
 - If the collection doesn't exist or isn't an array, an error will be raised during rendering
-- **Empty `<for>` bodies** (with no children) are silently skipped — no output is generated
+- **Empty `<for>` bodies** (with no children) are silently skipped - no output is generated
+
+## Repeat Reconciliation
+
+When an `@observable` array changes on the client, the `<for>` block uses
+cursor-based reconciliation (similar to Preact) that minimizes DOM mutations:
+
+| Operation | DOM Cost | Description |
+|-----------|----------|-------------|
+| Append | O(1) | Only the new node is inserted |
+| Prepend | O(1) | Only the new node is inserted; existing nodes untouched |
+| Remove | O(1) | Only the removed node is detached |
+| Reorder | O(moved) | Only nodes that changed position are moved |
+
+### Keyed Reconciliation
+
+The first attribute in the repeat block template serves as the key:
+
+```html
+<for each="item in items">
+  <todo-item id="{{item.id}}" title="{{item.title}}"></todo-item>
+</for>
+```
+
+Here, `item.id` (from the `id` attribute) is used as the key. Keyed
+reconciliation correctly handles reordering, insertion, and removal.
+
+### Unkeyed Reconciliation
+
+Without a key attribute, items are matched by index. This is suitable for
+append-only lists but not for reordering or arbitrary insertion.
+
+### Key Collision Warning
+
+Repeat item keys must be unique across the entire collection. If the server
+generates items 1–1000 and the client starts at id=1000, keys collide and
+the diff recreates all items - causing a visible flash.
+
+**Best practice:** Use server-provided `nextId` in the state, UUIDs, or
+start client IDs at `max(server_ids) + 1`.
