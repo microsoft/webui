@@ -942,6 +942,7 @@ impl HtmlParser {
                 // Skipped component attribute (class, style, role, data-*, aria-*)
                 if let Some(val) = &attr_value {
                     if let Some(signal_name) = Self::extract_single_handlebars(val) {
+                        // Pure binding: role="{{dynamicRole}}"
                         let frag = WebUIFragment {
                             fragment: Some(web_ui_fragment::Fragment::Attribute(
                                 WebUIFragmentAttribute {
@@ -954,6 +955,38 @@ impl HtmlParser {
                         };
                         self.add_fragment(frag, fragments);
                         binding_count += 1;
+                    } else if Self::contains_handlebars(val) {
+                        // Embedded binding: aria-labelledby="prefix-{{group.id}}"
+                        let template_id = self.id_counter.next_id("attr");
+                        let parsed = self.handlebars_parser.parse(val)?;
+                        self.fragment_records
+                            .insert(template_id.clone(), FragmentList { fragments: parsed });
+                        let frag = WebUIFragment {
+                            fragment: Some(web_ui_fragment::Fragment::Attribute(
+                                WebUIFragmentAttribute {
+                                    name: attr_name,
+                                    template: template_id,
+                                    attr_skip: true,
+                                    ..Default::default()
+                                },
+                            )),
+                        };
+                        self.add_fragment(frag, fragments);
+                        binding_count += 1;
+                    } else {
+                        // Static value: role="list"
+                        let frag = WebUIFragment {
+                            fragment: Some(web_ui_fragment::Fragment::Attribute(
+                                WebUIFragmentAttribute {
+                                    name: attr_name,
+                                    value: val.clone(),
+                                    raw_value: true,
+                                    attr_skip: true,
+                                    ..Default::default()
+                                },
+                            )),
+                        };
+                        self.add_fragment(frag, fragments);
                     }
                 }
             } else if let Some(ref val) = attr_value {
@@ -2956,6 +2989,41 @@ mod tests {
                 raw("</custom-element>"),
             ]
         );
+    }
+
+    #[test]
+    fn test_component_attr_skip_static_and_embedded() {
+        // Skipped attrs with static values and embedded bindings should
+        // emit fragments (not be silently dropped).
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component("item-group", "<slot></slot>", None)
+            .expect("register");
+
+        let html = r#"<item-group role="list" aria-labelledby="group-date-{{group.id}}" data-testid="grp-{{group.id}}" class="fixed-class"></item-group>"#;
+        let result = parser.parse("index.html", html);
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let records = parser.into_fragment_records();
+
+        assert_fragments!(
+            records["index.html"].fragments,
+            [
+                raw("<item-group"),
+                attr_skip_raw("role", "list"),
+                attr_skip_template("aria-labelledby", "attr-1"),
+                attr_skip_template("data-testid", "attr-2"),
+                attr_skip_raw("class", "fixed-class"),
+                raw(">"),
+                component("item-group"),
+                raw("</item-group>"),
+            ]
+        );
+
+        // Verify the embedded-binding template sub-streams exist and
+        // contain the expected static + signal fragments.
+        assert_stream!(records, "attr-1", [raw("group-date-"), signal("group.id"),]);
+        assert_stream!(records, "attr-2", [raw("grp-"), signal("group.id"),]);
     }
 
     #[test]

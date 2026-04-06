@@ -226,6 +226,27 @@ pub fn attr_skip(name: &str, value: &str) -> FragmentMatcher {
     })
 }
 
+/// Match a skipped attribute with a static raw value.
+pub fn attr_skip_raw(name: &str, value: &str) -> FragmentMatcher {
+    FragmentMatcher::Attribute(AttrMatcher {
+        name: name.to_string(),
+        raw_value: true,
+        value: Some(value.to_string()),
+        attr_skip: true,
+        ..Default::default()
+    })
+}
+
+/// Match a skipped attribute with an embedded binding template.
+pub fn attr_skip_template(name: &str, template: &str) -> FragmentMatcher {
+    FragmentMatcher::Attribute(AttrMatcher {
+        name: name.to_string(),
+        template: Some(template.to_string()),
+        attr_skip: true,
+        ..Default::default()
+    })
+}
+
 /// Match a simple dynamic attribute with attrStart.
 pub fn attr_start(name: &str, value: &str) -> FragmentMatcher {
     FragmentMatcher::Attribute(AttrMatcher {
