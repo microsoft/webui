@@ -41,6 +41,31 @@ pub enum CssStrategy {
     Module,
 }
 
+impl std::fmt::Display for CssStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CssStrategy::Link => write!(f, "link"),
+            CssStrategy::Style => write!(f, "style"),
+            CssStrategy::Module => write!(f, "module"),
+        }
+    }
+}
+
+impl std::str::FromStr for CssStrategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "link" => Ok(CssStrategy::Link),
+            "style" => Ok(CssStrategy::Style),
+            "module" => Ok(CssStrategy::Module),
+            other => Err(format!(
+                "Unknown CSS strategy: {other}. Use \"link\", \"style\", or \"module\"."
+            )),
+        }
+    }
+}
+
 /// Strategy for how component DOM is structured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
@@ -50,6 +75,61 @@ pub enum DomStrategy {
     Shadow,
     /// Use light DOM — component content is rendered as direct children.
     Light,
+}
+
+impl std::fmt::Display for DomStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DomStrategy::Shadow => write!(f, "shadow"),
+            DomStrategy::Light => write!(f, "light"),
+        }
+    }
+}
+
+impl std::str::FromStr for DomStrategy {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "shadow" => Ok(DomStrategy::Shadow),
+            "light" => Ok(DomStrategy::Light),
+            other => Err(format!(
+                "Unknown DOM strategy: {other}. Use \"shadow\" or \"light\"."
+            )),
+        }
+    }
+}
+
+/// Framework plugin to load for build-time and render-time processing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
+pub enum Plugin {
+    /// Fast hydration plugin — lightweight client-side interactivity.
+    Fast,
+    /// WebUI plugin — full component model with shadow DOM support.
+    #[cfg_attr(feature = "cli", value(name = "webui"))]
+    WebUI,
+}
+
+impl std::fmt::Display for Plugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Plugin::Fast => write!(f, "fast"),
+            Plugin::WebUI => write!(f, "webui"),
+        }
+    }
+}
+
+impl std::str::FromStr for Plugin {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "fast" => Ok(Plugin::Fast),
+            "webui" => Ok(Plugin::WebUI),
+            other => Err(format!("Unknown plugin: {other}")),
+        }
+    }
 }
 
 /// Counter for generating unique fragment IDs.

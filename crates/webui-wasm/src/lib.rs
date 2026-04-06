@@ -17,7 +17,7 @@ use wasm_bindgen::prelude::*;
 use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
-use webui_parser::{CssStrategy, HtmlParser};
+use webui_parser::{CssStrategy, HtmlParser, Plugin};
 use webui_protocol::WebUIProtocol;
 
 /// A simple string buffer for collecting rendered output.
@@ -63,14 +63,12 @@ pub fn render(
     request_path: &str,
     plugin: Option<String>,
 ) -> Result<String, JsValue> {
-    render_inner(
-        protocol_json,
-        state_json,
-        entry,
-        request_path,
-        plugin.as_deref(),
-    )
-    .map_err(|e| JsValue::from_str(&e.to_string()))
+    let plugin = plugin
+        .map(|s| s.parse::<Plugin>())
+        .transpose()
+        .map_err(|e| JsValue::from_str(&e))?;
+    render_inner(protocol_json, state_json, entry, request_path, plugin)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 /// Build and render a WebUI application from virtual files.
@@ -155,15 +153,14 @@ fn build_protocol_inner(
 }
 
 /// Create a handler with an optional plugin.
-fn create_handler(plugin: Option<&str>) -> Result<WebUIHandler, BuildError> {
+fn create_handler(plugin: Option<Plugin>) -> Result<WebUIHandler, BuildError> {
     match plugin {
-        Some("fast") => Ok(WebUIHandler::with_plugin(|| {
+        Some(Plugin::Fast) => Ok(WebUIHandler::with_plugin(|| {
             Box::new(FastHydrationPlugin::new())
         })),
-        Some("webui") => Ok(WebUIHandler::with_plugin(|| {
+        Some(Plugin::WebUI) => Ok(WebUIHandler::with_plugin(|| {
             Box::new(WebUIHydrationPlugin::new())
         })),
-        Some(unknown) => Err(BuildError::Render(format!("Unknown plugin: {unknown}"))),
         None => Ok(WebUIHandler::new()),
     }
 }
@@ -173,7 +170,7 @@ fn render_inner(
     state_json: &str,
     entry: &str,
     request_path: &str,
-    plugin: Option<&str>,
+    plugin: Option<Plugin>,
 ) -> Result<String, BuildError> {
     let protocol: WebUIProtocol =
         serde_json::from_str(protocol_json).map_err(|e| BuildError::Protocol(e.to_string()))?;

@@ -331,7 +331,7 @@ fn run(args: &ServeArgs) -> Result<()> {
     }
     output::field("Entry", &args.app_args.entry);
     output::field("Port", &args.port);
-    output::field("CSS", &format!("{:?}", args.app_args.css));
+    output::field("CSS", &args.app_args.css);
     if let Some(api_port) = args.api_port {
         output::field("API Port", &api_port);
     }
@@ -388,7 +388,7 @@ fn run(args: &ServeArgs) -> Result<()> {
         hmr_backend,
         assets_dir: paths.serve_dir,
         api_port: args.api_port,
-        plugin: args.app_args.plugin.clone(),
+        plugin: args.app_args.plugin,
         token_css: render_config.token_css.clone(),
     });
 
@@ -503,10 +503,10 @@ fn build_and_render(
 
     // Render to memory
     let mut writer = MemoryWriter::with_capacity(4096);
-    let handler = match config.app_args.plugin.as_deref() {
-        Some("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
-        Some("webui") => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
-        _ => WebUIHandler::new(),
+    let handler = match config.app_args.plugin {
+        Some(Plugin::Fast) => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
+        Some(Plugin::WebUI) => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
+        None => WebUIHandler::new(),
     };
     handler.handle(
         &build_result.protocol,
@@ -555,7 +555,7 @@ struct ServerContext {
     hmr_backend: Option<Arc<dyn HmrBackend>>,
     assets_dir: Option<PathBuf>,
     api_port: Option<u16>,
-    plugin: Option<String>,
+    plugin: Option<Plugin>,
     /// Pre-resolved token CSS keyed by theme name, injected into state at render time.
     token_css: Option<HashMap<String, String>>,
 }
@@ -657,7 +657,7 @@ async fn render_page_response(
     let mut state = resolve_state(context, request_path).await;
 
     let (protocol, entry, plugin) = match context.state.lock() {
-        Ok(s) => (s.protocol.clone(), s.entry.clone(), context.plugin.clone()),
+        Ok(s) => (s.protocol.clone(), s.entry.clone(), context.plugin),
         Err(_) => return HttpResponse::InternalServerError().body("Internal Server Error"),
     };
 
@@ -675,10 +675,10 @@ async fn render_page_response(
     }
 
     let mut writer = MemoryWriter::with_capacity(4096);
-    let handler = match plugin.as_deref() {
-        Some("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
-        Some("webui") => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
-        _ => WebUIHandler::new(),
+    let handler = match plugin {
+        Some(Plugin::Fast) => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
+        Some(Plugin::WebUI) => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
+        None => WebUIHandler::new(),
     };
 
     if let Err(e) = handler.handle(
