@@ -746,15 +746,21 @@ impl WebUIHandler {
                 context.writer.write("\">")?;
             }
 
-            // Emit CSS <link> tags in <head> for all needed components.
-            // In light DOM mode the parser does NOT embed links inside each
-            // component template, so we emit them once here instead.
-            // Components without CSS files simply won't have a matching static
-            // file on the server — the link is harmless.
+            // Emit CSS <link> tags in <head> for components with external stylesheets.
+            // Only Link-strategy components have css_href set; Style/Module
+            // handle CSS via inline <style> tags or adopted stylesheets.
             for name in &needed_components {
-                context.writer.write("<link rel=\"stylesheet\" href=\"/")?;
-                context.writer.write(name)?;
-                context.writer.write(".css\">")?;
+                if let Some(href) = context
+                    .protocol
+                    .components
+                    .get(name)
+                    .map(|c| &c.css_href)
+                    .filter(|h| !h.is_empty())
+                {
+                    context.writer.write("<link rel=\"stylesheet\" href=\"")?;
+                    context.writer.write(href)?;
+                    context.writer.write("\">")?;
+                }
             }
         }
 
@@ -5959,6 +5965,71 @@ mod tests {
         assert!(
             html.contains("<h1>Dashboard</h1>"),
             "Route component should render content: {html}"
+        );
+    }
+
+    #[test]
+    fn test_head_css_link_skipped_for_components_without_css() {
+        // Regression: components without CSS files must not get <link> tags
+        // in <head>, otherwise the browser requests a 404.
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::raw("</head><body>".to_string()),
+                    WebUIFragment::component("has-css"),
+                    WebUIFragment::component("no-css"),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        fragments.insert(
+            "has-css".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>styled</p>".to_string())],
+            },
+        );
+        fragments.insert(
+            "no-css".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>plain</p>".to_string())],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        // Only has-css has an external stylesheet (Link strategy)
+        protocol
+            .components
+            .entry("has-css".to_string())
+            .or_default()
+            .css_href = "/has-css.css".to_string();
+
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+
+        let html = writer.get_content();
+        assert!(
+            html.contains(r#"<link rel="stylesheet" href="/has-css.css">"#),
+            "Component with CSS should get a <link> in <head>: {html}"
+        );
+        assert!(
+            !html.contains("no-css.css"),
+            "Component without CSS must NOT get a <link> in <head>: {html}"
         );
     }
 }

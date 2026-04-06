@@ -48,6 +48,10 @@ pub struct ComponentData {
     pub template: String,
     /// Component CSS content for the Module strategy.
     pub css: String,
+    /// External stylesheet href for the Link CSS strategy (e.g. "/my-card.css").
+    /// Empty for Style/Module strategies and for components without CSS.
+    /// The handler emits a `<link>` tag in `<head>` only when this is non-empty.
+    pub css_href: String,
 }
 
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).

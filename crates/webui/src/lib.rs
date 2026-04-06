@@ -286,36 +286,34 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
 
     let mut protocol = WebUIProtocol::with_tokens(fragment_records, tokens);
 
-    // Store component CSS in the protocol keyed by tag name.
-    // Only Module strategy populates this — the handler emits CSS module
-    // <style> tags in <head> and prepends them to partial f-templates.
-    // Link and Style strategies handle CSS via <link> tags and inline
-    // <style> tags baked into raw fragments by the parser.
-    if options.css == CssStrategy::Module {
-        for (tag, css) in &css_snapshot {
-            if protocol.fragments.contains_key(tag) {
-                protocol.components.entry(tag.clone()).or_default().css = css.trim().to_string();
-            }
+    // Process component CSS in a single pass: store Module CSS content,
+    // set Link-strategy css_href, and collect external CSS files.
+    let is_module = options.css == CssStrategy::Module;
+    let is_link = options.css == CssStrategy::Link;
+    // css_href is only used for Light DOM — Shadow DOM components embed
+    // their own <link> inside the shadow root template at parse time.
+    let needs_head_link = is_link && options.dom == DomStrategy::Light;
+    let mut css_files: Vec<(String, String)> = Vec::new();
+    for (tag, css) in css_snapshot {
+        if !protocol.fragments.contains_key(&tag) {
+            continue;
         }
+        if is_module {
+            protocol.components.entry(tag).or_default().css = css.trim().to_string();
+        } else if is_link {
+            let safe_tag = tag.replace(['/', '\\'], "-");
+            if needs_head_link {
+                protocol
+                    .components
+                    .entry(tag)
+                    .or_default()
+                    .css_href = format!("/{safe_tag}.css");
+            }
+            css_files.push((format!("{safe_tag}.css"), css));
+        }
+        // Style strategy: CSS is already baked into raw fragments by the
+        // parser — nothing to store in the protocol or emit as files.
     }
-
-    // Filter CSS to only protocol-referenced components.
-    // In Style mode CSS is embedded in <style> tags; in Module mode CSS is
-    // emitted as <style type="module"> definitions. Neither produces external
-    // CSS files. Sanitize filenames: strip path separators to prevent traversal.
-    let css_files: Vec<(String, String)> =
-        if matches!(options.css, CssStrategy::Style | CssStrategy::Module) {
-            Vec::new()
-        } else {
-            css_snapshot
-                .into_iter()
-                .filter(|(tag, _)| protocol.fragments.contains_key(tag))
-                .map(|(tag, css)| {
-                    let safe_tag = tag.replace(['/', '\\'], "-");
-                    (format!("{safe_tag}.css"), css)
-                })
-                .collect()
-        };
 
     // Store client templates in the protocol so any host server can query them
     for (tag, tmpl) in &component_templates {
@@ -408,6 +406,102 @@ mod tests {
         assert_eq!(result.css_files[0].0, "my-card.css");
         assert!(result.css_files[0].1.contains("color: red"));
         assert_eq!(result.stats.css_file_count, 1);
+    }
+
+    #[test]
+    fn test_css_href_set_for_light_dom_link_strategy() {
+        let app = create_app_dir(&[
+            ("index.html", "<has-css>A</has-css><no-css>B</no-css>"),
+            ("has-css.html", "<p><slot></slot></p>"),
+            ("has-css.css", ".yes { color: green; }"),
+            ("no-css.html", "<p><slot></slot></p>"),
+        ]);
+        let mut options = default_options(app.path());
+        options.dom = DomStrategy::Light;
+        let result = build(options).unwrap();
+
+        let href = result
+            .protocol
+            .components
+            .get("has-css")
+            .map(|c| c.css_href.as_str())
+            .unwrap_or("");
+        assert_eq!(href, "/has-css.css", "Light×Link component with CSS should have css_href");
+
+        let no_href = result
+            .protocol
+            .components
+            .get("no-css")
+            .map(|c| c.css_href.as_str())
+            .unwrap_or("");
+        assert!(no_href.is_empty(), "Component without CSS should have empty css_href");
+    }
+
+    #[test]
+    fn test_css_href_empty_for_shadow_dom_link_strategy() {
+        // Shadow×Link: the parser embeds <link> inside each shadow root template,
+        // so css_href must be empty to avoid duplicate <link> tags in <head>.
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>A</my-card>"),
+            ("my-card.html", "<p><slot></slot></p>"),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let result = build(default_options(app.path())).unwrap();
+
+        let href = result
+            .protocol
+            .components
+            .get("my-card")
+            .map(|c| c.css_href.as_str())
+            .unwrap_or("");
+        assert!(href.is_empty(), "Shadow×Link should not set css_href — link is in shadow root");
+
+        // But CSS file should still be emitted for the server to serve
+        assert_eq!(result.css_files.len(), 1, "CSS file should still be produced");
+    }
+
+    #[test]
+    fn test_css_href_empty_for_style_strategy() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>A</my-card>"),
+            ("my-card.html", "<p><slot></slot></p>"),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.css = CssStrategy::Style;
+        let result = build(options).unwrap();
+
+        let href = result
+            .protocol
+            .components
+            .get("my-card")
+            .map(|c| c.css_href.as_str())
+            .unwrap_or("");
+        assert!(href.is_empty(), "Style-strategy should not set css_href");
+    }
+
+    #[test]
+    fn test_css_href_empty_for_module_strategy() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>A</my-card>"),
+            ("my-card.html", "<p><slot></slot></p>"),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.css = CssStrategy::Module;
+        let result = build(options).unwrap();
+
+        let href = result
+            .protocol
+            .components
+            .get("my-card")
+            .map(|c| c.css_href.as_str())
+            .unwrap_or("");
+        assert!(href.is_empty(), "Module-strategy should not set css_href");
+        assert!(
+            !result.protocol.components["my-card"].css.is_empty(),
+            "Module-strategy should still populate css content"
+        );
     }
 
     #[test]

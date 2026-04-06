@@ -17,6 +17,12 @@ message ComponentData {
   // Empty for Link and Style strategies (CSS is handled via <link> tags
   // or inline <style> tags baked into raw fragments by the parser).
   string css = 2;
+  // External stylesheet href for the Link CSS strategy.
+  // Set to e.g. "/my-card.css" when CssStrategy::Link is active and the
+  // component has a CSS file. Empty for Style/Module strategies and for
+  // components without CSS. The handler emits a <link> tag only when
+  // this field is non-empty.
+  string css_href = 3;
 }
 
 message WebUIProtocol {
