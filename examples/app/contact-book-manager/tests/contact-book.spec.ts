@@ -198,6 +198,54 @@ test.describe('client-side navigation', () => {
   });
 });
 
+// ── Regression: sidebar groups stable after contact edit (issue #177) ─
+
+test.describe('contact edit does not corrupt sidebar groups', () => {
+  test('editing a contact group from Work to Friends keeps sidebar labels stable', async ({ page, request }) => {
+    // Ensure contact #1 starts in group "Work" (reset from any prior test run)
+    await request.put('http://127.0.0.1:3013/api/contacts/1', { data: { group: 'Work' } });
+
+    // Navigate to contact #1 (Sarah Chen, group: Work)
+    await page.goto('/contacts/1');
+    await expect(page.locator('cb-contact-detail')).toBeVisible();
+    await expect(page.locator('cb-contact-detail .badge')).toHaveText('Work');
+
+    // Verify sidebar groups before edit
+    await expectSidebarGroupsStable(page);
+
+    // Click edit
+    await page.locator('cb-contact-detail .icon-edit').click();
+    await expect(page).toHaveURL('/contacts/1/edit');
+    await expect(page.locator('cb-contact-form .form-title')).toHaveText('Edit Contact');
+
+    // Change group from Work to Friends
+    const friendsLabel = page.locator('cb-contact-form .group-radio-label', { hasText: 'Friends' });
+    await friendsLabel.click();
+
+    // Save the contact
+    await page.locator('cb-contact-form .save-btn').click();
+    await expect(page).toHaveURL('/contacts/1');
+
+    // Sidebar groups must remain in the same stable order
+    await expectSidebarGroupsStable(page);
+
+    // The contact detail now shows Friends group
+    await expect(page.locator('cb-contact-detail .badge')).toHaveText('Friends');
+
+    // Navigate to Work group — should still exist and be clickable
+    await page.locator('cb-sidebar').getByRole('link', { name: 'Work' }).click();
+    await expect(page).toHaveURL('/groups/Work');
+    await expect(page.locator('cb-page-group .page-title')).toContainText('Work');
+
+    // Restore contact back to Work for test isolation
+    await page.goto('/contacts/1/edit');
+    await page.locator('cb-contact-form .group-radio-label', { hasText: 'Work' }).click();
+    await page.locator('cb-contact-form .save-btn').click();
+    await expect(page).toHaveURL('/contacts/1');
+    await expectSidebarGroupsStable(page);
+  });
+});
+
 // ── Visual regression tests ──────────────────────────────────────
 
 test.describe('visual regression', () => {

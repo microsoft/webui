@@ -49,6 +49,7 @@ const AVATAR_COLORS = [
 
 const stateData = JSON.parse(readFileSync(DATA_PATH, 'utf-8'));
 let contacts: Contact[] = stateData.contacts;
+let groups: string[] = stateData.groups ?? [];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -59,15 +60,14 @@ function findContact(id: string): Contact | undefined {
 }
 
 function uniqueGroups(): string[] {
-  const seen = new Set<string>();
-  const groups: string[] = [];
-  for (const c of contacts) {
-    if (c.group && !seen.has(c.group)) {
-      seen.add(c.group);
-      groups.push(c.group);
-    }
-  }
   return groups;
+}
+
+/** Ensures the group name exists in the stable groups list. */
+function ensureGroup(group: string): void {
+  if (group && !groups.includes(group)) {
+    groups.push(group);
+  }
 }
 
 function favoriteContacts(): Contact[] {
@@ -275,6 +275,7 @@ app.post('/api/contacts', (req: Request, res: Response) => {
     address: String(body.address || ''),
   };
   contacts.push(newContact);
+  ensureGroup(newContact.group);
   res.status(201).json(newContact);
 });
 
@@ -305,6 +306,7 @@ app.put('/api/contacts/:id', (req: Request, res: Response) => {
   };
 
   contacts[idx] = updated;
+  ensureGroup(updated.group);
   res.json(updated);
 });
 

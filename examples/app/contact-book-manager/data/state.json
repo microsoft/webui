@@ -1,7 +1,7 @@
 {
   "searchQuery": "",
   "activeGroup": "all",
-  "groups": ["Family", "Work", "Friends", "Other"],
+  "groups": ["Work", "Family", "Friends", "Other"],
   "totalContacts": 15,
   "totalFavorites": 5,
   "totalGroups": 4,
