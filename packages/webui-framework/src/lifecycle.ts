@@ -34,7 +34,7 @@ let completed = false;
  * Call before a component begins hydration.
  * Increments the pending counter and (once) places the global start mark.
  */
-export function hydrationStart(_tagName: string): void {
+export function hydrationStart(): void {
   if (!started) {
     performance.mark('webui:hydrate:total:start');
     started = true;
@@ -46,7 +46,7 @@ export function hydrationStart(_tagName: string): void {
  * Call after a component has finished hydration.
  * When the last component finishes, fires the global event + measure.
  */
-export function hydrationEnd(_tagName: string): void {
+export function hydrationEnd(): void {
   pendingCount--;
 
   if (pendingCount <= 0 && !completed) {
