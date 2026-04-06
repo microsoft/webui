@@ -303,11 +303,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         } else if is_link {
             let safe_tag = tag.replace(['/', '\\'], "-");
             if needs_head_link {
-                protocol
-                    .components
-                    .entry(tag)
-                    .or_default()
-                    .css_href = format!("/{safe_tag}.css");
+                protocol.components.entry(tag).or_default().css_href = format!("/{safe_tag}.css");
             }
             css_files.push((format!("{safe_tag}.css"), css));
         }
@@ -426,7 +422,10 @@ mod tests {
             .get("has-css")
             .map(|c| c.css_href.as_str())
             .unwrap_or("");
-        assert_eq!(href, "/has-css.css", "Light×Link component with CSS should have css_href");
+        assert_eq!(
+            href, "/has-css.css",
+            "Light×Link component with CSS should have css_href"
+        );
 
         let no_href = result
             .protocol
@@ -434,7 +433,10 @@ mod tests {
             .get("no-css")
             .map(|c| c.css_href.as_str())
             .unwrap_or("");
-        assert!(no_href.is_empty(), "Component without CSS should have empty css_href");
+        assert!(
+            no_href.is_empty(),
+            "Component without CSS should have empty css_href"
+        );
     }
 
     #[test]
@@ -454,10 +456,17 @@ mod tests {
             .get("my-card")
             .map(|c| c.css_href.as_str())
             .unwrap_or("");
-        assert!(href.is_empty(), "Shadow×Link should not set css_href — link is in shadow root");
+        assert!(
+            href.is_empty(),
+            "Shadow×Link should not set css_href — link is in shadow root"
+        );
 
         // But CSS file should still be emitted for the server to serve
-        assert_eq!(result.css_files.len(), 1, "CSS file should still be produced");
+        assert_eq!(
+            result.css_files.len(),
+            1,
+            "CSS file should still be produced"
+        );
     }
 
     #[test]
