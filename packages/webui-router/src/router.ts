@@ -162,8 +162,9 @@ export class WebUIRouter {
       event.intercept({
         handler: async () => {
           try {
-            await this.handleNavigation(buildNavigationTarget(url, this.config.basePath ?? ''));
+            await this.handleNavigation(buildNavigationTarget(url, this.config.basePath ?? ''), event.signal);
           } catch (err) {
+            if (err instanceof DOMException && err.name === 'AbortError') return;
             console.error('[Router] Navigation error:', err);
           }
         },
@@ -238,7 +239,7 @@ export class WebUIRouter {
    * change level down. Parent components above the change level are preserved and
    * receive fresh state from the server.
    */
-  private async handleNavigation(target: NavigationTarget): Promise<void> {
+  private async handleNavigation(target: NavigationTarget, signal?: AbortSignal): Promise<void> {
     const { requestPath } = target;
 
     if (this.isInitialNavigation) {
@@ -251,8 +252,11 @@ export class WebUIRouter {
       }
       this.isInitialNavigation = false;
     } else {
-      const partialData = await this.fetchPartial(requestPath);
+      const partialData = await this.fetchPartial(requestPath, signal);
       if (!partialData) return;
+
+      // Bail out if a newer navigation has superseded this one.
+      if (signal?.aborted) return;
 
       const newChain: RouteChainEntry[] = (partialData.chain ?? []).map(e => ({
         component: e.component ?? '',
@@ -270,6 +274,7 @@ export class WebUIRouter {
       // Pre-load all component modules before the DOM swap so the
       // view transition only covers the synchronous mount.
       for (const entry of newChain) {
+        if (signal?.aborted) return;
         if (entry.component) await this.ensureComponentLoaded(entry.component);
       }
 
@@ -281,7 +286,6 @@ export class WebUIRouter {
       // fresh partial response.
       const isQueryOnlyChange = changeLevel === newChain.length && newChain.length > 0;
 
-      // DOM swap — wrapped in a view transition when available.
       // DOM swap — synchronous, safe inside view transitions.
       // All async work (fetch, import) is done above.
       const commitNavigation = (): void => {
@@ -339,8 +343,14 @@ export class WebUIRouter {
         this.activeChain = newChain;
       };
 
+      // DOM swap — wrapped in a view transition when available.
+      // Await updateCallbackDone (not .finished) so the Navigation API
+      // handler resolves as soon as the DOM commit completes, without
+      // waiting for the CSS animation to finish. This allows rapid
+      // navigations to supersede each other without queuing.
       if (document.startViewTransition) {
-        await document.startViewTransition(commitNavigation).finished;
+        const transition = document.startViewTransition(commitNavigation);
+        await transition.updateCallbackDone;
       } else {
         commitNavigation();
       }
@@ -517,15 +527,18 @@ export class WebUIRouter {
 
   // ── Fetch + Mount ──────────────────────────────────────────────
 
-  private async fetchPartial(requestPath: string): Promise<(PartialResponse & { inventory?: string }) | null> {
+  private async fetchPartial(requestPath: string, signal?: AbortSignal): Promise<(PartialResponse & { inventory?: string }) | null> {
     const fullPath = prependBasePath(requestPath, this.config.basePath ?? '');
     const headers: Record<string, string> = { 'Accept': 'application/json' };
     if (this.inventory) headers['X-WebUI-Inventory'] = this.inventory;
-    const resp = await fetch(fullPath, { headers });
+    const resp = await fetch(fullPath, { headers, signal });
 
     if (!resp.ok) return null;
 
     const data = await resp.json() as PartialResponse & { inventory?: string };
+
+    // Bail out before applying side effects if this navigation was superseded.
+    if (signal?.aborted) return null;
 
     if (data.inventory) {
       this.updateInventory(data.inventory);
