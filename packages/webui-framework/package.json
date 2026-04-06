@@ -16,7 +16,7 @@
     "dist/"
   ],
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --platform=browser && tsc --emitDeclarationOnly",
+    "build": "find src -name '*.ts' ! -name '*.test.ts' | xargs esbuild --outdir=dist --outbase=src --format=esm --platform=browser && tsc --emitDeclarationOnly",
     "typecheck": "tsc --noEmit",
     "typecheck:e2e": "tsc -p tsconfig.test.json --noEmit",
     "build:e2e:scripts": "esbuild ./tests/server.ts --bundle --external:esbuild --outdir=tests/dist --format=esm --platform=node --target=es2022",
