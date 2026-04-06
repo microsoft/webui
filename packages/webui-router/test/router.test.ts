@@ -231,7 +231,179 @@ describe('WebUIRouter', () => {
     });
   });
 
+  describe('navigation abort signal', () => {
+    test('fetchPartial passes signal to fetch', async () => {
+      // Shim fetch to capture the options passed to it
+      const origFetch = (globalThis as any).fetch;
+      let capturedSignal: AbortSignal | undefined;
+      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
+        capturedSignal = opts?.signal as AbortSignal | undefined;
+        return { ok: true, json: async () => ({ state: {}, templates: [], path: '/', chain: [] }) };
+      };
+
+      try {
+        const router = new WebUIRouter();
+        const fetchPartial = (router as any).fetchPartial.bind(router) as (
+          path: string,
+          signal?: AbortSignal,
+        ) => Promise<unknown>;
+
+        const controller = new AbortController();
+        await fetchPartial('/test', controller.signal);
+
+        assert.ok(capturedSignal, 'signal should be passed to fetch');
+        assert.equal(capturedSignal, controller.signal, 'should be the same signal instance');
+      } finally {
+        (globalThis as any).fetch = origFetch;
+      }
+    });
+
+    test('fetchPartial skips side effects when signal is aborted after response', async () => {
+      const origFetch = (globalThis as any).fetch;
+      const origTemplates = globals().__webui_templates;
+      globals().__webui_templates = {};
+
+      (globalThis as any).fetch = async (_url: string, _opts?: RequestInit) => {
+        return {
+          ok: true,
+          json: async () => ({
+            state: {},
+            templates: [
+              '<script>(function(){window.__webui_templates["abort-test"]={h:"<div/>"};})()</script>',
+            ],
+            path: '/',
+            chain: [],
+            inventory: 'ff',
+          }),
+        };
+      };
+
+      try {
+        const router = new WebUIRouter();
+        const fetchPartial = (router as any).fetchPartial.bind(router) as (
+          path: string,
+          signal?: AbortSignal,
+        ) => Promise<unknown>;
+
+        // Abort the signal before calling — simulates a superseded navigation
+        const controller = new AbortController();
+        controller.abort();
+
+        const result = await fetchPartial('/test', controller.signal);
+
+        assert.equal(result, null, 'should return null for aborted navigation');
+        assert.equal(globals().__webui_templates?.['abort-test'], undefined, 'should not register templates after abort');
+      } finally {
+        (globalThis as any).fetch = origFetch;
+        globals().__webui_templates = origTemplates;
+      }
+    });
+
+    test('fetchPartial works normally without signal', async () => {
+      const origFetch = (globalThis as any).fetch;
+      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
+        assert.equal(opts?.signal, undefined, 'signal should be undefined');
+        return { ok: true, json: async () => ({ state: {}, templates: [], path: '/', chain: [] }) };
+      };
+
+      try {
+        const router = new WebUIRouter();
+        const fetchPartial = (router as any).fetchPartial.bind(router) as (
+          path: string,
+          signal?: AbortSignal,
+        ) => Promise<unknown>;
+
+        const result = await fetchPartial('/test');
+        assert.ok(result, 'should return data when no signal is provided');
+      } finally {
+        (globalThis as any).fetch = origFetch;
+      }
+    });
+
+    test('intercept handler silently swallows AbortError', async () => {
+      // Verify the architectural contract: the intercept handler catches
+      // AbortError without logging. This is critical for rapid navigation
+      // where superseded fetches throw AbortError.
+      const router = new WebUIRouter();
+      const source = (router as any).start.toString() as string;
+
+      // The handler must check for AbortError by name
+      assert.ok(
+        source.includes('AbortError'),
+        'intercept handler should check for AbortError',
+      );
+
+      // It should not re-throw or console.error AbortErrors
+      // Verify the pattern: if AbortError → return (swallow)
+      const abortIdx = source.indexOf('AbortError');
+      const returnAfterAbort = source.indexOf('return', abortIdx);
+      assert.ok(
+        returnAfterAbort > abortIdx && returnAfterAbort - abortIdx < 80,
+        'AbortError check should be followed by a return (swallow pattern)',
+      );
+    });
+
+    test('handleNavigation checks signal.aborted after fetch and inside preload loop', () => {
+      // Verify the architectural contract: handleNavigation has abort gates
+      // after fetchPartial and inside the ensureComponentLoaded loop.
+      const router = new WebUIRouter();
+      const source = (router as any).handleNavigation.toString() as string;
+
+      // Count occurrences of signal?.aborted checks
+      const abortChecks: number[] = [];
+      let searchFrom = 0;
+      while (true) {
+        const idx = source.indexOf('signal?.aborted', searchFrom);
+        if (idx === -1) break;
+        abortChecks.push(idx);
+        searchFrom = idx + 1;
+      }
+
+      assert.ok(
+        abortChecks.length >= 2,
+        `should have at least 2 abort gates, found ${abortChecks.length}`,
+      );
+
+      // First gate should be after fetchPartial
+      const fetchIdx = source.indexOf('fetchPartial');
+      assert.ok(fetchIdx > -1, 'fetchPartial should be called');
+      assert.ok(
+        abortChecks[0] > fetchIdx,
+        'first abort gate should be after fetchPartial call',
+      );
+
+      // One of the abort gates should be immediately followed by ensureComponentLoaded
+      // (i.e. inside the preload loop, guarding each iteration).
+      const hasPreloadGate = abortChecks.some(pos => {
+        const after = source.substring(pos, pos + 100);
+        return after.includes('ensureComponentLoaded');
+      });
+      assert.ok(
+        hasPreloadGate,
+        'an abort gate should guard ensureComponentLoaded inside the preload loop',
+      );
+    });
+  });
+
   describe('view transition timing', () => {
+    test('startViewTransition awaits updateCallbackDone not finished', () => {
+      // Regression: awaiting .finished blocks the Navigation API intercept
+      // handler until the CSS animation completes, serializing navigations
+      // behind transition animations. The router must use .updateCallbackDone
+      // so the handler resolves after the synchronous DOM commit.
+      const router = new WebUIRouter();
+      const source = (router as any).handleNavigation.toString() as string;
+
+      assert.ok(
+        source.includes('updateCallbackDone'),
+        'should await updateCallbackDone on the view transition',
+      );
+      assert.ok(
+        !source.includes('.finished'),
+        'should NOT await .finished on the view transition — it blocks rapid navigation',
+      );
+    });
+
     test('startViewTransition callback does not contain async fetch or import', () => {
       // Regression: the view transition callback must complete synchronously
       // (DOM swap only). Async work (fetch, module load) must happen BEFORE
