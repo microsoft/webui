@@ -4,12 +4,12 @@ The WebUI WASM handler compiles the full rendering pipeline to WebAssembly via `
 
 ## How It Works
 
-The WASM module includes the real `webui-parser` and `webui-handler` — the same code used by the CLI and the Rust handler. This means templates parsed in the browser produce identical output to server-side rendering.
+The WASM module includes the real `webui-parser` and `webui-handler` - the same code used by the CLI and the Rust handler. This means templates parsed in the browser produce identical output to server-side rendering.
 
 Two modes of operation are available:
 
-1. **`render`** — Takes a pre-built protocol (JSON) + state and renders HTML
-2. **`build_and_render`** — Takes virtual files + state, parses and renders in one call
+1. **`render`** - Takes a pre-built protocol (JSON) + state and renders HTML
+2. **`build_and_render`** - Takes virtual files + state, parses and renders in one call
 
 ## Building the WASM Module
 
@@ -17,7 +17,7 @@ Two modes of operation are available:
 cargo xtask build-wasm
 ```
 
-The output is committed to the repository under `docs/` for use by the playground. Most developers don't need to rebuild it — only rebuild when you change Rust code in the core crates.
+The output is committed to the repository under `docs/` for use by the playground. Most developers don't need to rebuild it - only rebuild when you change Rust code in the core crates.
 
 ## API Reference
 

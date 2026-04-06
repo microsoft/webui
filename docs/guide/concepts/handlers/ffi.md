@@ -1,6 +1,6 @@
 # WebUI FFI Handler
 
-The WebUI FFI (Foreign Function Interface) handler exposes the rendering pipeline as a C-compatible shared library. Any language with C interop — Go, C#, Python, Ruby, PHP, and more — can load the library and render WebUI templates without a JavaScript runtime.
+The WebUI FFI (Foreign Function Interface) handler exposes the rendering pipeline as a C-compatible shared library. Any language with C interop - Go, C#, Python, Ruby, PHP, and more - can load the library and render WebUI templates without a JavaScript runtime.
 
 ## Building the Shared Library
 
@@ -81,7 +81,7 @@ The FFI uses thread-local error storage following the POSIX `dlerror()` pattern:
 1. Any function that can fail returns `NULL` on error
 2. Call `webui_last_error()` immediately after to get a human-readable message
 3. The error pointer is valid until the next FFI call on the same thread
-4. Each thread has independent error state — safe for concurrent use
+4. Each thread has independent error state - safe for concurrent use
 
 ```c
 char *result = webui_render(html, json);
@@ -114,7 +114,7 @@ if (handler == NULL) {
     return 1;
 }
 
-// Render — output includes hydration markers
+// Render - output includes hydration markers
 char *html = webui_handler_render(handler, protocol_data, protocol_len,
                                   state_json, "index.html", "/");
 
@@ -132,6 +132,6 @@ For complete examples in Python, Go, and C#, see the [Language Integrations](/gu
 
 ## Next Steps
 
-- [Language Integrations](/guide/integrations) — Python, Go, C# examples with full code
-- [Plugins](/guide/concepts/plugins/) — Plugin system and FAST-HTML hydration
-- [CLI Reference](/guide/cli/) — Building protocols with `webui build`
+- [Language Integrations](/guide/integrations) - Python, Go, C# examples with full code
+- [Plugins](/guide/concepts/plugins/) - Plugin system and FAST-HTML hydration
+- [CLI Reference](/guide/cli/) - Building protocols with `webui build`

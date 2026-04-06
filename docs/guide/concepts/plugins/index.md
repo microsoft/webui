@@ -1,6 +1,6 @@
 # Plugins
 
-WebUI provides a framework-agnostic plugin system that extends both the parser (build time) and the handler (render time). Plugins let framework authors customize WebUI's behavior — component discovery, attribute filtering, hydration marker injection — without modifying WebUI internals.
+WebUI provides a framework-agnostic plugin system that extends both the parser (build time) and the handler (render time). Plugins let framework authors customize WebUI's behavior - component discovery, attribute filtering, hydration marker injection - without modifying WebUI internals.
 
 ## How Plugins Work
 
@@ -16,7 +16,7 @@ Build time (Parser Plugin)         Runtime (Handler Plugin)
 └──────────────────────────┘       └──────────────────────────┘
 ```
 
-Parser plugins emit opaque binary data into `Plugin` protocol fragments. Handler plugins receive that data at render time via `on_plugin_data`. WebUI never interprets this data — each plugin pair defines its own contract.
+Parser plugins emit opaque binary data into `Plugin` protocol fragments. Handler plugins receive that data at render time via `on_plugin_data`. WebUI never interprets this data - each plugin pair defines its own contract.
 
 ## Using Plugins via the CLI
 
@@ -98,6 +98,47 @@ For attribute bindings, data attributes are emitted instead:
 
 The plugin maintains per-scope binding counters that reset when entering components or loop items.
 
+## Built-in Plugin: WebUI Framework
+
+The `webui` plugin provides server-side rendering support for [WebUI Framework](https://github.com/microsoft/webui) components with automatic hydration.
+
+### Parser Side (`WebUIParserPlugin`)
+
+During `webui build --plugin=webui`, the parser plugin:
+
+- **Skips framework attributes**: `@click`, `@keydown`, `w-ref`, and other event/ref bindings are removed from the protocol (handled client-side)
+- **Emits binding metadata**: 12-byte `Plugin` fragments encoding `[binding_count, event_start, event_count]` per element
+- **Tracks components**: Records custom elements for template metadata generation
+- **Compiles templates**: Generates optimized metadata objects registered in `window.__webui_templates`
+
+### Handler Side (`WebUIHydrationPlugin`)
+
+During rendering with `--plugin=webui`, the handler injects lightweight comment markers for structural boundaries:
+
+| Context | Marker | Example |
+|---------|--------|---------|
+| Repeat block | `<!--wr-->` / `<!--/wr-->` | Wraps the entire `<for>` loop |
+| Repeat item | `<!--wi-->` | Before each loop iteration |
+| Conditional block | `<!--wc-->` / `<!--/wc-->` | Wraps the `<if>` block content |
+
+Text bindings, attribute bindings, and event handlers need no SSR markers - the client resolves them from compiled metadata path indices.
+
+### Using the WebUI Plugin
+
+```bash
+# Build with WebUI Framework hydration
+webui build ./src --out ./dist --plugin=webui
+
+# Dev server with WebUI Framework
+webui serve ./src --state ./data/state.json --plugin=webui --watch
+```
+
+```rust
+// Rust handler
+use webui_handler::plugin::webui::WebUIHydrationPlugin;
+let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+```
+
 ## Writing Custom Plugins
 
 To create a custom plugin, implement the `ParserPlugin` and/or `HandlerPlugin` traits:
@@ -145,6 +186,6 @@ pub trait HandlerPlugin {
 
 ## Next Steps
 
-- [CLI Reference](/guide/cli/) — `--plugin` flag details
-- [Rust Handler](/guide/concepts/handlers/rust) — Using plugins with the Rust handler
-- [Hello World Tutorial](/tutorials/hello-world) — Basic WebUI app
+- [CLI Reference](/guide/cli/) - `--plugin` flag details
+- [Rust Handler](/guide/concepts/handlers/rust) - Using plugins with the Rust handler
+- [Hello World Tutorial](/tutorials/hello-world) - Basic WebUI app

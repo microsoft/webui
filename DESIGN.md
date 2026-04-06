@@ -1,7 +1,7 @@
 # WebUI Framework Technical Specification
 
 ## Overview
-WebUI Framework is a high-performance server-side rendering framework that operates without JavaScript runtimes. It separates static and dynamic content at build time, creating an efficient protocol that enables fast server-side rendering in any language (Rust, Go, C#, PHP, Ruby, etc.).
+WebUI Framework is a high-performance server-side rendering framework that operates without JavaScript runtimes. It separates static and dynamic content at build time, creating an efficient protocol that enables fast server-side rendering in any language (Rust, Go, C#, PHP, Ruby, etc.). On the client, Web Components hydrate as interactive islands — only components that need interactivity ship JavaScript.
 
 ### Core Architecture
 
@@ -1027,23 +1027,21 @@ WebUI SSR marker formats are:
 
 | Marker | Format | Notes |
 |--------|--------|-------|
-| Binding start | `<!--w-b:start:INDEX:NAME-->` | Used for text bindings and block boundaries |
-| Binding end | `<!--w-b:end:INDEX:NAME-->` | Matches the corresponding start marker |
-| Repeat item start | `<!--w-r:start:INDEX-->` | Wraps one concrete `<for>` iteration |
-| Repeat item end | `<!--w-r:end:INDEX-->` | Closes that iteration |
-| Attribute single | `data-w-b-INDEX` | One dynamic attribute bound to `a[INDEX]` |
-| Attribute multi | `data-w-c-START-COUNT` | `COUNT` consecutive `a[]` entries on the same element |
-| Event count | `data-ev="COUNT"` | `COUNT` consecutive `e[]` entries belong to this element |
+| Repeat block start | `<!--wr-->` | Opens a `<for>` loop region |
+| Repeat block end | `<!--/wr-->` | Closes the `<for>` loop region |
+| Repeat item | `<!--wi-->` | Marks each iteration boundary inside a repeat |
+| Conditional start | `<!--wc-->` | Opens an `<if>` block |
+| Conditional end | `<!--/wc-->` | Closes the `<if>` block |
 
-For `<if>` and `<for>` blocks, `NAME` in the `w-b:*` marker pair uses block labels such as `if-2` or `for-3`. The handler only emits these markers in active child scopes; the root page scope remains marker-free.
+The WebUI handler plugin emits only these five comment markers. Text bindings, attribute bindings, and event handlers are resolved from compiled metadata path indices at hydration time - no DOM attribute markers are needed. The handler only emits markers in active child scopes; the root page scope remains marker-free. During hydration the framework keeps `<!--wr-->` and `<!--wc-->` as runtime anchors and removes `<!--/wr-->`, `<!--/wc-->`, and `<!--wi-->` markers.
 
 ### Runtime contract
 
-`@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`.
+`@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, and only interactive Web Components hydrate on the client — leaving static content untouched.
 
-- SSR hydration uses one DOM walk to discover `w-b:*`, `w-r:*`, `data-w-*`, and `data-ev` markers, wire the relevant bindings, then remove SSR-only markers.
+- SSR hydration uses one DOM walk to discover `<!--wr-->`, `<!--wi-->`, and `<!--wc-->` comment markers, wire the relevant bindings using compiled metadata path indices, then remove SSR-only markers.
 - Client-created DOM never reparses template syntax; it clones marker-free `h` and resolves `tx`, `ag`, `cl`, `rl`, and `el` locators directly.
-- Events are mapped from `data-ev="COUNT"` to consecutive `e[]` entries in DOM order. After target discovery, the runtime stores `data-eh-*` attributes on the target elements and installs one delegated listener per event type on the shadow root. Root events from `re[]` attach directly to the host element.
+- Events are resolved from compiled `e[]` and `el[]` metadata entries using path indices. The runtime installs one delegated listener per event type on the shadow root. Root events from `re[]` attach directly to the host element.
 - The full package entrypoint supports repeat metadata (`r[]` / `rl[]`). The additive `@microsoft/webui-framework/element-no-repeat` entrypoint preserves the same public `WebUIElement` API but must reject compiled templates that contain repeat metadata.
 
 Detailed component examples, decorators, and package entrypoint guidance live in [packages/webui-framework/README.md](packages/webui-framework/README.md) rather than being duplicated in this design spec.

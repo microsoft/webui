@@ -1,13 +1,13 @@
 # WebUI Electron Handler
 
-WebUI apps can run as native desktop applications using Electron. The Electron integration uses the `webui-node` native addon to render pre-built protocols at startup, then serves the rendered HTML and static assets through a custom `webui://` protocol scheme — no HTTP server needed.
+WebUI apps can run as native desktop applications using Electron. The Electron integration uses the `webui-node` native addon to render pre-built protocols at startup, then serves the rendered HTML and static assets through a custom `webui://` protocol scheme - no HTTP server needed.
 
 ## How it Works
 
-1. **Build phase** — `webui build --plugin=fast` compiles templates into `protocol.bin`. esbuild bundles the client JS.
-2. **Startup** — Electron's main process loads the native addon (`webui-node`), reads `protocol.bin` + `state.json`, and calls `addon.render()` to produce the full SSR HTML.
-3. **Custom protocol** — A `webui://` protocol scheme is registered. When Electron loads `webui://app/`, it serves the rendered HTML. CSS and JS assets are served from the app's `dist/` directory.
-4. **Hydration** — The client JS bundle hydrates the SSR output, attaching event listeners and enabling interactivity — same as in a browser.
+1. **Build phase** - `webui build --plugin=fast` compiles templates into `protocol.bin`. esbuild bundles the client JS.
+2. **Startup** - Electron's main process loads the native addon (`webui-node`), reads `protocol.bin` + `state.json`, and calls `addon.render()` to produce the full SSR HTML.
+3. **Custom protocol** - A `webui://` protocol scheme is registered. When Electron loads `webui://app/`, it serves the rendered HTML. CSS and JS assets are served from the app's `dist/` directory.
+4. **Hydration** - The client JS bundle hydrates the SSR output, attaching event listeners and enabling interactivity - same as in a browser.
 
 ## Usage
 
@@ -49,12 +49,12 @@ This avoids the need for a local HTTP server and provides a clean, secure origin
 
 ## Example
 
-A complete working example is available at [`examples/integration/electron/`](https://github.com/user/webui/tree/main/examples/integration/electron).
+A complete working example is available at [`examples/integration/electron/`](https://github.com/microsoft/webui/tree/main/examples/integration/electron).
 
-The [Contact Book Manager](https://github.com/user/webui/tree/main/examples/app/contact-book-manager) app demonstrates a full-featured WebUI application that works both in the browser (via `webui serve`) and as an Electron desktop app.
+The [Contact Book Manager](https://github.com/microsoft/webui/tree/main/examples/app/contact-book-manager) app demonstrates a full-featured WebUI application that works both in the browser (via `webui serve`) and as an Electron desktop app.
 
 ## Performance Notes
 
-- The native addon renders the entire page synchronously at startup — no per-request overhead.
+- The native addon renders the entire page synchronously at startup - no per-request overhead.
 - Protocol data is loaded once and rendered once. The custom protocol handler serves pre-rendered HTML from memory.
-- Client-side hydration runs identically to the browser — same JS bundle, same FAST-HTML components.
+- Client-side hydration runs identically to the browser - same JS bundle, same FAST-HTML components.

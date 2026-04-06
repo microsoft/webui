@@ -35,6 +35,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <STRATEGY>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
 | `--plugin <NAME>` | Load a parser plugin (e.g., `fast`) | *(none)* |
+| `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 
 Path inputs for `APP`, `--state`, and `--servedir` support absolute paths, relative paths, `~/...`, and `file://...` URI-style values.
@@ -46,6 +47,15 @@ Path inputs for `APP`, `--state`, and `--servedir` support absolute paths, relat
 | `link` | Emits `<link>` tags referencing external `.css` files. CSS files are copied to the output folder. |
 | `style` | Embeds CSS content directly in `<style>` tags inside shadow DOM templates. No separate CSS files are written. |
 | `module` | Emits `<style type="module" specifier="component">` definitions and adds `shadowrootadoptedstylesheets` to `<template>` tags. The browser shares a single `CSSStyleSheet` across all shadow roots that adopt it. No separate CSS files are written. Based on the [Declarative CSS Module Scripts](https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ShadowDOM/explainer.md) proposal. |
+
+**DOM Strategies:**
+
+| Strategy | Behavior |
+|----------|----------|
+| `shadow` | Components render inside `<template shadowrootmode="open">`. Style encapsulation via Shadow DOM. Default. |
+| `light` | Components render as direct children. No shadow boundary. 26% faster FCP on high-component-count pages. |
+
+See [Performance - Light DOM vs Shadow DOM](/guide/concepts/performance#light-dom-vs-shadow-dom) for benchmarks and guidance.
 
 **Examples:**
 
@@ -104,7 +114,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]...
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--api-port <PORT>] [--theme <VALUE>]
 ```
 
 **Arguments:**
@@ -119,7 +129,10 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
 | `--plugin <NAME>` | Load parser + handler plugins (e.g., `fast`) | *(none)* |
+| `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
+| `--api-port <PORT>` | Proxy route requests to your API server on this port. The dev server forwards navigation requests so your backend can provide real state data. | *(none)* |
+| `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Resolved tokens are injected into the render state. | *(none)* |
 
 The `APP` directory should contain your entry HTML and component files.
 
@@ -152,6 +165,15 @@ webui serve ./my-app --state ./state.json --plugin=fast --port 3001
 
 # Dev server with external components (--watch watches local paths)
 webui serve ./my-app --state ./state.json --components @reactive-ui --watch
+
+# Proxy route requests to your API server (e.g. Express on port 4000)
+webui serve ./my-app --state ./state.json --api-port 4000 --watch
+
+# Apply a design token theme from an npm package
+webui serve ./my-app --state ./state.json --theme @my-org/brand-tokens --watch
+
+# Apply a design token theme from a local JSON file
+webui serve ./my-app --state ./state.json --theme ./themes/dark.json --watch
 ```
 
 **Routes:**
@@ -184,7 +206,7 @@ The CLI automatically discovers web components in your app folder:
 - **HTML files with a hyphen** in the name are treated as components (e.g., `my-card.html` → `<my-card>`)
 - **CSS files** with the same name are automatically paired (e.g., `my-card.css`)
 - Components are registered and available for use in your templates
-- Discovery is recursive — components in subdirectories are also found
+- Discovery is recursive - components in subdirectories are also found
 
 ### Entry Template
 
@@ -222,7 +244,7 @@ dist/
 └── nav-bar.css         # Component CSS (--css link only)
 ```
 
-With `--css style`, only `protocol.bin` is written — CSS is embedded directly in the protocol's template fragments.
+With `--css style`, only `protocol.bin` is written - CSS is embedded directly in the protocol's template fragments.
 
 ### protocol.bin
 
@@ -344,7 +366,7 @@ Discovered npm package components are cached at `~/.webui/cache/components/` to 
 
 ## Next Steps
 
-- [Hello World Tutorial](/tutorials/hello-world) — Build your first WebUI app
-- [Components](/guide/concepts/components/) — Learn about web components
-- [Template Directives](/guide/concepts/directives/) — `<for>`, `<if>`, and <code v-pre>{{}}</code>
-- [Platform Handlers](/guide/concepts/handlers/) — Render protocols with state at runtime
+- [Hello World Tutorial](/tutorials/hello-world) - Build your first WebUI app
+- [Components](/guide/concepts/components/) - Learn about web components
+- [Template Directives](/guide/concepts/directives/) - `<for>`, `<if>`, and <code v-pre>{{}}</code>
+- [Platform Handlers](/guide/concepts/handlers/) - Render protocols with state at runtime

@@ -43,7 +43,7 @@ import { Router } from '@microsoft/webui-router';
 Router.start();
 ```
 
-The server SSRs the matched route on first load. The router handles clicks on `<a>` tags for subsequent navigations — no full page reloads.
+The server SSRs the matched route on first load. The router handles clicks on `<a>` tags for subsequent navigations - no full page reloads.
 
 ## Nested Routes
 
@@ -70,11 +70,11 @@ Routes nest to any depth. Each parent component uses `<outlet />` where its chil
 </template>
 ```
 
-When navigating between child routes, **parent content is preserved**. Navigating from `/sections/1/topics/react` to `/sections/1/topics/css` only remounts the topic component — the section heading and nav stay.
+When navigating between child routes, **parent content is preserved**. Navigating from `/sections/1/topics/react` to `/sections/1/topics/css` only remounts the topic component - the section heading and nav stay.
 
 ### The `exact` Attribute
 
-Use `exact` on **leaf routes** — routes with no children. Without `exact`, a route matches any URL that starts with its path, which is what you want for parent routes that have `<outlet />`.
+Use `exact` on **leaf routes** - routes with no children. Without `exact`, a route matches any URL that starts with its path, which is what you want for parent routes that have `<outlet />`.
 
 ```html
 <route path="/" component="app-shell">
@@ -96,7 +96,7 @@ Use `exact` on **leaf routes** — routes with no children. Without `exact`, a r
 1. Browser requests `/sections/1/topics/react`
 2. Server matches the full route chain: `app-shell → section-page → topic-page`
 3. Renders all matched components nested at their outlets
-4. Browser displays fully rendered HTML — no JavaScript needed yet
+4. Browser displays fully rendered HTML - no JavaScript needed yet
 5. JavaScript loads, hydration runs, router starts and reads the SSR'd active chain
 
 ### Client Navigation
@@ -104,9 +104,9 @@ Use `exact` on **leaf routes** — routes with no children. Without `exact`, a r
 1. User clicks a link to `/sections/1/topics/css`
 2. Router intercepts via the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navigation_API)
 3. Fetches JSON partial from server with `Accept: application/json`
-4. Server returns the matched route chain — the client does **not** perform route matching
-5. Compares old chain with new — finds first changed level
-6. Mounts only the changed component — parents stay mounted
+4. Server returns the matched route chain - the client does **not** perform route matching
+5. Compares old chain with new - finds first changed level
+6. Mounts only the changed component - parents stay mounted
 7. No full page reload
 
 ## The `Router` API
@@ -150,7 +150,7 @@ Tears down the router and removes event listeners.
 
 Release cached component templates to free memory. Removes entries from `window.__webui_templates` and clears their inventory bits so the server will re-send them on the next navigation that needs them.
 
-Active route components are always skipped — you cannot release a template that is currently rendered.
+Active route components are always skipped - you cannot release a template that is currently rendered.
 
 ```typescript
 // Release specific templates
@@ -163,7 +163,7 @@ Router.releaseTemplates();
 The framework's internal template cache is a `WeakMap` keyed by the same meta objects, so its entries become GC-eligible automatically when the template is released.
 
 ::: tip When to use this
-Most apps don't need this — the number of unique component templates is bounded by the route tree (typically 10–30). The server's inventory system already prevents duplicate downloads. Use `releaseTemplates()` in long-lived SPAs with many routes where memory pressure is a concern.
+Most apps don't need this - the number of unique component templates is bounded by the route tree (typically 10–30). The server's inventory system already prevents duplicate downloads. Use `releaseTemplates()` in long-lived SPAs with many routes where memory pressure is a concern.
 :::
 
 ## Lazy Loading
@@ -180,7 +180,7 @@ Router.start({
 ```
 
 - Components **not in `loaders`** are eagerly loaded
-- Each loader runs **at most once** — cached after first call
+- Each loader runs **at most once** - cached after first call
 - On SSR'd initial load, the lazy loader is skipped (content already rendered)
 
 ## Navigation Events
@@ -212,7 +212,7 @@ When `Accept: application/json`:
 }
 ```
 
-The `chain` field tells the client router which route components are active at each nesting level. The client uses this to diff against the previous chain and only remount what changed — it does **not** perform route matching itself.
+The `chain` field tells the client router which route components are active at each nesting level. The client uses this to diff against the previous chain and only remount what changed - it does **not** perform route matching itself.
 
 ### Full HTML (initial load)
 
@@ -220,7 +220,7 @@ Without `Accept: application/json`, return the full SSR'd page. The handler auto
 
 ### Building the chain
 
-Use `render_partial()` (Rust) or `webui_render_partial()` (FFI) to get the complete partial response — state, templates, inventory, path, and chain — in a single call:
+Use `render_partial()` (Rust) or `webui_render_partial()` (FFI) to get the complete partial response - state, templates, inventory, path, and chain - in a single call:
 
 ```rust
 // Rust
@@ -245,7 +245,7 @@ app.get('/users/:id', (req, res) => {
   const state = { name: getUser(req.params.id).name };
 
   if (req.accepts('json')) {
-    // renderPartial() returns the complete response — no assembly required
+    // renderPartial() returns the complete response - no assembly required
     const stateJson = JSON.stringify(state);
     res.type('json').send(webui.renderPartial(protocol, stateJson, 'index.html', req.path, req.get('X-WebUI-Inventory') ?? ''));
   } else {
@@ -261,6 +261,66 @@ Route parameters (`:id`, `:name`, etc.) are extracted from URLs and injected int
 > ⚠️ Never use triple braces (<code v-pre>{{{...}}}</code>) to render route parameters. An attacker could craft a URL like `/users/<script>alert(1)</script>` to inject arbitrary HTML.
 
 Always validate route parameters on the server before including them in state.
+
+## Route-Scoped State
+
+For optimal performance, each route handler should return only the state that
+its component template binds to - not the full application state.
+
+### Anti-pattern: Full State for Every Route
+
+```json
+// ❌ Returns everything for every route - 240 KB per navigation
+{
+  "folders": [...],
+  "threads": [...],
+  "messages": [...],
+  "settings": {...},
+  "contacts": [...]
+}
+```
+
+### Correct: Route-Scoped State
+
+```json
+// ✅ /inbox - only what the inbox component needs - 15 KB
+{ "threads": [...], "selectedFolder": "inbox" }
+
+// ✅ /inbox/:id - only what the detail component needs - 5 KB  
+{ "subject": "Q4 Review", "messages": [...] }
+
+// ✅ /settings - only settings data - 2 KB
+{ "theme": "dark", "language": "en", "notifications": true }
+```
+
+Route-scoped state keeps JSON payloads small during client-side navigation,
+where only the `state` field of the JSON partial is transferred.
+
+## Styling Route Outlets
+
+`<webui-route>` elements rendered by `<outlet />` are bare custom elements
+with `display: inline` by default. If the outlet's parent uses flexbox or
+grid layout, you need to style the route element:
+
+```css
+/* In the parent component's CSS */
+.content-area > webui-route {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+```
+
+Hidden routes use `style="display:none"` inline. If your CSS sets
+`display: flex`, add specificity to avoid showing hidden routes:
+
+```css
+.content-area > webui-route:not([style*="display:none"]) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+```
 
 ## Full Example
 

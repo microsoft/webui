@@ -1,10 +1,8 @@
 # WebUI
 
-Web rendering without a JavaScript runtime. Compile templates to binary. Serve them instantly from any backend.
+**WebUI** is a high-performance, language-agnostic server-side rendering framework built in Rust. It compiles HTML templates into Protocol Buffer binaries at build time — eliminating per-request template parsing entirely. On the client, Web Components hydrate as interactive islands using the [Islands Architecture](https://microsoft.github.io/webui/guide/concepts/how-it-works), where only components that need interactivity ship JavaScript.
 
-WebUI is a high-performance server-side rendering framework built in Rust. It compiles HTML templates into a Protocol Buffer binary at build time, separating static structure from dynamic content. At runtime, your backend (Rust, Node, Bun, Deno, C#, Python, Go — or any language via FFI) simply fills in state data and gets rendered HTML back. No template parsing, no JS runtime, minimal work.
-
-**📖 Documentation → [microsoft.github.io/webui](https://microsoft.github.io/webui)**
+> 📖 **[Full Documentation →](https://microsoft.github.io/webui)**
 
 ### Highlights
 
@@ -13,6 +11,18 @@ WebUI is a high-performance server-side rendering framework built in Rust. It co
 - **Web Components** — Built on native web components with Shadow DOM encapsulation.
 - **Server-side logic** — Conditionals and expressions evaluated on the server, not in the browser.
 - **Plugin system** — Parser and handler plugins for hydration, adding reactivity to interactive islands, custom directives, and framework-specific behavior.
+
+## Documentation
+
+Visit **[microsoft.github.io/webui](https://microsoft.github.io/webui)** for:
+
+- [Getting Started Guide](https://microsoft.github.io/webui/guide/) — What is WebUI and how to install it
+- [How It Works](https://microsoft.github.io/webui/guide/concepts/how-it-works) — Build → Render → Hydrate pipeline
+- [Interactivity Guide](https://microsoft.github.io/webui/guide/concepts/interactivity) — Web Components with `@attr`, `@observable`, events
+- [CLI Reference](https://microsoft.github.io/webui/guide/cli/) — `webui build`, `webui serve`, `webui inspect`
+- [Language Integrations](https://microsoft.github.io/webui/guide/integrations) — Rust, Node, Go, C#, Python
+- [Playground](https://microsoft.github.io/webui/playground/) — Try WebUI in the browser
+- [Tutorials](https://microsoft.github.io/webui/tutorials/hello-world) — Hello World, Todo App
 
 ## Install
 

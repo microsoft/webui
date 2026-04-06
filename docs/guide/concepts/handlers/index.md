@@ -38,7 +38,7 @@ Where:
 
 ## Plugin System
 
-Handlers support an optional **plugin system** for injecting framework-specific behavior during rendering. Plugins receive lifecycle callbacks at key points — binding start/end, loop iteration, scope changes — and can write additional content to the output.
+Handlers support an optional **plugin system** for injecting framework-specific behavior during rendering. Plugins receive lifecycle callbacks at key points - binding start/end, loop iteration, scope changes - and can write additional content to the output.
 
 ```
 handler = Handler::with_plugin(plugin)

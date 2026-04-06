@@ -31,8 +31,8 @@ char *webui_render(const char *html, const char *data_json);
 
 Parse an HTML template and render it with JSON state data in a single call. This is the **recommended entry point** for most consumers.
 
-- `html` — null-terminated UTF-8 string containing the HTML template.
-- `data_json` — null-terminated UTF-8 JSON string with the render state.
+- `html` - null-terminated UTF-8 string containing the HTML template.
+- `data_json` - null-terminated UTF-8 JSON string with the render state.
 - **Returns** a heap-allocated null-terminated UTF-8 string with the rendered HTML, or `NULL` on error.
 - The caller **must** free the returned string with `webui_free()`.
 
@@ -52,7 +52,7 @@ const char *webui_last_error();
 
 Return the last error message for the current thread, or `NULL` if no error has occurred. Call this after any function returns `NULL` to get a human-readable diagnostic.
 
-- The returned pointer is **owned by the library** — do **not** free it.
+- The returned pointer is **owned by the library** - do **not** free it.
 - The pointer is valid until the next FFI call on the same thread.
 - Each thread has its own independent error state.
 
@@ -72,7 +72,7 @@ void *webui_handler_create_with_plugin(const char *plugin_id);
 
 Create a reusable handler instance with a named plugin. Currently supported plugins: `"fast"`. Pass `NULL` for no plugin (equivalent to `webui_handler_create`).
 
-- `plugin_id` — null-terminated UTF-8 string identifying the plugin, or `NULL`.
+- `plugin_id` - null-terminated UTF-8 string identifying the plugin, or `NULL`.
 - **Returns** an opaque pointer on success, or `NULL` on error (call `webui_last_error()` for details).
 - The caller **must** free the returned pointer with `webui_handler_destroy()`.
 
@@ -90,15 +90,19 @@ Destroy a handler instance created by `webui_handler_create`. Passing `NULL` is 
 char *webui_handler_render(void *handler_ptr,
                            const uint8_t *protocol_data,
                            uintptr_t protocol_len,
-                           const char *data_json);
+                           const char *data_json,
+                           const char *entry_id,
+                           const char *request_path);
 ```
 
 Render a pre-compiled WebUI protocol (protobuf binary) with JSON state data. This is the lower-level API for callers that have already compiled their templates to protobuf via the CLI.
 
-- `handler_ptr` — pointer returned by `webui_handler_create`.
-- `protocol_data` — pointer to protobuf binary data.
-- `protocol_len` — length of the protobuf data in bytes.
-- `data_json` — null-terminated UTF-8 JSON string with the render state.
+- `handler_ptr` - pointer returned by `webui_handler_create`.
+- `protocol_data` - pointer to protobuf binary data.
+- `protocol_len` - length of the protobuf data in bytes.
+- `data_json` - null-terminated UTF-8 JSON string with the render state.
+- `entry_id` - null-terminated UTF-8 string identifying the entry fragment (e.g., `"index.html"`).
+- `request_path` - null-terminated UTF-8 string with the request path for route matching (e.g., `"/users/42"`).
 - **Returns** a heap-allocated string on success, or `NULL` on error.
 - The caller **must** free the returned string with `webui_free()`.
 
@@ -119,7 +123,7 @@ Two rules to remember:
 
 ## Python
 
-Python's built-in `ctypes` module can load the shared library directly — no pip packages needed.
+Python's built-in `ctypes` module can load the shared library directly - no pip packages needed.
 
 ```python
 import ctypes
@@ -260,7 +264,7 @@ class WebUI
 Any language with C FFI support can use WebUI. The pattern is always the same:
 
 1. Load the shared library (`libwebui_ffi.dylib` / `.so` / `.dll`).
-2. Declare the functions you need — at minimum `webui_render`, `webui_free`, and `webui_last_error`.
+2. Declare the functions you need - at minimum `webui_render`, `webui_free`, and `webui_last_error`.
 3. Pass UTF-8 null-terminated strings for `html` and `data_json`.
-4. Check the return value — `NULL` means an error occurred.
+4. Check the return value - `NULL` means an error occurred.
 5. Copy the returned string into your language's managed memory, then call `webui_free`.

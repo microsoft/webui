@@ -6,8 +6,8 @@ WebUI Framework can be installed and used with various environments and language
 
 The `@microsoft/webui` npm package is the primary way to use WebUI. It gives you:
 
-- **`npx webui build`** — the CLI for building templates into protocols
-- **`import { build, render } from '@microsoft/webui'`** — a programmatic API for Node.js
+- **`npx webui build`** - the CLI for building templates into protocols
+- **`import { build, render } from '@microsoft/webui'`** - a programmatic API for Node.js
 - **Native performance** via platform-specific binaries (no compilation required)
 
 ::: code-group
@@ -31,11 +31,12 @@ A typical project setup:
 ```json
 {
   "scripts": {
-    "build": "webui build ./src --out ./dist",
-    "dev": "webui serve ./src --state ./data/state.json --watch"
+    "build": "webui build ./src --out ./dist --plugin=webui",
+    "dev": "webui serve ./src --state ./data/state.json --plugin=webui --watch"
   },
   "dependencies": {
-    "@microsoft/webui": "latest"
+    "@microsoft/webui": "latest",
+    "@microsoft/webui-framework": "latest"
   }
 }
 ```
@@ -44,7 +45,35 @@ Run the development server with `npm run dev` and build for production with `npm
 
 ### Cross-Platform Support
 
-The npm package uses platform-specific optional dependencies to deliver native binaries. Supported platforms are installed automatically — no Rust toolchain required.
+The npm package uses platform-specific optional dependencies to deliver native binaries. Supported platforms are installed automatically - no Rust toolchain required.
+
+## WebUI Framework (Client-Side Interactivity)
+
+For interactive Web Components with Islands Architecture, install the framework runtime:
+
+::: code-group
+```bash [npm]
+npm install @microsoft/webui-framework
+```
+
+```bash [yarn]
+yarn add @microsoft/webui-framework
+```
+
+```bash [pnpm]
+pnpm add @microsoft/webui-framework
+```
+:::
+
+This gives you:
+- **`WebUIElement`** base class for interactive Web Components
+- **`@attr`** and **`@observable`** decorators for reactive state
+- Automatic SSR hydration with zero manual DOM reading
+- Path-indexed targeted updates for minimal DOM mutations
+
+::: tip Not every app needs this
+If your pages are purely informational with no client-side interactivity, you only need `@microsoft/webui` for building and rendering. The framework runtime is only needed when components have event handlers, reactive state, or user input.
+:::
 
 ## Client-Side Router (Optional)
 
@@ -64,7 +93,7 @@ pnpm add @microsoft/webui-router
 ```
 :::
 
-The router is a separate package because it's only needed for apps with client-side navigation. Server-only apps that do full page loads on every request don't need it.
+The router works with both WebUI Framework (`@microsoft/webui-framework`) and FAST-HTML (`@microsoft/fast-html`) components. It's a separate package because it's only needed for apps with client-side navigation.
 
 See the [Routing guide](/guide/concepts/routing) for setup and usage.
 

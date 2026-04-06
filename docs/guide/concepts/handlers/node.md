@@ -78,11 +78,11 @@ Deno.serve({ port: 3000 }, (req) => {
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `appDir` | `string` | — | Path to app folder |
+| `appDir` | `string` | - | Path to app folder |
 | `entry` | `string` | `"index.html"` | Entry file |
 | `css` | `"link" \| "style" \| "module"` | `"link"` | CSS delivery strategy |
-| `plugin` | `string` | — | Parser plugin (e.g. `"fast"`) |
-| `components` | `string[]` | — | External component sources |
+| `plugin` | `string` | - | Parser plugin (e.g. `"fast"`) |
+| `components` | `string[]` | - | External component sources |
 
 ### BuildStats
 
