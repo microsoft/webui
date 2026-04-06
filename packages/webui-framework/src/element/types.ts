@@ -40,11 +40,17 @@ export interface TextBinding {
   rawParent?: Element;
 }
 
+/** Attribute binding kind constants (matches compiled metadata). */
+export const ATTR_KIND_ATTRIBUTE = 0;
+export const ATTR_KIND_COMPLEX = 1;
+export const ATTR_KIND_BOOLEAN = 2;
+export const ATTR_KIND_TEMPLATE = 3;
+
 /** Direct reference to an attribute binding. */
 export interface AttrBinding {
   element: Element;
   name: string;
-  kind: 'attribute' | 'complex' | 'boolean' | 'template';
+  kind: number;
   path?: string;
   condition?: CompiledCondition;
   parts?: CompiledAttrPart[];
@@ -115,17 +121,3 @@ export interface RepeatHost {
   $insertInstanceAfter(cursor: Node | null, container: ParentNode & Node, instance: TemplateInstance): Node | null;
 }
 
-export function toCamelCase(str: string): string {
-  let result = '';
-  let capitalize = false;
-  for (let i = 0; i < str.length; i++) {
-    const ch = str[i];
-    if (ch === '-') {
-      capitalize = true;
-    } else {
-      result += capitalize ? ch.toUpperCase() : ch;
-      capitalize = false;
-    }
-  }
-  return result;
-}

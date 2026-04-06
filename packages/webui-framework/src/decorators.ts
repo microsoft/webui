@@ -62,8 +62,10 @@ const observableRegistry = new WeakMap<Function, Set<string>>();
 /**
  * Get the set of @observable property names registered for a class.
  */
+const EMPTY_SET: Set<string> = Object.freeze(new Set<string>()) as Set<string>;
+
 export function getObservableNames(ctor: Function): Set<string> {
-  return observableRegistry.get(ctor) ?? new Set();
+  return observableRegistry.get(ctor) ?? EMPTY_SET;
 }
 
 /**

@@ -45,7 +45,7 @@ import type {
 } from './template.js';
 import { hydrationStart, hydrationEnd } from './lifecycle.js';
 import { getObservableNames } from './decorators.js';
-import { syncRepeat } from './element/diff.js';
+import { syncRepeat, dotWalk } from './element/diff.js';
 import {
   collectItemMarkers,
   nextElement,
@@ -56,6 +56,11 @@ import {
 import {
   injectModuleStyle,
 } from './element/styles.js';
+import {
+  ATTR_KIND_BOOLEAN,
+  ATTR_KIND_COMPLEX,
+  ATTR_KIND_TEMPLATE,
+} from './element/types.js';
 import type {
   AttrBinding,
   CondBinding,
@@ -119,19 +124,6 @@ function getTemplateDom(meta: TemplateBlockMeta): Element {
   return div;
 }
 
-/** Walk a dotted path from a start offset without allocating. */
-function dotWalk(cursor: unknown, path: string, from: number): unknown {
-  let start = from;
-  for (let i = from; i <= path.length; i++) {
-    if (i === path.length || path.charCodeAt(i) === 46) {
-      if (cursor == null || typeof cursor !== 'object') return undefined;
-      cursor = (cursor as Record<string, unknown>)[path.substring(start, i)];
-      start = i + 1;
-    }
-  }
-  return cursor;
-}
-
 // ═══════════════════════════════════════════════════════════════════
 //  WebUIElement
 // ═══════════════════════════════════════════════════════════════════
@@ -151,6 +143,13 @@ export class WebUIElement extends HTMLElement {
     conds: CondBinding[];
     repeats: RepeatBinding[];
   }>;
+  /** Bindings that reference non-observable paths — updated on every flush. */
+  private $wildcardBindings?: {
+    texts: TextBinding[];
+    attrs: AttrBinding[];
+    conds: CondBinding[];
+    repeats: RepeatBinding[];
+  } | null;
 
   static define(tagName: string): void {
     customElements.define(tagName, this);
@@ -162,44 +161,41 @@ export class WebUIElement extends HTMLElement {
     const tag = this.tagName.toLowerCase();
 
     if (this.$hydrated && this.$root) {
-      hydrationStart(tag);
+      hydrationStart();
       this.$ready = true;
       this.$update();
-      hydrationEnd(tag);
+      hydrationEnd();
       return;
     }
 
     const meta = getTemplate(tag);
     if (!meta) {
-      if (typeof console !== 'undefined' && console.warn) {
-        console.warn(
-          `[WebUI] Template metadata for <${tag}> not found. ` +
-          `Ensure the component is included in the SSR output or registered via __webui_templates.`,
-        );
-      }
+      console.warn(
+        `[WebUI] Template metadata for <${tag}> not found. ` +
+        `Ensure the component is included in the SSR output or registered via __webui_templates.`,
+      );
       return;
     }
     this.$meta = meta;
-
     // Custom element upgrade timing: when the HTML parser encounters the
     // opening tag, connectedCallback fires BEFORE children are parsed.
     // If the document is still loading, defer to let the parser finish.
     if (document.readyState === 'loading') {
       const handler = (): void => {
         document.removeEventListener('DOMContentLoaded', handler);
-        this.$mount(meta, tag);
+        this.$mount(meta);
       };
       document.addEventListener('DOMContentLoaded', handler);
     } else {
       // Document is already parsed — children are available
-      this.$mount(meta, tag);
+      this.$mount(meta);
     }
   }
 
   /** Mount the component after children are available. */
-  private $mount(meta: TemplateMeta, tag: string): void {
+  private $mount(meta: TemplateMeta): void {
     if (this.$hydrated) return;
-    hydrationStart(tag);
+    hydrationStart();
 
     // Auto-detect shadow vs light DOM
     const hasShadow = !!this.shadowRoot;
@@ -222,7 +218,6 @@ export class WebUIElement extends HTMLElement {
       root = this.attachShadow({ mode: 'open' });
       const fragment = this.$parseTemplate(meta);
       root.appendChild(fragment);
-      isSSR = false;
       isSSR = false;
     } else {
       // Light DOM client-created — populate from template (no shadow = no link issue)
@@ -249,7 +244,7 @@ export class WebUIElement extends HTMLElement {
     this.$hydrated = true;
     this.$ready = true;
 
-    hydrationEnd(tag);
+    hydrationEnd();
   }
 
   disconnectedCallback(): void {}
@@ -349,6 +344,11 @@ export class WebUIElement extends HTMLElement {
         if (entry) {
           this.$updateBindings(entry.texts, entry.attrs, entry.conds, entry.repeats);
         }
+      }
+      // Update wildcard bindings once per flush (not per dirty path)
+      if (this.$wildcardBindings) {
+        const wc = this.$wildcardBindings;
+        this.$updateBindings(wc.texts, wc.attrs, wc.conds, wc.repeats);
       }
     }
 
@@ -612,30 +612,7 @@ export class WebUIElement extends HTMLElement {
         if (marker) lastCondMarker = marker;
 
         if (shown && blockMeta && marker) {
-          const rootTag = this.$rootTag(blockMeta);
-          if (rootTag) {
-            const el = nextElement(condAnchor);
-            if (el) {
-              const blockTplDom = getTemplateDom(blockMeta);
-              condInstance = this.$hydrate(el, blockMeta, blockTplDom, scope, 1);
-              this.$updateInstance(condInstance);
-            }
-          } else {
-            // Text-only conditional: collect nodes between <!--wc--> and <!--/wc-->
-            const condNodes = this.$collectBetween(condAnchor, MARKER_COND_END);
-            if (condNodes.length > 0) {
-              const wrapper = document.createElement('div');
-              for (let cn = 0; cn < condNodes.length; cn++) wrapper.appendChild(condNodes[cn]);
-              condInstance = this.$hydrate(wrapper, blockMeta, getTemplateDom(blockMeta), scope);
-              condInstance.nodes = childNodesArray(wrapper);
-              let afterNode: Node = condAnchor;
-              for (let cn = 0; cn < condInstance.nodes.length; cn++) {
-                ssrParent.insertBefore(condInstance.nodes[cn], afterNode.nextSibling);
-                afterNode = condInstance.nodes[cn];
-              }
-              this.$updateInstance(condInstance);
-            }
-          }
+          condInstance = this.$hydrateCondContent(condAnchor, blockMeta, scope);
         }
 
         // Remove the <!--/wc--> end marker — it's no longer needed after hydration.
@@ -762,29 +739,7 @@ export class WebUIElement extends HTMLElement {
                   if (condMet) {
                     const condBlockMeta = this.$block(condBlockIndex);
                     if (condBlockMeta) {
-                      const condRootTag = this.$rootTag(condBlockMeta);
-                      if (condRootTag) {
-                        const el = nextElement(condAnchor);
-                        if (el) {
-                          condInstance = this.$hydrate(el, condBlockMeta, getTemplateDom(condBlockMeta), itemScope, 1);
-                          this.$updateInstance(condInstance);
-                        }
-                      } else {
-                        // Text-only conditional: collect nodes between <!--wc--> and <!--/wc-->
-                        const condNodes = this.$collectBetween(condAnchor, MARKER_COND_END);
-                        if (condNodes.length > 0) {
-                          const wrapper = document.createElement('div');
-                          for (let cn = 0; cn < condNodes.length; cn++) wrapper.appendChild(condNodes[cn]);
-                          condInstance = this.$hydrate(wrapper, condBlockMeta, getTemplateDom(condBlockMeta), itemScope);
-                          condInstance.nodes = childNodesArray(wrapper);
-                          let afterNode: Node = condAnchor;
-                          for (let cn = 0; cn < condInstance.nodes.length; cn++) {
-                            condAnchor.parentNode?.insertBefore(condInstance.nodes[cn], afterNode.nextSibling);
-                            afterNode = condInstance.nodes[cn];
-                          }
-                          this.$updateInstance(condInstance);
-                        }
-                      }
+                      condInstance = this.$hydrateCondContent(condAnchor, condBlockMeta, itemScope);
                     }
                   }
 
@@ -847,6 +802,41 @@ export class WebUIElement extends HTMLElement {
       node = node.nextSibling;
     }
     return nodes;
+  }
+
+  /**
+   * Hydrate a conditional block's content — shared by top-level and
+   * repeat-item conditional hydration paths.
+   */
+  private $hydrateCondContent(
+    condAnchor: Comment,
+    blockMeta: TemplateBlockMeta,
+    scope: ScopeFrame | undefined,
+  ): TemplateInstance | null {
+    const rootTag = this.$rootTag(blockMeta);
+    if (rootTag) {
+      const el = nextElement(condAnchor);
+      if (el) {
+        const inst = this.$hydrate(el, blockMeta, getTemplateDom(blockMeta), scope, 1);
+        this.$updateInstance(inst);
+        return inst;
+      }
+      return null;
+    }
+    // Text-only conditional: collect nodes between <!--wc--> and <!--/wc-->
+    const condNodes = this.$collectBetween(condAnchor, MARKER_COND_END);
+    if (condNodes.length === 0) return null;
+    const wrapper = document.createElement('div');
+    for (let cn = 0; cn < condNodes.length; cn++) wrapper.appendChild(condNodes[cn]);
+    const inst = this.$hydrate(wrapper, blockMeta, getTemplateDom(blockMeta), scope);
+    inst.nodes = childNodesArray(wrapper);
+    let afterNode: Node = condAnchor;
+    for (let cn = 0; cn < inst.nodes.length; cn++) {
+      condAnchor.parentNode?.insertBefore(inst.nodes[cn], afterNode.nextSibling);
+      afterNode = inst.nodes[cn];
+    }
+    this.$updateInstance(inst);
+    return inst;
   }
 
   /**
@@ -970,13 +960,11 @@ export class WebUIElement extends HTMLElement {
   private $addEvent(target: EventTarget, eventName: string, handlerName: string, needsEvent: number): void {
     const method = (this as Record<string, unknown>)[handlerName];
     if (typeof method !== 'function') return;
-    target.addEventListener(eventName, (e: Event) => {
-      if (needsEvent) {
-        (method as (e: Event) => void).call(this, e);
-      } else {
-        (method as () => void).call(this);
-      }
-    });
+    const self = this;
+    target.addEventListener(eventName, needsEvent
+      ? (e: Event) => (method as (e: Event) => void).call(self, e)
+      : () => (method as () => void).call(self),
+    );
   }
 
   /** Find w-ref attributes and assign to component properties. */
@@ -994,13 +982,10 @@ export class WebUIElement extends HTMLElement {
   /** Create an AttrBinding from compiled metadata. */
   private $makeAttr(el: Element, entry: CompiledAttrMeta, scope?: ScopeFrame): AttrBinding {
     const name = entry[0];
-    switch (entry[1]) {
-      case 0: return { element: el, name, kind: 'attribute', path: entry[2] as string, scope };
-      case 1: return { element: el, name, kind: 'complex', path: entry[2] as string, scope };
-      case 2: return { element: el, name, kind: 'boolean', condition: entry[2] as CompiledCondition, scope };
-      case 3: return { element: el, name, kind: 'template', parts: entry[2] as CompiledAttrPart[], scope };
-      default: return { element: el, name, kind: 'attribute', path: '', scope };
-    }
+    const kind = entry[1];
+    if (kind === ATTR_KIND_BOOLEAN) return { element: el, name, kind, condition: entry[2] as CompiledCondition, scope };
+    if (kind === ATTR_KIND_TEMPLATE) return { element: el, name, kind, parts: entry[2] as CompiledAttrPart[], scope };
+    return { element: el, name, kind: kind as number, path: (entry[2] as string) || '', scope };
   }
 
   /** Build attrMap and rootBindings for a repeat block. */
@@ -1092,16 +1077,13 @@ export class WebUIElement extends HTMLElement {
       ensure(keyFor(rep.collection)).repeats.push(rep);
     }
 
-    // Merge wildcard into every concrete path
+    // Store wildcard bindings separately — avoids duplicating them into every path
     const wc = index.get('*');
     if (wc) {
       index.delete('*');
-      for (const [, e] of index) {
-        e.texts.push(...wc.texts);
-        e.attrs.push(...wc.attrs);
-        e.conds.push(...wc.conds);
-        e.repeats.push(...wc.repeats);
-      }
+      this.$wildcardBindings = wc;
+    } else {
+      this.$wildcardBindings = null;
     }
     this.$pathIndex = index;
   }
@@ -1114,7 +1096,7 @@ export class WebUIElement extends HTMLElement {
     for (let i = 0; i < attrs.length; i++) this.$patchAttr(attrs[i]);
     for (let i = 0; i < conds.length; i++) this.$toggleCond(conds[i]);
     for (let i = 0; i < repeats.length; i++) {
-      syncRepeat(this, this as unknown as Record<string, unknown>, this.constructor as Function, repeats[i]);
+      syncRepeat(this, repeats[i]);
     }
   }
 
@@ -1143,12 +1125,12 @@ export class WebUIElement extends HTMLElement {
   private $patchAttr(b: AttrBinding): void {
     const el = b.element;
     switch (b.kind) {
-      case 'complex': {
+      case ATTR_KIND_COMPLEX: {
         const v = this.$resolveValue(b.path!, b.scope);
         (el as unknown as Record<string, unknown>)[b.name] = v;
         break;
       }
-      case 'boolean': {
+      case ATTR_KIND_BOOLEAN: {
         const show = b.condition![0](this.$resolver, b.scope);
         if (show) el.setAttribute(b.name, '');
         else el.removeAttribute(b.name);
@@ -1158,7 +1140,7 @@ export class WebUIElement extends HTMLElement {
         }
         break;
       }
-      case 'template': {
+      case ATTR_KIND_TEMPLATE: {
         const v = this.$resolveParts(b.parts!, b.scope);
         if (el.getAttribute(b.name) !== v) el.setAttribute(b.name, v);
         break;

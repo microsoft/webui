@@ -22,11 +22,10 @@ function asParent(node: Node | null): (ParentNode & Node) | null {
   return 'childNodes' in node ? (node as ParentNode & Node) : null;
 }
 
-/** Resolve a dotted path against a value object without allocating. */
-function resolvePath(value: unknown, path: string): unknown {
-  let cursor = value;
-  let start = 0;
-  for (let i = 0; i <= path.length; i++) {
+/** Resolve a dotted path from a start offset without allocating. */
+export function dotWalk(cursor: unknown, path: string, from: number): unknown {
+  let start = from;
+  for (let i = from; i <= path.length; i++) {
     if (i === path.length || path.charCodeAt(i) === 46 /* . */) {
       if (cursor == null || typeof cursor !== 'object') return undefined;
       cursor = (cursor as Record<string, unknown>)[path.slice(start, i)];
@@ -49,13 +48,13 @@ export function resolveRepeatValue(
 ): unknown {
   if (path === scopeVar) return scope;
   if (!path.startsWith(`${scopeVar}.`)) return undefined;
-  return resolvePath(scope, path.slice(scopeVar.length + 1));
+  return dotWalk(scope, path, scopeVar.length + 1);
 }
 
 /** Compute a key for an item using the cached key path, or null. */
 function itemKey(item: unknown, keyPath: string | undefined): string | null {
   if (keyPath === undefined || keyPath === '') return null;
-  const v = resolvePath(item, keyPath);
+  const v = dotWalk(item, keyPath, 0);
   return v != null ? String(v) : '';
 }
 
@@ -74,8 +73,6 @@ function itemScope(rep: RepeatBinding, item: unknown): ScopeFrame {
  */
 export function syncRepeat(
   host: RepeatHost,
-  hostObj: Record<string, unknown>,
-  hostCtor: Function,
   rep: RepeatBinding,
 ): void {
   const resolved = host.$resolveValue(rep.collection, rep.scope);
