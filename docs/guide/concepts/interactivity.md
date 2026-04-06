@@ -385,3 +385,36 @@ Not every component needs JavaScript. Hydrating a component that has no interact
 - Client-side data manipulation (sorting, filtering, pagination)
 
 The goal is minimal JavaScript: hydrate only what the user will interact with, and let the server handle everything else.
+
+## SSR-Only Components (No TypeScript)
+
+Components that have no interactivity don't need a `.ts` file at all. Just create the `.html` template (and optional `.css`):
+
+```
+cb-stat-card/
+├── cb-stat-card.html   ← Template only
+└── cb-stat-card.css    ← Optional styles
+```
+
+No class, no `@attr`, no `define()`. The server renders these from their HTML template at build time. On the client, they render as static HTML — zero JavaScript.
+
+### SPA Navigation for SSR-Only Components
+
+When using the router for client-side navigation, SSR-only components need to render on route changes too. Pass `elementBase` to `Router.start()` and the router auto-registers bare `WebUIElement` subclasses on demand:
+
+```typescript
+import { WebUIElement } from '@microsoft/webui-framework';
+import { Router } from '@microsoft/webui-router';
+
+Router.start({
+  elementBase: WebUIElement,
+  loaders: {
+    // Only interactive components need lazy loaders
+    'contact-form': () => import('./pages/contact-form.js'),
+  },
+});
+```
+
+When the router navigates to a route whose component has no registered custom element, it checks `window.__webui_templates` for template metadata. If found, it auto-registers `class extends WebUIElement {}` — the base class's `connectedCallback` handles rendering the template.
+
+This means only components with event handlers or reactive state need a `.ts` file. Everything else is pure SSR.

@@ -42,6 +42,24 @@ export interface RouterConfig {
    */
   loaders?: Record<string, () => Promise<unknown>>;
 
+  /**
+   * Base custom element class for auto-registering SSR-only components.
+   *
+   * When a route's component tag is not a registered custom element but
+   * has template metadata in `window.__webui_templates`, the router
+   * auto-registers a bare subclass of this base. This enables pure-SSR
+   * components (no client JS class) to render on SPA navigations.
+   *
+   * Pass `WebUIElement` from `@microsoft/webui-framework`.
+   *
+   * @example
+   * ```ts
+   * import { WebUIElement } from '@microsoft/webui-framework';
+   * Router.start({ elementBase: WebUIElement });
+   * ```
+   */
+  elementBase?: CustomElementConstructor;
+
   /** Enable development mode warnings for common routing mistakes. */
   dev?: boolean;
 }

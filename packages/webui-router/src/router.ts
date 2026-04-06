@@ -125,6 +125,8 @@ export class WebUIRouter {
   private loaders: Record<string, () => Promise<unknown>> = {};
   /** Deduplication cache for in-flight / completed loader promises. */
   private loaderPromises = new Map<string, Promise<void>>();
+  /** Tags auto-registered as bare WebUIElement subclasses (SSR-only). */
+  private autoRegistered = new Set<string>();
   /** Current active route chain for reconciliation on next navigation. */
   private activeChain: RouteChainEntry[] = [];
 
@@ -220,6 +222,7 @@ export class WebUIRouter {
   /** Tear down. */
   destroy(): void {
     this.loaderPromises.clear();
+    this.autoRegistered.clear();
     this.loaders = {};
     this.activeChain = [];
     for (const fn of this.cleanupFns) fn();
@@ -315,10 +318,14 @@ export class WebUIRouter {
           const oldEntry = i < this.activeChain.length ? this.activeChain[i] : null;
           const parent = i > 0 ? newChain[i - 1] : null;
 
-          // Same component tag at this level → reuse instance, update state
+          // Same component tag at this level — reuse instance if the route
+          // path pattern also matches. Different path patterns (e.g.
+          // "contacts/:id/edit" vs "contacts/add") get a fresh mount so
+          // components like forms start with clean state.
           if (
             oldEntry &&
             oldEntry.component === entry.component &&
+            oldEntry.path === entry.path &&
             oldEntry.el
           ) {
             entry.el = oldEntry.el;
@@ -594,14 +601,25 @@ export class WebUIRouter {
     params: Record<string, string>,
   ): void {
     const component = document.createElement(componentTag);
+
+    // For auto-registered SSR-only components, set state as plain properties
+    // BEFORE appendChild so connectedCallback → $wire populates the binding
+    // tree. $update is called explicitly after mount.
+    if (this.autoRegistered.has(componentTag)) {
+      this.applyPlainState(component as any, data.state, params);
+    }
+
     routeEl.textContent = '';
     routeEl.appendChild(component);
 
-    // Component module is pre-loaded and defined before commitNavigation.
-    // connectedCallback fires synchronously on appendChild, populating
-    // the component's light DOM immediately.
-
-    if (typeof (component as any).setInitialState === 'function') {
+    if (this.autoRegistered.has(componentTag)) {
+      // Auto-registered components have no @observable setters to trigger
+      // updates. Flush bindings now so text/attrs resolve against the
+      // properties set above.
+      if (typeof (component as any).$update === 'function') {
+        (component as any).$update();
+      }
+    } else if (typeof (component as any).setInitialState === 'function') {
       (component as any).setInitialState(data.state, params);
     } else {
       this.applyStateAsAttributes(component, data.state, params);
@@ -616,11 +634,25 @@ export class WebUIRouter {
     if (!entry.component || !entry.el) return;
     const compEl = entry.el.querySelector(entry.component) as any;
     if (!compEl) return;
-    if (typeof compEl.setInitialState === 'function') {
+
+    if (this.autoRegistered.has(entry.component)) {
+      this.applyPlainState(compEl, data.state, entry.params);
+      if (typeof compEl.$update === 'function') compEl.$update();
+    } else if (typeof compEl.setInitialState === 'function') {
       compEl.setInitialState(data.state, entry.params);
     } else {
       this.applyStateAsAttributes(compEl, data.state, entry.params);
     }
+  }
+
+  /** Set state as plain JS properties — used for auto-registered SSR-only components. */
+  private applyPlainState(
+    el: Record<string, unknown>,
+    state: Record<string, unknown>,
+    params: Record<string, string>,
+  ): void {
+    for (const [key, value] of Object.entries(state)) el[key] = value;
+    for (const [key, value] of Object.entries(params)) el[key] = value;
   }
 
   /**
@@ -680,19 +712,33 @@ export class WebUIRouter {
    * configured for this tag and the element isn't already registered,
    * invoke the loader. The promise is cached so each loader runs at
    * most once.
+   *
+   * If no loader is configured and the tag is still unregistered,
+   * auto-register a lightweight WebUIElement subclass when template
+   * metadata exists. This enables pure-SSR components (no client JS
+   * class) to render their templates on client-side navigations.
    */
   private async ensureComponentLoaded(tag: string): Promise<void> {
     if (customElements.get(tag)) return;
 
     const loader = this.loaders[tag];
-    if (!loader) return;
-
-    let promise = this.loaderPromises.get(tag);
-    if (!promise) {
-      promise = loader().then(() => {});
-      this.loaderPromises.set(tag, promise);
+    if (loader) {
+      let promise = this.loaderPromises.get(tag);
+      if (!promise) {
+        promise = loader().then(() => {});
+        this.loaderPromises.set(tag, promise);
+      }
+      await promise;
     }
-    await promise;
+
+    // Auto-register SSR-only components that have template metadata
+    // but no client-side class. A bare subclass of the provided
+    // elementBase renders templates on SPA navigations.
+    if (!customElements.get(tag) && this.config.elementBase && window.__webui_templates?.[tag]) {
+      const Base = this.config.elementBase;
+      customElements.define(tag, class extends Base {});
+      this.autoRegistered.add(tag);
+    }
   }
 
   // ── Dev-mode Validation ─────────────────────────────────────────

@@ -17,8 +17,11 @@ Use this skill when building or modifying WebUI applications.
 6. **No `this.querySelector()` for reactive state.** Use `@observable` + template bindings.
 7. **Decorators: `@attr` (HTML attribute), `@observable` (reactive state).** Both work in SSR.
 8. **`@attr({ mode: 'boolean' })` for true/false.** Present = true, absent = false. Never use string `"false"`.
+9. **Only interactive components need a `.ts` file.** Components with no event handlers or reactive state are SSR-only — just `.html` (and optional `.css`). No class, no decorators, no `.define()`.
 
 ## Quick reference
+
+**Interactive component (needs .ts):**
 
 ```typescript
 import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
@@ -35,6 +38,17 @@ export class MyComponent extends WebUIElement {
 }
 MyComponent.define('my-component');
 ```
+
+**SSR-only component (no .ts needed):**
+
+```
+stat-card/
+├── stat-card.html   ← Template only
+└── stat-card.css    ← Optional styles
+```
+
+The server renders it. On SPA navigation, the router auto-registers it
+if `elementBase: WebUIElement` is set in `Router.start()`.
 
 ```bash
 webui build ./src --out ./dist --plugin=webui

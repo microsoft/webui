@@ -117,8 +117,9 @@ Starts the router. Call after hydration completes.
 
 ```typescript
 Router.start({
-  basePath: '/app',   // optional: prefix for all route URLs
-  loaders: { ... },   // optional: lazy-loading map
+  basePath: '/app',         // optional: prefix for all route URLs
+  elementBase: WebUIElement, // optional: auto-register SSR-only components
+  loaders: { ... },         // optional: lazy-loading map
 });
 ```
 
@@ -182,6 +183,26 @@ Router.start({
 - Components **not in `loaders`** are eagerly loaded
 - Each loader runs **at most once** - cached after first call
 - On SSR'd initial load, the lazy loader is skipped (content already rendered)
+
+## SSR-Only Route Components
+
+Route components that have no interactivity (no event handlers, no reactive state) don't need a `.ts` file. Pass `elementBase` to auto-register them on demand:
+
+```typescript
+import { WebUIElement } from '@microsoft/webui-framework';
+
+Router.start({
+  elementBase: WebUIElement,
+  loaders: {
+    // Only interactive components need loaders
+    'contact-form': () => import('./pages/contact-form.js'),
+  },
+});
+```
+
+When navigating to a route whose component isn't registered, the router checks `window.__webui_templates` for template metadata. If found, it defines a bare `WebUIElement` subclass automatically. The component renders its template, resolves bindings against the server state, and displays content — all without a custom `.ts` file.
+
+Components that are auto-registered have their state set as plain properties (not `@observable`). They render correctly on mount and update when navigating between routes with the same component tag (e.g., switching between groups).
 
 ## Navigation Events
 
