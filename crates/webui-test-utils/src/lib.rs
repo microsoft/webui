@@ -158,6 +158,27 @@ pub fn attr_complex_start(name: &str, value: &str) -> FragmentMatcher {
     })
 }
 
+/// Match a complex attribute with a static raw value.
+pub fn attr_complex_raw(name: &str, value: &str) -> FragmentMatcher {
+    FragmentMatcher::Attribute(AttrMatcher {
+        name: name.to_string(),
+        value: Some(value.to_string()),
+        complex: true,
+        raw_value: true,
+        ..Default::default()
+    })
+}
+
+/// Match a complex attribute with a template (mixed/embedded value).
+pub fn attr_complex_template(name: &str, template: &str) -> FragmentMatcher {
+    FragmentMatcher::Attribute(AttrMatcher {
+        name: name.to_string(),
+        template: Some(template.to_string()),
+        complex: true,
+        ..Default::default()
+    })
+}
+
 /// Match a boolean attribute with an identifier condition.
 pub fn bool_attr(name: &str, signal: &str) -> FragmentMatcher {
     FragmentMatcher::Attribute(AttrMatcher {

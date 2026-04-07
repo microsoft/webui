@@ -926,13 +926,52 @@ impl HtmlParser {
                 if is_component {
                     if let Some(val) = &attr_value {
                         if let Some(signal_name) = Self::extract_single_handlebars(val) {
+                            // Pure binding: :config="{{settings}}"
                             let frag = Self::maybe_mark_attr_start(
                                 WebUIFragment::attribute_complex(&attr_name, signal_name),
                                 &mut first_dynamic_emitted,
                             );
                             self.add_fragment(frag, fragments);
                             binding_count += 1;
+                        } else if Self::contains_handlebars(val) {
+                            // Embedded binding: :config="prefix-{{settings}}"
+                            let template_id = self.id_counter.next_id("attr");
+                            let parsed = self.handlebars_parser.parse(val)?;
+                            self.fragment_records
+                                .insert(template_id.clone(), FragmentList { fragments: parsed });
+                            let frag = Self::maybe_mark_attr_start(
+                                WebUIFragment {
+                                    fragment: Some(web_ui_fragment::Fragment::Attribute(
+                                        WebUIFragmentAttribute {
+                                            name: attr_name,
+                                            template: template_id,
+                                            complex: true,
+                                            ..Default::default()
+                                        },
+                                    )),
+                                },
+                                &mut first_dynamic_emitted,
+                            );
+                            self.add_fragment(frag, fragments);
+                            binding_count += 1;
+                        } else {
+                            // Static value: :config="staticValue"
+                            let frag = WebUIFragment {
+                                fragment: Some(web_ui_fragment::Fragment::Attribute(
+                                    WebUIFragmentAttribute {
+                                        name: attr_name,
+                                        value: val.clone(),
+                                        raw_value: true,
+                                        complex: true,
+                                        ..Default::default()
+                                    },
+                                )),
+                            };
+                            self.add_fragment(frag, fragments);
                         }
+                    } else {
+                        // No value: :config — emit as raw
+                        self.add_raw_fragment(&format!(" {}", attr_name));
                     }
                 } else {
                     self.process_complex_attribute(&attr_name, attr_value.as_deref(), fragments)?;
@@ -3024,6 +3063,133 @@ mod tests {
         // contain the expected static + signal fragments.
         assert_stream!(records, "attr-1", [raw("group-date-"), signal("group.id"),]);
         assert_stream!(records, "attr-2", [raw("grp-"), signal("group.id"),]);
+    }
+
+    #[test]
+    fn test_component_complex_attr_no_value() {
+        // Complex attribute on component without a value should emit as raw text.
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component("my-widget", "<slot></slot>", None)
+            .expect("register");
+        let html = r#"<my-widget :config></my-widget>"#;
+        let result = parser.parse("index.html", html);
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let records = parser.into_fragment_records();
+
+        assert_fragments!(
+            records["index.html"].fragments,
+            [
+                raw("<my-widget :config>"),
+                component("my-widget"),
+                raw("</my-widget>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_component_complex_attr_static_value() {
+        // Complex attribute on component with a static value should emit
+        // as a rawValue + complex attribute fragment.
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component("my-widget", "<slot></slot>", None)
+            .expect("register");
+        let html = r#"<my-widget :config="staticValue"></my-widget>"#;
+        let result = parser.parse("index.html", html);
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let records = parser.into_fragment_records();
+
+        assert_fragments!(
+            records["index.html"].fragments,
+            [
+                raw("<my-widget"),
+                attr_complex_raw(":config", "staticValue"),
+                raw(">"),
+                component("my-widget"),
+                raw("</my-widget>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_component_complex_attr_embedded_binding() {
+        // Complex attribute on component with an embedded handlebars value
+        // should emit as a template + complex attribute fragment.
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component("my-widget", "<slot></slot>", None)
+            .expect("register");
+        let html = r#"<my-widget :config="prefix-{{settings}}"></my-widget>"#;
+        let result = parser.parse("index.html", html);
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let records = parser.into_fragment_records();
+
+        // The template ID is auto-generated; verify shape rather than exact ID.
+        let frags = &records["index.html"].fragments;
+        assert_eq!(frags.len(), 5, "expected 5 fragments, got {}", frags.len());
+        // raw("<my-widget")
+        assert!(
+            matches!(frags[0].fragment.as_ref(), Some(Fragment::Raw(r)) if r.value == "<my-widget"),
+            "frag[0] should be raw '<my-widget>'"
+        );
+        // complex attribute with template
+        match frags[1].fragment.as_ref() {
+            Some(Fragment::Attribute(a)) => {
+                assert_eq!(a.name, ":config");
+                assert!(a.complex, "should be complex");
+                assert!(!a.template.is_empty(), "should have a template ID");
+                // Verify the template was stored in the records
+                assert!(
+                    records.contains_key(&a.template),
+                    "template '{}' not found in records",
+                    a.template
+                );
+            }
+            other => panic!(
+                "frag[1] should be a complex template attribute, got {:?}",
+                other
+            ),
+        }
+        // raw(">"), component, raw("</my-widget>")
+        assert!(matches!(frags[2].fragment.as_ref(), Some(Fragment::Raw(r)) if r.value == ">"));
+        assert!(
+            matches!(frags[3].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "my-widget")
+        );
+        assert!(
+            matches!(frags[4].fragment.as_ref(), Some(Fragment::Raw(r)) if r.value == "</my-widget>")
+        );
+    }
+
+    #[test]
+    fn test_component_complex_attr_with_other_attrs() {
+        // Complex attribute with static and dynamic values alongside
+        // other attribute types on a component.
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component("my-widget", "<slot></slot>", None)
+            .expect("register");
+        let html = r#"<my-widget :data="{{items}}" :mode="edit" title="{{t}}"></my-widget>"#;
+        let result = parser.parse("index.html", html);
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let records = parser.into_fragment_records();
+
+        assert_fragments!(
+            records["index.html"].fragments,
+            [
+                raw("<my-widget"),
+                attr_complex_start(":data", "items"),
+                attr_complex_raw(":mode", "edit"),
+                attr("title", "t"),
+                raw(">"),
+                component("my-widget"),
+                raw("</my-widget>"),
+            ]
+        );
     }
 
     #[test]
