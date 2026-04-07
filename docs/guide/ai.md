@@ -46,12 +46,7 @@ webui build         + JSON state          hydrate as islands
    takes over after hydration for user interactions.
 
 4. **Static content never ships JavaScript.** Only components with event
-   handlers, reactive state, or user input need a `.ts` file. Components
-   without interactivity are **SSR-only** — they have an `.html` template
-   (and optional `.css`) but no TypeScript class, no `@attr`/`@observable`,
-   and no `.define()` call. The server renders them from the template at
-   build time. On SPA navigations, the router auto-registers them if
-   `elementBase` is configured.
+   handlers, reactive state, or user input need client-side code.
 
 ## Project Structure
 
@@ -60,15 +55,14 @@ my-app/
 ├── src/
 │   ├── index.html              ← Entry template
 │   ├── index.ts                ← Hydration entry point
-│   ├── my-counter/
-│   │   ├── my-counter.html     ← Template (interactive island)
-│   │   ├── my-counter.css      ← Styles (scoped)
-│   │   └── my-counter.ts       ← Behavior (WebUIElement class)
-│   ├── stat-card/
-│   │   ├── stat-card.html      ← Template (SSR-only, no .ts needed)
-│   │   └── stat-card.css       ← Styles
-│   └── hero-banner/
-│       └── hero-banner.html    ← Template only (SSR-only)
+│   ├── my-component/
+│   │   ├── my-component.html   ← Component template
+│   │   ├── my-component.css    ← Component styles (scoped)
+│   │   └── my-component.ts     ← Component behavior
+│   └── other-widget/
+│       ├── other-widget.html
+│       ├── other-widget.css
+│       └── other-widget.ts
 ├── data/
 │   └── state.json              ← Server state for dev
 └── package.json
@@ -77,8 +71,7 @@ my-app/
 **Component discovery rules:**
 - HTML files with a hyphen in the name are components (`my-card.html` → `<my-card>`)
 - CSS files with the same name are auto-paired (`my-card.css`)
-- TypeScript files provide client-side behavior (`my-card.ts`) — **optional**
-- Components without a `.ts` file are SSR-only (no JavaScript shipped)
+- TypeScript files provide client-side behavior (`my-card.ts`)
 - Discovery is recursive through subdirectories
 
 ## The `<template>` Tag
@@ -221,9 +214,6 @@ In the TypeScript class: `searchInput!: HTMLInputElement;`
 ```
 
 ## Component Class
-
-**Only interactive components need a class.** If a component has no event
-handlers, no reactive state, and no user input, skip the `.ts` file entirely.
 
 Every interactive component extends `WebUIElement`:
 
@@ -389,13 +379,11 @@ import { WebUIElement } from '@microsoft/webui-framework';
 import { Router } from '@microsoft/webui-router';
 import './app-shell/app-shell.js';
 
-// Start router after components are registered.
-// elementBase enables auto-registration of SSR-only components
-// during SPA navigations — no .ts file needed for static pages.
+// Start router after components are registered
 Router.start({
-  elementBase: WebUIElement,
   loaders: {
-    // Only interactive components need lazy loaders
+    'home-page': () => import('./pages/home-page.js'),
+    'user-list': () => import('./pages/user-list.js'),
     'user-detail': () => import('./pages/user-detail.js'),
   },
 });

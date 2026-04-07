@@ -77,27 +77,6 @@ TemplateElement.options({
 
 Components in `loaders` are lazy-loaded on first navigation. Components not listed are assumed eagerly loaded.
 
-## SSR-Only Components
-
-Components with no interactivity don't need a `.ts` file — just the `.html` template (and optional `.css`). Pass `elementBase` so the router can auto-register them during SPA navigations:
-
-```typescript
-import { WebUIElement } from '@microsoft/webui-framework';
-import { Router } from '@microsoft/webui-router';
-
-Router.start({
-  elementBase: WebUIElement,
-  loaders: {
-    // Only interactive components need loaders
-    'contact-form': () => import('./pages/contact-form.js'),
-  },
-});
-```
-
-When navigating to a route whose component has no registered custom element but has template metadata in `window.__webui_templates`, the router auto-registers a bare `WebUIElement` subclass. The base class renders the template and resolves bindings against the server-provided state.
-
-This enables a pure islands architecture: only components with event handlers or reactive state ship JavaScript. Everything else is server-rendered HTML.
-
 ## Nested Routes
 
 Routes nest to any depth. Each parent uses `<outlet />` for child content:
@@ -130,7 +109,6 @@ Start the router. Call after hydration completes.
 | Option | Type | Description |
 |--------|------|-------------|
 | `basePath` | `string` | Prefix for all route URLs (e.g., `"/app"`) |
-| `elementBase` | `CustomElementConstructor` | Base class for auto-registering SSR-only components (pass `WebUIElement`) |
 | `loaders` | `Record<string, () => Promise<unknown>>` | Lazy-loading map: component tag → dynamic import |
 
 ### `Router.navigate(path)`
