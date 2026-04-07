@@ -921,13 +921,12 @@ impl HtmlParser {
                 )? {
                     binding_count += 1;
                 }
-            } else if attr_name.starts_with(':') {
+            } else if let Some(prop_name) = attr_name.strip_prefix(':') {
                 // Complex attribute: :config="{{settings}}"
                 // Only valid on custom elements — passes JS values by
                 // reference (objects, arrays). Native HTML elements should
                 // use regular attribute bindings (the framework already
                 // handles value, checked, selected as DOM properties).
-                let prop_name = &attr_name[1..];
                 if !is_component {
                     return Err(ParserError::Parse(format!(
                         ":{prop_name} complex binding is only allowed on custom elements. \
@@ -1140,27 +1139,6 @@ impl HtmlParser {
         }
         // Invalid boolean attribute — silently drop (no output at all)
         Ok(false)
-    }
-
-    /// Process a complex attribute (:prefix).
-    fn process_complex_attribute(
-        &mut self,
-        name: &str,
-        value: Option<&str>,
-        fragments: &mut Vec<WebUIFragment>,
-    ) -> Result<()> {
-        if let Some(val) = value {
-            if let Some(signal_name) = Self::extract_single_handlebars(val) {
-                self.add_fragment(
-                    WebUIFragment::attribute_complex(name, signal_name),
-                    fragments,
-                );
-                return Ok(());
-            }
-        }
-        // No valid handlebars — emit as raw
-        self.add_raw_fragment(&format!(" {}=\"{}\"", name, value.unwrap_or("")));
-        Ok(())
     }
 
     /// Process a dynamic attribute (regular name with handlebars in value).
