@@ -1,34 +1,34 @@
 <h2 class="form-title">{{formTitle}}</h2>
-<input type="hidden" name="_editId" :value="{{editId}}" />
+<input type="hidden" name="_editId" value="{{editId}}" />
 <div class="form-grid">
   <div class="form-field">
     <label class="field-label">First Name</label>
-    <input class="field-input" type="text" placeholder="Enter first name" :value="{{firstName}}" name="firstName"
+    <input class="field-input" type="text" placeholder="Enter first name" value="{{firstName}}" name="firstName"
       @input="{onFieldInput(e)}" />
   </div>
   <div class="form-field">
     <label class="field-label">Last Name</label>
-    <input class="field-input" type="text" placeholder="Enter last name" :value="{{lastName}}" name="lastName"
+    <input class="field-input" type="text" placeholder="Enter last name" value="{{lastName}}" name="lastName"
       @input="{onFieldInput(e)}" />
   </div>
   <div class="form-field">
     <label class="field-label">Email</label>
-    <input class="field-input" type="email" placeholder="email@example.com" :value="{{email}}" name="email"
+    <input class="field-input" type="email" placeholder="email@example.com" value="{{email}}" name="email"
       @input="{onFieldInput(e)}" />
   </div>
   <div class="form-field">
     <label class="field-label">Phone</label>
-    <input class="field-input" type="tel" placeholder="+1 (555) 000-0000" :value="{{phone}}" name="phone"
+    <input class="field-input" type="tel" placeholder="+1 (555) 000-0000" value="{{phone}}" name="phone"
       @input="{onFieldInput(e)}" />
   </div>
   <div class="form-field">
     <label class="field-label">Company</label>
-    <input class="field-input" type="text" placeholder="Company name" :value="{{company}}" name="company"
+    <input class="field-input" type="text" placeholder="Company name" value="{{company}}" name="company"
       @input="{onFieldInput(e)}" />
   </div>
   <div class="form-field">
     <label class="field-label">Address</label>
-    <input class="field-input" type="text" placeholder="Street address" :value="{{address}}" name="address"
+    <input class="field-input" type="text" placeholder="Street address" value="{{address}}" name="address"
       @input="{onFieldInput(e)}" />
   </div>
 </div>
@@ -45,7 +45,7 @@
 </div>
 <div class="form-field-full">
   <label class="field-label">Notes</label>
-  <textarea class="notes-input" placeholder="Add notes..." rows="3" name="notes" :value="{{notes}}"
+  <textarea class="notes-input" placeholder="Add notes..." rows="3" name="notes" value="{{notes}}"
     @input="{onNotesInput(e)}"></textarea>
 </div>
 <div class="form-actions">

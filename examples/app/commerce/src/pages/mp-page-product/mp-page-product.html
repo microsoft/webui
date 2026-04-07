@@ -25,7 +25,7 @@
           @variant-select="{onVariantSelect(e)}"
         ></mp-variant-selector>
 
-        <div class="product-description" :innerHTML="{{descriptionHtml}}"></div>
+        <div class="product-description">{{{descriptionHtml}}}</div>
 
         <mp-add-to-cart
           handle="{{handle}}"

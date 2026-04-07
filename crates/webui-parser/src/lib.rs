@@ -923,20 +923,33 @@ impl HtmlParser {
                 }
             } else if attr_name.starts_with(':') {
                 // Complex attribute: :config="{{settings}}"
-                if is_component {
-                    if let Some(val) = &attr_value {
-                        if let Some(signal_name) = Self::extract_single_handlebars(val) {
-                            let frag = Self::maybe_mark_attr_start(
-                                WebUIFragment::attribute_complex(&attr_name, signal_name),
-                                &mut first_dynamic_emitted,
-                            );
-                            self.add_fragment(frag, fragments);
-                            binding_count += 1;
-                        }
+                // Only valid on custom elements — passes JS values by
+                // reference (objects, arrays). Native HTML elements should
+                // use regular attribute bindings (the framework already
+                // handles value, checked, selected as DOM properties).
+                let prop_name = &attr_name[1..];
+                if !is_component {
+                    return Err(ParserError::Parse(format!(
+                        ":{prop_name} complex binding is only allowed on custom elements. \
+                         Use {prop_name}=\"{{{{expr}}}}\" for native HTML elements."
+                    )));
+                }
+                if Self::is_blocked_complex_property(prop_name) {
+                    return Err(ParserError::Parse(format!(
+                        ":{prop_name} is not allowed as a complex attribute binding \
+                         because it enables arbitrary HTML injection. \
+                         Use {{{{{{expr}}}}}} (triple-brace) syntax for raw HTML."
+                    )));
+                }
+                if let Some(val) = &attr_value {
+                    if let Some(signal_name) = Self::extract_single_handlebars(val) {
+                        let frag = Self::maybe_mark_attr_start(
+                            WebUIFragment::attribute_complex(&attr_name, signal_name),
+                            &mut first_dynamic_emitted,
+                        );
+                        self.add_fragment(frag, fragments);
+                        binding_count += 1;
                     }
-                } else {
-                    self.process_complex_attribute(&attr_name, attr_value.as_deref(), fragments)?;
-                    binding_count += 1;
                 }
             } else if is_component && Self::is_skipped_attribute(&attr_name) {
                 // Skipped component attribute (class, style, role, data-*, aria-*)
@@ -1540,6 +1553,13 @@ impl HtmlParser {
             || Self::SKIPPED_ATTRIBUTE_PREFIXES
                 .iter()
                 .any(|prefix| name.starts_with(prefix))
+    }
+
+    /// Properties that must never be set via `:attr` complex bindings.
+    /// These enable XSS (HTML injection) or arbitrary code execution.
+    fn is_blocked_complex_property(name: &str) -> bool {
+        matches!(name, "innerHTML" | "outerHTML" | "srcdoc" | "content")
+            || name.starts_with("on")
     }
 
     fn process_component_directive(
@@ -2373,6 +2393,27 @@ mod tests {
         (fragments, records)
     }
 
+    /// Helper to parse HTML with a pre-registered component.
+    fn parse_with_component(
+        tag: &str,
+        html: &str,
+    ) -> (Vec<WebUIFragment>, WebUIFragmentRecords) {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(tag, "<div></div>", None)
+            .expect("register");
+        let result = parser.parse("index.html", html);
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let records = parser.into_fragment_records();
+        let fragments = records
+            .get("index.html")
+            .expect("Failed to get index.html fragment")
+            .fragments
+            .clone();
+        (fragments, records)
+    }
+
     #[test]
     fn test_attribute_handlebars_in_href() {
         // Port of: 'should process handlebars from attributes as signals'
@@ -2499,15 +2540,19 @@ mod tests {
     fn test_attribute_colon_prefixed_complex() {
         // Port of: 'should process colon-prefixed attribute with handlebars'
         // <my-component :config="{{settings}}"></my-component>
-        let (fragments, _) =
-            parse_and_get_fragments(r#"<my-component :config="{{settings}}"></my-component>"#);
+        let (fragments, _) = parse_with_component(
+            "my-component",
+            r#"<my-component :config="{{settings}}"></my-component>"#,
+        );
 
         assert_fragments!(
             fragments,
             [
                 raw("<my-component"),
-                attr_complex(":config", "settings"),
-                raw("></my-component>"),
+                attr_complex_start(":config", "settings"),
+                raw(">"),
+                component("my-component"),
+                raw("</my-component>"),
             ]
         );
     }
@@ -2516,7 +2561,8 @@ mod tests {
     fn test_attribute_multiple_colon_prefixed() {
         // Port of: 'should process multiple colon-prefixed complex attributes'
         // <my-component :prop1="{{val1}}" :prop2="{{val2}}"></my-component>
-        let (fragments, _) = parse_and_get_fragments(
+        let (fragments, _) = parse_with_component(
+            "my-component",
             r#"<my-component :prop1="{{val1}}" :prop2="{{val2}}"></my-component>"#,
         );
 
@@ -2524,9 +2570,70 @@ mod tests {
             fragments,
             [
                 raw("<my-component"),
-                attr_complex(":prop1", "val1"),
+                attr_complex_start(":prop1", "val1"),
                 attr_complex(":prop2", "val2"),
-                raw("></my-component>"),
+                raw(">"),
+                component("my-component"),
+                raw("</my-component>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_blocked_complex_property_innerhtml() {
+        let mut parser = HtmlParser::new();
+        let result = parser.parse(
+            "index.html",
+            r#"<div :innerHTML="{{content}}"></div>"#,
+        );
+        assert!(result.is_err(), "Expected error for :innerHTML on native element");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("only allowed on custom elements"), "Error: {err}");
+    }
+
+    #[test]
+    fn test_blocked_complex_on_native_element() {
+        let mut parser = HtmlParser::new();
+        let result = parser.parse(
+            "index.html",
+            r#"<div :data="{{config}}"></div>"#,
+        );
+        assert!(result.is_err(), "Expected error for :data on native element");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("only allowed on custom elements"), "Error: {err}");
+    }
+
+    #[test]
+    fn test_blocked_complex_property_on_component() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component("my-widget", "<div></div>", None)
+            .expect("register");
+        let result = parser.parse(
+            "index.html",
+            r#"<my-widget :innerHTML="{{html}}"></my-widget>"#,
+        );
+        assert!(result.is_err(), "Expected error for :innerHTML on component");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("HTML injection"), "Error: {err}");
+    }
+
+    #[test]
+    fn test_allowed_complex_property() {
+        // :config on a component should still work
+        let (fragments, _) = parse_with_component(
+            "my-component",
+            r#"<my-component :config="{{settings}}"></my-component>"#,
+        );
+        assert_fragments!(
+            fragments,
+            [
+                raw("<my-component"),
+                attr_complex_start(":config", "settings"),
+                raw(">"),
+                component("my-component"),
+                raw("</my-component>"),
             ]
         );
     }
@@ -2535,17 +2642,21 @@ mod tests {
     fn test_attribute_mixed_normal_boolean_colon() {
         // Port of: 'should process mixed normal, boolean, and colon-prefixed attributes'
         // <my-component id="comp" :config="{{settings}}" ?enabled="{{isEnabled}}"></my-component>
-        let (fragments, _) = parse_and_get_fragments(
+        let (fragments, _) = parse_with_component(
+            "my-component",
             r#"<my-component id="comp" :config="{{settings}}" ?enabled="{{isEnabled}}"></my-component>"#,
         );
 
         assert_fragments!(
             fragments,
             [
-                raw("<my-component id=\"comp\""),
+                raw("<my-component"),
+                attr_raw_start("id", "comp"),
                 attr_complex(":config", "settings"),
                 bool_attr("enabled", "isEnabled"),
-                raw("></my-component>"),
+                raw(">"),
+                component("my-component"),
+                raw("</my-component>"),
             ]
         );
     }

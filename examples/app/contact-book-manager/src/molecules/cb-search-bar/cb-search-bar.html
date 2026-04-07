@@ -1,6 +1,6 @@
 <div class="search-container">
   <span class="search-icon"></span>
-  <input class="search-input" type="text" placeholder="{{placeholder}}" :value="{{value}}" @input="{onInput(e)}" />
+  <input class="search-input" type="text" placeholder="{{placeholder}}" value="{{value}}" @input="{onInput(e)}" />
   <if condition="value">
     <button class="clear-btn" type="button" title="Clear" @click="{onClear()}">&times;</button>
   </if>
