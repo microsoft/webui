@@ -1558,8 +1558,7 @@ impl HtmlParser {
     /// Properties that must never be set via `:attr` complex bindings.
     /// These enable XSS (HTML injection) or arbitrary code execution.
     fn is_blocked_complex_property(name: &str) -> bool {
-        matches!(name, "innerHTML" | "outerHTML" | "srcdoc" | "content")
-            || name.starts_with("on")
+        matches!(name, "innerHTML" | "outerHTML" | "srcdoc" | "content") || name.starts_with("on")
     }
 
     fn process_component_directive(
@@ -2394,10 +2393,7 @@ mod tests {
     }
 
     /// Helper to parse HTML with a pre-registered component.
-    fn parse_with_component(
-        tag: &str,
-        html: &str,
-    ) -> (Vec<WebUIFragment>, WebUIFragmentRecords) {
+    fn parse_with_component(tag: &str, html: &str) -> (Vec<WebUIFragment>, WebUIFragmentRecords) {
         let mut parser = HtmlParser::new();
         parser
             .component_registry
@@ -2582,25 +2578,31 @@ mod tests {
     #[test]
     fn test_blocked_complex_property_innerhtml() {
         let mut parser = HtmlParser::new();
-        let result = parser.parse(
-            "index.html",
-            r#"<div :innerHTML="{{content}}"></div>"#,
+        let result = parser.parse("index.html", r#"<div :innerHTML="{{content}}"></div>"#);
+        assert!(
+            result.is_err(),
+            "Expected error for :innerHTML on native element"
         );
-        assert!(result.is_err(), "Expected error for :innerHTML on native element");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("only allowed on custom elements"), "Error: {err}");
+        assert!(
+            err.contains("only allowed on custom elements"),
+            "Error: {err}"
+        );
     }
 
     #[test]
     fn test_blocked_complex_on_native_element() {
         let mut parser = HtmlParser::new();
-        let result = parser.parse(
-            "index.html",
-            r#"<div :data="{{config}}"></div>"#,
+        let result = parser.parse("index.html", r#"<div :data="{{config}}"></div>"#);
+        assert!(
+            result.is_err(),
+            "Expected error for :data on native element"
         );
-        assert!(result.is_err(), "Expected error for :data on native element");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("only allowed on custom elements"), "Error: {err}");
+        assert!(
+            err.contains("only allowed on custom elements"),
+            "Error: {err}"
+        );
     }
 
     #[test]
@@ -2614,7 +2616,10 @@ mod tests {
             "index.html",
             r#"<my-widget :innerHTML="{{html}}"></my-widget>"#,
         );
-        assert!(result.is_err(), "Expected error for :innerHTML on component");
+        assert!(
+            result.is_err(),
+            "Expected error for :innerHTML on component"
+        );
         let err = result.unwrap_err().to_string();
         assert!(err.contains("HTML injection"), "Error: {err}");
     }
