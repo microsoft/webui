@@ -100,11 +100,11 @@ docker images webui-commerce
 # Inspect image metadata
 docker inspect webui-commerce
 
-# Run the container (port 443)
-docker run -p 443:443 webui-commerce
+# Run the container (maps host port 443 to container port 3004)
+docker run -p 443:3004 webui-commerce
 ```
 
-Then open http://localhost:443
+Then open https://localhost
 
 To tag with the project version:
 

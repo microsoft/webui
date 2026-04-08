@@ -51,6 +51,6 @@ COPY --from=builder --chown=app:app /build/examples/app/commerce/src/ ./src/
 COPY --from=builder --chown=app:app /build/examples/app/commerce/dist/ ./dist/
 
 USER app
-EXPOSE 443
+EXPOSE 3004
 
-CMD ["marketplace-api", "--port", "443"]
+CMD ["marketplace-api", "--port", "3004"]
