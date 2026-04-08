@@ -17,11 +17,7 @@ fn is_valid_semver(version: &str) -> bool {
 }
 
 /// Update `version = "..."` inside a specific TOML section of a file.
-fn update_toml_section_version(
-    path: &Path,
-    section: &str,
-    version: &str,
-) -> Result<bool, String> {
+fn update_toml_section_version(path: &Path, section: &str, version: &str) -> Result<bool, String> {
     let content =
         fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
 
@@ -48,8 +44,7 @@ fn update_toml_section_version(
     }
 
     if updated {
-        fs::write(path, &result)
-            .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
+        fs::write(path, &result).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
     }
 
     Ok(updated)
@@ -411,7 +406,10 @@ pub fn run(version: Option<&str>) -> ExitCode {
     let commerce_cargo = commerce_root.join("server/Cargo.toml");
     match update_toml_section_version(&commerce_cargo, "[package]", version) {
         Ok(true) => {
-            let relative = commerce_cargo.strip_prefix(&root).unwrap_or(&commerce_cargo).display();
+            let relative = commerce_cargo
+                .strip_prefix(&root)
+                .unwrap_or(&commerce_cargo)
+                .display();
             eprintln!("  {} {relative}", console::style("✔").green());
             commerce_count += 1;
         }
