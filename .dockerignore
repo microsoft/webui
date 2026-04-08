@@ -14,8 +14,9 @@ target/
 # Release staging
 publish/
 
-# Documentation site (not needed for app builds)
-docs/
+# Documentation site is part of the pnpm workspace and must remain in the
+# Docker build context so frozen-lockfile installs see a complete workspace.
+# docs/
 
 # .NET bindings (not needed for commerce build)
 dotnet/
