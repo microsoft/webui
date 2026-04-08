@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 use actix_web::http::header::LOCATION;
-use actix_web::{web, HttpResponse};
+use actix_web::{web, HttpRequest, HttpResponse};
 use serde_json::Value;
 
 use crate::app::AppState;
@@ -10,6 +10,7 @@ use crate::cart::{self, build_cart_state, clear_cookie, cookie_for_cart};
 use crate::catalog::Catalog;
 use crate::error::ServerError;
 use crate::extractors::{CartMutationInput, CartMutationPayload, RequestContext};
+use crate::security;
 use crate::state;
 
 struct CartResponseOptions<'a> {
@@ -60,18 +61,26 @@ async fn handle_frontend_request(
         return Ok(partial_response(&context, data.get_ref(), &page_state));
     }
 
+    let nonce = security::generate_nonce();
     let html = data
         .frontend()
-        .render_html(context.route_path(), &page_state)
+        .render_html(context.route_path(), &page_state, &nonce)
         .map_err(ServerError::RenderFailed)?;
-    Ok(html_response(&context, html))
+    Ok(html_response(&context, html, &nonce))
 }
 
 async fn add_to_cart(
+    req: HttpRequest,
     context: RequestContext,
     payload: CartMutationPayload,
     data: web::Data<AppState>,
 ) -> Result<HttpResponse, ServerError> {
+    if !security::passes_csrf_check(&req) {
+        return Err(ServerError::CsrfRejected);
+    }
+    if !data.rate_limiter().check(security::client_ip(&req)) {
+        return Err(ServerError::RateLimited);
+    }
     let wants_json = context.wants_json();
     let mut cart_read = context.into_cart_read();
     let input = cart_mutation_input(payload);
@@ -101,10 +110,17 @@ async fn add_to_cart(
 }
 
 async fn update_cart(
+    req: HttpRequest,
     context: RequestContext,
     payload: CartMutationPayload,
     data: web::Data<AppState>,
 ) -> Result<HttpResponse, ServerError> {
+    if !security::passes_csrf_check(&req) {
+        return Err(ServerError::CsrfRejected);
+    }
+    if !data.rate_limiter().check(security::client_ip(&req)) {
+        return Err(ServerError::RateLimited);
+    }
     let wants_json = context.wants_json();
     let mut cart_read = context.into_cart_read();
     let input = cart_mutation_input(payload);
@@ -151,15 +167,20 @@ fn partial_response(
 
     let mut builder = HttpResponse::Ok();
     builder.content_type("application/json");
+    builder.insert_header(("Cache-Control", "private, no-store"));
+    builder.insert_header(("Vary", "Accept, Cookie"));
     if context.cart_read().should_reset {
         builder.cookie(clear_cookie());
     }
     builder.json(payload)
 }
 
-fn html_response(context: &RequestContext, html: String) -> HttpResponse {
+fn html_response(context: &RequestContext, html: String, nonce: &str) -> HttpResponse {
     let mut builder = HttpResponse::Ok();
     builder.content_type("text/html; charset=utf-8");
+    builder.insert_header(("Cache-Control", "private, no-store"));
+    builder.insert_header(("Vary", "Accept, Cookie"));
+    builder.insert_header(("Content-Security-Policy", security::csp_header(nonce)));
     if context.cart_read().should_reset {
         builder.cookie(clear_cookie());
     }
@@ -198,6 +219,9 @@ fn cart_response(
     } else {
         builder.cookie(clear_cookie());
     }
+
+    builder.insert_header(("Cache-Control", "private, no-store"));
+    builder.insert_header(("Vary", "Accept, Cookie"));
 
     if wants_json {
         builder.content_type("application/json");

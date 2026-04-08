@@ -61,14 +61,14 @@ impl FrontendRuntime {
         route_handler::collect_nested_route_params(&self.protocol, &self.entry, route_path)
     }
 
-    pub fn render_html(&self, route_path: &str, state: &Value) -> Result<String> {
+    pub fn render_html(&self, route_path: &str, state: &Value, nonce: &str) -> Result<String> {
         let mut writer = MemoryWriter::with_capacity(16_384);
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
         handler
             .handle(
                 &self.protocol,
                 state,
-                &RenderOptions::new(&self.entry, route_path),
+                &RenderOptions::new(&self.entry, route_path).with_nonce(nonce),
                 &mut writer,
             )
             .with_context(|| format!("Failed to render HTML for {route_path}"))?;
@@ -98,6 +98,7 @@ impl FrontendRuntime {
             return Some(
                 HttpResponse::Ok()
                     .content_type("text/css; charset=utf-8")
+                    .insert_header(("Cache-Control", "public, max-age=86400"))
                     .body(css.clone()),
             );
         }
@@ -105,6 +106,7 @@ impl FrontendRuntime {
         self.asset_files.get(relative).map(|asset| {
             HttpResponse::Ok()
                 .content_type(asset.content_type.as_str())
+                .insert_header(("Cache-Control", "public, max-age=86400"))
                 .body(asset.body.clone())
         })
     }

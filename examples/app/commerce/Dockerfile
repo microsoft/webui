@@ -66,4 +66,9 @@ COPY --from=builder --chown=app:app /build/examples/app/commerce/dist/ ./dist/
 USER app
 EXPOSE 3004
 
+# Cart cookies are signed with HMAC-SHA256. Pass CART_COOKIE_SECRET at runtime:
+#   docker run -e CART_COOKIE_SECRET=<your-secret> ...
+# If unset, the server generates an ephemeral per-process key (carts do not
+# survive restarts).
+
 CMD ["marketplace-api", "--port", "3004"]

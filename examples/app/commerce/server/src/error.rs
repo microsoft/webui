@@ -12,6 +12,10 @@ pub(crate) enum ServerError {
     NotFound,
     #[error("Unknown product")]
     UnknownProduct,
+    #[error("Cross-site request rejected")]
+    CsrfRejected,
+    #[error("Too many requests")]
+    RateLimited,
     #[error("Failed to render the requested page")]
     RenderFailed(#[source] AnyhowError),
 }
@@ -21,6 +25,8 @@ impl ResponseError for ServerError {
         match self {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::UnknownProduct => StatusCode::BAD_REQUEST,
+            Self::CsrfRejected => StatusCode::FORBIDDEN,
+            Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::RenderFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

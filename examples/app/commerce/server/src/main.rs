@@ -9,6 +9,8 @@ mod catalog;
 mod error;
 mod extractors;
 mod frontend;
+mod rate_limit;
+mod security;
 mod server;
 mod state;
 
@@ -17,6 +19,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use crate::app::AppState;
+use crate::security::security_headers;
 use crate::server::configure_app;
 use webui::CssStrategy;
 
@@ -55,10 +58,15 @@ fn main() -> Result<()> {
     let state = web::Data::new(app_state);
 
     actix_web::rt::System::new().block_on(async move {
-        HttpServer::new(move || App::new().app_data(state.clone()).configure(configure_app))
-            .bind(("0.0.0.0", port))?
-            .run()
-            .await
+        HttpServer::new(move || {
+            App::new()
+                .wrap(security_headers())
+                .app_data(state.clone())
+                .configure(configure_app)
+        })
+        .bind(("0.0.0.0", port))?
+        .run()
+        .await
     })?;
 
     Ok(())
