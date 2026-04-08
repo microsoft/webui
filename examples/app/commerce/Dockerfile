@@ -1,9 +1,12 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+# ── Build arguments ──────────────────────────────────────────────────
+ARG CARGO_CHEF_VERSION=0.1.75
+
 # ── Stage 1: Dependency planner ─────────────────────────────────────
 FROM rust:1.93-bookworm AS chef
-RUN cargo install cargo-chef
+RUN cargo install cargo-chef@${CARGO_CHEF_VERSION} --locked
 WORKDIR /build
 
 FROM chef AS planner
