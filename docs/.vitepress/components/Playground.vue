@@ -304,7 +304,8 @@ async function render() {
 // --- Load WASM ---
 async function loadWasm() {
   try {
-    const wasmUrl = new URL('/wasm/webui_wasm.js', window.location.origin).href
+    const base = import.meta.env.BASE_URL || '/'
+    const wasmUrl = new URL(`${base}wasm/webui_wasm.js`, window.location.origin).href
     const mod = await import(/* @vite-ignore */ wasmUrl)
     await mod.default()
     wasmModule.value = mod

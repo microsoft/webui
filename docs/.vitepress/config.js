@@ -4,9 +4,10 @@
 export default {
   title: "WebUI Framework",
   description: "Language-Agnostic SSR with Web Components Islands Architecture",
+  base: '/webui/',
   appearance: true,
   head: [
-    ['link', { rel: 'icon', href: '/favicon.ico' }],
+    ['link', { rel: 'icon', href: '/webui/favicon.ico' }],
   ],
   themeConfig: {
     logo: '/logo.svg',
