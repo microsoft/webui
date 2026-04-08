@@ -7,6 +7,32 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+/// Apply a version update and log the result.
+///
+/// On `Ok(true)` prints a success tick and increments the counter.
+/// On `Ok(false)` (already up-to-date) does nothing.
+/// On `Err` prints the error and returns `ExitCode::FAILURE`.
+fn apply_update(
+    result: Result<bool, String>,
+    path: &Path,
+    root: &Path,
+    total_updated: &mut usize,
+) -> Result<(), ExitCode> {
+    match result {
+        Ok(true) => {
+            let relative = path.strip_prefix(root).unwrap_or(path).display();
+            eprintln!("  {} {relative}", console::style("✔").green());
+            *total_updated += 1;
+            Ok(())
+        }
+        Ok(false) => Ok(()),
+        Err(e) => {
+            eprintln!("  {} {e}", console::style("✘").red().bold());
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
 /// Validate a semver string (basic check: major.minor.patch).
 fn is_valid_semver(version: &str) -> bool {
     let parts: Vec<&str> = version.split('.').collect();
@@ -338,16 +364,14 @@ pub fn run(version: Option<&str>) -> ExitCode {
     total_updated += 1;
 
     // 2. Update root package.json
-    match update_package_json(&root.join("package.json"), version) {
-        Ok(true) => {
-            eprintln!("  {} package.json (root)", console::style("✔").green());
-            total_updated += 1;
-        }
-        Ok(false) => {}
-        Err(e) => {
-            eprintln!("  {} {e}", console::style("✘").red().bold());
-            return ExitCode::FAILURE;
-        }
+    let root_pkg = root.join("package.json");
+    if let Err(code) = apply_update(
+        update_package_json(&root_pkg, version),
+        &root_pkg,
+        &root,
+        &mut total_updated,
+    ) {
+        return code;
     }
 
     // 3. Update dotnet/Directory.Build.props
@@ -355,81 +379,60 @@ pub fn run(version: Option<&str>) -> ExitCode {
         eprintln!("  {} {e}", console::style("✘").red().bold());
         return ExitCode::FAILURE;
     }
-    if root.join("dotnet").join("Directory.Build.props").exists() {
+    let dotnet_props = root.join("dotnet").join("Directory.Build.props");
+    if dotnet_props.exists() {
         eprintln!(
             "  {} dotnet/Directory.Build.props",
             console::style("✔").green()
         );
-    }
-
-    if root.join("dotnet").join("Directory.Build.props").exists() {
         total_updated += 1;
     }
 
     // 4. Update inter-crate dependency versions in crates/*/Cargo.toml
     let crate_tomls = find_crate_cargo_tomls(&root);
     for toml_path in &crate_tomls {
-        match update_crate_dep_versions(toml_path, version) {
-            Ok(true) => {
-                let relative = toml_path.strip_prefix(&root).unwrap_or(toml_path).display();
-                eprintln!("  {} {relative}", console::style("✔").green());
-                total_updated += 1;
-            }
-            Ok(false) => {}
-            Err(e) => {
-                eprintln!("  {} {e}", console::style("✘").red().bold());
-                return ExitCode::FAILURE;
-            }
+        if let Err(code) = apply_update(
+            update_crate_dep_versions(toml_path, version),
+            toml_path,
+            &root,
+            &mut total_updated,
+        ) {
+            return code;
         }
     }
 
     // 5. Update all package.json files under packages/
     let package_jsons = find_package_jsons(&root);
     for pkg_path in &package_jsons {
-        match update_package_json(pkg_path, version) {
-            Ok(true) => {
-                let relative = pkg_path.strip_prefix(&root).unwrap_or(pkg_path).display();
-                eprintln!("  {} {relative}", console::style("✔").green());
-                total_updated += 1;
-            }
-            Ok(false) => {}
-            Err(e) => {
-                eprintln!("  {} {e}", console::style("✘").red().bold());
-                return ExitCode::FAILURE;
-            }
+        if let Err(code) = apply_update(
+            update_package_json(pkg_path, version),
+            pkg_path,
+            &root,
+            &mut total_updated,
+        ) {
+            return code;
         }
     }
 
     // 6. Update commerce example (server/Cargo.toml + package.json)
     let commerce_root = root.join("examples/app/commerce");
     let commerce_cargo = commerce_root.join("server/Cargo.toml");
-    match update_toml_section_version(&commerce_cargo, "[package]", version) {
-        Ok(true) => {
-            let relative = commerce_cargo
-                .strip_prefix(&root)
-                .unwrap_or(&commerce_cargo)
-                .display();
-            eprintln!("  {} {relative}", console::style("✔").green());
-            total_updated += 1;
-        }
-        Ok(false) => {}
-        Err(e) => {
-            eprintln!("  {} {e}", console::style("✘").red().bold());
-            return ExitCode::FAILURE;
-        }
+    if let Err(code) = apply_update(
+        update_toml_section_version(&commerce_cargo, "[package]", version),
+        &commerce_cargo,
+        &root,
+        &mut total_updated,
+    ) {
+        return code;
     }
-    match update_package_json(&commerce_root.join("package.json"), version) {
-        Ok(true) => {
-            let relative = commerce_root.join("package.json");
-            let relative = relative.strip_prefix(&root).unwrap_or(&relative).display();
-            eprintln!("  {} {relative}", console::style("✔").green());
-            total_updated += 1;
-        }
-        Ok(false) => {}
-        Err(e) => {
-            eprintln!("  {} {e}", console::style("✘").red().bold());
-            return ExitCode::FAILURE;
-        }
+    let commerce_pkg = commerce_root.join("package.json");
+    if let Err(code) = apply_update(
+        update_package_json(&commerce_pkg, version),
+        &commerce_pkg,
+        &root,
+        &mut total_updated,
+    ) {
+        return code;
     }
 
     eprintln!(
