@@ -133,13 +133,21 @@ fn apply_update(
 ) -> Result<(), ExitCode> {
     match result {
         Ok(true) => {
-            let relative = target.path.strip_prefix(root).unwrap_or(&target.path).display();
+            let relative = target
+                .path
+                .strip_prefix(root)
+                .unwrap_or(&target.path)
+                .display();
             eprintln!("  {} {relative}", console::style("✔").green());
             *total_updated += 1;
             Ok(())
         }
         Ok(false) if target.required => {
-            let relative = target.path.strip_prefix(root).unwrap_or(&target.path).display();
+            let relative = target
+                .path
+                .strip_prefix(root)
+                .unwrap_or(&target.path)
+                .display();
             eprintln!(
                 "  {} No version field found in {relative}",
                 console::style("✘").red().bold()
@@ -354,8 +362,8 @@ fn update_package_json(path: &Path, version: &str) -> Result<bool, String> {
 
 /// Update `<Version>...</Version>` in a .NET `Directory.Build.props` file.
 fn update_dotnet_version(path: &Path, version: &str) -> Result<bool, String> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
 
     let Some(start) = content.find("<Version>") else {
         return Err(format!(
@@ -381,8 +389,7 @@ fn update_dotnet_version(path: &Path, version: &str) -> Result<bool, String> {
     result.push_str(version);
     result.push_str(&content[tag_value_start + end..]);
 
-    fs::write(path, result)
-        .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
+    fs::write(path, result).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
     Ok(true)
 }
 
