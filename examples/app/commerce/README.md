@@ -85,3 +85,29 @@ commerce/
   <route path="frequently-asked-questions" component="mp-page-faq" exact />
 </route>
 ```
+
+## Docker
+
+Build and run the commerce app as a container. Run all commands from the **repository root**.
+
+```bash
+# Build the image
+docker build -t webui-commerce -f examples/app/commerce/Dockerfile .
+
+# List images
+docker images webui-commerce
+
+# Inspect image metadata
+docker inspect webui-commerce
+
+# Run the container (port 443)
+docker run -p 443:443 webui-commerce
+```
+
+Then open http://localhost:443
+
+To tag with the project version:
+
+```bash
+docker tag webui-commerce webui-commerce:v$(jq -r .version package.json)
+```

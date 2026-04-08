@@ -49,24 +49,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/build
-        with:
-          shared-cache-key: commerce-docker
-          skip-build: 'true'
-
-      - name: Build frontend
-        run: cd examples/app/commerce && pnpm build
-
-      - name: Build release binary
-        run: cargo build --release -p marketplace-api
-
-      - name: Stage Docker context
-        run: |
-          mkdir -p .docker-context/src .docker-context/dist
-          cp target/release/marketplace-api .docker-context/
-          cp -r examples/app/commerce/src/* .docker-context/src/
-          cp -r examples/app/commerce/dist/* .docker-context/dist/
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -80,12 +62,14 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: .docker-context
+          context: .
           file: examples/app/commerce/Dockerfile
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:v${{ needs.check-version.outputs.version }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Create git tag
         env:

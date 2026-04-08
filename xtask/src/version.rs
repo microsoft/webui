@@ -16,24 +16,27 @@ fn is_valid_semver(version: &str) -> bool {
     parts.iter().all(|p| p.parse::<u64>().is_ok())
 }
 
-/// Update `version = "..."` in `[workspace.package]` of root Cargo.toml.
-fn update_cargo_workspace_version(root: &Path, version: &str) -> Result<(), String> {
-    let cargo_path = root.join("Cargo.toml");
+/// Update `version = "..."` inside a specific TOML section of a file.
+fn update_toml_section_version(
+    path: &Path,
+    section: &str,
+    version: &str,
+) -> Result<bool, String> {
     let content =
-        fs::read_to_string(&cargo_path).map_err(|e| format!("Failed to read Cargo.toml: {e}"))?;
+        fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
 
     let mut result = String::with_capacity(content.len());
-    let mut in_workspace_package = false;
+    let mut in_section = false;
     let mut updated = false;
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed == "[workspace.package]" {
-            in_workspace_package = true;
+        if trimmed == section {
+            in_section = true;
         } else if trimmed.starts_with('[') {
-            in_workspace_package = false;
+            in_section = false;
         }
-        if in_workspace_package && trimmed.starts_with("version") && trimmed.contains('=') {
+        if in_section && trimmed.starts_with("version") && trimmed.contains('=') && !updated {
             result.push_str("version = \"");
             result.push_str(version);
             result.push_str("\"\n");
@@ -44,11 +47,20 @@ fn update_cargo_workspace_version(root: &Path, version: &str) -> Result<(), Stri
         }
     }
 
-    if !updated {
-        return Err("Could not find version in [workspace.package]".to_string());
+    if updated {
+        fs::write(path, &result)
+            .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
     }
 
-    fs::write(&cargo_path, result).map_err(|e| format!("Failed to write Cargo.toml: {e}"))?;
+    Ok(updated)
+}
+
+/// Update `version = "..."` in `[workspace.package]` of root Cargo.toml.
+fn update_cargo_workspace_version(root: &Path, version: &str) -> Result<(), String> {
+    let cargo_path = root.join("Cargo.toml");
+    if !update_toml_section_version(&cargo_path, "[workspace.package]", version)? {
+        return Err("Could not find version in [workspace.package]".to_string());
+    }
     Ok(())
 }
 
@@ -393,11 +405,41 @@ pub fn run(version: Option<&str>) -> ExitCode {
         }
     }
 
+    // 6. Update commerce example (server/Cargo.toml + package.json)
+    let commerce_root = root.join("examples/app/commerce");
+    let mut commerce_count = 0;
+    let commerce_cargo = commerce_root.join("server/Cargo.toml");
+    match update_toml_section_version(&commerce_cargo, "[package]", version) {
+        Ok(true) => {
+            let relative = commerce_cargo.strip_prefix(&root).unwrap_or(&commerce_cargo).display();
+            eprintln!("  {} {relative}", console::style("✔").green());
+            commerce_count += 1;
+        }
+        Ok(false) => {}
+        Err(e) => {
+            eprintln!("  {} {e}", console::style("✘").red().bold());
+            return ExitCode::FAILURE;
+        }
+    }
+    match update_package_json(&commerce_root.join("package.json"), version) {
+        Ok(true) => {
+            let relative = commerce_root.join("package.json");
+            let relative = relative.strip_prefix(&root).unwrap_or(&relative).display();
+            eprintln!("  {} {relative}", console::style("✔").green());
+            commerce_count += 1;
+        }
+        Ok(false) => {}
+        Err(e) => {
+            eprintln!("  {} {e}", console::style("✘").red().bold());
+            return ExitCode::FAILURE;
+        }
+    }
+
     eprintln!(
         "\n  {} Updated {} file{}\n",
         console::style("✨").green(),
-        console::style(2 + dotnet_count + crate_count + count).bold(),
-        if (1 + dotnet_count + crate_count + count) == 0 {
+        console::style(2 + dotnet_count + crate_count + count + commerce_count).bold(),
+        if (1 + dotnet_count + crate_count + count + commerce_count) == 0 {
             ""
         } else {
             "s"
