@@ -37,7 +37,7 @@ COPY --from=planner /build/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
-RUN pnpm install --frozen-lockfile && \
+RUN pnpm install --frozen-lockfile --filter=commerce... && \
     cd examples/app/commerce && pnpm build
 
 RUN cargo build --release -p marketplace-api

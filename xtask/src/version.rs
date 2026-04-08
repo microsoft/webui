@@ -2,28 +2,149 @@
 // Licensed under the MIT license.
 
 //! Atomic version bumping across all Cargo.toml and package.json files.
+//!
+//! The update pipeline has two phases:
+//!
+//! 1. **Discovery** – [`discover_targets`] walks the workspace and collects
+//!    every file whose version must be bumped into a `Vec<VersionTarget>`.
+//! 2. **Execution** – [`run`] iterates the targets and applies the appropriate
+//!    updater via [`execute_update`], logging each result uniformly.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+// ── Target model ────────────────────────────────────────────────────
+
+/// How to update the version inside a given file.
+enum UpdateStrategy {
+    /// Replace `version = "..."` inside a TOML `[section]`.
+    TomlSection(&'static str),
+    /// Replace `"version"` (and `@microsoft/webui-*` optional deps) in a
+    /// `package.json`.
+    PackageJson,
+    /// Replace inline `version = "..."` on `microsoft-webui-*` dependency
+    /// lines in a crate `Cargo.toml`.
+    CrateDeps,
+    /// Replace `<Version>…</Version>` in a .NET `Directory.Build.props`.
+    DotnetProps,
+}
+
+/// A single file whose version must be updated.
+struct VersionTarget {
+    path: PathBuf,
+    strategy: UpdateStrategy,
+    /// When `true`, an `Ok(false)` result (no version field found) is treated
+    /// as an error rather than a silent skip.
+    required: bool,
+}
+
+/// Collect every file in the workspace that contains a version to bump.
+fn discover_targets(root: &Path) -> Vec<VersionTarget> {
+    let mut targets = Vec::new();
+
+    // Workspace Cargo.toml (must contain [workspace.package].version)
+    targets.push(VersionTarget {
+        path: root.join("Cargo.toml"),
+        strategy: UpdateStrategy::TomlSection("[workspace.package]"),
+        required: true,
+    });
+
+    // Root package.json
+    targets.push(VersionTarget {
+        path: root.join("package.json"),
+        strategy: UpdateStrategy::PackageJson,
+        required: false,
+    });
+
+    // dotnet/Directory.Build.props (only if present)
+    let dotnet_props = root.join("dotnet").join("Directory.Build.props");
+    if dotnet_props.exists() {
+        targets.push(VersionTarget {
+            path: dotnet_props,
+            strategy: UpdateStrategy::DotnetProps,
+            required: true,
+        });
+    }
+
+    // crates/*/Cargo.toml – inter-crate dependency versions
+    for toml in find_crate_cargo_tomls(root) {
+        targets.push(VersionTarget {
+            path: toml,
+            strategy: UpdateStrategy::CrateDeps,
+            required: false,
+        });
+    }
+
+    // packages/**/package.json
+    for pkg in find_package_jsons(root) {
+        targets.push(VersionTarget {
+            path: pkg,
+            strategy: UpdateStrategy::PackageJson,
+            required: false,
+        });
+    }
+
+    // Commerce example
+    let commerce = root.join("examples").join("app").join("commerce");
+    let commerce_cargo = commerce.join("server").join("Cargo.toml");
+    if commerce_cargo.exists() {
+        targets.push(VersionTarget {
+            path: commerce_cargo,
+            strategy: UpdateStrategy::TomlSection("[package]"),
+            required: true,
+        });
+    }
+    let commerce_pkg = commerce.join("package.json");
+    if commerce_pkg.exists() {
+        targets.push(VersionTarget {
+            path: commerce_pkg,
+            strategy: UpdateStrategy::PackageJson,
+            required: false,
+        });
+    }
+
+    targets
+}
+
+/// Dispatch a version update to the right updater function.
+fn execute_update(target: &VersionTarget, version: &str) -> Result<bool, String> {
+    match &target.strategy {
+        UpdateStrategy::TomlSection(section) => {
+            update_toml_section_version(&target.path, section, version)
+        }
+        UpdateStrategy::PackageJson => update_package_json(&target.path, version),
+        UpdateStrategy::CrateDeps => update_crate_dep_versions(&target.path, version),
+        UpdateStrategy::DotnetProps => update_dotnet_version(&target.path, version),
+    }
+}
+
 /// Apply a version update and log the result.
 ///
 /// On `Ok(true)` prints a success tick and increments the counter.
-/// On `Ok(false)` (already up-to-date) does nothing.
+/// On `Ok(false)` (no version field found) does nothing — unless
+/// `required` is `true`, in which case it is treated as an error.
 /// On `Err` prints the error and returns `ExitCode::FAILURE`.
 fn apply_update(
     result: Result<bool, String>,
-    path: &Path,
+    target: &VersionTarget,
     root: &Path,
     total_updated: &mut usize,
 ) -> Result<(), ExitCode> {
     match result {
         Ok(true) => {
-            let relative = path.strip_prefix(root).unwrap_or(path).display();
+            let relative = target.path.strip_prefix(root).unwrap_or(&target.path).display();
             eprintln!("  {} {relative}", console::style("✔").green());
             *total_updated += 1;
             Ok(())
+        }
+        Ok(false) if target.required => {
+            let relative = target.path.strip_prefix(root).unwrap_or(&target.path).display();
+            eprintln!(
+                "  {} No version field found in {relative}",
+                console::style("✘").red().bold()
+            );
+            Err(ExitCode::FAILURE)
         }
         Ok(false) => Ok(()),
         Err(e) => {
@@ -77,6 +198,9 @@ fn update_toml_section_version(path: &Path, section: &str, version: &str) -> Res
 }
 
 /// Update `version = "..."` in `[workspace.package]` of root Cargo.toml.
+///
+/// Used by tests only — production code goes through [`execute_update`].
+#[cfg(test)]
 fn update_cargo_workspace_version(root: &Path, version: &str) -> Result<(), String> {
     let cargo_path = root.join("Cargo.toml");
     if !update_toml_section_version(&cargo_path, "[workspace.package]", version)? {
@@ -228,32 +352,38 @@ fn update_package_json(path: &Path, version: &str) -> Result<bool, String> {
     Ok(changed)
 }
 
-/// Update `<Version>...</Version>` in dotnet/Directory.Build.props.
-fn update_dotnet_version(root: &Path, version: &str) -> Result<(), String> {
-    let props_path = root.join("dotnet").join("Directory.Build.props");
-    if !props_path.exists() {
-        return Ok(());
-    }
-
-    let content = fs::read_to_string(&props_path)
-        .map_err(|e| format!("Failed to read Directory.Build.props: {e}"))?;
+/// Update `<Version>...</Version>` in a .NET `Directory.Build.props` file.
+fn update_dotnet_version(path: &Path, version: &str) -> Result<bool, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
 
     let Some(start) = content.find("<Version>") else {
-        return Err("Could not find <Version> tag in Directory.Build.props".to_string());
+        return Err(format!(
+            "Could not find <Version> tag in {}",
+            path.display()
+        ));
     };
     let tag_value_start = start + "<Version>".len();
     let Some(end) = content[tag_value_start..].find("</Version>") else {
-        return Err("Could not find closing </Version> tag in Directory.Build.props".to_string());
+        return Err(format!(
+            "Could not find closing </Version> tag in {}",
+            path.display()
+        ));
     };
+
+    let old_version = &content[tag_value_start..tag_value_start + end];
+    if old_version == version {
+        return Ok(false);
+    }
 
     let mut result = String::with_capacity(content.len());
     result.push_str(&content[..tag_value_start]);
     result.push_str(version);
     result.push_str(&content[tag_value_start + end..]);
 
-    fs::write(&props_path, result)
-        .map_err(|e| format!("Failed to write Directory.Build.props: {e}"))?;
-    Ok(())
+    fs::write(path, result)
+        .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
+    Ok(true)
 }
 
 /// Find all package.json files under `packages/`.
@@ -336,13 +466,6 @@ pub fn run(version: Option<&str>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    eprintln!(
-        "\n  {} Updating all versions to {}\n",
-        console::style("⚡").cyan().bold(),
-        console::style(version).bold()
-    );
-
-    // 1. Update workspace Cargo.toml
     let root = match std::env::current_dir() {
         Ok(p) => p,
         Err(e) => {
@@ -354,85 +477,26 @@ pub fn run(version: Option<&str>) -> ExitCode {
         }
     };
 
+    let targets = discover_targets(&root);
+
+    eprintln!(
+        "\n  {} Updating {} target{} to {}\n",
+        console::style("⚡").cyan().bold(),
+        console::style(targets.len()).bold(),
+        if targets.len() == 1 { "" } else { "s" },
+        console::style(version).bold()
+    );
+
     let mut total_updated: usize = 0;
-
-    if let Err(e) = update_cargo_workspace_version(&root, version) {
-        eprintln!("  {} {e}", console::style("✘").red().bold());
-        return ExitCode::FAILURE;
-    }
-    eprintln!("  {} Cargo.toml (workspace)", console::style("✔").green());
-    total_updated += 1;
-
-    // 2. Update root package.json
-    let root_pkg = root.join("package.json");
-    if let Err(code) = apply_update(
-        update_package_json(&root_pkg, version),
-        &root_pkg,
-        &root,
-        &mut total_updated,
-    ) {
-        return code;
-    }
-
-    // 3. Update dotnet/Directory.Build.props
-    if let Err(e) = update_dotnet_version(&root, version) {
-        eprintln!("  {} {e}", console::style("✘").red().bold());
-        return ExitCode::FAILURE;
-    }
-    let dotnet_props = root.join("dotnet").join("Directory.Build.props");
-    if dotnet_props.exists() {
-        eprintln!(
-            "  {} dotnet/Directory.Build.props",
-            console::style("✔").green()
-        );
-        total_updated += 1;
-    }
-
-    // 4. Update inter-crate dependency versions in crates/*/Cargo.toml
-    let crate_tomls = find_crate_cargo_tomls(&root);
-    for toml_path in &crate_tomls {
+    for target in &targets {
         if let Err(code) = apply_update(
-            update_crate_dep_versions(toml_path, version),
-            toml_path,
+            execute_update(target, version),
+            target,
             &root,
             &mut total_updated,
         ) {
             return code;
         }
-    }
-
-    // 5. Update all package.json files under packages/
-    let package_jsons = find_package_jsons(&root);
-    for pkg_path in &package_jsons {
-        if let Err(code) = apply_update(
-            update_package_json(pkg_path, version),
-            pkg_path,
-            &root,
-            &mut total_updated,
-        ) {
-            return code;
-        }
-    }
-
-    // 6. Update commerce example (server/Cargo.toml + package.json)
-    let commerce_root = root.join("examples/app/commerce");
-    let commerce_cargo = commerce_root.join("server/Cargo.toml");
-    if let Err(code) = apply_update(
-        update_toml_section_version(&commerce_cargo, "[package]", version),
-        &commerce_cargo,
-        &root,
-        &mut total_updated,
-    ) {
-        return code;
-    }
-    let commerce_pkg = commerce_root.join("package.json");
-    if let Err(code) = apply_update(
-        update_package_json(&commerce_pkg, version),
-        &commerce_pkg,
-        &root,
-        &mut total_updated,
-    ) {
-        return code;
     }
 
     eprintln!(
@@ -624,7 +688,8 @@ microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.1" }
         )
         .unwrap();
 
-        update_dotnet_version(dir.path(), "1.2.3").unwrap();
+        let changed = update_dotnet_version(&props, "1.2.3").unwrap();
+        assert!(changed);
 
         let content = fs::read_to_string(&props).unwrap();
         assert!(content.contains("<Version>1.2.3</Version>"));
@@ -634,9 +699,9 @@ microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.1" }
     #[test]
     fn test_update_dotnet_version_missing_dir() {
         let dir = tempfile::TempDir::new().unwrap();
-        // No dotnet dir — should silently succeed
-        let result = update_dotnet_version(dir.path(), "1.0.0");
-        assert!(result.is_ok());
+        // File doesn't exist — should error
+        let result = update_dotnet_version(&dir.path().join("nope.props"), "1.0.0");
+        assert!(result.is_err());
     }
 
     #[test]
