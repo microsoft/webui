@@ -120,51 +120,79 @@ fn update_crate_dep_versions(path: &Path, version: &str) -> Result<bool, String>
     Ok(changed)
 }
 
+/// Replace the value of the first occurrence of a JSON field in raw content.
+///
+/// Finds `"field": "old"` and produces `"field": "new"`, preserving all formatting.
+fn replace_first_json_field(content: &str, field: &str, new_value: &str) -> Option<String> {
+    let key = format!("\"{field}\"");
+    let key_pos = content.find(&key)?;
+    let after_key = key_pos + key.len();
+
+    let colon_offset = content[after_key..].find(':')?;
+    let after_colon = after_key + colon_offset + 1;
+
+    let open_quote = content[after_colon..].find('"')?;
+    let value_start = after_colon + open_quote + 1;
+
+    let close_quote = content[value_start..].find('"')?;
+    let value_end = value_start + close_quote;
+
+    let mut result = String::with_capacity(content.len());
+    result.push_str(&content[..value_start]);
+    result.push_str(new_value);
+    result.push_str(&content[value_end..]);
+    Some(result)
+}
+
 /// Update version in a package.json file. Also updates optionalDependencies
 /// that reference @microsoft/webui-* packages.
+///
+/// Uses serde_json to read the structure, then performs surgical string
+/// replacement so only the version values change — all formatting is preserved.
 fn update_package_json(path: &Path, version: &str) -> Result<bool, String> {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return Ok(false),
     };
 
-    let mut value: serde_json::Value = serde_json::from_str(&content)
+    let value: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| format!("Invalid JSON in {}: {e}", path.display()))?;
-
     let obj = value
-        .as_object_mut()
+        .as_object()
         .ok_or_else(|| format!("{} is not a JSON object", path.display()))?;
 
-    // Update top-level version
+    let mut result = content;
+    let mut changed = false;
+
+    // Replace top-level "version" field value
     if obj.contains_key("version") {
-        obj.insert(
-            "version".to_string(),
-            serde_json::Value::String(version.to_string()),
-        );
+        if let Some(updated) = replace_first_json_field(&result, "version", version) {
+            result = updated;
+            changed = true;
+        }
     }
 
-    // Update optionalDependencies for @microsoft/webui-* packages
-    // Skip workspace: protocol values (pnpm resolves them at publish time)
-    if let Some(deps) = obj.get_mut("optionalDependencies") {
-        if let Some(deps_obj) = deps.as_object_mut() {
-            for (key, val) in deps_obj.iter_mut() {
-                if key.starts_with("@microsoft/webui") {
-                    let current = val.as_str().unwrap_or_default();
-                    if !current.starts_with("workspace:") {
-                        *val = serde_json::Value::String(version.to_string());
+    // Replace @microsoft/webui-* version values in optionalDependencies.
+    // Skip workspace: protocol values (pnpm resolves them at publish time).
+    if let Some(deps) = obj.get("optionalDependencies").and_then(|v| v.as_object()) {
+        for (key, val) in deps {
+            if key.starts_with("@microsoft/webui") {
+                let current = val.as_str().unwrap_or_default();
+                if !current.starts_with("workspace:") {
+                    if let Some(updated) = replace_first_json_field(&result, key, version) {
+                        result = updated;
+                        changed = true;
                     }
                 }
             }
         }
     }
 
-    let updated = serde_json::to_string_pretty(&value)
-        .map_err(|e| format!("Failed to serialize {}: {e}", path.display()))?;
+    if changed {
+        fs::write(path, &result).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
+    }
 
-    fs::write(path, format!("{updated}\n"))
-        .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-
-    Ok(true)
+    Ok(changed)
 }
 
 /// Update `<Version>...</Version>` in dotnet/Directory.Build.props.
@@ -299,7 +327,19 @@ pub fn run(version: Option<&str>) -> ExitCode {
     }
     eprintln!("  {} Cargo.toml (workspace)", console::style("✔").green());
 
-    // 2. Update dotnet/Directory.Build.props
+    // 2. Update root package.json
+    match update_package_json(&root.join("package.json"), version) {
+        Ok(true) => {
+            eprintln!("  {} package.json (root)", console::style("✔").green());
+        }
+        Ok(false) => {}
+        Err(e) => {
+            eprintln!("  {} {e}", console::style("✘").red().bold());
+            return ExitCode::FAILURE;
+        }
+    }
+
+    // 3. Update dotnet/Directory.Build.props
     if let Err(e) = update_dotnet_version(&root, version) {
         eprintln!("  {} {e}", console::style("✘").red().bold());
         return ExitCode::FAILURE;
@@ -317,7 +357,7 @@ pub fn run(version: Option<&str>) -> ExitCode {
         0
     };
 
-    // 3. Update inter-crate dependency versions in crates/*/Cargo.toml
+    // 4. Update inter-crate dependency versions in crates/*/Cargo.toml
     let crate_tomls = find_crate_cargo_tomls(&root);
     let mut crate_count = 0;
     for toml_path in &crate_tomls {
@@ -335,7 +375,7 @@ pub fn run(version: Option<&str>) -> ExitCode {
         }
     }
 
-    // 4. Update all package.json files under packages/
+    // 5. Update all package.json files under packages/
     let package_jsons = find_package_jsons(&root);
     let mut count = 0;
     for pkg_path in &package_jsons {
@@ -356,8 +396,8 @@ pub fn run(version: Option<&str>) -> ExitCode {
     eprintln!(
         "\n  {} Updated {} file{}\n",
         console::style("✨").green(),
-        console::style(1 + dotnet_count + crate_count + count).bold(),
-        if (dotnet_count + crate_count + count) == 0 {
+        console::style(2 + dotnet_count + crate_count + count).bold(),
+        if (1 + dotnet_count + crate_count + count) == 0 {
             ""
         } else {
             "s"
@@ -402,6 +442,20 @@ mod tests {
     }
 
     #[test]
+    fn test_update_root_package_json() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pkg = dir.path().join("package.json");
+        fs::write(&pkg, r#"{"name":"webui","version":"1.0.0","private":true}"#).unwrap();
+
+        update_package_json(&pkg, "2.0.0").unwrap();
+
+        let content = fs::read_to_string(&pkg).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(val["version"], "2.0.0");
+        assert_eq!(val["name"], "webui");
+    }
+
+    #[test]
     fn test_update_package_json_optional_deps() {
         let dir = tempfile::TempDir::new().unwrap();
         let pkg = dir.path().join("package.json");
@@ -429,6 +483,22 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let result = update_package_json(&dir.path().join("nope.json"), "1.0.0");
         assert!(matches!(result, Ok(false)));
+    }
+
+    #[test]
+    fn test_update_package_json_preserves_formatting() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pkg = dir.path().join("package.json");
+        let original =
+            "{\n  \"name\": \"webui\",\n  \"version\": \"1.0.0\",\n  \"private\": true\n}\n";
+        fs::write(&pkg, original).unwrap();
+
+        update_package_json(&pkg, "2.0.0").unwrap();
+
+        let content = fs::read_to_string(&pkg).unwrap();
+        let expected =
+            "{\n  \"name\": \"webui\",\n  \"version\": \"2.0.0\",\n  \"private\": true\n}\n";
+        assert_eq!(content, expected, "only version value should change");
     }
 
     #[test]

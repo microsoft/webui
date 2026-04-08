@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --outdir=dist --format=esm --splitting --sourcemap ",
+    "build": "esbuild src/index.ts --bundle --outdir=dist --format=esm --splitting --sourcemap --minify",
     "start:client": "esbuild src/index.ts --bundle --outdir=dist --splitting --format=esm --sourcemap --watch",
     "start:server": "cargo run -p marketplace-api -- --port 3004",
     "start": "cargo xtask dev commerce",

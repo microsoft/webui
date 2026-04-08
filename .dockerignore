@@ -1,0 +1,29 @@
+# Rust build artifacts
+target/
+
+# Node.js dependencies (reinstalled during build)
+**/node_modules/
+
+# Git history
+.git/
+.gitignore
+
+# Test artifacts
+**/test-results/
+
+# Release staging
+publish/
+
+# Documentation site (not needed for app builds)
+docs/
+
+# .NET bindings (not needed for commerce build)
+dotnet/
+
+# CI configuration
+.github/
+
+# IDE and editor files
+*.code-workspace
+.vscode/
+.idea/

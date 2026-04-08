@@ -1,0 +1,102 @@
+name: Commerce Docker
+
+permissions:
+  contents: write
+  packages: write
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/commerce
+
+jobs:
+  # ── Step 1: Detect version change ─────────────────────────────────────
+  check-version:
+    name: Check Version
+    runs-on: ubuntu-latest
+    outputs:
+      should_publish: ${{ steps.check.outputs.should_publish }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare version with latest tag
+        id: check
+        run: |
+          VERSION=$(jq -r '.version' package.json)
+          TAG="commerce-v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — skipping publish"
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag $TAG not found — will publish"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Step 2: Build and push Docker image ───────────────────────────────
+  docker:
+    name: Build & Push Docker Image
+    needs: check-version
+    if: needs.check-version.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/build
+        with:
+          shared-cache-key: commerce-docker
+          skip-build: 'true'
+
+      - name: Build frontend
+        run: cd examples/app/commerce && pnpm build
+
+      - name: Build release binary
+        run: cargo build --release -p marketplace-api
+
+      - name: Stage Docker context
+        run: |
+          mkdir -p .docker-context/src .docker-context/dist
+          cp target/release/marketplace-api .docker-context/
+          cp -r examples/app/commerce/src/* .docker-context/src/
+          cp -r examples/app/commerce/dist/* .docker-context/dist/
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .docker-context
+          file: examples/app/commerce/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:v${{ needs.check-version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Create git tag
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          git fetch --tags
+          if git rev-parse "commerce-v${VERSION}" >/dev/null 2>&1; then
+            echo "::warning::Tag commerce-v${VERSION} already exists (concurrent run?). Skipping."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "commerce-v${VERSION}" -m "Commerce Docker v${VERSION}"
+            git push origin "commerce-v${VERSION}"
+          fi
