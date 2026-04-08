@@ -383,8 +383,7 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
 }
 
 fn compute_signature(payload_hex: &str) -> Vec<u8> {
-    let mut mac =
-        HmacSha256::new_from_slice(cookie_secret()).expect("HMAC accepts any key length");
+    let mut mac = HmacSha256::new_from_slice(cookie_secret()).expect("HMAC accepts any key length");
     mac.update(payload_hex.as_bytes());
     mac.finalize().into_bytes().to_vec()
 }
@@ -394,8 +393,7 @@ fn verify_signature(payload_hex: &str, sig_hex: &str) -> bool {
         Some(bytes) => bytes,
         None => return false,
     };
-    let mut mac =
-        HmacSha256::new_from_slice(cookie_secret()).expect("HMAC accepts any key length");
+    let mut mac = HmacSha256::new_from_slice(cookie_secret()).expect("HMAC accepts any key length");
     mac.update(payload_hex.as_bytes());
     mac.verify_slice(&sig_bytes).is_ok()
 }

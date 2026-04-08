@@ -61,12 +61,7 @@ impl FrontendRuntime {
         route_handler::collect_nested_route_params(&self.protocol, &self.entry, route_path)
     }
 
-    pub fn render_html(
-        &self,
-        route_path: &str,
-        state: &Value,
-        nonce: &str,
-    ) -> Result<String> {
+    pub fn render_html(&self, route_path: &str, state: &Value, nonce: &str) -> Result<String> {
         let mut writer = MemoryWriter::with_capacity(16_384);
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
         handler
