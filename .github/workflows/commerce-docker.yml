@@ -29,7 +29,7 @@ jobs:
       - name: Compare version with latest tag
         id: check
         run: |
-          VERSION=$(jq -r '.version' package.json)
+          VERSION=$(jq -r '.version' examples/app/commerce/package.json)
           TAG="commerce-v${VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           if git show-ref --tags --verify --quiet "refs/tags/$TAG"; then

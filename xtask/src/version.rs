@@ -85,25 +85,6 @@ fn discover_targets(root: &Path) -> Vec<VersionTarget> {
         });
     }
 
-    // Commerce example
-    let commerce = root.join("examples").join("app").join("commerce");
-    let commerce_cargo = commerce.join("server").join("Cargo.toml");
-    if commerce_cargo.exists() {
-        targets.push(VersionTarget {
-            path: commerce_cargo,
-            strategy: UpdateStrategy::TomlSection("[package]"),
-            required: true,
-        });
-    }
-    let commerce_pkg = commerce.join("package.json");
-    if commerce_pkg.exists() {
-        targets.push(VersionTarget {
-            path: commerce_pkg,
-            strategy: UpdateStrategy::PackageJson,
-            required: false,
-        });
-    }
-
     targets
 }
 
