@@ -94,6 +94,9 @@ Build and run the commerce app as a container. Run all commands from the **repos
 # Build the image
 docker build -t webui-commerce -f examples/app/commerce/Dockerfile .
 
+# Override cargo-chef version if needed
+docker build --build-arg CARGO_CHEF_VERSION=0.1.75 -t webui-commerce -f examples/app/commerce/Dockerfile .
+
 # List images
 docker images webui-commerce
 
