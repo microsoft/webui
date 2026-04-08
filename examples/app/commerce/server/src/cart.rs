@@ -14,11 +14,28 @@ use crate::catalog::{Catalog, Product};
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Server-generated secret for HMAC signing the cart cookie.
-/// In production this would be loaded from configuration; for the demo
-/// a compile-time constant is acceptable since the cookie carries no
-/// sensitive data — signing only prevents casual tampering.
-const COOKIE_SECRET: &[u8] = b"webui-commerce-demo-cookie-secret-2024";
+/// Secret used for HMAC signing the cart cookie.  Loaded from the
+/// `CART_COOKIE_SECRET` environment variable so it is never compiled into the
+/// binary.  Falls back to a default only in `#[cfg(test)]` builds.
+fn cookie_secret() -> &'static [u8] {
+    static SECRET: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    SECRET
+        .get_or_init(|| {
+            std::env::var("CART_COOKIE_SECRET")
+                .unwrap_or_else(|_| {
+                    if cfg!(test) {
+                        "webui-commerce-demo-test-secret".to_string()
+                    } else {
+                        eprintln!(
+                            "CART_COOKIE_SECRET not set — generating a random session-scoped key"
+                        );
+                        format!("ephemeral-{}", std::process::id())
+                    }
+                })
+                .into_bytes()
+        })
+        .as_slice()
+}
 
 pub const CART_COOKIE_NAME: &str = "mp-cart";
 
@@ -121,7 +138,8 @@ pub fn cookie_for_cart(cart: &StoredCart) -> Option<Cookie<'static>> {
 
     let bytes = serde_json::to_vec(cart).ok()?;
     let payload_hex = encode_hex(&bytes);
-    let sig_hex = compute_signature(&payload_hex);
+    let sig_bytes = compute_signature(&payload_hex);
+    let sig_hex = encode_hex(&sig_bytes);
     let value = format!("{payload_hex}.{sig_hex}");
     Some(
         Cookie::build(CART_COOKIE_NAME, value)
@@ -364,11 +382,11 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-fn compute_signature(payload_hex: &str) -> String {
-    let mut mac = HmacSha256::new_from_slice(COOKIE_SECRET).expect("HMAC accepts any key length");
+fn compute_signature(payload_hex: &str) -> Vec<u8> {
+    let mut mac =
+        HmacSha256::new_from_slice(cookie_secret()).expect("HMAC accepts any key length");
     mac.update(payload_hex.as_bytes());
-    let result = mac.finalize().into_bytes();
-    encode_hex(&result)
+    mac.finalize().into_bytes().to_vec()
 }
 
 fn verify_signature(payload_hex: &str, sig_hex: &str) -> bool {
@@ -376,8 +394,8 @@ fn verify_signature(payload_hex: &str, sig_hex: &str) -> bool {
         Some(bytes) => bytes,
         None => return false,
     };
-
-    let mut mac = HmacSha256::new_from_slice(COOKIE_SECRET).expect("HMAC accepts any key length");
+    let mut mac =
+        HmacSha256::new_from_slice(cookie_secret()).expect("HMAC accepts any key length");
     mac.update(payload_hex.as_bytes());
     mac.verify_slice(&sig_bytes).is_ok()
 }
@@ -443,16 +461,18 @@ mod tests {
     #[test]
     fn cookie_signature_round_trips() {
         let payload_hex = encode_hex(b"test payload");
-        let sig = compute_signature(&payload_hex);
-        assert!(verify_signature(&payload_hex, &sig));
+        let sig_bytes = compute_signature(&payload_hex);
+        let sig_hex = encode_hex(&sig_bytes);
+        assert!(verify_signature(&payload_hex, &sig_hex));
     }
 
     #[test]
     fn cookie_signature_rejects_tampered_payload() {
         let payload_hex = encode_hex(b"original");
-        let sig = compute_signature(&payload_hex);
+        let sig_bytes = compute_signature(&payload_hex);
+        let sig_hex = encode_hex(&sig_bytes);
         let tampered_hex = encode_hex(b"tampered");
-        assert!(!verify_signature(&tampered_hex, &sig));
+        assert!(!verify_signature(&tampered_hex, &sig_hex));
     }
 
     #[test]

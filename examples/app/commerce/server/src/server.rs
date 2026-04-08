@@ -61,11 +61,12 @@ async fn handle_frontend_request(
         return Ok(partial_response(&context, data.get_ref(), &page_state));
     }
 
+    let nonce = security::generate_nonce();
     let html = data
         .frontend()
-        .render_html(context.route_path(), &page_state)
+        .render_html(context.route_path(), &page_state, &nonce)
         .map_err(ServerError::RenderFailed)?;
-    Ok(html_response(&context, html))
+    Ok(html_response(&context, html, &nonce))
 }
 
 async fn add_to_cart(
@@ -77,7 +78,7 @@ async fn add_to_cart(
     if !security::passes_csrf_check(&req) {
         return Err(ServerError::CsrfRejected);
     }
-    if !data.rate_limiter().check(req.peer_addr().map(|a| a.ip())) {
+    if !data.rate_limiter().check(security::client_ip(&req)) {
         return Err(ServerError::RateLimited);
     }
     let wants_json = context.wants_json();
@@ -117,7 +118,7 @@ async fn update_cart(
     if !security::passes_csrf_check(&req) {
         return Err(ServerError::CsrfRejected);
     }
-    if !data.rate_limiter().check(req.peer_addr().map(|a| a.ip())) {
+    if !data.rate_limiter().check(security::client_ip(&req)) {
         return Err(ServerError::RateLimited);
     }
     let wants_json = context.wants_json();
@@ -174,11 +175,12 @@ fn partial_response(
     builder.json(payload)
 }
 
-fn html_response(context: &RequestContext, html: String) -> HttpResponse {
+fn html_response(context: &RequestContext, html: String, nonce: &str) -> HttpResponse {
     let mut builder = HttpResponse::Ok();
     builder.content_type("text/html; charset=utf-8");
     builder.insert_header(("Cache-Control", "private, no-store"));
     builder.insert_header(("Vary", "Accept, Cookie"));
+    builder.insert_header(("Content-Security-Policy", security::csp_header(nonce)));
     if context.cart_read().should_reset {
         builder.cookie(clear_cookie());
     }

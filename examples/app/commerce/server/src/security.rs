@@ -2,9 +2,11 @@
 // Licensed under the MIT license.
 
 use actix_web::middleware::DefaultHeaders;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Returns a [`DefaultHeaders`] middleware that sets standard security headers
-/// on every response.
+/// on every response.  The `Content-Security-Policy` header is **not** included
+/// here because it contains a per-request nonce — use [`csp_header`] instead.
 pub(crate) fn security_headers() -> DefaultHeaders {
     DefaultHeaders::new()
         .add(("X-Content-Type-Options", "nosniff"))
@@ -14,14 +16,56 @@ pub(crate) fn security_headers() -> DefaultHeaders {
             "Permissions-Policy",
             "camera=(), microphone=(), geolocation=()",
         ))
-        .add((
-            "Content-Security-Policy",
-            "default-src 'self'; \
-             style-src 'self' 'unsafe-inline'; \
-             img-src 'self' https://cdn.shopify.com; \
-             font-src 'self'; \
-             frame-ancestors 'none'",
-        ))
+}
+
+/// Generate a unique CSP nonce for a single request.
+///
+/// Uses a monotonic counter mixed with the process ID to produce a
+/// hex-encoded value that is unique per request within this process.
+/// This avoids pulling in a full CSPRNG crate for a demo server.
+pub(crate) fn generate_nonce() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    format!("{pid:08x}{count:016x}")
+}
+
+/// Build a CSP header value that allows inline scripts matching `nonce`.
+#[must_use]
+pub(crate) fn csp_header(nonce: &str) -> String {
+    format!(
+        "default-src 'self'; \
+         script-src 'self' 'nonce-{nonce}'; \
+         style-src 'self' 'unsafe-inline'; \
+         img-src 'self' https://cdn.shopify.com; \
+         font-src 'self'; \
+         frame-ancestors 'none'"
+    )
+}
+
+/// Extract the client IP address for rate-limiting purposes.
+///
+/// When deployed behind a reverse proxy (Docker, CDN), `peer_addr()` returns
+/// the proxy's IP.  This helper checks `X-Forwarded-For` first and falls back
+/// to the TCP peer address.
+///
+/// **Trust model:** Only the *first* entry in `X-Forwarded-For` is used, which
+/// is the client-facing IP set by the outermost trusted proxy.  If the server
+/// is directly internet-facing without a proxy, clients can spoof this header
+/// — but the worst outcome is per-IP rate-limit evasion, which is acceptable
+/// for a demo.
+pub(crate) fn client_ip(req: &actix_web::HttpRequest) -> Option<std::net::IpAddr> {
+    if let Some(forwarded) = req
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+    {
+        let first = forwarded.split(',').next().unwrap_or(forwarded).trim();
+        if let Ok(ip) = first.parse::<std::net::IpAddr>() {
+            return Some(ip);
+        }
+    }
+    req.peer_addr().map(|a| a.ip())
 }
 
 /// Checks the `Origin` (or `Referer`) header on a request to verify it
@@ -83,7 +127,10 @@ fn referer_matches_host(referer: &str, host: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{origin_matches_host, passes_csrf_check, referer_matches_host};
+    use super::{
+        client_ip, csp_header, generate_nonce, origin_matches_host, passes_csrf_check,
+        referer_matches_host,
+    };
     use actix_web::test::TestRequest;
 
     #[test]
@@ -182,5 +229,45 @@ mod tests {
     fn csrf_allows_when_no_headers_at_all() {
         let req = TestRequest::post().uri("/cart/add").to_http_request();
         assert!(passes_csrf_check(&req));
+    }
+
+    #[test]
+    fn nonce_values_are_unique() {
+        let a = generate_nonce();
+        let b = generate_nonce();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn csp_header_includes_nonce() {
+        let nonce = "abc123";
+        let csp = csp_header(nonce);
+        assert!(csp.contains("'nonce-abc123'"));
+        assert!(
+            !csp.contains("script-src 'self' 'unsafe-inline'"),
+            "script-src must use nonce, not unsafe-inline"
+        );
+    }
+
+    #[test]
+    fn client_ip_returns_none_without_peer_or_header() {
+        let req = TestRequest::get().uri("/").to_http_request();
+        // TestRequest has no peer_addr and no X-Forwarded-For
+        assert!(client_ip(&req).is_none());
+    }
+
+    #[test]
+    fn client_ip_parses_x_forwarded_for() {
+        let req = TestRequest::get()
+            .uri("/")
+            .insert_header(("x-forwarded-for", "203.0.113.50, 70.41.3.18"))
+            .to_http_request();
+        let ip = client_ip(&req);
+        assert_eq!(
+            ip,
+            Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                203, 0, 113, 50
+            )))
+        );
     }
 }
