@@ -30,26 +30,28 @@ pub(crate) fn security_headers() -> DefaultHeaders {
 ///
 /// Policy (per OWASP double-submit recommendations):
 /// - If `Origin` is present it **must** match the `Host` header.
+///   If `Host` is missing, reject because validation is impossible.
 /// - If `Origin` is absent, fall back to `Referer` and compare its host.
-/// - If neither header is present, allow the request.  Same-origin form
-///   submissions may omit both in some browsers/proxies and test harnesses.
+///   If `Host` is missing, reject for the same reason.
+/// - If neither `Origin` nor `Referer` is present, allow the request.
+///   Same-origin form submissions may omit both in some browsers/proxies
+///   and test harnesses.
 pub(crate) fn passes_csrf_check(req: &actix_web::HttpRequest) -> bool {
-    let host = match req.headers().get("host").and_then(|v| v.to_str().ok()) {
-        Some(h) => h,
-        // No Host header → cannot validate, allow
-        None => return true,
-    };
+    let host = req.headers().get("host").and_then(|v| v.to_str().ok());
+    let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
+    let referer = req.headers().get("referer").and_then(|v| v.to_str().ok());
 
-    if let Some(origin) = req.headers().get("origin").and_then(|v| v.to_str().ok()) {
-        // Origin present → must match
-        return origin_matches_host(origin, host);
+    if let Some(origin) = origin {
+        // Origin present → must match, and Host must be present to validate.
+        return host.is_some_and(|host| origin_matches_host(origin, host));
     }
 
-    if let Some(referer) = req.headers().get("referer").and_then(|v| v.to_str().ok()) {
-        return referer_matches_host(referer, host);
+    if let Some(referer) = referer {
+        // Referer present → must match, and Host must be present to validate.
+        return host.is_some_and(|host| referer_matches_host(referer, host));
     }
 
-    // Neither Origin nor Referer → same-origin or non-browser client
+    // Neither Origin nor Referer → same-origin or non-browser client.
     true
 }
 
@@ -149,6 +151,30 @@ mod tests {
             .insert_header(("host", "localhost:3004"))
             .insert_header(("referer", "http://localhost:3004/product/acme-t-shirt"))
             .to_http_request();
+        assert!(passes_csrf_check(&req));
+    }
+
+    #[test]
+    fn csrf_rejects_origin_when_host_missing() {
+        let req = TestRequest::post()
+            .uri("/cart/add")
+            .insert_header(("origin", "https://evil.com"))
+            .to_http_request();
+        assert!(!passes_csrf_check(&req));
+    }
+
+    #[test]
+    fn csrf_rejects_referer_when_host_missing() {
+        let req = TestRequest::post()
+            .uri("/cart/add")
+            .insert_header(("referer", "https://evil.com/attack"))
+            .to_http_request();
+        assert!(!passes_csrf_check(&req));
+    }
+
+    #[test]
+    fn csrf_allows_when_no_headers_at_all() {
+        let req = TestRequest::post().uri("/cart/add").to_http_request();
         assert!(passes_csrf_check(&req));
     }
 }

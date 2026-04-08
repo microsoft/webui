@@ -373,11 +373,15 @@ fn compute_signature(payload_hex: &str) -> String {
 }
 
 fn verify_signature(payload_hex: &str, sig_hex: &str) -> bool {
-    let expected = compute_signature(payload_hex);
-    // Constant-time comparison via the hmac crate isn't possible here since
-    // we're comparing hex strings, but the HMAC itself is the security
-    // primitive — timing on the hex comparison leaks nothing exploitable.
-    expected == sig_hex
+    let sig_bytes = match decode_hex(sig_hex) {
+        Some(bytes) => bytes,
+        None => return false,
+    };
+
+    let mut mac =
+        HmacSha256::new_from_slice(COOKIE_SECRET).expect("HMAC accepts any key length");
+    mac.update(payload_hex.as_bytes());
+    mac.verify_slice(&sig_bytes).is_ok()
 }
 
 fn hex_nibble(byte: u8) -> Option<u8> {

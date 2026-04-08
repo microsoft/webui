@@ -218,10 +218,11 @@ fn cart_response(
         builder.cookie(clear_cookie());
     }
 
+    builder.insert_header(("Cache-Control", "private, no-store"));
+    builder.insert_header(("Vary", "Accept, Cookie"));
+
     if wants_json {
         builder.content_type("application/json");
-        builder.insert_header(("Cache-Control", "private, no-store"));
-        builder.insert_header(("Vary", "Accept, Cookie"));
         builder.json(payload)
     } else {
         builder.finish()
