@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Nested Repeat SSR Hydration Fixture</title>
+</head>
+<body>
+  <test-nested-repeat><div class="controls"><button class="load">Load</button></div><div class="groups"><!--wr--><!--wi--><section class="group"><h2>Color</h2><div class="values"><!--wr--><!--wi--><button class="value" data-group="Color" data-value="Black">Black</button><!--wi--><button class="value" data-group="Color" data-value="Blue" disabled>Blue</button><!--/wr--></div></section><!--wi--><section class="group"><h2>Size</h2><div class="values"><!--wr--><!--wi--><button class="value" data-group="Size" data-value="S">S</button><!--wi--><button class="value" data-group="Size" data-value="M">M</button><!--/wr--></div></section><!--/wr--></div></test-nested-repeat>
+  <script>
+    window.__webui_state = {
+      groups: [
+        { name: 'Color', values: [{ value: 'Black', disabled: false }, { value: 'Blue', disabled: true }] },
+        { name: 'Size', values: [{ value: 'S', disabled: false }, { value: 'M', disabled: false }] }
+      ]
+    };
+  </script>
+  <script src="/dist/nested-repeat/element.js"></script>
+</body>
+</html>

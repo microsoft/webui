@@ -89,3 +89,74 @@ test.describe(`nested repeat fixture [${mode} DOM]`, () => {
   });
 });
 }
+
+// ── SSR hydration regression (#175 / #176) ──────────────────────
+// Exercises $resolveSSR and $resolve with pathStart > 0 on paths
+// deeper than the block root (e.g. [0, 1]).  Before the fix, the
+// template cursor was not advanced through skipped path segments,
+// so inner repeats failed to find their parent element and markers.
+
+for (const mode of ['light', 'shadow'] as const) {
+test.describe(`nested repeat SSR hydration [${mode} DOM]`, () => {
+  test.beforeEach(async ({ page }) => {
+    const file = mode === 'light' ? 'fixture-ssr.html' : 'fixture-ssr-shadow.html';
+    await page.goto(`/nested-repeat/${file}`);
+    await page.waitForSelector('test-nested-repeat');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-nested-repeat');
+      return el && (el as any).$ready === true;
+    });
+  });
+
+  test('inner repeat items are hydrated without duplication', async ({ page }) => {
+    // SSR HTML contains 4 buttons; after hydration they must remain exactly 4.
+    await expect(page.locator('test-nested-repeat .value')).toHaveCount(4);
+    await expect(page.locator('test-nested-repeat .value')).toHaveText([
+      'Black', 'Blue', 'S', 'M',
+    ]);
+  });
+
+  test('inner repeat items preserve attributes from SSR', async ({ page }) => {
+    const groups = await page.locator('test-nested-repeat .value').evaluateAll(
+      (els) => els.map((el) => el.getAttribute('data-group')),
+    );
+    expect(groups).toEqual(['Color', 'Color', 'Size', 'Size']);
+
+    // The disabled attribute on "Blue" must survive hydration
+    await expect(page.locator('test-nested-repeat .value').nth(1)).toBeDisabled();
+    await expect(page.locator('test-nested-repeat .value').nth(0)).toBeEnabled();
+  });
+
+  test('reactive update after SSR hydration does not duplicate inner items', async ({ page }) => {
+    await expect(page.locator('test-nested-repeat .value')).toHaveCount(4);
+
+    // Trigger a reactive update with new object references
+    await page.evaluate(() => {
+      (document.querySelector('test-nested-repeat') as any).updateGroups();
+    });
+
+    // Must still be exactly 4 — no SSR ghosts left behind
+    await expect(page.locator('test-nested-repeat .value')).toHaveCount(4);
+    await expect(page.locator('test-nested-repeat .value')).toHaveText([
+      'Black', 'Blue', 'S', 'M',
+    ]);
+  });
+
+  test('growing inner list after SSR hydration works correctly', async ({ page }) => {
+    await expect(page.locator('test-nested-repeat .value')).toHaveCount(4);
+
+    await page.evaluate(() => {
+      (document.querySelector('test-nested-repeat') as any).growFirstGroup();
+    });
+
+    await expect(page.locator('test-nested-repeat .value')).toHaveCount(5);
+    await expect(page.locator('test-nested-repeat .value')).toHaveText([
+      'Black', 'Blue', 'Red', 'S', 'M',
+    ]);
+  });
+
+  test('outer scope text bindings hydrate correctly', async ({ page }) => {
+    await expect(page.locator('test-nested-repeat h2')).toHaveText(['Color', 'Size']);
+  });
+});
+}

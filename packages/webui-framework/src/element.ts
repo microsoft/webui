@@ -361,6 +361,13 @@ export class WebUIElement extends HTMLElement {
 
   private $resolve(root: Node, path: TemplateNodePath, pathStart = 0): Node | null {
     let cur: Node = root;
+    // When pathStart > 0, advance through the skipped segments so `cur`
+    // aligns with the already-positioned SSR root.
+    for (let i = 0; i < pathStart; i++) {
+      const child = cur.childNodes[path[i]];
+      if (!child) return null;
+      cur = child;
+    }
     for (let i = pathStart; i < path.length; i++) {
       const child = cur.childNodes[path[i]];
       if (!child) return null;
@@ -378,6 +385,15 @@ export class WebUIElement extends HTMLElement {
   private $resolveSSR(ssrRoot: Node, tplRoot: Node, path: TemplateNodePath, pathStart = 0): Node | null {
     let ssr: Node = ssrRoot;
     let tpl: Node = tplRoot;
+
+    // When pathStart > 0, ssr has already descended to the block root
+    // but tpl still points at the wrapper from getTemplateDom().
+    // Advance tpl through the skipped path segments to align them.
+    for (let i = 0; i < pathStart; i++) {
+      const tplChild = tpl.childNodes[path[i]];
+      if (!tplChild) return null;
+      tpl = tplChild;
+    }
 
     for (let i = pathStart; i < path.length; i++) {
       const idx = path[i];

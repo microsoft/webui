@@ -494,6 +494,56 @@ test.describe('product navigation', () => {
   });
 });
 
+// ── Regression: variant selector after SSR refresh (#175) ────────
+
+test.describe('variant selector SSR hydration', () => {
+  test('clicking variant updates active state after page refresh', async ({ page }) => {
+    // SSR load — variant selector is hydrated from server-rendered HTML
+    await page.goto('/product/acme-geometric-circles-t-shirt');
+    await expect(page.getByRole('button', { name: 'Black' })).toBeVisible();
+
+    // Click "Blue" — should get active attribute
+    await page.getByRole('button', { name: 'Blue' }).click();
+
+    // Verify "Blue" is now active and "Black" is not
+    await expect(page.getByRole('button', { name: 'Blue' })).toHaveAttribute('active', '');
+    await expect(page.getByRole('button', { name: 'Black' })).not.toHaveAttribute('active', '');
+  });
+
+  test('clicking size variant updates active state after page refresh', async ({ page }) => {
+    await page.goto('/product/acme-t-shirt');
+    await expect(page.getByRole('button', { name: 'M', exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: 'M', exact: true }).click();
+
+    await expect(page.getByRole('button', { name: 'M', exact: true })).toHaveAttribute('active', '');
+    await expect(page.getByRole('button', { name: 'XS' })).not.toHaveAttribute('active', '');
+  });
+});
+
+// ── Regression: add-to-cart duplicate for items (#176) ───────────
+
+test.describe('cart item deduplication', () => {
+  test('SSR-hydrated cart does not duplicate for-loop items', async ({ page }) => {
+    // Step 1: add an item to cart (sets the cart cookie)
+    await page.goto('/product/acme-geometric-circles-t-shirt');
+    await page.getByRole('button', { name: 'Add To Cart' }).click();
+    const cartPanel = page.locator('mp-cart-panel');
+    await expect(cartPanel.getByText('My Cart')).toBeVisible();
+    await expect(cartPanel.locator('.cart-line')).toHaveCount(1);
+
+    // Step 2: reload the page — server now renders cart items in SSR HTML
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Acme Circles T-Shirt', level: 1 })).toBeVisible();
+
+    // Step 3: open the cart and verify no duplicates after hydration
+    await page.locator('mp-navbar .cart-btn').click();
+    await expect(cartPanel.getByText('My Cart')).toBeVisible();
+    await expect(cartPanel.locator('.cart-line')).toHaveCount(1);
+    await expect(cartPanel.locator('.cart-line').getByRole('link', { name: 'Acme Circles T-Shirt' })).toBeVisible();
+  });
+});
+
 // ── Screenshot tests ─────────────────────────────────────────────
 
 test.describe('visual regression', () => {
