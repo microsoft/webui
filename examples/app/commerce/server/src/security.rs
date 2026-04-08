@@ -88,8 +88,14 @@ mod tests {
 
     #[test]
     fn origin_matches_with_scheme() {
-        assert!(origin_matches_host("https://localhost:3004", "localhost:3004"));
-        assert!(origin_matches_host("http://localhost:3004", "localhost:3004"));
+        assert!(origin_matches_host(
+            "https://localhost:3004",
+            "localhost:3004"
+        ));
+        assert!(origin_matches_host(
+            "http://localhost:3004",
+            "localhost:3004"
+        ));
         assert!(!origin_matches_host("https://evil.com", "localhost:3004"));
     }
 

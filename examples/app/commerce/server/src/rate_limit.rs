@@ -55,7 +55,9 @@ impl RateLimiter {
 
         // Prune expired entries every 60 seconds to prevent unbounded growth.
         if now.duration_since(state.last_prune).as_secs() > 60 {
-            state.buckets.retain(|_, bucket| now.duration_since(bucket.window_start) < window);
+            state
+                .buckets
+                .retain(|_, bucket| now.duration_since(bucket.window_start) < window);
             state.last_prune = now;
         }
 
