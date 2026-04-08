@@ -328,16 +328,20 @@ pub fn run(version: Option<&str>) -> ExitCode {
         }
     };
 
+    let mut total_updated: usize = 0;
+
     if let Err(e) = update_cargo_workspace_version(&root, version) {
         eprintln!("  {} {e}", console::style("✘").red().bold());
         return ExitCode::FAILURE;
     }
     eprintln!("  {} Cargo.toml (workspace)", console::style("✔").green());
+    total_updated += 1;
 
     // 2. Update root package.json
     match update_package_json(&root.join("package.json"), version) {
         Ok(true) => {
             eprintln!("  {} package.json (root)", console::style("✔").green());
+            total_updated += 1;
         }
         Ok(false) => {}
         Err(e) => {
@@ -358,21 +362,18 @@ pub fn run(version: Option<&str>) -> ExitCode {
         );
     }
 
-    let dotnet_count: usize = if root.join("dotnet").join("Directory.Build.props").exists() {
-        1
-    } else {
-        0
-    };
+    if root.join("dotnet").join("Directory.Build.props").exists() {
+        total_updated += 1;
+    }
 
     // 4. Update inter-crate dependency versions in crates/*/Cargo.toml
     let crate_tomls = find_crate_cargo_tomls(&root);
-    let mut crate_count = 0;
     for toml_path in &crate_tomls {
         match update_crate_dep_versions(toml_path, version) {
             Ok(true) => {
                 let relative = toml_path.strip_prefix(&root).unwrap_or(toml_path).display();
                 eprintln!("  {} {relative}", console::style("✔").green());
-                crate_count += 1;
+                total_updated += 1;
             }
             Ok(false) => {}
             Err(e) => {
@@ -384,13 +385,12 @@ pub fn run(version: Option<&str>) -> ExitCode {
 
     // 5. Update all package.json files under packages/
     let package_jsons = find_package_jsons(&root);
-    let mut count = 0;
     for pkg_path in &package_jsons {
         match update_package_json(pkg_path, version) {
             Ok(true) => {
                 let relative = pkg_path.strip_prefix(&root).unwrap_or(pkg_path).display();
                 eprintln!("  {} {relative}", console::style("✔").green());
-                count += 1;
+                total_updated += 1;
             }
             Ok(false) => {}
             Err(e) => {
@@ -402,7 +402,6 @@ pub fn run(version: Option<&str>) -> ExitCode {
 
     // 6. Update commerce example (server/Cargo.toml + package.json)
     let commerce_root = root.join("examples/app/commerce");
-    let mut commerce_count = 0;
     let commerce_cargo = commerce_root.join("server/Cargo.toml");
     match update_toml_section_version(&commerce_cargo, "[package]", version) {
         Ok(true) => {
@@ -411,7 +410,7 @@ pub fn run(version: Option<&str>) -> ExitCode {
                 .unwrap_or(&commerce_cargo)
                 .display();
             eprintln!("  {} {relative}", console::style("✔").green());
-            commerce_count += 1;
+            total_updated += 1;
         }
         Ok(false) => {}
         Err(e) => {
@@ -424,7 +423,7 @@ pub fn run(version: Option<&str>) -> ExitCode {
             let relative = commerce_root.join("package.json");
             let relative = relative.strip_prefix(&root).unwrap_or(&relative).display();
             eprintln!("  {} {relative}", console::style("✔").green());
-            commerce_count += 1;
+            total_updated += 1;
         }
         Ok(false) => {}
         Err(e) => {
@@ -436,12 +435,8 @@ pub fn run(version: Option<&str>) -> ExitCode {
     eprintln!(
         "\n  {} Updated {} file{}\n",
         console::style("✨").green(),
-        console::style(2 + dotnet_count + crate_count + count + commerce_count).bold(),
-        if (1 + dotnet_count + crate_count + count + commerce_count) == 0 {
-            ""
-        } else {
-            "s"
-        }
+        console::style(total_updated).bold(),
+        if total_updated == 1 { "" } else { "s" }
     );
 
     ExitCode::SUCCESS
