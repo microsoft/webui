@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 use actix_web::http::header::LOCATION;
-use actix_web::{web, HttpResponse};
+use actix_web::{web, HttpRequest, HttpResponse};
 use serde_json::Value;
 
 use crate::app::AppState;
@@ -10,6 +10,7 @@ use crate::cart::{self, build_cart_state, clear_cookie, cookie_for_cart};
 use crate::catalog::Catalog;
 use crate::error::ServerError;
 use crate::extractors::{CartMutationInput, CartMutationPayload, RequestContext};
+use crate::security;
 use crate::state;
 
 struct CartResponseOptions<'a> {
@@ -68,10 +69,17 @@ async fn handle_frontend_request(
 }
 
 async fn add_to_cart(
+    req: HttpRequest,
     context: RequestContext,
     payload: CartMutationPayload,
     data: web::Data<AppState>,
 ) -> Result<HttpResponse, ServerError> {
+    if !security::passes_csrf_check(&req) {
+        return Err(ServerError::CsrfRejected);
+    }
+    if !data.rate_limiter().check(req.peer_addr().map(|a| a.ip())) {
+        return Err(ServerError::RateLimited);
+    }
     let wants_json = context.wants_json();
     let mut cart_read = context.into_cart_read();
     let input = cart_mutation_input(payload);
@@ -101,10 +109,17 @@ async fn add_to_cart(
 }
 
 async fn update_cart(
+    req: HttpRequest,
     context: RequestContext,
     payload: CartMutationPayload,
     data: web::Data<AppState>,
 ) -> Result<HttpResponse, ServerError> {
+    if !security::passes_csrf_check(&req) {
+        return Err(ServerError::CsrfRejected);
+    }
+    if !data.rate_limiter().check(req.peer_addr().map(|a| a.ip())) {
+        return Err(ServerError::RateLimited);
+    }
     let wants_json = context.wants_json();
     let mut cart_read = context.into_cart_read();
     let input = cart_mutation_input(payload);
@@ -151,6 +166,8 @@ fn partial_response(
 
     let mut builder = HttpResponse::Ok();
     builder.content_type("application/json");
+    builder.insert_header(("Cache-Control", "private, no-store"));
+    builder.insert_header(("Vary", "Accept, Cookie"));
     if context.cart_read().should_reset {
         builder.cookie(clear_cookie());
     }
@@ -160,6 +177,8 @@ fn partial_response(
 fn html_response(context: &RequestContext, html: String) -> HttpResponse {
     let mut builder = HttpResponse::Ok();
     builder.content_type("text/html; charset=utf-8");
+    builder.insert_header(("Cache-Control", "private, no-store"));
+    builder.insert_header(("Vary", "Accept, Cookie"));
     if context.cart_read().should_reset {
         builder.cookie(clear_cookie());
     }
@@ -201,6 +220,8 @@ fn cart_response(
 
     if wants_json {
         builder.content_type("application/json");
+        builder.insert_header(("Cache-Control", "private, no-store"));
+        builder.insert_header(("Vary", "Accept, Cookie"));
         builder.json(payload)
     } else {
         builder.finish()

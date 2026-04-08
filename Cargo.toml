@@ -5,6 +5,7 @@ members = [
     "examples/integration/rust",
     "examples/integration/ssr-performance-showdown",
     "examples/app/commerce/server",
+    "examples/benchmarks/teams/server",
 ]
 resolver = "2"
 
@@ -35,6 +36,8 @@ wasm-bindgen = "=0.2.100"
 serde-wasm-bindgen = "0.6"
 actix-web = "4.11.0"
 awc = "3"
+hmac = "0.12"
+sha2 = "0.10"
 expand-tilde = "0.6.1"
 mime_guess = "2.0.5"
 html-escape = "0.2.13"

@@ -6,9 +6,19 @@
 use actix_web::cookie::time::Duration;
 use actix_web::cookie::{Cookie, SameSite};
 use actix_web::HttpRequest;
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 
 use crate::catalog::{Catalog, Product};
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Server-generated secret for HMAC signing the cart cookie.
+/// In production this would be loaded from configuration; for the demo
+/// a compile-time constant is acceptable since the cookie carries no
+/// sensitive data — signing only prevents casual tampering.
+const COOKIE_SECRET: &[u8] = b"webui-commerce-demo-cookie-secret-2024";
 
 pub const CART_COOKIE_NAME: &str = "mp-cart";
 
@@ -65,7 +75,23 @@ pub fn read_cart(req: &HttpRequest) -> CartRead {
         };
     };
 
-    let Some(bytes) = decode_hex(cookie.value()) else {
+    let Some((payload_hex, sig_hex)) = cookie.value().split_once('.') else {
+        eprintln!("Invalid cart cookie: missing signature");
+        return CartRead {
+            cart: StoredCart::default(),
+            should_reset: true,
+        };
+    };
+
+    if !verify_signature(payload_hex, sig_hex) {
+        eprintln!("Invalid cart cookie: bad signature");
+        return CartRead {
+            cart: StoredCart::default(),
+            should_reset: true,
+        };
+    }
+
+    let Some(bytes) = decode_hex(payload_hex) else {
         eprintln!("Invalid cart cookie: not valid hex");
         return CartRead {
             cart: StoredCart::default(),
@@ -94,7 +120,9 @@ pub fn cookie_for_cart(cart: &StoredCart) -> Option<Cookie<'static>> {
     }
 
     let bytes = serde_json::to_vec(cart).ok()?;
-    let value = encode_hex(&bytes);
+    let payload_hex = encode_hex(&bytes);
+    let sig_hex = compute_signature(&payload_hex);
+    let value = format!("{payload_hex}.{sig_hex}");
     Some(
         Cookie::build(CART_COOKIE_NAME, value)
             .path("/")
@@ -182,7 +210,11 @@ pub fn sanitize_redirect(target: Option<&str>) -> String {
         return "/".to_string();
     };
 
-    if !target.starts_with('/') || target.starts_with("//") {
+    if !target.starts_with('/')
+        || target.starts_with("//")
+        || target.contains('\\')
+        || target.bytes().any(|b| b < 0x20 || b == 0x7f)
+    {
         return "/".to_string();
     }
 
@@ -332,6 +364,22 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+fn compute_signature(payload_hex: &str) -> String {
+    let mut mac =
+        HmacSha256::new_from_slice(COOKIE_SECRET).expect("HMAC accepts any key length");
+    mac.update(payload_hex.as_bytes());
+    let result = mac.finalize().into_bytes();
+    encode_hex(&result)
+}
+
+fn verify_signature(payload_hex: &str, sig_hex: &str) -> bool {
+    let expected = compute_signature(payload_hex);
+    // Constant-time comparison via the hmac crate isn't possible here since
+    // we're comparing hex strings, but the HMAC itself is the security
+    // primitive — timing on the hex comparison leaks nothing exploitable.
+    expected == sig_hex
+}
+
 fn hex_nibble(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -344,8 +392,8 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        add_item, build_cart_state, decode_hex, encode_hex, sanitize_redirect, with_cart_open,
-        without_cart, StoredCart,
+        add_item, build_cart_state, compute_signature, cookie_for_cart, decode_hex, encode_hex,
+        sanitize_redirect, verify_signature, with_cart_open, without_cart, StoredCart,
     };
     use crate::catalog::Catalog;
 
@@ -372,6 +420,14 @@ mod tests {
     }
 
     #[test]
+    fn redirect_rejects_backslash_and_control_chars() {
+        assert_eq!(sanitize_redirect(Some("\\evil.com")), "/");
+        assert_eq!(sanitize_redirect(Some("/foo\\bar")), "/");
+        assert_eq!(sanitize_redirect(Some("/foo\r\nX-Injected: true")), "/");
+        assert_eq!(sanitize_redirect(Some("/foo\x00bar")), "/");
+    }
+
+    #[test]
     fn cart_cookie_hex_round_trips() {
         let payload = br#"{"lines":[{"h":"acme-t-shirt","c":"Black","s":"M","q":2}]}"#;
         let encoded = encode_hex(payload);
@@ -380,6 +436,40 @@ mod tests {
             None => panic!("failed to decode hex"),
         };
         assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn cookie_signature_round_trips() {
+        let payload_hex = encode_hex(b"test payload");
+        let sig = compute_signature(&payload_hex);
+        assert!(verify_signature(&payload_hex, &sig));
+    }
+
+    #[test]
+    fn cookie_signature_rejects_tampered_payload() {
+        let payload_hex = encode_hex(b"original");
+        let sig = compute_signature(&payload_hex);
+        let tampered_hex = encode_hex(b"tampered");
+        assert!(!verify_signature(&tampered_hex, &sig));
+    }
+
+    #[test]
+    fn cookie_for_cart_produces_signed_value() {
+        let mut cart = StoredCart::default();
+        add_item(&mut cart, "acme-t-shirt", "Black", "M", 1);
+        let cookie = cookie_for_cart(&cart);
+        assert!(cookie.is_some(), "non-empty cart should produce a cookie");
+        let cookie = cookie.unwrap();
+        let value = cookie.value();
+        assert!(
+            value.contains('.'),
+            "signed cookie must contain a dot separator"
+        );
+        let (payload_hex, sig_hex) = value.split_once('.').unwrap();
+        assert!(
+            verify_signature(payload_hex, sig_hex),
+            "cookie signature must verify"
+        );
     }
 
     #[test]

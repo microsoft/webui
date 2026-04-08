@@ -98,6 +98,7 @@ impl FrontendRuntime {
             return Some(
                 HttpResponse::Ok()
                     .content_type("text/css; charset=utf-8")
+                    .insert_header(("Cache-Control", "public, max-age=86400"))
                     .body(css.clone()),
             );
         }
@@ -105,6 +106,7 @@ impl FrontendRuntime {
         self.asset_files.get(relative).map(|asset| {
             HttpResponse::Ok()
                 .content_type(asset.content_type.as_str())
+                .insert_header(("Cache-Control", "public, max-age=86400"))
                 .body(asset.body.clone())
         })
     }

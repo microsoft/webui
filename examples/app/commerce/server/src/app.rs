@@ -6,17 +6,25 @@ use std::path::Path;
 
 use crate::catalog::Catalog;
 use crate::frontend::FrontendRuntime;
+use crate::rate_limit::RateLimiter;
 
 pub(crate) struct AppState {
     catalog: Catalog,
     frontend: FrontendRuntime,
+    rate_limiter: RateLimiter,
 }
 
 impl AppState {
     pub(crate) fn load(app_root: &Path, css: webui::CssStrategy) -> Result<Self> {
         let frontend = FrontendRuntime::load(app_root, css)?;
         let catalog = Catalog::generate();
-        Ok(Self { catalog, frontend })
+        // 60 mutation requests per IP per minute
+        let rate_limiter = RateLimiter::new(60, 60);
+        Ok(Self {
+            catalog,
+            frontend,
+            rate_limiter,
+        })
     }
 
     #[must_use]
@@ -32,6 +40,11 @@ impl AppState {
     #[must_use]
     pub(crate) fn product_count(&self) -> usize {
         self.catalog.product_count()
+    }
+
+    #[must_use]
+    pub(crate) fn rate_limiter(&self) -> &RateLimiter {
+        &self.rate_limiter
     }
 }
 
