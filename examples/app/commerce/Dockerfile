@@ -6,6 +6,7 @@ ARG CARGO_CHEF_VERSION=0.1.75
 
 # ── Stage 1: Dependency planner ─────────────────────────────────────
 FROM rust:1.93-bookworm AS chef
+ARG CARGO_CHEF_VERSION
 RUN cargo install cargo-chef@${CARGO_CHEF_VERSION} --locked
 WORKDIR /build
 
