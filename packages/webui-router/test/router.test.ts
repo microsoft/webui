@@ -383,6 +383,20 @@ describe('WebUIRouter', () => {
         'an abort gate should guard ensureComponentLoaded inside the preload loop',
       );
     });
+
+    test('handleNavigation clears SSR-only preload links before partial fetches', () => {
+      const router = new WebUIRouter();
+      const source = (router as any).handleNavigation.toString() as string;
+      const clearIdx = source.indexOf('this.clearSsrPreloads()');
+      const fetchIdx = source.indexOf('fetchPartial');
+
+      assert.ok(clearIdx > -1, 'handleNavigation should clear SSR preload links on SPA navigations');
+      assert.ok(fetchIdx > -1, 'handleNavigation should fetch partial data');
+      assert.ok(
+        clearIdx < fetchIdx,
+        'SSR preload links should be cleared before fetching the next partial route',
+      );
+    });
   });
 
   describe('view transition timing', () => {

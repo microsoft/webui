@@ -66,16 +66,16 @@ async fn handle_frontend_request(
         return Ok(partial_response(&context, data.get_ref(), &page_state));
     }
 
-    let css_preloads = data.frontend().css_preload_hrefs(context.route_path());
-    let css_refs: Vec<&str> = css_preloads.iter().map(|s| s.as_str()).collect();
-    let img_refs: Vec<&str> = image_preloads.iter().map(|s| s.as_str()).collect();
     let nonce = security::generate_nonce();
     let html = data
         .frontend()
         .render_html(context.route_path(), &page_state, &nonce)
         .map_err(ServerError::RenderFailed)?;
-    let link_header = build_link_header(&css_refs, &img_refs);
-    Ok(html_response(&context, html, &nonce, &link_header))
+    Ok(html_response(
+        &context,
+        inject_head_preload_tags(html, &image_preloads),
+        &nonce,
+    ))
 }
 
 async fn add_to_cart(
@@ -184,58 +184,79 @@ fn partial_response(
     builder.json(payload)
 }
 
-fn html_response(
-    context: &RequestContext,
-    html: String,
-    nonce: &str,
-    link_header: &str,
-) -> HttpResponse {
+fn html_response(context: &RequestContext, html: String, nonce: &str) -> HttpResponse {
     let mut builder = HttpResponse::Ok();
     builder.content_type("text/html; charset=utf-8");
     builder.insert_header(("Cache-Control", "private, no-store"));
     builder.insert_header(("Vary", "Accept, Cookie"));
     builder.insert_header(("Content-Security-Policy", security::csp_header(nonce)));
-    if !link_header.is_empty() {
-        builder.insert_header(("Link", link_header.to_string()));
-    }
     if context.cart_read().should_reset {
         builder.cookie(clear_cookie());
     }
     builder.body(html)
 }
 
-/// Build an HTTP `Link` header value for early resource hints.
-///
-/// The browser processes `Link` headers before it even begins parsing the
-/// HTML body, giving CSS, JS, and images a head start.  The first image
-/// gets `fetchpriority=high` for LCP optimization.
-fn build_link_header(css_hrefs: &[&str], image_urls: &[&str]) -> String {
-    let capacity = 40 + css_hrefs.len() * 50 + image_urls.len() * 80;
-    let mut parts = Vec::with_capacity(1 + css_hrefs.len() + image_urls.len());
+fn inject_head_preload_tags(mut html: String, image_urls: &[String]) -> String {
+    let Some(head_end) = html.find("</head>") else {
+        return html;
+    };
 
-    parts.push("</index.js>; rel=modulepreload".to_string());
+    let css_hrefs = css_preload_hrefs_from_html(&html);
+    let preloads = build_head_preload_tags(image_urls, &css_hrefs);
+    if preloads.is_empty() {
+        return html;
+    }
+
+    html.insert_str(head_end, &preloads);
+    html
+}
+
+fn css_preload_hrefs_from_html(html: &str) -> Vec<String> {
+    const STYLESHEET_LINK: &str = r#"<link rel="stylesheet" href=""#;
+
+    let mut hrefs = Vec::new();
+    let mut remaining = html;
+    while let Some(start) = remaining.find(STYLESHEET_LINK) {
+        let href_start = start + STYLESHEET_LINK.len();
+        let after_marker = &remaining[href_start..];
+        let Some(end) = after_marker.find('"') else {
+            break;
+        };
+        let href = &after_marker[..end];
+        if hrefs.iter().all(|existing| existing != href) {
+            hrefs.push(href.to_string());
+        }
+        remaining = &after_marker[end + 1..];
+    }
+
+    hrefs
+}
+
+/// Build SSR-only `<link rel="preload">` tags that match the initial HTML.
+/// The router removes these managed tags on SPA navigations so preloads never
+/// leak across routes.
+fn build_head_preload_tags(image_urls: &[String], css_hrefs: &[String]) -> String {
+    let capacity = 80 + css_hrefs.len() * 90 + image_urls.len() * 120;
+    let mut buf = String::with_capacity(capacity);
 
     for href in css_hrefs {
-        parts.push(format!("<{href}>; rel=preload; as=style"));
+        buf.push_str(r#"<link rel="preload" as="style" href=""#);
+        buf.push_str(href);
+        buf.push_str(r#"" data-webui-ssr-preload="style">"#);
     }
+
+    buf.push_str(r#"<link rel="modulepreload" href="/index.js" data-webui-ssr-preload="script">"#);
 
     for (i, url) in image_urls.iter().enumerate() {
+        buf.push_str(r#"<link rel="preload" as="image" href=""#);
+        buf.push_str(url);
         if i == 0 {
-            parts.push(format!(
-                "<{url}>; rel=preload; as=image; fetchpriority=high"
-            ));
+            buf.push_str(r#"" fetchpriority="high" data-webui-ssr-preload="image">"#);
         } else {
-            parts.push(format!("<{url}>; rel=preload; as=image"));
+            buf.push_str(r#"" data-webui-ssr-preload="image">"#);
         }
     }
 
-    let mut buf = String::with_capacity(capacity);
-    for (i, part) in parts.iter().enumerate() {
-        if i > 0 {
-            buf.push_str(", ");
-        }
-        buf.push_str(part);
-    }
     buf
 }
 
@@ -302,6 +323,10 @@ mod tests {
         let response = test::call_service(&app, request).await;
 
         assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers().get(header::LINK).is_none(),
+            "SSR preload tags should be emitted in <head>, not the HTTP Link header"
+        );
         let body = match to_bytes(response.into_body()).await {
             Ok(body) => body,
             Err(error) => panic!("{error}"),
@@ -313,6 +338,13 @@ mod tests {
 
         assert!(html.contains("mp-page-search"));
         assert!(html.contains("mp-navbar"));
+        assert!(html.contains(r#"data-webui-ssr-preload="style""#));
+        assert!(html.contains(r#"href="/mp-app.css""#));
+        assert!(html.contains(r#"href="/_image/t-shirt-1?w=640&q=75""#));
+        assert!(
+            !html.contains(r#"\"data-webui-ssr-preload\""#),
+            "server-only preload tags should not leak into serialized client state"
+        );
     }
 
     #[actix_web::test]
@@ -369,6 +401,7 @@ mod tests {
         assert!(json["state"].get("cartItems").is_none());
         assert!(json["state"].get("cartItemCount").is_none());
         assert!(json["state"].get("page").is_none());
+        assert!(json["state"].get("head_end").is_none());
     }
 
     #[actix_web::test]

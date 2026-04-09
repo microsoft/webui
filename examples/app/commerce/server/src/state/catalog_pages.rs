@@ -8,6 +8,8 @@ use crate::catalog::{self, Product};
 use super::context::ShellContext;
 use super::shell::{apply_page_metadata, page_state_base};
 
+const CATALOG_GRID_PRELOAD_COUNT: usize = 3;
+
 pub(crate) fn home_state(context: &ShellContext<'_>, is_partial: bool) -> (Value, Vec<String>) {
     let mut state = page_state_base(context, is_partial);
     if !is_partial {
@@ -18,13 +20,9 @@ pub(crate) fn home_state(context: &ShellContext<'_>, is_partial: bool) -> (Value
         Vec::new()
     } else {
         featured
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let w = if i == 0 { 1080 } else { 640 };
-                format!("{}?w={w}&q=75", &p.image_url)
-            })
-            .collect()
+            .first()
+            .map(|product| vec![format!("{}?w=1080&q=75", &product.image_url)])
+            .unwrap_or_default()
     };
     state.insert(
         "featuredProducts".into(),
@@ -58,14 +56,11 @@ pub(crate) fn search_state(
     let image_preloads = if is_partial {
         Vec::new()
     } else {
-        products
-            .first()
-            .map(|p| vec![format!("{}?w=640&q=75", &p.image_url)])
-            .unwrap_or_default()
+        catalog_grid_image_preloads(&products)
     };
     state.insert(
         "products".into(),
-        Value::Array(catalog::products_to_json(&products)),
+        Value::Array(catalog_grid_products_to_json(&products)),
     );
     state.insert(
         "categories".into(),
@@ -121,14 +116,11 @@ pub(crate) fn category_state(
     let image_preloads = if is_partial {
         Vec::new()
     } else {
-        products
-            .first()
-            .map(|p| vec![format!("{}?w=640&q=75", &p.image_url)])
-            .unwrap_or_default()
+        catalog_grid_image_preloads(&products)
     };
     state.insert(
         "products".into(),
-        Value::Array(catalog::products_to_json(&products)),
+        Value::Array(catalog_grid_products_to_json(&products)),
     );
     state.insert(
         "categories".into(),
@@ -217,6 +209,35 @@ fn category_search_path(category: &str) -> String {
     path
 }
 
+fn catalog_grid_image_preloads(products: &[&Product]) -> Vec<String> {
+    products
+        .iter()
+        .take(CATALOG_GRID_PRELOAD_COUNT)
+        .map(|product| format!("{}?w=640&q=75", &product.image_url))
+        .collect()
+}
+
+fn catalog_grid_products_to_json(products: &[&Product]) -> Vec<Value> {
+    products
+        .iter()
+        .enumerate()
+        .map(|(i, product)| {
+            let mut json = catalog::product_to_json(product);
+            if let Some(obj) = json.as_object_mut() {
+                let loading = if i < CATALOG_GRID_PRELOAD_COUNT {
+                    "eager"
+                } else {
+                    "lazy"
+                };
+                let priority = if i == 0 { "high" } else { "auto" };
+                obj.insert("imageLoading".into(), Value::String(loading.to_string()));
+                obj.insert("fetchPriority".into(), Value::String(priority.to_string()));
+            }
+            json
+        })
+        .collect()
+}
+
 /// Like `products_to_json` but adds a `fetchPriority` field so the template
 /// can mark only the first hero image as `fetchpriority="high"`.
 fn featured_products_to_json(products: &[&Product]) -> Vec<serde_json::Value> {
@@ -226,7 +247,9 @@ fn featured_products_to_json(products: &[&Product]) -> Vec<serde_json::Value> {
         .map(|(i, product)| {
             let mut json = catalog::product_to_json(product);
             if let Some(obj) = json.as_object_mut() {
+                let loading = if i == 0 { "eager" } else { "lazy" };
                 let priority = if i == 0 { "high" } else { "auto" };
+                obj.insert("imageLoading".into(), Value::String(loading.to_string()));
                 obj.insert("fetchPriority".into(), Value::String(priority.to_string()));
                 let width = if i == 0 { 1080 } else { 640 };
                 obj.insert("imageWidth".into(), serde_json::json!(width));

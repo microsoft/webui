@@ -20,6 +20,7 @@ import type { RouterConfig, NavigationEvent } from './types.js';
 import type { NavigationTarget } from './navigation-path.js';
 
 const ROUTE_SELECTOR = 'webui-route';
+const SSR_PRELOAD_SELECTOR = 'link[data-webui-ssr-preload]';
 
 /**
  * Get the render root of a component element.
@@ -252,6 +253,7 @@ export class WebUIRouter {
       }
       this.isInitialNavigation = false;
     } else {
+      this.clearSsrPreloads();
       const partialData = await this.fetchPartial(requestPath, signal);
       if (!partialData) return;
 
@@ -363,6 +365,12 @@ export class WebUIRouter {
       path: requestPath,
     };
     window.dispatchEvent(new CustomEvent('webui:route:navigated', { detail }));
+  }
+
+  private clearSsrPreloads(): void {
+    for (const link of document.head.querySelectorAll(SSR_PRELOAD_SELECTOR)) {
+      link.remove();
+    }
   }
 
   /**

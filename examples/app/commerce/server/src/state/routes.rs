@@ -50,7 +50,7 @@ fn route_key_from_path(route_path: &str) -> &str {
     }
 }
 
-/// Build page state and return image preload URLs for the `Link` header.
+/// Build page state and return SSR image preload URLs for the initial document.
 pub(crate) fn build_route_state(req: &RouteStateRequest<'_>) -> Option<(Value, Vec<String>)> {
     let (context, query) = build_shell_context(req.catalog, req.request_path, req.cart_state);
     let query_text = query.q.as_deref().unwrap_or_default();

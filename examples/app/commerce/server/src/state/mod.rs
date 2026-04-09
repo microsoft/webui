@@ -147,7 +147,7 @@ mod tests {
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/");
         let params = std::collections::HashMap::new();
 
-        let (_, image_preloads) = match build_route_state(&RouteStateRequest {
+        let (state, image_preloads) = match build_route_state(&RouteStateRequest {
             catalog: &catalog,
             route_path: "/",
             params: &params,
@@ -159,13 +159,24 @@ mod tests {
             None => panic!("expected home state"),
         };
 
-        assert!(
-            !image_preloads.is_empty(),
-            "home page should have image preloads"
+        assert_eq!(
+            image_preloads.len(),
+            1,
+            "home page should preload only the primary hero image"
         );
         assert!(
             image_preloads[0].contains("/_image/"),
             "image preloads should reference image proxy"
+        );
+        assert_eq!(
+            state["featuredProducts"][0]["imageLoading"].as_str(),
+            Some("eager"),
+            "primary hero image should load eagerly"
+        );
+        assert_eq!(
+            state["featuredProducts"][1]["imageLoading"].as_str(),
+            Some("lazy"),
+            "secondary hero images should not be marked eager"
         );
     }
 
@@ -231,7 +242,7 @@ mod tests {
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/search");
         let params = std::collections::HashMap::new();
 
-        let (_, image_preloads) = match build_route_state(&RouteStateRequest {
+        let (state, image_preloads) = match build_route_state(&RouteStateRequest {
             catalog: &catalog,
             route_path: "/search",
             params: &params,
@@ -243,9 +254,25 @@ mod tests {
             None => panic!("expected search state"),
         };
 
-        assert!(
-            !image_preloads.is_empty(),
-            "search page should preload first product image"
+        assert_eq!(
+            image_preloads.len(),
+            3,
+            "search page should preload the first row of product images"
+        );
+        assert_eq!(
+            state["products"][0]["imageLoading"].as_str(),
+            Some("eager"),
+            "first search result image should load eagerly"
+        );
+        assert_eq!(
+            state["products"][0]["fetchPriority"].as_str(),
+            Some("high"),
+            "first search result image should get high fetch priority"
+        );
+        assert_eq!(
+            state["products"][3]["imageLoading"].as_str(),
+            Some("lazy"),
+            "non-preloaded search results should remain lazy"
         );
     }
 
@@ -256,7 +283,7 @@ mod tests {
         let params =
             std::collections::HashMap::from([("category".to_string(), "shirts".to_string())]);
 
-        let (_, image_preloads) = match build_route_state(&RouteStateRequest {
+        let (state, image_preloads) = match build_route_state(&RouteStateRequest {
             catalog: &catalog,
             route_path: "/search/shirts",
             params: &params,
@@ -269,8 +296,13 @@ mod tests {
         };
 
         assert!(
-            !image_preloads.is_empty(),
-            "category page should preload first product image"
+            !image_preloads.is_empty() && image_preloads.len() <= 3,
+            "category page should preload the first visible product images"
+        );
+        assert_eq!(
+            state["products"][0]["imageLoading"].as_str(),
+            Some("eager"),
+            "first category result image should load eagerly"
         );
     }
 }
