@@ -15,6 +15,12 @@
  */
 export function render(protocol_json: string, state_json: string, entry: string, request_path: string, plugin?: string | null): string;
 /**
+ * Build the protocol JSON from virtual files without rendering.
+ *
+ * Returns the serialized `WebUIProtocol` as a JSON string.
+ */
+export function build_protocol(files: any, entry: string): string;
+/**
  * Produce a complete JSON partial response for client-side navigation.
  *
  * Combines application state, route templates, inventory, request path, and
@@ -42,12 +48,6 @@ export function render_partial(protocol_json: string, state_json: string, entry_
  * The rendered HTML string, or throws a JS error on failure.
  */
 export function build_and_render(files: any, state_json: string, entry: string, request_path: string): string;
-/**
- * Build the protocol JSON from virtual files without rendering.
- *
- * Returns the serialized `WebUIProtocol` as a JSON string.
- */
-export function build_protocol(files: any, entry: string): string;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
