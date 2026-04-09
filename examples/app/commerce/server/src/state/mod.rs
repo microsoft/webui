@@ -201,7 +201,8 @@ mod tests {
     #[test]
     fn product_state_includes_preload_tag_in_head_end() {
         let catalog = Catalog::generate();
-        let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/product/acme-t-shirt");
+        let cart_state =
+            build_cart_state(&StoredCart::default(), &catalog, "/product/acme-t-shirt");
         let params =
             std::collections::HashMap::from([("handle".to_string(), "acme-t-shirt".to_string())]);
 

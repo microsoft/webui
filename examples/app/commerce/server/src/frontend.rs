@@ -133,9 +133,12 @@ fn is_content_hashed(relative: &str) -> bool {
     let stem = name.split('.').next().unwrap_or("");
     // Content-hashed files always have a hyphenated 8-char uppercase hash suffix
     // e.g. "chunk-3QJD3BDH" or "mp-page-home-UFH4TZ7P"
-    stem.rsplit('-')
-        .next()
-        .is_some_and(|hash| hash.len() == 8 && hash.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+    stem.rsplit('-').next().is_some_and(|hash| {
+        hash.len() == 8
+            && hash
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+    })
 }
 
 fn load_cached_assets(assets_dir: &Path) -> Result<HashMap<String, CachedAsset>> {

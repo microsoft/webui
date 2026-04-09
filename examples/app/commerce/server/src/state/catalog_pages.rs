@@ -229,7 +229,10 @@ mod tests {
 
     #[test]
     fn preload_tags_first_image_gets_high_priority() {
-        let tags = build_preload_tags(&["https://cdn.example.com/a.png", "https://cdn.example.com/b.png"]);
+        let tags = build_preload_tags(&[
+            "https://cdn.example.com/a.png",
+            "https://cdn.example.com/b.png",
+        ]);
         assert!(
             tags.contains("fetchpriority=\"high\""),
             "first image should have fetchpriority=high"
@@ -239,7 +242,8 @@ mod tests {
             "first image URL should be present"
         );
         // Second image should NOT have fetchpriority
-        assert!(tags.contains(r#"<link rel="preload" as="image" href="https://cdn.example.com/b.png">"#));
+        assert!(tags
+            .contains(r#"<link rel="preload" as="image" href="https://cdn.example.com/b.png">"#));
         assert_eq!(
             tags.matches("fetchpriority").count(),
             1,
