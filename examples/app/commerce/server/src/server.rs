@@ -485,8 +485,12 @@ mod tests {
 
     #[actix_web::test]
     async fn image_proxy_serves_cached_image() {
-        let app =
-            test::init_service(App::new().app_data(test_state()).configure(configure_app)).await;
+        let state = test_state();
+        let expected = state
+            .image_cache()
+            .get("baby-cap-white", 384)
+            .unwrap_or_else(|| panic!("expected cached baby-cap-white image"));
+        let app = test::init_service(App::new().app_data(state).configure(configure_app)).await;
 
         let request = TestRequest::get()
             .uri("/_image/baby-cap-white?w=256&q=75")
@@ -512,9 +516,11 @@ mod tests {
             Ok(body) => body,
             Err(error) => panic!("{error}"),
         };
-        // AVIF files start with an ftyp box
-        assert!(body.len() > 12);
-        assert_eq!(&body[4..8], b"ftyp");
+        assert_eq!(
+            body.as_ref(),
+            expected.as_ref(),
+            "proxy response should return the exact cached bytes for the snapped width"
+        );
     }
 
     #[actix_web::test]

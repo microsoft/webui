@@ -146,13 +146,58 @@ pub(crate) async fn serve_image(
 #[cfg(test)]
 mod tests {
     use super::{snap_width, ImageCache, SERVED_WIDTHS};
-    use std::path::Path;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn images_dir() -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("server crate should live under the app directory")
-            .join("images")
+    struct TestImagesDir {
+        path: PathBuf,
+    }
+
+    impl TestImagesDir {
+        fn new() -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_nanos());
+            let path = std::env::temp_dir().join(format!(
+                "webui-commerce-image-cache-{}-{unique}",
+                std::process::id()
+            ));
+
+            for &width in SERVED_WIDTHS {
+                let dir = path.join(width.to_string());
+                fs::create_dir_all(&dir).unwrap_or_else(|error| panic!("{error}"));
+                write_fake_avif(&dir, "keyboard", width, 0x11);
+                write_fake_avif(&dir, "baby-cap-white", width, 0x33);
+            }
+
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestImagesDir {
+        fn drop(&mut self) {
+            if self.path.exists() {
+                fs::remove_dir_all(&self.path).unwrap_or_else(|error| panic!("{error}"));
+            }
+        }
+    }
+
+    fn write_fake_avif(dir: &Path, stem: &str, width: u32, seed: u8) {
+        let payload_len = (width as usize / 4).max(1);
+        let mut bytes = Vec::with_capacity(16 + payload_len);
+        bytes.extend_from_slice(&[0, 0, 0, 32, b'f', b't', b'y', b'p']);
+        bytes.extend_from_slice(b"avif");
+        bytes.extend_from_slice(&[0, 0, 0, 0]);
+        for i in 0..payload_len {
+            bytes.push(seed.wrapping_add(i as u8));
+        }
+        fs::write(dir.join(format!("{stem}.avif")), bytes)
+            .unwrap_or_else(|error| panic!("{error}"));
     }
 
     #[test]
@@ -167,12 +212,9 @@ mod tests {
 
     #[test]
     fn cache_loads_all_variants() {
-        let dir = images_dir();
-        if !dir.is_dir() {
-            return;
-        }
-        let cache = ImageCache::load(&dir).expect("should load");
-        assert!(cache.len() > 0, "expected images");
+        let images = TestImagesDir::new();
+        let cache = ImageCache::load(images.path()).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(cache.len(), 2, "expected both fake stems");
         assert_eq!(
             cache.variant_count(),
             cache.len() * SERVED_WIDTHS.len(),
@@ -182,25 +224,25 @@ mod tests {
 
     #[test]
     fn get_returns_bytes_for_valid_stem_and_width() {
-        let dir = images_dir();
-        if !dir.is_dir() {
-            return;
-        }
-        let cache = ImageCache::load(&dir).expect("should load");
+        let images = TestImagesDir::new();
+        let cache = ImageCache::load(images.path()).unwrap_or_else(|error| panic!("{error}"));
         let bytes = cache.get("keyboard", 640);
         assert!(bytes.is_some(), "expected keyboard at 640");
-        assert!(bytes.unwrap().len() > 0);
+        let bytes = bytes.unwrap_or_else(|| panic!("missing keyboard at 640"));
+        assert!(bytes.len() > 16, "expected AVIF header plus payload");
+        assert_eq!(&bytes[4..8], b"ftyp");
     }
 
     #[test]
     fn smaller_width_produces_smaller_file() {
-        let dir = images_dir();
-        if !dir.is_dir() {
-            return;
-        }
-        let cache = ImageCache::load(&dir).expect("should load");
-        let small = cache.get("keyboard", 96).expect("96 variant");
-        let large = cache.get("keyboard", 640).expect("640 variant");
+        let images = TestImagesDir::new();
+        let cache = ImageCache::load(images.path()).unwrap_or_else(|error| panic!("{error}"));
+        let small = cache
+            .get("keyboard", 96)
+            .unwrap_or_else(|| panic!("missing keyboard at 96"));
+        let large = cache
+            .get("keyboard", 640)
+            .unwrap_or_else(|| panic!("missing keyboard at 640"));
         assert!(
             small.len() < large.len(),
             "96px should be smaller than 640px: {} vs {}",
@@ -211,11 +253,8 @@ mod tests {
 
     #[test]
     fn get_returns_none_for_unknown_stem() {
-        let dir = images_dir();
-        if !dir.is_dir() {
-            return;
-        }
-        let cache = ImageCache::load(&dir).expect("should load");
+        let images = TestImagesDir::new();
+        let cache = ImageCache::load(images.path()).unwrap_or_else(|error| panic!("{error}"));
         assert!(cache.get("nonexistent", 640).is_none());
     }
 }
