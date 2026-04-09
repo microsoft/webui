@@ -1,6 +1,14 @@
 trigger: none
 pr: none
 
+schedules:
+  - cron: '0 * * * *'
+    displayName: Hourly deployment check
+    branches:
+      include:
+        - main
+    always: true  # run even when there are no new commits — needed since we check an external GitHub release, not repo changes
+
 # The `resources` specify the location and version of the 1ES PT.
 resources:
   repositories:
@@ -33,86 +41,98 @@ extends:
       networkIsolationPolicy: Permissive
     stages:
 
-    # ── Download pre-built release artifacts and publish ──
+    # ── Download pre-built release artifacts and deploy ──
     - stage: Package
       jobs:
-      - job: PackageJob
 
+      # ── Job 1: Resolve the latest release tag and check registry status ──
+      - job: NeedsDeployment
         steps:
           - checkout: self
             persistCredentials: "true"
 
-          - script: |
-              sudo mkdir -p -m 755 /etc/apt/keyrings
-              wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-                | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
-              sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-                | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-              sudo apt-get update -qq
-              sudo apt-get install -y gh
-            displayName: Install GitHub CLI
+          - task: DownloadGitHubRelease@0
+            displayName: Download latest GitHub release
+            inputs:
+              connection: fast
+              userRepository: microsoft/webui
+              defaultVersionType: 'latest'
+              downloadPath: '$(System.ArtifactsDirectory)'
 
-          # Download npm tarballs, crate archives, and NuGet packages from the
-          # GitHub release produced by the publish.yml GitHub Actions workflow.
+          # Extract the version number from the downloaded .crate filename,
+          # e.g. microsoft-webui-0.0.3.crate → 0.0.3, and expose it as output
+          # variables for the Deploy job.
           - script: |
-              mkdir -p publish_artifacts_npm publish_artifacts_crates publish_artifacts_nuget
-              gh release download "$(releaseTag)" \
-                --repo microsoft/webui \
-                --pattern "*.tgz" \
-                --dir publish_artifacts_npm/
-              gh release download "$(releaseTag)" \
-                --repo microsoft/webui \
-                --pattern "*.crate" \
-                --dir publish_artifacts_crates/
-              gh release download "$(releaseTag)" \
-                --repo microsoft/webui \
-                --pattern "*.nupkg" \
-                --dir publish_artifacts_nuget/
-            displayName: Download release artifacts
-            env:
-              GH_TOKEN: $(GH_TOKEN)
+              CRATE_FILE=$(ls "$(System.ArtifactsDirectory)"/microsoft-webui-*.crate 2>/dev/null | head -1)
+              if [ -z "$CRATE_FILE" ]; then
+                echo "##vso[task.logissue type=error]No microsoft-webui-*.crate file found in $(System.ArtifactsDirectory)"
+                exit 1
+              fi
+              VERSION=$(basename "$CRATE_FILE" .crate | sed 's/^microsoft-webui-//')
+              echo "Detected version: ${VERSION}"
+              echo "##vso[task.setvariable variable=releaseVersion]${VERSION}"
+              echo "##vso[task.setvariable variable=releaseVersion;isOutput=true]${VERSION}"
+              echo "##vso[task.setvariable variable=releaseTag;isOutput=true]v${VERSION}"
+            displayName: Extract version from downloaded artifacts
+            name: resolveTag
 
-          # Check whether this version is already published to all registries.
-          # Sets needsPublishing=true if any of npm, NuGet, or crates.io do not
-          # yet carry the version — so a partial publish still reruns the template.
-          # The 'v' prefix is stripped from the release tag since registries
-          # expect a bare version number e.g. 1.2.3 not v1.2.3.
+          # Check whether this version is already deployed to all registries.
+          # Sets needsDeployment=true if any of npm or crates.io do not yet carry
+          # the version — so a partial deployment still reruns the template.
           - script: |
-              VERSION="$(releaseTag)"
-              VERSION="${VERSION#v}"
-              NEEDS_PUBLISHING=false
+              VERSION="$(releaseVersion)"
+              NEEDS_DEPLOYMENT=false
 
               # npm
               if npm view "@microsoft/webui@${VERSION}" version 2>/dev/null | grep -q "^${VERSION}$"; then
-                echo "npm @microsoft/webui@${VERSION} already published"
+                echo "npm @microsoft/webui@${VERSION} already deployed"
               else
-                echo "npm @microsoft/webui@${VERSION} not yet published"
-                NEEDS_PUBLISHING=true
-              fi
-
-              # NuGet
-              NUGET_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-                "https://api.nuget.org/v3-flatcontainer/microsoft.webui/${VERSION}/microsoft.webui.${VERSION}.nupkg")
-              if [ "$NUGET_STATUS" = "200" ]; then
-                echo "NuGet Microsoft.WebUI ${VERSION} already published"
-              else
-                echo "NuGet Microsoft.WebUI ${VERSION} not yet published (HTTP ${NUGET_STATUS})"
-                NEEDS_PUBLISHING=true
+                echo "npm @microsoft/webui@${VERSION} not yet deployed"
+                NEEDS_DEPLOYMENT=true
               fi
 
               # crates.io
               CRATE_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
                 "https://crates.io/api/v1/crates/microsoft-webui/${VERSION}")
               if [ "$CRATE_STATUS" = "200" ]; then
-                echo "crates.io microsoft-webui ${VERSION} already published"
+                echo "crates.io microsoft-webui ${VERSION} already deployed"
               else
-                echo "crates.io microsoft-webui ${VERSION} not yet published (HTTP ${CRATE_STATUS})"
-                NEEDS_PUBLISHING=true
+                echo "crates.io microsoft-webui ${VERSION} not yet deployed (HTTP ${CRATE_STATUS})"
+                NEEDS_DEPLOYMENT=true
               fi
 
-              echo "##vso[task.setvariable variable=needsPublishing]${NEEDS_PUBLISHING}"
-            displayName: Check if already published
+              echo "##vso[task.setvariable variable=needsDeployment;isOutput=true]${NEEDS_DEPLOYMENT}"
+            displayName: Check if already deployed
+            name: deploymentCheck
+
+      # ── Job 2: Download artifacts and deploy (skipped if all already deployed) ──
+      - job: Deploy
+        dependsOn: NeedsDeployment
+        condition: eq(dependencies.NeedsDeployment.outputs['deploymentCheck.needsDeployment'], 'true')
+        variables:
+          releaseTag: $[ dependencies.NeedsDeployment.outputs['resolveTag.releaseTag'] ]
+        steps:
+          - checkout: self
+            persistCredentials: "true"
+
+          - task: DownloadGitHubRelease@0
+            displayName: Download GitHub release artifacts
+            inputs:
+              connection: fast
+              userRepository: microsoft/webui
+              defaultVersionType: 'latest'
+              downloadPath: '$(System.ArtifactsDirectory)'
+
+          # Separate the downloaded files into the directories expected by the
+          # release pipeline template. .tgz → npm, .crate → crates. NuGet skipped.
+          - script: |
+              mkdir -p publish_artifacts_npm publish_artifacts_crates
+              find "$(System.ArtifactsDirectory)" -name "*.tgz"   -exec cp {} publish_artifacts_npm/   \;
+              find "$(System.ArtifactsDirectory)" -name "*.crate" -exec cp {} publish_artifacts_crates/ \;
+              echo "npm artifacts:"
+              ls publish_artifacts_npm/
+              echo "crate artifacts:"
+              ls publish_artifacts_crates/
+            displayName: Separate release artifacts
 
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
-            condition: eq(variables['needsPublishing'], 'true')
