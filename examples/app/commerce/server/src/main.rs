@@ -140,13 +140,11 @@ fn load_pem_files(
     use rustls::pki_types::pem::PemObject;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-    let certs: Vec<CertificateDer<'static>> =
-        CertificateDer::pem_slice_iter(&cert_data)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .context("Failed to parse TLS certificate PEM")?;
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&cert_data)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("Failed to parse TLS certificate PEM")?;
 
-    let key = PrivateKeyDer::from_pem_slice(&key_data)
-        .context("Failed to parse TLS key PEM")?;
+    let key = PrivateKeyDer::from_pem_slice(&key_data).context("Failed to parse TLS key PEM")?;
 
     Ok((certs, key))
 }
