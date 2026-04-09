@@ -104,9 +104,14 @@ impl FrontendRuntime {
         }
 
         self.asset_files.get(relative).map(|asset| {
+            let cache = if is_content_hashed(relative) {
+                "public, max-age=31536000, immutable"
+            } else {
+                "public, max-age=86400"
+            };
             HttpResponse::Ok()
                 .content_type(asset.content_type.as_str())
-                .insert_header(("Cache-Control", "public, max-age=86400"))
+                .insert_header(("Cache-Control", cache))
                 .body(asset.body.clone())
         })
     }
@@ -114,6 +119,23 @@ impl FrontendRuntime {
 
 fn canonicalize_dir(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Returns `true` if the filename contains an esbuild content hash, making it
+/// safe for immutable caching. Esbuild produces `chunk-{HASH}.js` for shared
+/// chunks and `{name}-{HASH}.js` for page-specific entry points.
+fn is_content_hashed(relative: &str) -> bool {
+    let name = relative.rsplit('/').next().unwrap_or(relative);
+    if !name.ends_with(".js") && !name.ends_with(".js.map") {
+        return false;
+    }
+    // Skip bare entry points like `index.js`
+    let stem = name.split('.').next().unwrap_or("");
+    // Content-hashed files always have a hyphenated 8-char uppercase hash suffix
+    // e.g. "chunk-3QJD3BDH" or "mp-page-home-UFH4TZ7P"
+    stem.rsplit('-')
+        .next()
+        .is_some_and(|hash| hash.len() == 8 && hash.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
 }
 
 fn load_cached_assets(assets_dir: &Path) -> Result<HashMap<String, CachedAsset>> {
@@ -238,5 +260,27 @@ mod tests {
         assert_eq!(asset.body.as_ref(), b"console.log('cached');");
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn content_hashed_js_chunks_detected() {
+        assert!(super::is_content_hashed("chunk-3QJD3BDH.js"));
+        assert!(super::is_content_hashed("chunk-YXUYDP2R.js"));
+        assert!(super::is_content_hashed("mp-page-home-UFH4TZ7P.js"));
+        assert!(super::is_content_hashed("mp-page-product-3BEKONPP.js"));
+    }
+
+    #[test]
+    fn content_hashed_sourcemaps_detected() {
+        assert!(super::is_content_hashed("chunk-3QJD3BDH.js.map"));
+        assert!(super::is_content_hashed("mp-page-home-UFH4TZ7P.js.map"));
+    }
+
+    #[test]
+    fn unhashed_files_not_detected() {
+        assert!(!super::is_content_hashed("index.js"));
+        assert!(!super::is_content_hashed("index.js.map"));
+        assert!(!super::is_content_hashed("mp-app.css"));
+        assert!(!super::is_content_hashed("mp-page-home.css"));
     }
 }

@@ -60,6 +60,7 @@ fn main() -> Result<()> {
     actix_web::rt::System::new().block_on(async move {
         HttpServer::new(move || {
             App::new()
+                .wrap(actix_web::middleware::Compress::default())
                 .wrap(security_headers())
                 .app_data(state.clone())
                 .configure(configure_app)

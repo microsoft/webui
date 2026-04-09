@@ -1380,6 +1380,7 @@ dependencies = [
  "anyhow",
  "clap",
  "hmac",
+ "html-escape",
  "microsoft-webui",
  "microsoft-webui-handler",
  "mime_guess",

@@ -13,9 +13,14 @@ pub(crate) fn home_state(context: &ShellContext<'_>, is_partial: bool) -> Value 
     if !is_partial {
         apply_page_metadata(&mut state, "home", false, "default-shell");
     }
+    let featured = context.catalog.home_featured();
+    if !is_partial {
+        let urls: Vec<&str> = featured.iter().map(|p| p.image_url.as_str()).collect();
+        state.insert("head_end".into(), Value::String(build_preload_tags(&urls)));
+    }
     state.insert(
         "featuredProducts".into(),
-        Value::Array(catalog::products_to_json(&context.catalog.home_featured())),
+        Value::Array(catalog::products_to_json(&featured)),
     );
     state.insert(
         "carouselProducts".into(),
@@ -41,6 +46,12 @@ pub(crate) fn search_state(
     let mut state = page_state_base(context, is_partial);
     if !is_partial {
         apply_page_metadata(&mut state, "search", true, "catalog-shell");
+        if let Some(first) = products.first() {
+            state.insert(
+                "head_end".into(),
+                Value::String(build_preload_tags(&[&first.image_url])),
+            );
+        }
     }
     state.insert(
         "products".into(),
@@ -96,6 +107,12 @@ pub(crate) fn category_state(
     let mut state = page_state_base(context, is_partial);
     if !is_partial {
         apply_page_metadata(&mut state, "category", true, "catalog-shell");
+        if let Some(first) = products.first() {
+            state.insert(
+                "head_end".into(),
+                Value::String(build_preload_tags(&[&first.image_url])),
+            );
+        }
     }
     state.insert(
         "products".into(),
@@ -139,6 +156,10 @@ pub(crate) fn product_state(
     let mut state = page_state_base(context, is_partial);
     if !is_partial {
         apply_page_metadata(&mut state, "product", false, "default-shell");
+        state.insert(
+            "head_end".into(),
+            Value::String(build_preload_tags(&[&product.image_url])),
+        );
     }
     state.insert(
         "relatedProducts".into(),
@@ -181,4 +202,69 @@ fn category_search_path(category: &str) -> String {
     path.push_str("/search/");
     path.push_str(category);
     path
+}
+
+/// Build `<link rel="preload">` tags for above-the-fold images so the browser
+/// can start fetching them in parallel with CSS and JS during the initial HTML
+/// parse, improving LCP. Only the first image gets `fetchpriority="high"` to
+/// avoid competing with critical CSS/JS resources.
+fn build_preload_tags(image_urls: &[&str]) -> String {
+    const HIGH_PREFIX: &str = "<link rel=\"preload\" as=\"image\" fetchpriority=\"high\" href=\"";
+    const NORMAL_PREFIX: &str = "<link rel=\"preload\" as=\"image\" href=\"";
+    const TAG_SUFFIX: &str = "\">";
+    let estimate = image_urls.len() * (HIGH_PREFIX.len() + TAG_SUFFIX.len() + 120);
+    let mut buf = String::with_capacity(estimate);
+    for (i, url) in image_urls.iter().enumerate() {
+        let prefix = if i == 0 { HIGH_PREFIX } else { NORMAL_PREFIX };
+        buf.push_str(prefix);
+        buf.push_str(&html_escape::encode_double_quoted_attribute(url));
+        buf.push_str(TAG_SUFFIX);
+    }
+    buf
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_preload_tags;
+
+    #[test]
+    fn preload_tags_first_image_gets_high_priority() {
+        let tags = build_preload_tags(&["https://cdn.example.com/a.png", "https://cdn.example.com/b.png"]);
+        assert!(
+            tags.contains("fetchpriority=\"high\""),
+            "first image should have fetchpriority=high"
+        );
+        assert!(
+            tags.contains("https://cdn.example.com/a.png"),
+            "first image URL should be present"
+        );
+        // Second image should NOT have fetchpriority
+        assert!(tags.contains(r#"<link rel="preload" as="image" href="https://cdn.example.com/b.png">"#));
+        assert_eq!(
+            tags.matches("fetchpriority").count(),
+            1,
+            "only the first image should have fetchpriority"
+        );
+    }
+
+    #[test]
+    fn preload_tags_escapes_html_in_urls() {
+        let tags = build_preload_tags(&["https://cdn.example.com/img?a=1&b=2"]);
+        assert!(
+            tags.contains("a=1&amp;b=2"),
+            "ampersand in URL should be HTML-escaped"
+        );
+    }
+
+    #[test]
+    fn preload_tags_empty_urls_returns_empty() {
+        assert!(build_preload_tags(&[]).is_empty());
+    }
+
+    #[test]
+    fn preload_tags_single_url_gets_high_priority() {
+        let tags = build_preload_tags(&["https://cdn.example.com/hero.png"]);
+        assert!(tags.contains("fetchpriority=\"high\""));
+        assert!(tags.contains("hero.png"));
+    }
 }
