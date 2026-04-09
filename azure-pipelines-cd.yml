@@ -119,4 +119,7 @@ extends:
         dependsOn: PackageJob
         condition: eq(dependencies.PackageJob.outputs['checkPublished.needsPublishing'], 'true')
         steps:
+          - checkout: self
+            persistCredentials: "true"
+
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
