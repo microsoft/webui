@@ -20,7 +20,7 @@ pub(crate) fn home_state(context: &ShellContext<'_>, is_partial: bool) -> Value 
     }
     state.insert(
         "featuredProducts".into(),
-        Value::Array(catalog::products_to_json(&featured)),
+        Value::Array(featured_products_to_json(&featured)),
     );
     state.insert(
         "carouselProducts".into(),
@@ -202,6 +202,23 @@ fn category_search_path(category: &str) -> String {
     path.push_str("/search/");
     path.push_str(category);
     path
+}
+
+/// Like `products_to_json` but adds a `fetchPriority` field so the template
+/// can mark only the first hero image as `fetchpriority="high"`.
+fn featured_products_to_json(products: &[&Product]) -> Vec<serde_json::Value> {
+    products
+        .iter()
+        .enumerate()
+        .map(|(i, product)| {
+            let mut json = catalog::product_to_json(product);
+            if let Some(obj) = json.as_object_mut() {
+                let priority = if i == 0 { "high" } else { "auto" };
+                obj.insert("fetchPriority".into(), Value::String(priority.to_string()));
+            }
+            json
+        })
+        .collect()
 }
 
 /// Build `<link rel="preload">` tags for above-the-fold images so the browser
