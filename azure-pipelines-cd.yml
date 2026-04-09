@@ -111,15 +111,9 @@ extends:
                 NEEDS_PUBLISHING=true
               fi
 
-              echo "##vso[task.setvariable variable=needsPublishing;isOutput=true]${NEEDS_PUBLISHING}"
-            name: checkPublished
+              echo "##vso[task.setvariable variable=needsPublishing]${NEEDS_PUBLISHING}"
             displayName: Check if already published
 
-      - job: PublishJob
-        dependsOn: PackageJob
-        condition: eq(dependencies.PackageJob.outputs['checkPublished.needsPublishing'], 'true')
-        steps:
-          - checkout: self
-            persistCredentials: "true"
-
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
+            parameters:
+              needsPublishing: $(needsPublishing)
