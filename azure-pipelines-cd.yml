@@ -33,46 +33,11 @@ extends:
       networkIsolationPolicy: Permissive
     stages:
 
-    # ── Download pre-built release artifacts and publish ──
-    - stage: Package
+    # ── Check whether packages are already published ──
+    - stage: Check
       jobs:
-      - job: PackageJob
-
+      - job: CheckJob
         steps:
-          - checkout: self
-            persistCredentials: "true"
-
-          - script: |
-              sudo mkdir -p -m 755 /etc/apt/keyrings
-              wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-                | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
-              sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-                | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-              sudo apt-get update -qq
-              sudo apt-get install -y gh
-            displayName: Install GitHub CLI
-
-          # Download npm tarballs, crate archives, and NuGet packages from the
-          # GitHub release produced by the publish.yml GitHub Actions workflow.
-          - script: |
-              mkdir -p publish_artifacts_npm publish_artifacts_crates publish_artifacts_nuget
-              gh release download "$(releaseTag)" \
-                --repo microsoft/webui \
-                --pattern "*.tgz" \
-                --dir publish_artifacts_npm/
-              gh release download "$(releaseTag)" \
-                --repo microsoft/webui \
-                --pattern "*.crate" \
-                --dir publish_artifacts_crates/
-              gh release download "$(releaseTag)" \
-                --repo microsoft/webui \
-                --pattern "*.nupkg" \
-                --dir publish_artifacts_nuget/
-            displayName: Download release artifacts
-            env:
-              GH_TOKEN: $(GH_TOKEN)
-
           # Check whether this version is already published to all registries.
           # Sets needsPublishing=true if any of npm, NuGet, or crates.io do not
           # yet carry the version — so a partial publish still reruns the template.
@@ -111,9 +76,49 @@ extends:
                 NEEDS_PUBLISHING=true
               fi
 
-              echo "##vso[task.setvariable variable=needsPublishing]${NEEDS_PUBLISHING}"
+              echo "##vso[task.setvariable variable=needsPublishing;isOutput=true]${NEEDS_PUBLISHING}"
+            name: checkPublished
             displayName: Check if already published
 
+    # ── Download pre-built release artifacts and publish ──
+    - stage: Package
+      dependsOn: Check
+      condition: eq(stageDependencies.Check.CheckJob.outputs['checkPublished.needsPublishing'], 'true')
+      jobs:
+      - job: PackageJob
+        steps:
+          - checkout: self
+            persistCredentials: "true"
+
+          - script: |
+              sudo mkdir -p -m 755 /etc/apt/keyrings
+              wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+                | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+              sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+                | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+              sudo apt-get update -qq
+              sudo apt-get install -y gh
+            displayName: Install GitHub CLI
+
+          # Download npm tarballs, crate archives, and NuGet packages from the
+          # GitHub release produced by the publish.yml GitHub Actions workflow.
+          - script: |
+              mkdir -p publish_artifacts_npm publish_artifacts_crates publish_artifacts_nuget
+              gh release download "$(releaseTag)" \
+                --repo microsoft/webui \
+                --pattern "*.tgz" \
+                --dir publish_artifacts_npm/
+              gh release download "$(releaseTag)" \
+                --repo microsoft/webui \
+                --pattern "*.crate" \
+                --dir publish_artifacts_crates/
+              gh release download "$(releaseTag)" \
+                --repo microsoft/webui \
+                --pattern "*.nupkg" \
+                --dir publish_artifacts_nuget/
+            displayName: Download release artifacts
+            env:
+              GH_TOKEN: $(GH_TOKEN)
+
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
-            parameters:
-              needsPublishing: $(needsPublishing)
