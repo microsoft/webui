@@ -1,6 +1,6 @@
 {
   "name": "@microsoft/webui-examples-theme",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "type": "module",
   "description": "Shared design token theme for WebUI example applications",
   "license": "MIT",
