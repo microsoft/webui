@@ -706,7 +706,7 @@ pub trait ParserPlugin {
 **Built-in plugin: `WebUIParserPlugin`**
 - Skips WebUI Framework runtime attributes (`@click`, `@keydown`, etc.) without counting them as attribute bindings
 - Tracks per-element event count; emits 12-byte `WebUIElementData` `Plugin` fragments encoding `[binding_count, event_start, event_count]`
-- Tracks components and compiles templates into metadata `<script>` blocks registered in `window.__webui_templates`
+- Tracks components and compiles templates into raw JS IIFE strings registered in `window.__webui_templates`. During SSR the handler wraps them in a single `<script>` tag; during SPA navigation the router evaluates them directly.
 - Public framework authoring, decorators, and package entrypoints live in [packages/webui-framework/README.md](packages/webui-framework/README.md)
 
 **Usage:**

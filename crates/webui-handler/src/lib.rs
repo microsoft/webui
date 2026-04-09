@@ -787,12 +787,14 @@ impl WebUIHandler {
                 }
             }
 
-            crate::plugin::emit_rendered_component_templates(
-                context.protocol,
-                &reachable,
-                context.nonce.as_deref(),
-                context.writer,
-            )?;
+            if let Some(ref p) = context.plugin {
+                p.emit_templates(
+                    context.protocol,
+                    &reachable,
+                    context.nonce.as_deref(),
+                    context.writer,
+                )?;
+            }
 
             // Emit initial state as JSON for client-side hydration.
             // Like Preact/Next.js, we pass the same state used for SSR

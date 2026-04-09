@@ -37,7 +37,7 @@ No flash of content - HTML is already visible from step 2, and hydration silentl
 
 ## Template Metadata
 
-At build time, the WebUI compiler produces a metadata object for each component and registers it on the page:
+At build time, the WebUI compiler produces a metadata object for each component as a raw JS IIFE string. During SSR, the handler wraps all templates into a single `<script>` tag. During SPA partial navigation, the router evaluates them directly — no `<script>` wrapper needed.
 
 ```javascript
 (function () {

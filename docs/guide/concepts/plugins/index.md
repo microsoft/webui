@@ -109,7 +109,7 @@ During `webui build --plugin=webui`, the parser plugin:
 - **Skips framework attributes**: `@click`, `@keydown`, `w-ref`, and other event/ref bindings are removed from the protocol (handled client-side)
 - **Emits binding metadata**: 12-byte `Plugin` fragments encoding `[binding_count, event_start, event_count]` per element
 - **Tracks components**: Records custom elements for template metadata generation
-- **Compiles templates**: Generates optimized metadata objects registered in `window.__webui_templates`
+- **Compiles templates**: Generates optimized metadata as raw JS IIFE strings registered in `window.__webui_templates` (wrapped in `<script>` for SSR, evaluated directly for SPA navigation)
 
 ### Handler Side (`WebUIHydrationPlugin`)
 
