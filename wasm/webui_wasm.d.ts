@@ -1,11 +1,15 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
- * Build the protocol JSON from virtual files without rendering.
+ * Produce a complete JSON partial response for client-side navigation.
  *
- * Returns the serialized `WebUIProtocol` as a JSON string.
+ * Combines application state, route templates, inventory, request path, and
+ * matched route chain into a single JSON string:
+ * `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
+ *
+ * Host servers return this directly — no assembly required.
  */
-export function build_protocol(files: any, entry: string): string;
+export function render_partial(protocol_json: string, state_json: string, entry_id: string, request_path: string, inventory_hex: string): string;
 /**
  * Build and render a WebUI application from virtual files.
  *
@@ -39,15 +43,11 @@ export function build_and_render(files: any, state_json: string, entry: string, 
  */
 export function render(protocol_json: string, state_json: string, entry: string, request_path: string, plugin?: string | null): string;
 /**
- * Produce a complete JSON partial response for client-side navigation.
+ * Build the protocol JSON from virtual files without rendering.
  *
- * Combines application state, route templates, inventory, request path, and
- * matched route chain into a single JSON string:
- * `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
- *
- * Host servers return this directly — no assembly required.
+ * Returns the serialized `WebUIProtocol` as a JSON string.
  */
-export function render_partial(protocol_json: string, state_json: string, entry_id: string, request_path: string, inventory_hex: string): string;
+export function build_protocol(files: any, entry: string): string;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
