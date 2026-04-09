@@ -545,20 +545,10 @@ export class WebUIRouter {
     }
 
     // Execute template registration. Each entry is either:
-    // - "<script>…</script>" (WebUI plugin) — execute JS via a nonced script element
+    // - Raw JS string (WebUI plugin) — execute directly via script element
     // - "<f-template …>…</f-template>" (FAST plugin) — insert as DOM element
     for (const tmpl of data.templates) {
-      if (tmpl.startsWith('<script')) {
-        const start = tmpl.indexOf('>') + 1;
-        const end = tmpl.lastIndexOf('<');
-        if (start > 0 && end > start) {
-          const script = document.createElement('script');
-          if (this.nonce) script.nonce = this.nonce;
-          script.textContent = tmpl.substring(start, end);
-          document.head.appendChild(script);
-          document.head.removeChild(script);
-        }
-      } else {
+      if (tmpl.startsWith('<')) {
         // FAST / DOM-based templates — insert into document for processing
         const container = document.createDocumentFragment();
         const temp = document.createElement('div');
@@ -567,6 +557,13 @@ export class WebUIRouter {
           container.appendChild(temp.firstChild);
         }
         document.body.appendChild(container);
+      } else {
+        // Raw JS body — execute via script element
+        const script = document.createElement('script');
+        if (this.nonce) script.nonce = this.nonce;
+        script.textContent = tmpl;
+        document.head.appendChild(script);
+        document.head.removeChild(script);
       }
     }
 

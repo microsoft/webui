@@ -11,6 +11,8 @@
 
 use super::HandlerPlugin;
 use crate::{ResponseWriter, Result};
+use std::collections::HashSet;
+use webui_protocol::WebUIProtocol;
 
 const REPEAT_START: &str = "<!--wr-->";
 const REPEAT_END: &str = "<!--/wr-->";
@@ -86,6 +88,50 @@ impl HandlerPlugin for WebUIHydrationPlugin {
     }
 
     fn on_element_data(&mut self, _data: &[u8], _writer: &mut dyn ResponseWriter) -> Result<()> {
+        Ok(())
+    }
+
+    /// Emit all WebUI component templates inside a single `<script>` tag
+    /// for SSR.  Templates are raw JS IIFE strings (no `<script>` wrapper)
+    /// stored in the protocol — the `<script>` tag is only added here for
+    /// the SSR HTML output.  Partial SPA responses send the raw JS directly
+    /// and the router evaluates it client-side.
+    fn emit_templates(
+        &self,
+        protocol: &WebUIProtocol,
+        rendered_components: &HashSet<String>,
+        nonce: Option<&str>,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        let mut templates: Vec<&str> = Vec::with_capacity(rendered_components.len());
+
+        for name in rendered_components {
+            if let Some(template) = protocol
+                .components
+                .get(name)
+                .map(|component| component.template.as_str())
+                .filter(|t| !t.is_empty())
+            {
+                templates.push(template);
+            }
+        }
+
+        if templates.is_empty() {
+            return Ok(());
+        }
+
+        if let Some(nonce) = nonce {
+            writer.write("<script nonce=\"")?;
+            writer.write(nonce)?;
+            writer.write("\">\n")?;
+        } else {
+            writer.write("<script>\n")?;
+        }
+        for tmpl in &templates {
+            writer.write(tmpl)?;
+        }
+        writer.write("</script>\n")?;
+
         Ok(())
     }
 }
@@ -277,6 +323,12 @@ mod tests {
         );
     }
 
+    fn iife_template(tag: &str, body: &str) -> String {
+        format!(
+            "(function(){{var w=window.__webui_templates||(window.__webui_templates={{}});w['{tag}']={{{body}}}}})();\n"
+        )
+    }
+
     #[test]
     fn test_on_render_complete_only_emits_rendered_components() {
         let mut writer = TestWriter::new();
@@ -286,22 +338,24 @@ mod tests {
             .components
             .entry("comp-a".to_string())
             .or_default()
-            .template = "<script>/*comp-a*/</script>".to_string();
+            .template = iife_template("comp-a", "h:\"a\"");
         protocol
             .components
             .entry("comp-b".to_string())
             .or_default()
-            .template = "<script>/*comp-b*/</script>".to_string();
+            .template = iife_template("comp-b", "h:\"b\"");
         protocol
             .components
             .entry("comp-c".to_string())
             .or_default()
-            .template = "<script>/*comp-c*/</script>".to_string();
+            .template = iife_template("comp-c", "h:\"c\"");
 
         let mut rendered = std::collections::HashSet::new();
         rendered.insert("comp-a".to_string());
 
-        crate::plugin::emit_rendered_component_templates(&protocol, &rendered, None, &mut writer)
+        let plugin = WebUIHydrationPlugin::new();
+        plugin
+            .emit_templates(&protocol, &rendered, None, &mut writer)
             .unwrap();
 
         assert!(
@@ -329,11 +383,48 @@ mod tests {
             .components
             .entry("comp-a".to_string())
             .or_default()
-            .template = "<script>/*a*/</script>".to_string();
+            .template = iife_template("comp-a", "h:\"a\"");
         let rendered = std::collections::HashSet::new();
-        crate::plugin::emit_rendered_component_templates(&protocol, &rendered, None, &mut writer)
+        let plugin = WebUIHydrationPlugin::new();
+        plugin
+            .emit_templates(&protocol, &rendered, None, &mut writer)
             .unwrap();
         assert_eq!(writer.output, "", "empty rendered set should emit nothing");
+    }
+
+    #[test]
+    fn test_on_render_complete_consolidates_into_single_script() {
+        let mut writer = TestWriter::new();
+
+        let mut protocol = webui_protocol::WebUIProtocol::new(std::collections::HashMap::new());
+        protocol
+            .components
+            .entry("comp-a".to_string())
+            .or_default()
+            .template = iife_template("comp-a", "h:\"a\"");
+        protocol
+            .components
+            .entry("comp-b".to_string())
+            .or_default()
+            .template = iife_template("comp-b", "h:\"b\"");
+
+        let mut rendered = std::collections::HashSet::new();
+        rendered.insert("comp-a".to_string());
+        rendered.insert("comp-b".to_string());
+
+        let plugin = WebUIHydrationPlugin::new();
+        plugin
+            .emit_templates(&protocol, &rendered, None, &mut writer)
+            .unwrap();
+
+        let script_count = writer.output.matches("<script").count();
+        assert_eq!(
+            script_count, 1,
+            "should emit exactly one <script> tag, got {script_count}: {}",
+            writer.output
+        );
+        assert!(writer.output.contains("comp-a"));
+        assert!(writer.output.contains("comp-b"));
     }
 
     #[test]
@@ -347,7 +438,9 @@ mod tests {
             .template = String::new();
         let mut rendered = std::collections::HashSet::new();
         rendered.insert("comp-a".to_string());
-        crate::plugin::emit_rendered_component_templates(&protocol, &rendered, None, &mut writer)
+        let plugin = WebUIHydrationPlugin::new();
+        plugin
+            .emit_templates(&protocol, &rendered, None, &mut writer)
             .unwrap();
         assert_eq!(writer.output, "", "empty template should not be emitted");
     }
@@ -358,7 +451,9 @@ mod tests {
         let protocol = webui_protocol::WebUIProtocol::new(std::collections::HashMap::new());
         let mut rendered = std::collections::HashSet::new();
         rendered.insert("nonexistent-comp".to_string());
-        crate::plugin::emit_rendered_component_templates(&protocol, &rendered, None, &mut writer)
+        let plugin = WebUIHydrationPlugin::new();
+        plugin
+            .emit_templates(&protocol, &rendered, None, &mut writer)
             .unwrap();
         assert_eq!(
             writer.output, "",

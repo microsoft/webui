@@ -560,18 +560,16 @@ pub fn render_partial(
     inventory_hex: &str,
 ) -> Value {
     // Get needed templates (filtered by client inventory).
-    // Each template string is prepended with its CSS module definition
-    // (if any) so the client can insert both as a DocumentFragment.
+    // Each template is a raw JS IIFE string — no <script> wrapper.
     let (templates, updated_inv) =
         get_route_templates_for_request(protocol, entry_id, request_path, inventory_hex);
 
     // Build the matched route chain
     let chain = collect_route_chain(protocol, entry_id, request_path);
 
-    // Assemble the response
     let tmpl_array: Vec<Value> = templates
         .into_iter()
-        .map(|(_, html)| Value::String(html))
+        .map(|(_, js)| Value::String(js))
         .collect();
 
     let chain_array = Value::Array(chain.iter().map(RouteChainEntry::to_json).collect());

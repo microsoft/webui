@@ -84,13 +84,27 @@ pub trait HandlerPlugin {
     ) -> Result<()> {
         Ok(())
     }
+
+    /// Emit component templates collected during SSR.  The default emits
+    /// each template as-is (suitable for FAST `<f-template>` tags).  The
+    /// WebUI plugin overrides this to wrap all raw JS IIFE templates in a
+    /// single `<script>` tag.
+    fn emit_templates(
+        &self,
+        protocol: &WebUIProtocol,
+        rendered_components: &HashSet<String>,
+        _nonce: Option<&str>,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        emit_rendered_component_templates(protocol, rendered_components, writer)
+    }
 }
 
-/// Emit client component templates for only the components rendered in this response.
+/// Default template emission: write each non-empty template verbatim.
+/// Used by the FAST plugin for `<f-template>` tags.
 pub(crate) fn emit_rendered_component_templates(
     protocol: &WebUIProtocol,
     rendered_components: &HashSet<String>,
-    nonce: Option<&str>,
     writer: &mut dyn ResponseWriter,
 ) -> Result<()> {
     for name in rendered_components {
@@ -100,29 +114,8 @@ pub(crate) fn emit_rendered_component_templates(
             .map(|component| component.template.as_str())
             .filter(|template| !template.is_empty())
         {
-            emit_template_script(template, nonce, writer)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn emit_template_script(
-    template: &str,
-    nonce: Option<&str>,
-    writer: &mut dyn ResponseWriter,
-) -> Result<()> {
-    if let Some(nonce) = nonce {
-        if let Some(rest) = template.strip_prefix("<script>") {
-            writer.write("<script nonce=\"")?;
-            writer.write(nonce)?;
-            writer.write("\">")?;
-            writer.write(rest)?;
-        } else {
             writer.write(template)?;
         }
-    } else {
-        writer.write(template)?;
     }
     Ok(())
 }

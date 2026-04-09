@@ -5,8 +5,10 @@
 //!
 //! # Overview
 //!
-//! Compiles HTML templates into structured metadata objects emitted as
-//! `<script>` blocks in the rendered page. Each metadata object contains
+//! Compiles HTML templates into structured metadata objects stored as raw
+//! JS IIFE strings in the protocol. During SSR the handler wraps them in
+//! a single `<script>` tag; during SPA navigation the router evaluates
+//! them directly. Each metadata object contains
 //! **marker-free static HTML** plus locator arrays for client-created DOM
 //! (`tx`, `ag`, `cl`, `rl`, `el`) and semantic arrays (`a`, `c`, `r`, `e`,
 //! `re`, `b`). The client runtime resolves those locators once and then
@@ -56,7 +58,7 @@
 //! 3. **`register_component_template`** — caches the component's final template
 //!    HTML for later compilation (deduplicates by tag name).
 //! 4. **`take_component_templates`** — called after parsing is complete;
-//!    compiles each tracked component into a `<script>` block.
+//!    compiles each tracked component into a raw JS IIFE string.
 
 use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use crate::component_registry::Component;
@@ -77,7 +79,7 @@ struct TrackedComponent {
 /// WebUI Framework parser plugin.
 ///
 /// Intercepts `@event` attributes and component registrations during parsing,
-/// then compiles each component's HTML template into a metadata `<script>` block.
+/// then compiles each component's HTML template into a metadata JS IIFE string.
 ///
 /// # Event tracking
 ///
@@ -299,15 +301,20 @@ enum CompiledAttrPart {
     Dynamic(String),
 }
 
-/// Generate a compiled template `<script>` block with a metadata object.
+/// Generate a compiled template as a raw JS IIFE string.
+///
+/// The output is a self-executing function that registers the component's
+/// metadata on `window.__webui_templates[tagName]`.  During SSR, the
+/// handler wraps one or more of these in a single `<script>` tag.  During
+/// SPA partial navigation, the router evaluates them directly.
 ///
 /// # Flow
 ///
 /// 1. Extract `@event` bindings from the `<template>` wrapper (→ `root_events`).
 /// 2. Strip the `<template shadowrootmode="…">` wrapper if present.
 /// 3. Compile the inner body via [`compile_to_metadata`].
-/// 4. Serialize into a self-executing `<script>` IIFE that registers
-///    the metadata on `window.__webui_templates[tagName]`.
+/// 4. Serialize into a self-executing IIFE that registers the metadata
+///    on `window.__webui_templates[tagName]`.
 ///
 /// # Compilation rules
 ///
@@ -341,7 +348,6 @@ fn generate_compiled_template_with_root_source(
     let meta = compile_to_metadata(body, root_events);
 
     let mut out = String::with_capacity(512 + html_content.len());
-    out.push_str("<script>\n");
     out.push_str("(function(){var w=window.__webui_templates||(window.__webui_templates={});w['");
     out.push_str(tag_name);
     out.push_str("']={");
@@ -391,7 +397,6 @@ fn generate_compiled_template_with_root_source(
     }
 
     out.push_str("};})();\n");
-    out.push_str("</script>\n");
     out
 }
 
