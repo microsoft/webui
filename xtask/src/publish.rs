@@ -561,6 +561,16 @@ fn pack_npm_tarballs(root: &Path) -> Result<(), String> {
 
         let pkg_name = entry.file_name().to_string_lossy().to_string();
 
+        // Skip private packages — they must not be published
+        if is_private_package(&path) {
+            eprintln!(
+                "  {} [npm] @microsoft/{} (private, skipped)",
+                console::style("·").dim(),
+                console::style(&pkg_name).bold(),
+            );
+            continue;
+        }
+
         // Run pnpm pack in the package directory
         let mut cmd = build_command(
             "pnpm",
@@ -596,6 +606,18 @@ fn pack_npm_tarballs(root: &Path) -> Result<(), String> {
         console::style(count).bold(),
     );
     Ok(())
+}
+
+/// Returns `true` if the `package.json` in `pkg_dir` has `"private": true`.
+fn is_private_package(pkg_dir: &Path) -> bool {
+    let pkg_json_path = pkg_dir.join("package.json");
+    let Ok(contents) = fs::read_to_string(&pkg_json_path) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return false;
+    };
+    json.get("private").and_then(serde_json::Value::as_bool) == Some(true)
 }
 
 // ── Phase 3: NuGet packaging ────────────────────────────────────────────
@@ -1043,5 +1065,44 @@ mod tests {
             triple.contains('-'),
             "host triple should contain a dash: {triple}"
         );
+    }
+
+    #[test]
+    fn test_is_private_package_true() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"name": "@microsoft/webui-test-support", "private": true}"#,
+        )
+        .unwrap();
+        assert!(is_private_package(dir.path()));
+    }
+
+    #[test]
+    fn test_is_private_package_false_when_absent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"name": "@microsoft/webui"}"#,
+        )
+        .unwrap();
+        assert!(!is_private_package(dir.path()));
+    }
+
+    #[test]
+    fn test_is_private_package_false_when_explicit_false() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"name": "@microsoft/webui", "private": false}"#,
+        )
+        .unwrap();
+        assert!(!is_private_package(dir.path()));
+    }
+
+    #[test]
+    fn test_is_private_package_no_package_json() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(!is_private_package(dir.path()));
     }
 }
