@@ -50,7 +50,8 @@ fn route_key_from_path(route_path: &str) -> &str {
     }
 }
 
-pub(crate) fn build_route_state(req: &RouteStateRequest<'_>) -> Option<Value> {
+/// Build page state and return image preload URLs for the `Link` header.
+pub(crate) fn build_route_state(req: &RouteStateRequest<'_>) -> Option<(Value, Vec<String>)> {
     let (context, query) = build_shell_context(req.catalog, req.request_path, req.cart_state);
     let query_text = query.q.as_deref().unwrap_or_default();
     let requested_sort = query.sort.as_deref();
@@ -78,6 +79,8 @@ pub(crate) fn build_route_state(req: &RouteStateRequest<'_>) -> Option<Value> {
             let handle = req.params.get("handle")?;
             catalog_pages::product_state(&context, handle, req.is_partial)
         }
-        _ => content_pages::static_page_state(&context, key, req.is_partial),
+        _ => {
+            content_pages::static_page_state(&context, key, req.is_partial).map(|v| (v, Vec::new()))
+        }
     }
 }

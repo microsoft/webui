@@ -21,6 +21,10 @@ struct CartResponseOptions<'a> {
 }
 
 pub(crate) fn configure_app(cfg: &mut web::ServiceConfig) {
+    cfg.route(
+        "/_image/{stem}",
+        web::get().to(crate::image_proxy::serve_image),
+    );
     cfg.service(web::scope("/cart").configure(configure_cart_routes));
     configure_frontend_routes(cfg);
 }
@@ -47,13 +51,14 @@ async fn handle_frontend_request(
     let route_params = data.frontend().collect_route_params(context.route_path());
     let stable_path = cart::without_cart(context.request_path());
     let cart_state = build_cart_state(&context.cart_read().cart, data.catalog(), &stable_path);
-    let page_state = state::build_route_state(&state::RouteStateRequest {
+    let is_partial = context.wants_json();
+    let (page_state, image_preloads) = state::build_route_state(&state::RouteStateRequest {
         catalog: data.catalog(),
         route_path: context.route_path(),
         params: &route_params,
         request_path: context.request_path(),
         cart_state: &cart_state,
-        is_partial: context.wants_json(),
+        is_partial,
     })
     .ok_or(ServerError::NotFound)?;
 
@@ -61,12 +66,16 @@ async fn handle_frontend_request(
         return Ok(partial_response(&context, data.get_ref(), &page_state));
     }
 
+    let css_preloads = data.frontend().css_preload_hrefs(context.route_path());
+    let css_refs: Vec<&str> = css_preloads.iter().map(|s| s.as_str()).collect();
+    let img_refs: Vec<&str> = image_preloads.iter().map(|s| s.as_str()).collect();
     let nonce = security::generate_nonce();
     let html = data
         .frontend()
         .render_html(context.route_path(), &page_state, &nonce)
         .map_err(ServerError::RenderFailed)?;
-    Ok(html_response(&context, html, &nonce))
+    let link_header = build_link_header(&css_refs, &img_refs);
+    Ok(html_response(&context, html, &nonce, &link_header))
 }
 
 async fn add_to_cart(
@@ -175,16 +184,59 @@ fn partial_response(
     builder.json(payload)
 }
 
-fn html_response(context: &RequestContext, html: String, nonce: &str) -> HttpResponse {
+fn html_response(
+    context: &RequestContext,
+    html: String,
+    nonce: &str,
+    link_header: &str,
+) -> HttpResponse {
     let mut builder = HttpResponse::Ok();
     builder.content_type("text/html; charset=utf-8");
     builder.insert_header(("Cache-Control", "private, no-store"));
     builder.insert_header(("Vary", "Accept, Cookie"));
     builder.insert_header(("Content-Security-Policy", security::csp_header(nonce)));
+    if !link_header.is_empty() {
+        builder.insert_header(("Link", link_header.to_string()));
+    }
     if context.cart_read().should_reset {
         builder.cookie(clear_cookie());
     }
     builder.body(html)
+}
+
+/// Build an HTTP `Link` header value for early resource hints.
+///
+/// The browser processes `Link` headers before it even begins parsing the
+/// HTML body, giving CSS, JS, and images a head start.  The first image
+/// gets `fetchpriority=high` for LCP optimization.
+fn build_link_header(css_hrefs: &[&str], image_urls: &[&str]) -> String {
+    let capacity = 40 + css_hrefs.len() * 50 + image_urls.len() * 80;
+    let mut parts = Vec::with_capacity(1 + css_hrefs.len() + image_urls.len());
+
+    parts.push("</index.js>; rel=modulepreload".to_string());
+
+    for href in css_hrefs {
+        parts.push(format!("<{href}>; rel=preload; as=style"));
+    }
+
+    for (i, url) in image_urls.iter().enumerate() {
+        if i == 0 {
+            parts.push(format!(
+                "<{url}>; rel=preload; as=image; fetchpriority=high"
+            ));
+        } else {
+            parts.push(format!("<{url}>; rel=preload; as=image"));
+        }
+    }
+
+    let mut buf = String::with_capacity(capacity);
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            buf.push_str(", ");
+        }
+        buf.push_str(part);
+    }
+    buf
 }
 
 fn cart_response(
@@ -396,5 +448,52 @@ mod tests {
         let response = test::call_service(&app, request).await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[actix_web::test]
+    async fn image_proxy_serves_cached_image() {
+        let app =
+            test::init_service(App::new().app_data(test_state()).configure(configure_app)).await;
+
+        let request = TestRequest::get()
+            .uri("/_image/baby-cap-white?w=256&q=75")
+            .to_request();
+        let response = test::call_service(&app, request).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(content_type, "image/avif");
+
+        let cache_control = response
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(cache_control.contains("immutable"));
+
+        let body = match to_bytes(response.into_body()).await {
+            Ok(body) => body,
+            Err(error) => panic!("{error}"),
+        };
+        // AVIF files start with an ftyp box
+        assert!(body.len() > 12);
+        assert_eq!(&body[4..8], b"ftyp");
+    }
+
+    #[actix_web::test]
+    async fn image_proxy_returns_404_for_unknown_image() {
+        let app =
+            test::init_service(App::new().app_data(test_state()).configure(configure_app)).await;
+
+        let request = TestRequest::get()
+            .uri("/_image/no-such-image?w=96&q=75")
+            .to_request();
+        let response = test::call_service(&app, request).await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

@@ -6,12 +6,14 @@ use std::path::Path;
 
 use crate::catalog::Catalog;
 use crate::frontend::FrontendRuntime;
+use crate::image_proxy::ImageCache;
 use crate::rate_limit::RateLimiter;
 
 pub(crate) struct AppState {
     catalog: Catalog,
     frontend: FrontendRuntime,
     rate_limiter: RateLimiter,
+    image_cache: ImageCache,
 }
 
 impl AppState {
@@ -20,10 +22,12 @@ impl AppState {
         let catalog = Catalog::generate();
         // 60 mutation requests per IP per minute
         let rate_limiter = RateLimiter::new(60, 60);
+        let image_cache = ImageCache::load(&app_root.join("images"))?;
         Ok(Self {
             catalog,
             frontend,
             rate_limiter,
+            image_cache,
         })
     }
 
@@ -40,6 +44,16 @@ impl AppState {
     #[must_use]
     pub(crate) fn product_count(&self) -> usize {
         self.catalog.product_count()
+    }
+
+    #[must_use]
+    pub(crate) fn image_count(&self) -> usize {
+        self.image_cache.len()
+    }
+
+    #[must_use]
+    pub(crate) fn image_cache(&self) -> &ImageCache {
+        &self.image_cache
     }
 
     #[must_use]

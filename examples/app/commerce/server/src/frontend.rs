@@ -61,6 +61,44 @@ impl FrontendRuntime {
         route_handler::collect_nested_route_params(&self.protocol, &self.entry, route_path)
     }
 
+    /// Return the CSS preload hrefs for all components discovered on the
+    /// given route.  For Light DOM components, uses `css_href` from the
+    /// protocol.  For Shadow DOM components (where `css_href` is empty),
+    /// checks if the server has a CSS file at `/{tag}.css` in `css_files`.
+    /// Return the CSS `<link>` preload hrefs for all components discovered
+    /// on the given route.  Works for both Light DOM (where `css_href` is
+    /// set) and Shadow DOM (where CSS is embedded in shadow roots but still
+    /// served as external files by the server).
+    #[must_use]
+    pub fn css_preload_hrefs(&self, route_path: &str) -> Vec<String> {
+        let (components, _) = route_handler::get_needed_components_for_request(
+            &self.protocol,
+            &self.entry,
+            route_path,
+            "",
+        );
+        let mut hrefs: Vec<String> = components
+            .iter()
+            .filter_map(|tag| {
+                // Shadow DOM: css_href is empty but the file is served at /{tag}.css
+                // Light DOM: css_href is set directly
+                let comp = self.protocol.components.get(tag)?;
+                if !comp.css_href.is_empty() {
+                    return Some(comp.css_href.clone());
+                }
+                let filename = format!("{tag}.css");
+                if self.css_files.contains_key(&filename) {
+                    Some(format!("/{filename}"))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        hrefs.sort_unstable();
+        hrefs.dedup();
+        hrefs
+    }
+
     pub fn render_html(&self, route_path: &str, state: &Value, nonce: &str) -> Result<String> {
         let mut writer = MemoryWriter::with_capacity(16_384);
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
@@ -95,10 +133,12 @@ impl FrontendRuntime {
     #[must_use]
     pub fn serve_asset(&self, relative: &str) -> Option<HttpResponse> {
         if let Some(css) = self.css_files.get(relative) {
+            // CSS filenames are not content-hashed, so use a moderate
+            // max-age with revalidation instead of immutable.
             return Some(
                 HttpResponse::Ok()
                     .content_type("text/css; charset=utf-8")
-                    .insert_header(("Cache-Control", "public, max-age=86400"))
+                    .insert_header(("Cache-Control", "public, max-age=86400, must-revalidate"))
                     .body(css.clone()),
             );
         }

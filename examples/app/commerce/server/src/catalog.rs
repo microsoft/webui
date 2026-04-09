@@ -75,13 +75,13 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme T-Shirt",
         description: "60% combed ringspun cotton/40% polyester jersey tee.",
         description_html: r#"<p>60% combed ringspun cotton/40% polyester jersey tee.</p>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-color-black.png?v=1690003675",
+        image_url: "t-shirt-color-black",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-color-black.png?v=1690003675",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-color-blue.png?v=1690003675",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-color-gray.png?v=1690003676",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-color-pink.png?v=1690003675",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-color-white.png?v=1690003675",
+            "t-shirt-color-black",
+            "t-shirt-color-blue",
+            "t-shirt-color-gray",
+            "t-shirt-color-pink",
+            "t-shirt-color-white",
         ],
         price: 20.00,
         collections: &[
@@ -94,12 +94,12 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme Prism T-Shirt",
         description: "60% combed ringspun cotton/40% polyester jersey tee.",
         description_html: r#"<p>60% combed ringspun cotton/40% polyester jersey tee.</p>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-spiral-1.png?v=1690003571",
+        image_url: "t-shirt-spiral-1",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-spiral-1.png?v=1690003571",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-spiral-2.png?v=1690003571",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-spiral-3.png?v=1690003571",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-spiral-4.png?v=1690003572",
+            "t-shirt-spiral-1",
+            "t-shirt-spiral-2",
+            "t-shirt-spiral-3",
+            "t-shirt-spiral-4",
         ],
         price: 25.00,
         collections: &[
@@ -112,11 +112,11 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme Circles T-Shirt",
         description: "60% combed ringspun cotton/40% polyester jersey tee.",
         description_html: r#"<p>60% combed ringspun cotton/40% polyester jersey tee.</p>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-1.png?v=1689798965",
+        image_url: "t-shirt-1",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-1.png?v=1689798965",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-2.png?v=1689798965",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/t-shirt-circles-blue.png?v=1690003396",
+            "t-shirt-1",
+            "t-shirt-2",
+            "t-shirt-circles-blue",
         ],
         price: 20.00,
         collections: &[
@@ -142,10 +142,10 @@ const PRODUCT_DEFS: &[ProductDef] = &[
 <span style="font-size: 0.875rem;">Sturdy, reusable, and resilient</span><br>
 </li>
 </ul>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/bag-1-dark.png?v=1689796304",
+        image_url: "bag-1-dark",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/bag-1-dark.png?v=1689796304",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/bag-1-light.png?v=1689796304",
+            "bag-1-dark",
+            "bag-1-light",
         ],
         price: 12.00,
         collections: &[
@@ -158,10 +158,10 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme Cup",
         description: "12oz double wall ceramic body with a padded bottom.",
         description_html: r#"<p>12oz double wall ceramic body with a padded bottom.</p>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/cup-black.png?v=1690003088",
+        image_url: "cup-black",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/cup-black.png?v=1690003088",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/cup-white.png?v=1690003088",
+            "cup-black",
+            "cup-white",
         ],
         price: 15.00,
         collections: &[
@@ -174,10 +174,10 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme Mug",
         description: "12 oz Beck Cork-Bottom Mug.",
         description_html: r#"<p>12 oz Beck Cork-Bottom Mug.</p>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/mug-1.png?v=1690003527",
+        image_url: "mug-1",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/mug-1.png?v=1690003527",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/mug-2.png?v=1690003527",
+            "mug-1",
+            "mug-2",
         ],
         price: 15.00,
         collections: &[
@@ -190,9 +190,9 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme Keyboard",
         description: "",
         description_html: "",
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/keyboard.png?v=1690003507",
+        image_url: "keyboard",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/keyboard.png?v=1690003507",
+            "keyboard",
         ],
         price: 150.00,
         collections: &[
@@ -223,12 +223,12 @@ const PRODUCT_DEFS: &[ProductDef] = &[
 <span style="font-size: 0.875rem;">Signature rubber waffle outsoles</span><br>
 </li>
 </ul>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/shoes-1.png?v=1690004109",
+        image_url: "shoes-1",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/shoes-1.png?v=1690004109",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/shoes-2.png?v=1690004110",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/shoes-3.png?v=1690004110",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/shoes-4.png?v=1690004110",
+            "shoes-1",
+            "shoes-2",
+            "shoes-3",
+            "shoes-4",
         ],
         price: 45.00,
         collections: &[
@@ -241,11 +241,11 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme Baby Cap",
         description: "100% combed ringspun cotton",
         description_html: r#"<p>100% combed ringspun cotton</p>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/baby-cap-black.png?v=1690002570",
+        image_url: "baby-cap-black",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/baby-cap-black.png?v=1690002570",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/baby-cap-gray.png?v=1690002570",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/baby-cap-white.png?v=1690002570",
+            "baby-cap-black",
+            "baby-cap-gray",
+            "baby-cap-white",
         ],
         price: 10.00,
         collections: &[
@@ -269,13 +269,13 @@ const PRODUCT_DEFS: &[ProductDef] = &[
 <li>American Buffalo Collection</li>
 <li>Made in the USA</li>
 </ul>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/cowboy-hat-black-1.png?v=1690208765",
+        image_url: "cowboy-hat-black-1",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/cowboy-hat-black-1.png?v=1690208765",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/cowboy-hat-black-2.png?v=1690208765",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/cowboy-hat-black-3.png?v=1690208765",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/cowboy-hat-black-4.png?v=1690208858",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/cowboy-hat-black-5.png?v=1690208858",
+            "cowboy-hat-black-1",
+            "cowboy-hat-black-2",
+            "cowboy-hat-black-3",
+            "cowboy-hat-black-4",
+            "cowboy-hat-black-5",
         ],
         price: 160.00,
         collections: &[
@@ -288,11 +288,11 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme Cap",
         description: "100% peach-washed cotton.",
         description_html: r#"<p>100% peach-washed cotton.</p>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/hat-1.png?v=1690002833",
+        image_url: "hat-1",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/hat-1.png?v=1690002833",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/hat-2.png?v=1690002833",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/hat-3.png?v=1690002833",
+            "hat-1",
+            "hat-2",
+            "hat-3",
         ],
         price: 20.00,
         collections: &[
@@ -305,10 +305,10 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme Hoodie",
         description: "Fabric blend of Supima Cotton and Micromodal.",
         description_html: r#"<p>Fabric blend of Supima Cotton and Micromodal.</p>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/hoodie-1.png?v=1690003482",
+        image_url: "hoodie-1",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/hoodie-1.png?v=1690003482",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/hoodie-2.png?v=1690003482",
+            "hoodie-1",
+            "hoodie-2",
         ],
         price: 50.00,
         collections: &[
@@ -321,10 +321,10 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme Bomber Jacket",
         description: "The multi-season must-have jacket: light and classic for daily wear, with a soft fleece lining for extra warmth.",
         description_html: r#"<p>The multi-season must-have jacket: light and classic for daily wear, with a soft fleece lining for extra warmth.</p>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/bomber-jacket-army.png?v=1690002722",
+        image_url: "bomber-jacket-army",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/bomber-jacket-army.png?v=1690002722",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/bomber-jacket-black.png?v=1690002722",
+            "bomber-jacket-army",
+            "bomber-jacket-black",
         ],
         price: 50.00,
         collections: &[
@@ -337,13 +337,13 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme Baby Onesie",
         description: "Short sleeve 5-oz, 100% combed ringspun cotton onesie",
         description_html: r#"<p>Short sleeve 5-oz, 100% combed ringspun cotton onesie</p>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/baby-onesie-beige-1.png?v=1690002632",
+        image_url: "baby-onesie-beige-1",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/baby-onesie-beige-1.png?v=1690002632",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/baby-onesie-beige-2.png?v=1690002631",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/baby-onesie-black-1.png?v=1690002631",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/baby-onesie-black-2.png?v=1690002632",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/baby-onesie-white-1.png?v=1690002631",
+            "baby-onesie-beige-1",
+            "baby-onesie-beige-2",
+            "baby-onesie-black-1",
+            "baby-onesie-black-2",
+            "baby-onesie-white-1",
         ],
         price: 10.00,
         collections: &[
@@ -356,10 +356,10 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme Pacifier",
         description: r#"This line of pacifiers has been thoughtfully designed for your baby's comfort. The pacifier allows your child to self-soothe in the most natural way possible."#,
         description_html: r#"<p>This line of pacifiers has been thoughtfully designed for your baby's comfort. The pacifier allows your child to self-soothe in the most natural way possible.</p>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/pacifier-1.png?v=1690003544",
+        image_url: "pacifier-1",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/pacifier-1.png?v=1690003544",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/pacifier-2.png?v=1690003544",
+            "pacifier-1",
+            "pacifier-2",
         ],
         price: 10.00,
         collections: &[
@@ -372,10 +372,10 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme Dog Sweater",
         description: r#"Keep your dog warm all winter long - When the cold weather hits, make sure your dog isn't shivering and stays warm with the soft and stretchy fleece dog sweater. Made with 90% polyester & 5% polyurethane to keep moisture out, freezing rain or snow, and to help keep warm air in, so your dog always stays warm. Our dog clothing is safe, durable, and made to last."#,
         description_html: r#"<p>Keep your dog warm all winter long - When the cold weather hits, make sure your dog isn't shivering and stays warm with the soft and stretchy fleece dog sweater. Made with 90% polyester &amp; 5% polyurethane to keep moisture out, freezing rain or snow, and to help keep warm air in, so your dog always stays warm. Our dog clothing is safe, durable, and made to last.</p>"#,
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/dog-sweater-1.png?v=1690003132",
+        image_url: "dog-sweater-1",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/dog-sweater-1.png?v=1690003132",
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/dog-sweater-2.png?v=1690003132",
+            "dog-sweater-1",
+            "dog-sweater-2",
         ],
         price: 20.00,
         collections: &[
@@ -388,9 +388,9 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme Sticker",
         description: "",
         description_html: "",
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/sticker.png?v=1690003619",
+        image_url: "sticker",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/sticker.png?v=1690003619",
+            "sticker",
         ],
         price: 4.00,
         collections: &[
@@ -403,9 +403,9 @@ const PRODUCT_DEFS: &[ProductDef] = &[
         title: "Acme Rainbow Sticker",
         description: "",
         description_html: "",
-        image_url: "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/sticker-rainbow.png?v=1690003602",
+        image_url: "sticker-rainbow",
         gallery_image_urls: &[
-            "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/sticker-rainbow.png?v=1690003602",
+            "sticker-rainbow",
         ],
         price: 4.00,
         collections: &[
@@ -654,12 +654,12 @@ impl Catalog {
                 category: primary_collection.to_string(),
                 gradient,
                 gradient_alt,
-                image_url: def.image_url.to_string(),
-                image_alt_url: image_alt_url.to_string(),
+                image_url: format!("/_image/{}", def.image_url),
+                image_alt_url: format!("/_image/{}", image_alt_url),
                 gallery_image_urls: def
                     .gallery_image_urls
                     .iter()
-                    .map(|url| (*url).to_string())
+                    .map(|url| format!("/_image/{}", url))
                     .collect(),
                 available: true,
                 tags,

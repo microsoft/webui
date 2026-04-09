@@ -54,7 +54,7 @@ mod tests {
             cart_state: &cart_state,
             is_partial: false,
         }) {
-            Some(state) => state,
+            Some((state, _)) => state,
             None => panic!("expected product state"),
         };
 
@@ -77,7 +77,7 @@ mod tests {
             cart_state: &cart_state,
             is_partial: false,
         }) {
-            Some(state) => state,
+            Some((state, _)) => state,
             None => panic!("expected about content state"),
         };
 
@@ -101,7 +101,7 @@ mod tests {
             cart_state: &cart_state,
             is_partial: false,
         }) {
-            Some(state) => state,
+            Some((state, _)) => state,
             None => panic!("expected category state"),
         };
 
@@ -123,7 +123,7 @@ mod tests {
             cart_state: &cart_state,
             is_partial: true,
         }) {
-            Some(state) => state,
+            Some((state, _)) => state,
             None => panic!("expected partial state"),
         };
 
@@ -142,12 +142,12 @@ mod tests {
     }
 
     #[test]
-    fn home_state_includes_preload_tags_in_head_end() {
+    fn home_state_returns_image_preloads() {
         let catalog = Catalog::generate();
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/");
         let params = std::collections::HashMap::new();
 
-        let state = match build_route_state(&RouteStateRequest {
+        let (_, image_preloads) = match build_route_state(&RouteStateRequest {
             catalog: &catalog,
             route_path: "/",
             params: &params,
@@ -155,32 +155,27 @@ mod tests {
             cart_state: &cart_state,
             is_partial: false,
         }) {
-            Some(state) => state,
+            Some(result) => result,
             None => panic!("expected home state"),
         };
 
-        let head_end = state["head_end"].as_str().unwrap_or("");
         assert!(
-            head_end.contains("rel=\"preload\""),
-            "head_end should contain preload links"
+            !image_preloads.is_empty(),
+            "home page should have image preloads"
         );
         assert!(
-            head_end.contains("as=\"image\""),
-            "preload links should target images"
-        );
-        assert!(
-            head_end.contains("cdn.shopify.com"),
-            "preload links should reference image CDN"
+            image_preloads[0].contains("/_image/"),
+            "image preloads should reference image proxy"
         );
     }
 
     #[test]
-    fn home_partial_excludes_head_end() {
+    fn home_partial_returns_no_image_preloads() {
         let catalog = Catalog::generate();
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/");
         let params = std::collections::HashMap::new();
 
-        let state = match build_route_state(&RouteStateRequest {
+        let (state, image_preloads) = match build_route_state(&RouteStateRequest {
             catalog: &catalog,
             route_path: "/",
             params: &params,
@@ -188,10 +183,14 @@ mod tests {
             cart_state: &cart_state,
             is_partial: true,
         }) {
-            Some(state) => state,
+            Some(result) => result,
             None => panic!("expected home partial state"),
         };
 
+        assert!(
+            image_preloads.is_empty(),
+            "partial response should not include image preloads"
+        );
         assert!(
             state.get("head_end").is_none(),
             "partial response should not include head_end"
@@ -199,14 +198,14 @@ mod tests {
     }
 
     #[test]
-    fn product_state_includes_preload_tag_in_head_end() {
+    fn product_state_returns_image_preloads() {
         let catalog = Catalog::generate();
         let cart_state =
             build_cart_state(&StoredCart::default(), &catalog, "/product/acme-t-shirt");
         let params =
             std::collections::HashMap::from([("handle".to_string(), "acme-t-shirt".to_string())]);
 
-        let state = match build_route_state(&RouteStateRequest {
+        let (_, image_preloads) = match build_route_state(&RouteStateRequest {
             catalog: &catalog,
             route_path: "/product/acme-t-shirt",
             params: &params,
@@ -214,28 +213,25 @@ mod tests {
             cart_state: &cart_state,
             is_partial: false,
         }) {
-            Some(state) => state,
+            Some(result) => result,
             None => panic!("expected product state"),
         };
 
-        let head_end = state["head_end"].as_str().unwrap_or("");
-        assert!(
-            head_end.contains("rel=\"preload\""),
-            "product head_end should contain preload link"
+        assert_eq!(
+            image_preloads.len(),
+            1,
+            "product page should preload hero image"
         );
-        assert!(
-            head_end.contains("fetchpriority=\"high\""),
-            "product image preload should have high fetchpriority"
-        );
+        assert!(image_preloads[0].contains("/_image/"));
     }
 
     #[test]
-    fn search_state_includes_preload_tag_in_head_end() {
+    fn search_state_returns_image_preloads() {
         let catalog = Catalog::generate();
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/search");
         let params = std::collections::HashMap::new();
 
-        let state = match build_route_state(&RouteStateRequest {
+        let (_, image_preloads) = match build_route_state(&RouteStateRequest {
             catalog: &catalog,
             route_path: "/search",
             params: &params,
@@ -243,25 +239,24 @@ mod tests {
             cart_state: &cart_state,
             is_partial: false,
         }) {
-            Some(state) => state,
+            Some(result) => result,
             None => panic!("expected search state"),
         };
 
-        let head_end = state["head_end"].as_str().unwrap_or("");
         assert!(
-            head_end.contains("rel=\"preload\""),
-            "search head_end should contain preload link for first product"
+            !image_preloads.is_empty(),
+            "search page should preload first product image"
         );
     }
 
     #[test]
-    fn category_state_includes_preload_tag_in_head_end() {
+    fn category_state_returns_image_preloads() {
         let catalog = Catalog::generate();
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/search/shirts");
         let params =
             std::collections::HashMap::from([("category".to_string(), "shirts".to_string())]);
 
-        let state = match build_route_state(&RouteStateRequest {
+        let (_, image_preloads) = match build_route_state(&RouteStateRequest {
             catalog: &catalog,
             route_path: "/search/shirts",
             params: &params,
@@ -269,14 +264,13 @@ mod tests {
             cart_state: &cart_state,
             is_partial: false,
         }) {
-            Some(state) => state,
+            Some(result) => result,
             None => panic!("expected category state"),
         };
 
-        let head_end = state["head_end"].as_str().unwrap_or("");
         assert!(
-            head_end.contains("rel=\"preload\""),
-            "category head_end should contain preload link for first product"
+            !image_preloads.is_empty(),
+            "category page should preload first product image"
         );
     }
 }

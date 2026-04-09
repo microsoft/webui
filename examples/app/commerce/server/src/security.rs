@@ -37,7 +37,7 @@ pub(crate) fn csp_header(nonce: &str) -> String {
         "default-src 'self'; \
          script-src 'self' 'nonce-{nonce}'; \
          style-src 'self' 'unsafe-inline'; \
-         img-src 'self' https://cdn.shopify.com; \
+         img-src 'self'; \
          font-src 'self'; \
          frame-ancestors 'none'"
     )
@@ -81,18 +81,24 @@ pub(crate) fn client_ip(req: &actix_web::HttpRequest) -> Option<std::net::IpAddr
 ///   Same-origin form submissions may omit both in some browsers/proxies
 ///   and test harnesses.
 pub(crate) fn passes_csrf_check(req: &actix_web::HttpRequest) -> bool {
-    let host = req.headers().get("host").and_then(|v| v.to_str().ok());
+    // HTTP/2 uses the `:authority` pseudo-header instead of `Host`.
+    // `connection_info().host()` handles both transparently.
+    let info = req.connection_info();
+    let host = info.host();
+    if host.is_empty() {
+        // No host available — can't validate Origin/Referer.
+        // Allow only when neither is present (same-origin or non-browser).
+        return req.headers().get("origin").is_none() && req.headers().get("referer").is_none();
+    }
     let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
     let referer = req.headers().get("referer").and_then(|v| v.to_str().ok());
 
     if let Some(origin) = origin {
-        // Origin present → must match, and Host must be present to validate.
-        return host.is_some_and(|host| origin_matches_host(origin, host));
+        return origin_matches_host(origin, host);
     }
 
     if let Some(referer) = referer {
-        // Referer present → must match, and Host must be present to validate.
-        return host.is_some_and(|host| referer_matches_host(referer, host));
+        return referer_matches_host(referer, host);
     }
 
     // Neither Origin nor Referer → same-origin or non-browser client.

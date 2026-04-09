@@ -1,15 +1,13 @@
-<template shadowrootmode="open">
-  <div class="media">
-    <if condition="imageUrl">
-      <img
-        src="{{imageUrl}}"
-        alt="{{alt}}"
-        width="800"
-        height="800"
-        loading="{{loading}}"
-        decoding="{{decoding}}"
-        fetchpriority="{{fetchPriority}}"
-      />
-    </if>
-  </div>
-</template>
+<div class="media">
+  <if condition="imageUrl">
+    <img
+      src="{{imageUrl}}?w={{proxyWidth}}&q=75"
+      alt="{{alt}}"
+      width="{{proxyWidth}}"
+      height="{{proxyHeight}}"
+      loading="{{loading}}"
+      decoding="{{decoding}}"
+      fetchpriority="{{fetchPriority}}"
+    />
+  </if>
+</div>

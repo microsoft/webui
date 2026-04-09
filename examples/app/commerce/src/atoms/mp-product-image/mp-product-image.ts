@@ -11,6 +11,8 @@ export class MpProductImage extends WebUIElement {
   @attr loading = 'lazy';
   @attr decoding = 'async';
   @attr({ attribute: 'fetch-priority' }) fetchPriority = 'auto';
+  @attr({ attribute: 'proxy-width' }) proxyWidth = '640';
+  @attr({ attribute: 'proxy-height' }) proxyHeight = '640';
 }
 
 MpProductImage.define('mp-product-image');

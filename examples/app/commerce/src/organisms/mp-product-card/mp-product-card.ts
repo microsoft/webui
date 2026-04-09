@@ -15,6 +15,8 @@ export class MpProductCard extends WebUIElement {
   @attr variant = 'grid';
   @attr({ attribute: 'image-loading' }) imageLoading = 'lazy';
   @attr({ attribute: 'image-fetch-priority' }) imageFetchPriority = 'auto';
+  @attr({ attribute: 'image-width' }) imageWidth = '640';
+  @attr({ attribute: 'image-height' }) imageHeight = '640';
 
   handleChanged(): void {
     this.applyViewTransitionName();

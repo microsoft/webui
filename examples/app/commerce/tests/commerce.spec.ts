@@ -20,9 +20,9 @@ const PLACEHOLDER_PNG = Buffer.from(
   'base64',
 );
 
-// Mock all CDN image requests so tests are hermetic (no network, no flakiness)
+// Mock all image proxy requests so tests are hermetic (no resize overhead)
 test.beforeEach(async ({ page }) => {
-  await page.route('**/cdn.shopify.com/**', (route) =>
+  await page.route('**/_image/**', (route) =>
     route.fulfill({ contentType: 'image/png', body: PLACEHOLDER_PNG }),
   );
 });

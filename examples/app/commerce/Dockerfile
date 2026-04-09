@@ -62,6 +62,7 @@ WORKDIR /app
 COPY --from=builder /build/target/release/marketplace-api /usr/local/bin/marketplace-api
 COPY --from=builder --chown=app:app /build/examples/app/commerce/src/ ./src/
 COPY --from=builder --chown=app:app /build/examples/app/commerce/dist/ ./dist/
+COPY --from=builder --chown=app:app /build/examples/app/commerce/images/ ./images/
 
 USER app
 EXPOSE 3004
@@ -71,4 +72,4 @@ EXPOSE 3004
 # If unset, the server generates an ephemeral per-process key (carts do not
 # survive restarts).
 
-CMD ["marketplace-api", "--port", "3004"]
+CMD ["marketplace-api", "--port", "3004", "--no-tls"]
