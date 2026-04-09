@@ -51,35 +51,36 @@ extends:
           - checkout: self
             persistCredentials: "true"
 
-          - script: |
-              sudo mkdir -p -m 755 /etc/apt/keyrings
-              wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-                | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
-              sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-                | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-              sudo apt-get update -qq
-              sudo apt-get install -y gh
-            displayName: Install GitHub CLI
+          - task: DownloadGitHubRelease@0
+            displayName: Download latest GitHub release
+            inputs:
+              connection: fast
+              userRepository: microsoft/webui
+              defaultVersionType: 'latest'
+              downloadPath: '$(System.ArtifactsDirectory)'
 
+          # Extract the version number from the downloaded .crate filename,
+          # e.g. microsoft-webui-0.0.3.crate → 0.0.3, and expose it as output
+          # variables for the Deploy job.
           - script: |
-              LATEST_TAG=$(gh release view --repo microsoft/webui --json tagName -q .tagName)
-              echo "Latest release tag: ${LATEST_TAG}"
-              echo "##vso[task.setvariable variable=releaseTag]${LATEST_TAG}"
-              echo "##vso[task.setvariable variable=releaseTag;isOutput=true]${LATEST_TAG}"
-            displayName: Resolve latest release tag
+              CRATE_FILE=$(ls "$(System.ArtifactsDirectory)"/microsoft-webui-*.crate 2>/dev/null | head -1)
+              if [ -z "$CRATE_FILE" ]; then
+                echo "##vso[task.logissue type=error]No microsoft-webui-*.crate file found in $(System.ArtifactsDirectory)"
+                exit 1
+              fi
+              VERSION=$(basename "$CRATE_FILE" .crate | sed 's/^microsoft-webui-//')
+              echo "Detected version: ${VERSION}"
+              echo "##vso[task.setvariable variable=releaseVersion]${VERSION}"
+              echo "##vso[task.setvariable variable=releaseVersion;isOutput=true]${VERSION}"
+              echo "##vso[task.setvariable variable=releaseTag;isOutput=true]v${VERSION}"
+            displayName: Extract version from downloaded artifacts
             name: resolveTag
-            env:
-              GH_TOKEN: $(GH_TOKEN)
 
           # Check whether this version is already deployed to all registries.
-          # Sets needsDeployment=true if any of npm, NuGet, or crates.io do not
-          # yet carry the version — so a partial deployment still reruns the template.
-          # The 'v' prefix is stripped from the release tag since registries
-          # expect a bare version number e.g. 1.2.3 not v1.2.3.
+          # Sets needsDeployment=true if any of npm or crates.io do not yet carry
+          # the version — so a partial deployment still reruns the template.
           - script: |
-              VERSION="$(releaseTag)"
-              VERSION="${VERSION#v}"
+              VERSION="$(releaseVersion)"
               NEEDS_DEPLOYMENT=false
 
               # npm
@@ -87,16 +88,6 @@ extends:
                 echo "npm @microsoft/webui@${VERSION} already deployed"
               else
                 echo "npm @microsoft/webui@${VERSION} not yet deployed"
-                NEEDS_DEPLOYMENT=true
-              fi
-
-              # NuGet
-              NUGET_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-                "https://api.nuget.org/v3-flatcontainer/microsoft.webui/${VERSION}/microsoft.webui.${VERSION}.nupkg")
-              if [ "$NUGET_STATUS" = "200" ]; then
-                echo "NuGet Microsoft.WebUI ${VERSION} already deployed"
-              else
-                echo "NuGet Microsoft.WebUI ${VERSION} not yet deployed (HTTP ${NUGET_STATUS})"
                 NEEDS_DEPLOYMENT=true
               fi
 
@@ -124,35 +115,24 @@ extends:
           - checkout: self
             persistCredentials: "true"
 
-          - script: |
-              sudo mkdir -p -m 755 /etc/apt/keyrings
-              wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-                | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
-              sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-                | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-              sudo apt-get update -qq
-              sudo apt-get install -y gh
-            displayName: Install GitHub CLI
+          - task: DownloadGitHubRelease@0
+            displayName: Download GitHub release artifacts
+            inputs:
+              connection: fast
+              userRepository: microsoft/webui
+              defaultVersionType: 'latest'
+              downloadPath: '$(System.ArtifactsDirectory)'
 
-          # Download npm tarballs, crate archives, and NuGet packages from the
-          # GitHub release produced by the publish.yml GitHub Actions workflow.
+          # Separate the downloaded files into the directories expected by the
+          # release pipeline template. .tgz → npm, .crate → crates. NuGet skipped.
           - script: |
-              mkdir -p publish_artifacts_npm publish_artifacts_crates publish_artifacts_nuget
-              gh release download "$(releaseTag)" \
-                --repo microsoft/webui \
-                --pattern "*.tgz" \
-                --dir publish_artifacts_npm/
-              gh release download "$(releaseTag)" \
-                --repo microsoft/webui \
-                --pattern "*.crate" \
-                --dir publish_artifacts_crates/
-              gh release download "$(releaseTag)" \
-                --repo microsoft/webui \
-                --pattern "*.nupkg" \
-                --dir publish_artifacts_nuget/
-            displayName: Download release artifacts
-            env:
-              GH_TOKEN: $(GH_TOKEN)
+              mkdir -p publish_artifacts_npm publish_artifacts_crates
+              find "$(System.ArtifactsDirectory)" -name "*.tgz"   -exec cp {} publish_artifacts_npm/   \;
+              find "$(System.ArtifactsDirectory)" -name "*.crate" -exec cp {} publish_artifacts_crates/ \;
+              echo "npm artifacts:"
+              ls publish_artifacts_npm/
+              echo "crate artifacts:"
+              ls publish_artifacts_crates/
+            displayName: Separate release artifacts
 
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
