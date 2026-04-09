@@ -1,15 +1,13 @@
 # Normalize text files to LF in the repository so macOS/Windows edits do not
 # create noisy CRLF/LF churn. Override the few Windows-native file types below.
 * text=auto eol=lf
-
 # Windows-native script and solution files.
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
 *.sln text eol=crlf
-
 # Common binary assets.
-*.png binary
+*.png filter=lfs diff=lfs merge=lfs -text
 *.jpg binary
 *.jpeg binary
 *.gif binary
@@ -26,3 +24,5 @@
 *.exe binary
 *.so binary
 *.dylib binary
+*.avif filter=lfs diff=lfs merge=lfs -text
+*.webp filter=lfs diff=lfs merge=lfs -text
