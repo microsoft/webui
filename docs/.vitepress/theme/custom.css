@@ -617,3 +617,67 @@ div[class*='language-']>button.copy {
 .VPNavBarMenuGroup {
   transition: color 0.2s ease, background-color 0.2s ease;
 }
+/* ==========================================================
+  13. Side-by-side code comparison
+   ========================================================== */
+
+.comparison-wrapper {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin: 1.5rem 0;
+  align-items: start;
+}
+
+.comparison-col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.comparison-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.4rem 1rem;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  margin-bottom: -2px;
+  position: relative;
+  z-index: 1;
+}
+
+.comparison-label--left {
+  background: rgba(97, 218, 251, 0.10);
+  color: #61aacb;
+  border: 1px solid rgba(97, 218, 251, 0.25);
+  border-bottom: none;
+}
+
+.comparison-label--right {
+  background: var(--accent-soft-bg);
+  color: var(--accent);
+  border: 1px solid var(--accent-soft-border);
+  border-bottom: none;
+}
+
+.dark .comparison-label--left {
+  color: #61dafb;
+}
+
+.comparison-col div[class*='language-'] {
+  margin: 0 !important;
+  border-radius: 0 var(--radius-md) var(--radius-md) var(--radius-md) !important;
+  flex: 1;
+}
+
+.comparison-col div[class*='language-']:not(:first-of-type) {
+  border-radius: var(--radius-md) !important;
+  margin-top: 0.5rem !important;
+}
+
+@media (max-width: 768px) {
+  .comparison-wrapper {
+    grid-template-columns: 1fr;
+  }
+}

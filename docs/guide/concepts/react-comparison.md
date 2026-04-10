@@ -1,6 +1,6 @@
 # React vs Web Components
 
-This guide compares common UI patterns written in React (imperative, JavaScript-centric) with their WebUI and FAST equivalents (declarative, HTML-centric). Each section shows a React "Before" alongside the WebUI "After" so you can see how familiar patterns translate to a Web Components model.
+This guide compares common UI patterns written in React (imperative, JavaScript-centric) with their WebUI and FAST equivalents (declarative, HTML-centric). Each section shows React and WebUI side by side so you can see how familiar patterns translate to a Web Components model.
 
 ## Key Differences at a Glance
 
@@ -16,7 +16,8 @@ This guide compares common UI patterns written in React (imperative, JavaScript-
 
 ## Simple Counter
 
-### React
+<CodeComparison>
+<template #left>
 
 ```jsx
 import { useState } from 'react';
@@ -33,7 +34,8 @@ function Counter() {
 }
 ```
 
-### WebUI
+</template>
+<template #right>
 
 **my-counter.html**
 
@@ -58,11 +60,15 @@ export class MyCounter extends WebUIElement {
 MyCounter.define('my-counter');
 ```
 
+</template>
+</CodeComparison>
+
 **What changed:** Template and logic are separated into HTML and TypeScript files. No JSX, no `useState` hook, no `setState` call. The `@observable` decorator makes `count` reactive - when it changes, only the bound DOM nodes update.
 
 ## Conditional Rendering
 
-### React
+<CodeComparison>
+<template #left>
 
 ```jsx
 function Greeting({ isLoggedIn, username }) {
@@ -78,7 +84,8 @@ function Greeting({ isLoggedIn, username }) {
 }
 ```
 
-### WebUI
+</template>
+<template #right>
 
 **user-greeting.html**
 
@@ -93,11 +100,15 @@ function Greeting({ isLoggedIn, username }) {
 </div>
 ```
 
+</template>
+</CodeComparison>
+
 **What changed:** Conditional logic moves from JavaScript ternary expressions into declarative `<if>` directives. These are evaluated on the server during rendering - no JavaScript is shipped to the browser for static conditionals.
 
 ## List Rendering
 
-### React
+<CodeComparison>
+<template #left>
 
 ```jsx
 function TodoList({ items }) {
@@ -114,7 +125,8 @@ function TodoList({ items }) {
 }
 ```
 
-### WebUI
+</template>
+<template #right>
 
 **todo-list.html**
 
@@ -129,11 +141,15 @@ function TodoList({ items }) {
 </ul>
 ```
 
+</template>
+</CodeComparison>
+
 **What changed:** `Array.map()` with JSX becomes a declarative `<for>` directive. The `key` prop is replaced by the first attribute on the repeated element. This runs on the server and produces static HTML - no JavaScript array iteration in the browser.
 
 ## Event Handling
 
-### React
+<CodeComparison>
+<template #left>
 
 ```jsx
 function SearchBox() {
@@ -159,7 +175,8 @@ function SearchBox() {
 }
 ```
 
-### WebUI
+</template>
+<template #right>
 
 **search-box.html**
 
@@ -198,11 +215,15 @@ export class SearchBox extends WebUIElement {
 SearchBox.define('search-box');
 ```
 
+</template>
+</CodeComparison>
+
 **What changed:** Event handlers use `@event` syntax instead of `onEvent` props. DOM references use `w-ref` instead of `useRef`. No synthetic event system - the browser's native events are used directly.
 
 ## Parent-Child Communication
 
-### React
+<CodeComparison>
+<template #left>
 
 ```jsx
 function ColorPicker({ onColorChange }) {
@@ -226,7 +247,8 @@ function App() {
 }
 ```
 
-### WebUI
+</template>
+<template #right>
 
 **color-picker.html**
 
@@ -278,11 +300,15 @@ export class ThemeApp extends WebUIElement {
 ThemeApp.define('theme-app');
 ```
 
+</template>
+</CodeComparison>
+
 **What changed:** React passes callback props down; WebUI uses native Custom Events that bubble up through the DOM. The child emits an event with `this.$emit()`, and the parent catches it with `@event` syntax on the component tag. Components are fully decoupled - the child doesn't reference the parent.
 
 ## Styling
 
-### React (CSS-in-JS)
+<CodeComparison>
+<template #left>
 
 ```jsx
 import styled from 'styled-components';
@@ -308,7 +334,8 @@ function ProductCard({ name, price }) {
 }
 ```
 
-### WebUI
+</template>
+<template #right>
 
 **product-card.html**
 
@@ -334,11 +361,15 @@ h3 {
 }
 ```
 
+</template>
+</CodeComparison>
+
 **What changed:** CSS-in-JS becomes a plain CSS file. Shadow DOM provides the style encapsulation that CSS-in-JS libraries simulate with generated class names. Styles cannot leak in or out of the component. No JavaScript runtime cost for styling.
 
 ## Component Composition
 
-### React
+<CodeComparison>
+<template #left>
 
 ```jsx
 function UserProfile({ user }) {
@@ -358,7 +389,8 @@ function UserProfile({ user }) {
 }
 ```
 
-### WebUI
+</template>
+<template #right>
 
 **user-profile.html**
 
@@ -378,6 +410,9 @@ function UserProfile({ user }) {
 </div>
 ```
 
+</template>
+</CodeComparison>
+
 **What changed:** JSX expressions (`&&`, `.map()`, template literals) become HTML directives (`<if>`, `<for>`, <code v-pre>{{}}</code>). The template reads like HTML with declarative annotations, not JavaScript with embedded markup.
 
 ## FAST Alternative
@@ -390,7 +425,8 @@ webui build ./src --out ./dist --plugin=fast
 
 The **template syntax is identical** - `<if>`, `<for>`, <code v-pre>{{}}</code>, and `@click` work the same way in both plugins. The difference is in the TypeScript component class:
 
-### WebUI Framework
+<CodeComparison left-label="WebUI Framework" right-label="FAST">
+<template #left>
 
 ```typescript
 import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
@@ -407,7 +443,8 @@ export class MyCounter extends WebUIElement {
 MyCounter.define('my-counter');
 ```
 
-### FAST
+</template>
+<template #right>
 
 ```typescript
 import { FASTElement, attr, observable } from '@microsoft/fast-element';
@@ -429,6 +466,9 @@ export class MyCounter extends RenderableFASTElement(FASTElement) {
 
 MyCounter.define({ name: 'my-counter', template: /* ... */ });
 ```
+
+</template>
+</CodeComparison>
 
 | | WebUI Framework | FAST |
 |---|---|---|
