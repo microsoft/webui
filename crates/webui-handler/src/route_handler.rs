@@ -512,9 +512,12 @@ pub fn render_partial(
     let chain = collect_route_chain(protocol, entry_id, request_path);
 
     // Build templateStyles (module CSS definitions) and templates (JS IIFEs)
-    // from the same inventory-filtered set.  The SSR handler emits <style type="module">
-    // definitions in <head> for ALL inventoried components, so the client already has
-    // definitions for components in its inventory.
+    // from the same inventory-filtered set. During SSR, module style definitions
+    // are emitted inline in each rendered component's light DOM — so only
+    // components the client actually rendered have their CSS definition in the
+    // document. For SPA partial navigation, we send templateStyles alongside
+    // templates so the router can append the missing definitions to <head>
+    // before executing the template scripts.
     let mut style_array = Vec::new();
     let mut tmpl_array = Vec::with_capacity(needed_names.len());
     let mut sorted_names: Vec<&String> = needed_names.iter().collect();

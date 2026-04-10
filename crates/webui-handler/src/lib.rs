@@ -464,6 +464,40 @@ impl WebUIHandler {
         Ok(())
     }
 
+    /// Emit a `<style type="module">` tag for a component's CSS module definition.
+    ///
+    /// Only emits on first render of this component (deduped by `rendered_components`).
+    /// Placed in the component's light DOM so the browser can register the CSS module:
+    /// `<my-comp><style type="module" specifier="my-comp">CSS</style><template ...>`.
+    ///
+    /// This keeps SSR output lean — only components actually rendered on the current
+    /// route get their style definitions. Components on other routes receive their
+    /// definitions via `templateStyles` during SPA partial navigation.
+    fn emit_css_module(
+        &self,
+        component: &webui_protocol::WebUIFragmentComponent,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        if !context.rendered_components.contains(&component.fragment_id) {
+            if let Some(css) = context
+                .protocol
+                .components
+                .get(&component.fragment_id)
+                .map(|c| c.css.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                context
+                    .writer
+                    .write("<style type=\"module\" specifier=\"")?;
+                context.writer.write(&component.fragment_id)?;
+                context.writer.write("\">")?;
+                context.writer.write(css)?;
+                context.writer.write("</style>")?;
+            }
+        }
+        Ok(())
+    }
+
     /// Process a route fragment — renders `<webui-route>` with matched/hidden state.
     fn process_route(
         &self,
@@ -539,6 +573,15 @@ impl WebUIHandler {
         component: &webui_protocol::WebUIFragmentComponent,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
+        // Emit CSS module into the component's light DOM on first encounter.
+        // Only rendered components get their <style type="module"> definition
+        // during SSR. Components on other routes will receive theirs via the
+        // templateStyles array in the SPA partial response instead.
+        // Produces: <my-comp><style type="module" specifier="my-comp">CSS</style><template ...>
+        if !context.rendered_components.contains(&component.fragment_id) {
+            self.emit_css_module(component, context)?;
+        }
+
         // Track this component as rendered (for selective f-template emission)
         context
             .rendered_components
@@ -689,21 +732,8 @@ impl WebUIHandler {
         signal: &webui_protocol::WebUIFragmentSignal,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        // Hook: emit inventory meta tag before </head>
+        // Hook: emit nonce meta and CSS <link> tags before </head>
         if signal.raw && signal.value == "head_end" {
-            let (needed_components, inventory_hex) =
-                crate::route_handler::get_needed_components_for_request(
-                    context.protocol,
-                    &context.entry_id,
-                    &context.request_path,
-                    "",
-                );
-            context
-                .writer
-                .write("<meta name=\"webui-inventory\" content=\"")?;
-            context.writer.write(&inventory_hex)?;
-            context.writer.write("\">")?;
-
             if let Some(ref nonce) = context.nonce {
                 context
                     .writer
@@ -712,61 +742,56 @@ impl WebUIHandler {
                 context.writer.write("\">")?;
             }
 
-            // Emit CSS <link> tags in <head> for components with external stylesheets.
-            // Only Link-strategy components have css_href set; Style/Module
-            // handle CSS via inline <style> tags or adopted stylesheets.
-            //
-            // For Module-strategy: emit <style type="module"> definitions for ALL
-            // route-reachable components so the inventory contract holds — the client
-            // has both the template IIFE (in the <script> at body_end) and the CSS
-            // definition (here) for every inventoried component.
+            // Emit CSS <link> tags in <head> for Link-strategy components.
+            // Only Link-strategy components have css_href set.
+            // Style-strategy embeds CSS inside the shadow DOM template.
+            // Module-strategy emits <style type="module"> inline in each
+            // component's light DOM during rendering (via emit_css_module).
+            let (needed_components, _) = crate::route_handler::get_needed_components_for_request(
+                context.protocol,
+                &context.entry_id,
+                &context.request_path,
+                "",
+            );
             for name in &needed_components {
-                if let Some(component) = context.protocol.components.get(name) {
-                    if !component.css_href.is_empty() {
-                        context.writer.write("<link rel=\"stylesheet\" href=\"")?;
-                        context.writer.write(&component.css_href)?;
-                        context.writer.write("\">")?;
-                    }
-                    if !component.css.is_empty() {
-                        context
-                            .writer
-                            .write("<style type=\"module\" specifier=\"")?;
-                        context.writer.write(name)?;
-                        context.writer.write("\">")?;
-                        context.writer.write(&component.css)?;
-                        context.writer.write("</style>")?;
-                    }
+                if let Some(href) = context
+                    .protocol
+                    .components
+                    .get(name)
+                    .map(|c| &c.css_href)
+                    .filter(|h| !h.is_empty())
+                {
+                    context.writer.write("<link rel=\"stylesheet\" href=\"")?;
+                    context.writer.write(href)?;
+                    context.writer.write("\">")?;
                 }
             }
         }
 
         // Hook: emit component templates before body_end when hydration is enabled.
-        // Emit templates for rendered components AND components inside conditional
-        // blocks on the active route (they may be needed if conditions toggle client-side).
-        // Templates for other routes' components are delivered via partial navigation.
+        // Only emit templates for components that were actually rendered during SSR.
+        // This keeps the inventory aligned with what's truly in the document:
+        // if a component's template IIFE is emitted, its <style type="module">
+        // definition was also emitted inline (via emit_css_module). Components
+        // inside unrendered conditional blocks are excluded — they'll be delivered
+        // via templateStyles[] + templates[] during SPA partial navigation.
         if signal.raw && signal.value == "body_end" && context.plugin.is_some() {
-            // Collect all components reachable from rendered fragments, including
-            // those inside conditional blocks that weren't rendered.
-            let mut reachable = context.rendered_components.clone();
-            let mut stack: Vec<&str> = context
-                .rendered_components
-                .iter()
-                .map(|s| s.as_str())
-                .collect();
-            while let Some(fid) = stack.pop() {
-                if let Some(fragment_list) = context.protocol.fragments.get(fid) {
-                    collect_reachable_components(
-                        &fragment_list.fragments,
-                        &mut reachable,
-                        &mut stack,
-                    );
-                }
-            }
+            // Emit inventory meta tag based on actually rendered components.
+            // Placed here (not head_end) because rendered_components is only
+            // complete after the full SSR pass. The router reads it via
+            // document.querySelector regardless of position.
+            let (_, inventory_hex) =
+                crate::route_handler::filter_needed_components(&context.rendered_components, "");
+            context
+                .writer
+                .write("<meta name=\"webui-inventory\" content=\"")?;
+            context.writer.write(&inventory_hex)?;
+            context.writer.write("\">")?;
 
             if let Some(ref p) = context.plugin {
                 p.emit_templates(
                     context.protocol,
-                    &reachable,
+                    &context.rendered_components,
                     context.nonce.as_deref(),
                     context.writer,
                 )?;
@@ -1024,41 +1049,6 @@ impl Default for WebUIHandler {
 }
 
 /// Write ` name="value"` to the writer without allocating a format string.
-/// Walk a fragment list's children to find all component references, including
-/// those inside conditional blocks that may not have been rendered during SSR.
-/// This ensures templates for components on the active route are available
-/// client-side even when their parent `<if>` condition was false.
-fn collect_reachable_components<'a>(
-    fragments: &'a [WebUIFragment],
-    reachable: &mut HashSet<String>,
-    stack: &mut Vec<&'a str>,
-) {
-    for node in fragments {
-        match &node.fragment {
-            Some(Fragment::Component(comp)) => {
-                if reachable.insert(comp.fragment_id.clone()) {
-                    stack.push(&comp.fragment_id);
-                }
-            }
-            Some(Fragment::IfCond(ic)) => {
-                // Walk into conditional blocks even if they weren't rendered
-                if reachable.insert(ic.fragment_id.clone()) {
-                    stack.push(&ic.fragment_id);
-                }
-            }
-            Some(Fragment::ForLoop(fl)) => {
-                if reachable.insert(fl.fragment_id.clone()) {
-                    stack.push(&fl.fragment_id);
-                }
-            }
-            Some(Fragment::Route(_)) => {
-                // Don't walk into other routes — their templates come via partial nav
-            }
-            _ => {}
-        }
-    }
-}
-
 fn write_attr(writer: &mut dyn ResponseWriter, name: &str, value: &str) -> Result<()> {
     writer.write(" ")?;
     writer.write(name)?;
@@ -5682,9 +5672,9 @@ mod tests {
     // ── CSS Module dedup tests ───────────────────────────────────────
 
     #[test]
-    fn test_css_module_emitted_once_in_head() {
-        // CSS module definitions are emitted once in <head> via head_end,
-        // not inline in component light DOM.
+    fn test_css_module_emitted_once_inline_in_component() {
+        // CSS module definition emitted once in the component's light DOM
+        // on first render, not in <head> and not on second instance.
         let template = r#"<p><slot></slot></p>"#;
 
         let mut fragments = HashMap::new();
@@ -5730,7 +5720,7 @@ mod tests {
 
         let html = writer.get_content();
 
-        // CSS module should appear exactly once (in <head>)
+        // CSS module should appear exactly once
         let count = html
             .matches(r#"<style type="module" specifier="my-card">"#)
             .count();
@@ -5746,12 +5736,15 @@ mod tests {
             "Template should render twice, got {tmpl_count} in: {html}"
         );
 
-        // CSS module should be in <head>, before <body>
+        // CSS module should be in <body> (inline), not in <head>
         let css_pos = html
             .find(r#"<style type="module""#)
             .expect("CSS module missing");
         let body_pos = html.find("<body>").expect("<body> missing");
-        assert!(css_pos < body_pos, "CSS module should be in <head>: {html}");
+        assert!(
+            css_pos > body_pos,
+            "CSS module should be inline in component, not in <head>: {html}"
+        );
     }
 
     #[test]
@@ -5948,9 +5941,10 @@ mod tests {
     }
 
     #[test]
-    fn test_css_module_emitted_in_head_not_component_body() {
-        // CSS module <style> tags are emitted in <head> via head_end,
-        // not inline inside the component element.
+    fn test_css_module_emitted_in_component_light_dom() {
+        // CSS module <style> tags are emitted inline in the component's light DOM,
+        // not in <head>. This keeps SSR output lean — only rendered components
+        // get their style definitions.
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -5992,29 +5986,28 @@ mod tests {
 
         let html = writer.get_content();
 
-        // CSS module must be in <head>, NOT inside the component tag
-        let head_end = html.find("</head>").expect("</head> missing");
+        // CSS module must be INSIDE the component tag (light DOM)
+        let tag_open = html.find("<my-card>").expect("<my-card> missing");
         let css_pos = html
             .find(r#"<style type="module""#)
             .expect("CSS module missing");
+        let tag_close = html.rfind("</my-card>").expect("</my-card> missing");
         assert!(
-            css_pos < head_end,
-            "CSS module should be in <head>, not component body: {html}"
+            css_pos > tag_open && css_pos < tag_close,
+            "CSS module should be inside component light DOM: {html}"
         );
 
-        // Component body should NOT contain the style tag
-        let tag_open = html.find("<my-card>").expect("<my-card> missing");
-        let tag_close = html.rfind("</my-card>").expect("</my-card> missing");
-        let body_slice = &html[tag_open..tag_close];
+        // <head> should NOT contain module styles
+        let head_end = html.find("</head>").expect("</head> missing");
         assert!(
-            !body_slice.contains(r#"<style type="module""#),
-            "Component body should not contain module style: {html}"
+            css_pos > head_end,
+            "CSS module should not be in <head>: {html}"
         );
     }
 
     #[test]
     fn test_css_module_emitted_for_route_components() {
-        // Route components also get CSS modules emitted in <head>.
+        // Route components get CSS modules emitted inline in their light DOM.
         let template = r#"<h1>Dashboard</h1>"#;
 
         let mut fragments = HashMap::new();
@@ -6062,7 +6055,7 @@ mod tests {
             html.contains(
                 r#"<style type="module" specifier="dash-page">h1{font-size:2rem}</style>"#
             ),
-            "Route component should have CSS module in <head>: {html}"
+            "Route component should have CSS module: {html}"
         );
         assert!(
             html.contains("<h1>Dashboard</h1>"),
@@ -6132,6 +6125,114 @@ mod tests {
         assert!(
             !html.contains("no-css.css"),
             "Component without CSS must NOT get a <link> in <head>: {html}"
+        );
+    }
+
+    #[test]
+    fn test_unrendered_components_excluded_from_templates_and_inventory() {
+        // Simulates the commerce about page: app-shell renders cart-panel,
+        // but cart-panel contains an <if> block with product-card inside.
+        // When the condition is false (empty cart), product-card is NOT rendered.
+        // Its template IIFE must NOT be in the <script> output, and its bit
+        // must NOT be set in the inventory — otherwise the client thinks it
+        // has the component but lacks the <style type="module"> definition.
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::raw("</head><body><app-shell>".to_string()),
+                    WebUIFragment::component("app-shell"),
+                    WebUIFragment::raw("</app-shell>".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        // app-shell contains a cart panel
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<div>Shell</div>".to_string()),
+                    WebUIFragment::component("cart-panel"),
+                ],
+            },
+        );
+        // cart-panel has an <if> block containing product-card
+        fragments.insert(
+            "cart-panel".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<aside>".to_string()),
+                    WebUIFragment::if_cond(ConditionExpr::identifier("hasItems"), "cart-items"),
+                    WebUIFragment::raw("</aside>".to_string()),
+                ],
+            },
+        );
+        // cart-items (if block body) contains product-card
+        fragments.insert(
+            "cart-items".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("product-card")],
+            },
+        );
+        fragments.insert(
+            "product-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<div>Card</div>".to_string())],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        for name in ["app-shell", "cart-panel", "product-card"] {
+            let comp = protocol.components.entry(name.to_string()).or_default();
+            comp.template = format!(
+                "(function(){{var w=window.__webui_templates||(window.__webui_templates={{}});w['{name}']={{h:'<div/>'}};}})();\n"
+            );
+            comp.css = format!(".{name}{{display:block}}");
+        }
+
+        // Render with hasItems=false — product-card should NOT be rendered
+        let state = test_json!({ "hasItems": false });
+        let mut writer = TestWriter::new();
+
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+
+        let html = writer.get_content();
+
+        // product-card template IIFE must NOT be in the output
+        assert!(
+            !html.contains("w['product-card']"),
+            "unrendered product-card template should not be emitted: {html}"
+        );
+
+        // product-card style must NOT be in the output
+        assert!(
+            !html.contains(r#"specifier="product-card""#),
+            "unrendered product-card CSS module should not be emitted: {html}"
+        );
+
+        // app-shell and cart-panel SHOULD be in the output (they were rendered)
+        assert!(
+            html.contains("w['app-shell']"),
+            "rendered app-shell template should be emitted: {html}"
+        );
+        assert!(
+            html.contains("w['cart-panel']"),
+            "rendered cart-panel template should be emitted: {html}"
         );
     }
 }

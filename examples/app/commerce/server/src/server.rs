@@ -464,7 +464,7 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn module_mode_about_page_includes_cart_panel_style_in_head() {
+    async fn module_mode_about_page_includes_cart_panel_style() {
         let state = test_state_with_css(webui::CssStrategy::Module);
         let app = test::init_service(App::new().app_data(state).configure(configure_app)).await;
 
@@ -483,10 +483,11 @@ mod tests {
 
         // mp-cart-panel is a non-route sibling inside mp-app whose FNV-1a hash
         // collides with mp-app (both map to bit 218). The inventory filter must
-        // not drop it due to this collision.
+        // not drop it due to this collision. The style is emitted inline in the
+        // component's light DOM during SSR rendering.
         assert!(
             html.contains(r#"<style type="module" specifier="mp-cart-panel">"#),
-            "mp-cart-panel module style should be in <head> for /about"
+            "mp-cart-panel module style should be present in SSR output for /about"
         );
     }
 

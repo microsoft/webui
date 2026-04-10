@@ -555,7 +555,11 @@ export class WebUIRouter {
     }
 
     // 1. Append module CSS definition tags before executing any template scripts.
-    //    These must exist in the DOM so adoptedStyleSheets can reference them.
+    //    During SSR, module styles are emitted inline in each component's light DOM.
+    //    During SPA navigation, the server sends new module styles in templateStyles[]
+    //    for components not yet in the document. We append them to <head> so the
+    //    framework's injectModuleStyle() can find them and create CSSStyleSheets
+    //    for newly mounted shadow roots.
     if (data.templateStyles) {
       for (const styleMarkup of data.templateStyles) {
         const trimmed = styleMarkup.trim();

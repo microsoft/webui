@@ -11,23 +11,22 @@
  *
  * - **Style**: Inline `<style>` tags inside each shadow template.
  *
- * - **Module**: `<style type="module" specifier="...">` definitions are emitted
- *   in `<head>` during SSR for all inventoried components. The framework reads
- *   these definitions, creates a single `CSSStyleSheet` per specifier (cached in
- *   `sheetCache`), and adopts it onto each shadow root that needs it. During SPA
- *   navigation the router appends new definitions to `<head>` before template
- *   scripts execute.
+ * - **Module**: Uses the Declarative CSS Module Scripts proposal. During SSR,
+ *   `<style type="module" specifier="...">` definitions are emitted inline in
+ *   each rendered component's light DOM. The browser registers these globally
+ *   and automatically adopts them via `shadowrootadoptedstylesheets` on
+ *   declarative shadow roots.
  *
- * For light DOM components (no shadow root), Module mode falls back to injecting
- * a `<style>` element in `<head>`, deduplicated by `headInjected`.
+ *   During SPA navigation, the router appends new `<style type="module">`
+ *   definitions to `<head>` via `templateStyles[]`. The framework uses
+ *   `import(specifier, { with: { type: "css" } })` to retrieve the browser's
+ *   registered CSSStyleSheet and adopts it onto the shadow root. This is a
+ *   direct hash-map lookup in the browser's module registry — no DOM queries,
+ *   no manual CSSStyleSheet construction.
+ *
+ * For light DOM components (no shadow root), Module mode injects a `<style>`
+ * element in `<head>`, deduplicated by `headInjected`.
  */
-
-/**
- * Cached constructable CSSStyleSheet instances keyed by specifier.
- * Parsed once from the `<style type="module">` definition in the document,
- * then adopted onto every shadow root that references the same specifier.
- */
-const sheetCache = new Map<string, CSSStyleSheet>();
 
 /**
  * Specifiers already injected into `<head>` via the light DOM path.
@@ -36,50 +35,56 @@ const sheetCache = new Map<string, CSSStyleSheet>();
 const headInjected = new Set<string>();
 
 /**
- * Inject a CSS module stylesheet. Shadow DOM components get a
- * constructable stylesheet on their shadow root; light DOM components
- * get a `<style>` in the document head. The CSSStyleSheet is parsed
- * once per specifier and reused across all shadow roots that adopt it.
+ * Adopt a CSS module stylesheet onto a shadow root, or inject into `<head>`
+ * for light DOM components.
+ *
+ * For shadow DOM: uses `import(specifier, { with: { type: "css" } })` to
+ * retrieve the browser-registered CSSStyleSheet from the module registry.
+ * The browser caches the sheet internally — no application-level cache needed.
+ *
+ * For light DOM: appends a `<style>` element to `<head>` (once per specifier).
  */
 export function injectModuleStyle(
   specifier: string,
   shadowRoot: ShadowRoot | null,
 ): void {
-  // Fast path: reuse a cached sheet for shadow DOM components
-  let sheet = sheetCache.get(specifier);
-  if (sheet) {
-    if (shadowRoot && !shadowRoot.adoptedStyleSheets.includes(sheet)) {
-      shadowRoot.adoptedStyleSheets = [
-        ...shadowRoot.adoptedStyleSheets,
-        sheet,
-      ];
-    }
-    return;
-  }
-
-  // Find the <style type="module" specifier="..."> definition in the document
-  const defs = document.querySelectorAll('style[type="module"][specifier]');
-  let cssText: string | null = null;
-  for (let i = 0; i < defs.length; i++) {
-    if (defs[i].getAttribute('specifier') === specifier) {
-      cssText = defs[i].textContent;
-      break;
-    }
-  }
-  if (!cssText) return;
-
   if (shadowRoot) {
-    sheet = new CSSStyleSheet();
-    sheet.replaceSync(cssText);
-    sheetCache.set(specifier, sheet);
-    shadowRoot.adoptedStyleSheets = [
-      ...shadowRoot.adoptedStyleSheets,
-      sheet,
-    ];
+    // SSR hydration: the browser already adopted the sheet from
+    // shadowrootadoptedstylesheets on the declarative shadow root.
+    if (shadowRoot.adoptedStyleSheets.length > 0) return;
+
+    // SPA path: import the CSS module from the browser's registry.
+    // The <style type="module" specifier="X"> definition was either
+    // emitted inline during SSR or appended to <head> by the router.
+    // The import resolves to the same CSSStyleSheet the browser registered.
+    import(specifier, { with: { type: 'css' } }).then(
+      (mod: { default: CSSStyleSheet }) => {
+        if (!shadowRoot.adoptedStyleSheets.includes(mod.default)) {
+          shadowRoot.adoptedStyleSheets = [
+            ...shadowRoot.adoptedStyleSheets,
+            mod.default,
+          ];
+        }
+      },
+      () => {
+        // Specifier not registered — component has no CSS module definition.
+        // This is expected for Link/Style strategies or components without CSS.
+      },
+    );
   } else if (!headInjected.has(specifier)) {
     headInjected.add(specifier);
-    const style = document.createElement('style');
-    style.textContent = cssText;
-    document.head.appendChild(style);
+    import(specifier, { with: { type: 'css' } }).then(
+      (mod: { default: CSSStyleSheet }) => {
+        const style = document.createElement('style');
+        const rules = mod.default.cssRules;
+        let cssText = '';
+        for (let i = 0; i < rules.length; i++) {
+          cssText += rules[i].cssText;
+        }
+        style.textContent = cssText;
+        document.head.appendChild(style);
+      },
+      () => {},
+    );
   }
 }
