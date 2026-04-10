@@ -20,8 +20,8 @@ fs = ["walkdir"]
 cli = ["clap"]
 
 [dependencies]
-microsoft-webui-expressions = { path = "../webui-expressions", version = "0.0.6" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.6" }
+microsoft-webui-expressions = { path = "../webui-expressions", version = "0.0.7" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.7" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -36,7 +36,7 @@ clap = { workspace = true, optional = true }
 [dev-dependencies]
 mockall = { workspace = true }
 tempfile = { workspace = true }
-microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.6" }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.7" }
 criterion = { workspace = true }
 
 [[bench]]

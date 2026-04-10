@@ -317,16 +317,32 @@ pub fn run(args: &[String]) -> ExitCode {
 
     let handles: Vec<_> = suites
         .iter()
-        .map(|suite| {
+        .filter_map(|suite| {
             let name = suite.name.to_string();
             let dir = PathBuf::from(suite.dir);
             let test_script = if update_snapshots {
+                // Skip suites that don't have an update-snapshots script.
+                let pkg_path = dir.join("package.json");
+                let has_update_script = std::fs::read_to_string(&pkg_path)
+                    .ok()
+                    .is_some_and(|json| json.contains(suite.update_snapshots_script));
+                if !has_update_script {
+                    let n = completed.fetch_add(1, Ordering::SeqCst) + 1;
+                    let progress = console::style(format!("[{n}/{total}]")).dim();
+                    eprintln!(
+                        "  {} {progress} {} {}",
+                        console::style("–").dim(),
+                        console::style(&name).bold(),
+                        console::style("(skipped, no update-snapshots script)").dim(),
+                    );
+                    return None;
+                }
                 suite.update_snapshots_script
             } else {
                 suite.test_script
             };
             let done = completed.clone();
-            thread::spawn(move || {
+            Some(thread::spawn(move || {
                 let start = Instant::now();
                 let (success, output) = run_test(&name, &dir, test_script);
                 let elapsed = start.elapsed().as_secs_f64();
@@ -347,7 +363,7 @@ pub fn run(args: &[String]) -> ExitCode {
                     success,
                     output,
                 }
-            })
+            }))
         })
         .collect();
 

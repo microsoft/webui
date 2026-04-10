@@ -18,15 +18,15 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { workspace = true }
 napi-derive = { workspace = true }
-microsoft-webui = { path = "../webui", version = "0.0.6" }
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.6" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.6" }
+microsoft-webui = { path = "../webui", version = "0.0.7" }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.7" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.7" }
 serde_json = { workspace = true }
 
 [build-dependencies]
 napi-build = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-parser = { path = "../webui-parser", version = "0.0.6", default-features = false }
-microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.6" }
+microsoft-webui-parser = { path = "../webui-parser", version = "0.0.7", default-features = false }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.7" }
 tempfile = { workspace = true }

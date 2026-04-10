@@ -19,4 +19,4 @@ serde_json = { workspace = true }
 mockall = { workspace = true }
 tokio-test = { workspace = true }
 tempfile = { workspace = true }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.6" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.7" }

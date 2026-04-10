@@ -17,6 +17,9 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     screenshot: 'only-on-failure',
+    launchOptions: {
+      args: ['--enable-blink-features=DeclarativeCSSModules'],
+    },
   },
   webServer: {
     command: 'node --experimental-strip-types ./tests/server.ts',
