@@ -59,12 +59,10 @@ export function injectModuleStyle(
     // The import resolves to the same CSSStyleSheet the browser registered.
     import(specifier, { with: { type: 'css' } }).then(
       (mod: { default: CSSStyleSheet }) => {
-        if (!shadowRoot.adoptedStyleSheets.includes(mod.default)) {
-          shadowRoot.adoptedStyleSheets = [
-            ...shadowRoot.adoptedStyleSheets,
-            mod.default,
-          ];
-        }
+        shadowRoot.adoptedStyleSheets = [
+          ...shadowRoot.adoptedStyleSheets,
+          mod.default,
+        ];
       },
       () => {
         // Specifier not registered — component has no CSS module definition.
