@@ -1,13 +1,26 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <title>CSS Module Fixture</title>
-  <style type="module" specifier="test-module-host">.host-label{color:rgb(0, 102, 204);}</style>
-  <style type="module" specifier="test-module-child">.child-label{color:rgb(178, 34, 34);}</style>
+  <style type="module" specifier="test-module-host">
+    .host-label{color:rgb(0, 102, 204);}
+  </style>
+  <style type="module" specifier="test-module-child">
+    .child-label{color:rgb(178, 34, 34);}
+  </style>
 </head>
+
 <body>
-  <test-module-host></test-module-host>
-  <script>window.__webui_shadow=true;</script><script src="/dist/css-module/element.js"></script>
+  <test-module-host>
+    <template shadowrootmode="open" shadowrootadoptedstylesheets="test-module-host"><button class="spawn">Spawn</button>
+      <p class="host-label">Host</p>
+      <div class="slot"></div>
+    </template>
+  </test-module-host>
+  <script>window.__webui_shadow = true;</script>
+  <script src="/dist/css-module/element.js"></script>
 </body>
+
 </html>

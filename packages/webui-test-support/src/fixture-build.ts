@@ -48,6 +48,7 @@ export async function buildFixtureEntries({
     outbase: fixturesRoot,
     platform: 'browser',
     target: 'es2022',
+    supported: { 'import-attributes': true },
     tsconfig,
     logLevel: 'info',
   });
