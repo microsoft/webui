@@ -633,6 +633,16 @@ div[class*='language-']>button.copy {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  border-radius: var(--radius-md);
+  padding: 0 0.5rem 0.5rem;
+}
+
+.comparison-col:first-child {
+  background: rgba(97, 218, 251, 0.05);
+}
+
+.comparison-col:last-child {
+  background: var(--accent-soft-bg);
 }
 
 .comparison-label {
@@ -642,7 +652,7 @@ div[class*='language-']>button.copy {
   text-transform: uppercase;
   padding: 0.4rem 1rem;
   border-radius: var(--radius-md) var(--radius-md) 0 0;
-  margin-bottom: -2px;
+  margin: 0 -0.5rem -2px;
   position: relative;
   z-index: 1;
 }
@@ -669,6 +679,7 @@ div[class*='language-']>button.copy {
   margin: 0 !important;
   border-radius: 0 var(--radius-md) var(--radius-md) var(--radius-md) !important;
   flex: 1;
+  overflow-x: auto;
 }
 
 .comparison-col div[class*='language-']:not(:first-of-type) {
@@ -676,8 +687,20 @@ div[class*='language-']>button.copy {
   margin-top: 0.5rem !important;
 }
 
-@media (max-width: 768px) {
+.comparison-col div[class*='language-'] pre {
+  overflow-x: auto;
+}
+
+/* Collapse to single column on tablet and below */
+@media (max-width: 960px) {
   .comparison-wrapper {
     grid-template-columns: 1fr;
+  }
+}
+
+/* On larger screens where sidebar is visible, extra breathing room */
+@media (min-width: 961px) and (max-width: 1199px) {
+  .comparison-col div[class*='language-'] code {
+    font-size: 0.8rem;
   }
 }

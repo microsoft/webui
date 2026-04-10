@@ -155,6 +155,10 @@ function TodoList({ items }) {
 function SearchBox() {
   const [query, setQuery] = useState('');
 
+  const performSearch = (searchQuery) => {
+    // search logic
+  };
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') {
       performSearch(query);
@@ -183,7 +187,7 @@ function SearchBox() {
 ```html
 <div>
   <input
-    w-ref="inputEl"
+    @input="{onInput(e)}"
     @keydown="{onKeyDown(e)}"
     placeholder="Search..."
   />
@@ -197,8 +201,11 @@ function SearchBox() {
 import { WebUIElement, observable } from '@microsoft/webui-framework';
 
 export class SearchBox extends WebUIElement {
-  inputEl!: HTMLInputElement;
   @observable query = '';
+
+  onInput(e: InputEvent): void {
+    this.query = (e.currentTarget as HTMLInputElement).value;
+  }
 
   onKeyDown(e: KeyboardEvent): void {
     if (e.key === 'Enter') {
@@ -207,8 +214,7 @@ export class SearchBox extends WebUIElement {
   }
 
   performSearch(): void {
-    this.query = this.inputEl.value;
-    // search logic
+    // search logic using this.query
   }
 }
 
@@ -218,7 +224,7 @@ SearchBox.define('search-box');
 </template>
 </CodeComparison>
 
-**What changed:** Event handlers use `@event` syntax instead of `onEvent` props. DOM references use `w-ref` instead of `useRef`. No synthetic event system - the browser's native events are used directly.
+**What changed:** Event handlers use `@event` syntax instead of `onEvent` props. Input value is read from `e.currentTarget` in the `@input` handler — no DOM reference needed. No synthetic event system - the browser's native events are used directly.
 
 ## Parent-Child Communication
 
