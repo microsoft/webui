@@ -88,7 +88,9 @@ pub fn serve_request(
     }
 
     if request.accept_json {
-        // JSON partial response for client-side navigation
+        // JSON partial response for client-side navigation.
+        // render_partial() produces the complete response shape including
+        // separated templateStyles and templates arrays.
         let partial = route_handler::render_partial(
             protocol,
             data,
@@ -96,34 +98,7 @@ pub fn serve_request(
             request.path,
             request.inventory_hex,
         );
-
-        let (needed, new_inv) = route_handler::get_needed_components_for_request(
-            protocol,
-            entry,
-            request.path,
-            request.inventory_hex,
-        );
-
-        let templates: Vec<serde_json::Value> = needed
-            .iter()
-            .filter_map(|name| {
-                protocol
-                    .components
-                    .get(name)
-                    .map(|c| c.template.as_str())
-                    .filter(|s| !s.is_empty())
-            })
-            .map(|t| serde_json::Value::String(t.to_string()))
-            .collect();
-
-        let mut resp = match partial {
-            serde_json::Value::Object(m) => m,
-            _ => serde_json::Map::new(),
-        };
-        resp.insert("templates".into(), serde_json::Value::Array(templates));
-        resp.insert("inventory".into(), serde_json::Value::String(new_inv));
-
-        Ok(ServeResponse::Json(serde_json::Value::Object(resp)))
+        Ok(ServeResponse::Json(partial))
     } else {
         // Full HTML SSR
         let mut writer = MemWriter::with_capacity(131_072);
@@ -162,5 +137,172 @@ impl ResponseWriter for MemWriter {
 
     fn end(&mut self) -> webui_handler::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use webui_protocol::{FragmentList, WebUIFragment};
+
+    #[test]
+    fn serve_request_json_partial_preserves_template_styles() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("my-page")],
+            },
+        );
+        fragments.insert(
+            "my-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>page</p>")],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        let component = protocol
+            .components
+            .entry("my-page".to_string())
+            .or_default();
+        component.template =
+            "(function(){window.__webui_templates['my-page']={h:'<p>page</p>'};})();".to_string();
+        component.css = ".page{color:red}".to_string();
+
+        let handler = WebUIHandler::new();
+        let request = ServeRequest {
+            path: "/",
+            accept_json: true,
+            inventory_hex: "",
+        };
+
+        let response = serve_request(&protocol, &handler, json!({}), "index.html", &request)
+            .expect("partial response should succeed");
+
+        let json = match response {
+            ServeResponse::Json(value) => value,
+            ServeResponse::Html(_) => panic!("expected JSON partial response"),
+        };
+
+        // templateStyles must be present and non-empty for module-mode components
+        assert_eq!(
+            json["templateStyles"].as_array().map(Vec::len),
+            Some(1),
+            "serve_request should include module template styles"
+        );
+        // templates must not contain any style tags
+        assert!(
+            !json["templates"][0]
+                .as_str()
+                .unwrap_or_default()
+                .contains("<style"),
+            "template scripts should not contain module style tags"
+        );
+    }
+
+    #[test]
+    fn serve_request_link_strategy_returns_empty_template_styles() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("my-page")],
+            },
+        );
+        fragments.insert(
+            "my-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>page</p>")],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        let comp = protocol
+            .components
+            .entry("my-page".to_string())
+            .or_default();
+        comp.template = "(function(){})();".to_string();
+        comp.css_href = "/my-page.css".to_string();
+        // No css content — Link strategy
+
+        let handler = WebUIHandler::new();
+        let request = ServeRequest {
+            path: "/",
+            accept_json: true,
+            inventory_hex: "",
+        };
+
+        let response = serve_request(&protocol, &handler, json!({}), "index.html", &request)
+            .expect("partial response should succeed");
+
+        let json = match response {
+            ServeResponse::Json(value) => value,
+            ServeResponse::Html(_) => panic!("expected JSON partial response"),
+        };
+
+        assert!(
+            json["templateStyles"]
+                .as_array()
+                .is_some_and(|a| a.is_empty()),
+            "Link strategy should return empty templateStyles"
+        );
+        assert!(
+            json["templates"].as_array().is_some_and(|a| a.len() == 1),
+            "Link strategy should still return templates"
+        );
+    }
+
+    #[test]
+    fn serve_request_style_strategy_returns_empty_template_styles() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("my-page")],
+            },
+        );
+        fragments.insert(
+            "my-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>page</p>")],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        let comp = protocol
+            .components
+            .entry("my-page".to_string())
+            .or_default();
+        // Style strategy: CSS is inlined in the template IIFE
+        comp.template = "(function(){var w=window.__webui_templates;w['my-page']={h:'<style>.p{color:red}</style><p/>'};})();".to_string();
+
+        let handler = WebUIHandler::new();
+        let request = ServeRequest {
+            path: "/",
+            accept_json: true,
+            inventory_hex: "",
+        };
+
+        let response = serve_request(&protocol, &handler, json!({}), "index.html", &request)
+            .expect("partial response should succeed");
+
+        let json = match response {
+            ServeResponse::Json(value) => value,
+            ServeResponse::Html(_) => panic!("expected JSON partial response"),
+        };
+
+        assert!(
+            json["templateStyles"]
+                .as_array()
+                .is_some_and(|a| a.is_empty()),
+            "Style strategy should return empty templateStyles"
+        );
+        assert!(
+            json["templates"].as_array().is_some_and(|a| a.len() == 1),
+            "Style strategy should still return templates"
+        );
     }
 }

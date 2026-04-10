@@ -106,13 +106,19 @@ pub fn get_needed_components_for_request(
 
 /// Filter an inventoryable component set against the client's inventory bitmask.
 ///
+/// Only skips components whose bit is set in the client's **original** inventory.
+/// Components that hash-collide (FNV-1a mod 256) with an already-processed
+/// component are NOT skipped — the check uses the immutable client inventory,
+/// not the accumulating one built during iteration.
+///
 /// Returns the missing component names and the updated inventory hex string.
 #[must_use]
 pub fn filter_needed_components(
     component_names: &HashSet<String>,
     inventory_hex: &str,
 ) -> (Vec<String>, String) {
-    let mut updated_inv = parse_inventory(inventory_hex);
+    let client_inv = parse_inventory(inventory_hex);
+    let mut updated_inv = client_inv.clone();
     updated_inv.resize(32, 0);
 
     let mut ordered_names: Vec<&String> = component_names.iter().collect();
@@ -120,7 +126,17 @@ pub fn filter_needed_components(
 
     let mut needed = Vec::with_capacity(ordered_names.len());
     for name in ordered_names {
-        if has_component(&updated_inv, name) {
+        // Only skip if the component bit was set in the CLIENT's original inventory.
+        // Do not skip based on bits set during this iteration — that would cause
+        // false negatives when two component names hash to the same bit position.
+        if has_component(&client_inv, name) {
+            // Still set the bit in the updated inventory to maintain it
+            let bit = component_bit_position(name);
+            let byte_idx = (bit / 8) as usize;
+            let bit_idx = bit % 8;
+            if byte_idx < updated_inv.len() {
+                updated_inv[byte_idx] |= 1 << bit_idx;
+            }
             continue;
         }
 
@@ -134,78 +150,6 @@ pub fn filter_needed_components(
     }
 
     (needed, encode_inventory(&updated_inv))
-}
-
-/// Get the f-template HTML strings needed for a route that the client doesn't
-/// already have.
-///
-/// Walks the fragment graph from `entry_id`, identifies needed components (not
-/// in the client's inventory), and returns their client template HTML from the
-/// protocol's `components` map.
-///
-/// Returns `(templates: Vec<(name, html)>, updated_inventory_hex)`.
-pub fn get_route_templates(
-    protocol: &WebUIProtocol,
-    entry_id: &str,
-    inventory_hex: &str,
-) -> (Vec<(String, String)>, String) {
-    let (needed_names, updated_inv) = get_needed_components(protocol, entry_id, inventory_hex);
-
-    let templates: Vec<(String, String)> = needed_names
-        .iter()
-        .filter_map(|name| {
-            protocol
-                .components
-                .get(name)
-                .filter(|c| !c.template.is_empty())
-                .map(|c| (name.clone(), prepend_css_module(name, &c.css, &c.template)))
-        })
-        .collect();
-
-    (templates, updated_inv)
-}
-
-/// Get the client template HTML strings needed for the active route chain
-/// rooted at `entry_id` for the current `request_path`.
-///
-/// Returns `(templates: Vec<(name, html)>, updated_inventory_hex)`.
-pub fn get_route_templates_for_request(
-    protocol: &WebUIProtocol,
-    entry_id: &str,
-    request_path: &str,
-    inventory_hex: &str,
-) -> (Vec<(String, String)>, String) {
-    let (needed_names, updated_inv) =
-        get_needed_components_for_request(protocol, entry_id, request_path, inventory_hex);
-
-    let templates: Vec<(String, String)> = needed_names
-        .iter()
-        .filter_map(|name| {
-            protocol
-                .components
-                .get(name)
-                .filter(|c| !c.template.is_empty())
-                .map(|c| (name.clone(), prepend_css_module(name, &c.css, &c.template)))
-        })
-        .collect();
-
-    (templates, updated_inv)
-}
-
-/// Prepend the CSS module `<style type="module">` definition to a client template
-/// string for partial responses.
-fn prepend_css_module(name: &str, css: &str, tmpl: &str) -> String {
-    if css.is_empty() {
-        return tmpl.to_string();
-    }
-    let mut s = String::with_capacity(40 + name.len() + css.len() + tmpl.len());
-    s.push_str("<style type=\"module\" specifier=\"");
-    s.push_str(name);
-    s.push_str("\">");
-    s.push_str(css);
-    s.push_str("</style>");
-    s.push_str(tmpl);
-    s
 }
 
 #[derive(Debug)]
@@ -547,7 +491,8 @@ fn collect_params_from_children(
 ///
 /// Returns a `serde_json::Value` object with fields:
 /// - `state`: the application state passed through
-/// - `templates`: array of f-template HTML strings the client needs
+/// - `templateStyles`: module CSS definition tags for inventory-new components (empty for Link/Style)
+/// - `templates`: client template payloads the client doesn't already have (inventory-filtered)
 /// - `inventory`: updated hex bitmask
 /// - `path`: the request path
 /// - `chain`: matched route chain array
@@ -559,23 +504,45 @@ pub fn render_partial(
     request_path: &str,
     inventory_hex: &str,
 ) -> Value {
-    // Get needed templates (filtered by client inventory).
-    // Each template is a raw JS IIFE string — no <script> wrapper.
-    let (templates, updated_inv) =
-        get_route_templates_for_request(protocol, entry_id, request_path, inventory_hex);
+    // Filter by inventory — only send components the client doesn't have.
+    let (needed_names, updated_inv) =
+        get_needed_components_for_request(protocol, entry_id, request_path, inventory_hex);
 
     // Build the matched route chain
     let chain = collect_route_chain(protocol, entry_id, request_path);
 
-    let tmpl_array: Vec<Value> = templates
-        .into_iter()
-        .map(|(_, js)| Value::String(js))
-        .collect();
+    // Build templateStyles (module CSS definitions) and templates (JS IIFEs)
+    // from the same inventory-filtered set.  The SSR handler emits <style type="module">
+    // definitions in <head> for ALL inventoried components, so the client already has
+    // definitions for components in its inventory.
+    let mut style_array = Vec::new();
+    let mut tmpl_array = Vec::with_capacity(needed_names.len());
+    let mut sorted_names: Vec<&String> = needed_names.iter().collect();
+    sorted_names.sort_unstable();
+    for name in sorted_names {
+        let Some(component) = protocol.components.get(name) else {
+            continue;
+        };
+        if component.template.is_empty() {
+            continue;
+        }
+        if !component.css.is_empty() {
+            let mut s = String::with_capacity(40 + name.len() + component.css.len());
+            s.push_str("<style type=\"module\" specifier=\"");
+            s.push_str(name);
+            s.push_str("\">");
+            s.push_str(&component.css);
+            s.push_str("</style>");
+            style_array.push(Value::String(s));
+        }
+        tmpl_array.push(Value::String(component.template.clone()));
+    }
 
     let chain_array = Value::Array(chain.iter().map(RouteChainEntry::to_json).collect());
 
-    let mut result = serde_json::Map::with_capacity(5);
+    let mut result = serde_json::Map::with_capacity(6);
     result.insert("state".into(), state);
+    result.insert("templateStyles".into(), Value::Array(style_array));
     result.insert("templates".into(), Value::Array(tmpl_array));
     result.insert("inventory".into(), Value::String(updated_inv));
     result.insert("path".into(), Value::String(request_path.to_string()));
@@ -797,6 +764,36 @@ mod tests {
     }
 
     #[test]
+    fn test_filter_needed_components_hash_collision_does_not_drop_components() {
+        // mp-app and mp-cart-panel both hash to bit 218 (FNV-1a mod 256).
+        // With empty inventory, BOTH must appear in the needed set.
+        assert_eq!(
+            component_bit_position("mp-app"),
+            component_bit_position("mp-cart-panel"),
+            "test precondition: mp-app and mp-cart-panel should collide"
+        );
+
+        let mut names = HashSet::new();
+        names.insert("mp-app".to_string());
+        names.insert("mp-cart-panel".to_string());
+        names.insert("mp-footer".to_string());
+
+        let (needed, _inv) = filter_needed_components(&names, "");
+        assert!(
+            needed.contains(&"mp-app".to_string()),
+            "mp-app should be needed: {needed:?}"
+        );
+        assert!(
+            needed.contains(&"mp-cart-panel".to_string()),
+            "mp-cart-panel should be needed despite hash collision with mp-app: {needed:?}"
+        );
+        assert!(
+            needed.contains(&"mp-footer".to_string()),
+            "mp-footer should be needed: {needed:?}"
+        );
+    }
+
+    #[test]
     fn test_get_needed_components_empty_inventory() {
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -816,28 +813,6 @@ mod tests {
         let (needed, _inv) = get_needed_components(&protocol, "app-shell", "");
         assert!(needed.contains(&"app-shell".to_string()));
         assert!(needed.contains(&"my-card".to_string()));
-    }
-
-    #[test]
-    fn test_get_route_templates() {
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "my-page".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("<p>page</p>")],
-            },
-        );
-
-        let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
-        protocol
-            .components
-            .entry("my-page".to_string())
-            .or_default()
-            .template = "<p>page</p>".to_string();
-
-        let (templates, _inv) = get_route_templates(&protocol, "my-page", "");
-        assert_eq!(templates.len(), 1);
-        assert_eq!(templates[0].0, "my-page");
     }
 
     #[test]
@@ -1224,61 +1199,327 @@ mod tests {
     }
 
     #[test]
-    fn test_get_route_templates_for_request_returns_only_active_route_templates() {
+    fn test_render_partial_separates_module_styles_from_templates() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
             FragmentList {
-                fragments: vec![WebUIFragment::component("mp-app")],
+                fragments: vec![WebUIFragment::component("my-page")],
             },
         );
         fragments.insert(
-            "mp-app".to_string(),
+            "my-page".to_string(),
             FragmentList {
-                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
-                    path: "/search".into(),
-                    fragment_id: "mp-search-page".into(),
-                    exact: true,
-                    ..Default::default()
-                })],
-            },
-        );
-        fragments.insert(
-            "mp-search-page".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::component("mp-product-grid")],
-            },
-        );
-        fragments.insert(
-            "mp-product-grid".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("<grid></grid>")],
+                fragments: vec![WebUIFragment::raw("<p>page</p>")],
             },
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
-        protocol
+        let component = protocol
             .components
-            .entry("mp-app".to_string())
-            .or_default()
-            .template = "<f-template id=app></f-template>".to_string();
-        protocol
-            .components
-            .entry("mp-search-page".to_string())
-            .or_default()
-            .template = "<f-template id=search></f-template>".to_string();
-        protocol
-            .components
-            .entry("mp-product-grid".to_string())
-            .or_default()
-            .template = "<f-template id=grid></f-template>".to_string();
+            .entry("my-page".to_string())
+            .or_default();
+        component.template =
+            "(function(){window.__webui_templates['my-page']={h:'<p>page</p>'};})();".to_string();
+        component.css = ".page{color:red}".to_string();
 
-        let (templates, _inv) =
-            get_route_templates_for_request(&protocol, "index.html", "/search", "");
+        let partial = render_partial(&protocol, serde_json::json!({}), "index.html", "/", "");
 
-        assert_eq!(templates.len(), 3);
-        assert_eq!(templates[0].0, "mp-app");
-        assert_eq!(templates[1].0, "mp-product-grid");
-        assert_eq!(templates[2].0, "mp-search-page");
+        // templateStyles should contain the separated module style tag
+        let styles = partial["templateStyles"]
+            .as_array()
+            .expect("templateStyles should be an array");
+        assert_eq!(styles.len(), 1);
+        assert!(
+            styles[0]
+                .as_str()
+                .unwrap_or_default()
+                .contains("specifier=\"my-page\""),
+            "module style should carry the component specifier"
+        );
+        assert!(
+            styles[0]
+                .as_str()
+                .unwrap_or_default()
+                .contains(".page{color:red}"),
+            "module style should contain the CSS content"
+        );
+
+        // templates should contain only the clean JS IIFE
+        let templates = partial["templates"]
+            .as_array()
+            .expect("templates should be an array");
+        assert_eq!(templates.len(), 1);
+        assert!(
+            !templates[0].as_str().unwrap_or_default().contains("<style"),
+            "template should not contain any style tags"
+        );
+        assert!(
+            templates[0]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("(function()"),
+            "template should be a raw JS IIFE"
+        );
+    }
+
+    #[test]
+    fn test_render_partial_link_strategy_has_empty_template_styles() {
+        // Link-strategy components have css_href but no css content.
+        // templateStyles should be empty; templates should contain the IIFE.
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("my-page")],
+            },
+        );
+        fragments.insert(
+            "my-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>page</p>")],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        let component = protocol
+            .components
+            .entry("my-page".to_string())
+            .or_default();
+        component.template = "(function(){})();".to_string();
+        component.css_href = "/my-page.css".to_string();
+        // css is empty — Link strategy stores href, not content
+
+        let partial = render_partial(&protocol, serde_json::json!({}), "index.html", "/", "");
+        let styles = partial["templateStyles"]
+            .as_array()
+            .expect("templateStyles should be an array");
+        let templates = partial["templates"]
+            .as_array()
+            .expect("templates should be an array");
+
+        assert!(
+            styles.is_empty(),
+            "Link strategy should produce empty templateStyles: {styles:?}"
+        );
+        assert_eq!(templates.len(), 1, "should include the template IIFE");
+    }
+
+    #[test]
+    fn test_render_partial_style_strategy_has_empty_template_styles() {
+        // Style-strategy components have CSS embedded in the template HTML
+        // (as <style>...</style>), not in component.css.
+        // templateStyles should be empty; templates should contain the IIFE.
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("my-page")],
+            },
+        );
+        fragments.insert(
+            "my-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>page</p>")],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        let component = protocol
+            .components
+            .entry("my-page".to_string())
+            .or_default();
+        // Style strategy: CSS is inside the template HTML, not in component.css
+        component.template =
+            "(function(){var w=window.__webui_templates;w['my-page']={h:'<style>.p{color:red}</style><p>page</p>'};})();"
+                .to_string();
+        // css is empty for Style strategy
+
+        let partial = render_partial(&protocol, serde_json::json!({}), "index.html", "/", "");
+        let styles = partial["templateStyles"]
+            .as_array()
+            .expect("templateStyles should be an array");
+        let templates = partial["templates"]
+            .as_array()
+            .expect("templates should be an array");
+
+        assert!(
+            styles.is_empty(),
+            "Style strategy should produce empty templateStyles: {styles:?}"
+        );
+        assert_eq!(templates.len(), 1, "should include the template IIFE");
+        assert!(
+            templates[0]
+                .as_str()
+                .unwrap_or_default()
+                .contains("<style>"),
+            "Style strategy template should contain inline <style> tag"
+        );
+    }
+
+    #[test]
+    fn test_render_partial_empty_styles_for_no_css_components() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("my-page")],
+            },
+        );
+        fragments.insert(
+            "my-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>page</p>")],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        let component = protocol
+            .components
+            .entry("my-page".to_string())
+            .or_default();
+        component.template = "(function(){})();".to_string();
+        // No CSS — simulates Link or Style mode
+
+        let partial = render_partial(&protocol, serde_json::json!({}), "index.html", "/", "");
+        let styles = partial["templateStyles"]
+            .as_array()
+            .expect("templateStyles should be an array");
+        assert!(
+            styles.is_empty(),
+            "templateStyles should be empty when components have no CSS"
+        );
+    }
+
+    #[test]
+    fn test_render_partial_sends_styles_even_when_templates_filtered_by_inventory() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("my-page")],
+            },
+        );
+        fragments.insert(
+            "my-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>page</p>")],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        let component = protocol
+            .components
+            .entry("my-page".to_string())
+            .or_default();
+        component.template = "(function(){})();".to_string();
+        component.css = ".page{color:red}".to_string();
+
+        // First call to establish inventory
+        let partial1 = render_partial(&protocol, serde_json::json!({}), "index.html", "/", "");
+        let inv = partial1["inventory"].as_str().unwrap_or_default();
+        assert!(!inv.is_empty());
+
+        // Second call with the inventory — both templates and styles should be empty
+        // because the inventory covers this component.  The SSR handler emits all
+        // module style definitions in <head> for inventoried components, so the
+        // client already has the CSS definition.
+        let partial2 = render_partial(&protocol, serde_json::json!({}), "index.html", "/", inv);
+        let styles = partial2["templateStyles"]
+            .as_array()
+            .expect("templateStyles should be an array");
+        let templates = partial2["templates"]
+            .as_array()
+            .expect("templates should be an array");
+
+        assert!(
+            templates.is_empty(),
+            "templates should be empty when inventory is full"
+        );
+        assert!(
+            styles.is_empty(),
+            "module styles should be empty when inventory is full — SSR already placed them"
+        );
+    }
+
+    #[test]
+    fn test_non_route_siblings_included_in_needed_components() {
+        // Reproduces the commerce app layout: mp-app has both route children
+        // (via outlet) AND non-route sibling components (mp-cart-panel, mp-footer).
+        // All siblings must be in the needed set so their module CSS definitions
+        // are emitted in <head> during SSR.
+        let mut fragments = HashMap::new();
+
+        // Entry → app-shell component
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("app-shell")],
+            },
+        );
+
+        // app-shell has: navbar (component), route (outlet), cart-panel (component)
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::component("my-navbar"),
+                    WebUIFragment::route_from(WebUiFragmentRoute {
+                        path: "/about".into(),
+                        fragment_id: "page-about".into(),
+                        exact: true,
+                        ..Default::default()
+                    }),
+                    WebUIFragment::component("cart-panel"),
+                ],
+            },
+        );
+
+        // Leaf fragments
+        fragments.insert(
+            "my-navbar".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<nav/>")],
+            },
+        );
+        fragments.insert(
+            "page-about".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<h1>About</h1>")],
+            },
+        );
+        fragments.insert(
+            "cart-panel".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<aside>Cart</aside>")],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        for name in ["app-shell", "my-navbar", "page-about", "cart-panel"] {
+            let comp = protocol.components.entry(name.to_string()).or_default();
+            comp.template = format!("(function(){{/* {name} */}})();");
+            comp.css = format!(".{name}{{display:block}}");
+        }
+
+        let (needed, _inv) =
+            get_needed_components_for_request(&protocol, "index.html", "/about", "");
+
+        assert!(
+            needed.contains(&"app-shell".to_string()),
+            "app-shell should be needed: {needed:?}"
+        );
+        assert!(
+            needed.contains(&"my-navbar".to_string()),
+            "my-navbar (non-route sibling) should be needed: {needed:?}"
+        );
+        assert!(
+            needed.contains(&"page-about".to_string()),
+            "page-about (active route) should be needed: {needed:?}"
+        );
+        assert!(
+            needed.contains(&"cart-panel".to_string()),
+            "cart-panel (non-route sibling) should be needed: {needed:?}"
+        );
     }
 }

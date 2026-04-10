@@ -867,7 +867,7 @@ async fn handle_json_partial(
         .unwrap_or_default()
         .to_string();
 
-    // Build the complete partial response (state, templates, inventory, path, chain) in one call
+    // Build the complete partial response (state, templateStyles, templates, inventory, path, chain)
     let partial = if let Some(proto) = &protocol {
         webui_handler::route_handler::render_partial(
             proto,
@@ -880,43 +880,12 @@ async fn handle_json_partial(
         Value::Object(serde_json::Map::new())
     };
 
-    // Re-derive needed component names and look up templates from the protocol.
-    let (needed_names, inv_hex) = if let Some(proto) = &protocol {
-        collect_needed_template_names(proto, &entry, &paths.route_path, &client_inv_hex)
-    } else {
-        (Vec::new(), client_inv_hex)
-    };
-
-    let templates: Vec<Value> = if let Some(proto) = &protocol {
-        needed_names
-            .iter()
-            .filter_map(|name| {
-                proto
-                    .components
-                    .get(name)
-                    .map(|c| c.template.as_str())
-                    .filter(|s| !s.is_empty())
-            })
-            .map(|t| Value::String(t.to_string()))
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    // Start from the partial (which has state, path, chain) and override
-    // templates/inventory with the CLI dev server's local template map.
-    let mut resp = match partial {
-        Value::Object(m) => m,
-        _ => serde_json::Map::new(),
-    };
-    resp.insert("templates".into(), Value::Array(templates));
-    resp.insert("inventory".into(), Value::String(inv_hex));
-
     HttpResponse::Ok()
         .content_type("application/json")
-        .json(Value::Object(resp))
+        .json(partial)
 }
 
+#[cfg(test)]
 fn collect_needed_template_names(
     protocol: &WebUIProtocol,
     entry_fragment_id: &str,

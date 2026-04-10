@@ -1,12 +1,12 @@
 {
   "name": "commerce",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
   "private": true,
   "scripts": {
     "build": "esbuild src/index.ts --bundle --outdir=dist --format=esm --splitting --sourcemap --minify",
     "start:client": "esbuild src/index.ts --bundle --outdir=dist --splitting --format=esm --sourcemap --watch",
-    "start:server": "cargo run -p marketplace-api -- --port 3004 --no-tls",
+    "start:server": "cargo run -p marketplace-api -- --port 3004 --no-tls --css=module",
     "start": "cargo xtask dev commerce",
     "test": "playwright test",
     "test:update-snapshots": "playwright test --update-snapshots"

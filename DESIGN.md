@@ -236,9 +236,10 @@ on the first client-side navigation.
 5. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
 6. Parent components and their state are preserved.
 
-**Partial response:** The server returns `{ state, templates, inventory, path, chain }`:
+**Partial response:** The server returns `{ state, templateStyles, templates, inventory, path, chain }`:
 - `state`: route params from all nesting levels injected into API state
-- `templates`: client template strings the client doesn't already have (filtered by inventory bitmask)
+- `templateStyles`: module CSS definition tags (`<style type="module" specifier="...">`) for newly shipped components. Empty array for Link/Style modes. The client appends these to `<head>` before evaluating template scripts so adopted stylesheets are available
+- `templates`: client template script/markup payloads the client doesn't already have (filtered by inventory bitmask). Clean JS IIFEs for the WebUI plugin, `<f-template>` markup for the FAST plugin
 - `inventory`: updated hex bitmask of loaded templates
 - `chain`: matched route chain array — each entry has `component`, `path`, optional `params` and `exact`
 
@@ -659,7 +660,7 @@ pub enum CssStrategy {
 
 - **Link** (default): Emits `<link>` tags referencing external `.css` files only for components whose discovery/registration data included CSS. Used by the CLI for production builds where CSS files are served separately.
 - **Style**: Embeds the full CSS content in `<style>` tags inside the shadow DOM template. Used when all files are needed in-memory.
-- **Module**: Uses the [Declarative CSS Module Scripts](https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ShadowDOM/explainer.md) proposal. Emits a `<style type="module" specifier="component-name">` definition in each component's light DOM (once per component) and adds `shadowrootadoptedstylesheets="component-name"` to the `<template>` tag. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. For partial rendering, CSS module definitions are prepended to client template payloads so the client inserts the definition before the companion template/script runs; WebUI Framework compiled metadata also carries the adopted stylesheet specifier so client-created components can reuse the registered stylesheet.
+- **Module**: Uses the [Declarative CSS Module Scripts](https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ShadowDOM/explainer.md) proposal. During SSR, emits `<style type="module" specifier="component-name">` definitions in `<head>` for all inventoried components and adds `shadowrootadoptedstylesheets="component-name"` to each shadow root `<template>`. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. During SPA partial navigation, module style definitions for newly needed components are sent in the `templateStyles` array; the router appends them to `<head>` before executing template scripts. WebUI Framework compiled metadata carries the adopted stylesheet specifier (`sa`) so client-created components can adopt the registered stylesheet on their shadow root.
 
 Set via `parser.set_css_strategy(CssStrategy::Style)`.
 
@@ -706,7 +707,7 @@ pub trait ParserPlugin {
 **Built-in plugin: `WebUIParserPlugin`**
 - Skips WebUI Framework runtime attributes (`@click`, `@keydown`, etc.) without counting them as attribute bindings
 - Tracks per-element event count; emits 12-byte `WebUIElementData` `Plugin` fragments encoding `[binding_count, event_start, event_count]`
-- Tracks components and compiles templates into raw JS IIFE strings registered in `window.__webui_templates`. During SSR the handler wraps them in a single `<script>` tag; during SPA navigation the router evaluates them directly.
+- Tracks components and compiles templates into raw JS IIFE strings registered in `window.__webui_templates`. During SSR the handler wraps them in a single `<script>` tag; during SPA navigation the router appends any `templateStyles` first, then evaluates the batched template scripts in one nonce-friendly `<script>` tag.
 - Public framework authoring, decorators, and package entrypoints live in [packages/webui-framework/README.md](packages/webui-framework/README.md)
 
 **Usage:**
@@ -1138,7 +1139,7 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 | `webui_handler_create()` | Create a reusable handler (no plugin). |
 | `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin (e.g. `"fast"`). Returns `NULL` on error. |
 | `webui_handler_render(handler, data, len, json, entry_id, request_path)` | Render a pre-compiled protocol with route matching. `request_path` controls which route is active. Returns heap-allocated string. |
-| `webui_render_partial(protocol_data, len, state_json, entry_id, request_path, inventory_hex)` | Produce a complete JSON partial response (state, templates, inventory, path, and matched route chain) in a single call. Returns heap-allocated JSON string. |
+| `webui_render_partial(protocol_data, len, state_json, entry_id, request_path, inventory_hex)` | Produce a complete JSON partial response (state, templateStyles, templates, inventory, path, and matched route chain) in a single call. Returns heap-allocated JSON string. |
 | `webui_handler_destroy(handler)` | Destroy a handler. `NULL` is a safe no-op. |
 | `webui_free(ptr)` | Free a string returned by any render function. `NULL` is a safe no-op. |
 | `webui_last_error()` | Return per-thread error message. Caller must **not** free. |

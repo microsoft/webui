@@ -103,11 +103,20 @@ docker images webui-commerce
 # Inspect image metadata
 docker inspect webui-commerce
 
-# Run the container (maps host port 443 to container port 3004)
-docker run -p 443:3004 webui-commerce
+# Run the container:
+# - host 443  -> container 3004 (--css link)
+# - host 1443 -> container 3003 (--css module)
+# - host 2443  -> container 3002 (--css style)
+docker run -p 443:3004 -p 1443:3003 -p 2443:3002 webui-commerce
 ```
 
-Then open https://localhost
+The container runs both commerce variants:
+
+- `http://localhost` serves the `--css link` app on container port `3004`
+- `http://localhost:1443` serves the `--css module` app on container port `3003`
+
+These ports are plain HTTP because the container starts `marketplace-api` with `--no-tls`.
+Use a TLS-terminating proxy or ingress if you want external HTTPS on `443` and `1443`.
 
 To tag with the project version:
 

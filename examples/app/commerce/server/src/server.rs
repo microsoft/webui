@@ -307,7 +307,7 @@ fn cart_response(
 #[cfg(test)]
 mod tests {
     use super::configure_app;
-    use crate::app::test_state;
+    use crate::app::{test_state, test_state_with_css};
     use crate::cart;
     use actix_web::body::to_bytes;
     use actix_web::http::{header, StatusCode};
@@ -402,6 +402,92 @@ mod tests {
         assert!(json["state"].get("cartItemCount").is_none());
         assert!(json["state"].get("page").is_none());
         assert!(json["state"].get("head_end").is_none());
+    }
+
+    #[actix_web::test]
+    async fn category_partial_in_module_mode_splits_styles_from_templates() {
+        let app = test::init_service(
+            App::new()
+                .app_data(test_state_with_css(webui::CssStrategy::Module))
+                .configure(configure_app),
+        )
+        .await;
+
+        let request = TestRequest::with_uri("/search/shirts")
+            .insert_header((header::ACCEPT, "application/json"))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = match to_bytes(response.into_body()).await {
+            Ok(body) => body,
+            Err(error) => panic!("{error}"),
+        };
+        let json: serde_json::Value = match serde_json::from_slice(&body) {
+            Ok(json) => json,
+            Err(error) => panic!("{error}"),
+        };
+
+        let template_styles = match json["templateStyles"].as_array() {
+            Some(template_styles) => template_styles,
+            None => panic!("templateStyles should be an array"),
+        };
+        let templates = match json["templates"].as_array() {
+            Some(templates) => templates,
+            None => panic!("templates should be an array"),
+        };
+        let combined_styles = template_styles
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<String>();
+        let combined_templates = templates
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<String>();
+
+        assert!(
+            combined_styles.contains(r#"<style type="module" specifier="mp-product-grid">"#),
+            "module partials should return module CSS definitions separately: {combined_styles}"
+        );
+        assert!(
+            !combined_templates.contains(r#"<style type="module" specifier="mp-product-grid">"#),
+            "template scripts should not be prefixed with module styles: {combined_templates}"
+        );
+        assert!(
+            !combined_templates.contains(r#"<link rel="stylesheet" href="/mp-product-grid.css""#),
+            "module partials must not ship link-mode product-grid templates: {combined_templates}"
+        );
+        assert!(
+            !combined_templates.contains(r#"<link rel="stylesheet" href="/mp-page-search.css""#),
+            "module partials must not ship link-mode page-search templates: {combined_templates}"
+        );
+    }
+
+    #[actix_web::test]
+    async fn module_mode_about_page_includes_cart_panel_style_in_head() {
+        let state = test_state_with_css(webui::CssStrategy::Module);
+        let app = test::init_service(App::new().app_data(state).configure(configure_app)).await;
+
+        let request = TestRequest::with_uri("/about").to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = match to_bytes(response.into_body()).await {
+            Ok(body) => body,
+            Err(error) => panic!("{error}"),
+        };
+        let html = match String::from_utf8(body.to_vec()) {
+            Ok(html) => html,
+            Err(error) => panic!("{error}"),
+        };
+
+        // mp-cart-panel is a non-route sibling inside mp-app whose FNV-1a hash
+        // collides with mp-app (both map to bit 218). The inventory filter must
+        // not drop it due to this collision.
+        assert!(
+            html.contains(r#"<style type="module" specifier="mp-cart-panel">"#),
+            "mp-cart-panel module style should be in <head> for /about"
+        );
     }
 
     #[actix_web::test]

@@ -60,16 +60,20 @@ RUN apt-get update && \
 WORKDIR /app
 
 COPY --from=builder /build/target/release/marketplace-api /usr/local/bin/marketplace-api
+COPY --from=builder /build/examples/app/commerce/docker-entrypoint.sh /usr/local/bin/commerce-entrypoint.sh
 COPY --from=builder --chown=app:app /build/examples/app/commerce/src/ ./src/
 COPY --from=builder --chown=app:app /build/examples/app/commerce/dist/ ./dist/
 COPY --from=builder --chown=app:app /build/examples/app/commerce/images/ ./images/
+RUN chmod 0755 /usr/local/bin/commerce-entrypoint.sh && \
+    sed -i 's/\r$//' /usr/local/bin/commerce-entrypoint.sh && \
+    chown app:app /usr/local/bin/commerce-entrypoint.sh
 
 USER app
-EXPOSE 3004
+EXPOSE 3002 3003 3004
 
 # Cart cookies are signed with HMAC-SHA256. Pass CART_COOKIE_SECRET at runtime:
 #   docker run -e CART_COOKIE_SECRET=<your-secret> ...
 # If unset, the server generates an ephemeral per-process key (carts do not
 # survive restarts).
 
-CMD ["marketplace-api", "--port", "3004", "--no-tls"]
+CMD ["/usr/local/bin/commerce-entrypoint.sh"]

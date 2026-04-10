@@ -202,7 +202,8 @@ When `Accept: application/json`:
 ```json
 {
   "state": { "name": "Alice", "email": "alice@example.com" },
-  "templates": ["<f-template name=\"user-detail\">...</f-template>"],
+  "templateStyles": ["<style type=\"module\" specifier=\"user-detail\">.user-detail{display:block}</style>"],
+  "templates": ["(function(){var w=window.__webui_templates||...})();"],
   "inventory": "04000400...",
   "path": "/users/42",
   "chain": [
@@ -212,6 +213,8 @@ When `Accept: application/json`:
 }
 ```
 
+The `templateStyles` array contains module CSS definition tags for CssStrategy::Module. The client appends these to `<head>` before evaluating template scripts so adopted stylesheets are available. For Link/Style modes, this array is empty.
+
 The `chain` field tells the client router which route components are active at each nesting level. The client uses this to diff against the previous chain and only remount what changed - it does **not** perform route matching itself.
 
 ### Full HTML (initial load)
@@ -220,12 +223,12 @@ Without `Accept: application/json`, return the full SSR'd page. The handler auto
 
 ### Building the chain
 
-Use `render_partial()` (Rust) or `webui_render_partial()` (FFI) to get the complete partial response - state, templates, inventory, path, and chain - in a single call:
+Use `render_partial()` (Rust) or `webui_render_partial()` (FFI) to get the complete partial response - state, templateStyles, templates, inventory, path, and chain - in a single call:
 
 ```rust
 // Rust
 let partial = route_handler::render_partial(&protocol, state, &entry, &path, &inventory_hex);
-// partial contains: { "state": {...}, "templates": [...], "inventory": "...", "path": "...", "chain": [...] }
+// partial contains: { "state": {...}, "templateStyles": [...], "templates": [...], "inventory": "...", "path": "...", "chain": [...] }
 ```
 
 ```csharp

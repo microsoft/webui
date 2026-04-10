@@ -229,6 +229,151 @@ describe('WebUIRouter', () => {
       // The guard `start > 0 && end > start` should prevent execution
       assert.equal(start > 0 && end > start, false, 'guard should reject malformed input');
     });
+
+    test('fetchPartial appends module styles before one batched script execution', async () => {
+      const origFetch = (globalThis as any).fetch;
+      const origCreateElement = (globalThis as any).document.createElement;
+      const origQuerySelector = (globalThis as any).document.querySelector;
+      const origHead = (globalThis as any).document.head;
+
+      const order: string[] = [];
+      const scriptBodies: string[] = [];
+      const scriptNonces: string[] = [];
+
+      (globalThis as any).fetch = async () => ({
+        ok: true,
+        json: async () => ({
+          state: {},
+          templateStyles: [
+            '<style type="module" specifier="alpha">.alpha{color:red}</style>',
+            '<style type="module" specifier="beta">.beta{color:blue}</style>',
+          ],
+          templates: [
+            '(function(){var w=window.__webui_templates||(window.__webui_templates={});w["alpha"]={h:"<div>a</div>"};})();',
+            '(function(){var w=window.__webui_templates||(window.__webui_templates={});w["beta"]={h:"<div>b</div>"};})();',
+          ],
+          path: '/',
+          chain: [],
+          inventory: 'ff',
+        }),
+      });
+
+      (globalThis as any).document.createElement = (tag: string) => ({
+        tagName: tag,
+        type: '',
+        nonce: '',
+        textContent: '',
+        attributes: {} as Record<string, string>,
+        setAttribute(name: string, value: string) {
+          this.attributes[name] = value;
+        },
+      });
+      (globalThis as any).document.querySelector = () => null;
+      (globalThis as any).document.head = {
+        appendChild(el: Record<string, unknown>) {
+          if (el.tagName === 'style') {
+            order.push(`style:${(el.attributes as Record<string, string>).specifier}`);
+            return el;
+          }
+          order.push('script');
+          scriptNonces.push(el.nonce as string);
+          scriptBodies.push(el.textContent as string);
+          // eslint-disable-next-line no-new-func
+          Function(el.textContent as string)();
+          return el;
+        },
+        removeChild() {
+          return undefined;
+        },
+      };
+
+      try {
+        const router = new WebUIRouter();
+        (router as any).nonce = 'test-nonce';
+        const fetchPartial = (router as any).fetchPartial.bind(router) as (
+          path: string,
+          signal?: AbortSignal,
+        ) => Promise<unknown>;
+
+        const result = await fetchPartial('/test');
+
+        assert.ok(result, 'should return partial data');
+        // Styles must be appended BEFORE scripts
+        assert.deepEqual(order, ['style:alpha', 'style:beta', 'script']);
+        // All JS IIFEs batched into one script tag
+        assert.equal(scriptBodies.length, 1, 'all JS should be batched into one script tag');
+        assert.ok(scriptBodies[0].includes('w["alpha"]'), 'batch should include alpha IIFE');
+        assert.ok(scriptBodies[0].includes('w["beta"]'), 'batch should include beta IIFE');
+        // CSP nonce preserved
+        assert.deepEqual(scriptNonces, ['test-nonce'], 'batched script should carry the nonce');
+        // Templates actually registered
+        assert.ok(globals().__webui_templates?.['alpha'], 'alpha template should register');
+        assert.ok(globals().__webui_templates?.['beta'], 'beta template should register');
+      } finally {
+        (globalThis as any).fetch = origFetch;
+        (globalThis as any).document.createElement = origCreateElement;
+        (globalThis as any).document.querySelector = origQuerySelector;
+        (globalThis as any).document.head = origHead;
+      }
+    });
+
+    test('fetchPartial handles empty templateStyles for Link/Style modes', async () => {
+      const origFetch = (globalThis as any).fetch;
+      const origCreateElement = (globalThis as any).document.createElement;
+      const origHead = (globalThis as any).document.head;
+
+      const appendedTags: string[] = [];
+
+      (globalThis as any).fetch = async () => ({
+        ok: true,
+        json: async () => ({
+          state: {},
+          templateStyles: [],
+          templates: [
+            '(function(){var w=window.__webui_templates||(window.__webui_templates={});w["link-comp"]={h:"<div/>"};})();',
+          ],
+          path: '/',
+          chain: [],
+          inventory: 'ff',
+        }),
+      });
+
+      (globalThis as any).document.createElement = (tag: string) => ({
+        tagName: tag,
+        type: '',
+        nonce: '',
+        textContent: '',
+        setAttribute() {},
+      });
+      (globalThis as any).document.head = {
+        appendChild(el: Record<string, unknown>) {
+          appendedTags.push(el.tagName as string);
+          if (el.tagName === 'script') {
+            // eslint-disable-next-line no-new-func
+            Function(el.textContent as string)();
+          }
+          return el;
+        },
+        removeChild() { return undefined; },
+      };
+
+      try {
+        const router = new WebUIRouter();
+        const fetchPartial = (router as any).fetchPartial.bind(router) as (
+          path: string,
+        ) => Promise<unknown>;
+
+        await fetchPartial('/test');
+
+        // No style tags should be appended — only the batched script
+        assert.deepEqual(appendedTags, ['script'], 'only a script tag should be appended');
+        assert.ok(globals().__webui_templates?.['link-comp'], 'template should register');
+      } finally {
+        (globalThis as any).fetch = origFetch;
+        (globalThis as any).document.createElement = origCreateElement;
+        (globalThis as any).document.head = origHead;
+      }
+    });
   });
 
   describe('navigation abort signal', () => {

@@ -11,7 +11,7 @@
 .product-area {
   flex: 1;
   min-width: 0;
-  min-height: 100vh;
+  min-height: 75vh;
 }
 
 mp-category-nav {

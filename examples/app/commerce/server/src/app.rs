@@ -64,10 +64,15 @@ impl AppState {
 
 #[cfg(test)]
 pub(crate) fn test_state() -> actix_web::web::Data<AppState> {
+    test_state_with_css(webui::CssStrategy::Link)
+}
+
+#[cfg(test)]
+pub(crate) fn test_state_with_css(css: webui::CssStrategy) -> actix_web::web::Data<AppState> {
     let app_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("server crate should live under the app directory");
-    let state = match AppState::load(app_root, webui::CssStrategy::Link) {
+    let state = match AppState::load(app_root, css) {
         Ok(state) => state,
         Err(error) => panic!("Failed to build the commerce WebUI protocol: {error:#}"),
     };

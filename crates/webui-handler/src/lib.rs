@@ -464,33 +464,6 @@ impl WebUIHandler {
         Ok(())
     }
 
-    /// Emit a `<style type="module">` tag for a component if this is its first
-    /// rendering and it has CSS in `protocol.components` (Module strategy only).
-    fn emit_css_module(
-        &self,
-        component: &webui_protocol::WebUIFragmentComponent,
-        context: &mut WebUIProcessContext,
-    ) -> Result<()> {
-        if !context.rendered_components.contains(&component.fragment_id) {
-            if let Some(css) = context
-                .protocol
-                .components
-                .get(&component.fragment_id)
-                .map(|c| c.css.as_str())
-                .filter(|s| !s.is_empty())
-            {
-                context
-                    .writer
-                    .write("<style type=\"module\" specifier=\"")?;
-                context.writer.write(&component.fragment_id)?;
-                context.writer.write("\">")?;
-                context.writer.write(css)?;
-                context.writer.write("</style>")?;
-            }
-        }
-        Ok(())
-    }
-
     /// Process a route fragment — renders `<webui-route>` with matched/hidden state.
     fn process_route(
         &self,
@@ -566,13 +539,6 @@ impl WebUIHandler {
         component: &webui_protocol::WebUIFragmentComponent,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        // Emit CSS module into the component's light DOM on first encounter.
-        // Subsequent instances skip — the browser's module map deduplicates.
-        let first_render = !context.rendered_components.contains(&component.fragment_id);
-        if first_render {
-            self.emit_css_module(component, context)?;
-        }
-
         // Track this component as rendered (for selective f-template emission)
         context
             .rendered_components
@@ -749,17 +715,27 @@ impl WebUIHandler {
             // Emit CSS <link> tags in <head> for components with external stylesheets.
             // Only Link-strategy components have css_href set; Style/Module
             // handle CSS via inline <style> tags or adopted stylesheets.
+            //
+            // For Module-strategy: emit <style type="module"> definitions for ALL
+            // route-reachable components so the inventory contract holds — the client
+            // has both the template IIFE (in the <script> at body_end) and the CSS
+            // definition (here) for every inventoried component.
             for name in &needed_components {
-                if let Some(href) = context
-                    .protocol
-                    .components
-                    .get(name)
-                    .map(|c| &c.css_href)
-                    .filter(|h| !h.is_empty())
-                {
-                    context.writer.write("<link rel=\"stylesheet\" href=\"")?;
-                    context.writer.write(href)?;
-                    context.writer.write("\">")?;
+                if let Some(component) = context.protocol.components.get(name) {
+                    if !component.css_href.is_empty() {
+                        context.writer.write("<link rel=\"stylesheet\" href=\"")?;
+                        context.writer.write(&component.css_href)?;
+                        context.writer.write("\">")?;
+                    }
+                    if !component.css.is_empty() {
+                        context
+                            .writer
+                            .write("<style type=\"module\" specifier=\"")?;
+                        context.writer.write(name)?;
+                        context.writer.write("\">")?;
+                        context.writer.write(&component.css)?;
+                        context.writer.write("</style>")?;
+                    }
                 }
             }
         }
@@ -5706,9 +5682,9 @@ mod tests {
     // ── CSS Module dedup tests ───────────────────────────────────────
 
     #[test]
-    fn test_css_module_emitted_once_before_component() {
-        // CSS module definition emitted once, right before the first
-        // component usage — not in <head>.
+    fn test_css_module_emitted_once_in_head() {
+        // CSS module definitions are emitted once in <head> via head_end,
+        // not inline in component light DOM.
         let template = r#"<p><slot></slot></p>"#;
 
         let mut fragments = HashMap::new();
@@ -5716,11 +5692,15 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![
-                    WebUIFragment::raw("<div>".to_string()),
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::raw("</head><body><div>".to_string()),
                     WebUIFragment::component("my-card"),
                     WebUIFragment::raw("A".to_string()),
                     WebUIFragment::component("my-card"),
                     WebUIFragment::raw("B</div>".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
         );
@@ -5750,7 +5730,7 @@ mod tests {
 
         let html = writer.get_content();
 
-        // CSS module should appear exactly once
+        // CSS module should appear exactly once (in <head>)
         let count = html
             .matches(r#"<style type="module" specifier="my-card">"#)
             .count();
@@ -5766,17 +5746,12 @@ mod tests {
             "Template should render twice, got {tmpl_count} in: {html}"
         );
 
-        // CSS module should appear before the first template content
+        // CSS module should be in <head>, before <body>
         let css_pos = html
             .find(r#"<style type="module""#)
             .expect("CSS module missing");
-        let tmpl_pos = html
-            .find(r#"<p><slot></slot></p>"#)
-            .expect("template missing");
-        assert!(
-            css_pos < tmpl_pos,
-            "CSS module should precede first component: {html}"
-        );
+        let body_pos = html.find("<body>").expect("<body> missing");
+        assert!(css_pos < body_pos, "CSS module should be in <head>: {html}");
     }
 
     #[test]
@@ -5867,18 +5842,127 @@ mod tests {
     }
 
     #[test]
-    fn test_css_module_emitted_in_component_light_dom() {
-        // The CSS module <style> must be inside the component tag (light DOM),
-        // not outside it — e.g. <mp-card><style type="module" ...>CSS</style>
-        // <p>hi</p></mp-card>
+    fn test_style_strategy_embeds_inline_style_in_shadow_template() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![
-                    WebUIFragment::raw("<my-card>".to_string()),
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::raw("</head><body><my-card>".to_string()),
+                    WebUIFragment::component("my-card"),
+                    WebUIFragment::raw("</my-card></body></html>".to_string()),
+                ],
+            },
+        );
+        fragments.insert(
+            "my-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw(
+                    "<template shadowrootmode=\"open\"><style>.card{color:red}</style><div>card</div></template>"
+                        .to_string(),
+                )],
+            },
+        );
+
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        let html = writer.get_content();
+
+        assert!(
+            html.contains("<style>.card{color:red}</style>"),
+            "Style strategy should embed inline CSS in shadow template: {html}"
+        );
+        assert!(
+            !html.contains(r#"<style type="module""#),
+            "Style strategy should not emit module CSS in <head>: {html}"
+        );
+    }
+
+    #[test]
+    fn test_link_strategy_emits_link_tag_in_head() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::raw("</head><body><my-card>".to_string()),
                     WebUIFragment::component("my-card"),
                     WebUIFragment::raw("</my-card>".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        fragments.insert(
+            "my-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<div>card</div>".to_string())],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        let comp = protocol
+            .components
+            .entry("my-card".to_string())
+            .or_default();
+        comp.css_href = "/my-card.css".to_string();
+        comp.template = "(function(){})();".to_string();
+
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        let html = writer.get_content();
+
+        let head_end = html.find("</head>").expect("</head> missing");
+        let link_pos = html.find(r#"<link rel="stylesheet" href="/my-card.css">"#);
+        assert!(
+            link_pos.is_some_and(|p| p < head_end),
+            "Link strategy should emit <link> in <head>: {html}"
+        );
+        assert!(
+            !html.contains(r#"<style type="module""#),
+            "Link strategy should not emit module CSS: {html}"
+        );
+    }
+
+    #[test]
+    fn test_css_module_emitted_in_head_not_component_body() {
+        // CSS module <style> tags are emitted in <head> via head_end,
+        // not inline inside the component element.
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::raw("</head><body><my-card>".to_string()),
+                    WebUIFragment::component("my-card"),
+                    WebUIFragment::raw("</my-card>".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
         );
@@ -5908,28 +5992,43 @@ mod tests {
 
         let html = writer.get_content();
 
-        // CSS module must be INSIDE the component tag (light DOM)
-        let tag_open = html.find("<my-card>").expect("<my-card> missing");
+        // CSS module must be in <head>, NOT inside the component tag
+        let head_end = html.find("</head>").expect("</head> missing");
         let css_pos = html
             .find(r#"<style type="module""#)
             .expect("CSS module missing");
-        let tag_close = html.rfind("</my-card>").expect("</my-card> missing");
         assert!(
-            css_pos > tag_open && css_pos < tag_close,
-            "CSS module should be inside component light DOM: {html}"
+            css_pos < head_end,
+            "CSS module should be in <head>, not component body: {html}"
+        );
+
+        // Component body should NOT contain the style tag
+        let tag_open = html.find("<my-card>").expect("<my-card> missing");
+        let tag_close = html.rfind("</my-card>").expect("</my-card> missing");
+        let body_slice = &html[tag_open..tag_close];
+        assert!(
+            !body_slice.contains(r#"<style type="module""#),
+            "Component body should not contain module style: {html}"
         );
     }
 
     #[test]
     fn test_css_module_emitted_for_route_components() {
-        // Route components also get CSS modules via process_route → process_component.
+        // Route components also get CSS modules emitted in <head>.
         let template = r#"<h1>Dashboard</h1>"#;
 
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
             FragmentList {
-                fragments: vec![WebUIFragment::route("/", "dash-page")],
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::raw("</head><body>".to_string()),
+                    WebUIFragment::route("/", "dash-page"),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
             },
         );
         fragments.insert(
@@ -5940,11 +6039,12 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::new(fragments);
-        protocol
+        let comp = protocol
             .components
             .entry("dash-page".to_string())
-            .or_default()
-            .css = "h1{font-size:2rem}".to_string();
+            .or_default();
+        comp.css = "h1{font-size:2rem}".to_string();
+        comp.template = "(function(){})();".to_string();
         let state = test_json!({});
         let mut writer = TestWriter::new();
 
@@ -5962,7 +6062,7 @@ mod tests {
             html.contains(
                 r#"<style type="module" specifier="dash-page">h1{font-size:2rem}</style>"#
             ),
-            "Route component should have CSS module: {html}"
+            "Route component should have CSS module in <head>: {html}"
         );
         assert!(
             html.contains("<h1>Dashboard</h1>"),

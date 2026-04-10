@@ -1999,6 +1999,78 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_shadow_dom_shell_fragment_graph_includes_child_components() {
+        // Reproduces commerce app: mp-app has a shadow DOM template containing
+        // child components (mp-navbar, mp-cart-panel, mp-footer) plus an <outlet>.
+        // The parser must emit Fragment::Component entries for ALL child components
+        // so the inventory walk finds them.
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Shadow);
+
+        parser
+            .component_registry
+            .register_component(
+                "app-shell",
+                r#"<template shadowrootmode="open">
+                  <my-navbar></my-navbar>
+                  <main><outlet /></main>
+                  <cart-panel></cart-panel>
+                  <my-footer></my-footer>
+                </template>"#,
+                Some(":host{display:flex}"),
+            )
+            .expect("register app-shell");
+        parser
+            .component_registry
+            .register_component("my-navbar", "<nav>Nav</nav>", Some("nav{color:red}"))
+            .expect("register my-navbar");
+        parser
+            .component_registry
+            .register_component(
+                "cart-panel",
+                "<aside>Cart</aside>",
+                Some("aside{color:green}"),
+            )
+            .expect("register cart-panel");
+        parser
+            .component_registry
+            .register_component(
+                "my-footer",
+                "<footer>Footer</footer>",
+                Some("footer{color:blue}"),
+            )
+            .expect("register my-footer");
+
+        parser
+            .parse("index.html", "<app-shell></app-shell>")
+            .expect("parse index.html");
+        let records = parser.into_fragment_records();
+
+        // app-shell's fragment list must contain Component entries for all children
+        let app_frags = &records["app-shell"].fragments;
+        let component_ids: Vec<&str> = app_frags
+            .iter()
+            .filter_map(|f| match f.fragment.as_ref() {
+                Some(Fragment::Component(c)) => Some(c.fragment_id.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            component_ids.contains(&"my-navbar"),
+            "app-shell fragments should contain my-navbar: {component_ids:?}"
+        );
+        assert!(
+            component_ids.contains(&"cart-panel"),
+            "app-shell fragments should contain cart-panel: {component_ids:?}"
+        );
+        assert!(
+            component_ids.contains(&"my-footer"),
+            "app-shell fragments should contain my-footer: {component_ids:?}"
+        );
+    }
+
     // ── Component template wrapping tests ────────────────────────────
 
     #[test]

@@ -106,6 +106,8 @@ interface RouteChainEntry {
 /** JSON partial response from the server. */
 interface PartialResponse {
   state: Record<string, unknown>;
+  /** Module CSS definitions to append before executing template scripts. */
+  templateStyles?: string[];
   templates: string[];
   path: string;
   chain?: RouteChainEntry[];
@@ -552,9 +554,43 @@ export class WebUIRouter {
       this.updateInventory(data.inventory);
     }
 
-    // Execute template registration. Each entry is either:
-    // - Raw JS string (WebUI plugin) — execute directly via script element
-    // - "<f-template …>…</f-template>" (FAST plugin) — insert as DOM element
+    // 1. Append module CSS definition tags before executing any template scripts.
+    //    These must exist in the DOM so adoptedStyleSheets can reference them.
+    if (data.templateStyles) {
+      for (const styleMarkup of data.templateStyles) {
+        const trimmed = styleMarkup.trim();
+        if (!trimmed.startsWith('<style')) continue;
+
+        const openTagEnd = trimmed.indexOf('>');
+        const closeTagStart = trimmed.lastIndexOf('</style>');
+        if (openTagEnd < 0 || closeTagStart <= openTagEnd) continue;
+
+        // Extract specifier for deduplication
+        const specifierToken = 'specifier="';
+        const specStart = trimmed.indexOf(specifierToken);
+        let specifier: string | null = null;
+        if (specStart >= 0) {
+          const valStart = specStart + specifierToken.length;
+          const valEnd = trimmed.indexOf('"', valStart);
+          if (valEnd > valStart) specifier = trimmed.substring(valStart, valEnd);
+        }
+
+        // Skip if already present
+        if (specifier && document.querySelector(`style[type="module"][specifier="${specifier}"]`)) {
+          continue;
+        }
+
+        const style = document.createElement('style');
+        style.type = 'module';
+        if (specifier) style.setAttribute('specifier', specifier);
+        style.textContent = trimmed.substring(openTagEnd + 1, closeTagStart);
+        document.head.appendChild(style);
+      }
+    }
+
+    // 2. Execute template registration. Partition DOM-based templates (FAST plugin)
+    //    from raw JS IIFEs (WebUI plugin) and batch JS into one nonce'd script tag.
+    let scriptBody = '';
     for (const tmpl of data.templates) {
       if (tmpl.startsWith('<')) {
         // FAST / DOM-based templates — insert into document for processing
@@ -566,13 +602,17 @@ export class WebUIRouter {
         }
         document.body.appendChild(container);
       } else {
-        // Raw JS body — execute via script element
-        const script = document.createElement('script');
-        if (this.nonce) script.nonce = this.nonce;
-        script.textContent = tmpl;
-        document.head.appendChild(script);
-        document.head.removeChild(script);
+        // Raw JS IIFE — accumulate for batched execution
+        if (scriptBody) scriptBody += '\n';
+        scriptBody += tmpl;
       }
+    }
+    if (scriptBody) {
+      const script = document.createElement('script');
+      if (this.nonce) script.nonce = this.nonce;
+      script.textContent = scriptBody;
+      document.head.appendChild(script);
+      document.head.removeChild(script);
     }
 
     // Inject CSS stylesheets provided by the server for this route's

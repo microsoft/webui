@@ -197,10 +197,10 @@ X-WebUI-Inventory: <hex bitmask>
 
 The server should return:
 
-- **`Accept: application/json`** → JSON partial: `{ state, templates, inventory, path, chain }` — returned directly from `renderPartial()`, no assembly required
+- **`Accept: application/json`** → JSON partial: `{ state, templateStyles, templates, inventory, path, chain }` - returned directly from `renderPartial()`, no assembly required
 - **Otherwise** → Full SSR'd HTML page (handler emits a `<meta name="webui-inventory">` tag in `<head>` so the client knows which templates are loaded)
 
-The `chain` field contains the matched route chain — the client uses it to diff against the previous chain and only remount what changed. The `X-WebUI-Inventory` header is a bitmask of component templates the client already has — the server uses it to avoid sending duplicate templates.
+When `templateStyles` is present (CssStrategy::Module), the router appends those module CSS definition tags to `<head>` before evaluating the batched template scripts. The `chain` field contains the matched route chain - the client uses it to diff against the previous chain and only remount what changed. The `X-WebUI-Inventory` header is a bitmask of component templates the client already has - the server uses it to avoid sending duplicate templates.
 
 See the [Routing guide](https://github.com/microsoft/webui/blob/main/docs/guide/concepts/routing.md) for complete server implementation examples.
 
