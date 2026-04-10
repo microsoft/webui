@@ -84,7 +84,7 @@ extends:
               NEEDS_DEPLOYMENT=false
 
               # npm
-              if npm view "@microsoft/webui@${VERSION}" version 2>/dev/null | grep -q "^${VERSION}$"; then
+              if npm view "@microsoft/webui@${VERSION}" version 2>/dev/null | grep -qxF "${VERSION}"; then
                 echo "npm @microsoft/webui@${VERSION} already deployed"
               else
                 echo "npm @microsoft/webui@${VERSION} not yet deployed"
@@ -93,6 +93,7 @@ extends:
 
               # crates.io
               CRATE_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                -H "User-Agent: webui-cd-pipeline (microsoft/webui)" \
                 "https://crates.io/api/v1/crates/microsoft-webui/${VERSION}")
               if [ "$CRATE_STATUS" = "200" ]; then
                 echo "crates.io microsoft-webui ${VERSION} already deployed"
