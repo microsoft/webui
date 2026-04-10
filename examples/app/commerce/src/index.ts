@@ -42,12 +42,9 @@ function onHydrationComplete(): void {
   });
 }
 
-// Shell component — eagerly loaded (child imports are co-located in each component)
-import '#organisms/mp-app/mp-app.js';
-
-// Search page components — eagerly loaded for SSR hydration of nested routes.
-import '#pages/mp-page-search/mp-page-search.js';
-import '#organisms/mp-product-grid/mp-product-grid.js';
+// All element definitions — single import so every define() runs before any
+// element upgrades, producing one layout pass instead of three staggered batches.
+import './elements.js';
 
 // Fallback: if hydration already completed before the listener, log now
 if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {
