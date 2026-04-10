@@ -3,7 +3,7 @@
   "devDependencies": {
     "@types/dom-navigation": "catalog:",
     "@types/dom-view-transitions": "catalog:",
-    "esbuild": "catalog:",
+    "@types/node": "catalog:",
     "typescript": "catalog:",
     "urlpattern-polyfill": "catalog:"
   },
@@ -21,8 +21,8 @@
   "license": "MIT",
   "name": "@microsoft/webui-router",
   "scripts": {
-    "build": "esbuild src/*.ts --outdir=dist --format=esm --platform=browser && tsc --emitDeclarationOnly",
-    "test": "esbuild test/navigation-path.test.ts test/inventory.test.ts --bundle --outdir=test/dist --format=esm --platform=node && esbuild test/browser-shim.ts test/router.test.ts --bundle --outdir=test/dist --format=esm --platform=node && node --test test/dist/navigation-path.test.js test/dist/inventory.test.js test/dist/router.test.js",
+    "build": "tsc",
+    "test": "tsc -p tsconfig.unit-test.json && node --test dist/**/*.test.js",
     "typecheck": "tsc --noEmit"
   },
   "type": "module",

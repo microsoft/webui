@@ -8,7 +8,7 @@ import {
   clearInventoryBit,
   encodeInventoryHex,
   parseInventoryHex,
-} from '../src/inventory.js';
+} from './inventory.js';
 
 describe('inventory helpers', () => {
   test('parseInventoryHex round-trips with encodeInventoryHex', () => {

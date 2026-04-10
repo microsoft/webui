@@ -351,9 +351,6 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 25.3.5
-      esbuild:
-        specifier: 'catalog:'
-        version: 0.27.3
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
@@ -370,9 +367,9 @@ importers:
       '@types/dom-view-transitions':
         specifier: 'catalog:'
         version: 1.0.6
-      esbuild:
+      '@types/node':
         specifier: 'catalog:'
-        version: 0.27.3
+        version: 25.3.5
       typescript:
         specifier: 'catalog:'
         version: 5.9.3

@@ -7,10 +7,9 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const testsRoot = resolve(here, '..');
-const fixturesRoot = resolve(testsRoot, 'fixtures');
+const fixturesRoot = resolve(here, 'fixtures');
 const outDir = resolve(fixturesRoot, 'dist');
-const tsconfig = resolve(testsRoot, '..', 'tsconfig.test.json');
+const tsconfig = resolve(here, '..', 'tsconfig.test.json');
 const port = Number(process.env.PORT ?? 39101);
 
 await buildFixtureEntries({

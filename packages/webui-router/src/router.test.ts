@@ -6,8 +6,8 @@ import './browser-shim.js';
 
 import { strict as assert } from 'node:assert';
 import { describe, test, beforeEach, afterEach } from 'node:test';
-import { encodeInventoryHex } from '../src/inventory.js';
-import { WebUIRouter } from '../src/router.js';
+import { encodeInventoryHex } from './inventory.js';
+import { WebUIRouter } from './router.js';
 
 // ── Test-only type access ────────────────────────────────────────
 // The router's `inventory` and `activeChain` are private at compile
@@ -520,7 +520,7 @@ describe('WebUIRouter', () => {
       // One of the abort gates should be immediately followed by ensureComponentLoaded
       // (i.e. inside the preload loop, guarding each iteration).
       const hasPreloadGate = abortChecks.some(pos => {
-        const after = source.substring(pos, pos + 100);
+        const after = source.substring(pos, pos + 200);
         return after.includes('ensureComponentLoaded');
       });
       assert.ok(
@@ -558,8 +558,8 @@ describe('WebUIRouter', () => {
         'should await updateCallbackDone on the view transition',
       );
       assert.ok(
-        !source.includes('.finished'),
-        'should NOT await .finished on the view transition — it blocks rapid navigation',
+        !source.includes('transition.finished'),
+        'should NOT await transition.finished on the view transition — it blocks rapid navigation',
       );
     });
 

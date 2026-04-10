@@ -110,6 +110,15 @@ const SUITES: &[PlaywrightSuite] = &[
         test_script: "test",
         update_snapshots_script: "test:update-snapshots",
     },
+    PlaywrightSuite {
+        name: "webui-router",
+        dir: "packages/webui-router",
+        ports: &[],
+        scripts: &[],
+        build_client: false,
+        test_script: "test",
+        update_snapshots_script: "test:update-snapshots",
+    },
 ];
 
 struct TestResult {
@@ -126,11 +135,11 @@ pub fn run(args: &[String]) -> ExitCode {
     // Filter to apps that exist on disk
     let suites: Vec<&PlaywrightSuite> = SUITES
         .iter()
-        .filter(|suite| Path::new(suite.dir).join("playwright.config.ts").exists())
+        .filter(|suite| Path::new(suite.dir).join("package.json").exists())
         .collect();
 
     if suites.is_empty() {
-        eprintln!("  No Playwright suites with playwright.config.ts found");
+        eprintln!("  No test suites with package.json found");
         return ExitCode::FAILURE;
     }
 

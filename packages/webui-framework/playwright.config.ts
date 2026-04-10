@@ -19,7 +19,7 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   webServer: {
-    command: 'node ./tests/dist/server.js',
+    command: 'node --experimental-strip-types ./tests/server.ts',
     port,
     reuseExistingServer: !process.env.CI,
   },
