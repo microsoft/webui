@@ -3,7 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
-import { collectItemMarkers, nextElement } from './markers.js';
+import { collectItemMarkers, nextElement, findByOrdinal } from './markers.js';
 
 // ── Mock helpers ────────────────────────────────────────────────
 // markers.ts only reads nodeType, data, and nextSibling — lightweight
@@ -185,5 +185,178 @@ describe('nextElement', () => {
 
     const result = nextElement(marker as unknown as Comment);
     assert.strictEqual(result, null);
+  });
+});
+
+// ── findByOrdinal ───────────────────────────────────────────────
+
+describe('findByOrdinal', () => {
+  // Helper: build a linked list of children and attach to a mock parent.
+  function makeParent(...children: MockNode[]): MockNode {
+    for (let i = 0; i < children.length - 1; i++) {
+      children[i].nextSibling = children[i + 1];
+    }
+    return {
+      nodeType: ELEMENT,
+      firstChild: children[0] ?? null,
+    } as unknown as MockNode;
+  }
+
+  function el(tag = ''): MockNode {
+    return { nodeType: ELEMENT, data: tag, nextSibling: null } as MockNode;
+  }
+  function text(data = ''): MockNode {
+    return { nodeType: TEXT, data, nextSibling: null } as MockNode;
+  }
+  function comment(data: string): MockNode {
+    return { nodeType: COMMENT, data, nextSibling: null } as MockNode;
+  }
+
+  test('finds element at ordinal 0 with no structural blocks', () => {
+    //  <link> <div>
+    const link = el('link');
+    const div = el('div');
+    const parent = makeParent(link, div);
+
+    assert.strictEqual(findByOrdinal(parent as unknown as Node, ELEMENT, 0), link);
+    assert.strictEqual(findByOrdinal(parent as unknown as Node, ELEMENT, 1), div);
+  });
+
+  test('skips conditional block content when counting elements', () => {
+    // Simulates:  <link> <!--wc--> <p>no results</p> <!--/wc--> <div.grid>
+    // Template only has <link> and <div.grid>, so <div.grid> = element ordinal 1.
+    const link = el('link');
+    const wcStart = comment('wc');
+    const p = el('p');
+    const wcEnd = comment('/wc');
+    const div = el('div');
+    const parent = makeParent(link, wcStart, p, wcEnd, div);
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 0), link,
+      'ordinal 0 = <link> (before conditional)',
+    );
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 1), div,
+      'ordinal 1 = <div> (after conditional, skipping <p>)',
+    );
+  });
+
+  test('skips repeat block content when counting elements', () => {
+    // Simulates:  <!--wr--> <card/> <card/> <!--/wr--> <button>
+    // Template only has <button>, so <button> = element ordinal 0.
+    const wrStart = comment('wr');
+    const card1 = el('card');
+    const card2 = el('card');
+    const wrEnd = comment('/wr');
+    const btn = el('button');
+    const parent = makeParent(wrStart, card1, card2, wrEnd, btn);
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 0), btn,
+      'ordinal 0 = <button> (repeat items skipped)',
+    );
+  });
+
+  test('skips nested conditional blocks', () => {
+    // <!--wc--> <!--wc--> <inner/> <!--/wc--> <outer/> <!--/wc--> <target>
+    const wc1 = comment('wc');
+    const wc2 = comment('wc');
+    const inner = el('inner');
+    const wcEnd2 = comment('/wc');
+    const outer = el('outer');
+    const wcEnd1 = comment('/wc');
+    const target = el('target');
+    const parent = makeParent(wc1, wc2, inner, wcEnd2, outer, wcEnd1, target);
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 0), target,
+      'ordinal 0 = <target> (all nested conditional content skipped)',
+    );
+  });
+
+  test('skips multiple sequential conditional blocks', () => {
+    // <!--wc--> <a/> <!--/wc--> <!--wc--> <b/> <!--/wc--> <target>
+    const wc1 = comment('wc');
+    const a = el('a');
+    const wcEnd1 = comment('/wc');
+    const wc2 = comment('wc');
+    const b = el('b');
+    const wcEnd2 = comment('/wc');
+    const target = el('target');
+    const parent = makeParent(wc1, a, wcEnd1, wc2, b, wcEnd2, target);
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 0), target,
+      'ordinal 0 = <target> (two conditional blocks skipped)',
+    );
+  });
+
+  test('handles empty conditional blocks (false condition)', () => {
+    // <!--wc--> <!--/wc--> <target>
+    const wcStart = comment('wc');
+    const wcEnd = comment('/wc');
+    const target = el('target');
+    const parent = makeParent(wcStart, wcEnd, target);
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 0), target,
+      'ordinal 0 = <target> (empty conditional skipped)',
+    );
+  });
+
+  test('skips conditional content for text ordinals too', () => {
+    // "hello" <!--wc--> "inside" <!--/wc--> "world"
+    const t1 = text('hello');
+    const wcStart = comment('wc');
+    const t2 = text('inside');
+    const wcEnd = comment('/wc');
+    const t3 = text('world');
+    const parent = makeParent(t1, wcStart, t2, wcEnd, t3);
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, TEXT, 0), t1,
+      'text ordinal 0 = "hello"',
+    );
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, TEXT, 1), t3,
+      'text ordinal 1 = "world" (skipping "inside" in conditional)',
+    );
+  });
+
+  test('skips interleaved conditional and repeat blocks', () => {
+    // <!--wc--> <p/> <!--/wc--> <!--wr--> <item/> <!--/wr--> <target>
+    const wc = comment('wc');
+    const p = el('p');
+    const wcEnd = comment('/wc');
+    const wr = comment('wr');
+    const item = el('item');
+    const wrEnd = comment('/wr');
+    const target = el('target');
+    const parent = makeParent(wc, p, wcEnd, wr, item, wrEnd, target);
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 0), target,
+      'ordinal 0 = <target> (both conditional and repeat blocks skipped)',
+    );
+  });
+
+  test('returns null when ordinal exceeds available children', () => {
+    const a = el('a');
+    const parent = makeParent(a);
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 5), null,
+      'should return null for out-of-range ordinal',
+    );
+  });
+
+  test('returns null for empty parent', () => {
+    const parent = { nodeType: ELEMENT, firstChild: null } as unknown as MockNode;
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 0), null,
+      'should return null for parent with no children',
+    );
   });
 });

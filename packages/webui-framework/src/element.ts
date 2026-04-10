@@ -23,6 +23,12 @@
  * marker is kept as the runtime repeat anchor, and `<!--wc-->` is kept
  * as the runtime condition anchor.
  *
+ * **Marker removal is deferred** until after all path-based resolution
+ * (`$resolveSSR`, `$findSSRText`, `$finalize`) is complete.  This is
+ * critical because `$resolveSSR` uses marker pairs to skip structural
+ * block content when counting element/text ordinals — removing a closing
+ * marker mid-hydration would break later resolution calls.
+ *
  * ## Comment anchors (client-created)
  *
  * For client-created components (no SSR), the framework inserts empty
@@ -49,9 +55,11 @@ import { syncRepeat, dotWalk } from './element/diff.js';
 import {
   collectItemMarkers,
   nextElement,
+  findByOrdinal,
   MARKER_COND_START,
   MARKER_COND_END,
   MARKER_REPEAT_START,
+  MARKER_REPEAT_END,
 } from './element/markers.js';
 import {
   injectModuleStyle,
@@ -377,9 +385,30 @@ export class WebUIElement extends HTMLElement {
   }
 
   // ── DOM resolution: SSR hydration path ────────────────────────
-  // SSR DOM may lack whitespace text nodes the compiled template has.
-  // We walk the template DOM in parallel to translate each childNode
-  // index into an element-ordinal lookup in the SSR DOM.
+  //
+  // Compiled template metadata stores binding targets as paths of
+  // childNode indices into the *static* template HTML (`meta.h`).
+  // The SSR DOM, however, contains extra nodes injected by the server
+  // for rendered structural blocks:
+  //
+  //   - Conditional (`<if>`) blocks: `<!--wc-->` content `<!--/wc-->`
+  //   - Repeat (`<for>`) blocks: `<!--wr-->` items `<!--/wr-->`
+  //
+  // These extra nodes shift element/text ordinals in the SSR DOM
+  // relative to the template.  For example, a template with:
+  //
+  //     <div class="grid"></div>          ← element ordinal 0
+  //
+  // becomes in SSR (when a prior <if> block renders a <p>):
+  //
+  //     <!--wc--><p>no results</p><!--/wc-->  ← extra content
+  //     <div class="grid">...</div>           ← now element ordinal 1
+  //
+  // To resolve the correct element, `$resolveSSR` walks SSR children
+  // in parallel with the template DOM, skipping everything between
+  // structural marker pairs.  This requires closing markers to still
+  // be present — marker removal is deferred to the end of $hydrate().
+  //
   // pathStart: skip leading path segments for in-place block hydration.
 
   private $resolveSSR(ssrRoot: Node, tplRoot: Node, path: TemplateNodePath, pathStart = 0): Node | null {
@@ -400,20 +429,18 @@ export class WebUIElement extends HTMLElement {
       const tplChild = tpl.childNodes[idx];
       if (!tplChild) return null;
 
+      // Look up the target's nodeType and ordinal from the template.
+      // getTplOrdinals maps childNode index → [nodeType, ordinal],
+      // counting elements and text nodes separately (comments ignored).
       const ordinals = getTplOrdinals(tpl);
       const entry = ordinals.get(idx);
       if (!entry) return null;
 
+      // Walk SSR children to find the Nth element/text node, skipping
+      // structural block content that exists in SSR but not in meta.h.
+      // See findByOrdinal() for the full algorithm and invariants.
       const [nodeType, ordinal] = entry;
-      let count = 0;
-      let child = ssr.firstChild;
-      while (child) {
-        if (child.nodeType === nodeType) {
-          if (count === ordinal) break;
-          count++;
-        }
-        child = child.nextSibling;
-      }
+      const child = findByOrdinal(ssr, nodeType, ordinal);
       if (!child) return null;
       ssr = child;
       tpl = tplChild;
@@ -568,6 +595,17 @@ export class WebUIElement extends HTMLElement {
       texts: [], attrs: [], conds: [], repeats: [],
     };
 
+    // Collect SSR markers for deferred removal.  Closing markers
+    // (<!--/wc-->, <!--/wr-->) and item markers (<!--wi-->) must stay in
+    // the DOM throughout the entire hydration pass so that $resolveSSR
+    // and $findSSRText can correctly skip structural block content when
+    // counting element/text ordinals.  All collected markers are removed
+    // in a single cleanup pass after $finalize() (events + refs).
+    //
+    // Hydration order:  text → attrs → conditionals → repeats → events
+    // All phases use $resolveSSR, so markers must survive until the end.
+    const staleMarkers: Node[] = [];
+
     // Text bindings — find existing text nodes rendered by the server
     if (meta.tx) {
       for (let i = 0; i < meta.tx.length; i++) {
@@ -631,12 +669,14 @@ export class WebUIElement extends HTMLElement {
           condInstance = this.$hydrateCondContent(condAnchor, blockMeta, scope);
         }
 
-        // Remove the <!--/wc--> end marker — it's no longer needed after hydration.
+        // Collect <!--/wc--> end marker for deferred removal.
+        // Do NOT remove here — later phases (repeats, events) still need
+        // intact marker pairs for $resolveSSR structural-block skipping.
         if (marker) {
           const lastNode = condInstance ? condInstance.nodes[condInstance.nodes.length - 1] : condAnchor;
           const endMarker = lastNode?.nextSibling;
           if (endMarker && endMarker.nodeType === 8 && (endMarker as Comment).data === MARKER_COND_END) {
-            endMarker.parentNode?.removeChild(endMarker);
+            staleMarkers.push(endMarker);
           }
         }
 
@@ -781,14 +821,15 @@ export class WebUIElement extends HTMLElement {
             }
           }
 
-          // Strip SSR item markers — single pass (anchor <!--wr--> stays)
+          // Defer <!--wi--> item marker removal (anchor <!--wr--> stays
+          // as the runtime repeat anchor; <!--/wr--> collected below).
           for (let m = 0; m < itemMarkers.length; m++) {
-            itemMarkers[m].parentNode?.removeChild(itemMarkers[m]);
+            staleMarkers.push(itemMarkers[m]);
           }
         }
 
-        // Always clean up end marker (including empty repeats)
-        if (endMarker) endMarker.parentNode?.removeChild(endMarker);
+        // Defer <!--/wr--> end marker removal (including empty repeats).
+        if (endMarker) staleMarkers.push(endMarker);
 
         instance.repeats.push({
           markerId: i, collection, itemVar, blockIndex,
@@ -800,8 +841,16 @@ export class WebUIElement extends HTMLElement {
       }
     }
 
-    // Events + refs
+    // Events + refs — this is the last phase that uses $resolveSSR.
     this.$finalize(ssrRoot, meta, (r, p) => this.$resolveSSR(r, tplDom, p, pathStart));
+
+    // All path-based resolution is complete. Remove the SSR markers that
+    // were kept alive for structural-block skipping.  Start markers
+    // (<!--wc-->, <!--wr-->) are intentionally NOT collected — they
+    // remain as runtime anchors for conditional/repeat toggling.
+    for (let i = 0; i < staleMarkers.length; i++) {
+      staleMarkers[i].parentNode?.removeChild(staleMarkers[i]);
+    }
 
     return instance;
   }
@@ -870,9 +919,16 @@ export class WebUIElement extends HTMLElement {
     return null;
   }
 
-  /** Find existing SSR text node by mapping template text-node ordinal. */
+  /**
+   * Find existing SSR text node by mapping template text-node ordinal.
+   *
+   * Similar to `$resolveSSR`, the SSR DOM may contain extra text nodes
+   * inside structural blocks (`<if>`/`<for>`) that are not in the
+   * compiled template.  We skip `<!--wc-->...<!--/wc-->` and
+   * `<!--wr-->...<!--/wr-->` ranges to keep text ordinals aligned.
+   */
   private $findSSRText(ssrParent: Node, tplParent: Node, beforeIndex: number): Text | null {
-    // Use pre-computed ordinals from template cache
+    // Count how many text nodes precede `beforeIndex` in the template
     const ordinals = getTplOrdinals(tplParent);
     let textOrd = 0;
     for (let k = 0; k < beforeIndex; k++) {
@@ -880,19 +936,13 @@ export class WebUIElement extends HTMLElement {
       if (entry && entry[0] === 3) textOrd++;
     }
 
-    // Find the text node at that ordinal in SSR DOM
-    let count = 0;
-    let child = ssrParent.firstChild;
-    while (child) {
-      if (child.nodeType === 3) {
-        if (count === textOrd) return child as Text;
-        count++;
-      }
-      child = child.nextSibling;
-    }
+    // Find the matching text node in SSR DOM, skipping structural block
+    // content — same algorithm as $resolveSSR (see findByOrdinal).
+    const found = findByOrdinal(ssrParent, 3 /* TEXT_NODE */, textOrd);
+    if (found) return found as Text;
 
     // Fallback: any text node with content
-    child = ssrParent.firstChild;
+    let child = ssrParent.firstChild;
     while (child) {
       if (child.nodeType === 3 && (child as Text).data && (child as Text).data.trim()) {
         return child as Text;

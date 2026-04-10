@@ -349,6 +349,28 @@ test.describe('category navigation flows', () => {
     await expect(page.locator('mp-category-nav').getByRole('link', { name: 'Shirts' }).first()).toBeVisible();
   });
 
+  test('search results page → category via sidebar (hydration parity)', async ({ page }) => {
+    // Regression: boolean attr hydration mismatch left orphaned "All" node
+    // when navigating from a search-results page to a category page.
+    await page.goto('/search?q=test');
+    await expect(page.locator('mp-category-nav')).toBeVisible();
+
+    // "All" should be active (not a link) on the search results page
+    const nav = page.locator('mp-category-nav');
+    await expect(nav.getByRole('link', { name: 'All', exact: true })).toHaveCount(0);
+
+    // Navigate to Shirts via sidebar
+    await nav.getByRole('link', { name: 'Shirts' }).first().click();
+    await expect(page).toHaveURL('/search/shirts');
+
+    // "All" must become a link (no longer active) — no duplicate "All" text
+    await expect(nav.getByRole('link', { name: 'All', exact: true }).first()).toBeVisible();
+    // "Shirts" should now be active (not a link)
+    await expect(nav.getByRole('link', { name: 'Shirts' })).toHaveCount(0);
+    // Product grid must show the 3 shirts (validates repeat hydration fix)
+    await expect(page.locator('mp-product-grid mp-product-card')).toHaveCount(3);
+  });
+
   test('search → category → product → different category', async ({ page }) => {
     await page.goto('/search');
 

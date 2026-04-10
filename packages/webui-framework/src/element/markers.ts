@@ -62,3 +62,55 @@ export function nextElement(marker: Comment): Element | null {
   }
   return null;
 }
+
+/**
+ * Find the Nth child of a given nodeType, skipping structural block ranges.
+ *
+ * The compiled template static HTML (`meta.h`) does not contain conditional
+ * or repeat block content — those are stored as separate block metadata.
+ * But the SSR DOM has this content rendered inline between marker pairs
+ * (`<!--wc-->...<!--/wc-->` and `<!--wr-->...<!--/wr-->`).
+ *
+ * This function walks `parent.firstChild` → siblings, counting only
+ * children of the requested `nodeType` that are NOT inside a structural
+ * block range.  Nested blocks of the same type are handled via depth
+ * tracking.  Returns the child at the given `ordinal`, or null.
+ *
+ * Used by `$resolveSSR` (element ordinals) and `$findSSRText` (text
+ * ordinals) to keep SSR DOM ordinals aligned with template metadata.
+ *
+ * **Requires closing markers to still be in the DOM** — caller must
+ * not remove `<!--/wc-->` or `<!--/wr-->` before all resolution is done.
+ */
+export function findByOrdinal(parent: Node, nodeType: number, ordinal: number): Node | null {
+  let count = 0;
+  let child = parent.firstChild;
+  while (child) {
+    // Detect a structural block opening marker and skip the entire range.
+    if (child.nodeType === 8 /* COMMENT_NODE */) {
+      const data = (child as Comment).data;
+      if (data === MARKER_COND_START || data === MARKER_REPEAT_START) {
+        const endTag = data === MARKER_COND_START ? MARKER_COND_END : MARKER_REPEAT_END;
+        let depth = 1;
+        child = child.nextSibling;
+        while (child && depth > 0) {
+          if (child.nodeType === 8 /* COMMENT_NODE */) {
+            const d = (child as Comment).data;
+            if (d === data) depth++;
+            else if (d === endTag) depth--;
+          }
+          if (depth > 0) child = child.nextSibling;
+        }
+        // Advance past the closing marker itself
+        if (child) child = child.nextSibling;
+        continue;
+      }
+    }
+    if (child.nodeType === nodeType) {
+      if (count === ordinal) return child;
+      count++;
+    }
+    child = child.nextSibling;
+  }
+  return null;
+}
