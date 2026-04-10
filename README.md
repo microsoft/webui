@@ -21,7 +21,7 @@ Visit **[microsoft.github.io/webui](https://microsoft.github.io/webui)** for:
 - [Interactivity Guide](https://microsoft.github.io/webui/guide/concepts/interactivity) — Web Components with `@attr`, `@observable`, events
 - [CLI Reference](https://microsoft.github.io/webui/guide/cli/) — `webui build`, `webui serve`, `webui inspect`
 - [Language Integrations](https://microsoft.github.io/webui/guide/integrations) — Rust, Node, Go, C#, Python
-- [React vs WebUI](https://microsoft.github.io/webui/guide/concepts/react-comparison) — Side-by-side comparison with React
+- [React vs Web Components](https://microsoft.github.io/webui/guide/concepts/react-comparison) — Side-by-side comparison with React
 - [Playground](https://microsoft.github.io/webui/playground/) — Try WebUI in the browser
 - [Tutorials](https://microsoft.github.io/webui/tutorials/hello-world) — Hello World, Todo App
 

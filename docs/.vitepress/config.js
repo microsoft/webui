@@ -90,7 +90,7 @@ export default {
               { text: 'webui inspect', link: '/guide/cli/#webui-inspect' },
             ]},
             { text: 'Language Integrations', link: '/guide/integrations' },
-            { text: 'React vs WebUI', link: '/guide/concepts/react-comparison' },
+            { text: 'React vs Web Components', link: '/guide/concepts/react-comparison' },
             { text: 'Best Practices', link: '/guide/concepts/best-practices' },
             { text: 'CSS Token Hoisting', link: '/guide/concepts/css-tokens' },
             { text: 'Plugins', link: '/guide/concepts/plugins/' },

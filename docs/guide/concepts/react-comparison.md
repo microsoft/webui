@@ -1,6 +1,6 @@
-# React vs WebUI
+# React vs Web Components
 
-This guide compares common UI patterns written in React (imperative, JavaScript-centric) with their WebUI equivalents (declarative, HTML-centric). Each section shows a React "Before" alongside the WebUI "After" so you can see how familiar patterns translate to WebUI's component model.
+This guide compares common UI patterns written in React (imperative, JavaScript-centric) with their WebUI and FAST equivalents (declarative, HTML-centric). Each section shows a React "Before" alongside the WebUI "After" so you can see how familiar patterns translate to a Web Components model.
 
 ## Key Differences at a Glance
 
@@ -380,9 +380,9 @@ function UserProfile({ user }) {
 
 **What changed:** JSX expressions (`&&`, `.map()`, template literals) become HTML directives (`<if>`, `<for>`, <code v-pre>{{}}</code>). The template reads like HTML with declarative annotations, not JavaScript with embedded markup.
 
-## FAST-HTML Alternative
+## FAST Alternative
 
-WebUI supports two hydration plugins. The examples above use `@microsoft/webui-framework` (recommended). If your team uses the [FAST](https://fast.design/) ecosystem, the `--plugin=fast` option provides an alternative:
+WebUI supports two hydration plugins. The examples above use `@microsoft/webui-framework`. If your team uses the [FAST](https://fast.design/) ecosystem, the `--plugin=fast` option provides an alternative:
 
 ```bash
 webui build ./src --out ./dist --plugin=fast
@@ -390,7 +390,7 @@ webui build ./src --out ./dist --plugin=fast
 
 The **template syntax is identical** - `<if>`, `<for>`, <code v-pre>{{}}</code>, and `@click` work the same way in both plugins. The difference is in the TypeScript component class:
 
-### WebUI Framework (recommended)
+### WebUI Framework
 
 ```typescript
 import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
@@ -407,7 +407,7 @@ export class MyCounter extends WebUIElement {
 MyCounter.define('my-counter');
 ```
 
-### FAST-HTML
+### FAST
 
 ```typescript
 import { FASTElement, attr, observable } from '@microsoft/fast-element';
@@ -430,14 +430,12 @@ export class MyCounter extends RenderableFASTElement(FASTElement) {
 MyCounter.define({ name: 'my-counter', template: /* ... */ });
 ```
 
-| | WebUI Framework | FAST-HTML |
+| | WebUI Framework | FAST |
 |---|---|---|
 | **State seeding** | Automatic from SSR markers | Manual in `prepare()` |
 | **Update model** | Targeted path-indexed | Full observable chain |
 | **Package** | `@microsoft/webui-framework` | `@microsoft/fast-html` + `@microsoft/fast-element` |
 | **Best for** | SSR-first apps, minimal JS | Complex client interactivity, existing FAST projects |
-
-For new projects, **WebUI Framework** is recommended - it handles state seeding automatically and produces smaller client bundles. Choose FAST-HTML if you are already invested in the FAST ecosystem.
 
 ## Architecture Comparison
 
