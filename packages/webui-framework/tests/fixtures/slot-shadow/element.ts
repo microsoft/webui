@@ -16,13 +16,7 @@
  */
 
 import { WebUIElement, attr } from '../../../src/index.js';
-import {
-  bindText,
-  dynamic,
-  nodePath,
-  registerCompiledTemplate,
-  slot,
-} from '@microsoft/webui-test-support';
+import { registerCompiledTemplate } from '@microsoft/webui-test-support';
 
 // A simple shadow-DOM button component with a <slot> for projected content.
 registerCompiledTemplate('test-slot-btn', {
