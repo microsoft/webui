@@ -776,12 +776,18 @@ impl WebUIHandler {
         // inside unrendered conditional blocks are excluded — they'll be delivered
         // via templateStyles[] + templates[] during SPA partial navigation.
         if signal.raw && signal.value == "body_end" && context.plugin.is_some() {
+            // Build the component → index map for the inventory bitfield.
+            let comp_index = crate::route_handler::build_component_index(context.protocol);
+
             // Emit inventory meta tag based on actually rendered components.
             // Placed here (not head_end) because rendered_components is only
             // complete after the full SSR pass. The router reads it via
             // document.querySelector regardless of position.
-            let (_, inventory_hex) =
-                crate::route_handler::filter_needed_components(&context.rendered_components, "");
+            let (_, inventory_hex) = crate::route_handler::filter_needed_components(
+                &context.rendered_components,
+                "",
+                &comp_index,
+            );
             context
                 .writer
                 .write("<meta name=\"webui-inventory\" content=\"")?;

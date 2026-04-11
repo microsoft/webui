@@ -51,7 +51,7 @@ These apply to `packages/webui-framework` (the client-side Web Component runtime
 ### Memory
 
 1. **No framework in the GC.** Minimize object allocations during reactive updates. Reuse binding objects, don't recreate them.
-2. **Template cache is `WeakMap`-keyed.** Parsed template DOMs are cached per metadata object. When metadata is released (e.g., via `Router.releaseTemplates()`), the cache entry becomes GC-eligible.
+2. **Template cache is `WeakMap`-keyed.** Parsed template DOMs are cached per metadata object. When metadata is released (e.g., via `Router.gc()`), the cache entry becomes GC-eligible.
 3. **No per-update array allocations.** Avoid `.filter()`, `.map()`, `.slice()` in the update hot path. Use index-based iteration.
 4. **Strip SSR markers after hydration.** Comment nodes used as markers are removed from the DOM once wiring is complete - they don't persist as memory overhead.
 5. **Scope frames are stack-allocated.** `<for>` loop item variables use a linked-list scope chain, not cloned Maps or Objects.
@@ -68,7 +68,7 @@ These apply to `packages/webui-router` (the client-side SPA router).
 
 ### Memory
 
-1. **Release unused templates.** `Router.releaseTemplates()` clears cached component templates for routes the user hasn't visited recently. Active route components are never released.
+1. **Release unused templates.** `Router.gc()` clears cached component templates for routes the user hasn't visited recently. Active route components are never released.
 2. **Inventory bitmask prevents duplicate downloads.** The server tracks which component templates the client already has via a bitmask. Re-navigation never re-sends templates.
 3. **Minimal state per navigation.** Route-scoped state means the JSON partial contains only what the active route needs, not the full app state.
 

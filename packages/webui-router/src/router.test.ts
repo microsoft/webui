@@ -6,7 +6,6 @@ import './browser-shim.js';
 
 import { strict as assert } from 'node:assert';
 import { describe, test, beforeEach, afterEach } from 'node:test';
-import { encodeInventoryHex } from './inventory.js';
 import { WebUIRouter } from './router.js';
 
 // ── Test-only type access ────────────────────────────────────────
@@ -38,41 +37,41 @@ function globals(): TemplateRegistry {
   return globalThis as unknown as TemplateRegistry;
 }
 
-/** Build a 32-byte inventory with specific bits set via component names. */
-function inventoryWith(...names: string[]): string {
-  function bitPosition(name: string): number {
-    let hash = 0x811c9dc5;
-    for (let i = 0; i < name.length; i++) {
-      hash ^= name.charCodeAt(i);
-      hash = Math.imul(hash, 0x01000193) >>> 0;
-    }
-    return hash % 256;
-  }
-  const inv = new Uint8Array(32);
-  for (const n of names) {
-    const bit = bitPosition(n);
-    inv[bit >> 3] |= 1 << (bit & 7);
-  }
-  return encodeInventoryHex(inv);
+// Assign deterministic indices for test components
+const testIndex: Record<string, number> = {};
+let nextIdx = 0;
+function ensureIndex(name: string): number {
+  if (!(name in testIndex)) testIndex[name] = nextIdx++;
+  return testIndex[name];
 }
 
-/** Check if a bit is set for a component name in an inventory hex string. */
-function hasBit(hex: string, name: string): boolean {
-  function bitPosition(n: string): number {
-    let hash = 0x811c9dc5;
-    for (let i = 0; i < n.length; i++) {
-      hash ^= n.charCodeAt(i);
-      hash = Math.imul(hash, 0x01000193) >>> 0;
-    }
-    return hash % 256;
+/** Build an inventory hex with specific components marked as loaded. */
+function inventoryWith(...names: string[]): string {
+  for (const n of names) ensureIndex(n);
+  const byteCount = Math.max(1, Math.ceil(nextIdx / 8));
+  const inv = new Uint8Array(byteCount);
+  for (const n of names) {
+    const idx = testIndex[n];
+    inv[idx >> 3] |= 1 << (idx & 7);
   }
+  // Encode as hex
+  let hex = '';
+  for (const b of inv) {
+    hex += (b < 16 ? '0' : '') + b.toString(16);
+  }
+  return hex;
+}
+
+/** Check if a component's bit is set in an inventory hex string. */
+function hasBit(hex: string, name: string): boolean {
+  const idx = testIndex[name];
+  if (idx === undefined) return false;
   const bytes = new Uint8Array(hex.length >> 1);
   for (let i = 0; i < bytes.length; i++) {
     bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
   }
-  const bit = bitPosition(name);
-  const byteIdx = bit >> 3;
-  return byteIdx < bytes.length && (bytes[byteIdx] & (1 << (bit & 7))) !== 0;
+  const byteIdx = idx >> 3;
+  return byteIdx < bytes.length && (bytes[byteIdx] & (1 << (idx & 7))) !== 0;
 }
 
 describe('WebUIRouter', () => {
@@ -91,29 +90,8 @@ describe('WebUIRouter', () => {
     }
   });
 
-  describe('releaseTemplates', () => {
-    test('releases specific templates and clears inventory bits', () => {
-      const router = new WebUIRouter();
-      const registry = globals().__webui_templates!;
-      registry['page-a'] = { h: '<div>A</div>' };
-      registry['page-b'] = { h: '<div>B</div>' };
-      registry['page-c'] = { h: '<div>C</div>' };
-
-      internals(router).inventory = inventoryWith('page-a', 'page-b', 'page-c');
-
-      router.releaseTemplates(['page-a', 'page-c']);
-
-      assert.equal(registry['page-a'], undefined, 'page-a should be deleted');
-      assert.ok(registry['page-b'], 'page-b should be retained');
-      assert.equal(registry['page-c'], undefined, 'page-c should be deleted');
-
-      const inv = internals(router).inventory;
-      assert.equal(hasBit(inv, 'page-a'), false, 'inventory bit for page-a should be cleared');
-      assert.equal(hasBit(inv, 'page-b'), true, 'inventory bit for page-b should remain');
-      assert.equal(hasBit(inv, 'page-c'), false, 'inventory bit for page-c should be cleared');
-    });
-
-    test('releases all non-active templates when called with no args', () => {
+  describe('gc', () => {
+    test('clears all templates and resets inventory', () => {
       const router = new WebUIRouter();
       const registry = globals().__webui_templates!;
       registry['shell'] = { h: '<div>Shell</div>' };
@@ -122,79 +100,19 @@ describe('WebUIRouter', () => {
 
       const ri = internals(router);
       ri.inventory = inventoryWith('shell', 'page-x', 'page-y');
-      ri.activeChain = [{ component: 'shell', path: '/', params: {} }];
 
-      router.releaseTemplates();
+      router.gc();
 
-      assert.ok(registry['shell'], 'active component should be retained');
-      assert.equal(registry['page-x'], undefined, 'inactive page-x should be released');
-      assert.equal(registry['page-y'], undefined, 'inactive page-y should be released');
-    });
-
-    test('skips active components even when explicitly requested', () => {
-      const router = new WebUIRouter();
-      const registry = globals().__webui_templates!;
-      registry['active-comp'] = { h: '<div>active</div>' };
-      registry['inactive-comp'] = { h: '<div>inactive</div>' };
-
-      const ri = internals(router);
-      ri.inventory = inventoryWith('active-comp', 'inactive-comp');
-      ri.activeChain = [{ component: 'active-comp', path: '/', params: {} }];
-
-      router.releaseTemplates(['active-comp', 'inactive-comp']);
-
-      assert.ok(registry['active-comp'], 'active component must not be released');
-      assert.equal(registry['inactive-comp'], undefined, 'inactive component should be released');
-      assert.equal(hasBit(ri.inventory, 'active-comp'), true, 'active bit must remain set');
+      assert.equal(registry['shell'], undefined, 'shell should be cleared');
+      assert.equal(registry['page-x'], undefined, 'page-x should be cleared');
+      assert.equal(registry['page-y'], undefined, 'page-y should be cleared');
+      assert.equal(ri.inventory, '', 'inventory should be reset to empty');
     });
 
     test('is a no-op when no templates are registered', () => {
       const router = new WebUIRouter();
       globals().__webui_templates = undefined;
-
-      // Should not throw
-      router.releaseTemplates();
-      router.releaseTemplates(['anything']);
-    });
-
-    test('is a no-op when all requested tags are active', () => {
-      const router = new WebUIRouter();
-      const registry = globals().__webui_templates!;
-      registry['only-one'] = { h: '<div/>' };
-
-      const origInventory = inventoryWith('only-one');
-      const ri = internals(router);
-      ri.inventory = origInventory;
-      ri.activeChain = [{ component: 'only-one', path: '/', params: {} }];
-
-      router.releaseTemplates(['only-one']);
-
-      assert.ok(registry['only-one'], 'should not release');
-      assert.equal(ri.inventory, origInventory, 'inventory should be unchanged');
-    });
-
-    test('handles nested active chain correctly', () => {
-      const router = new WebUIRouter();
-      const registry = globals().__webui_templates!;
-      registry['app-shell'] = { h: '<div>shell</div>' };
-      registry['section-page'] = { h: '<div>section</div>' };
-      registry['topic-page'] = { h: '<div>topic</div>' };
-      registry['lesson-page'] = { h: '<div>lesson</div>' };
-
-      const ri = internals(router);
-      ri.inventory = inventoryWith('app-shell', 'section-page', 'topic-page', 'lesson-page');
-      ri.activeChain = [
-        { component: 'app-shell', path: '/', params: {} },
-        { component: 'section-page', path: 'sections/:id', params: { id: '1' } },
-        { component: 'topic-page', path: 'topics/:tid', params: { tid: 'react' } },
-      ];
-
-      router.releaseTemplates();
-
-      assert.ok(registry['app-shell'], 'active shell retained');
-      assert.ok(registry['section-page'], 'active section retained');
-      assert.ok(registry['topic-page'], 'active topic retained');
-      assert.equal(registry['lesson-page'], undefined, 'inactive lesson released');
+      router.gc(); // should not throw
     });
   });
 
