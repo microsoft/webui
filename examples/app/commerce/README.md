@@ -88,7 +88,7 @@ commerce/
 
 ## Docker
 
-Build and run the commerce app as a container. Run all commands from the **repository root**.
+Build and run the commerce app as a container. Each container runs a **single CSS strategy** — run one container per strategy. All commands are from the **repository root**.
 
 ```bash
 # Build the image
@@ -96,27 +96,27 @@ docker build -t webui-commerce -f examples/app/commerce/Dockerfile .
 
 # Override cargo-chef version if needed
 docker build --build-arg CARGO_CHEF_VERSION=0.1.75 -t webui-commerce -f examples/app/commerce/Dockerfile .
-
-# List images
-docker images webui-commerce
-
-# Inspect image metadata
-docker inspect webui-commerce
-
-# Run the container:
-# - host 443  -> container 3004 (--css link)
-# - host 1443 -> container 3003 (--css module)
-# - host 2443  -> container 3002 (--css style)
-docker run -p 443:3004 -p 1443:3003 -p 2443:3002 webui-commerce
 ```
 
-The container runs both commerce variants:
+### Running containers
 
-- `http://localhost` serves the `--css link` app on container port `3004`
-- `http://localhost:1443` serves the `--css module` app on container port `3003`
+Configure the CSS strategy via the `CSS_STRATEGY` environment variable (`link`, `module`, or `style`). The default is `link`. The server listens on port `3000` inside the container by default (override with `PORT`).
+
+```bash
+# One container per CSS strategy
+docker run -d -p 3004:3000 -e CSS_STRATEGY=link   webui-commerce
+docker run -d -p 3003:3000 -e CSS_STRATEGY=module webui-commerce
+docker run -d -p 3002:3000 -e CSS_STRATEGY=style  webui-commerce
+```
+
+Or pass flags directly:
+
+```bash
+docker run -d -p 3004:3000 webui-commerce --css link --port 3000
+```
 
 These ports are plain HTTP because the container starts `marketplace-api` with `--no-tls`.
-Use a TLS-terminating proxy or ingress if you want external HTTPS on `443` and `1443`.
+Use a TLS-terminating proxy or ingress for external HTTPS.
 
 To tag with the project version:
 

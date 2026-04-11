@@ -69,8 +69,12 @@ RUN chmod 0755 /usr/local/bin/commerce-entrypoint.sh && \
     chown app:app /usr/local/bin/commerce-entrypoint.sh
 
 USER app
-EXPOSE 3002 3003 3004
+EXPOSE 3000
 
+# Configure the CSS strategy and port at runtime:
+#   docker run -e CSS_STRATEGY=module -e PORT=3000 ...
+#   docker run ... -- --css module --port 3000
+#
 # Cart cookies are signed with HMAC-SHA256. Pass CART_COOKIE_SECRET at runtime:
 #   docker run -e CART_COOKIE_SECRET=<your-secret> ...
 # If unset, the server generates an ephemeral per-process key (carts do not
