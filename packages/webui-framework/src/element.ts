@@ -216,13 +216,17 @@ export class WebUIElement extends HTMLElement {
       // Shadow DOM SSR — declarative shadow root already has content
       root = this.shadowRoot!;
       isSSR = true;
-    } else if (this.childNodes.length > 0) {
-      // SSR — element already has server-rendered children (light DOM).
-      // Reuse existing DOM regardless of shadow preference.
+    } else if (this.childNodes.length > 0 && !meta.sd) {
+      // SSR light-DOM — element already has server-rendered children.
+      // Only treat as SSR when the template does NOT explicitly declare
+      // shadow DOM (meta.sd).  When meta.sd is set, existing children
+      // are slot content from an SPA partial, not SSR output.
       root = this;
       isSSR = true;
     } else if (wantShadow) {
-      // Shadow DOM client-created
+      // Shadow DOM client-created (or SPA partial with slot content).
+      // Existing children are slot content — they stay in light DOM
+      // and project through the template's <slot>.
       root = this.attachShadow({ mode: 'open' });
       const fragment = this.$parseTemplate(meta);
       root.appendChild(fragment);
