@@ -14,7 +14,6 @@
  * templates, instantiates the component, and mounts it into the route.
  */
 
-import { clearInventoryBit, encodeInventoryHex, parseInventoryHex } from './inventory.js';
 import { buildNavigationTarget, prependBasePath } from './navigation-path.js';
 import type { RouterConfig, NavigationEvent } from './types.js';
 import type { NavigationTarget } from './navigation-path.js';
@@ -120,7 +119,7 @@ export class WebUIRouter {
   private started = false;
   private cleanupFns: Array<() => void> = [];
   private isInitialNavigation = true;
-  /** Hex string tracking which component templates are loaded. */
+  /** Comma-separated list tracking which component templates are loaded. */
   private inventory = '';
   /** CSP nonce read from `<meta name="webui-nonce">` — used for dynamic script creation. */
   private nonce = '';
@@ -191,35 +190,20 @@ export class WebUIRouter {
   }
 
   /**
-   * Release cached templates to free memory. Removes entries from
-   * `window.__webui_templates` and clears their inventory bits so the
-   * server will re-send them on the next navigation that needs them.
-   *
-   * The framework's `templateCache` is a `WeakMap` keyed by the same
-   * meta objects, so those entries become GC-eligible automatically.
-   *
-   * @param tags - Component tag names to release (e.g. `['section-page']`).
-   *               Omit to release all non-active templates.
+   * Garbage-collect all cached templates to free memory. Clears every entry
+   * from `window.__webui_templates` and resets the inventory so the server
+   * re-sends needed templates on the next navigation.
    */
-  releaseTemplates(tags?: string[]): void {
+  gc(): void {
     const registry = window.__webui_templates;
-    if (!registry) return;
-
-    const activeSet = new Set(this.activeChain.map(e => e.component));
-    const toRelease = tags
-      ? tags.filter(t => !activeSet.has(t))
-      : Object.keys(registry).filter(t => !activeSet.has(t));
-
-    if (toRelease.length === 0) return;
-
-    // Parse inventory hex → bytes, clear bits, re-encode
-    const inv = parseInventoryHex(this.inventory);
-    for (const tag of toRelease) {
-      delete registry[tag];
-      clearInventoryBit(inv, tag);
+    if (registry) {
+      for (const tag of Object.keys(registry)) {
+        delete registry[tag];
+      }
     }
-    this.inventory = encodeInventoryHex(inv);
+    this.inventory = '';
   }
+
   /** Tear down. */
   destroy(): void {
     this.loaderPromises.clear();

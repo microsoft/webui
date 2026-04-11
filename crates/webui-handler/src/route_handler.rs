@@ -15,32 +15,52 @@ use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUIFragmentRout
 
 // ── Component Inventory ─────────────────────────────────────────────────
 
-/// FNV-1a hash mod 256 — deterministic bit position for a component name.
-/// Must match the client-side implementation in `@microsoft/webui-router`.
-fn component_bit_position(name: &str) -> u32 {
-    let mut hash: u32 = 0x811c_9dc5;
-    for byte in name.as_bytes() {
-        hash ^= u32::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0193);
+/// Build a deterministic component-name → bit-index map from the protocol.
+///
+/// Derives names from fragment keys (hyphenated = custom element) since that
+/// is the source of truth regardless of whether a plugin populated
+/// `protocol.components`. Components are sorted alphabetically; index =
+/// position in that order.
+pub fn build_component_index(protocol: &WebUIProtocol) -> HashMap<String, u32> {
+    let mut names: HashSet<&String> = HashSet::new();
+    for key in protocol.fragments.keys() {
+        if key.contains('-') {
+            names.insert(key);
+        }
     }
-    hash % 256
+    let mut sorted: Vec<&String> = names.into_iter().collect();
+    sorted.sort_unstable();
+    sorted
+        .iter()
+        .enumerate()
+        .map(|(i, n)| ((*n).clone(), i as u32))
+        .collect()
 }
 
-/// Check if a component is present in an inventory bitmask.
-fn has_component(inventory: &[u8], name: &str) -> bool {
-    let bit = component_bit_position(name);
-    let byte_idx = (bit / 8) as usize;
-    let bit_idx = bit % 8;
+/// Check if a component's bit is set in the inventory bitfield.
+fn has_component(inventory: &[u8], index: u32) -> bool {
+    let byte_idx = (index / 8) as usize;
+    let bit_idx = index % 8;
     byte_idx < inventory.len() && inventory[byte_idx] & (1 << bit_idx) != 0
 }
 
-/// Parse a hex string into bytes for the inventory bitmask.
+/// Set a component's bit in the inventory bitfield.
+fn set_component(inventory: &mut Vec<u8>, index: u32) {
+    let byte_idx = (index / 8) as usize;
+    let bit_idx = index % 8;
+    if byte_idx >= inventory.len() {
+        inventory.resize(byte_idx + 1, 0);
+    }
+    inventory[byte_idx] |= 1 << bit_idx;
+}
+
+/// Parse a hex-encoded inventory string into bytes.
 pub fn parse_inventory(hex: &str) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(hex.len() / 2);
     let mut chars = hex.bytes();
     while let (Some(hi), Some(lo)) = (chars.next(), chars.next()) {
-        if let (Some(hi_nibble), Some(lo_nibble)) = (hex_nibble(hi), hex_nibble(lo)) {
-            bytes.push((hi_nibble << 4) | lo_nibble);
+        if let (Some(h), Some(l)) = (hex_nibble(hi), hex_nibble(lo)) {
+            bytes.push((h << 4) | l);
         }
     }
     bytes
@@ -55,7 +75,7 @@ fn hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-/// Encode an inventory bitmask as a hex string.
+/// Encode an inventory bitfield as a hex string.
 pub fn encode_inventory(inv: &[u8]) -> String {
     inv.iter()
         .fold(String::with_capacity(inv.len() * 2), |mut acc, b| {
@@ -68,9 +88,6 @@ pub fn encode_inventory(inv: &[u8]) -> String {
 /// Walk the protocol fragment graph from `entry_id` and return the names of
 /// all components the route needs that are NOT in the client's inventory.
 ///
-/// `entry_id` is the route's component name (e.g., `"cb-page-group"`).
-/// `inventory` is the client's bitmask of already-loaded components.
-///
 /// Returns `(needed_names, updated_inventory_hex)`.
 pub fn get_needed_components(
     protocol: &WebUIProtocol,
@@ -78,19 +95,12 @@ pub fn get_needed_components(
     inventory_hex: &str,
 ) -> (Vec<String>, String) {
     let component_names = collect_inventoryable_components(protocol, entry_id, None, true);
-    filter_needed_components(&component_names, inventory_hex)
+    let index = build_component_index(protocol);
+    filter_needed_components(&component_names, inventory_hex, &index)
 }
 
 /// Walk the protocol from the persistent `entry_id` and return the component
 /// templates needed for the current `request_path`.
-///
-/// The traversal is route-aware but state-agnostic:
-///
-/// - sibling `<route>` fragments are pruned to the single best match for the
-///   request path
-/// - nested route groups are traversed recursively via that same rule
-/// - `if`, `for`, and attribute-template edges are still followed
-///   conservatively, without evaluating runtime state
 ///
 /// Returns `(needed_names, updated_inventory_hex)`.
 pub fn get_needed_components_for_request(
@@ -101,52 +111,39 @@ pub fn get_needed_components_for_request(
 ) -> (Vec<String>, String) {
     let component_names =
         collect_inventoryable_components(protocol, entry_id, Some(request_path), false);
-    filter_needed_components(&component_names, inventory_hex)
+    let index = build_component_index(protocol);
+    filter_needed_components(&component_names, inventory_hex, &index)
 }
 
-/// Filter an inventoryable component set against the client's inventory bitmask.
-///
-/// Only skips components whose bit is set in the client's **original** inventory.
-/// Components that hash-collide (FNV-1a mod 256) with an already-processed
-/// component are NOT skipped — the check uses the immutable client inventory,
-/// not the accumulating one built during iteration.
+/// Filter components against the client's inventory bitfield using sequential indices.
+/// Zero collisions — each component has a unique bit.
 ///
 /// Returns the missing component names and the updated inventory hex string.
 #[must_use]
 pub fn filter_needed_components(
     component_names: &HashSet<String>,
     inventory_hex: &str,
+    index: &HashMap<String, u32>,
 ) -> (Vec<String>, String) {
     let client_inv = parse_inventory(inventory_hex);
     let mut updated_inv = client_inv.clone();
-    updated_inv.resize(32, 0);
 
     let mut ordered_names: Vec<&String> = component_names.iter().collect();
     ordered_names.sort_unstable();
 
     let mut needed = Vec::with_capacity(ordered_names.len());
     for name in ordered_names {
-        // Only skip if the component bit was set in the CLIENT's original inventory.
-        // Do not skip based on bits set during this iteration — that would cause
-        // false negatives when two component names hash to the same bit position.
-        if has_component(&client_inv, name) {
-            // Still set the bit in the updated inventory to maintain it
-            let bit = component_bit_position(name);
-            let byte_idx = (bit / 8) as usize;
-            let bit_idx = bit % 8;
-            if byte_idx < updated_inv.len() {
-                updated_inv[byte_idx] |= 1 << bit_idx;
+        if let Some(&idx) = index.get(name.as_str()) {
+            if !has_component(&client_inv, idx) {
+                needed.push(name.clone());
             }
-            continue;
+            set_component(&mut updated_inv, idx);
+        } else {
+            // Component exists in the fragment graph but has no index entry
+            // (no protocol.components record). It can't be tracked in the
+            // bitfield, so we must always send it.
+            needed.push(name.clone());
         }
-
-        let bit = component_bit_position(name);
-        let byte_idx = (bit / 8) as usize;
-        let bit_idx = bit % 8;
-        if byte_idx < updated_inv.len() {
-            updated_inv[byte_idx] |= 1 << bit_idx;
-        }
-        needed.push(name.clone());
     }
 
     (needed, encode_inventory(&updated_inv))
@@ -735,30 +732,6 @@ mod tests {
     use webui_protocol::{FragmentList, WebUIFragment, WebUiFragmentRoute};
 
     #[test]
-    fn test_component_bit_position_deterministic() {
-        let pos1 = component_bit_position("my-component");
-        let pos2 = component_bit_position("my-component");
-        assert_eq!(pos1, pos2);
-        assert!(pos1 < 256);
-    }
-
-    #[test]
-    fn test_has_component_present() {
-        let mut inv = vec![0u8; 32];
-        let bit = component_bit_position("test-comp");
-        let byte_idx = (bit / 8) as usize;
-        let bit_idx = bit % 8;
-        inv[byte_idx] |= 1 << bit_idx;
-        assert!(has_component(&inv, "test-comp"));
-    }
-
-    #[test]
-    fn test_has_component_absent() {
-        let inv = vec![0u8; 32];
-        assert!(!has_component(&inv, "test-comp"));
-    }
-
-    #[test]
     fn test_parse_encode_inventory_roundtrip() {
         let original = vec![0xABu8, 0xCD, 0xEF, 0x01];
         let hex = encode_inventory(&original);
@@ -767,32 +740,42 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_needed_components_hash_collision_does_not_drop_components() {
-        // mp-app and mp-cart-panel both hash to bit 218 (FNV-1a mod 256).
-        // With empty inventory, BOTH must appear in the needed set.
-        assert_eq!(
-            component_bit_position("mp-app"),
-            component_bit_position("mp-cart-panel"),
-            "test precondition: mp-app and mp-cart-panel should collide"
-        );
+    fn test_bitfield_set_and_check() {
+        let mut inv = vec![0u8; 4];
+        set_component(&mut inv, 0);
+        set_component(&mut inv, 7);
+        set_component(&mut inv, 8);
+        set_component(&mut inv, 15);
+        assert!(has_component(&inv, 0));
+        assert!(has_component(&inv, 7));
+        assert!(has_component(&inv, 8));
+        assert!(has_component(&inv, 15));
+        assert!(!has_component(&inv, 1));
+        assert!(!has_component(&inv, 9));
+    }
+
+    #[test]
+    fn test_filter_needed_components_no_false_positives() {
+        // With sequential indices, no two components share a bit
+        let mut index = HashMap::new();
+        index.insert("email-message".to_string(), 0);
+        index.insert("o-button".to_string(), 1);
+        index.insert("o-avatar".to_string(), 2);
 
         let mut names = HashSet::new();
-        names.insert("mp-app".to_string());
-        names.insert("mp-cart-panel".to_string());
-        names.insert("mp-footer".to_string());
+        names.insert("email-message".to_string());
+        names.insert("o-button".to_string());
 
-        let (needed, _inv) = filter_needed_components(&names, "");
+        // Only o-button (index 1) is loaded — bit 1 set
+        let mut inv = vec![0u8; 1];
+        set_component(&mut inv, 1); // o-button
+        let inv_hex = encode_inventory(&inv);
+
+        let (needed, _) = filter_needed_components(&names, &inv_hex, &index);
+        assert_eq!(needed.len(), 1);
         assert!(
-            needed.contains(&"mp-app".to_string()),
-            "mp-app should be needed: {needed:?}"
-        );
-        assert!(
-            needed.contains(&"mp-cart-panel".to_string()),
-            "mp-cart-panel should be needed despite hash collision with mp-app: {needed:?}"
-        );
-        assert!(
-            needed.contains(&"mp-footer".to_string()),
-            "mp-footer should be needed: {needed:?}"
+            needed.contains(&"email-message".to_string()),
+            "email-message must be needed: {needed:?}"
         );
     }
 
@@ -834,7 +817,17 @@ mod tests {
             },
         );
 
-        let protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol
+            .components
+            .entry("app-shell".to_string())
+            .or_default()
+            .template = "<t></t>".to_string();
+        protocol
+            .components
+            .entry("my-card".to_string())
+            .or_default()
+            .template = "<t></t>".to_string();
 
         let (_needed, inv_hex) = get_needed_components(&protocol, "app-shell", "");
         let (needed2, _) = get_needed_components(&protocol, "app-shell", &inv_hex);
@@ -1188,11 +1181,13 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
-        protocol
-            .components
-            .entry("mp-search-page".to_string())
-            .or_default()
-            .template = "<mp-search-page></mp-search-page>".to_string();
+        for name in ["mp-app", "mp-search-page", "mp-product-grid"] {
+            protocol
+                .components
+                .entry(name.to_string())
+                .or_default()
+                .template = format!("<f-template id=\"{name}\"></f-template>");
+        }
 
         let (_needed, inventory) =
             get_needed_components_for_request(&protocol, "index.html", "/search", "");

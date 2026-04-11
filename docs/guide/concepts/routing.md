@@ -146,24 +146,19 @@ console.log(Router.activeParams); // { id: "42" }
 
 Tears down the router and removes event listeners.
 
-### `Router.releaseTemplates(tags?)`
+### `Router.gc()`
 
-Release cached component templates to free memory. Removes entries from `window.__webui_templates` and clears their inventory bits so the server will re-send them on the next navigation that needs them.
-
-Active route components are always skipped - you cannot release a template that is currently rendered.
+Release all cached component templates to free memory. Removes all entries from `window.__webui_templates` and clears their inventory bits so the server will re-send them on the next navigation that needs them.
 
 ```typescript
-// Release specific templates
-Router.releaseTemplates(['user-detail', 'user-list']);
-
 // Release all non-active templates
-Router.releaseTemplates();
+Router.gc();
 ```
 
 The framework's internal template cache is a `WeakMap` keyed by the same meta objects, so its entries become GC-eligible automatically when the template is released.
 
 ::: tip When to use this
-Most apps don't need this - the number of unique component templates is bounded by the route tree (typically 10–30). The server's inventory system already prevents duplicate downloads. Use `releaseTemplates()` in long-lived SPAs with many routes where memory pressure is a concern.
+Most apps don't need this - the number of unique component templates is bounded by the route tree (typically 10–30). The server's inventory system already prevents duplicate downloads. Use `gc()` in long-lived SPAs with many routes where memory pressure is a concern.
 :::
 
 ## Lazy Loading
