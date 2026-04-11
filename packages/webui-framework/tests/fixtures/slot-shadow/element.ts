@@ -21,14 +21,14 @@ import { registerCompiledTemplate } from '@microsoft/webui-test-support';
 // A simple shadow-DOM button component with a <slot> for projected content.
 registerCompiledTemplate('test-slot-btn', {
   h: '<button class="btn"><slot></slot></button>',
-  sd: 1,
+  sd: true,
 });
 
 // A parent component that programmatically creates a child with slot content,
 // mimicking what the SPA router does when injecting a server partial.
 registerCompiledTemplate('test-slot-parent', {
   h: '<div class="container"></div>',
-  sd: 1,
+  sd: true,
 });
 
 export class TestSlotBtn extends WebUIElement {
