@@ -11,7 +11,7 @@
  * must re-render with the new array.
  */
 
-import { WebUIElement, attr, observable } from '../../../src/index.js';
+import { WebUIElement, observable } from '../../../src/index.js';
 import {
   bindProp,
   bindText,
