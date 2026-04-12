@@ -252,6 +252,14 @@ export class WebUIElement extends HTMLElement {
     this.$hydrated = true;
     this.$ready = true;
 
+    // Client-created components: flush current attr/observable values
+    // into the freshly-wired template DOM. Call $updateInstance directly
+    // to avoid the $update() path-index build — it will be lazy-built
+    // on the first reactive change instead.
+    if (!isSSR) {
+      this.$updateInstance(this.$root);
+    }
+
     hydrationEnd();
   }
 
@@ -269,7 +277,13 @@ export class WebUIElement extends HTMLElement {
     );
   }
 
-  /** Populate @observable properties from router state. */
+  /** Populate @observable properties from router state.
+   *
+   * Each property is set through its reactive setter, which coalesces
+   * updates into a single pending microtask. We then synchronously
+   * flush those pending path updates so the DOM is current before any
+   * view-transition snapshot captures it.
+   */
   setInitialState(state: Record<string, unknown>): void {
     const names = getObservableNames(this.constructor as Function);
     for (const key of Object.keys(state)) {
@@ -277,6 +291,7 @@ export class WebUIElement extends HTMLElement {
         (this as Record<string, unknown>)[key] = state[key];
       }
     }
+    this.$flushUpdates();
   }
 
   /**
@@ -1194,6 +1209,12 @@ export class WebUIElement extends HTMLElement {
       case ATTR_KIND_COMPLEX: {
         const v = this.$resolveValue(b.path!, b.scope);
         (el as unknown as Record<string, unknown>)[b.name] = v;
+        // If the target is a WebUIElement, flush its pending updates
+        // synchronously so child <for> loops re-render immediately.
+        // Without this, the child's microtask-coalesced update runs
+        // too late for view transitions that snapshot the DOM.
+        const flush = (el as unknown as Record<string, unknown>)['$flushUpdates'];
+        if (typeof flush === 'function') (flush as () => void).call(el);
         break;
       }
       case ATTR_KIND_BOOLEAN: {
