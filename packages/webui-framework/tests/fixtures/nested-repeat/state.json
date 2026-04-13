@@ -1,0 +1,18 @@
+{
+  "groups": [
+    {
+      "name": "Color",
+      "values": [
+        { "value": "Black", "disabled": false },
+        { "value": "Blue", "disabled": true }
+      ]
+    },
+    {
+      "name": "Size",
+      "values": [
+        { "value": "S", "disabled": false },
+        { "value": "M", "disabled": false }
+      ]
+    }
+  ]
+}

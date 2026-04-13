@@ -39,39 +39,69 @@ webui-test-utils = { path = "../webui-test-utils" }
 
 ## webui-framework E2E fixtures
 
-The `packages/webui-framework` package uses Playwright for E2E tests. Each fixture is a self-contained mini-app.
+The `packages/webui-framework` package uses Playwright for E2E tests. Each fixture is a mini WebUI app compiled and rendered by the real pipeline.
+
+See `tests/fixtures/README.md` for the full reference.
 
 ### Fixture structure
 
 ```
 tests/fixtures/<name>/
-├── element.ts          # Component class + template metadata registration
-├── fixture.html        # Light DOM SSR fixture (pre-rendered HTML)
-├── fixture-shadow.html # Shadow DOM SSR fixture (with <template shadowrootmode>)
-└── <name>.spec.ts      # Playwright test file
+  src/
+    index.html                 Page template (uses the component)
+    <tag-name>/
+      <tag-name>.html          Component template (real WebUI syntax)
+      <tag-name>.css           Component CSS (optional)
+  state.json                   Initial render state (all bound properties)
+  element.ts                   Component class (NO template registration)
+  <name>.spec.ts               Playwright tests
+  webui.config.json            Build options override (optional)
 ```
 
-### element.ts pattern
+### How it works
+
+The test server (`fixture-render.ts`) auto-discovers fixtures with `src/index.html`, calls `@microsoft/webui` `build()` + `render()` to produce SSR HTML with template IIFEs, hydration markers, and inventory. The result is served at `/<name>/fixture.html`.
+
+### Creating a new fixture
+
+1. Create `fixtures/<name>/src/index.html` — page template:
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>My Fixture</title></head>
+<body>
+  <test-widget label="Hello"></test-widget>
+</body>
+</html>
+```
+
+2. Create `fixtures/<name>/src/test-widget/test-widget.html` — component template:
+
+```html
+<template shadowrootmode="open">
+  <span class="label">{{label}}</span>
+  <span class="count">{{count}}</span>
+  <button class="inc" @click="{increment()}">+</button>
+</template>
+```
+
+3. Create `fixtures/<name>/state.json` — initial state:
+
+```json
+{ "label": "Hello", "count": 0 }
+```
+
+4. Create `fixtures/<name>/element.ts` — component class only:
 
 ```typescript
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 import { WebUIElement, attr, observable } from '../../../src/index.js';
-import {
-  bindEvent, bindText, dynamic, nodePath,
-  registerCompiledTemplate, slot,
-} from '@microsoft/webui-test-support';
 
-// Register compiled template metadata (what the build tool would produce)
-registerCompiledTemplate('test-counter', {
-  h: '<span class="count"></span><button class="inc">+</button>',
-  text: [
-    bindText(slot({ parent: nodePath(0), before: 0 }), dynamic('count')),
-  ],
-  events: [
-    bindEvent('click', 'increment', false, nodePath(1)),
-  ],
-});
-
-export class TestCounter extends WebUIElement {
+export class TestWidget extends WebUIElement {
+  @attr label = 'Hello';
   @observable count = 0;
 
   increment(): void {
@@ -79,87 +109,103 @@ export class TestCounter extends WebUIElement {
   }
 }
 
-TestCounter.define('test-counter');
+TestWidget.define('test-widget');
 ```
 
-### fixture.html pattern (light DOM)
-
-```html
-<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Counter Fixture</title></head>
-<body>
-  <test-counter><span class="count">0</span><button class="inc">+</button></test-counter>
-  <script src="/dist/<name>/element.js"></script>
-</body>
-</html>
-```
-
-### fixture-shadow.html pattern (shadow DOM)
-
-```html
-<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Counter Fixture</title></head>
-<body>
-  <test-counter><template shadowrootmode="open"><span class="count">0</span><button class="inc">+</button></template></test-counter>
-  <script>window.__webui_shadow=true;</script><script src="/dist/<name>/element.js"></script>
-</body>
-</html>
-```
-
-### spec.ts pattern
-
-Always test both DOM modes:
+5. Create `fixtures/<name>/<name>.spec.ts` — Playwright tests:
 
 ```typescript
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 import { expect, test } from '@playwright/test';
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`counter fixture [${mode} DOM]`, () => {
+test.describe('widget fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/<name>/${file}`);
-    await page.waitForSelector('test-counter');
+    await page.goto('/<name>/fixture.html');
     await page.waitForFunction(() => {
-      const el = document.querySelector('test-counter');
+      const el = document.querySelector('test-widget');
       return el && (el as any).$ready === true;
     });
   });
 
   test('renders SSR content', async ({ page }) => {
-    await expect(page.locator('test-counter .count')).toHaveText('0');
+    await expect(page.locator('test-widget .label')).toHaveText('Hello');
+    await expect(page.locator('test-widget .count')).toHaveText('0');
   });
 
-  test('updates on interaction', async ({ page }) => {
-    await page.locator('test-counter .inc').click();
-    await expect(page.locator('test-counter .count')).toHaveText('1');
+  test('updates on click', async ({ page }) => {
+    await page.locator('test-widget .inc').click();
+    await expect(page.locator('test-widget .count')).toHaveText('1');
   });
 });
-}
 ```
+
+### Template syntax quick reference
+
+| Feature | Syntax |
+|---------|--------|
+| Text binding | `{{propertyName}}` |
+| Event binding | `@click="{handler()}"` or `@click="{handler(e)}"` |
+| Boolean attribute | `?disabled="{{isDisabled}}"` |
+| Dynamic attribute | `href="{{url}}"` |
+| Mixed attribute | `href="/items/{{id}}"` |
+| Complex property | `:items="{{items}}"` |
+| Element ref | `w-ref="{myElement}"` |
+| Conditional | `<if condition="show">...</if>` |
+| Negation | `<if condition="!hidden">...</if>` |
+| Comparison | `<if condition="count > 0">...</if>` |
+| Compound | `<if condition="active && !busy">...</if>` |
+| Loop | `<for each="item in items">...</for>` |
+| Nested loop | `<for each="group in groups">...<for each="item in group.items">...</for></for>` |
+| Shadow DOM | `<template shadowrootmode="open">...</template>` |
+| Root event | `<template shadowrootmode="open" @click="{handler(e)}">` |
+| Slot | `<slot></slot>` |
+
+### Dynamic children pattern
+
+Components only created via `document.createElement()` (not in any template) need a false `<if>` in the page template to make their template IIFEs available:
+
+```html
+<body>
+  <my-host></my-host>
+  <if condition="showChild"><my-child></my-child></if>
+</body>
+```
+
+With `state.json`: `{ "showChild": false }`.
+
+### Per-fixture build config
+
+Create `webui.config.json` to override build options:
+
+```json
+{ "css": "module" }
+```
+
+### Light-DOM fixtures
+
+The pipeline always produces shadow DOM. For light-DOM hydration tests, use manual template registration with `registerCompiledTemplate` from `@microsoft/webui-test-support` and a hand-written `fixture.html`. See `fixtures/light-dom/` for the pattern.
 
 ### Running framework E2E tests
 
 ```bash
 cd packages/webui-framework
 pnpm build                    # build the framework
-pnpm build:e2e                # build the test server + fixtures
-npx playwright test           # run all fixtures
-npx playwright test tests/fixtures/<name>/<name>.spec.ts  # one fixture
+pnpm test                     # unit + E2E tests
+npx playwright test           # E2E only
+npx playwright test tests/fixtures/<name>/  # one fixture
 ```
 
 ### Test support package (`@microsoft/webui-test-support`)
 
 The `packages/webui-test-support` package provides:
 
-- **`registerCompiledTemplate(name, meta)`** - register template metadata (what the build tool produces)
-- **Binding builders** - `bindText`, `bindAttr`, `bindBoolAttr`, `bindEvent`
-- **Path builders** - `nodePath`, `slot`, `dynamic`
-- **Condition builders** - `identifier`, `eq`, `when`, `repeat`
-- **Fixture server** - `buildFixtureEntries`, `startFixtureServer` (auto-discovers fixtures, bundles with esbuild, serves with a static file server)
-
-This package is private (`@microsoft/webui-test-support`) and shared between `webui-framework` and `webui-router` tests.
+- **`registerCompiledTemplate(name, meta)`** — register a raw `TemplateMeta` object (for manual/light-DOM fixtures)
+- **`renderTemplateScript(name, meta)`** — render a template as an inline `<script>` tag
+- **`renderFixtures({ fixturesRoot })`** — build+render all pipeline fixtures
+- **`buildFixtureEntries({ ... })`** — bundle element.ts files via esbuild
+- **`startFixtureServer({ ... })`** — start the HTTP fixture server
 
 ## When to use what
 

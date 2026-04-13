@@ -3,11 +3,9 @@
 
 import { expect, test } from '@playwright/test';
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`nested repeat fixture [${mode} DOM]`, () => {
+test.describe('nested repeat fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/nested-repeat/${file}`);
+    await page.goto('/nested-repeat/fixture.html');
     await page.waitForSelector('test-nested-repeat');
     await page.waitForFunction(() => {
       const el = document.querySelector('test-nested-repeat');
@@ -88,7 +86,6 @@ test.describe(`nested repeat fixture [${mode} DOM]`, () => {
     await expect(page.locator('test-nested-repeat .value')).toHaveText(['Blue', 'S', 'M']);
   });
 });
-}
 
 // ── SSR hydration regression (#175 / #176) ──────────────────────
 // Exercises $resolveSSR and $resolve with pathStart > 0 on paths
@@ -96,11 +93,9 @@ test.describe(`nested repeat fixture [${mode} DOM]`, () => {
 // template cursor was not advanced through skipped path segments,
 // so inner repeats failed to find their parent element and markers.
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`nested repeat SSR hydration [${mode} DOM]`, () => {
+test.describe('nested repeat SSR hydration', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture-ssr.html' : 'fixture-ssr-shadow.html';
-    await page.goto(`/nested-repeat/${file}`);
+    await page.goto('/nested-repeat/fixture.html');
     await page.waitForSelector('test-nested-repeat');
     await page.waitForFunction(() => {
       const el = document.querySelector('test-nested-repeat');
@@ -159,4 +154,3 @@ test.describe(`nested repeat SSR hydration [${mode} DOM]`, () => {
     await expect(page.locator('test-nested-repeat h2')).toHaveText(['Color', 'Size']);
   });
 });
-}

@@ -1,0 +1,7 @@
+{
+  "items": [
+    { "title": "Shirts", "href": "/search/shirts", "activeClass": "active", "disabled": false },
+    { "title": "Headwear", "href": "/search/headwear", "activeClass": "", "disabled": false },
+    { "title": "Archived", "href": "/search/archived", "activeClass": "", "disabled": true }
+  ]
+}

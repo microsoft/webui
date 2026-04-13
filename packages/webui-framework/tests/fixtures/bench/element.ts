@@ -14,72 +14,6 @@
  */
 
 import { WebUIElement, observable } from '../../../src/index.js';
-import {
-  bindAttr,
-  bindBoolAttr,
-  bindEvent,
-  bindText,
-  dynamic,
-  identifier,
-  nodePath,
-  registerCompiledTemplate,
-  repeat,
-  slot,
-} from '@microsoft/webui-test-support';
-
-// Build a template with many bindings.
-// Structure: 10 <p> elements each showing prop0..prop9,
-//            10 <span> elements with attr bindings,
-//            5 <div> with boolean disabled attrs,
-//            plus a button to trigger measurement.
-
-const textBindings = [];
-const htmlParts: string[] = [];
-
-// 50 text bindings: 5 per property, 10 properties
-for (let prop = 0; prop < 10; prop++) {
-  for (let dup = 0; dup < 5; dup++) {
-    const idx = prop * 5 + dup;
-    htmlParts.push(`<span class="t${idx}"></span>`);
-    textBindings.push(
-      bindText(slot({ parent: nodePath(idx), before: 0 }), dynamic(`prop${prop}`)),
-    );
-  }
-}
-
-// 10 attribute bindings on elements 50-59
-const attrBindings = [];
-const attrGroups = [];
-for (let i = 0; i < 10; i++) {
-  const elIdx = 50 + i;
-  htmlParts.push(`<span class="a${i}"></span>`);
-  attrBindings.push(bindAttr('data-val', `prop${i}`));
-  attrGroups.push({ target: nodePath(elIdx), startIndex: i, bindingCount: 1 });
-}
-
-// 5 boolean attribute bindings on elements 60-64
-for (let i = 0; i < 5; i++) {
-  const elIdx = 60 + i;
-  htmlParts.push(`<span class="b${i}"></span>`);
-  attrBindings.push(bindBoolAttr('disabled', identifier(`prop${i}`)));
-  attrGroups.push({ target: nodePath(elIdx), startIndex: 10 + i, bindingCount: 1 });
-}
-
-// Button and result display
-htmlParts.push('<button class="run"></button>');
-htmlParts.push('<pre class="result"></pre>');
-
-registerCompiledTemplate('test-bench', {
-  h: htmlParts.join(''),
-  text: textBindings,
-  attrs: attrBindings,
-  attrGroups: attrGroups.map(g => ({
-    target: g.target,
-    startIndex: g.startIndex,
-    bindingCount: g.bindingCount,
-  })),
-  events: [bindEvent('click', 'runBenchmark', false, nodePath(65))],
-});
 
 export class TestBench extends WebUIElement {
   @observable prop0 = 'v0';
@@ -146,27 +80,6 @@ TestBench.define('test-bench');
 
 // ── Repeat instantiation benchmark ─────────────────────────────────
 
-registerCompiledTemplate('test-bench-item', {
-  h: '<li class="bench-item"><span class="label"></span> — <span class="value"></span></li>',
-  text: [
-    bindText(slot({ parent: nodePath(0, 0), before: 0 }), dynamic('item.label')),
-    bindText(slot({ parent: nodePath(0, 2), before: 0 }), dynamic('item.value')),
-  ],
-});
-
-registerCompiledTemplate('test-bench-repeat', {
-  h: '<button class="run-repeat"></button><ul class="list"></ul>',
-  repeats: [repeat('items', 'item', { blockIndex: 0, slot: { parent: nodePath(1), before: 0 } })],
-  blocks: [{
-    h: '<li class="bench-item"><span class="label"></span> — <span class="value"></span></li>',
-    text: [
-      bindText(slot({ parent: nodePath(0, 0), before: 0 }), dynamic('item.label')),
-      bindText(slot({ parent: nodePath(0, 2), before: 0 }), dynamic('item.value')),
-    ],
-  }],
-  events: [bindEvent('click', 'runRepeatBench', false, nodePath(0))],
-});
-
 interface BenchItem {
   label: string;
   value: string;
@@ -221,22 +134,6 @@ TestBenchRepeat.define('test-bench-repeat');
 
 // ── Event closure benchmark ────────────────────────────────────────
 // Each repeat item has 5 event bindings → 200 items × 5 = 1000 closures
-
-registerCompiledTemplate('test-bench-events', {
-  h: '<button class="run-events"></button><div class="event-list"></div>',
-  repeats: [repeat('items', 'item', { blockIndex: 0, slot: { parent: nodePath(1), before: 0 } })],
-  blocks: [{
-    h: '<div class="event-item"><button class="a"></button><button class="b"></button><button class="c"></button><button class="d"></button><button class="e"></button></div>',
-    events: [
-      bindEvent('click', 'onA', false, nodePath(0, 0)),
-      bindEvent('click', 'onB', false, nodePath(0, 1)),
-      bindEvent('click', 'onC', false, nodePath(0, 2)),
-      bindEvent('click', 'onD', false, nodePath(0, 3)),
-      bindEvent('click', 'onE', false, nodePath(0, 4)),
-    ],
-  }],
-  events: [bindEvent('click', 'runEventBench', false, nodePath(0))],
-});
 
 export class TestBenchEvents extends WebUIElement {
   @observable items: Array<{ id: number }> = [];

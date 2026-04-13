@@ -1,0 +1,6 @@
+{
+  "items": [
+    { "id": "1", "title": "Alpha", "state": "pending", "flagged": false },
+    { "id": "2", "title": "Beta", "state": "done", "flagged": true }
+  ]
+}

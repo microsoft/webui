@@ -2,54 +2,6 @@
 // Licensed under the MIT license.
 
 import { WebUIElement, observable } from '../../../src/index.js';
-import {
-  attrTarget,
-  bindAttr,
-  bindText,
-  dynamic,
-  eq,
-  nodePath,
-  neq,
-  registerCompiledTemplate,
-  repeat,
-  slot,
-  when,
-  stringLiteral,
-} from '@microsoft/webui-test-support';
-
-// Component with TWO <for> loops that both contain <if> conditionals,
-// rendering the same items collection into two separate containers.
-// Verifies that conditionals inside duplicate repeats update correctly.
-registerCompiledTemplate('test-multi-repeat', {
-  h: '<ul class="list-a"></ul><ul class="list-b"></ul>',
-  repeats: [
-    repeat('items', 'item', { blockIndex: 0, slot: { parent: nodePath(0), before: 0 } }),
-    repeat('items', 'item', { blockIndex: 0, slot: { parent: nodePath(1), before: 0 } }),
-  ],
-  blocks: [
-    {
-      h: '<li></li>',
-      conditionals: [
-        when(eq('item.active', stringLiteral('true')), { blockIndex: 1, slot: { parent: nodePath(0), before: 0, order: 0 } }),
-        when(neq('item.active', stringLiteral('true')), { blockIndex: 2, slot: { parent: nodePath(0), before: 0, order: 1 } }),
-      ],
-    },
-    {
-      h: '<p class="current"></p>',
-      text: [
-        bindText(slot({ parent: nodePath(0), before: 0 }), dynamic('item.title')),
-      ],
-    },
-    {
-      h: '<a class="link"></a>',
-      text: [
-        bindText(slot({ parent: nodePath(0), before: 0 }), dynamic('item.title')),
-      ],
-      attrs: [bindAttr('href', 'item.href')],
-      attrGroups: [attrTarget(nodePath(0), { startIndex: 0, bindingCount: 1 })],
-    },
-  ],
-});
 
 interface MultiRepeatItem {
   title: string;

@@ -5,62 +5,16 @@
  * Regression tests: custom elements inside conditional (<if>) blocks
  * that are initially false during SSR must mount correctly when the
  * condition flips true client-side.
- *
- * Two test groups:
- * 1. "templates missing" — simulates current SSR where unrendered component
- *    templates are NOT emitted. These tests document the bug.
- * 2. "templates available" — simulates the fixed SSR where ALL reachable
- *    component templates are emitted. These tests verify the fix works.
  */
 
 import { expect, test } from '@playwright/test';
 
-test.describe('conditional-component: templates missing (current SSR bug)', () => {
+test.describe('conditional-component', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/conditional-component/fixture.html');
     await page.waitForFunction(() => {
       const el = document.querySelector('test-cond-parent') as any;
       return el && el.$ready === true;
-    });
-  });
-
-  test('child component fails to mount without template', async ({ page }) => {
-    // Set show=true — child element is created but has no template
-    await page.evaluate(() => {
-      (document.querySelector('test-cond-parent') as any).show = true;
-    });
-
-    // Give it a moment to attempt mounting
-    await page.waitForTimeout(100);
-
-    const result = await page.evaluate(() => {
-      const parent = document.querySelector('test-cond-parent') as any;
-      const child = parent.shadowRoot?.querySelector('test-child-comp');
-      return {
-        childExists: !!child,
-        hasShadowRoot: !!child?.shadowRoot,
-        ready: child?.$ready ?? false,
-      };
-    });
-
-    // Child element IS created by the <if> block...
-    expect(result.childExists).toBe(true);
-    // ...but it has no shadow root because its template wasn't emitted
-    expect(result.hasShadowRoot).toBe(false);
-    expect(result.ready).toBe(false);
-  });
-});
-
-test.describe('conditional-component: templates available (fixed SSR)', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto('/conditional-component/fixture.html');
-    await page.waitForFunction(() => {
-      const el = document.querySelector('test-cond-parent') as any;
-      return el && el.$ready === true;
-    });
-    // Register all child templates upfront (simulating fixed SSR emit_templates)
-    await page.evaluate(() => {
-      (window as any).__fixture_register_all();
     });
   });
 

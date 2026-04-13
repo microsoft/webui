@@ -1,0 +1,7 @@
+{
+  "options": [
+    { "title": "Relevance", "active": true },
+    { "title": "Trending", "active": false },
+    { "title": "Price", "active": false }
+  ]
+}

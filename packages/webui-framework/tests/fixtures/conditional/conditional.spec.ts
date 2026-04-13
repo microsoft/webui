@@ -3,11 +3,9 @@
 
 import { expect, test } from '@playwright/test';
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`conditional fixture [${mode} DOM]`, () => {
+test.describe('conditional fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/conditional/${file}`);
+    await page.goto('/conditional/fixture.html');
     await page.waitForSelector('test-conditional');
     await page.waitForFunction(() => {
       const el = document.querySelector('test-conditional');
@@ -68,5 +66,44 @@ test.describe(`conditional fixture [${mode} DOM]`, () => {
     await expect(page.locator('test-conditional .details')).toHaveText('Details');
     await expect(page.locator('test-conditional .toggle')).toBeDisabled();
   });
+
+  test('negation simulates else branch — shows alternate when condition is false', async ({ page }) => {
+    // !open is hidden when open=true
+    await expect(page.locator('test-conditional .negated')).toHaveCount(0);
+
+    await page.locator('test-conditional .toggle').click();
+    // Now open=false, !open shows, details hides
+    await expect(page.locator('test-conditional .details')).toHaveCount(0);
+    await expect(page.locator('test-conditional .negated')).toHaveText('Negated visible');
+
+    await page.locator('test-conditional .toggle').click();
+    await expect(page.locator('test-conditional .details')).toHaveText('Details');
+    await expect(page.locator('test-conditional .negated')).toHaveCount(0);
+  });
+
+  test('compound && condition requires both operands', async ({ page }) => {
+    await expect(page.locator('test-conditional .compound-and')).toHaveText('And visible');
+
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional') as any).busy = true;
+    });
+    await expect(page.locator('test-conditional .compound-and')).toHaveCount(0);
+  });
+
+  test('compound || condition requires at least one operand', async ({ page }) => {
+    await expect(page.locator('test-conditional .compound-or')).toHaveText('Or visible');
+
+    await page.locator('test-conditional .toggle').click();
+    // open=false, busy=false → both false → hidden
+    await expect(page.locator('test-conditional .compound-or')).toHaveCount(0);
+  });
+
+  test('comparison operator > evaluates numeric values', async ({ page }) => {
+    await expect(page.locator('test-conditional .gt-zero')).toHaveText('Positive');
+
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional') as any).count = 0;
+    });
+    await expect(page.locator('test-conditional .gt-zero')).toHaveCount(0);
+  });
 });
-}

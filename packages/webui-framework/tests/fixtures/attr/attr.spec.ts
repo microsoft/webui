@@ -3,11 +3,9 @@
 
 import { expect, test } from '@playwright/test';
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`attr fixture [${mode} DOM]`, () => {
+test.describe('attr fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/attr/${file}`);
+    await page.goto('/attr/fixture.html');
     await page.waitForSelector('test-attr');
     await page.waitForFunction(() => {
       const el = document.querySelector('test-attr');
@@ -122,5 +120,24 @@ test.describe(`attr fixture [${mode} DOM]`, () => {
 
     await expect(page.locator('test-attr .bool-check')).not.toBeChecked();
   });
+
+  test('mixed static+dynamic attribute renders correctly', async ({ page }) => {
+    await expect(page.locator('test-attr .mixed')).toHaveAttribute('href', '/items/42');
+
+    await page.evaluate(() => {
+      (document.querySelector('test-attr') as any).itemId = '99';
+    });
+
+    await expect(page.locator('test-attr .mixed')).toHaveAttribute('href', '/items/99');
+  });
+
+  test('mixed attribute with prefix and suffix', async ({ page }) => {
+    await expect(page.locator('test-attr .mixed-class')).toHaveAttribute('data-tag', 'prefix-demo-suffix');
+
+    await page.evaluate(() => {
+      (document.querySelector('test-attr') as any).tag = 'live';
+    });
+
+    await expect(page.locator('test-attr .mixed-class')).toHaveAttribute('data-tag', 'prefix-live-suffix');
+  });
 });
-}

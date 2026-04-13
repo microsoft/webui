@@ -3,11 +3,9 @@
 
 import { expect, test } from '@playwright/test';
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`root-event fixture [${mode} DOM]`, () => {
+test.describe('root-event fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/root-event/${file}`);
+    await page.goto('/root-event/fixture.html');
     await page.waitForSelector('test-root-event');
     await page.waitForFunction(() => {
       const el = document.querySelector('test-root-event');
@@ -46,4 +44,3 @@ test.describe(`root-event fixture [${mode} DOM]`, () => {
     expect(action).toBe('pong');
   });
 });
-}

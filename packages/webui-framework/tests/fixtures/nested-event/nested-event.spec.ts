@@ -3,11 +3,9 @@
 
 import { expect, test } from '@playwright/test';
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`nested event fixture [${mode} DOM]`, () => {
+test.describe('nested event fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/nested-event/${file}`);
+    await page.goto('/nested-event/fixture.html');
     await page.waitForSelector('test-nested-event');
   });
 
@@ -28,4 +26,3 @@ test.describe(`nested event fixture [${mode} DOM]`, () => {
     expect(errors).toEqual([]);
   });
 });
-}

@@ -3,11 +3,9 @@
 
 import { expect, test } from '@playwright/test';
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`state-seed fixture [${mode} DOM]`, () => {
+test.describe('state-seed fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/state-seed/${file}`);
+    await page.goto('/state-seed/fixture.html');
     await page.waitForSelector('test-state-seed');
     await page.waitForFunction(() => {
       const el = document.querySelector('test-state-seed');
@@ -62,4 +60,3 @@ test.describe(`state-seed fixture [${mode} DOM]`, () => {
     await expect(page.locator('test-state-seed-shell .category-link').first()).toHaveClass(/active/);
   });
 });
-}

@@ -3,14 +3,11 @@
 
 import { expect, test } from '@playwright/test';
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`list fixture [${mode} DOM]`, () => {
+test.describe('list fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/list/${file}`);
+    await page.goto('/list/fixture.html');
     await page.waitForSelector('test-list');
     await expect(page.locator('test-list-item .title')).toHaveCount(2);
-    // Wait for hydration to complete (events wired)
     await page.waitForFunction(() => {
       const host = document.querySelector('test-list');
       const root = host?.shadowRoot ?? host;
@@ -21,6 +18,7 @@ test.describe(`list fixture [${mode} DOM]`, () => {
 
   test('renders SSR repeat content and nested child conditionals', async ({ page }) => {
     await expect(page.locator('test-list-item .title')).toHaveText(['Alpha', 'Beta']);
+    await expect(page.locator('test-list .count')).toHaveText('2');
     await expect(page.locator('test-list-item .done')).toHaveText(['Done']);
   });
 
@@ -128,4 +126,3 @@ test.describe(`list fixture [${mode} DOM]`, () => {
     await expect(page.locator('test-list-item .done')).toHaveCount(2);
   });
 });
-}

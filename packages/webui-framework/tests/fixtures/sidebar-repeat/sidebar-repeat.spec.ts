@@ -3,11 +3,9 @@
 
 import { expect, test } from '@playwright/test';
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`sidebar repeat fixture [${mode} DOM]`, () => {
+test.describe('sidebar repeat fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/sidebar-repeat/${file}`);
+    await page.goto('/sidebar-repeat/fixture.html');
     await page.waitForSelector('test-sidebar-repeat');
     await page.waitForFunction(() => {
       const el = document.querySelector('test-sidebar-repeat');
@@ -79,4 +77,3 @@ test.describe(`sidebar repeat fixture [${mode} DOM]`, () => {
     await expectActiveNav(page, 'All Contacts');
   });
 });
-}

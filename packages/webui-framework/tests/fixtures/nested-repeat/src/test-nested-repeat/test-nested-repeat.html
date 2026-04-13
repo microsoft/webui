@@ -1,0 +1,17 @@
+<template shadowrootmode="open">
+  <div class="controls">
+    <button class="load" @click="{loadGroups()}">Load</button>
+  </div>
+  <div class="groups">
+    <for each="group in groups">
+      <section class="group">
+        <h2>{{group.name}}</h2>
+        <div class="values">
+          <for each="item in group.values">
+            <button class="value" data-group="{{group.name}}" data-value="{{item.value}}" ?disabled="{{item.disabled}}">{{item.value}}</button>
+          </for>
+        </div>
+      </section>
+    </for>
+  </div>
+</template>

@@ -42,6 +42,8 @@ struct PlaywrightSuite {
     ports: &'static [u16],
     scripts: &'static [&'static str],
     build_client: bool,
+    /// Optional pnpm script to run before starting servers (e.g. "build:e2e").
+    pre_script: Option<&'static str>,
     test_script: &'static str,
     update_snapshots_script: &'static str,
 }
@@ -53,6 +55,7 @@ const SUITES: &[PlaywrightSuite] = &[
         ports: &[3000],
         scripts: &["start:server"],
         build_client: true,
+        pre_script: None,
         test_script: "test",
         update_snapshots_script: "test:update-snapshots",
     },
@@ -62,6 +65,7 @@ const SUITES: &[PlaywrightSuite] = &[
         ports: &[3002],
         scripts: &["start:server"],
         build_client: true,
+        pre_script: None,
         test_script: "test",
         update_snapshots_script: "test:update-snapshots",
     },
@@ -71,6 +75,7 @@ const SUITES: &[PlaywrightSuite] = &[
         ports: &[3003, 3013],
         scripts: &["start:api", "start:server"],
         build_client: true,
+        pre_script: None,
         test_script: "test",
         update_snapshots_script: "test:update-snapshots",
     },
@@ -80,6 +85,7 @@ const SUITES: &[PlaywrightSuite] = &[
         ports: &[3004],
         scripts: &["start:server"],
         build_client: true,
+        pre_script: None,
         test_script: "test",
         update_snapshots_script: "test:update-snapshots",
     },
@@ -89,6 +95,7 @@ const SUITES: &[PlaywrightSuite] = &[
         ports: &[3018, 3008],
         scripts: &["start:api", "start:server"],
         build_client: true,
+        pre_script: None,
         test_script: "test",
         update_snapshots_script: "test:update-snapshots",
     },
@@ -98,6 +105,7 @@ const SUITES: &[PlaywrightSuite] = &[
         ports: &[3006],
         scripts: &["start:server"],
         build_client: true,
+        pre_script: None,
         test_script: "test",
         update_snapshots_script: "test:update-snapshots",
     },
@@ -107,15 +115,17 @@ const SUITES: &[PlaywrightSuite] = &[
         ports: &[],
         scripts: &[],
         build_client: false,
+        pre_script: None,
         test_script: "test",
         update_snapshots_script: "test:update-snapshots",
     },
     PlaywrightSuite {
         name: "webui-router",
         dir: "packages/webui-router",
-        ports: &[],
-        scripts: &[],
+        ports: &[39102],
+        scripts: &["start:server"],
         build_client: false,
+        pre_script: Some("build:e2e"),
         test_script: "test",
         update_snapshots_script: "test:update-snapshots",
     },
@@ -219,6 +229,33 @@ pub fn run(args: &[String]) -> ExitCode {
                 );
                 eprintln!("    {msg}");
                 return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    // Run pre-scripts (e.g. build:e2e for router client bundle)
+    for suite in &suites {
+        if let Some(script) = suite.pre_script {
+            let dir = PathBuf::from(suite.dir);
+            match util::run_command_quiet("pnpm", &[script], Some(&dir)) {
+                Ok(()) => {
+                    eprintln!(
+                        "  {} {} ({})",
+                        console::style("✔").green(),
+                        suite.name,
+                        script
+                    );
+                }
+                Err(msg) => {
+                    eprintln!(
+                        "  {} {} — {} failed",
+                        console::style("✘").red().bold(),
+                        suite.name,
+                        script,
+                    );
+                    eprintln!("    {msg}");
+                    return ExitCode::FAILURE;
+                }
             }
         }
     }

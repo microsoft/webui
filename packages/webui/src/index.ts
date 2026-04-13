@@ -17,8 +17,8 @@ export interface BuildOptions {
   appDir: string;
   /** Entry HTML file name (default: "index.html"). */
   entry?: string;
-  /** CSS delivery strategy: "link" (default) or "style". */
-  css?: "link" | "style";
+  /** CSS delivery strategy: "link" (default), "style", or "module". */
+  css?: "link" | "style" | "module";
   /** Parser plugin (e.g., "fast" for FAST-HTML hydration). */
   plugin?: string;
   /** Additional component sources (npm packages or local paths). */

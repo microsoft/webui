@@ -1,0 +1,26 @@
+<template shadowrootmode="open">
+  <ul class="list-a">
+    <for each="item in items">
+      <li>
+        <if condition="item.active == 'true'">
+          <p class="current">{{item.title}}</p>
+        </if>
+        <if condition="item.active != 'true'">
+          <a class="link" href="{{item.href}}">{{item.title}}</a>
+        </if>
+      </li>
+    </for>
+  </ul>
+  <ul class="list-b">
+    <for each="item in items">
+      <li>
+        <if condition="item.active == 'true'">
+          <p class="current">{{item.title}}</p>
+        </if>
+        <if condition="item.active != 'true'">
+          <a class="link" href="{{item.href}}">{{item.title}}</a>
+        </if>
+      </li>
+    </for>
+  </ul>
+</template>

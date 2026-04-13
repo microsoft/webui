@@ -1,0 +1,8 @@
+{
+  "label": "Status",
+  "displayValue": "Ready",
+  "ctaHref": "/checkout",
+  "isActive": false,
+  "itemId": "42",
+  "tag": "demo"
+}

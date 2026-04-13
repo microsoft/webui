@@ -3,11 +3,9 @@
 
 import { expect, test } from '@playwright/test';
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`text-only repeat fixture [${mode} DOM]`, () => {
+test.describe('text-only repeat fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/text-only-repeat/${file}`);
+    await page.goto('/text-only-repeat/fixture.html');
     await page.waitForSelector('test-text-only-repeat');
     await page.waitForFunction(() => {
       const el = document.querySelector('test-text-only-repeat');
@@ -49,4 +47,3 @@ test.describe(`text-only repeat fixture [${mode} DOM]`, () => {
     expect(countAfter).toBe(1);
   });
 });
-}

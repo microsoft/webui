@@ -1,0 +1,5 @@
+{
+  "page": "dashboard",
+  "activeGroup": "",
+  "groups": ["work", "family", "friends", "other"]
+}

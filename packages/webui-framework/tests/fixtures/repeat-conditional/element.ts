@@ -2,60 +2,6 @@
 // Licensed under the MIT license.
 
 import { WebUIElement, observable } from '../../../src/index.js';
-import {
-  attrTarget,
-  bindAttr,
-  bindBoolAttr,
-  bindEvent,
-  bindText,
-  dynamic,
-  eq,
-  identifier,
-  nodePath,
-  neq,
-  registerCompiledTemplate,
-  repeat,
-  slot,
-  when,
-  stringLiteral,
-} from '@microsoft/webui-test-support';
-
-registerCompiledTemplate('test-repeat-conditional', {
-  h: '<div class="controls"><button class="load">Load</button><button class="switch">Switch</button></div><ul class="items"></ul>',
-  repeats: [repeat('items', 'item', { blockIndex: 0, slot: { parent: nodePath(1), before: 0 } })],
-  blocks: [
-    {
-      h: '<li></li>',
-      conditionals: [
-        when(eq('item.activeClass', stringLiteral('active')), { blockIndex: 1, slot: { parent: nodePath(0), before: 0, order: 0 } }),
-        when(neq('item.activeClass', stringLiteral('active')), { blockIndex: 2, slot: { parent: nodePath(0), before: 0, order: 1 } }),
-      ],
-    },
-    {
-      h: '<p class="current"></p>',
-      text: [
-        bindText(slot({ parent: nodePath(0), before: 0 }), dynamic('item.title')),
-      ],
-      attrs: [bindAttr('data-href', 'item.href')],
-      attrGroups: [attrTarget(nodePath(0), { startIndex: 0, bindingCount: 1 })],
-    },
-    {
-      h: '<button class="link"></button>',
-      text: [
-        bindText(slot({ parent: nodePath(0), before: 0 }), dynamic('item.title')),
-      ],
-      attrs: [
-        bindAttr('data-href', 'item.href'),
-        bindBoolAttr('disabled', identifier('item.disabled')),
-      ],
-      attrGroups: [attrTarget(nodePath(0), { startIndex: 0, bindingCount: 2 })],
-    },
-  ],
-  events: [
-    bindEvent('click', 'loadItems', false, nodePath(0, 0)),
-    bindEvent('click', 'switchItems', false, nodePath(0, 1)),
-  ],
-});
 
 interface RepeatConditionalItem {
   title: string;

@@ -1,0 +1,52 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+import { WebUIElement, observable } from '@microsoft/webui-framework';
+import { Router } from '@microsoft/webui-router';
+
+// ── Shell component ──────────────────────────────────────────────
+
+export class RouteShell extends WebUIElement {
+  @observable isHome = false;
+  @observable isAlpha = false;
+  @observable isBeta = false;
+  @observable isItem1 = false;
+  @observable isItem2 = false;
+}
+RouteShell.define('route-shell');
+
+// ── Page components ──────────────────────────────────────────────
+
+export class PageAlpha extends WebUIElement {}
+PageAlpha.define('page-alpha');
+
+export class PageBeta extends WebUIElement {}
+PageBeta.define('page-beta');
+
+export class PageDetail extends WebUIElement {
+  @observable itemId = '';
+}
+PageDetail.define('page-detail');
+
+// ── Start router after hydration ─────────────────────────────────
+
+window.addEventListener('webui:hydration-complete', () => {
+  Router.start({
+    loaders: {
+      'page-alpha': () => Promise.resolve(),
+      'page-beta': () => Promise.resolve(),
+      'page-detail': () => Promise.resolve(),
+    },
+  });
+});
+
+// Fallback if hydration already completed
+if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {
+  Router.start({
+    loaders: {
+      'page-alpha': () => Promise.resolve(),
+      'page-beta': () => Promise.resolve(),
+      'page-detail': () => Promise.resolve(),
+    },
+  });
+}

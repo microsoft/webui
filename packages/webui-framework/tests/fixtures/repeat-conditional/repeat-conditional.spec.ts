@@ -3,11 +3,9 @@
 
 import { expect, test } from '@playwright/test';
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`repeat conditional fixture [${mode} DOM]`, () => {
+test.describe('repeat conditional fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/repeat-conditional/${file}`);
+    await page.goto('/repeat-conditional/fixture.html');
     await page.waitForSelector('test-repeat-conditional');
     await page.waitForFunction(() => {
       const el = document.querySelector('test-repeat-conditional');
@@ -53,4 +51,3 @@ test.describe(`repeat conditional fixture [${mode} DOM]`, () => {
     await expect(page.locator('test-repeat-conditional .link').first()).toHaveAttribute('data-href', '/search/shirts');
   });
 });
-}

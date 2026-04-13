@@ -3,11 +3,9 @@
 
 import { expect, test } from '@playwright/test';
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`ref fixture [${mode} DOM]`, () => {
+test.describe('ref fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/ref/${file}`);
+    await page.goto('/ref/fixture.html');
     await page.waitForFunction(
       () => (document.querySelector('test-ref') as { inputEl?: HTMLInputElement } | null)?.inputEl instanceof HTMLInputElement,
     );
@@ -42,12 +40,10 @@ test.describe(`ref fixture [${mode} DOM]`, () => {
         inputEl?: HTMLInputElement;
         shadowRoot: ShadowRoot | null;
       }) | null;
-      // In shadow DOM, activeElement is on shadowRoot; in light DOM, on document
-      const active = host?.shadowRoot?.activeElement ?? document.activeElement;
+      const active = host?.shadowRoot?.activeElement;
       return active === host?.inputEl;
     });
 
     expect(focused).toBe(true);
   });
 });
-}

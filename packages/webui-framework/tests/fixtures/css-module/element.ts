@@ -2,22 +2,6 @@
 // Licensed under the MIT license.
 
 import { WebUIElement } from '../../../src/index.js';
-import {
-  bindEvent,
-  nodePath,
-  registerCompiledTemplate,
-} from '@microsoft/webui-test-support';
-
-registerCompiledTemplate('test-module-host', {
-  h: '<button class="spawn">Spawn</button><p class="host-label">Host</p><div class="slot"></div>',
-  adoptedStylesheet: 'test-module-host',
-  events: [bindEvent('click', 'spawnChild', false, nodePath(0))],
-});
-
-registerCompiledTemplate('test-module-child', {
-  h: '<p class="child-label">Child</p>',
-  adoptedStylesheet: 'test-module-child',
-});
 
 export class TestModuleHost extends WebUIElement {
   spawnChild(): void {
@@ -25,7 +9,6 @@ export class TestModuleHost extends WebUIElement {
     if (!(slot instanceof HTMLDivElement)) {
       throw new Error('Missing .slot container');
     }
-
     if (!slot.querySelector('test-module-child')) {
       slot.appendChild(document.createElement('test-module-child'));
     }
@@ -36,4 +19,3 @@ export class TestModuleChild extends WebUIElement {}
 
 TestModuleHost.define('test-module-host');
 TestModuleChild.define('test-module-child');
-

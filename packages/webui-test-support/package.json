@@ -7,6 +7,7 @@
   "license": "MIT",
   "sideEffects": false,
   "dependencies": {
+    "@microsoft/webui": "workspace:*",
     "esbuild": "catalog:"
   },
   "exports": {
@@ -17,6 +18,10 @@
     "./fixture-build": {
       "types": "./src/fixture-build.ts",
       "default": "./src/fixture-build.ts"
+    },
+    "./fixture-render": {
+      "types": "./src/fixture-render.ts",
+      "default": "./src/fixture-render.ts"
     },
     "./fixture-server": {
       "types": "./src/fixture-server.ts",

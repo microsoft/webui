@@ -3,11 +3,9 @@
 
 import { expect, test } from '@playwright/test';
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`css style fixture [${mode} DOM]`, () => {
+test.describe('css style fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/css-style/${file}`);
+    await page.goto('/css-style/fixture.html');
     await page.waitForSelector('test-style-host .spawn');
   });
 
@@ -42,4 +40,3 @@ test.describe(`css style fixture [${mode} DOM]`, () => {
     });
   });
 });
-}

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Router Test App</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 16px; }
+    nav a { margin-right: 12px; }
+    nav a[active] { font-weight: bold; }
+    .page { padding: 8px; }
+  </style>
+</head>
+<body>
+  <route path="/" component="route-shell">
+    <route path="alpha" component="page-alpha" exact />
+    <route path="beta" component="page-beta" exact />
+    <route path="items/:itemId" component="page-detail" exact />
+  </route>
+
+  <script type="module" src="/index.js"></script>
+</body>
+</html>

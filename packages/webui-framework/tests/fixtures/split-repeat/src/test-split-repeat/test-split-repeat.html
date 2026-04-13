@@ -1,0 +1,15 @@
+<template shadowrootmode="open">
+  <div class="controls">
+    <button class="load" @click="{loadItems()}">Load</button>
+  </div>
+  <ul class="primary">
+    <for each="item in primaryItems">
+      <li class="primary-item">{{item.label}}</li>
+    </for>
+  </ul>
+  <ul class="secondary">
+    <for each="item in secondaryItems">
+      <li class="secondary-item">{{item.label}}</li>
+    </for>
+  </ul>
+</template>

@@ -1,0 +1,10 @@
+{
+  "primaryItems": [
+    { "label": "Seed Alpha" },
+    { "label": "Seed Beta" }
+  ],
+  "secondaryItems": [
+    { "label": "Seed One" },
+    { "label": "Seed Two" }
+  ]
+}

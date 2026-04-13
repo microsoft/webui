@@ -1,0 +1,6 @@
+<template shadowrootmode="open">
+  <h1 class="title">{{title}}</h1>
+  <test-state-seed-shell page="{{page}}" :groups="{{groups}}" :navCategories="{{navCategories}}"></test-state-seed-shell>
+  <button class="add-group" @click="{addGroup()}">Add Group</button>
+  <button class="add-category" @click="{addCategory()}">Add Category</button>
+</template>

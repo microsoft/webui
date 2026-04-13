@@ -1,0 +1,6 @@
+<template shadowrootmode="open">
+  <button class="toggle" @click="{toggleShow()}">Toggle</button>
+  <if condition="show">
+    <test-child-comp></test-child-comp>
+  </if>
+</template>

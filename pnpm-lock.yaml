@@ -361,6 +361,15 @@ importers:
 
   packages/webui-router:
     devDependencies:
+      '@microsoft/webui-framework':
+        specifier: workspace:*
+        version: link:../webui-framework
+      '@microsoft/webui-router':
+        specifier: workspace:*
+        version: 'link:'
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.2
       '@types/dom-navigation':
         specifier: 'catalog:'
         version: 1.0.7
@@ -370,6 +379,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 25.3.5
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.27.3
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
@@ -379,6 +391,9 @@ importers:
 
   packages/webui-test-support:
     dependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../webui
       esbuild:
         specifier: 'catalog:'
         version: 0.27.3

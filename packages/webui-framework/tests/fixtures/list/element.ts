@@ -2,61 +2,6 @@
 // Licensed under the MIT license.
 
 import { WebUIElement, attr, observable } from '../../../src/index.js';
-import {
-  attrTarget,
-  bindAttr,
-  bindBoolAttr,
-  bindEvent,
-  bindText,
-  dynamic,
-  eq,
-  identifier,
-  nodePath,
-  registerCompiledTemplate,
-  repeat,
-  slot,
-  stringLiteral,
-  when,
-} from '@microsoft/webui-test-support';
-
-registerCompiledTemplate('test-list-item', {
-  h: '<article class="item"><button class="toggle">Toggle</button><span class="title"></span></article>',
-  text: [
-    bindText(slot({ parent: nodePath(0, 1), before: 0 }), dynamic('title')),
-  ],
-  conditionals: [when(eq('state', stringLiteral('done')), { blockIndex: 0, slot: { parent: nodePath(0), before: 2 } })],
-  blocks: [{
-    h: '<span class="done">Done</span>',
-  }],
-  events: [
-    bindEvent('click', 'onToggle', false, nodePath(0, 0)),
-  ],
-});
-
-registerCompiledTemplate('test-list', {
-  h: '<div class="controls"><button class="add">Add</button><button class="prepend">Prepend</button><button class="reverse">Reverse</button><button class="clear">Clear</button></div><div class="items"></div>',
-  repeats: [repeat('items', 'item', { blockIndex: 0, slot: { parent: nodePath(1), before: 0 } })],
-  blocks: [{
-    h: '<test-list-item></test-list-item>',
-    attrs: [
-      bindAttr('item-id', 'item.id'),
-      bindAttr('title', 'item.title'),
-      bindAttr('state', 'item.state'),
-      bindBoolAttr('data-done', eq('item.state', stringLiteral('done'))),
-      bindBoolAttr('data-flagged', identifier('item.flagged')),
-    ],
-    attrGroups: [attrTarget(nodePath(0), { startIndex: 0, bindingCount: 5 })],
-  }],
-  events: [
-    bindEvent('click', 'addItem', false, nodePath(0, 0)),
-    bindEvent('click', 'prependItem', false, nodePath(0, 1)),
-    bindEvent('click', 'reverseItems', false, nodePath(0, 2)),
-    bindEvent('click', 'clearItems', false, nodePath(0, 3)),
-  ],
-  rootEvents: [
-    bindEvent('toggle-item', 'toggleItem', true),
-  ],
-});
 
 export class TestListItem extends WebUIElement {
   @attr({ attribute: 'item-id' }) itemId = '';

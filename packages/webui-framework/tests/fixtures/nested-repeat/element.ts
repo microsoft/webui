@@ -2,46 +2,6 @@
 // Licensed under the MIT license.
 
 import { WebUIElement, observable } from '../../../src/index.js';
-import {
-  attrTarget,
-  bindAttr,
-  bindBoolAttr,
-  bindEvent,
-  bindText,
-  dynamic,
-  identifier,
-  nodePath,
-  registerCompiledTemplate,
-  repeat,
-  slot,
-} from '@microsoft/webui-test-support';
-
-registerCompiledTemplate('test-nested-repeat', {
-  h: '<div class="controls"><button class="load">Load</button></div><div class="groups"></div>',
-  repeats: [repeat('groups', 'group', { blockIndex: 0, slot: { parent: nodePath(1), before: 0 } })],
-  blocks: [
-    {
-      h: '<section class="group"><h2></h2><div class="values"></div></section>',
-      text: [
-        bindText(slot({ parent: nodePath(0, 0), before: 0 }), dynamic('group.name')),
-      ],
-      repeats: [repeat('group.values', 'item', { blockIndex: 1, slot: { parent: nodePath(0, 1), before: 0 } })],
-    },
-    {
-      h: '<button class="value"></button>',
-      text: [
-        bindText(slot({ parent: nodePath(0), before: 0 }), dynamic('item.value')),
-      ],
-      attrs: [
-        bindAttr('data-group', 'group.name'),
-        bindAttr('data-value', 'item.value'),
-        bindBoolAttr('disabled', identifier('item.disabled')),
-      ],
-      attrGroups: [attrTarget(nodePath(0), { startIndex: 0, bindingCount: 3 })],
-    },
-  ],
-  events: [bindEvent('click', 'loadGroups', false, nodePath(0, 0))],
-});
 
 interface NestedRepeatValue {
   value: string;

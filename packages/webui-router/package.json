@@ -1,9 +1,13 @@
 {
   "description": "Lightweight client-side router for WebUI apps. Intercepts navigation, matches routes locally or via server route-data, and hydrates components.",
   "devDependencies": {
+    "@microsoft/webui-framework": "workspace:*",
+    "@microsoft/webui-router": "workspace:*",
+    "@playwright/test": "catalog:",
     "@types/dom-navigation": "catalog:",
     "@types/dom-view-transitions": "catalog:",
     "@types/node": "catalog:",
+    "esbuild": "catalog:",
     "typescript": "catalog:",
     "urlpattern-polyfill": "catalog:"
   },
@@ -22,7 +26,11 @@
   "name": "@microsoft/webui-router",
   "scripts": {
     "build": "tsc",
-    "test": "tsc -p tsconfig.unit-test.json && node --test dist/**/*.test.js",
+    "build:e2e": "esbuild tests/fixtures/router-app/src/index.ts --bundle --outfile=tests/fixtures/router-app/dist/index.js --format=esm --sourcemap --tsconfig=tsconfig.e2e.json",
+    "start:server": "cargo run -p microsoft-webui-cli -- serve ./tests/fixtures/router-app/src --plugin=webui --servedir ./tests/fixtures/router-app/dist --state ./tests/fixtures/router-app/data/state.json --port 39102",
+    "test": "tsc -p tsconfig.unit-test.json && node --test dist/**/*.test.js && pnpm build:e2e && playwright test",
+    "test:e2e": "playwright test",
+    "test:update-snapshots": "playwright test --update-snapshots",
     "typecheck": "tsc --noEmit"
   },
   "type": "module",

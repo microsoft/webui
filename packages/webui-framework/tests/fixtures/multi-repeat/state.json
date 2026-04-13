@@ -1,0 +1,6 @@
+{
+  "items": [
+    { "title": "Alpha", "href": "/alpha", "active": "true" },
+    { "title": "Beta", "href": "/beta", "active": "false" }
+  ]
+}

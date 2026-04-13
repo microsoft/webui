@@ -12,11 +12,9 @@ interface BenchResult {
   allPropsPerUpdate: number;
 }
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`bench fixture [${mode} DOM]`, () => {
+test.describe('bench fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/bench/${file}`);
+    await page.goto('/bench/fixture.html');
     await page.waitForSelector('test-bench');
   });
 
@@ -55,4 +53,3 @@ test.describe(`bench fixture [${mode} DOM]`, () => {
     // We don't assert this ratio yet — this test captures the baseline.
   });
 });
-}

@@ -3,11 +3,9 @@
 
 import { expect, test } from '@playwright/test';
 
-for (const mode of ['light', 'shadow'] as const) {
-test.describe(`optional css link fixture [${mode} DOM]`, () => {
+test.describe('optional css link fixture', () => {
   test.beforeEach(async ({ page }) => {
-    const file = mode === 'light' ? 'fixture.html' : 'fixture-shadow.html';
-    await page.goto(`/optional-css-link/${file}`);
+    await page.goto('/optional-css-link/fixture.html');
     await page.waitForSelector('test-no-css-host .spawn');
   });
 
@@ -38,4 +36,3 @@ test.describe(`optional css link fixture [${mode} DOM]`, () => {
     });
   });
 });
-}

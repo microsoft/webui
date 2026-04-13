@@ -1,0 +1,14 @@
+<template shadowrootmode="open" @toggle-item="{toggleItem(e)}">
+  <div class="controls">
+    <button class="add" @click="{addItem()}">Add</button>
+    <button class="prepend" @click="{prependItem()}">Prepend</button>
+    <button class="reverse" @click="{reverseItems()}">Reverse</button>
+    <button class="clear" @click="{clearItems()}">Clear</button>
+    <span class="count">{{items.length}}</span>
+  </div>
+  <div class="items">
+    <for each="item in items">
+      <test-list-item item-id="{{item.id}}" title="{{item.title}}" state="{{item.state}}" ?data-done="{{item.state == 'done'}}" ?data-flagged="{{item.flagged}}"></test-list-item>
+    </for>
+  </div>
+</template>

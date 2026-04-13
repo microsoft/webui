@@ -1,0 +1,9 @@
+{
+  "title": "SSR Title",
+  "page": "dashboard",
+  "groups": ["work", "family"],
+  "navCategories": [
+    { "handle": "featured", "title": "Featured", "activeClass": "active" },
+    { "handle": "sale", "title": "Sale", "activeClass": "" }
+  ]
+}

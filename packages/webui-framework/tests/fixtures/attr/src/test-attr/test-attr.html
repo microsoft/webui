@@ -1,0 +1,3 @@
+<template shadowrootmode="open">
+  <button class="noop" @click="{noop()}">Toggle</button><a class="logo" href="/" @click="{noop()}">Home</a><span class="label">{{label}}</span><span class="display">{{displayValue}}</span><a class="cta" href="{{ctaHref}}">Open</a><div class="bool-target" ?data-active="{{isActive}}"></div><input class="bool-check" type="checkbox" ?checked="{{isActive}}" /><a class="mixed" href="/items/{{itemId}}">Item</a><span class="mixed-class" data-tag="prefix-{{tag}}-suffix">Mixed</span>
+</template>
