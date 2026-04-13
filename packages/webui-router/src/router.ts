@@ -230,6 +230,11 @@ export class WebUIRouter {
     const { requestPath } = target;
 
     if (this.isInitialNavigation) {
+      // Set the flag BEFORE any async work — if a new navigation
+      // supersedes this one (user clicks a folder while components
+      // are loading), the new navigation must NOT take the initial
+      // SSR-bootstrap path again.
+      this.isInitialNavigation = false;
       this.activeChain = this.buildChainFromSSR();
       for (const entry of this.activeChain) {
         if (entry.component) await this.ensureComponentLoaded(entry.component);
@@ -237,7 +242,6 @@ export class WebUIRouter {
       if (this.config.dev) {
         this.validateRoutes();
       }
-      this.isInitialNavigation = false;
     } else {
       this.clearSsrPreloads();
       const partialData = await this.fetchPartial(requestPath, signal);
@@ -634,62 +638,38 @@ export class WebUIRouter {
     // connectedCallback fires synchronously on appendChild, populating
     // the component's light DOM immediately.
 
+    // Set route params as attributes (for @attr reflection)
+    const toKebab = (k: string): string => k.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
+    for (const [key, value] of Object.entries(params)) {
+      component.setAttribute(toKebab(key), value);
+    }
+
+    // Set state via the framework's setInitialState (handles @observable + flush)
     if (typeof (component as any).setInitialState === 'function') {
-      (component as any).setInitialState(data.state, params);
-    } else {
-      this.applyStateAsAttributes(component, data.state, params);
+      (component as any).setInitialState(data.state);
     }
   }
 
   /**
-   * Apply state to a mounted component — uses `setInitialState` if defined,
-   * otherwise falls back to setting attributes (mirrors SSR behavior).
+   * Apply partial state to a mounted route component.
+   * Calls the framework's built-in `setInitialState` which sets
+   * `@observable` properties and flushes DOM updates synchronously.
+   * Route params are set as HTML attributes for `@attr` reflection.
    */
   private applyState(entry: RouteChainEntry, data: PartialResponse): void {
     if (!entry.component || !entry.el) return;
     const compEl = entry.el.querySelector(entry.component) as any;
     if (!compEl) return;
-    if (typeof compEl.setInitialState === 'function') {
-      compEl.setInitialState(data.state, entry.params);
-    } else {
-      this.applyStateAsAttributes(compEl, data.state, entry.params);
-    }
-  }
 
-  /**
-   * Apply state values as HTML attributes on a component element.
-   *
-   * Mirrors the server's `emit_state_attributes` behavior: scalar values
-   * (string, number, boolean) become individual attributes in kebab-case.
-   * Objects and arrays are serialized as a `data-state` JSON attribute.
-   * Route params are also set as attributes.
-   *
-   * This is the zero-code default — components using FAST-HTML `@attr`
-   * bindings receive state automatically without implementing `setInitialState`.
-   */
-  private applyStateAsAttributes(
-    el: HTMLElement,
-    state: Record<string, unknown>,
-    params: Record<string, string>,
-  ): void {
+    // Set route params as attributes (for @attr reflection)
     const toKebab = (k: string): string => k.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
-    const complex: Record<string, unknown> = {};
-
-    for (const [key, value] of Object.entries(state)) {
-      if (value == null) continue;
-      if (typeof value === 'object') {
-        complex[key] = value;
-      } else {
-        el.setAttribute(toKebab(key), String(value));
-      }
+    for (const [key, value] of Object.entries(entry.params)) {
+      compEl.setAttribute(toKebab(key), value);
     }
 
-    if (Object.keys(complex).length > 0) {
-      el.setAttribute('data-state', JSON.stringify(complex));
-    }
-
-    for (const [key, value] of Object.entries(params)) {
-      el.setAttribute(toKebab(key), value);
+    // Set state via the framework's setInitialState (handles @observable + flush)
+    if (typeof compEl.setInitialState === 'function') {
+      compEl.setInitialState(data.state);
     }
   }
 
