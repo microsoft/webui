@@ -769,12 +769,6 @@ impl WebUIHandler {
         }
 
         // Hook: emit component templates before body_end when hydration is enabled.
-        // Only emit templates for components that were actually rendered during SSR.
-        // This keeps the inventory aligned with what's truly in the document:
-        // if a component's template IIFE is emitted, its <style type="module">
-        // definition was also emitted inline (via emit_css_module). Components
-        // inside unrendered conditional blocks are excluded — they'll be delivered
-        // via templateStyles[] + templates[] during SPA partial navigation.
         if signal.raw && signal.value == "body_end" && context.plugin.is_some() {
             // Build the component → index map for the inventory bitfield.
             let comp_index = crate::route_handler::build_component_index(context.protocol);
@@ -794,10 +788,51 @@ impl WebUIHandler {
             context.writer.write(&inventory_hex)?;
             context.writer.write("\">")?;
 
+            // Emit templates for all REACHABLE components on the current route,
+            // not just those rendered in this SSR pass. Components inside false
+            // <if> blocks or empty <for> loops are reachable via client-side
+            // state changes and need their templates available without a server
+            // round-trip. The graph walker follows conditional and loop branches
+            // unconditionally, but only descends into the matched route chain —
+            // components on other routes are delivered via SPA partial navigation.
+            let (reachable_names, _) = crate::route_handler::get_needed_components_for_request(
+                context.protocol,
+                &context.entry_id,
+                &context.request_path,
+                "",
+            );
+            let reachable: std::collections::HashSet<String> =
+                reachable_names.into_iter().collect();
+
+            // Emit CSS module definitions for reachable-but-unrendered components.
+            // Rendered components already got their <style type="module"> inline
+            // during the render pass (via emit_css_module). Unrendered components
+            // need their definitions here so the framework can adopt them when
+            // the <if> condition flips true client-side.
+            for name in &reachable {
+                if !context.rendered_components.contains(name) {
+                    if let Some(css) = context
+                        .protocol
+                        .components
+                        .get(name)
+                        .map(|c| c.css.as_str())
+                        .filter(|s| !s.is_empty())
+                    {
+                        context
+                            .writer
+                            .write("<style type=\"module\" specifier=\"")?;
+                        context.writer.write(name)?;
+                        context.writer.write("\">")?;
+                        context.writer.write(css)?;
+                        context.writer.write("</style>")?;
+                    }
+                }
+            }
+
             if let Some(ref p) = context.plugin {
                 p.emit_templates(
                     context.protocol,
-                    &context.rendered_components,
+                    &reachable,
                     context.nonce.as_deref(),
                     context.writer,
                 )?;
@@ -6135,13 +6170,14 @@ mod tests {
     }
 
     #[test]
-    fn test_unrendered_components_excluded_from_templates_and_inventory() {
-        // Simulates the commerce about page: app-shell renders cart-panel,
-        // but cart-panel contains an <if> block with product-card inside.
-        // When the condition is false (empty cart), product-card is NOT rendered.
-        // Its template IIFE must NOT be in the <script> output, and its bit
-        // must NOT be set in the inventory — otherwise the client thinks it
-        // has the component but lacks the <style type="module"> definition.
+    fn test_reachable_unrendered_components_get_templates_and_css_but_not_inventory() {
+        // Simulates a page where app-shell renders cart-panel, but cart-panel
+        // contains an <if> block with product-card inside. When the condition
+        // is false (empty cart), product-card is NOT rendered — but it IS
+        // reachable from the fragment graph. Its template IIFE and CSS module
+        // definition must be in the output so the client can mount it when
+        // the <if> flips true. However, its bit must NOT be set in the
+        // inventory — the inventory tracks what was actually rendered.
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -6219,16 +6255,18 @@ mod tests {
 
         let html = writer.get_content();
 
-        // product-card template IIFE must NOT be in the output
+        // product-card template IS in the output — it's a known component
+        // whose template must be available for client-side <if> activation.
         assert!(
-            !html.contains("w['product-card']"),
-            "unrendered product-card template should not be emitted: {html}"
+            html.contains("w['product-card']"),
+            "product-card template should be emitted even when unrendered: {html}"
         );
 
-        // product-card style must NOT be in the output
+        // product-card CSS module IS in the output — reachable components need
+        // their stylesheet definitions for client-side <if> activation.
         assert!(
-            !html.contains(r#"specifier="product-card""#),
-            "unrendered product-card CSS module should not be emitted: {html}"
+            html.contains(r#"specifier="product-card""#),
+            "reachable product-card CSS module should be emitted: {html}"
         );
 
         // app-shell and cart-panel SHOULD be in the output (they were rendered)

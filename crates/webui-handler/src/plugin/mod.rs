@@ -92,22 +92,22 @@ pub trait HandlerPlugin {
     fn emit_templates(
         &self,
         protocol: &WebUIProtocol,
-        rendered_components: &HashSet<String>,
+        components: &HashSet<String>,
         _nonce: Option<&str>,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        emit_rendered_component_templates(protocol, rendered_components, writer)
+        emit_component_templates(protocol, components, writer)
     }
 }
 
 /// Default template emission: write each non-empty template verbatim.
 /// Used by the FAST plugin for `<f-template>` tags.
-pub(crate) fn emit_rendered_component_templates(
+pub(crate) fn emit_component_templates(
     protocol: &WebUIProtocol,
-    rendered_components: &HashSet<String>,
+    components: &HashSet<String>,
     writer: &mut dyn ResponseWriter,
 ) -> Result<()> {
-    for name in rendered_components {
+    for name in components {
         if let Some(template) = protocol
             .components
             .get(name)
