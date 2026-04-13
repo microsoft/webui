@@ -1157,4 +1157,99 @@ mod tests {
         let output = convert_btr_to_fast(input);
         assert_eq!(output, input);
     }
+
+    // --- End-to-end f-template regression tests ---
+    // Verify that generated f-template blocks always use FAST syntax
+    // (<f-when>/<f-repeat>) instead of webui syntax (<if>/<for>).
+
+    #[test]
+    fn ftemplate_for_loop_converted_to_f_repeat() {
+        let mut plugin = FastParserPlugin::new();
+        let html = r#"<ul><for each="item in items"><li>{{item.name}}</li></for></ul>"#;
+        let comp = make_component("my-list", html, None);
+        plugin
+            .register_component_template("my-list", &comp, &comp.html_content)
+            .unwrap();
+
+        let templates = plugin.take_component_templates();
+        let (_, result) = &templates[0];
+
+        assert!(
+            result.contains("<f-repeat value=\"{item in items}\">"),
+            "f-template should use <f-repeat>, got: {result}"
+        );
+        assert!(
+            result.contains("</f-repeat>"),
+            "f-template should close with </f-repeat>, got: {result}"
+        );
+        assert!(
+            !result.contains("<for "),
+            "f-template should NOT contain <for>, got: {result}"
+        );
+    }
+
+    #[test]
+    fn ftemplate_shadow_dom_strips_shadowroot_and_converts_directives() {
+        let mut plugin = FastParserPlugin::new();
+        let html = r#"<template shadowrootmode="open"><div><if condition="visible">Shown</if><for each="x in list"><span>{{x}}</span></for></div></template>"#;
+        let comp = make_component("my-shadow", html, None);
+        plugin
+            .register_component_template("my-shadow", &comp, &comp.html_content)
+            .unwrap();
+
+        let templates = plugin.take_component_templates();
+        let (_, result) = &templates[0];
+
+        assert!(
+            result.contains("<f-when value=\"{visible}\">"),
+            "Shadow f-template should contain <f-when>, got: {result}"
+        );
+        assert!(
+            result.contains("<f-repeat value=\"{x in list}\">"),
+            "Shadow f-template should contain <f-repeat>, got: {result}"
+        );
+        assert!(
+            !result.contains("shadowrootmode"),
+            "Shadow f-template should strip shadowrootmode, got: {result}"
+        );
+        assert!(
+            !result.contains("<if "),
+            "Shadow f-template should NOT contain <if>, got: {result}"
+        );
+        assert!(
+            !result.contains("<for "),
+            "Shadow f-template should NOT contain <for>, got: {result}"
+        );
+    }
+
+    #[test]
+    fn ftemplate_nested_if_and_for_both_converted() {
+        let mut plugin = FastParserPlugin::new();
+        let html =
+            r#"<div><if condition="show"><for each="x in items"><p>{{x}}</p></for></if></div>"#;
+        let comp = make_component("my-nested", html, None);
+        plugin
+            .register_component_template("my-nested", &comp, &comp.html_content)
+            .unwrap();
+
+        let templates = plugin.take_component_templates();
+        let (_, result) = &templates[0];
+
+        assert!(
+            result.contains("<f-when value=\"{show}\">"),
+            "Nested f-template should contain <f-when>, got: {result}"
+        );
+        assert!(
+            result.contains("<f-repeat value=\"{x in items}\">"),
+            "Nested f-template should contain <f-repeat>, got: {result}"
+        );
+        assert!(
+            !result.contains("<if "),
+            "Nested f-template should NOT contain <if>, got: {result}"
+        );
+        assert!(
+            !result.contains("<for "),
+            "Nested f-template should NOT contain <for>, got: {result}"
+        );
+    }
 }
