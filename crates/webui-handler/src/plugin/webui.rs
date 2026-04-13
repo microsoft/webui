@@ -99,13 +99,13 @@ impl HandlerPlugin for WebUIHydrationPlugin {
     fn emit_templates(
         &self,
         protocol: &WebUIProtocol,
-        rendered_components: &HashSet<String>,
+        components: &HashSet<String>,
         nonce: Option<&str>,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        let mut templates: Vec<&str> = Vec::with_capacity(rendered_components.len());
+        let mut templates: Vec<&str> = Vec::with_capacity(components.len());
 
-        for name in rendered_components {
+        for name in components {
             if let Some(template) = protocol
                 .components
                 .get(name)
@@ -330,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn test_on_render_complete_only_emits_rendered_components() {
+    fn test_emit_templates_only_emits_provided_components() {
         let mut writer = TestWriter::new();
 
         let mut protocol = webui_protocol::WebUIProtocol::new(std::collections::HashMap::new());
@@ -350,12 +350,12 @@ mod tests {
             .or_default()
             .template = iife_template("comp-c", "h:\"c\"");
 
-        let mut rendered = std::collections::HashSet::new();
-        rendered.insert("comp-a".to_string());
+        let mut components = std::collections::HashSet::new();
+        components.insert("comp-a".to_string());
 
         let plugin = WebUIHydrationPlugin::new();
         plugin
-            .emit_templates(&protocol, &rendered, None, &mut writer)
+            .emit_templates(&protocol, &components, None, &mut writer)
             .unwrap();
 
         assert!(
@@ -376,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn test_on_render_complete_empty_rendered_set() {
+    fn test_emit_templates_empty_set() {
         let mut writer = TestWriter::new();
         let mut protocol = webui_protocol::WebUIProtocol::new(std::collections::HashMap::new());
         protocol
@@ -384,12 +384,12 @@ mod tests {
             .entry("comp-a".to_string())
             .or_default()
             .template = iife_template("comp-a", "h:\"a\"");
-        let rendered = std::collections::HashSet::new();
+        let components = std::collections::HashSet::new();
         let plugin = WebUIHydrationPlugin::new();
         plugin
-            .emit_templates(&protocol, &rendered, None, &mut writer)
+            .emit_templates(&protocol, &components, None, &mut writer)
             .unwrap();
-        assert_eq!(writer.output, "", "empty rendered set should emit nothing");
+        assert_eq!(writer.output, "", "empty set should emit nothing");
     }
 
     #[test]

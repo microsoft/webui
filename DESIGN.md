@@ -221,8 +221,11 @@ When the handler encounters `Fragment::Outlet`:
 3. Emit `<webui-outlet>` containing matched child `<webui-route>` with component, and hidden stubs for siblings.
 
 The handler also emits `<meta name="webui-inventory">` in `<head>` with the initial component
-inventory bitmask, so the client router can tell the server which templates it already has
-on the first client-side navigation.
+inventory bitmask (covering only **rendered** components), so the client router can tell the server
+which templates it already has on the first client-side navigation. Note that **templates** and
+**CSS module definitions** are emitted for all **reachable** components (including those in false
+`<if>` blocks), not just rendered ones — this ensures client-side conditional activation works
+without a server round-trip.
 
 **Key elements:**
 - `<webui-route>` — light DOM custom element, structural routing wrapper with no shadow DOM
@@ -660,7 +663,7 @@ pub enum CssStrategy {
 
 - **Link** (default): Emits `<link>` tags referencing external `.css` files only for components whose discovery/registration data included CSS. Used by the CLI for production builds where CSS files are served separately.
 - **Style**: Embeds the full CSS content in `<style>` tags inside the shadow DOM template. Used when all files are needed in-memory.
-- **Module**: Uses the [Declarative CSS Module Scripts](https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ShadowDOM/explainer.md) proposal. During SSR, emits a `<style type="module" specifier="component-name">` definition in each component's light DOM on first render (e.g., `<my-comp><style type="module" ...>CSS</style><template ...>`) and adds `shadowrootadoptedstylesheets="component-name"` to each shadow root `<template>`. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. During SPA partial navigation, module style definitions for newly needed components are sent in the `templateStyles` array; the router appends them to `<head>` before executing template scripts. WebUI Framework compiled metadata carries the adopted stylesheet specifier (`sa`) so client-created components can adopt the registered stylesheet on their shadow root.
+- **Module**: Uses the [Declarative CSS Module Scripts](https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ShadowDOM/explainer.md) proposal. During SSR, emits a `<style type="module" specifier="component-name">` definition in each component's light DOM on first render (e.g., `<my-comp><style type="module" ...>CSS</style><template ...>`) and adds `shadowrootadoptedstylesheets="component-name"` to each shadow root `<template>`. Components inside false `<if>` blocks or empty `<for>` loops that were not rendered during SSR get their module style definitions emitted at `body_end`, so client-side activation can adopt them. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. During SPA partial navigation, module style definitions for newly needed components are sent in the `templateStyles` array; the router appends them to `<head>` before executing template scripts. WebUI Framework compiled metadata carries the adopted stylesheet specifier (`sa`) so client-created components can adopt the registered stylesheet on their shadow root.
 
 Set via `parser.set_css_strategy(CssStrategy::Style)`.
 
@@ -707,7 +710,7 @@ pub trait ParserPlugin {
 **Built-in plugin: `WebUIParserPlugin`**
 - Skips WebUI Framework runtime attributes (`@click`, `@keydown`, etc.) without counting them as attribute bindings
 - Tracks per-element event count; emits 12-byte `WebUIElementData` `Plugin` fragments encoding `[binding_count, event_start, event_count]`
-- Tracks components and compiles templates into raw JS IIFE strings registered in `window.__webui_templates`. During SSR the handler wraps them in a single `<script>` tag; during SPA navigation the router appends any `templateStyles` first, then evaluates the batched template scripts in one nonce-friendly `<script>` tag.
+- Tracks components and compiles templates into raw JS IIFE strings registered in `window.__webui_templates`. During SSR the handler emits templates for all reachable components on the active route (including those inside false `<if>` and empty `<for>` blocks) in a single `<script>` tag. During SPA navigation the router appends any `templateStyles` first, then evaluates the batched template scripts in one nonce-friendly `<script>` tag.
 - Public framework authoring, decorators, and package entrypoints live in [packages/webui-framework/README.md](packages/webui-framework/README.md)
 
 **Usage:**
