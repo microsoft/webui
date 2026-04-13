@@ -202,9 +202,9 @@ pub fn generate_f_template(
 /// Convert WebUI Framework template syntax to FAST syntax in HTML content.
 ///
 /// Performs the following transformations without regex:
-/// - `<if condition="EXPR">` → `<f-when value="{EXPR}">`
+/// - `<if condition="EXPR">` → `<f-when value="{{EXPR}}">`
 /// - `</if>` → `</f-when>`
-/// - `<for each="EXPR">` → `<f-repeat value="{EXPR}">`
+/// - `<for each="EXPR">` → `<f-repeat value="{{EXPR}}">`
 /// - `</for>` → `</f-repeat>`
 /// - `{{expr}}` inside `:attr` complex attribute values → `{expr}`
 /// - Strips `shadowrootmode` attributes from `<template>` tags
@@ -317,7 +317,7 @@ fn starts_with_tag_name(s: &str, name: &str) -> bool {
     next == b' ' || next == b'\t' || next == b'\n' || next == b'\r' || next == b'>'
 }
 
-/// Convert `<if condition="EXPR">` to `<f-when value="{EXPR}">`.
+/// Convert `<if condition="EXPR">` to `<f-when value="{{EXPR}}">`.
 /// Returns bytes consumed on success.
 fn convert_if_tag(tag_str: &str, result: &mut String) -> Option<usize> {
     // Find the closing '>'
@@ -327,14 +327,14 @@ fn convert_if_tag(tag_str: &str, result: &mut String) -> Option<usize> {
     // Find condition="..." attribute
     let attr_value = extract_attribute_value(tag_content, "condition")?;
 
-    result.push_str("<f-when value=\"{");
+    result.push_str("<f-when value=\"{{");
     result.push_str(attr_value);
-    result.push_str("}\">");
+    result.push_str("}}\">");
 
     Some(close + 1)
 }
 
-/// Convert `<for each="EXPR">` to `<f-repeat value="{EXPR}">`.
+/// Convert `<for each="EXPR">` to `<f-repeat value="{{EXPR}}">`.
 /// Returns bytes consumed on success.
 fn convert_for_tag(tag_str: &str, result: &mut String) -> Option<usize> {
     // Find the closing '>'
@@ -344,9 +344,9 @@ fn convert_for_tag(tag_str: &str, result: &mut String) -> Option<usize> {
     // Find each="..." attribute
     let attr_value = extract_attribute_value(tag_content, "each")?;
 
-    result.push_str("<f-repeat value=\"{");
+    result.push_str("<f-repeat value=\"{{");
     result.push_str(attr_value);
-    result.push_str("}\">");
+    result.push_str("}}\">");
 
     Some(close + 1)
 }
@@ -933,7 +933,7 @@ mod tests {
         let output = convert_btr_to_fast(input);
         assert_eq!(
             output,
-            r#"<f-when value="{isComplete}"><span>Done</span></f-when>"#
+            r#"<f-when value="{{isComplete}}"><span>Done</span></f-when>"#
         );
     }
 
@@ -943,7 +943,7 @@ mod tests {
         let output = convert_btr_to_fast(input);
         assert_eq!(
             output,
-            r#"<f-repeat value="{tag in tags}"><span>{{tag}}</span></f-repeat>"#
+            r#"<f-repeat value="{{tag in tags}}"><span>{{tag}}</span></f-repeat>"#
         );
     }
 
@@ -953,7 +953,7 @@ mod tests {
         let output = convert_btr_to_fast(input);
         assert_eq!(
             output,
-            r#"<f-when value="{show}"><f-repeat value="{x in items}"><p>{{x}}</p></f-repeat></f-when>"#
+            r#"<f-when value="{{show}}"><f-repeat value="{{x in items}}"><p>{{x}}</p></f-repeat></f-when>"#
         );
     }
 
@@ -1001,7 +1001,7 @@ mod tests {
         let (name, result) = &templates[0];
         assert_eq!(name, "my-widget");
 
-        assert!(result.contains("<f-when value=\"{visible}\">"));
+        assert!(result.contains("<f-when value=\"{{visible}}\">"));
         assert!(result.contains("</f-when>"));
         assert!(!result.contains("<if condition="));
         assert!(!result.contains("</if>"));
@@ -1175,7 +1175,7 @@ mod tests {
         let (_, result) = &templates[0];
 
         assert!(
-            result.contains("<f-repeat value=\"{item in items}\">"),
+            result.contains("<f-repeat value=\"{{item in items}}\">"),
             "f-template should use <f-repeat>, got: {result}"
         );
         assert!(
@@ -1201,11 +1201,11 @@ mod tests {
         let (_, result) = &templates[0];
 
         assert!(
-            result.contains("<f-when value=\"{visible}\">"),
+            result.contains("<f-when value=\"{{visible}}\">"),
             "Shadow f-template should contain <f-when>, got: {result}"
         );
         assert!(
-            result.contains("<f-repeat value=\"{x in list}\">"),
+            result.contains("<f-repeat value=\"{{x in list}}\">"),
             "Shadow f-template should contain <f-repeat>, got: {result}"
         );
         assert!(
@@ -1236,11 +1236,11 @@ mod tests {
         let (_, result) = &templates[0];
 
         assert!(
-            result.contains("<f-when value=\"{show}\">"),
+            result.contains("<f-when value=\"{{show}}\">"),
             "Nested f-template should contain <f-when>, got: {result}"
         );
         assert!(
-            result.contains("<f-repeat value=\"{x in items}\">"),
+            result.contains("<f-repeat value=\"{{x in items}}\">"),
             "Nested f-template should contain <f-repeat>, got: {result}"
         );
         assert!(
