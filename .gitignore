@@ -11,6 +11,10 @@ docs/.vitepress/cache/
 test-results/
 
 # Staged native binaries (populated by cargo xtask publish-stage)
+# Exception: the JS shim must be committed so pnpm can create the bin symlink.
+!packages/webui/bin/
+packages/webui/bin/*
+!packages/webui/bin/webui
 dotnet/runtimes/
 packages/*/webui.node
 publish/

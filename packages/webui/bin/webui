@@ -1,0 +1,80 @@
+#!/usr/bin/env node
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+// This file serves two purposes:
+//
+// 1. Placeholder at install time — pnpm/npm create the node_modules/.bin/webui
+//    symlink before postinstall runs. Without this file those tools emit ENOENT
+//    warnings and the symlink is never created.
+//
+// 2. Permanent shim on Windows — npm/pnpm generate a .cmd wrapper that invokes
+//    `node` on this file, so a raw .exe cannot live here. The shim resolves and
+//    spawns webui.exe at runtime.
+//
+// On macOS and Linux the postinstall script (dist/install.js) replaces this
+// file with the real Rust binary from the platform-specific optional package,
+// so the CLI runs natively with zero Node.js overhead after a successful install.
+
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const require = createRequire(import.meta.url);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const PLATFORMS = {
+  "darwin-arm64": "@microsoft/webui-darwin-arm64",
+  "darwin-x64": "@microsoft/webui-darwin-x64",
+  "linux-x64": "@microsoft/webui-linux-x64",
+  "linux-arm64": "@microsoft/webui-linux-arm64",
+  "win32-x64": "@microsoft/webui-win32-x64",
+  "win32-arm64": "@microsoft/webui-win32-arm64",
+};
+
+function resolveBinary() {
+  if (process.env["WEBUI_BINARY_PATH"]) {
+    return process.env["WEBUI_BINARY_PATH"];
+  }
+
+  const key = `${process.platform}-${os.arch()}`;
+  const pkg = PLATFORMS[key];
+  const binName = process.platform === "win32" ? "webui.exe" : "webui";
+
+  if (pkg) {
+    try {
+      const pkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
+      const candidate = path.join(pkgDir, "bin", binName);
+      if (existsSync(candidate)) return candidate;
+    } catch {
+      // Platform package not installed — fall through to workspace fallback.
+    }
+  }
+
+  // Workspace fallback: look for a cargo build output.
+  // __dirname is packages/webui/bin, so ../../../ is the workspace root.
+  const workspaceRoot = path.resolve(__dirname, "..", "..", "..");
+  for (const profile of ["release", "debug"]) {
+    const candidate = path.join(workspaceRoot, "target", profile, binName);
+    if (existsSync(candidate)) return candidate;
+  }
+
+  return null;
+}
+
+const binPath = resolveBinary();
+
+if (!binPath) {
+  process.stderr.write(
+    "[webui] Error: Could not find the webui binary.\n" +
+      "Make sure the platform package (@microsoft/webui-<os>-<arch>) is installed,\n" +
+      "or set the WEBUI_BINARY_PATH environment variable.\n",
+  );
+  process.exit(1);
+}
+
+const result = spawnSync(binPath, process.argv.slice(2), { stdio: "inherit" });
+process.exit(result.status ?? 1);
