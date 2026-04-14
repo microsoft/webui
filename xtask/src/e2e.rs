@@ -33,7 +33,6 @@ fn port_timeout() -> Duration {
         Duration::from_secs(5)
     }
 }
-const WORKSPACE_PACKAGES: &[&str] = &["@microsoft/webui-framework", "@microsoft/webui-router"];
 
 /// A Playwright suite with optional long-lived server processes.
 struct PlaywrightSuite {
@@ -167,29 +166,21 @@ pub fn run(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Build workspace packages before app bundling so example apps import the
-    // current framework/router runtime rather than stale dist outputs.
+    // Build all workspace packages so example apps and test fixtures import
+    // the current runtime rather than stale dist outputs.
     eprintln!(
         "\n{} Building workspace packages...",
         console::style("▸").cyan().bold(),
     );
-    for package in WORKSPACE_PACKAGES {
-        match util::run_command_quiet("pnpm", &["--filter", package, "build"], None) {
-            Ok(()) => eprintln!(
-                "  {} {}",
-                console::style("✔").green(),
-                package.strip_prefix("@microsoft/").unwrap_or(package),
-            ),
-            Err(msg) => {
-                let label = package.strip_prefix("@microsoft/").unwrap_or(package);
-                eprintln!(
-                    "  {} {} build failed",
-                    console::style("✘").red().bold(),
-                    label,
-                );
-                eprintln!("    {msg}");
-                return ExitCode::FAILURE;
-            }
+    match util::run_command_quiet("pnpm", &["build"], None) {
+        Ok(()) => eprintln!("  {}", console::style("✔ all packages").green()),
+        Err(msg) => {
+            eprintln!(
+                "  {} workspace build failed",
+                console::style("✘").red().bold(),
+            );
+            eprintln!("    {msg}");
+            return ExitCode::FAILURE;
         }
     }
 
