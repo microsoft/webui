@@ -184,17 +184,15 @@ Key points:
 ### Template – `src/todo-item/todo-item.html`
 
 ```html
-<template shadowrootmode="open">
-  <div class="todo-item" @click="{onClick(e)}">
-    <button class="toggle" data-action="toggle" title="Toggle complete">
-      <if condition="state == 'done'">
-        <span class="check">&#10003;</span>
-      </if>
-    </button>
-    <span class="title">{{title}}</span>
-    <button class="delete" data-action="delete" title="Delete">&times;</button>
-  </div>
-</template>
+<div class="todo-item" @click="{onClick(e)}">
+  <button class="toggle" data-action="toggle" title="Toggle complete">
+    <if condition="state == 'done'">
+      <span class="check">&#10003;</span>
+    </if>
+  </button>
+  <span class="title">{{title}}</span>
+  <button class="delete" data-action="delete" title="Delete">&times;</button>
+</div>
 ```
 
 - **`<if condition="state == 'done'">`** – conditionally renders the checkmark

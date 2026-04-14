@@ -1,105 +1,103 @@
-<template shadowrootmode="open">
-  <div class="cart-panel" id="cart-popover">
-    <div class="panel-header">
-      <h2 class="panel-title">My Cart</h2>
-      <a href="{{cartCloseHref}}" class="close-btn" aria-label="Close cart" @click="{onCloseClick(e)}">
-        <svg class="close-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-          <path d="M18 6L6 18"></path>
-          <path d="M6 6l12 12"></path>
-        </svg>
-      </a>
-    </div>
-
-    <if condition="cartItems.length == 0">
-      <div class="empty-state">
-        <svg class="empty-cart-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"></path>
-          <line x1="3" y1="6" x2="21" y2="6"></line>
-          <path d="M16 10a4 4 0 01-8 0"></path>
-        </svg>
-        <p class="empty-text">Your cart is empty.</p>
-      </div>
-    </if>
-
-    <if condition="cartItems.length">
-      <div class="cart-content">
-          <ul class="cart-items">
-            <for each="item in cartItems">
-              <li class="cart-line">
-                <div class="item-image">
-                  <button
-                    class="remove-btn"
-                    type="button"
-                    data-handle="{{item.handle}}"
-                    data-color="{{item.color}}"
-                    data-size="{{item.size}}"
-                    data-quantity="0"
-                    aria-label="Remove cart item"
-                    @click="{onQuantityClick(e)}"
-                  >
-                    <svg class="remove-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-                      <path d="M18 6L6 18"></path>
-                      <path d="M6 6l12 12"></path>
-                    </svg>
-                  </button>
-                  <mp-product-image gradient="{{item.gradient}}" image-url="{{item.imageUrl}}" alt="{{item.title}}" loading="lazy" decoding="async" proxy-width="64" proxy-height="64"></mp-product-image>
-                </div>
-                <div class="item-info">
-                  <a href="/product/{{item.handle}}" class="item-title">{{item.title}}</a>
-                  <if condition="item.variantLabel">
-                    <p class="item-variant">{{item.variantLabel}}</p>
-                  </if>
-                </div>
-                <div class="item-actions">
-                  <div class="item-price">
-                    <mp-price value="{{item.price}}" variant="plain" size="sm" currency-code="USD"></mp-price>
-                  </div>
-                  <div class="qty-control">
-                  <form method="post" action="/cart/update" class="qty-form">
-                    <input type="hidden" name="handle" value="{{item.handle}}" />
-                    <input type="hidden" name="color" value="{{item.color}}" />
-                    <input type="hidden" name="size" value="{{item.size}}" />
-                     <input type="hidden" name="redirectTo" value="{{item.redirectTo}}" />
-                     <input type="hidden" name="openCart" value="true" />
-                     <button class="qty-btn" type="submit" name="quantity" value="{{item.decreaseTo}}" data-handle="{{item.handle}}" data-color="{{item.color}}" data-size="{{item.size}}" data-quantity="{{item.decreaseTo}}" @click="{onQuantityClick(e)}">
-                       <svg class="qty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-                         <path d="M5 12h14"></path>
-                       </svg>
-                     </button>
-                   </form>
-                  <span class="qty-count">{{item.quantity}}</span>
-                  <form method="post" action="/cart/update" class="qty-form">
-                    <input type="hidden" name="handle" value="{{item.handle}}" />
-                    <input type="hidden" name="color" value="{{item.color}}" />
-                    <input type="hidden" name="size" value="{{item.size}}" />
-                     <input type="hidden" name="redirectTo" value="{{item.redirectTo}}" />
-                     <input type="hidden" name="openCart" value="true" />
-                      <button class="qty-btn" type="submit" name="quantity" value="{{item.increaseTo}}" data-handle="{{item.handle}}" data-color="{{item.color}}" data-size="{{item.size}}" data-quantity="{{item.increaseTo}}" @click="{onQuantityClick(e)}">
-                       <svg class="qty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-                         <path d="M12 5v14"></path>
-                         <path d="M5 12h14"></path>
-                       </svg>
-                     </button>
-                   </form>
-                </div>
-              </div>
-            </li>
-          </for>
-        </ul>
-        <div class="cart-footer">
-          <div class="total-row total-breakdown">
-            <span>Taxes</span>
-            <span class="total-value total-price"><span>{{taxes}}</span><span class="currency-label">USD</span></span>
-          </div>
-          <div class="total-row shipping-row"><span>Shipping</span><span class="total-value">Calculated at checkout</span></div>
-          <div class="total-row total-final">
-            <span>Total</span>
-            <span class="total-value total-price"><span>{{subtotal}}</span><span class="currency-label">USD</span></span>
-          </div>
-          <button class="checkout-btn">Proceed to Checkout</button>
-        </div>
-      </div>
-    </if>
+<div class="cart-panel" id="cart-popover">
+  <div class="panel-header">
+    <h2 class="panel-title">My Cart</h2>
+    <a href="{{cartCloseHref}}" class="close-btn" aria-label="Close cart" @click="{onCloseClick(e)}">
+      <svg class="close-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <path d="M18 6L6 18"></path>
+        <path d="M6 6l12 12"></path>
+      </svg>
+    </a>
   </div>
-  <a href="{{cartCloseHref}}" class="backdrop" aria-label="Close cart" @click="{onBackdropClick(e)}"></a>
-</template>
+
+  <if condition="cartItems.length == 0">
+    <div class="empty-state">
+      <svg class="empty-cart-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"></path>
+        <line x1="3" y1="6" x2="21" y2="6"></line>
+        <path d="M16 10a4 4 0 01-8 0"></path>
+      </svg>
+      <p class="empty-text">Your cart is empty.</p>
+    </div>
+  </if>
+
+  <if condition="cartItems.length">
+    <div class="cart-content">
+        <ul class="cart-items">
+          <for each="item in cartItems">
+            <li class="cart-line">
+              <div class="item-image">
+                <button
+                  class="remove-btn"
+                  type="button"
+                  data-handle="{{item.handle}}"
+                  data-color="{{item.color}}"
+                  data-size="{{item.size}}"
+                  data-quantity="0"
+                  aria-label="Remove cart item"
+                  @click="{onQuantityClick(e)}"
+                >
+                  <svg class="remove-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <path d="M18 6L6 18"></path>
+                    <path d="M6 6l12 12"></path>
+                  </svg>
+                </button>
+                <mp-product-image gradient="{{item.gradient}}" image-url="{{item.imageUrl}}" alt="{{item.title}}" loading="lazy" decoding="async" proxy-width="64" proxy-height="64"></mp-product-image>
+              </div>
+              <div class="item-info">
+                <a href="/product/{{item.handle}}" class="item-title">{{item.title}}</a>
+                <if condition="item.variantLabel">
+                  <p class="item-variant">{{item.variantLabel}}</p>
+                </if>
+              </div>
+              <div class="item-actions">
+                <div class="item-price">
+                  <mp-price value="{{item.price}}" variant="plain" size="sm" currency-code="USD"></mp-price>
+                </div>
+                <div class="qty-control">
+                <form method="post" action="/cart/update" class="qty-form">
+                  <input type="hidden" name="handle" value="{{item.handle}}" />
+                  <input type="hidden" name="color" value="{{item.color}}" />
+                  <input type="hidden" name="size" value="{{item.size}}" />
+                   <input type="hidden" name="redirectTo" value="{{item.redirectTo}}" />
+                   <input type="hidden" name="openCart" value="true" />
+                   <button class="qty-btn" type="submit" name="quantity" value="{{item.decreaseTo}}" data-handle="{{item.handle}}" data-color="{{item.color}}" data-size="{{item.size}}" data-quantity="{{item.decreaseTo}}" @click="{onQuantityClick(e)}">
+                     <svg class="qty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                       <path d="M5 12h14"></path>
+                     </svg>
+                   </button>
+                 </form>
+                <span class="qty-count">{{item.quantity}}</span>
+                <form method="post" action="/cart/update" class="qty-form">
+                  <input type="hidden" name="handle" value="{{item.handle}}" />
+                  <input type="hidden" name="color" value="{{item.color}}" />
+                  <input type="hidden" name="size" value="{{item.size}}" />
+                   <input type="hidden" name="redirectTo" value="{{item.redirectTo}}" />
+                   <input type="hidden" name="openCart" value="true" />
+                    <button class="qty-btn" type="submit" name="quantity" value="{{item.increaseTo}}" data-handle="{{item.handle}}" data-color="{{item.color}}" data-size="{{item.size}}" data-quantity="{{item.increaseTo}}" @click="{onQuantityClick(e)}">
+                     <svg class="qty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                       <path d="M12 5v14"></path>
+                       <path d="M5 12h14"></path>
+                     </svg>
+                   </button>
+                 </form>
+              </div>
+            </div>
+          </li>
+        </for>
+      </ul>
+      <div class="cart-footer">
+        <div class="total-row total-breakdown">
+          <span>Taxes</span>
+          <span class="total-value total-price"><span>{{taxes}}</span><span class="currency-label">USD</span></span>
+        </div>
+        <div class="total-row shipping-row"><span>Shipping</span><span class="total-value">Calculated at checkout</span></div>
+        <div class="total-row total-final">
+          <span>Total</span>
+          <span class="total-value total-price"><span>{{subtotal}}</span><span class="currency-label">USD</span></span>
+        </div>
+        <button class="checkout-btn">Proceed to Checkout</button>
+      </div>
+    </div>
+  </if>
+</div>
+<a href="{{cartCloseHref}}" class="backdrop" aria-label="Close cart" @click="{onBackdropClick(e)}"></a>

@@ -29,10 +29,8 @@ Only needed when your app has client-side navigation. Server-only apps with full
 
 ```html
 <!-- app-shell.html -->
-<template shadowrootmode="open">
-  <nav><a href="/">Home</a> <a href="/users">Users</a></nav>
-  <main><outlet /></main>
-</template>
+<nav><a href="/">Home</a> <a href="/users">Users</a></nav>
+<main><outlet /></main>
 ```
 
 **3. Start the router:**
@@ -63,11 +61,9 @@ Routes nest to any depth. Each parent component uses `<outlet />` where its chil
 
 ```html
 <!-- section-page.html -->
-<template shadowrootmode="open">
-  <h2>{{sectionName}}</h2>
-  <nav>topic links...</nav>
-  <outlet />
-</template>
+<h2>{{sectionName}}</h2>
+<nav>topic links...</nav>
+<outlet />
 ```
 
 When navigating between child routes, **parent content is preserved**. Navigating from `/sections/1/topics/react` to `/sections/1/topics/css` only remounts the topic component - the section heading and nav stay.
@@ -339,19 +335,15 @@ Hidden routes use `style="display:none"` inline. If your CSS sets
 
 ```html
 <!-- app-shell.html -->
-<template shadowrootmode="open">
-  <header><nav-bar></nav-bar></header>
-  <main><outlet /></main>
-</template>
+<header><nav-bar></nav-bar></header>
+<main><outlet /></main>
 ```
 
 ```html
 <!-- contacts-page.html -->
-<template shadowrootmode="open">
-  <h2>Contacts</h2>
-  <div class="list">...</div>
-  <outlet />
-</template>
+<h2>Contacts</h2>
+<div class="list">...</div>
+<outlet />
 ```
 
 ```typescript

@@ -1,21 +1,19 @@
-<template shadowrootmode="open">
-  <if condition="products.length == 0 && query">
-    <p class="empty-results">There are no products that match "<strong>{{query}}</strong>"</p>
-  </if>
-  <div class="grid">
-    <for each="product in products">
-      <mp-product-card
-        handle="{{product.handle}}"
-        title="{{product.title}}"
-        price="{{product.price}}"
-        gradient="{{product.gradient}}"
-        image-url="{{product.imageUrl}}"
-        image-loading="{{product.imageLoading}}"
-        image-fetch-priority="{{product.fetchPriority}}"
-        image-width="640"
-        image-height="640"
-        variant="grid"
-      ></mp-product-card>
-    </for>
-  </div>
-</template>
+<if condition="products.length == 0 && query">
+  <p class="empty-results">There are no products that match "<strong>{{query}}</strong>"</p>
+</if>
+<div class="grid">
+  <for each="product in products">
+    <mp-product-card
+      handle="{{product.handle}}"
+      title="{{product.title}}"
+      price="{{product.price}}"
+      gradient="{{product.gradient}}"
+      image-url="{{product.imageUrl}}"
+      image-loading="{{product.imageLoading}}"
+      image-fetch-priority="{{product.fetchPriority}}"
+      image-width="640"
+      image-height="640"
+      variant="grid"
+    ></mp-product-card>
+  </for>
+</div>

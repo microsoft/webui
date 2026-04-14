@@ -182,10 +182,8 @@ pub struct WebUIFragmentOutlet {}
 
 Components use `<outlet />` in their templates to declare insertion points:
 ```html
-<template shadowrootmode="open">
-  <h1>Title</h1>
-  <main><outlet /></main>
-</template>
+<h1>Title</h1>
+<main><outlet /></main>
 ```
 
 **Route declaration:** Routes are declared as nested `<route>` elements in the entry HTML.

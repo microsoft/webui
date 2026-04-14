@@ -1,37 +1,35 @@
-<template shadowrootmode="open">
-  <div class="gallery">
-    <div class="main-image">
-      <mp-product-image
-        class="image-display"
-        gradient="{{activeGradient}}"
-        image-url="{{activeImageUrl}}"
-        alt=""
-        loading="eager"
-        decoding="async"
-        fetch-priority="high"
-        proxy-width="1080"
-        proxy-height="1080"
-      ></mp-product-image>
-      <div class="nav-buttons">
-        <button class="nav-btn" aria-label="Previous image" @click="{onPreviousClick()}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M15 18l-6-6 6-6"></path>
-          </svg>
-        </button>
-        <div class="separator"></div>
-        <button class="nav-btn" aria-label="Next image" @click="{onNextClick()}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M9 18l6-6-6-6"></path>
-          </svg>
-        </button>
-      </div>
-    </div>
-    <div class="thumbnails">
-      <for each="img in images">
-        <button class="thumb" ?active="{{img.index == activeIndex}}" data-index="{{img.index}}" @click="{onThumbnailClick(e)}">
-          <mp-product-image gradient="{{img.gradient}}" image-url="{{img.imageUrl}}" alt="" loading="lazy" decoding="async" proxy-width="96" proxy-height="96"></mp-product-image>
-        </button>
-      </for>
+<div class="gallery">
+  <div class="main-image">
+    <mp-product-image
+      class="image-display"
+      gradient="{{activeGradient}}"
+      image-url="{{activeImageUrl}}"
+      alt=""
+      loading="eager"
+      decoding="async"
+      fetch-priority="high"
+      proxy-width="1080"
+      proxy-height="1080"
+    ></mp-product-image>
+    <div class="nav-buttons">
+      <button class="nav-btn" aria-label="Previous image" @click="{onPreviousClick()}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M15 18l-6-6 6-6"></path>
+        </svg>
+      </button>
+      <div class="separator"></div>
+      <button class="nav-btn" aria-label="Next image" @click="{onNextClick()}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 18l6-6-6-6"></path>
+        </svg>
+      </button>
     </div>
   </div>
-</template>
+  <div class="thumbnails">
+    <for each="img in images">
+      <button class="thumb" ?active="{{img.index == activeIndex}}" data-index="{{img.index}}" @click="{onThumbnailClick(e)}">
+        <mp-product-image gradient="{{img.gradient}}" image-url="{{img.imageUrl}}" alt="" loading="lazy" decoding="async" proxy-width="96" proxy-height="96"></mp-product-image>
+      </button>
+    </for>
+  </div>
+</div>

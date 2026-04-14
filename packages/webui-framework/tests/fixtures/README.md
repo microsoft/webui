@@ -42,12 +42,10 @@ Static files (JS bundles, CSS) are served from the fixtures root as-is.
 
 ```html
 <!-- Component template (shadow DOM) -->
-<template shadowrootmode="open">
-  <span>{{propertyName}}</span>
-  <button @click="{handler()}">Click</button>
-  <if condition="show"><p>Visible</p></if>
-  <for each="item in items"><li>{{item.name}}</li></for>
-</template>
+<span>{{propertyName}}</span>
+<button @click="{handler()}">Click</button>
+<if condition="show"><p>Visible</p></if>
+<for each="item in items"><li>{{item.name}}</li></for>
 ```
 
 ### State

@@ -1,21 +1,19 @@
-<template shadowrootmode="open">
-  <div class="carousel-wrapper">
-    <ul class="carousel">
-      <for each="product in products">
-        <li class="carousel-item">
-          <mp-product-card
-            handle="{{product.handle}}"
-            title="{{product.title}}"
-            price="{{product.price}}"
-            gradient="{{product.gradient}}"
-            image-url="{{product.imageUrl}}"
-            image-loading="lazy"
-            image-width="384"
-            image-height="384"
-            variant="carousel"
-          ></mp-product-card>
-        </li>
-      </for>
-    </ul>
-  </div>
-</template>
+<div class="carousel-wrapper">
+  <ul class="carousel">
+    <for each="product in products">
+      <li class="carousel-item">
+        <mp-product-card
+          handle="{{product.handle}}"
+          title="{{product.title}}"
+          price="{{product.price}}"
+          gradient="{{product.gradient}}"
+          image-url="{{product.imageUrl}}"
+          image-loading="lazy"
+          image-width="384"
+          image-height="384"
+          variant="carousel"
+        ></mp-product-card>
+      </li>
+    </for>
+  </ul>
+</div>

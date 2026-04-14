@@ -1,13 +1,11 @@
-<template shadowrootmode="open">
-  <div class="page">{{page}}</div>
-  <nav class="groups">
-    <for each="group in groups">
-      <a class="group-link" data-nav="{{group}}" href="/groups/{{group}}">{{group}}</a>
-    </for>
-  </nav>
-  <nav class="categories">
-    <for each="cat in navCategories">
-      <a class="category-link {{cat.activeClass}}" href="/search/{{cat.handle}}">{{cat.title}}</a>
-    </for>
-  </nav>
-</template>
+<div class="page">{{page}}</div>
+<nav class="groups">
+  <for each="group in groups">
+    <a class="group-link" data-nav="{{group}}" href="/groups/{{group}}">{{group}}</a>
+  </for>
+</nav>
+<nav class="categories">
+  <for each="cat in navCategories">
+    <a class="category-link {{cat.activeClass}}" href="/search/{{cat.handle}}">{{cat.title}}</a>
+  </for>
+</nav>
