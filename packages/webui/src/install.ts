@@ -31,8 +31,12 @@ if (srcBinPath && fs.existsSync(srcBinPath)) {
       fs.mkdirSync(binDir, { recursive: true });
       fs.copyFileSync(srcBinPath, destPath);
       fs.chmodSync(destPath, 0o755);
-    } catch {
-      // Copy failed — the JS shim fallback remains in place.
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[webui] Warning: Could not copy native binary to bin/webui: ${msg}\n` +
+          `The JS shim fallback will be used instead.`,
+      );
     }
   }
   process.exit(0);
