@@ -8,7 +8,7 @@
 
 import { describe, test, before, after } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { build, render, renderStream, inspect } from '../dist/index.js';
+import { build, render, renderStream, inspect } from '@microsoft/webui';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';

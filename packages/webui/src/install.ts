@@ -2,13 +2,23 @@
 // Licensed under the MIT license.
 
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { resolve, platformKey, packageName } from "./platform.js";
 
-// Validate that the platform binary exists after install.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const binDir = path.resolve(__dirname, "..", "bin");
+const binName = process.platform === "win32" ? "webui.exe" : "webui";
+const binDest = path.join(binDir, binName);
+
+// Locate the platform binary and copy it into bin/ so the package.json
+// "bin" entry points at a real native executable.
 try {
-  const binPath = resolve("bin");
-  if (binPath && fs.existsSync(binPath)) {
-    // Success — binary is available.
+  const srcBin = resolve("bin");
+  if (srcBin && fs.existsSync(srcBin)) {
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.copyFileSync(srcBin, binDest);
+    fs.chmodSync(binDest, 0o755);
     process.exit(0);
   }
 } catch {
