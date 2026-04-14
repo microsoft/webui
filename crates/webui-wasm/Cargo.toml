@@ -19,13 +19,13 @@ name = "webui_wasm"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-microsoft-webui-parser = { path = "../webui-parser", version = "0.0.7", default-features = false }
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.7" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.7" }
+microsoft-webui-parser = { path = "../webui-parser", version = "0.0.8", default-features = false }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.8" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.8" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 wasm-bindgen = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.7" }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.8" }

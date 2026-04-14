@@ -362,7 +362,7 @@ fn update_dotnet_version(path: &Path, version: &str) -> Result<bool, String> {
 
     let old_version = &content[tag_value_start..tag_value_start + end];
     if old_version == version {
-        return Ok(false);
+        return Ok(true);
     }
 
     let mut result = String::with_capacity(content.len());
