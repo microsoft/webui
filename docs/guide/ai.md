@@ -202,6 +202,7 @@ In the TypeScript class: `searchInput!: HTMLInputElement;`
 - Use `exact` on leaf routes (no children)
 - Omit `exact` on parent routes that have `<outlet />`
 - Path params: `:id` (required), `:query?` (optional), `*path` (catch-all)
+- Query param allowlist: `query="action,to,subject"` — only listed params are set as component attributes (deny-by-default)
 
 ### Outlet
 

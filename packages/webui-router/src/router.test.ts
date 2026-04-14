@@ -161,6 +161,7 @@ describe('WebUIRouter', () => {
 
       (globalThis as any).fetch = async () => ({
         ok: true,
+        headers: { get: () => 'application/json' },
         json: async () => ({
           state: {},
           templateStyles: [
@@ -245,6 +246,7 @@ describe('WebUIRouter', () => {
 
       (globalThis as any).fetch = async () => ({
         ok: true,
+        headers: { get: () => 'application/json' },
         json: async () => ({
           state: {},
           templateStyles: [],
@@ -302,7 +304,7 @@ describe('WebUIRouter', () => {
       let capturedSignal: AbortSignal | undefined;
       (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
         capturedSignal = opts?.signal as AbortSignal | undefined;
-        return { ok: true, json: async () => ({ state: {}, templates: [], path: '/', chain: [] }) };
+        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: [], path: '/', chain: [] }) };
       };
 
       try {
@@ -330,6 +332,7 @@ describe('WebUIRouter', () => {
       (globalThis as any).fetch = async (_url: string, _opts?: RequestInit) => {
         return {
           ok: true,
+          headers: { get: () => 'application/json' },
           json: async () => ({
             state: {},
             templates: [
@@ -367,7 +370,7 @@ describe('WebUIRouter', () => {
       const origFetch = (globalThis as any).fetch;
       (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
         assert.equal(opts?.signal, undefined, 'signal should be undefined');
-        return { ok: true, json: async () => ({ state: {}, templates: [], path: '/', chain: [] }) };
+        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: [], path: '/', chain: [] }) };
       };
 
       try {

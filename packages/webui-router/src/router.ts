@@ -64,6 +64,9 @@ const routeParamsMap = new WeakMap<Element, Record<string, string>>();
  */
 const queryAttrsMap = new WeakMap<Element, Set<string>>();
 
+/** Convert a camelCase key to a kebab-case attribute name. */
+const toKebab = (k: string): string => k.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
+
 /** Parse query-string parameters from a request path (e.g. `/compose?action=reply&to=x`). */
 export function parseQuery(requestPath: string): Record<string, string> {
   const qIdx = requestPath.indexOf('?');
@@ -106,7 +109,6 @@ export function filterQuery(
   routeParams?: Record<string, string>,
 ): Record<string, string> {
   if (!allowed) return {};
-  const toKebab = (k: string): string => k.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
   // Build a set of kebab-cased route param attribute names for collision check
   const paramAttrNames = routeParams
     ? new Set(Object.keys(routeParams).map(toKebab))
@@ -608,6 +610,7 @@ export class WebUIRouter {
     if (!contentType.includes('application/json')) {
       // Server returned HTML (e.g. login page) instead of JSON partial.
       // Trigger a full page navigation so the browser handles it.
+      if (signal?.aborted) return null;
       window.location.href = prependBasePath(requestPath, this.config.basePath ?? '');
       return null;
     }
@@ -719,7 +722,6 @@ export class WebUIRouter {
     // the component's light DOM immediately.
 
     // Set route params as attributes (for @attr reflection)
-    const toKebab = (k: string): string => k.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
     for (const [key, value] of Object.entries(params)) {
       component.setAttribute(toKebab(key), value);
     }
@@ -756,7 +758,6 @@ export class WebUIRouter {
     if (!compEl) return;
 
     // Set route params as attributes (for @attr reflection)
-    const toKebab = (k: string): string => k.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
     for (const [key, value] of Object.entries(entry.params)) {
       compEl.setAttribute(toKebab(key), value);
     }

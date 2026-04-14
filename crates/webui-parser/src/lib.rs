@@ -4076,6 +4076,43 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_route_with_query_allowlist() {
+        let mut parser = HtmlParser::new();
+        let html =
+            r#"<route path="/compose" component="compose-page" query="action,to,subject" exact />"#;
+        parser.parse("test.html", html).expect("parse failed");
+
+        let records = parser.into_fragment_records();
+        let frags = &records["test.html"].fragments;
+        assert_eq!(frags.len(), 1);
+        match frags[0].fragment.as_ref() {
+            Some(web_ui_fragment::Fragment::Route(r)) => {
+                assert_eq!(r.path, "/compose");
+                assert_eq!(r.fragment_id, "compose-page");
+                assert!(r.exact);
+                assert_eq!(r.allowed_query, "action,to,subject");
+            }
+            other => panic!("expected Fragment::Route, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_route_without_query_has_empty_allowed_query() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<route path="/profile" component="profile-page" exact />"#;
+        parser.parse("test.html", html).expect("parse failed");
+
+        let records = parser.into_fragment_records();
+        let frags = &records["test.html"].fragments;
+        match frags[0].fragment.as_ref() {
+            Some(web_ui_fragment::Fragment::Route(r)) => {
+                assert!(r.allowed_query.is_empty());
+            }
+            other => panic!("expected Fragment::Route, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_outlet_not_captured_by_for_loop() {
         let mut parser = HtmlParser::new();
         let html = r#"<template shadowrootmode="open">

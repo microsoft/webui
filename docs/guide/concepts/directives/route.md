@@ -66,6 +66,7 @@ Navigating from `/contacts/1` to `/contacts/2` preserves the contacts list - onl
 | `path` | Yes | URL path segment to match (relative to parent) |
 | `component` | Yes | Tag name of the component to render |
 | `exact` | No | Only match when the full path is consumed (no prefix matching) |
+| `query` | No | Comma-separated allowlist of query params forwarded as component attributes (deny-by-default) |
 
 ## Path Parameters
 

@@ -6311,4 +6311,135 @@ mod tests {
         assert_eq!(component_attr_name("key-hyphen"), "keyHyphen");
         assert_eq!(component_attr_name("simple"), "simple");
     }
+
+    // ── allowed_query SSR emission tests ─────────────────────────────
+
+    fn make_query_route_protocol() -> WebUIProtocol {
+        use webui_protocol::WebUiFragmentRoute;
+
+        let mut fragments = HashMap::new();
+
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/".into(),
+                    fragment_id: "app-shell".into(),
+                    exact: false,
+                    children: vec![
+                        WebUiFragmentRoute {
+                            path: "compose".into(),
+                            fragment_id: "compose-page".into(),
+                            exact: true,
+                            allowed_query: "action,to,subject".into(),
+                            ..Default::default()
+                        },
+                        WebUiFragmentRoute {
+                            path: "settings".into(),
+                            fragment_id: "settings-page".into(),
+                            exact: true,
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                })],
+            },
+        );
+
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+            },
+        );
+        fragments.insert(
+            "compose-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Compose</p>")],
+            },
+        );
+        fragments.insert(
+            "settings-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Settings</p>")],
+            },
+        );
+
+        WebUIProtocol::new(fragments)
+    }
+
+    #[test]
+    fn test_matched_route_emits_query_attr() {
+        let protocol = make_query_route_protocol();
+        let state = test_json!({});
+        let handler = WebUIHandler::new();
+        let mut writer = TestWriter::new();
+
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/compose"),
+                &mut writer,
+            )
+            .expect("render failed");
+
+        let html = writer.get_content();
+        assert!(
+            html.contains(r#"query="action,to,subject""#),
+            "matched route with allowed_query should emit query attr: {html}"
+        );
+    }
+
+    #[test]
+    fn test_nonmatched_route_preserves_query_attr() {
+        let protocol = make_query_route_protocol();
+        let state = test_json!({});
+        let handler = WebUIHandler::new();
+        let mut writer = TestWriter::new();
+
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/settings"),
+                &mut writer,
+            )
+            .expect("render failed");
+
+        let html = writer.get_content();
+        // Compose is the non-matched sibling — it should still have query attr
+        assert!(
+            html.contains(r#"query="action,to,subject""#),
+            "hidden route should preserve query attr: {html}"
+        );
+    }
+
+    #[test]
+    fn test_route_without_query_has_no_query_attr() {
+        let protocol = make_query_route_protocol();
+        let state = test_json!({});
+        let handler = WebUIHandler::new();
+        let mut writer = TestWriter::new();
+
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/settings"),
+                &mut writer,
+            )
+            .expect("render failed");
+
+        let html = writer.get_content();
+        // Find the settings route element and verify it has no query attr
+        let settings_idx = html
+            .find(r#"component="settings-page""#)
+            .expect("settings route should exist");
+        let settings_tag = &html[settings_idx.saturating_sub(60)..settings_idx + 40];
+        assert!(
+            !settings_tag.contains("query="),
+            "route without allowed_query should not emit query attr: {settings_tag}"
+        );
+    }
 }

@@ -786,7 +786,7 @@ mod tests {
                 fragment_id: "user-posts".to_string(),
                 exact: true,
                 children: Vec::new(),
-                allowed_query: String::new(),
+                allowed_query: "action,to,subject".to_string(),
             })),
         };
         fragments.insert(

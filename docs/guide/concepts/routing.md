@@ -85,6 +85,32 @@ Use `exact` on **leaf routes** - routes with no children. Without `exact`, a rou
 
 **Rule of thumb:** If a route has `<outlet />`, don't add `exact`. If it doesn't, add `exact`.
 
+### The `query` Attribute
+
+Declare which URL query parameters are forwarded as HTML attributes on the component:
+
+```html
+<route path="compose" component="compose-page" query="action,to,subject" exact />
+```
+
+Navigating to `/compose?action=reply&to=user@test.com` sets `action` and `to` as attributes on `<compose-page>`. Unlisted params (e.g. `?class=evil`) are silently dropped.
+
+| Behavior | Description |
+|----------|-------------|
+| No `query` attribute | No query params forwarded (deny-by-default) |
+| `query="action,to"` | Only `action` and `to` set as attributes |
+| Collision with path param | Path param wins — query param is skipped |
+
+Declare `@attr` properties in the component to receive them:
+
+```typescript
+export class ComposePage extends WebUIElement {
+  @attr action = '';
+  @attr to = '';
+  @attr subject = '';
+}
+```
+
 ## How It Works
 
 ### First Load (SSR)

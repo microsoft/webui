@@ -188,6 +188,7 @@ pub struct WebUIFragmentRoute {
     pub fragment_id: String,                   // Fragment containing the route body
     pub exact: bool,                           // Require exact path match
     pub children: Vec<WebUIFragmentRoute>,     // Nested child routes
+    pub allowed_query: String,                 // Comma-separated allowlist of query params forwarded as attributes
 }
 ```
 
@@ -217,8 +218,13 @@ Child paths are relative to their parent (no leading `/`). The HTML nesting IS t
       <route path="lessons/:lessonId" component="lesson-page" exact />
     </route>
   </route>
+  <route path="compose" component="compose-page" query="action,to,subject" exact />
 </route>
 ```
+
+The optional `query` attribute declares which URL query parameters are forwarded as HTML attributes
+on the component (deny-by-default). Routes without `query` forward no query params. Route path
+params always take priority over query params to prevent URL-based attribute injection.
 
 **Route matching:** The handler uses an iterative path template matcher (no regex). Segments are
 compared left-to-right: `:param` binds a value, `*splat` captures remaining segments, `?` marks

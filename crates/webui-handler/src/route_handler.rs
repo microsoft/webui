@@ -1530,4 +1530,78 @@ mod tests {
             "cart-panel (non-route sibling) should be needed: {needed:?}"
         );
     }
+
+    // ── RouteChainEntry.to_json + allowed_query tests ────────────────
+
+    #[test]
+    fn test_chain_entry_to_json_includes_allowed_query() {
+        let entry = RouteChainEntry {
+            component: "compose-page".into(),
+            path: "compose".into(),
+            params: HashMap::new(),
+            exact: true,
+            allowed_query: "action,to,subject".into(),
+        };
+        let json = entry.to_json();
+        assert_eq!(json["allowedQuery"], "action,to,subject");
+    }
+
+    #[test]
+    fn test_chain_entry_to_json_omits_empty_allowed_query() {
+        let entry = RouteChainEntry {
+            component: "home-page".into(),
+            path: "/".into(),
+            params: HashMap::new(),
+            exact: true,
+            allowed_query: String::new(),
+        };
+        let json = entry.to_json();
+        assert!(
+            json.get("allowedQuery").is_none(),
+            "empty allowed_query should not appear in JSON"
+        );
+    }
+
+    #[test]
+    fn test_collect_route_chain_carries_allowed_query() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/".into(),
+                    fragment_id: "app-shell".into(),
+                    exact: false,
+                    children: vec![WebUiFragmentRoute {
+                        path: "compose".into(),
+                        fragment_id: "compose-page".into(),
+                        exact: true,
+                        allowed_query: "action,to".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })],
+            },
+        );
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+            },
+        );
+        fragments.insert(
+            "compose-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Compose</p>")],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+
+        let chain = collect_route_chain(&protocol, "index.html", "/compose");
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].component, "app-shell");
+        assert!(chain[0].allowed_query.is_empty());
+        assert_eq!(chain[1].component, "compose-page");
+        assert_eq!(chain[1].allowed_query, "action,to");
+    }
 }
