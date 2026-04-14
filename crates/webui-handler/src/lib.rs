@@ -136,8 +136,94 @@ struct WebUIProcessContext<'a> {
     nonce: Option<String>,
 }
 
+/// Map an ARIA camelCase property name to its HTML attribute.
+///
+/// Multi-word ARIA attributes use concatenated lowercase after `aria-`
+/// (e.g., `aria-describedby`), which doesn't match standard camelCase-to-kebab
+/// conversion. This table covers every multi-word ARIA attribute in the
+/// [ARIAMixin](https://w3c.github.io/aria/#ARIAMixin) specification.
+fn aria_property_to_attribute(name: &str) -> Option<&'static str> {
+    match name {
+        "ariaActiveDescendant" => Some("aria-activedescendant"),
+        "ariaAutoComplete" => Some("aria-autocomplete"),
+        "ariaBrailleLabel" => Some("aria-braillelabel"),
+        "ariaBrailleRoleDescription" => Some("aria-brailleroledescription"),
+        "ariaColCount" => Some("aria-colcount"),
+        "ariaColIndex" => Some("aria-colindex"),
+        "ariaColIndexText" => Some("aria-colindextext"),
+        "ariaColSpan" => Some("aria-colspan"),
+        "ariaDescribedBy" => Some("aria-describedby"),
+        "ariaDropEffect" => Some("aria-dropeffect"),
+        "ariaErrorMessage" => Some("aria-errormessage"),
+        "ariaFlowTo" => Some("aria-flowto"),
+        "ariaHasPopup" => Some("aria-haspopup"),
+        "ariaKeyShortcuts" => Some("aria-keyshortcuts"),
+        "ariaLabelledBy" => Some("aria-labelledby"),
+        "ariaMultiLine" => Some("aria-multiline"),
+        "ariaMultiSelectable" => Some("aria-multiselectable"),
+        "ariaPosInSet" => Some("aria-posinset"),
+        "ariaReadOnly" => Some("aria-readonly"),
+        "ariaRoleDescription" => Some("aria-roledescription"),
+        "ariaRowCount" => Some("aria-rowcount"),
+        "ariaRowIndex" => Some("aria-rowindex"),
+        "ariaRowIndexText" => Some("aria-rowindextext"),
+        "ariaRowSpan" => Some("aria-rowspan"),
+        "ariaSetSize" => Some("aria-setsize"),
+        "ariaValueMax" => Some("aria-valuemax"),
+        "ariaValueMin" => Some("aria-valuemin"),
+        "ariaValueNow" => Some("aria-valuenow"),
+        "ariaValueText" => Some("aria-valuetext"),
+        _ => None,
+    }
+}
+
+/// Map an ARIA HTML attribute to its camelCase property name.
+///
+/// Inverse of [`aria_property_to_attribute`].
+fn aria_attribute_to_property(name: &str) -> Option<&'static str> {
+    match name {
+        "aria-activedescendant" => Some("ariaActiveDescendant"),
+        "aria-autocomplete" => Some("ariaAutoComplete"),
+        "aria-braillelabel" => Some("ariaBrailleLabel"),
+        "aria-brailleroledescription" => Some("ariaBrailleRoleDescription"),
+        "aria-colcount" => Some("ariaColCount"),
+        "aria-colindex" => Some("ariaColIndex"),
+        "aria-colindextext" => Some("ariaColIndexText"),
+        "aria-colspan" => Some("ariaColSpan"),
+        "aria-describedby" => Some("ariaDescribedBy"),
+        "aria-dropeffect" => Some("ariaDropEffect"),
+        "aria-errormessage" => Some("ariaErrorMessage"),
+        "aria-flowto" => Some("ariaFlowTo"),
+        "aria-haspopup" => Some("ariaHasPopup"),
+        "aria-keyshortcuts" => Some("ariaKeyShortcuts"),
+        "aria-labelledby" => Some("ariaLabelledBy"),
+        "aria-multiline" => Some("ariaMultiLine"),
+        "aria-multiselectable" => Some("ariaMultiSelectable"),
+        "aria-posinset" => Some("ariaPosInSet"),
+        "aria-readonly" => Some("ariaReadOnly"),
+        "aria-roledescription" => Some("ariaRoleDescription"),
+        "aria-rowcount" => Some("ariaRowCount"),
+        "aria-rowindex" => Some("ariaRowIndex"),
+        "aria-rowindextext" => Some("ariaRowIndexText"),
+        "aria-rowspan" => Some("ariaRowSpan"),
+        "aria-setsize" => Some("ariaSetSize"),
+        "aria-valuemax" => Some("ariaValueMax"),
+        "aria-valuemin" => Some("ariaValueMin"),
+        "aria-valuenow" => Some("ariaValueNow"),
+        "aria-valuetext" => Some("ariaValueText"),
+        _ => None,
+    }
+}
+
 /// Convert hyphenated name to camelCase (e.g., "data-title" → "dataTitle").
+///
+/// Multi-word ARIA attributes are handled via a lookup table so that
+/// `aria-describedby` correctly maps to `ariaDescribedBy` rather than
+/// the naive `ariaDescribedby`.
 fn convert_hyphen_to_camel_case(name: &str) -> String {
+    if let Some(prop) = aria_attribute_to_property(name) {
+        return prop.to_string();
+    }
     let mut result = String::with_capacity(name.len());
     let mut capitalize_next = false;
     for ch in name.chars() {
@@ -154,7 +240,14 @@ fn convert_hyphen_to_camel_case(name: &str) -> String {
 }
 
 /// Convert camelCase to kebab-case (e.g., "totalContacts" → "total-contacts").
-fn camel_to_kebab(name: &str) -> String {
+///
+/// Multi-word ARIA properties are handled via a lookup table so that
+/// `ariaDescribedBy` correctly maps to `aria-describedby` rather than
+/// the naive `aria-described-by`.
+pub(crate) fn camel_to_kebab(name: &str) -> String {
+    if let Some(attr) = aria_property_to_attribute(name) {
+        return attr.to_string();
+    }
     let mut result = String::with_capacity(name.len() + 4);
     for ch in name.chars() {
         if ch.is_uppercase() && !result.is_empty() {
@@ -6278,5 +6371,113 @@ mod tests {
             html.contains("w['cart-panel']"),
             "rendered cart-panel template should be emitted: {html}"
         );
+    }
+
+    #[test]
+    fn test_aria_property_to_attribute() {
+        // Multi-word ARIA attributes must use the lookup table
+        assert_eq!(camel_to_kebab("ariaDescribedBy"), "aria-describedby");
+        assert_eq!(camel_to_kebab("ariaLabelledBy"), "aria-labelledby");
+        assert_eq!(
+            camel_to_kebab("ariaActiveDescendant"),
+            "aria-activedescendant"
+        );
+        assert_eq!(camel_to_kebab("ariaAutoComplete"), "aria-autocomplete");
+        assert_eq!(camel_to_kebab("ariaColCount"), "aria-colcount");
+        assert_eq!(camel_to_kebab("ariaColIndex"), "aria-colindex");
+        assert_eq!(camel_to_kebab("ariaColIndexText"), "aria-colindextext");
+        assert_eq!(camel_to_kebab("ariaColSpan"), "aria-colspan");
+        assert_eq!(camel_to_kebab("ariaDropEffect"), "aria-dropeffect");
+        assert_eq!(camel_to_kebab("ariaErrorMessage"), "aria-errormessage");
+        assert_eq!(camel_to_kebab("ariaFlowTo"), "aria-flowto");
+        assert_eq!(camel_to_kebab("ariaHasPopup"), "aria-haspopup");
+        assert_eq!(camel_to_kebab("ariaKeyShortcuts"), "aria-keyshortcuts");
+        assert_eq!(camel_to_kebab("ariaMultiLine"), "aria-multiline");
+        assert_eq!(
+            camel_to_kebab("ariaMultiSelectable"),
+            "aria-multiselectable"
+        );
+        assert_eq!(camel_to_kebab("ariaPosInSet"), "aria-posinset");
+        assert_eq!(camel_to_kebab("ariaReadOnly"), "aria-readonly");
+        assert_eq!(
+            camel_to_kebab("ariaRoleDescription"),
+            "aria-roledescription"
+        );
+        assert_eq!(camel_to_kebab("ariaRowCount"), "aria-rowcount");
+        assert_eq!(camel_to_kebab("ariaRowIndex"), "aria-rowindex");
+        assert_eq!(camel_to_kebab("ariaRowIndexText"), "aria-rowindextext");
+        assert_eq!(camel_to_kebab("ariaRowSpan"), "aria-rowspan");
+        assert_eq!(camel_to_kebab("ariaSetSize"), "aria-setsize");
+        assert_eq!(camel_to_kebab("ariaValueMax"), "aria-valuemax");
+        assert_eq!(camel_to_kebab("ariaValueMin"), "aria-valuemin");
+        assert_eq!(camel_to_kebab("ariaValueNow"), "aria-valuenow");
+        assert_eq!(camel_to_kebab("ariaValueText"), "aria-valuetext");
+        assert_eq!(camel_to_kebab("ariaBrailleLabel"), "aria-braillelabel");
+        assert_eq!(
+            camel_to_kebab("ariaBrailleRoleDescription"),
+            "aria-brailleroledescription"
+        );
+    }
+
+    #[test]
+    fn test_aria_attribute_to_property() {
+        // Multi-word ARIA attributes must use the lookup table
+        assert_eq!(
+            convert_hyphen_to_camel_case("aria-describedby"),
+            "ariaDescribedBy"
+        );
+        assert_eq!(
+            convert_hyphen_to_camel_case("aria-labelledby"),
+            "ariaLabelledBy"
+        );
+        assert_eq!(
+            convert_hyphen_to_camel_case("aria-activedescendant"),
+            "ariaActiveDescendant"
+        );
+        assert_eq!(
+            convert_hyphen_to_camel_case("aria-autocomplete"),
+            "ariaAutoComplete"
+        );
+        assert_eq!(
+            convert_hyphen_to_camel_case("aria-errormessage"),
+            "ariaErrorMessage"
+        );
+        assert_eq!(
+            convert_hyphen_to_camel_case("aria-roledescription"),
+            "ariaRoleDescription"
+        );
+        assert_eq!(
+            convert_hyphen_to_camel_case("aria-valuetext"),
+            "ariaValueText"
+        );
+    }
+
+    #[test]
+    fn test_aria_single_word_attrs_use_fallback() {
+        // Single-word ARIA attributes work correctly via naive conversion
+        assert_eq!(camel_to_kebab("ariaLabel"), "aria-label");
+        assert_eq!(camel_to_kebab("ariaHidden"), "aria-hidden");
+        assert_eq!(camel_to_kebab("ariaDisabled"), "aria-disabled");
+        assert_eq!(convert_hyphen_to_camel_case("aria-label"), "ariaLabel");
+        assert_eq!(convert_hyphen_to_camel_case("aria-hidden"), "ariaHidden");
+    }
+
+    #[test]
+    fn test_aria_roundtrip() {
+        // Property → attribute → property must be a no-op
+        let props = [
+            "ariaDescribedBy",
+            "ariaLabelledBy",
+            "ariaActiveDescendant",
+            "ariaAutoComplete",
+            "ariaColCount",
+            "ariaPosInSet",
+            "ariaValueText",
+        ];
+        for prop in props {
+            let attr = camel_to_kebab(prop);
+            let back = convert_hyphen_to_camel_case(&attr);
+            assert_eq!(back, prop, "roundtrip failed for {prop}");
+        }
     }
 }

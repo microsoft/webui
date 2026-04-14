@@ -12,8 +12,55 @@
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/** Convert camelCase to kebab-case for attribute reflection. */
-function toKebabCase(str: string): string {
+/**
+ * Map of ARIA camelCase property names to their HTML attribute names.
+ *
+ * Multi-word ARIA attributes use concatenated lowercase after `aria-`
+ * (e.g., `aria-describedby`), which doesn't match standard camelCase-to-kebab
+ * conversion. This table covers every multi-word ARIA attribute in the
+ * ARIAMixin specification.
+ */
+const ariaPropertyToAttribute: Record<string, string> = {
+  ariaActiveDescendant: 'aria-activedescendant',
+  ariaAutoComplete: 'aria-autocomplete',
+  ariaBrailleLabel: 'aria-braillelabel',
+  ariaBrailleRoleDescription: 'aria-brailleroledescription',
+  ariaColCount: 'aria-colcount',
+  ariaColIndex: 'aria-colindex',
+  ariaColIndexText: 'aria-colindextext',
+  ariaColSpan: 'aria-colspan',
+  ariaDescribedBy: 'aria-describedby',
+  ariaDropEffect: 'aria-dropeffect',
+  ariaErrorMessage: 'aria-errormessage',
+  ariaFlowTo: 'aria-flowto',
+  ariaHasPopup: 'aria-haspopup',
+  ariaKeyShortcuts: 'aria-keyshortcuts',
+  ariaLabelledBy: 'aria-labelledby',
+  ariaMultiLine: 'aria-multiline',
+  ariaMultiSelectable: 'aria-multiselectable',
+  ariaPosInSet: 'aria-posinset',
+  ariaReadOnly: 'aria-readonly',
+  ariaRoleDescription: 'aria-roledescription',
+  ariaRowCount: 'aria-rowcount',
+  ariaRowIndex: 'aria-rowindex',
+  ariaRowIndexText: 'aria-rowindextext',
+  ariaRowSpan: 'aria-rowspan',
+  ariaSetSize: 'aria-setsize',
+  ariaValueMax: 'aria-valuemax',
+  ariaValueMin: 'aria-valuemin',
+  ariaValueNow: 'aria-valuenow',
+  ariaValueText: 'aria-valuetext',
+};
+
+/**
+ * Convert camelCase to kebab-case for attribute reflection.
+ *
+ * Multi-word ARIA properties are handled via a lookup table so that
+ * `ariaDescribedBy` correctly maps to `aria-describedby` rather than
+ * the naive `aria-described-by`.
+ */
+export function toKebabCase(str: string): string {
+  if (str in ariaPropertyToAttribute) return ariaPropertyToAttribute[str];
   return str.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
 }
 

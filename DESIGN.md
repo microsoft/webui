@@ -148,6 +148,29 @@ pub struct WebUIFragmentAttribute {
 }
 ```
 
+##### ARIA Attribute Name Mapping
+
+Multi-word ARIA attributes use concatenated lowercase after `aria-` (e.g.,
+`aria-describedby`, `aria-activedescendant`), which does not follow standard
+camelCase-to-kebab-case conversion rules. The parser, handler, and framework
+maintain a lookup table mapping between these irregular attribute names and
+their corresponding JavaScript property names (e.g., `ariaDescribedBy`,
+`ariaActiveDescendant`).
+
+This mapping is used in three places:
+
+1. **Handler** (`camel_to_kebab`) - when converting camelCase state keys to
+   HTML attribute names (e.g., `ariaDescribedBy` to `aria-describedby`).
+2. **Handler** (`convert_hyphen_to_camel_case`) - when converting HTML attribute
+   names to camelCase property names for component state lookup.
+3. **Parser** (`kebab_to_camel`) - when converting kebab-case attribute names
+   to camelCase property names for compiled metadata.
+4. **Framework** (`toKebabCase`) - when converting camelCase `@attr` property
+   names to HTML attribute names for reflection.
+
+Single-word ARIA attributes (e.g., `aria-label` to `ariaLabel`) work correctly
+with standard conversion and do not require the lookup table.
+
 #### Plugin Fragment
 Plugin fragments carry opaque data from parser plugins to handler plugins. WebUI does
 not interpret this data — each parser/handler plugin pair defines its own binary contract.

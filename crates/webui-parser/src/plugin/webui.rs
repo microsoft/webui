@@ -402,7 +402,14 @@ fn generate_compiled_template_with_root_source(
 
 /// Emit a JS string literal with script-safe escaping.
 /// Convert a kebab-case string to camelCase. `"my-prop"` → `"myProp"`.
+///
+/// Multi-word ARIA attributes are handled via a lookup table so that
+/// `aria-describedby` correctly maps to `ariaDescribedBy` rather than
+/// the naive `ariaDescribedby`.
 fn kebab_to_camel(s: &str) -> String {
+    if let Some(prop) = aria_attribute_to_property(s) {
+        return prop.to_string();
+    }
     let mut result = String::with_capacity(s.len());
     let mut capitalize = false;
     for ch in s.chars() {
@@ -416,6 +423,46 @@ fn kebab_to_camel(s: &str) -> String {
         }
     }
     result
+}
+
+/// Map an ARIA HTML attribute to its camelCase property name.
+///
+/// Multi-word ARIA attributes use concatenated lowercase after `aria-`
+/// (e.g., `aria-describedby` → `ariaDescribedBy`), which doesn't match
+/// standard kebab-to-camel conversion.
+fn aria_attribute_to_property(name: &str) -> Option<&'static str> {
+    match name {
+        "aria-activedescendant" => Some("ariaActiveDescendant"),
+        "aria-autocomplete" => Some("ariaAutoComplete"),
+        "aria-braillelabel" => Some("ariaBrailleLabel"),
+        "aria-brailleroledescription" => Some("ariaBrailleRoleDescription"),
+        "aria-colcount" => Some("ariaColCount"),
+        "aria-colindex" => Some("ariaColIndex"),
+        "aria-colindextext" => Some("ariaColIndexText"),
+        "aria-colspan" => Some("ariaColSpan"),
+        "aria-describedby" => Some("ariaDescribedBy"),
+        "aria-dropeffect" => Some("ariaDropEffect"),
+        "aria-errormessage" => Some("ariaErrorMessage"),
+        "aria-flowto" => Some("ariaFlowTo"),
+        "aria-haspopup" => Some("ariaHasPopup"),
+        "aria-keyshortcuts" => Some("ariaKeyShortcuts"),
+        "aria-labelledby" => Some("ariaLabelledBy"),
+        "aria-multiline" => Some("ariaMultiLine"),
+        "aria-multiselectable" => Some("ariaMultiSelectable"),
+        "aria-posinset" => Some("ariaPosInSet"),
+        "aria-readonly" => Some("ariaReadOnly"),
+        "aria-roledescription" => Some("ariaRoleDescription"),
+        "aria-rowcount" => Some("ariaRowCount"),
+        "aria-rowindex" => Some("ariaRowIndex"),
+        "aria-rowindextext" => Some("ariaRowIndexText"),
+        "aria-rowspan" => Some("ariaRowSpan"),
+        "aria-setsize" => Some("ariaSetSize"),
+        "aria-valuemax" => Some("ariaValueMax"),
+        "aria-valuemin" => Some("ariaValueMin"),
+        "aria-valuenow" => Some("ariaValueNow"),
+        "aria-valuetext" => Some("ariaValueText"),
+        _ => None,
+    }
 }
 
 fn emit_js_string(s: &str, out: &mut String) {
@@ -2949,5 +2996,35 @@ mod tests {
     #[test]
     fn test_parse_event_handler_empty_value() {
         assert!(matches!(parse_event_handler("{}"), EventHandler::Empty));
+    }
+
+    #[test]
+    fn test_aria_kebab_to_camel() {
+        // Multi-word ARIA attributes must use the lookup table
+        assert_eq!(kebab_to_camel("aria-describedby"), "ariaDescribedBy");
+        assert_eq!(kebab_to_camel("aria-labelledby"), "ariaLabelledBy");
+        assert_eq!(
+            kebab_to_camel("aria-activedescendant"),
+            "ariaActiveDescendant"
+        );
+        assert_eq!(kebab_to_camel("aria-autocomplete"), "ariaAutoComplete");
+        assert_eq!(kebab_to_camel("aria-errormessage"), "ariaErrorMessage");
+        assert_eq!(
+            kebab_to_camel("aria-roledescription"),
+            "ariaRoleDescription"
+        );
+        assert_eq!(kebab_to_camel("aria-valuetext"), "ariaValueText");
+        assert_eq!(kebab_to_camel("aria-posinset"), "ariaPosInSet");
+        assert_eq!(kebab_to_camel("aria-colspan"), "ariaColSpan");
+        assert_eq!(kebab_to_camel("aria-haspopup"), "ariaHasPopup");
+        assert_eq!(kebab_to_camel("aria-keyshortcuts"), "ariaKeyShortcuts");
+    }
+
+    #[test]
+    fn test_aria_single_word_fallback() {
+        // Single-word ARIA attributes work correctly via naive conversion
+        assert_eq!(kebab_to_camel("aria-label"), "ariaLabel");
+        assert_eq!(kebab_to_camel("aria-hidden"), "ariaHidden");
+        assert_eq!(kebab_to_camel("aria-disabled"), "ariaDisabled");
     }
 }
