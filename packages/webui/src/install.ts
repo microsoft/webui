@@ -2,19 +2,43 @@
 // Licensed under the MIT license.
 
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { resolve, platformKey, packageName } from "./platform.js";
 
-// Validate that the platform binary exists after install.
+// dist/install.js lives one level below the package root, so bin/ is at ../bin.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Find the platform-specific Rust binary.
+let srcBinPath: string | null = null;
 try {
-  const binPath = resolve("bin");
-  if (binPath && fs.existsSync(binPath)) {
-    // Success — binary is available.
-    process.exit(0);
-  }
+  srcBinPath = resolve("bin");
 } catch {
   // Fall through to warning.
 }
 
+if (srcBinPath && fs.existsSync(srcBinPath)) {
+  // On non-Windows, replace bin/webui (the JS shim placeholder) with the
+  // actual Rust binary so the CLI runs directly without a Node.js wrapper.
+  //
+  // On Windows, keep the shim: npm/pnpm generate a .cmd wrapper that calls
+  // `node` on the bin entry, so placing a raw .exe there would not work.
+  // The shim resolves and spawns webui.exe at runtime instead.
+  if (process.platform !== "win32") {
+    const binDir = path.join(__dirname, "..", "bin");
+    const destPath = path.join(binDir, "webui");
+    try {
+      fs.mkdirSync(binDir, { recursive: true });
+      fs.copyFileSync(srcBinPath, destPath);
+      fs.chmodSync(destPath, 0o755);
+    } catch {
+      // Copy failed — the JS shim fallback remains in place.
+    }
+  }
+  process.exit(0);
+}
+
+// Binary not found — emit a warning.
 const key = platformKey();
 let pkg: string | undefined;
 try {
