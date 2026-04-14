@@ -138,6 +138,71 @@ pub fn attribute_to_property(name: &str) -> Option<&'static str> {
     }
 }
 
+/// Convert a camelCase property name to its HTML attribute name.
+///
+/// Checks the irregular attribute lookup table first, then falls back to
+/// generic camelCase → kebab-case conversion (inserting `-` before each
+/// uppercase letter).
+///
+/// # Examples
+/// ```
+/// # use webui_protocol::attrs::camel_to_kebab;
+/// assert_eq!(camel_to_kebab("ariaDescribedBy"), "aria-describedby");
+/// assert_eq!(camel_to_kebab("readOnly"), "readonly");
+/// assert_eq!(camel_to_kebab("totalContacts"), "total-contacts");
+/// ```
+#[must_use]
+pub fn camel_to_kebab(name: &str) -> String {
+    if let Some(attr) = property_to_attribute(name) {
+        return attr.to_string();
+    }
+    let mut result = String::with_capacity(name.len() + 4);
+    for ch in name.chars() {
+        if ch.is_uppercase() && !result.is_empty() {
+            result.push('-');
+            for lc in ch.to_lowercase() {
+                result.push(lc);
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+/// Convert an HTML attribute name to its camelCase property name.
+///
+/// Checks the irregular attribute lookup table first, then falls back to
+/// generic kebab-case → camelCase conversion (removing `-` and capitalizing
+/// the following character).
+///
+/// # Examples
+/// ```
+/// # use webui_protocol::attrs::attribute_to_camel;
+/// assert_eq!(attribute_to_camel("aria-describedby"), "ariaDescribedBy");
+/// assert_eq!(attribute_to_camel("readonly"), "readOnly");
+/// assert_eq!(attribute_to_camel("data-title"), "dataTitle");
+/// ```
+#[must_use]
+pub fn attribute_to_camel(name: &str) -> String {
+    if let Some(prop) = attribute_to_property(name) {
+        return prop.to_string();
+    }
+    let mut result = String::with_capacity(name.len());
+    let mut capitalize_next = false;
+    for ch in name.chars() {
+        if ch == '-' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.extend(ch.to_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +331,53 @@ mod tests {
             let attr = property_to_attribute(prop).unwrap();
             let back = attribute_to_property(attr).unwrap();
             assert_eq!(back, prop, "roundtrip failed for {prop}");
+        }
+    }
+
+    #[test]
+    fn camel_to_kebab_irregular() {
+        assert_eq!(camel_to_kebab("ariaDescribedBy"), "aria-describedby");
+        assert_eq!(camel_to_kebab("ariaLabelledBy"), "aria-labelledby");
+        assert_eq!(camel_to_kebab("readOnly"), "readonly");
+        assert_eq!(camel_to_kebab("tabIndex"), "tabindex");
+        assert_eq!(camel_to_kebab("contentEditable"), "contenteditable");
+    }
+
+    #[test]
+    fn camel_to_kebab_regular() {
+        assert_eq!(camel_to_kebab("ariaLabel"), "aria-label");
+        assert_eq!(camel_to_kebab("totalContacts"), "total-contacts");
+        assert_eq!(camel_to_kebab("dataTitle"), "data-title");
+    }
+
+    #[test]
+    fn attribute_to_camel_irregular() {
+        assert_eq!(attribute_to_camel("aria-describedby"), "ariaDescribedBy");
+        assert_eq!(attribute_to_camel("readonly"), "readOnly");
+        assert_eq!(attribute_to_camel("tabindex"), "tabIndex");
+        assert_eq!(attribute_to_camel("contenteditable"), "contentEditable");
+    }
+
+    #[test]
+    fn attribute_to_camel_regular() {
+        assert_eq!(attribute_to_camel("aria-label"), "ariaLabel");
+        assert_eq!(attribute_to_camel("data-title"), "dataTitle");
+    }
+
+    #[test]
+    fn conversion_roundtrip() {
+        let props = [
+            "ariaDescribedBy",
+            "readOnly",
+            "tabIndex",
+            "ariaLabel",
+            "dataTitle",
+            "totalContacts",
+        ];
+        for prop in props {
+            let attr = camel_to_kebab(prop);
+            let back = attribute_to_camel(&attr);
+            assert_eq!(back, prop, "conversion roundtrip failed for {prop}");
         }
     }
 }

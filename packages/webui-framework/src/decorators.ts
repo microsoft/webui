@@ -77,16 +77,10 @@ const propertyToAttribute: Record<string, string> = {
   useMap: 'usemap',
 };
 
-/**
- * Convert camelCase to kebab-case for attribute reflection.
- *
- * Multi-word ARIA properties are handled via a lookup table so that
- * `ariaDescribedBy` correctly maps to `aria-describedby` rather than
- * the naive `aria-described-by`.
- */
+/** Convert camelCase to kebab-case for attribute reflection. */
 export function toKebabCase(str: string): string {
-  if (str in propertyToAttribute) return propertyToAttribute[str];
-  return str.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+  const mapped = propertyToAttribute[str];
+  return mapped ?? str.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
 }
 
 /**

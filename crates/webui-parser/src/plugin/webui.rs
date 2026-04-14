@@ -400,31 +400,6 @@ fn generate_compiled_template_with_root_source(
     out
 }
 
-/// Emit a JS string literal with script-safe escaping.
-/// Convert a kebab-case string to camelCase. `"my-prop"` → `"myProp"`.
-///
-/// Irregular attributes (multi-word ARIA and global HTML attributes like
-/// `readonly`, `tabindex`) are handled via the shared lookup table in
-/// `webui_protocol::attrs`.
-fn kebab_to_camel(s: &str) -> String {
-    if let Some(prop) = webui_protocol::attrs::attribute_to_property(s) {
-        return prop.to_string();
-    }
-    let mut result = String::with_capacity(s.len());
-    let mut capitalize = false;
-    for ch in s.chars() {
-        if ch == '-' {
-            capitalize = true;
-        } else if capitalize {
-            result.push(ch.to_ascii_uppercase());
-            capitalize = false;
-        } else {
-            result.push(ch);
-        }
-    }
-    result
-}
-
 fn emit_js_string(s: &str, out: &mut String) {
     out.push('"');
     let mut index = 0usize;
@@ -1918,7 +1893,9 @@ fn parse_regular_tag(input: &str, meta: &mut TemplateSectionMeta) -> Option<(Str
             if let Some(raw_value) = value.and_then(extract_single_handlebars) {
                 // Strip the ':' prefix and convert to camelCase for the JS property name.
                 // The runtime uses el[name] = value directly — no conversion needed.
-                let prop_name = kebab_to_camel(name.strip_prefix(':').unwrap_or(name));
+                let prop_name = webui_protocol::attrs::attribute_to_camel(
+                    name.strip_prefix(':').unwrap_or(name),
+                );
                 meta.attr_bindings.push(CompiledAttrBinding::Complex {
                     name: prop_name,
                     value: raw_value,
@@ -2959,46 +2936,27 @@ mod tests {
     }
 
     #[test]
-    fn test_aria_kebab_to_camel() {
-        // Multi-word ARIA attributes must use the lookup table
-        assert_eq!(kebab_to_camel("aria-describedby"), "ariaDescribedBy");
-        assert_eq!(kebab_to_camel("aria-labelledby"), "ariaLabelledBy");
+    fn test_attribute_to_camel_aria() {
+        use webui_protocol::attrs::attribute_to_camel;
+        assert_eq!(attribute_to_camel("aria-describedby"), "ariaDescribedBy");
+        assert_eq!(attribute_to_camel("aria-labelledby"), "ariaLabelledBy");
         assert_eq!(
-            kebab_to_camel("aria-activedescendant"),
+            attribute_to_camel("aria-activedescendant"),
             "ariaActiveDescendant"
         );
-        assert_eq!(kebab_to_camel("aria-autocomplete"), "ariaAutoComplete");
-        assert_eq!(kebab_to_camel("aria-errormessage"), "ariaErrorMessage");
-        assert_eq!(
-            kebab_to_camel("aria-roledescription"),
-            "ariaRoleDescription"
-        );
-        assert_eq!(kebab_to_camel("aria-valuetext"), "ariaValueText");
-        assert_eq!(kebab_to_camel("aria-posinset"), "ariaPosInSet");
-        assert_eq!(kebab_to_camel("aria-colspan"), "ariaColSpan");
-        assert_eq!(kebab_to_camel("aria-haspopup"), "ariaHasPopup");
-        assert_eq!(kebab_to_camel("aria-keyshortcuts"), "ariaKeyShortcuts");
+        assert_eq!(attribute_to_camel("aria-label"), "ariaLabel");
+        assert_eq!(attribute_to_camel("aria-hidden"), "ariaHidden");
     }
 
     #[test]
-    fn test_aria_single_word_fallback() {
-        // Single-word ARIA attributes work correctly via naive conversion
-        assert_eq!(kebab_to_camel("aria-label"), "ariaLabel");
-        assert_eq!(kebab_to_camel("aria-hidden"), "ariaHidden");
-        assert_eq!(kebab_to_camel("aria-disabled"), "ariaDisabled");
-    }
-
-    #[test]
-    fn test_html_global_attribute_to_property() {
-        assert_eq!(kebab_to_camel("readonly"), "readOnly");
-        assert_eq!(kebab_to_camel("tabindex"), "tabIndex");
-        assert_eq!(kebab_to_camel("accesskey"), "accessKey");
-        assert_eq!(kebab_to_camel("contenteditable"), "contentEditable");
-        assert_eq!(kebab_to_camel("crossorigin"), "crossOrigin");
-        assert_eq!(kebab_to_camel("inputmode"), "inputMode");
-        assert_eq!(kebab_to_camel("maxlength"), "maxLength");
-        assert_eq!(kebab_to_camel("minlength"), "minLength");
-        assert_eq!(kebab_to_camel("novalidate"), "noValidate");
-        assert_eq!(kebab_to_camel("formaction"), "formAction");
+    fn test_attribute_to_camel_html_global() {
+        use webui_protocol::attrs::attribute_to_camel;
+        assert_eq!(attribute_to_camel("readonly"), "readOnly");
+        assert_eq!(attribute_to_camel("tabindex"), "tabIndex");
+        assert_eq!(attribute_to_camel("accesskey"), "accessKey");
+        assert_eq!(attribute_to_camel("contenteditable"), "contentEditable");
+        assert_eq!(attribute_to_camel("inputmode"), "inputMode");
+        assert_eq!(attribute_to_camel("maxlength"), "maxLength");
+        assert_eq!(attribute_to_camel("formaction"), "formAction");
     }
 }

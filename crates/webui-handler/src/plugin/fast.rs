@@ -218,7 +218,7 @@ impl HandlerPlugin for FastHydrationPlugin {
                 Value::Bool(false) => std::borrow::Cow::Borrowed("false"),
                 _ => continue,
             };
-            let attr_name = crate::camel_to_kebab(key);
+            let attr_name = webui_protocol::attrs::camel_to_kebab(key);
             writer.write(" ")?;
             writer.write(&attr_name)?;
             writer.write("=\"")?;

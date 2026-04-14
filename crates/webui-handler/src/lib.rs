@@ -136,68 +136,14 @@ struct WebUIProcessContext<'a> {
     nonce: Option<String>,
 }
 
-/// Convert hyphenated name to camelCase (e.g., "data-title" → "dataTitle").
-///
-/// Irregular attributes (multi-word ARIA and global HTML attributes like
-/// `readonly`, `tabindex`) are handled via the shared lookup table in
-/// `webui_protocol::attrs`.
-fn convert_hyphen_to_camel_case(name: &str) -> String {
-    if let Some(prop) = webui_protocol::attrs::attribute_to_property(name) {
-        return prop.to_string();
-    }
-    let mut result = String::with_capacity(name.len());
-    let mut capitalize_next = false;
-    for ch in name.chars() {
-        if ch == '-' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.extend(ch.to_uppercase());
-            capitalize_next = false;
-        } else {
-            result.push(ch);
-        }
-    }
-    result
-}
-
-/// Convert camelCase to kebab-case (e.g., "totalContacts" → "total-contacts").
-///
-/// Irregular attributes (multi-word ARIA and global HTML attributes like
-/// `readOnly`, `tabIndex`) are handled via the shared lookup table in
-/// `webui_protocol::attrs`.
-pub(crate) fn camel_to_kebab(name: &str) -> String {
-    if let Some(attr) = webui_protocol::attrs::property_to_attribute(name) {
-        return attr.to_string();
-    }
-    let mut result = String::with_capacity(name.len() + 4);
-    for ch in name.chars() {
-        if ch.is_uppercase() && !result.is_empty() {
-            result.push('-');
-            for lc in ch.to_lowercase() {
-                result.push(lc);
-            }
-        } else {
-            result.push(ch);
-        }
-    }
-    result
-}
-
 /// Get the component attribute name, stripping `:` prefix and converting to camelCase.
 ///
-/// Non-hyphenated attributes (e.g., `readonly`, `tabindex`) are checked against
-/// the shared lookup table so they map to the correct property name (e.g.,
-/// `readOnly`, `tabIndex`).
+/// Uses `webui_protocol::attrs::attribute_to_camel` which handles irregular
+/// attributes (multi-word ARIA and global HTML attributes like `readonly`,
+/// `tabindex`) via the shared lookup table.
 fn component_attr_name(name: &str) -> String {
     let stripped = name.strip_prefix(':').unwrap_or(name);
-    if let Some(prop) = webui_protocol::attrs::attribute_to_property(stripped) {
-        return prop.to_string();
-    }
-    if stripped.contains('-') {
-        convert_hyphen_to_camel_case(stripped)
-    } else {
-        stripped.to_string()
-    }
+    webui_protocol::attrs::attribute_to_camel(stripped)
 }
 
 impl WebUIHandler {
@@ -6302,121 +6248,20 @@ mod tests {
     }
 
     #[test]
-    fn test_aria_property_to_attribute() {
-        // Multi-word ARIA attributes must use the lookup table
-        assert_eq!(camel_to_kebab("ariaDescribedBy"), "aria-describedby");
-        assert_eq!(camel_to_kebab("ariaLabelledBy"), "aria-labelledby");
+    fn test_component_attr_name_aria() {
+        // component_attr_name correctly maps ARIA attributes via the shared table
+        assert_eq!(component_attr_name("aria-describedby"), "ariaDescribedBy");
+        assert_eq!(component_attr_name("aria-labelledby"), "ariaLabelledBy");
         assert_eq!(
-            camel_to_kebab("ariaActiveDescendant"),
-            "aria-activedescendant"
-        );
-        assert_eq!(camel_to_kebab("ariaAutoComplete"), "aria-autocomplete");
-        assert_eq!(camel_to_kebab("ariaColCount"), "aria-colcount");
-        assert_eq!(camel_to_kebab("ariaColIndex"), "aria-colindex");
-        assert_eq!(camel_to_kebab("ariaColIndexText"), "aria-colindextext");
-        assert_eq!(camel_to_kebab("ariaColSpan"), "aria-colspan");
-        assert_eq!(camel_to_kebab("ariaDropEffect"), "aria-dropeffect");
-        assert_eq!(camel_to_kebab("ariaErrorMessage"), "aria-errormessage");
-        assert_eq!(camel_to_kebab("ariaFlowTo"), "aria-flowto");
-        assert_eq!(camel_to_kebab("ariaHasPopup"), "aria-haspopup");
-        assert_eq!(camel_to_kebab("ariaKeyShortcuts"), "aria-keyshortcuts");
-        assert_eq!(camel_to_kebab("ariaMultiLine"), "aria-multiline");
-        assert_eq!(
-            camel_to_kebab("ariaMultiSelectable"),
-            "aria-multiselectable"
-        );
-        assert_eq!(camel_to_kebab("ariaPosInSet"), "aria-posinset");
-        assert_eq!(camel_to_kebab("ariaReadOnly"), "aria-readonly");
-        assert_eq!(
-            camel_to_kebab("ariaRoleDescription"),
-            "aria-roledescription"
-        );
-        assert_eq!(camel_to_kebab("ariaRowCount"), "aria-rowcount");
-        assert_eq!(camel_to_kebab("ariaRowIndex"), "aria-rowindex");
-        assert_eq!(camel_to_kebab("ariaRowIndexText"), "aria-rowindextext");
-        assert_eq!(camel_to_kebab("ariaRowSpan"), "aria-rowspan");
-        assert_eq!(camel_to_kebab("ariaSetSize"), "aria-setsize");
-        assert_eq!(camel_to_kebab("ariaValueMax"), "aria-valuemax");
-        assert_eq!(camel_to_kebab("ariaValueMin"), "aria-valuemin");
-        assert_eq!(camel_to_kebab("ariaValueNow"), "aria-valuenow");
-        assert_eq!(camel_to_kebab("ariaValueText"), "aria-valuetext");
-        assert_eq!(camel_to_kebab("ariaBrailleLabel"), "aria-braillelabel");
-        assert_eq!(
-            camel_to_kebab("ariaBrailleRoleDescription"),
-            "aria-brailleroledescription"
-        );
-    }
-
-    #[test]
-    fn test_aria_attribute_to_property() {
-        // Multi-word ARIA attributes must use the lookup table
-        assert_eq!(
-            convert_hyphen_to_camel_case("aria-describedby"),
-            "ariaDescribedBy"
-        );
-        assert_eq!(
-            convert_hyphen_to_camel_case("aria-labelledby"),
-            "ariaLabelledBy"
-        );
-        assert_eq!(
-            convert_hyphen_to_camel_case("aria-activedescendant"),
+            component_attr_name("aria-activedescendant"),
             "ariaActiveDescendant"
         );
-        assert_eq!(
-            convert_hyphen_to_camel_case("aria-autocomplete"),
-            "ariaAutoComplete"
-        );
-        assert_eq!(
-            convert_hyphen_to_camel_case("aria-errormessage"),
-            "ariaErrorMessage"
-        );
-        assert_eq!(
-            convert_hyphen_to_camel_case("aria-roledescription"),
-            "ariaRoleDescription"
-        );
-        assert_eq!(
-            convert_hyphen_to_camel_case("aria-valuetext"),
-            "ariaValueText"
-        );
+        assert_eq!(component_attr_name("aria-label"), "ariaLabel");
+        assert_eq!(component_attr_name("aria-hidden"), "ariaHidden");
     }
 
     #[test]
-    fn test_aria_single_word_attrs_use_fallback() {
-        // Single-word ARIA attributes work correctly via naive conversion
-        assert_eq!(camel_to_kebab("ariaLabel"), "aria-label");
-        assert_eq!(camel_to_kebab("ariaHidden"), "aria-hidden");
-        assert_eq!(camel_to_kebab("ariaDisabled"), "aria-disabled");
-        assert_eq!(convert_hyphen_to_camel_case("aria-label"), "ariaLabel");
-        assert_eq!(convert_hyphen_to_camel_case("aria-hidden"), "ariaHidden");
-    }
-
-    #[test]
-    fn test_html_global_property_to_attribute() {
-        assert_eq!(camel_to_kebab("readOnly"), "readonly");
-        assert_eq!(camel_to_kebab("tabIndex"), "tabindex");
-        assert_eq!(camel_to_kebab("accessKey"), "accesskey");
-        assert_eq!(camel_to_kebab("contentEditable"), "contenteditable");
-        assert_eq!(camel_to_kebab("crossOrigin"), "crossorigin");
-        assert_eq!(camel_to_kebab("inputMode"), "inputmode");
-        assert_eq!(camel_to_kebab("maxLength"), "maxlength");
-        assert_eq!(camel_to_kebab("minLength"), "minlength");
-        assert_eq!(camel_to_kebab("noValidate"), "novalidate");
-        assert_eq!(camel_to_kebab("formAction"), "formaction");
-        assert_eq!(camel_to_kebab("formEnctype"), "formenctype");
-        assert_eq!(camel_to_kebab("formMethod"), "formmethod");
-        assert_eq!(camel_to_kebab("formNoValidate"), "formnovalidate");
-        assert_eq!(camel_to_kebab("formTarget"), "formtarget");
-        assert_eq!(camel_to_kebab("isMap"), "ismap");
-        assert_eq!(camel_to_kebab("useMap"), "usemap");
-        assert_eq!(camel_to_kebab("noModule"), "nomodule");
-        assert_eq!(camel_to_kebab("autoCapitalize"), "autocapitalize");
-        assert_eq!(camel_to_kebab("dirName"), "dirname");
-        assert_eq!(camel_to_kebab("fetchPriority"), "fetchpriority");
-        assert_eq!(camel_to_kebab("referrerPolicy"), "referrerpolicy");
-    }
-
-    #[test]
-    fn test_html_global_attribute_to_property() {
+    fn test_component_attr_name_html_global() {
         assert_eq!(component_attr_name("readonly"), "readOnly");
         assert_eq!(component_attr_name("tabindex"), "tabIndex");
         assert_eq!(component_attr_name("accesskey"), "accessKey");
@@ -6432,40 +6277,16 @@ mod tests {
     }
 
     #[test]
-    fn test_aria_roundtrip() {
-        // Property → attribute → property must be a no-op
-        let props = [
-            "ariaDescribedBy",
-            "ariaLabelledBy",
-            "ariaActiveDescendant",
-            "ariaAutoComplete",
-            "ariaColCount",
-            "ariaPosInSet",
-            "ariaValueText",
-        ];
-        for prop in props {
-            let attr = camel_to_kebab(prop);
-            let back = convert_hyphen_to_camel_case(&attr);
-            assert_eq!(back, prop, "roundtrip failed for {prop}");
-        }
+    fn test_component_attr_name_strips_colon() {
+        assert_eq!(component_attr_name(":readonly"), "readOnly");
+        assert_eq!(component_attr_name(":aria-describedby"), "ariaDescribedBy");
+        assert_eq!(component_attr_name(":data-title"), "dataTitle");
     }
 
     #[test]
-    fn test_html_global_roundtrip() {
-        let props = [
-            "readOnly",
-            "tabIndex",
-            "accessKey",
-            "contentEditable",
-            "maxLength",
-            "inputMode",
-            "formAction",
-            "crossOrigin",
-        ];
-        for prop in props {
-            let attr = camel_to_kebab(prop);
-            let back = component_attr_name(&attr);
-            assert_eq!(back, prop, "roundtrip failed for {prop}");
-        }
+    fn test_component_attr_name_regular() {
+        assert_eq!(component_attr_name("data-title"), "dataTitle");
+        assert_eq!(component_attr_name("key-hyphen"), "keyHyphen");
+        assert_eq!(component_attr_name("simple"), "simple");
     }
 }
