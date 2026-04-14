@@ -41,12 +41,14 @@ extends:
       networkIsolationPolicy: Permissive
     stages:
 
-    # ── Download pre-built release artifacts and deploy ──
-    - stage: Package
+    # ── Stage 1: Lightweight version check (runs every hour, ~1-2 min) ──
+    # This stage is separate so that when no deployment is needed, the
+    # heavyweight Package stage (with all its 1ES SDL tasks) is skipped
+    # entirely — avoiding ~30 min of unnecessary agent provisioning and
+    # compliance scans on every hourly no-op run.
+    - stage: Check
       jobs:
-
-      # ── Job 1: Resolve the latest release tag and check registry status ──
-      - job: NeedsDeployment
+      - job: CheckVersion
         steps:
           - checkout: self
             persistCredentials: "true"
@@ -60,8 +62,7 @@ extends:
               downloadPath: '$(System.ArtifactsDirectory)'
 
           # Extract the version number from the downloaded .crate filename,
-          # e.g. microsoft-webui-0.0.3.crate → 0.0.3, and expose it as output
-          # variables for the Deploy job.
+          # e.g. microsoft-webui-0.0.3.crate → 0.0.3
           - script: |
               CRATE_FILE=$(ls "$(System.ArtifactsDirectory)"/microsoft-webui-*.crate 2>/dev/null | head -1)
               if [ -z "$CRATE_FILE" ]; then
@@ -106,12 +107,14 @@ extends:
             displayName: Check if already deployed
             name: deploymentCheck
 
-      # ── Job 2: Download artifacts and deploy (skipped if all already deployed) ──
+    # ── Stage 2: Download artifacts and deploy (entirely skipped if already deployed) ──
+    - stage: Package
+      dependsOn: Check
+      condition: eq(dependencies.Check.outputs['CheckVersion.deploymentCheck.needsDeployment'], 'true')
+      variables:
+        releaseTag: $[ stageDependencies.Check.CheckVersion.outputs['resolveTag.releaseTag'] ]
+      jobs:
       - job: Deploy
-        dependsOn: NeedsDeployment
-        condition: eq(dependencies.NeedsDeployment.outputs['deploymentCheck.needsDeployment'], 'true')
-        variables:
-          releaseTag: $[ dependencies.NeedsDeployment.outputs['resolveTag.releaseTag'] ]
         steps:
           - checkout: self
             persistCredentials: "true"
