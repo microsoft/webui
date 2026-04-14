@@ -1,10 +1,8 @@
-<template shadowrootmode="open">
-  <button class="add" @click="{addItem()}">Add</button>
-  <button class="prepend" @click="{prependItem()}">Prepend</button>
-  <button class="remove" @click="{removeItem()}">Remove</button>
-  <div class="list">
-    <for each="item in items">
-      <test-repeat-child label="{{item.title}}"></test-repeat-child>
-    </for>
-  </div>
-</template>
+<button class="add" @click="{addItem()}">Add</button>
+<button class="prepend" @click="{prependItem()}">Prepend</button>
+<button class="remove" @click="{removeItem()}">Remove</button>
+<div class="list">
+  <for each="item in items">
+    <test-repeat-child label="{{item.title}}"></test-repeat-child>
+  </for>
+</div>

@@ -1,18 +1,16 @@
-<template shadowrootmode="open">
-  <button class="toggle" @click="{toggleOpen()}" ?disabled="{{busy}}">Toggle</button>
-  <if condition="open">
-    <span class="details">{{details}}</span>
-  </if>
-  <if condition="!open">
-    <span class="negated">Negated visible</span>
-  </if>
-  <if condition="open && !busy">
-    <span class="compound-and">And visible</span>
-  </if>
-  <if condition="open || busy">
-    <span class="compound-or">Or visible</span>
-  </if>
-  <if condition="count > 0">
-    <span class="gt-zero">Positive</span>
-  </if>
-</template>
+<button class="toggle" @click="{toggleOpen()}" ?disabled="{{busy}}">Toggle</button>
+<if condition="open">
+  <span class="details">{{details}}</span>
+</if>
+<if condition="!open">
+  <span class="negated">Negated visible</span>
+</if>
+<if condition="open && !busy">
+  <span class="compound-and">And visible</span>
+</if>
+<if condition="open || busy">
+  <span class="compound-or">Or visible</span>
+</if>
+<if condition="count > 0">
+  <span class="gt-zero">Positive</span>
+</if>

@@ -40,14 +40,12 @@ Child routes use **relative paths** (no leading `/`). The nesting is the route t
 
 ```html
 <!-- app-shell.html -->
-<template shadowrootmode="open">
-  <nav>
-    <a href="/">Home</a>
-    <a href="/users">Users</a>
-  </nav>
-  <main><outlet /></main>
-  <footer>© 2026</footer>
-</template>
+<nav>
+  <a href="/">Home</a>
+  <a href="/users">Users</a>
+</nav>
+<main><outlet /></main>
+<footer>© 2026</footer>
 ```
 
 `<outlet />` marks where child route content renders. The nav and footer persist across navigations.

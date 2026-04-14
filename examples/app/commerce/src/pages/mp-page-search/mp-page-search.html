@@ -1,13 +1,11 @@
-<template shadowrootmode="open">
-  <mp-category-nav
-    ?all-active="{{allActive}}"
-    current-label="{{currentCategoryLabel}}"
-    :categories="{{categories}}"
-  ></mp-category-nav>
+<mp-category-nav
+  ?all-active="{{allActive}}"
+  current-label="{{currentCategoryLabel}}"
+  :categories="{{categories}}"
+></mp-category-nav>
 
-  <div class="product-area">
-    <outlet />
-  </div>
+<div class="product-area">
+  <outlet />
+</div>
 
-  <mp-filter-list :sort-options="{{sortOptions}}"></mp-filter-list>
-</template>
+<mp-filter-list :sort-options="{{sortOptions}}"></mp-filter-list>

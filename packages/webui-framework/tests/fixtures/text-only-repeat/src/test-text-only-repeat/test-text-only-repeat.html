@@ -1,10 +1,8 @@
-<template shadowrootmode="open">
-  <span class="label">
-    <for each="option in options">
-      <if condition="option.active">
-        <span class="active-label">{{option.title}}</span>
-      </if>
-    </for>
-  </span>
-  <button class="update" @click="{onUpdate()}">Update</button>
-</template>
+<span class="label">
+  <for each="option in options">
+    <if condition="option.active">
+      <span class="active-label">{{option.title}}</span>
+    </if>
+  </for>
+</span>
+<button class="update" @click="{onUpdate()}">Update</button>

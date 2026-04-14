@@ -1,64 +1,62 @@
-<template shadowrootmode="open">
-  <div class="product-layout">
-    <div class="product-container">
-      <div class="product-gallery-col">
-        <mp-product-gallery
-          handle="{{handle}}"
-          active-gradient="{{gradient}}"
-          active-image-url="{{imageUrl}}"
-          :images="{{images}}"
-        ></mp-product-gallery>
-      </div>
-
-      <div class="product-info-col">
-        <h1 class="product-title">{{productTitle}}</h1>
-
-        <div class="product-price-row">
-          <mp-price value="{{price}}" variant="pill" size="md" currency-code="USD"></mp-price>
-          <if condition="hasCompareAt">
-            <span class="product-price-compare">{{compareAt}}</span>
-          </if>
-        </div>
-
-        <mp-variant-selector
-          :option-groups="{{optionGroups}}"
-          @variant-select="{onVariantSelect(e)}"
-        ></mp-variant-selector>
-
-        <div class="product-description">{{{descriptionHtml}}}</div>
-
-        <mp-add-to-cart
-          handle="{{handle}}"
-          product-title="{{productTitle}}"
-          price="{{price}}"
-          gradient="{{gradient}}"
-          image-url="{{imageUrl}}"
-          default-color="{{defaultColor}}"
-          default-size="{{defaultSize}}"
-          selected-color="{{selectedColor}}"
-          selected-size="{{selectedSize}}"
-          current-path="{{currentPath}}"
-        ></mp-add-to-cart>
-      </div>
+<div class="product-layout">
+  <div class="product-container">
+    <div class="product-gallery-col">
+      <mp-product-gallery
+        handle="{{handle}}"
+        active-gradient="{{gradient}}"
+        active-image-url="{{imageUrl}}"
+        :images="{{images}}"
+      ></mp-product-gallery>
     </div>
 
-    <section class="related-section">
-      <h2 class="related-heading">Related Products</h2>
-      <div class="related-scroll">
-        <for each="rel in relatedProducts">
-          <mp-product-card
-            handle="{{rel.handle}}"
-            title="{{rel.title}}"
-            price="{{rel.price}}"
-            gradient="{{rel.gradient}}"
-            image-url="{{rel.imageUrl}}"
-            image-loading="lazy"
-            image-width="384"
-            image-height="384"
-            variant="related"
-          ></mp-product-card>
-        </for>
+    <div class="product-info-col">
+      <h1 class="product-title">{{productTitle}}</h1>
+
+      <div class="product-price-row">
+        <mp-price value="{{price}}" variant="pill" size="md" currency-code="USD"></mp-price>
+        <if condition="hasCompareAt">
+          <span class="product-price-compare">{{compareAt}}</span>
+        </if>
       </div>
-    </section>
+
+      <mp-variant-selector
+        :option-groups="{{optionGroups}}"
+        @variant-select="{onVariantSelect(e)}"
+      ></mp-variant-selector>
+
+      <div class="product-description">{{{descriptionHtml}}}</div>
+
+      <mp-add-to-cart
+        handle="{{handle}}"
+        product-title="{{productTitle}}"
+        price="{{price}}"
+        gradient="{{gradient}}"
+        image-url="{{imageUrl}}"
+        default-color="{{defaultColor}}"
+        default-size="{{defaultSize}}"
+        selected-color="{{selectedColor}}"
+        selected-size="{{selectedSize}}"
+        current-path="{{currentPath}}"
+      ></mp-add-to-cart>
+    </div>
   </div>
-</template>
+
+  <section class="related-section">
+    <h2 class="related-heading">Related Products</h2>
+    <div class="related-scroll">
+      <for each="rel in relatedProducts">
+        <mp-product-card
+          handle="{{rel.handle}}"
+          title="{{rel.title}}"
+          price="{{rel.price}}"
+          gradient="{{rel.gradient}}"
+          image-url="{{rel.imageUrl}}"
+          image-loading="lazy"
+          image-width="384"
+          image-height="384"
+          variant="related"
+        ></mp-product-card>
+      </for>
+    </div>
+  </section>
+</div>

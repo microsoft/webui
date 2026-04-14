@@ -25,13 +25,11 @@ Components that have child routes use `<outlet />` to mark where the matched chi
 
 ```html
 <!-- app-shell.html -->
-<template shadowrootmode="open">
-  <header><nav-bar></nav-bar></header>
-  <main>
-    <outlet />
-  </main>
-  <footer></footer>
-</template>
+<header><nav-bar></nav-bar></header>
+<main>
+  <outlet />
+</main>
+<footer></footer>
 ```
 
 The shell (header, footer) persists across all routes. Only the content at `<outlet />` changes.
@@ -54,11 +52,9 @@ Routes can be nested to any depth. Each level's component uses `<outlet />` for 
 
 ```html
 <!-- contacts-page.html -->
-<template shadowrootmode="open">
-  <h2>Contacts</h2>
-  <div class="contact-list">...</div>
-  <outlet />
-</template>
+<h2>Contacts</h2>
+<div class="contact-list">...</div>
+<outlet />
 ```
 
 Navigating from `/contacts/1` to `/contacts/2` preserves the contacts list - only the detail view at `<outlet />` changes.

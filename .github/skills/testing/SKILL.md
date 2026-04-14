@@ -79,11 +79,9 @@ The test server (`fixture-render.ts`) auto-discovers fixtures with `src/index.ht
 2. Create `fixtures/<name>/src/test-widget/test-widget.html` — component template:
 
 ```html
-<template shadowrootmode="open">
-  <span class="label">{{label}}</span>
-  <span class="count">{{count}}</span>
-  <button class="inc" @click="{increment()}">+</button>
-</template>
+<span class="label">{{label}}</span>
+<span class="count">{{count}}</span>
+<button class="inc" @click="{increment()}">+</button>
 ```
 
 3. Create `fixtures/<name>/state.json` — initial state:

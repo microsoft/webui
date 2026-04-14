@@ -1,20 +1,18 @@
-<template shadowrootmode="open">
-  <section class="grid">
-    <for each="product in products">
-      <div class="grid-item">
-        <mp-product-card
-          handle="{{product.handle}}"
-          title="{{product.title}}"
-          price="{{product.price}}"
-          gradient="{{product.gradient}}"
-          image-url="{{product.imageUrl}}"
-          image-loading="{{product.imageLoading}}"
-          image-fetch-priority="{{product.fetchPriority}}"
-          image-width="{{product.imageWidth}}"
-          image-height="{{product.imageHeight}}"
-          variant="hero"
-        ></mp-product-card>
-      </div>
-    </for>
-  </section>
-</template>
+<section class="grid">
+  <for each="product in products">
+    <div class="grid-item">
+      <mp-product-card
+        handle="{{product.handle}}"
+        title="{{product.title}}"
+        price="{{product.price}}"
+        gradient="{{product.gradient}}"
+        image-url="{{product.imageUrl}}"
+        image-loading="{{product.imageLoading}}"
+        image-fetch-priority="{{product.fetchPriority}}"
+        image-width="{{product.imageWidth}}"
+        image-height="{{product.imageHeight}}"
+        variant="hero"
+      ></mp-product-card>
+    </div>
+  </for>
+</section>

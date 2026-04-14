@@ -97,16 +97,14 @@ The WebUI Framework plugin emits only these five comment markers. Text bindings,
 Given this template:
 
 ```html
-<template shadowrootmode="open">
-  <h1>{{title}}</h1>
-  <button @click="{toggle()}">Toggle</button>
-  <if condition="visible">
-    <p>Now you see me</p>
-  </if>
-  <for each="item in items">
-    <span data-id="{{item.id}}">{{item.name}}</span>
-  </for>
-</template>
+<h1>{{title}}</h1>
+<button @click="{toggle()}">Toggle</button>
+<if condition="visible">
+  <p>Now you see me</p>
+</if>
+<for each="item in items">
+  <span data-id="{{item.id}}">{{item.name}}</span>
+</for>
 ```
 
 The server renders something like:
@@ -192,16 +190,14 @@ The `webui:hydration-complete` event fires once after every component on the pag
 Both plugins use the **same template syntax** - the difference is in the TypeScript component class, not the template:
 
 ```html
-<template shadowrootmode="open">
-  <h1>{{title}}</h1>
-  <button @click="{onClick()}">Click me</button>
-  <for each="item in items">
-    <p>{{item.name}}</p>
-  </for>
-  <if condition="isVisible">
-    <span>Shown</span>
-  </if>
-</template>
+<h1>{{title}}</h1>
+<button @click="{onClick()}">Click me</button>
+<for each="item in items">
+  <p>{{item.name}}</p>
+</for>
+<if condition="isVisible">
+  <span>Shown</span>
+</if>
 ```
 
 Event binding, interpolation, conditionals, and loops are compiled identically regardless of the hydration plugin. For a complete syntax reference, see [Interactivity](/guide/concepts/interactivity).

@@ -207,10 +207,8 @@ In the TypeScript class: `searchInput!: HTMLInputElement;`
 
 ```html
 <!-- Parent component template -->
-<template shadowrootmode="open">
-  <nav>...</nav>
-  <main><outlet /></main>
-</template>
+<nav>...</nav>
+<main><outlet /></main>
 ```
 
 ## Component Class

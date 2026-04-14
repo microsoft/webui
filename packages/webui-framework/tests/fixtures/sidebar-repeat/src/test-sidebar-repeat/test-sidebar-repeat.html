@@ -1,17 +1,15 @@
-<template shadowrootmode="open">
-  <link rel="stylesheet" href="/sidebar-repeat/sidebar-repeat.css" />
-  <nav class="sidebar">
-    <div class="nav-section">
-      <a class="nav-item" ?data-active="{{page == 'dashboard'}}" data-nav="Dashboard" href="/">Dashboard</a>
-      <a class="nav-item" ?data-active="{{page == 'contacts'}}" data-nav="All Contacts" href="/contacts">All Contacts</a>
-      <a class="nav-item" ?data-active="{{page == 'favorites'}}" data-nav="Favorites" href="/favorites">Favorites</a>
-    </div>
-    <div class="nav-divider"></div>
-    <div class="nav-section">
-      <h3 class="nav-heading">Groups</h3>
-      <for each="group in groups">
-        <a class="nav-item nav-item-group" ?data-active="{{page == 'group' && activeGroup == group}}" data-nav="{{group}}" href="/groups/{{group}}">{{group}}</a>
-      </for>
-    </div>
-  </nav>
-</template>
+<link rel="stylesheet" href="/sidebar-repeat/sidebar-repeat.css" />
+<nav class="sidebar">
+  <div class="nav-section">
+    <a class="nav-item" ?data-active="{{page == 'dashboard'}}" data-nav="Dashboard" href="/">Dashboard</a>
+    <a class="nav-item" ?data-active="{{page == 'contacts'}}" data-nav="All Contacts" href="/contacts">All Contacts</a>
+    <a class="nav-item" ?data-active="{{page == 'favorites'}}" data-nav="Favorites" href="/favorites">Favorites</a>
+  </div>
+  <div class="nav-divider"></div>
+  <div class="nav-section">
+    <h3 class="nav-heading">Groups</h3>
+    <for each="group in groups">
+      <a class="nav-item nav-item-group" ?data-active="{{page == 'group' && activeGroup == group}}" data-nav="{{group}}" href="/groups/{{group}}">{{group}}</a>
+    </for>
+  </div>
+</nav>
