@@ -77,51 +77,23 @@ extends:
             displayName: Extract version from downloaded artifacts
             name: resolveTag
 
-          # Check whether this version is already deployed to all registries.
-          # Sets needsDeployment=true if any of npm or crates.io do not yet carry
-          # the version — so a partial deployment still reruns the template.
-          # Uses curl for both checks (no npm CLI dependency) with retries and
-          # timeouts. Fails on network errors to avoid false deployment triggers.
+          # Check whether this version has already been deployed by looking
+          # for a "deployed/vX.Y.Z" git tag. This avoids external network
+          # calls to npm/crates.io which are unreachable from 1ES agents.
+          # The Deploy job pushes this tag after a successful deployment.
           - script: |
               set -euo pipefail
               VERSION="$(releaseVersion)"
-              NEEDS_DEPLOYMENT=false
+              DEPLOY_TAG="deployed/v${VERSION}"
 
-              # Helper: curl with retry and timeout. Returns HTTP status code.
-              # Fails the script if the network is unreachable (HTTP 000).
-              check_registry() {
-                local name="$1" url="$2"
-                local status
-                status=$(curl -s -o /dev/null -w "%{http_code}" \
-                  --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 5 \
-                  -H "User-Agent: webui-cd-pipeline (microsoft/webui)" \
-                  "$url")
-                if [ "$status" = "000" ]; then
-                  echo "##vso[task.logissue type=error]Network error checking ${name} (HTTP 000 — could not connect). Check agent proxy/firewall settings."
-                  exit 1
-                fi
-                echo "$status"
-              }
-
-              # npm (uses the registry HTTP API directly — no npm CLI needed)
-              NPM_STATUS=$(check_registry "npm" "https://registry.npmjs.org/@microsoft%2Fwebui/${VERSION}")
-              if [ "$NPM_STATUS" = "200" ]; then
-                echo "npm @microsoft/webui@${VERSION} already deployed"
+              git fetch --tags --quiet
+              if git tag -l "${DEPLOY_TAG}" | grep -q .; then
+                echo "${DEPLOY_TAG} tag exists — version ${VERSION} already deployed"
+                echo "##vso[task.setvariable variable=needsDeployment;isOutput=true]false"
               else
-                echo "npm @microsoft/webui@${VERSION} not yet deployed (HTTP ${NPM_STATUS})"
-                NEEDS_DEPLOYMENT=true
+                echo "${DEPLOY_TAG} tag not found — version ${VERSION} needs deployment"
+                echo "##vso[task.setvariable variable=needsDeployment;isOutput=true]true"
               fi
-
-              # crates.io
-              CRATE_STATUS=$(check_registry "crates.io" "https://crates.io/api/v1/crates/microsoft-webui/${VERSION}")
-              if [ "$CRATE_STATUS" = "200" ]; then
-                echo "crates.io microsoft-webui ${VERSION} already deployed"
-              else
-                echo "crates.io microsoft-webui ${VERSION} not yet deployed (HTTP ${CRATE_STATUS})"
-                NEEDS_DEPLOYMENT=true
-              fi
-
-              echo "##vso[task.setvariable variable=needsDeployment;isOutput=true]${NEEDS_DEPLOYMENT}"
             displayName: Check if already deployed
             name: deploymentCheck
 
@@ -158,3 +130,14 @@ extends:
             displayName: Separate release artifacts
 
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
+
+          # Mark this version as deployed so future pipeline runs skip it.
+          # Uses the releaseTag stage variable (e.g. "v0.0.8") to create
+          # a "deployed/v0.0.8" tag and push it back to the repo.
+          - script: |
+              set -euo pipefail
+              DEPLOY_TAG="deployed/$(releaseTag)"
+              echo "Tagging successful deployment: ${DEPLOY_TAG}"
+              git tag "${DEPLOY_TAG}"
+              git push origin "${DEPLOY_TAG}"
+            displayName: Tag successful deployment
