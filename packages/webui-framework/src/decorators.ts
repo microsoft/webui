@@ -22,7 +22,7 @@
  * 2. HTML global/element attributes — concatenated lowercase attribute names
  *    with camelCase property counterparts (e.g., `readOnly` → `readonly`).
  */
-const propertyToAttribute: Record<string, string> = {
+const propertyToAttribute: Record<string, string> = Object.assign(Object.create(null) as Record<string, string>, {
   // --- ARIA (ARIAMixin) ---
   ariaActiveDescendant: 'aria-activedescendant',
   ariaAutoComplete: 'aria-autocomplete',
@@ -75,7 +75,7 @@ const propertyToAttribute: Record<string, string> = {
   referrerPolicy: 'referrerpolicy',
   tabIndex: 'tabindex',
   useMap: 'usemap',
-};
+});
 
 /** Convert camelCase to kebab-case for attribute reflection. */
 export function toKebabCase(str: string): string {
