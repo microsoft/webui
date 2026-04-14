@@ -404,9 +404,10 @@ fn generate_compiled_template_with_root_source(
 /// Convert a kebab-case string to camelCase. `"my-prop"` → `"myProp"`.
 ///
 /// Irregular attributes (multi-word ARIA and global HTML attributes like
-/// `readonly`, `tabindex`) are handled via a lookup table.
+/// `readonly`, `tabindex`) are handled via the shared lookup table in
+/// `webui_protocol::attrs`.
 fn kebab_to_camel(s: &str) -> String {
-    if let Some(prop) = attribute_to_property(s) {
+    if let Some(prop) = webui_protocol::attrs::attribute_to_property(s) {
         return prop.to_string();
     }
     let mut result = String::with_capacity(s.len());
@@ -422,72 +423,6 @@ fn kebab_to_camel(s: &str) -> String {
         }
     }
     result
-}
-
-/// Map an HTML attribute to its camelCase property name.
-///
-/// Covers two categories of irregular mappings:
-///
-/// 1. **Multi-word ARIA attributes** — concatenated lowercase after `aria-`
-///    (e.g., `aria-describedby` → `ariaDescribedBy`).
-/// 2. **HTML global/element attributes** — concatenated lowercase attribute names
-///    with camelCase property counterparts (e.g., `readonly` → `readOnly`).
-fn attribute_to_property(name: &str) -> Option<&'static str> {
-    match name {
-        // --- ARIA (ARIAMixin) ---
-        "aria-activedescendant" => Some("ariaActiveDescendant"),
-        "aria-autocomplete" => Some("ariaAutoComplete"),
-        "aria-braillelabel" => Some("ariaBrailleLabel"),
-        "aria-brailleroledescription" => Some("ariaBrailleRoleDescription"),
-        "aria-colcount" => Some("ariaColCount"),
-        "aria-colindex" => Some("ariaColIndex"),
-        "aria-colindextext" => Some("ariaColIndexText"),
-        "aria-colspan" => Some("ariaColSpan"),
-        "aria-describedby" => Some("ariaDescribedBy"),
-        "aria-dropeffect" => Some("ariaDropEffect"),
-        "aria-errormessage" => Some("ariaErrorMessage"),
-        "aria-flowto" => Some("ariaFlowTo"),
-        "aria-haspopup" => Some("ariaHasPopup"),
-        "aria-keyshortcuts" => Some("ariaKeyShortcuts"),
-        "aria-labelledby" => Some("ariaLabelledBy"),
-        "aria-multiline" => Some("ariaMultiLine"),
-        "aria-multiselectable" => Some("ariaMultiSelectable"),
-        "aria-posinset" => Some("ariaPosInSet"),
-        "aria-readonly" => Some("ariaReadOnly"),
-        "aria-roledescription" => Some("ariaRoleDescription"),
-        "aria-rowcount" => Some("ariaRowCount"),
-        "aria-rowindex" => Some("ariaRowIndex"),
-        "aria-rowindextext" => Some("ariaRowIndexText"),
-        "aria-rowspan" => Some("ariaRowSpan"),
-        "aria-setsize" => Some("ariaSetSize"),
-        "aria-valuemax" => Some("ariaValueMax"),
-        "aria-valuemin" => Some("ariaValueMin"),
-        "aria-valuenow" => Some("ariaValueNow"),
-        "aria-valuetext" => Some("ariaValueText"),
-        // --- HTML global/element attributes ---
-        "accesskey" => Some("accessKey"),
-        "autocapitalize" => Some("autoCapitalize"),
-        "contenteditable" => Some("contentEditable"),
-        "crossorigin" => Some("crossOrigin"),
-        "dirname" => Some("dirName"),
-        "fetchpriority" => Some("fetchPriority"),
-        "formaction" => Some("formAction"),
-        "formenctype" => Some("formEnctype"),
-        "formmethod" => Some("formMethod"),
-        "formnovalidate" => Some("formNoValidate"),
-        "formtarget" => Some("formTarget"),
-        "inputmode" => Some("inputMode"),
-        "ismap" => Some("isMap"),
-        "maxlength" => Some("maxLength"),
-        "minlength" => Some("minLength"),
-        "nomodule" => Some("noModule"),
-        "novalidate" => Some("noValidate"),
-        "readonly" => Some("readOnly"),
-        "referrerpolicy" => Some("referrerPolicy"),
-        "tabindex" => Some("tabIndex"),
-        "usemap" => Some("useMap"),
-        _ => None,
-    }
 }
 
 fn emit_js_string(s: &str, out: &mut String) {

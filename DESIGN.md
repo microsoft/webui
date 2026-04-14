@@ -151,8 +151,9 @@ pub struct WebUIFragmentAttribute {
 ##### Attribute Name Mapping
 
 Some HTML attributes use concatenated lowercase names that do not follow
-standard camelCase-to-kebab-case conversion rules. The parser, handler,
-and framework maintain a lookup table covering two categories:
+standard camelCase-to-kebab-case conversion rules. The canonical lookup
+table lives in `webui-protocol` (`webui_protocol::attrs`) and covers two
+categories:
 
 1. **Multi-word ARIA attributes** — e.g., `aria-describedby` ↔
    `ariaDescribedBy`, `aria-activedescendant` ↔ `ariaActiveDescendant`,
@@ -160,17 +161,9 @@ and framework maintain a lookup table covering two categories:
 2. **HTML global/element attributes** — e.g., `readonly` ↔ `readOnly`,
    `tabindex` ↔ `tabIndex`, `contenteditable` ↔ `contentEditable`.
 
-This mapping is used in four places:
-
-1. **Handler** (`camel_to_kebab`) — converting camelCase state keys to
-   HTML attribute names (e.g., `readOnly` → `readonly`).
-2. **Handler** (`convert_hyphen_to_camel_case`, `component_attr_name`) —
-   converting HTML attribute names to camelCase property names for
-   component state lookup (e.g., `tabindex` → `tabIndex`).
-3. **Parser** (`kebab_to_camel`) — converting attribute names to camelCase
-   property names for compiled metadata.
-4. **Framework** (`toKebabCase`) — converting camelCase `@attr` property
-   names to HTML attribute names for reflection.
+The handler and parser both call into `webui_protocol::attrs` — there is
+no duplicated table. The framework (`toKebabCase` in `decorators.ts`)
+maintains a TypeScript copy of the same table for client-side use.
 
 Attributes that follow standard conversion (e.g., `aria-label` ↔ `ariaLabel`,
 `data-title` ↔ `dataTitle`) use the generic algorithm and do not require

@@ -17,6 +17,9 @@ use thiserror::Error;
 /// Plugin-specific protocol helpers for framework hydration metadata.
 pub mod plugin;
 
+/// Attribute-name ↔ property-name mapping for irregular HTML attributes.
+pub mod attrs;
+
 /// Generated protobuf types from `proto/webui.proto`.
 pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/webui.rs"));

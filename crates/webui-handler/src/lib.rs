@@ -136,143 +136,13 @@ struct WebUIProcessContext<'a> {
     nonce: Option<String>,
 }
 
-/// Map a camelCase property name to its HTML attribute.
-///
-/// Covers two categories of irregular mappings:
-///
-/// 1. **Multi-word ARIA attributes** — use concatenated lowercase after `aria-`
-///    (e.g., `ariaDescribedBy` → `aria-describedby`), per the
-///    [ARIAMixin](https://w3c.github.io/aria/#ARIAMixin) specification.
-/// 2. **HTML global/element attributes** — concatenated lowercase attribute names
-///    with camelCase property counterparts (e.g., `readOnly` → `readonly`,
-///    `tabIndex` → `tabindex`).
-fn property_to_attribute(name: &str) -> Option<&'static str> {
-    match name {
-        // --- ARIA (ARIAMixin) ---
-        "ariaActiveDescendant" => Some("aria-activedescendant"),
-        "ariaAutoComplete" => Some("aria-autocomplete"),
-        "ariaBrailleLabel" => Some("aria-braillelabel"),
-        "ariaBrailleRoleDescription" => Some("aria-brailleroledescription"),
-        "ariaColCount" => Some("aria-colcount"),
-        "ariaColIndex" => Some("aria-colindex"),
-        "ariaColIndexText" => Some("aria-colindextext"),
-        "ariaColSpan" => Some("aria-colspan"),
-        "ariaDescribedBy" => Some("aria-describedby"),
-        "ariaDropEffect" => Some("aria-dropeffect"),
-        "ariaErrorMessage" => Some("aria-errormessage"),
-        "ariaFlowTo" => Some("aria-flowto"),
-        "ariaHasPopup" => Some("aria-haspopup"),
-        "ariaKeyShortcuts" => Some("aria-keyshortcuts"),
-        "ariaLabelledBy" => Some("aria-labelledby"),
-        "ariaMultiLine" => Some("aria-multiline"),
-        "ariaMultiSelectable" => Some("aria-multiselectable"),
-        "ariaPosInSet" => Some("aria-posinset"),
-        "ariaReadOnly" => Some("aria-readonly"),
-        "ariaRoleDescription" => Some("aria-roledescription"),
-        "ariaRowCount" => Some("aria-rowcount"),
-        "ariaRowIndex" => Some("aria-rowindex"),
-        "ariaRowIndexText" => Some("aria-rowindextext"),
-        "ariaRowSpan" => Some("aria-rowspan"),
-        "ariaSetSize" => Some("aria-setsize"),
-        "ariaValueMax" => Some("aria-valuemax"),
-        "ariaValueMin" => Some("aria-valuemin"),
-        "ariaValueNow" => Some("aria-valuenow"),
-        "ariaValueText" => Some("aria-valuetext"),
-        // --- HTML global/element attributes ---
-        "accessKey" => Some("accesskey"),
-        "autoCapitalize" => Some("autocapitalize"),
-        "contentEditable" => Some("contenteditable"),
-        "crossOrigin" => Some("crossorigin"),
-        "dirName" => Some("dirname"),
-        "fetchPriority" => Some("fetchpriority"),
-        "formAction" => Some("formaction"),
-        "formEnctype" => Some("formenctype"),
-        "formMethod" => Some("formmethod"),
-        "formNoValidate" => Some("formnovalidate"),
-        "formTarget" => Some("formtarget"),
-        "inputMode" => Some("inputmode"),
-        "isMap" => Some("ismap"),
-        "maxLength" => Some("maxlength"),
-        "minLength" => Some("minlength"),
-        "noModule" => Some("nomodule"),
-        "noValidate" => Some("novalidate"),
-        "readOnly" => Some("readonly"),
-        "referrerPolicy" => Some("referrerpolicy"),
-        "tabIndex" => Some("tabindex"),
-        "useMap" => Some("usemap"),
-        _ => None,
-    }
-}
-
-/// Map an HTML attribute to its camelCase property name.
-///
-/// Inverse of [`property_to_attribute`]. Covers multi-word ARIA attributes
-/// and HTML global/element attributes whose attribute names are concatenated
-/// lowercase (e.g., `readonly` → `readOnly`, `tabindex` → `tabIndex`).
-fn attribute_to_property(name: &str) -> Option<&'static str> {
-    match name {
-        // --- ARIA (ARIAMixin) ---
-        "aria-activedescendant" => Some("ariaActiveDescendant"),
-        "aria-autocomplete" => Some("ariaAutoComplete"),
-        "aria-braillelabel" => Some("ariaBrailleLabel"),
-        "aria-brailleroledescription" => Some("ariaBrailleRoleDescription"),
-        "aria-colcount" => Some("ariaColCount"),
-        "aria-colindex" => Some("ariaColIndex"),
-        "aria-colindextext" => Some("ariaColIndexText"),
-        "aria-colspan" => Some("ariaColSpan"),
-        "aria-describedby" => Some("ariaDescribedBy"),
-        "aria-dropeffect" => Some("ariaDropEffect"),
-        "aria-errormessage" => Some("ariaErrorMessage"),
-        "aria-flowto" => Some("ariaFlowTo"),
-        "aria-haspopup" => Some("ariaHasPopup"),
-        "aria-keyshortcuts" => Some("ariaKeyShortcuts"),
-        "aria-labelledby" => Some("ariaLabelledBy"),
-        "aria-multiline" => Some("ariaMultiLine"),
-        "aria-multiselectable" => Some("ariaMultiSelectable"),
-        "aria-posinset" => Some("ariaPosInSet"),
-        "aria-readonly" => Some("ariaReadOnly"),
-        "aria-roledescription" => Some("ariaRoleDescription"),
-        "aria-rowcount" => Some("ariaRowCount"),
-        "aria-rowindex" => Some("ariaRowIndex"),
-        "aria-rowindextext" => Some("ariaRowIndexText"),
-        "aria-rowspan" => Some("ariaRowSpan"),
-        "aria-setsize" => Some("ariaSetSize"),
-        "aria-valuemax" => Some("ariaValueMax"),
-        "aria-valuemin" => Some("ariaValueMin"),
-        "aria-valuenow" => Some("ariaValueNow"),
-        "aria-valuetext" => Some("ariaValueText"),
-        // --- HTML global/element attributes ---
-        "accesskey" => Some("accessKey"),
-        "autocapitalize" => Some("autoCapitalize"),
-        "contenteditable" => Some("contentEditable"),
-        "crossorigin" => Some("crossOrigin"),
-        "dirname" => Some("dirName"),
-        "fetchpriority" => Some("fetchPriority"),
-        "formaction" => Some("formAction"),
-        "formenctype" => Some("formEnctype"),
-        "formmethod" => Some("formMethod"),
-        "formnovalidate" => Some("formNoValidate"),
-        "formtarget" => Some("formTarget"),
-        "inputmode" => Some("inputMode"),
-        "ismap" => Some("isMap"),
-        "maxlength" => Some("maxLength"),
-        "minlength" => Some("minLength"),
-        "nomodule" => Some("noModule"),
-        "novalidate" => Some("noValidate"),
-        "readonly" => Some("readOnly"),
-        "referrerpolicy" => Some("referrerPolicy"),
-        "tabindex" => Some("tabIndex"),
-        "usemap" => Some("useMap"),
-        _ => None,
-    }
-}
-
 /// Convert hyphenated name to camelCase (e.g., "data-title" → "dataTitle").
 ///
 /// Irregular attributes (multi-word ARIA and global HTML attributes like
-/// `readonly`, `tabindex`) are handled via a lookup table.
+/// `readonly`, `tabindex`) are handled via the shared lookup table in
+/// `webui_protocol::attrs`.
 fn convert_hyphen_to_camel_case(name: &str) -> String {
-    if let Some(prop) = attribute_to_property(name) {
+    if let Some(prop) = webui_protocol::attrs::attribute_to_property(name) {
         return prop.to_string();
     }
     let mut result = String::with_capacity(name.len());
@@ -293,9 +163,10 @@ fn convert_hyphen_to_camel_case(name: &str) -> String {
 /// Convert camelCase to kebab-case (e.g., "totalContacts" → "total-contacts").
 ///
 /// Irregular attributes (multi-word ARIA and global HTML attributes like
-/// `readOnly`, `tabIndex`) are handled via a lookup table.
+/// `readOnly`, `tabIndex`) are handled via the shared lookup table in
+/// `webui_protocol::attrs`.
 pub(crate) fn camel_to_kebab(name: &str) -> String {
-    if let Some(attr) = property_to_attribute(name) {
+    if let Some(attr) = webui_protocol::attrs::property_to_attribute(name) {
         return attr.to_string();
     }
     let mut result = String::with_capacity(name.len() + 4);
@@ -315,11 +186,11 @@ pub(crate) fn camel_to_kebab(name: &str) -> String {
 /// Get the component attribute name, stripping `:` prefix and converting to camelCase.
 ///
 /// Non-hyphenated attributes (e.g., `readonly`, `tabindex`) are checked against
-/// the lookup table so they map to the correct property name (e.g., `readOnly`,
-/// `tabIndex`).
+/// the shared lookup table so they map to the correct property name (e.g.,
+/// `readOnly`, `tabIndex`).
 fn component_attr_name(name: &str) -> String {
     let stripped = name.strip_prefix(':').unwrap_or(name);
-    if let Some(prop) = attribute_to_property(stripped) {
+    if let Some(prop) = webui_protocol::attrs::attribute_to_property(stripped) {
         return prop.to_string();
     }
     if stripped.contains('-') {
