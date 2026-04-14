@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { WebUIElement, observable } from '@microsoft/webui-framework';
+import { WebUIElement, observable, attr } from '@microsoft/webui-framework';
 import { Router } from '@microsoft/webui-router';
 
 // ── Shell component ──────────────────────────────────────────────
@@ -28,6 +28,13 @@ export class PageDetail extends WebUIElement {
 }
 PageDetail.define('page-detail');
 
+export class PageCompose extends WebUIElement {
+  @attr action = '';
+  @attr to = '';
+  @attr subject = '';
+}
+PageCompose.define('page-compose');
+
 // ── Start router after hydration ─────────────────────────────────
 
 window.addEventListener('webui:hydration-complete', () => {
@@ -36,6 +43,7 @@ window.addEventListener('webui:hydration-complete', () => {
       'page-alpha': () => Promise.resolve(),
       'page-beta': () => Promise.resolve(),
       'page-detail': () => Promise.resolve(),
+      'page-compose': () => Promise.resolve(),
     },
   });
 });
@@ -47,6 +55,7 @@ if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {
       'page-alpha': () => Promise.resolve(),
       'page-beta': () => Promise.resolve(),
       'page-detail': () => Promise.resolve(),
+      'page-compose': () => Promise.resolve(),
     },
   });
 }

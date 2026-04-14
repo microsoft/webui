@@ -20,7 +20,7 @@ test.describe('SSR deep links', () => {
   test('root page renders shell with nav links', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('h1')).toContainText('Router Test');
-    await expect(page.locator('nav a')).toHaveCount(5);
+    await expect(page.locator('nav a')).toHaveCount(6);
   });
 
   test('alpha page renders via SSR', async ({ page }) => {
@@ -162,5 +162,131 @@ test.describe('page reload preservation', () => {
 
     await page.reload();
     await expect(page.locator('h2')).toContainText('Item 99');
+  });
+});
+
+test.describe('query parameter passing', () => {
+  test('SSR renders compose page (query params not available server-side)', async ({ page }) => {
+    await page.goto('/compose?action=reply&to=test@example.com&subject=Re: Hello');
+    await expect(page.locator('h2')).toContainText('Compose');
+  });
+
+  test('client-side navigation passes query params as attributes', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    }, null);
+    await page.waitForFunction(
+      () => !!(window as any).navigation,
+      null,
+      { timeout: 5000 },
+    );
+    await page.waitForTimeout(300);
+
+    // Click the compose link with query params
+    await page.locator('nav a[href*="compose"]').click();
+    await expect(page.locator('h2')).toContainText('Compose');
+
+    // Verify query params were set as attributes on the component
+    const action = await page.locator('.action').textContent();
+    expect(action).toContain('reply');
+
+    const to = await page.locator('.to').textContent();
+    expect(to).toContain('test@example.com');
+
+    const subject = await page.locator('.subject').textContent();
+    expect(subject).toContain('Re: Hello');
+  });
+
+  test('navigated event includes query object', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    }, null);
+    await page.waitForFunction(
+      () => !!(window as any).navigation,
+      null,
+      { timeout: 5000 },
+    );
+    await page.waitForTimeout(300);
+
+    // Listen for the navigated event
+    const queryPromise = page.evaluate(() => {
+      return new Promise<Record<string, string>>((resolve) => {
+        window.addEventListener('webui:route:navigated', ((e: CustomEvent) => {
+          resolve(e.detail.query);
+        }) as EventListener, { once: true });
+      });
+    });
+
+    await page.locator('nav a[href*="compose"]').click();
+    const query = await queryPromise;
+    expect(query).toEqual({
+      action: 'reply',
+      to: 'test@example.com',
+      subject: 'Re: Hello',
+    });
+  });
+
+  test('unlisted query params are NOT set as attributes (allowlist enforcement)', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    }, null);
+    await page.waitForFunction(
+      () => !!(window as any).navigation,
+      null,
+      { timeout: 5000 },
+    );
+    await page.waitForTimeout(300);
+
+    // Navigate to compose with both allowed and disallowed query params
+    await page.evaluate(() => {
+      (window as any).navigation.navigate('/compose?action=reply&to=user@test.com&class=evil&style=display:none&id=hijack');
+    });
+    await expect(page.locator('h2')).toContainText('Compose');
+
+    // Allowed params should be set
+    const comp = page.locator('page-compose');
+    await expect(comp).toHaveAttribute('action', 'reply');
+    await expect(comp).toHaveAttribute('to', 'user@test.com');
+
+    // Disallowed params must NOT be set
+    expect(await comp.getAttribute('class')).toBeNull();
+    expect(await comp.getAttribute('style')).toBeNull();
+    expect(await comp.getAttribute('id')).toBeNull();
+  });
+
+  test('navigated event includes ALL query params (unfiltered)', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    }, null);
+    await page.waitForFunction(
+      () => !!(window as any).navigation,
+      null,
+      { timeout: 5000 },
+    );
+    await page.waitForTimeout(300);
+
+    const queryPromise = page.evaluate(() => {
+      return new Promise<Record<string, string>>((resolve) => {
+        window.addEventListener('webui:route:navigated', ((e: CustomEvent) => {
+          resolve(e.detail.query);
+        }) as EventListener, { once: true });
+      });
+    });
+
+    await page.evaluate(() => {
+      (window as any).navigation.navigate('/compose?action=reply&evil=inject');
+    });
+
+    const query = await queryPromise;
+    // Event should contain ALL params (unfiltered) for JS consumers
+    expect(query).toEqual({ action: 'reply', evil: 'inject' });
   });
 });

@@ -63,6 +63,9 @@ message WebUIFragmentRoute {
   bool exact = 3;
   // Nested child routes rendered at the component's <outlet />.
   repeated WebUIFragmentRoute children = 4;
+  // Comma-separated allowlist of query parameters forwarded as attributes.
+  // Empty string means no query params are forwarded (deny-by-default).
+  string allowed_query = 5;
 }
 
 // Outlet placeholder — marks where matched child route content renders.

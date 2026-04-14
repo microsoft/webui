@@ -563,13 +563,15 @@ pub struct RouteChainEntry {
     pub params: HashMap<String, String>,
     /// Whether this route requires an exact match.
     pub exact: bool,
+    /// Comma-separated allowlist of query parameters forwarded as attributes.
+    pub allowed_query: String,
 }
 
 impl RouteChainEntry {
     /// Serialize this entry to a JSON value ready for inclusion in a partial response.
     #[must_use]
     pub fn to_json(&self) -> Value {
-        let mut obj = serde_json::Map::with_capacity(4);
+        let mut obj = serde_json::Map::with_capacity(5);
         obj.insert("component".into(), Value::String(self.component.clone()));
         obj.insert("path".into(), Value::String(self.path.clone()));
         if !self.params.is_empty() {
@@ -582,6 +584,12 @@ impl RouteChainEntry {
         }
         if self.exact {
             obj.insert("exact".into(), Value::Bool(true));
+        }
+        if !self.allowed_query.is_empty() {
+            obj.insert(
+                "allowedQuery".into(),
+                Value::String(self.allowed_query.clone()),
+            );
         }
         Value::Object(obj)
     }
@@ -652,6 +660,7 @@ pub fn collect_route_chain(
                                 path: route_frag.path.clone(),
                                 params: rm.params.clone(),
                                 exact: route_frag.exact,
+                                allowed_query: route_frag.allowed_query.clone(),
                             });
 
                             let child_route_base = route_matcher::compute_route_base(
@@ -715,6 +724,7 @@ fn collect_chain_from_children(
                 path: matched.path.clone(),
                 params: rm.params,
                 exact: matched.exact,
+                allowed_query: matched.allowed_query.clone(),
             });
             if !matched.children.is_empty() {
                 let child_base =

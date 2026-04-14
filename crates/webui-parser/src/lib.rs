@@ -1404,10 +1404,15 @@ impl HtmlParser {
 
         let exact = self.has_element_attribute(node, "exact", source)?;
 
+        let query = self
+            .get_element_attribute(node, "query", source)?
+            .unwrap_or_default();
+
         let attrs = route_parser::RouteAttributes {
             path: path.clone(),
             component: component.clone(),
             exact,
+            query,
         };
 
         // Validate attributes (component is required)
@@ -1464,10 +1469,15 @@ impl HtmlParser {
             .unwrap_or_default();
         let exact = self.has_element_attribute(node, "exact", source)?;
 
+        let query = self
+            .get_element_attribute(node, "query", source)?
+            .unwrap_or_default();
+
         let attrs = route_parser::RouteAttributes {
             path: path.clone(),
             component: component.clone(),
             exact,
+            query,
         };
 
         route_parser::validate_attributes(&attrs)?;

@@ -387,6 +387,11 @@ fn convert_route_tag(tag_str: &str, result: &mut String) -> Option<usize> {
     if tag.contains(" layout") {
         result.push_str(" layout");
     }
+    if let Some(v) = extract_attribute_value(tag, "query") {
+        result.push_str(" query=\"");
+        result.push_str(v);
+        result.push('"');
+    }
     result.push_str(" style=\"display:none\"");
 
     if is_self_closing {

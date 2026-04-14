@@ -57,6 +57,69 @@ function routeComponent(el: Element): string {
 /** Type-safe route param storage — avoids expando properties on DOM elements. */
 const routeParamsMap = new WeakMap<Element, Record<string, string>>();
 
+/**
+ * Tracks which query-param attribute names (kebab-case) were last applied to
+ * each component element. Used to remove stale attributes when query params
+ * change (e.g. navigating from `?subject=foo` to no `subject`).
+ */
+const queryAttrsMap = new WeakMap<Element, Set<string>>();
+
+/** Parse query-string parameters from a request path (e.g. `/compose?action=reply&to=x`). */
+export function parseQuery(requestPath: string): Record<string, string> {
+  const qIdx = requestPath.indexOf('?');
+  if (qIdx < 0) return {};
+  const query: Record<string, string> = {};
+  const params = new URLSearchParams(requestPath.slice(qIdx));
+  for (const [k, v] of params) {
+    query[k] = v;
+  }
+  return query;
+}
+
+/**
+ * Read the comma-separated `query` allowlist attribute from a `<route>` element.
+ * Returns null if no `query` attribute is present (deny-by-default).
+ */
+function routeAllowedQuery(el: Element): Set<string> | null {
+  const raw = el.getAttribute('query');
+  if (raw == null) return null;
+  const set = new Set<string>();
+  for (const part of raw.split(',')) {
+    const trimmed = part.trim();
+    if (trimmed) set.add(trimmed);
+  }
+  return set;
+}
+
+/**
+ * Filter query params through an allowlist. Returns only key-value pairs
+ * whose keys appear in `allowed`. If `allowed` is null (no `query` attr
+ * on the route), returns an empty object (deny-by-default).
+ *
+ * Keys whose kebab-case form collides with a route param's kebab-case
+ * form are always excluded so that path parameters cannot be overridden
+ * via query string.
+ */
+export function filterQuery(
+  query: Record<string, string>,
+  allowed: Set<string> | null,
+  routeParams?: Record<string, string>,
+): Record<string, string> {
+  if (!allowed) return {};
+  const toKebab = (k: string): string => k.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
+  // Build a set of kebab-cased route param attribute names for collision check
+  const paramAttrNames = routeParams
+    ? new Set(Object.keys(routeParams).map(toKebab))
+    : undefined;
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(query)) {
+    if (allowed.has(k) && !(paramAttrNames && paramAttrNames.has(toKebab(k)))) {
+      result[k] = v;
+    }
+  }
+  return result;
+}
+
 function activateRoute(el: HTMLElement, params: Record<string, string>): void {
   routeParamsMap.set(el, params);
   el.setAttribute('active', '');
@@ -82,6 +145,8 @@ export class WebUIRouteElement extends HTMLElement {
   get component(): string { return this.getAttribute('component') ?? ''; }
   get isActive(): boolean { return this.hasAttribute('active'); }
   get params(): Record<string, string> { return getRouteParams(this); }
+  /** Comma-separated allowlist of query params forwarded as attributes. */
+  get query(): string { return this.getAttribute('query') ?? ''; }
 }
 
 // ── Route Chain Types ────────────────────────────────────────────
@@ -98,6 +163,8 @@ interface RouteChainEntry {
   exact?: boolean;
   /** DOM element, populated during mount or SSR chain build. */
   el?: HTMLElement;
+  /** Comma-separated allowlist of query params forwarded as attributes. */
+  allowedQuery?: string;
 }
 
 // ── Router ───────────────────────────────────────────────────────
@@ -228,6 +295,7 @@ export class WebUIRouter {
    */
   private async handleNavigation(target: NavigationTarget, signal?: AbortSignal): Promise<void> {
     const { requestPath } = target;
+    const query = parseQuery(requestPath);
 
     if (this.isInitialNavigation) {
       // Set the flag BEFORE any async work — if a new navigation
@@ -255,6 +323,7 @@ export class WebUIRouter {
         path: e.path ?? '',
         params: e.params ?? {},
         exact: e.exact,
+        allowedQuery: e.allowedQuery,
       }));
 
       if (newChain.length === 0) {
@@ -297,7 +366,7 @@ export class WebUIRouter {
         if (changeLevel > 0 || isQueryOnlyChange) {
           const end = isQueryOnlyChange ? newChain.length : changeLevel;
           for (let i = 0; i < end; i++) {
-            this.applyState(newChain[i], partialData);
+            this.applyState(newChain[i], partialData, query);
           }
         }
 
@@ -315,7 +384,7 @@ export class WebUIRouter {
           ) {
             entry.el = oldEntry.el;
             if (entry.component && partialData) {
-              this.applyState(entry, partialData);
+              this.applyState(entry, partialData, query);
             }
             activateRoute(entry.el, entry.params);
             continue;
@@ -326,7 +395,7 @@ export class WebUIRouter {
           entry.el = routeEl;
 
           if (entry.component && partialData) {
-            this.mountComponent(routeEl, entry.component, partialData, entry.params);
+            this.mountComponent(routeEl, entry.component, partialData, entry.params, query);
           }
 
           activateRoute(routeEl, entry.params);
@@ -352,6 +421,7 @@ export class WebUIRouter {
     const detail: NavigationEvent = {
       component: leaf?.component ?? '',
       params: leaf?.params ?? {},
+      query,
       path: requestPath,
     };
     window.dispatchEvent(new CustomEvent('webui:route:navigated', { detail }));
@@ -448,6 +518,7 @@ export class WebUIRouter {
         params,
         exact: isExact(activeEl),
         el: activeEl,
+        allowedQuery: activeEl.getAttribute('query') ?? undefined,
       });
       activateRoute(activeEl, params);
 
@@ -532,6 +603,14 @@ export class WebUIRouter {
     const resp = await fetch(fullPath, { headers, signal });
 
     if (!resp.ok) return null;
+
+    const contentType = resp.headers.get('content-type') ?? '';
+    if (!contentType.includes('application/json')) {
+      // Server returned HTML (e.g. login page) instead of JSON partial.
+      // Trigger a full page navigation so the browser handles it.
+      window.location.href = prependBasePath(requestPath, this.config.basePath ?? '');
+      return null;
+    }
 
     const data = await resp.json() as PartialResponse & { inventory?: string };
 
@@ -629,6 +708,7 @@ export class WebUIRouter {
     componentTag: string,
     data: PartialResponse,
     params: Record<string, string>,
+    query?: Record<string, string>,
   ): void {
     const component = document.createElement(componentTag);
     routeEl.textContent = '';
@@ -644,6 +724,17 @@ export class WebUIRouter {
       component.setAttribute(toKebab(key), value);
     }
 
+    // Set allowed query params as attributes (deny-by-default)
+    const allowed = routeAllowedQuery(routeEl);
+    const filtered = query ? filterQuery(query, allowed, params) : {};
+    const setAttrs = new Set<string>();
+    for (const [key, value] of Object.entries(filtered)) {
+      const attr = toKebab(key);
+      component.setAttribute(attr, value);
+      setAttrs.add(attr);
+    }
+    queryAttrsMap.set(component, setAttrs);
+
     // Set state via the framework's setInitialState (handles @observable + flush)
     if (typeof (component as any).setInitialState === 'function') {
       (component as any).setInitialState(data.state);
@@ -655,8 +746,11 @@ export class WebUIRouter {
    * Calls the framework's built-in `setInitialState` which sets
    * `@observable` properties and flushes DOM updates synchronously.
    * Route params are set as HTML attributes for `@attr` reflection.
+   * Allowed query params (declared via `query` attr on the route) are
+   * also set as attributes; stale ones from the previous navigation
+   * are removed.
    */
-  private applyState(entry: RouteChainEntry, data: PartialResponse): void {
+  private applyState(entry: RouteChainEntry, data: PartialResponse, query?: Record<string, string>): void {
     if (!entry.component || !entry.el) return;
     const compEl = entry.el.querySelector(entry.component) as any;
     if (!compEl) return;
@@ -666,6 +760,27 @@ export class WebUIRouter {
     for (const [key, value] of Object.entries(entry.params)) {
       compEl.setAttribute(toKebab(key), value);
     }
+
+    // Set allowed query params as attributes (deny-by-default)
+    const allowed = routeAllowedQuery(entry.el);
+    const filtered = query ? filterQuery(query, allowed, entry.params) : {};
+    const newAttrs = new Set<string>();
+    for (const [key, value] of Object.entries(filtered)) {
+      const attr = toKebab(key);
+      compEl.setAttribute(attr, value);
+      newAttrs.add(attr);
+    }
+
+    // Remove stale query-param attributes from the previous navigation
+    const prevAttrs = queryAttrsMap.get(compEl);
+    if (prevAttrs) {
+      for (const attr of prevAttrs) {
+        if (!newAttrs.has(attr)) {
+          compEl.removeAttribute(attr);
+        }
+      }
+    }
+    queryAttrsMap.set(compEl, newAttrs);
 
     // Set state via the framework's setInitialState (handles @observable + flush)
     if (typeof compEl.setInitialState === 'function') {

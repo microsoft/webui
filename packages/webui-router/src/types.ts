@@ -50,6 +50,8 @@ export interface RouterConfig {
 export interface NavigationEvent {
   component: string;
   params: Record<string, string>;
+  /** Parsed query-string parameters (e.g. `?action=reply&to=x` → `{ action: 'reply', to: 'x' }`). */
+  query: Record<string, string>;
   /** The navigated path, including the query string when present. */
   path: string;
 }

@@ -21,6 +21,8 @@ pub(crate) struct RouteAttributes {
     pub path: String,
     pub component: String,
     pub exact: bool,
+    /// Comma-separated allowlist of query parameters forwarded as attributes.
+    pub query: String,
 }
 
 /// Iteratively extract `:param` and `*splat` tokens from a path template.
@@ -107,6 +109,7 @@ pub(crate) fn build_route_fragment(
         fragment_id,
         exact: attrs.exact,
         children,
+        allowed_query: attrs.query.clone(),
     }
 }
 

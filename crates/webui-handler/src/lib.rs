@@ -384,6 +384,11 @@ impl WebUIHandler {
                 if matched_child.exact {
                     context.writer.write(" exact")?;
                 }
+                if !matched_child.allowed_query.is_empty() {
+                    context.writer.write(" query=\"")?;
+                    context.writer.write(&matched_child.allowed_query)?;
+                    context.writer.write("\"")?;
+                }
                 context.writer.write(" active>")?;
 
                 context.writer.write("<")?;
@@ -422,9 +427,18 @@ impl WebUIHandler {
                 }
                 context.writer.write(" component=\"")?;
                 context.writer.write(&child.fragment_id)?;
+                context.writer.write("\"")?;
+                if child.exact {
+                    context.writer.write(" exact")?;
+                }
+                if !child.allowed_query.is_empty() {
+                    context.writer.write(" query=\"")?;
+                    context.writer.write(&child.allowed_query)?;
+                    context.writer.write("\"")?;
+                }
                 context
                     .writer
-                    .write("\" style=\"display:none\"></webui-route>")?;
+                    .write(" style=\"display:none\"></webui-route>")?;
             }
         }
 
@@ -489,6 +503,11 @@ impl WebUIHandler {
         }
         if route_frag.exact {
             context.writer.write(" exact")?;
+        }
+        if !route_frag.allowed_query.is_empty() {
+            context.writer.write(" query=\"")?;
+            context.writer.write(&route_frag.allowed_query)?;
+            context.writer.write("\"")?;
         }
 
         if is_matched {
@@ -5254,8 +5273,11 @@ mod tests {
                             fragment_id: "topic-comp".into(),
                             exact: true,
                             children: vec![],
+                            ..Default::default()
                         }],
+                        ..Default::default()
                     }],
+                    ..Default::default()
                 })],
             },
         );
@@ -5640,7 +5662,7 @@ mod tests {
         let html = writer.get_content();
 
         assert!(
-            html.contains(r#"component="topic-comp" style="display:none">"#),
+            html.contains(r#"component="topic-comp" exact style="display:none">"#),
             "topic should be hidden: {html}"
         );
     }

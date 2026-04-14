@@ -117,6 +117,31 @@ Programmatic navigation:
 Router.navigate('/users/42');
 ```
 
+### View Transitions
+
+The router automatically uses the [View Transitions API](https://developer.mozilla.org/en-US/docs/Web/API/Document/startViewTransition) when available. On each client-side navigation, the DOM swap is wrapped in `document.startViewTransition()`, giving you a CSS-driven cross-fade between old and new route content with zero extra code.
+
+**Do NOT wrap `Router.navigate()` in your own `startViewTransition()`** — the router already does this internally.
+
+To customize the animation, use `view-transition-name` on specific elements and target them in CSS:
+
+```css
+/* Scope the transition to the reading pane only */
+.route-outlet {
+  view-transition-name: reading-pane;
+}
+
+/* Custom cross-fade for the reading pane */
+::view-transition-old(reading-pane) {
+  animation: fade-out 100ms ease-out;
+}
+::view-transition-new(reading-pane) {
+  animation: fade-in 150ms ease-in;
+}
+```
+
+The router awaits `transition.updateCallbackDone` (not `.finished`), so rapid navigations supersede each other without queuing animations.
+
 ### `Router.back()`
 
 Navigate back in history.
@@ -164,10 +189,14 @@ Dispatched on `window` after each navigation:
 
 ```typescript
 window.addEventListener('webui:route:navigated', (e) => {
-  const { component, params, path } = (e as CustomEvent).detail;
-  console.log(`Navigated to ${component}`, params);
+  const { component, params, query, path } = (e as CustomEvent).detail;
+  console.log(`Navigated to ${component}`, params, query);
 });
 ```
+
+> **Note:** `query` contains **all** URL query parameters (unfiltered). Only
+> parameters declared via the `query` attribute on `<route>` are set as DOM
+> attributes — the event exposes the full set for programmatic use.
 
 ## Route Path Syntax
 
@@ -179,6 +208,41 @@ window.addEventListener('webui:route:navigated', (e) => {
 | `*splat` | `files/*path` | Rest of path → `{ path: "a/b/c" }` |
 
 Paths are relative to the parent route. Use `/` prefix only for the root route.
+
+## Query Parameters
+
+URL query parameters can be forwarded to components as HTML attributes by
+declaring an **allowlist** on the `<route>` element:
+
+```html
+<route path="compose" component="page-compose" query="action,to,subject" exact />
+```
+
+When a user navigates to `/compose?action=reply&to=user@test.com`, only the
+three listed parameters are set as attributes on `<page-compose>`. Any
+unlisted parameter (e.g. `?class=evil&style=display:none`) is silently
+dropped — **deny-by-default**.
+
+### Rules
+
+| Scenario | Behavior |
+|----------|----------|
+| No `query` attribute | No query params forwarded (safe default) |
+| `query="action,to"` | Only `action` and `to` are set as attributes |
+| Collision with route param | Route param wins — query param is skipped |
+| Query-only navigation | Stale attributes from previous query are removed |
+
+### Component usage
+
+Declare `@attr` properties matching the allowed query param names:
+
+```typescript
+export class PageCompose extends WebUIElement {
+  @attr action = '';
+  @attr to = '';
+  @attr subject = '';
+}
+```
 
 ## Server Contract
 
