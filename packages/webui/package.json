@@ -40,7 +40,7 @@
   },
   "scripts": {
     "build": "esbuild src/index.ts src/platform.ts src/install.ts --outdir=dist --format=esm --platform=node && tsc --emitDeclarationOnly",
-    "postinstall": "node --input-type=module -e \"try{await import('./dist/install.js')}catch{}\"",
+    "postinstall": "node --input-type=module -e \"try{await import('./dist/install.js')}catch(e){if(e.code!=='ERR_MODULE_NOT_FOUND')console.error('[webui] postinstall error:',e.message)}\"",
     "test": "esbuild test/integration.test.ts --outfile=test/integration.test.js --format=esm --platform=node && node --test test/integration.test.js"
   },
   "type": "module",
