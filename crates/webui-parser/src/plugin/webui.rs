@@ -403,11 +403,10 @@ fn generate_compiled_template_with_root_source(
 /// Emit a JS string literal with script-safe escaping.
 /// Convert a kebab-case string to camelCase. `"my-prop"` → `"myProp"`.
 ///
-/// Multi-word ARIA attributes are handled via a lookup table so that
-/// `aria-describedby` correctly maps to `ariaDescribedBy` rather than
-/// the naive `ariaDescribedby`.
+/// Irregular attributes (multi-word ARIA and global HTML attributes like
+/// `readonly`, `tabindex`) are handled via a lookup table.
 fn kebab_to_camel(s: &str) -> String {
-    if let Some(prop) = aria_attribute_to_property(s) {
+    if let Some(prop) = attribute_to_property(s) {
         return prop.to_string();
     }
     let mut result = String::with_capacity(s.len());
@@ -425,13 +424,17 @@ fn kebab_to_camel(s: &str) -> String {
     result
 }
 
-/// Map an ARIA HTML attribute to its camelCase property name.
+/// Map an HTML attribute to its camelCase property name.
 ///
-/// Multi-word ARIA attributes use concatenated lowercase after `aria-`
-/// (e.g., `aria-describedby` → `ariaDescribedBy`), which doesn't match
-/// standard kebab-to-camel conversion.
-fn aria_attribute_to_property(name: &str) -> Option<&'static str> {
+/// Covers two categories of irregular mappings:
+///
+/// 1. **Multi-word ARIA attributes** — concatenated lowercase after `aria-`
+///    (e.g., `aria-describedby` → `ariaDescribedBy`).
+/// 2. **HTML global/element attributes** — concatenated lowercase attribute names
+///    with camelCase property counterparts (e.g., `readonly` → `readOnly`).
+fn attribute_to_property(name: &str) -> Option<&'static str> {
     match name {
+        // --- ARIA (ARIAMixin) ---
         "aria-activedescendant" => Some("ariaActiveDescendant"),
         "aria-autocomplete" => Some("ariaAutoComplete"),
         "aria-braillelabel" => Some("ariaBrailleLabel"),
@@ -461,6 +464,28 @@ fn aria_attribute_to_property(name: &str) -> Option<&'static str> {
         "aria-valuemin" => Some("ariaValueMin"),
         "aria-valuenow" => Some("ariaValueNow"),
         "aria-valuetext" => Some("ariaValueText"),
+        // --- HTML global/element attributes ---
+        "accesskey" => Some("accessKey"),
+        "autocapitalize" => Some("autoCapitalize"),
+        "contenteditable" => Some("contentEditable"),
+        "crossorigin" => Some("crossOrigin"),
+        "dirname" => Some("dirName"),
+        "fetchpriority" => Some("fetchPriority"),
+        "formaction" => Some("formAction"),
+        "formenctype" => Some("formEnctype"),
+        "formmethod" => Some("formMethod"),
+        "formnovalidate" => Some("formNoValidate"),
+        "formtarget" => Some("formTarget"),
+        "inputmode" => Some("inputMode"),
+        "ismap" => Some("isMap"),
+        "maxlength" => Some("maxLength"),
+        "minlength" => Some("minLength"),
+        "nomodule" => Some("noModule"),
+        "novalidate" => Some("noValidate"),
+        "readonly" => Some("readOnly"),
+        "referrerpolicy" => Some("referrerPolicy"),
+        "tabindex" => Some("tabIndex"),
+        "usemap" => Some("useMap"),
         _ => None,
     }
 }
@@ -3026,5 +3051,19 @@ mod tests {
         assert_eq!(kebab_to_camel("aria-label"), "ariaLabel");
         assert_eq!(kebab_to_camel("aria-hidden"), "ariaHidden");
         assert_eq!(kebab_to_camel("aria-disabled"), "ariaDisabled");
+    }
+
+    #[test]
+    fn test_html_global_attribute_to_property() {
+        assert_eq!(kebab_to_camel("readonly"), "readOnly");
+        assert_eq!(kebab_to_camel("tabindex"), "tabIndex");
+        assert_eq!(kebab_to_camel("accesskey"), "accessKey");
+        assert_eq!(kebab_to_camel("contenteditable"), "contentEditable");
+        assert_eq!(kebab_to_camel("crossorigin"), "crossOrigin");
+        assert_eq!(kebab_to_camel("inputmode"), "inputMode");
+        assert_eq!(kebab_to_camel("maxlength"), "maxLength");
+        assert_eq!(kebab_to_camel("minlength"), "minLength");
+        assert_eq!(kebab_to_camel("novalidate"), "noValidate");
+        assert_eq!(kebab_to_camel("formaction"), "formAction");
     }
 }

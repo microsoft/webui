@@ -13,14 +13,17 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Map of ARIA camelCase property names to their HTML attribute names.
+ * Map of camelCase property names to their HTML attribute names.
  *
- * Multi-word ARIA attributes use concatenated lowercase after `aria-`
- * (e.g., `aria-describedby`), which doesn't match standard camelCase-to-kebab
- * conversion. This table covers every multi-word ARIA attribute in the
- * ARIAMixin specification.
+ * Covers two categories of irregular mappings:
+ *
+ * 1. Multi-word ARIA attributes — concatenated lowercase after `aria-`
+ *    (e.g., `ariaDescribedBy` → `aria-describedby`), per the ARIAMixin spec.
+ * 2. HTML global/element attributes — concatenated lowercase attribute names
+ *    with camelCase property counterparts (e.g., `readOnly` → `readonly`).
  */
-const ariaPropertyToAttribute: Record<string, string> = {
+const propertyToAttribute: Record<string, string> = {
+  // --- ARIA (ARIAMixin) ---
   ariaActiveDescendant: 'aria-activedescendant',
   ariaAutoComplete: 'aria-autocomplete',
   ariaBrailleLabel: 'aria-braillelabel',
@@ -50,6 +53,28 @@ const ariaPropertyToAttribute: Record<string, string> = {
   ariaValueMin: 'aria-valuemin',
   ariaValueNow: 'aria-valuenow',
   ariaValueText: 'aria-valuetext',
+  // --- HTML global/element attributes ---
+  accessKey: 'accesskey',
+  autoCapitalize: 'autocapitalize',
+  contentEditable: 'contenteditable',
+  crossOrigin: 'crossorigin',
+  dirName: 'dirname',
+  fetchPriority: 'fetchpriority',
+  formAction: 'formaction',
+  formEnctype: 'formenctype',
+  formMethod: 'formmethod',
+  formNoValidate: 'formnovalidate',
+  formTarget: 'formtarget',
+  inputMode: 'inputmode',
+  isMap: 'ismap',
+  maxLength: 'maxlength',
+  minLength: 'minlength',
+  noModule: 'nomodule',
+  noValidate: 'novalidate',
+  readOnly: 'readonly',
+  referrerPolicy: 'referrerpolicy',
+  tabIndex: 'tabindex',
+  useMap: 'usemap',
 };
 
 /**
@@ -60,7 +85,7 @@ const ariaPropertyToAttribute: Record<string, string> = {
  * the naive `aria-described-by`.
  */
 export function toKebabCase(str: string): string {
-  if (str in ariaPropertyToAttribute) return ariaPropertyToAttribute[str];
+  if (str in propertyToAttribute) return propertyToAttribute[str];
   return str.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
 }
 

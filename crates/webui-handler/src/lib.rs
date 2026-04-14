@@ -136,14 +136,19 @@ struct WebUIProcessContext<'a> {
     nonce: Option<String>,
 }
 
-/// Map an ARIA camelCase property name to its HTML attribute.
+/// Map a camelCase property name to its HTML attribute.
 ///
-/// Multi-word ARIA attributes use concatenated lowercase after `aria-`
-/// (e.g., `aria-describedby`), which doesn't match standard camelCase-to-kebab
-/// conversion. This table covers every multi-word ARIA attribute in the
-/// [ARIAMixin](https://w3c.github.io/aria/#ARIAMixin) specification.
-fn aria_property_to_attribute(name: &str) -> Option<&'static str> {
+/// Covers two categories of irregular mappings:
+///
+/// 1. **Multi-word ARIA attributes** — use concatenated lowercase after `aria-`
+///    (e.g., `ariaDescribedBy` → `aria-describedby`), per the
+///    [ARIAMixin](https://w3c.github.io/aria/#ARIAMixin) specification.
+/// 2. **HTML global/element attributes** — concatenated lowercase attribute names
+///    with camelCase property counterparts (e.g., `readOnly` → `readonly`,
+///    `tabIndex` → `tabindex`).
+fn property_to_attribute(name: &str) -> Option<&'static str> {
     match name {
+        // --- ARIA (ARIAMixin) ---
         "ariaActiveDescendant" => Some("aria-activedescendant"),
         "ariaAutoComplete" => Some("aria-autocomplete"),
         "ariaBrailleLabel" => Some("aria-braillelabel"),
@@ -173,15 +178,40 @@ fn aria_property_to_attribute(name: &str) -> Option<&'static str> {
         "ariaValueMin" => Some("aria-valuemin"),
         "ariaValueNow" => Some("aria-valuenow"),
         "ariaValueText" => Some("aria-valuetext"),
+        // --- HTML global/element attributes ---
+        "accessKey" => Some("accesskey"),
+        "autoCapitalize" => Some("autocapitalize"),
+        "contentEditable" => Some("contenteditable"),
+        "crossOrigin" => Some("crossorigin"),
+        "dirName" => Some("dirname"),
+        "fetchPriority" => Some("fetchpriority"),
+        "formAction" => Some("formaction"),
+        "formEnctype" => Some("formenctype"),
+        "formMethod" => Some("formmethod"),
+        "formNoValidate" => Some("formnovalidate"),
+        "formTarget" => Some("formtarget"),
+        "inputMode" => Some("inputmode"),
+        "isMap" => Some("ismap"),
+        "maxLength" => Some("maxlength"),
+        "minLength" => Some("minlength"),
+        "noModule" => Some("nomodule"),
+        "noValidate" => Some("novalidate"),
+        "readOnly" => Some("readonly"),
+        "referrerPolicy" => Some("referrerpolicy"),
+        "tabIndex" => Some("tabindex"),
+        "useMap" => Some("usemap"),
         _ => None,
     }
 }
 
-/// Map an ARIA HTML attribute to its camelCase property name.
+/// Map an HTML attribute to its camelCase property name.
 ///
-/// Inverse of [`aria_property_to_attribute`].
-fn aria_attribute_to_property(name: &str) -> Option<&'static str> {
+/// Inverse of [`property_to_attribute`]. Covers multi-word ARIA attributes
+/// and HTML global/element attributes whose attribute names are concatenated
+/// lowercase (e.g., `readonly` → `readOnly`, `tabindex` → `tabIndex`).
+fn attribute_to_property(name: &str) -> Option<&'static str> {
     match name {
+        // --- ARIA (ARIAMixin) ---
         "aria-activedescendant" => Some("ariaActiveDescendant"),
         "aria-autocomplete" => Some("ariaAutoComplete"),
         "aria-braillelabel" => Some("ariaBrailleLabel"),
@@ -211,17 +241,38 @@ fn aria_attribute_to_property(name: &str) -> Option<&'static str> {
         "aria-valuemin" => Some("ariaValueMin"),
         "aria-valuenow" => Some("ariaValueNow"),
         "aria-valuetext" => Some("ariaValueText"),
+        // --- HTML global/element attributes ---
+        "accesskey" => Some("accessKey"),
+        "autocapitalize" => Some("autoCapitalize"),
+        "contenteditable" => Some("contentEditable"),
+        "crossorigin" => Some("crossOrigin"),
+        "dirname" => Some("dirName"),
+        "fetchpriority" => Some("fetchPriority"),
+        "formaction" => Some("formAction"),
+        "formenctype" => Some("formEnctype"),
+        "formmethod" => Some("formMethod"),
+        "formnovalidate" => Some("formNoValidate"),
+        "formtarget" => Some("formTarget"),
+        "inputmode" => Some("inputMode"),
+        "ismap" => Some("isMap"),
+        "maxlength" => Some("maxLength"),
+        "minlength" => Some("minLength"),
+        "nomodule" => Some("noModule"),
+        "novalidate" => Some("noValidate"),
+        "readonly" => Some("readOnly"),
+        "referrerpolicy" => Some("referrerPolicy"),
+        "tabindex" => Some("tabIndex"),
+        "usemap" => Some("useMap"),
         _ => None,
     }
 }
 
 /// Convert hyphenated name to camelCase (e.g., "data-title" → "dataTitle").
 ///
-/// Multi-word ARIA attributes are handled via a lookup table so that
-/// `aria-describedby` correctly maps to `ariaDescribedBy` rather than
-/// the naive `ariaDescribedby`.
+/// Irregular attributes (multi-word ARIA and global HTML attributes like
+/// `readonly`, `tabindex`) are handled via a lookup table.
 fn convert_hyphen_to_camel_case(name: &str) -> String {
-    if let Some(prop) = aria_attribute_to_property(name) {
+    if let Some(prop) = attribute_to_property(name) {
         return prop.to_string();
     }
     let mut result = String::with_capacity(name.len());
@@ -241,11 +292,10 @@ fn convert_hyphen_to_camel_case(name: &str) -> String {
 
 /// Convert camelCase to kebab-case (e.g., "totalContacts" → "total-contacts").
 ///
-/// Multi-word ARIA properties are handled via a lookup table so that
-/// `ariaDescribedBy` correctly maps to `aria-describedby` rather than
-/// the naive `aria-described-by`.
+/// Irregular attributes (multi-word ARIA and global HTML attributes like
+/// `readOnly`, `tabIndex`) are handled via a lookup table.
 pub(crate) fn camel_to_kebab(name: &str) -> String {
-    if let Some(attr) = aria_property_to_attribute(name) {
+    if let Some(attr) = property_to_attribute(name) {
         return attr.to_string();
     }
     let mut result = String::with_capacity(name.len() + 4);
@@ -263,8 +313,15 @@ pub(crate) fn camel_to_kebab(name: &str) -> String {
 }
 
 /// Get the component attribute name, stripping `:` prefix and converting to camelCase.
+///
+/// Non-hyphenated attributes (e.g., `readonly`, `tabindex`) are checked against
+/// the lookup table so they map to the correct property name (e.g., `readOnly`,
+/// `tabIndex`).
 fn component_attr_name(name: &str) -> String {
     let stripped = name.strip_prefix(':').unwrap_or(name);
+    if let Some(prop) = attribute_to_property(stripped) {
+        return prop.to_string();
+    }
     if stripped.contains('-') {
         convert_hyphen_to_camel_case(stripped)
     } else {
@@ -6463,6 +6520,47 @@ mod tests {
     }
 
     #[test]
+    fn test_html_global_property_to_attribute() {
+        assert_eq!(camel_to_kebab("readOnly"), "readonly");
+        assert_eq!(camel_to_kebab("tabIndex"), "tabindex");
+        assert_eq!(camel_to_kebab("accessKey"), "accesskey");
+        assert_eq!(camel_to_kebab("contentEditable"), "contenteditable");
+        assert_eq!(camel_to_kebab("crossOrigin"), "crossorigin");
+        assert_eq!(camel_to_kebab("inputMode"), "inputmode");
+        assert_eq!(camel_to_kebab("maxLength"), "maxlength");
+        assert_eq!(camel_to_kebab("minLength"), "minlength");
+        assert_eq!(camel_to_kebab("noValidate"), "novalidate");
+        assert_eq!(camel_to_kebab("formAction"), "formaction");
+        assert_eq!(camel_to_kebab("formEnctype"), "formenctype");
+        assert_eq!(camel_to_kebab("formMethod"), "formmethod");
+        assert_eq!(camel_to_kebab("formNoValidate"), "formnovalidate");
+        assert_eq!(camel_to_kebab("formTarget"), "formtarget");
+        assert_eq!(camel_to_kebab("isMap"), "ismap");
+        assert_eq!(camel_to_kebab("useMap"), "usemap");
+        assert_eq!(camel_to_kebab("noModule"), "nomodule");
+        assert_eq!(camel_to_kebab("autoCapitalize"), "autocapitalize");
+        assert_eq!(camel_to_kebab("dirName"), "dirname");
+        assert_eq!(camel_to_kebab("fetchPriority"), "fetchpriority");
+        assert_eq!(camel_to_kebab("referrerPolicy"), "referrerpolicy");
+    }
+
+    #[test]
+    fn test_html_global_attribute_to_property() {
+        assert_eq!(component_attr_name("readonly"), "readOnly");
+        assert_eq!(component_attr_name("tabindex"), "tabIndex");
+        assert_eq!(component_attr_name("accesskey"), "accessKey");
+        assert_eq!(component_attr_name("contenteditable"), "contentEditable");
+        assert_eq!(component_attr_name("crossorigin"), "crossOrigin");
+        assert_eq!(component_attr_name("inputmode"), "inputMode");
+        assert_eq!(component_attr_name("maxlength"), "maxLength");
+        assert_eq!(component_attr_name("minlength"), "minLength");
+        assert_eq!(component_attr_name("novalidate"), "noValidate");
+        assert_eq!(component_attr_name("formaction"), "formAction");
+        assert_eq!(component_attr_name("ismap"), "isMap");
+        assert_eq!(component_attr_name("usemap"), "useMap");
+    }
+
+    #[test]
     fn test_aria_roundtrip() {
         // Property → attribute → property must be a no-op
         let props = [
@@ -6477,6 +6575,25 @@ mod tests {
         for prop in props {
             let attr = camel_to_kebab(prop);
             let back = convert_hyphen_to_camel_case(&attr);
+            assert_eq!(back, prop, "roundtrip failed for {prop}");
+        }
+    }
+
+    #[test]
+    fn test_html_global_roundtrip() {
+        let props = [
+            "readOnly",
+            "tabIndex",
+            "accessKey",
+            "contentEditable",
+            "maxLength",
+            "inputMode",
+            "formAction",
+            "crossOrigin",
+        ];
+        for prop in props {
+            let attr = camel_to_kebab(prop);
+            let back = component_attr_name(&attr);
             assert_eq!(back, prop, "roundtrip failed for {prop}");
         }
     }

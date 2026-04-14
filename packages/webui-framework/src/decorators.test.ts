@@ -49,6 +49,30 @@ describe('toKebabCase', () => {
     assert.equal(toKebabCase('ariaChecked'), 'aria-checked');
   });
 
+  test('converts HTML global/element properties to correct attribute names', () => {
+    assert.equal(toKebabCase('readOnly'), 'readonly');
+    assert.equal(toKebabCase('tabIndex'), 'tabindex');
+    assert.equal(toKebabCase('accessKey'), 'accesskey');
+    assert.equal(toKebabCase('contentEditable'), 'contenteditable');
+    assert.equal(toKebabCase('crossOrigin'), 'crossorigin');
+    assert.equal(toKebabCase('inputMode'), 'inputmode');
+    assert.equal(toKebabCase('maxLength'), 'maxlength');
+    assert.equal(toKebabCase('minLength'), 'minlength');
+    assert.equal(toKebabCase('noValidate'), 'novalidate');
+    assert.equal(toKebabCase('formAction'), 'formaction');
+    assert.equal(toKebabCase('formEnctype'), 'formenctype');
+    assert.equal(toKebabCase('formMethod'), 'formmethod');
+    assert.equal(toKebabCase('formNoValidate'), 'formnovalidate');
+    assert.equal(toKebabCase('formTarget'), 'formtarget');
+    assert.equal(toKebabCase('isMap'), 'ismap');
+    assert.equal(toKebabCase('useMap'), 'usemap');
+    assert.equal(toKebabCase('noModule'), 'nomodule');
+    assert.equal(toKebabCase('autoCapitalize'), 'autocapitalize');
+    assert.equal(toKebabCase('dirName'), 'dirname');
+    assert.equal(toKebabCase('fetchPriority'), 'fetchpriority');
+    assert.equal(toKebabCase('referrerPolicy'), 'referrerpolicy');
+  });
+
   test('non-ARIA properties use standard camelCase-to-kebab', () => {
     assert.equal(toKebabCase('myProp'), 'my-prop');
     assert.equal(toKebabCase('totalContacts'), 'total-contacts');
