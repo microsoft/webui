@@ -973,7 +973,7 @@ impl WebUIHandler {
                     }
                     Some(other) => {
                         let s = other.to_string();
-                        write_attr(context.writer, &attr.name, &s)?;
+                        write_attr(context.writer, &attr.name, &html_escape::encode_safe(&s))?;
                     }
                 }
 
@@ -1599,6 +1599,82 @@ mod tests {
         assert_eq!(
             writer.get_content(),
             "<div name=\"test\" handle=\"0\"></div>"
+        );
+    }
+
+    // ── Dynamic attribute escaping for non-string JSON types ─────────
+
+    #[test]
+    fn test_attribute_array_value_is_escaped() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<a"),
+                    WebUIFragment::attribute("href", "value"),
+                    WebUIFragment::raw(">demo</a>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({"value": ["\" autofocus onfocus=alert(1) x=\""]});
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        let content = writer.get_content();
+        // All inner double quotes must be entity-escaped so that the
+        // browser never sees a second attribute boundary.
+        assert!(
+            content.contains("&quot;"),
+            "Double quotes inside attribute value must be escaped: {content}"
+        );
+        // The href attribute value must be a single contiguous quoted
+        // string — no extra attributes should appear.
+        assert_eq!(
+            content.matches("=\"").count(),
+            1,
+            "Only one attribute assignment expected: {content}"
+        );
+    }
+
+    #[test]
+    fn test_attribute_object_value_is_escaped() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<div"),
+                    WebUIFragment::attribute("data-cfg", "cfg"),
+                    WebUIFragment::raw("></div>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({"cfg": {"key": "\" onfocus=alert(1) x=\""}});
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        let content = writer.get_content();
+        assert!(
+            content.contains("&quot;"),
+            "Double quotes inside attribute value must be escaped: {content}"
+        );
+        assert_eq!(
+            content.matches("=\"").count(),
+            1,
+            "Only one attribute assignment expected: {content}"
         );
     }
 
