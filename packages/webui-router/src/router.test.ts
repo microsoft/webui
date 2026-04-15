@@ -481,6 +481,35 @@ describe('WebUIRouter', () => {
       );
     });
 
+    test('startViewTransition is skipped for query-only navigations', () => {
+      // Regression (issue #235): query-only navigations (e.g. /contacts →
+      // /contacts?q=foo) do not remount any components. Wrapping them in
+      // startViewTransition captures a screenshot and temporarily suppresses
+      // the live DOM, which blurs the active element (search input focus lost
+      // mid-typing). The router must guard the startViewTransition call with
+      // an `isQueryOnlyChange` check so focus is preserved.
+      const router = new WebUIRouter();
+      const source = (router as any).handleNavigation.toString() as string;
+
+      // The view-transition block must be gated on !isQueryOnlyChange
+      const transitionIdx = source.indexOf('startViewTransition');
+      assert.ok(transitionIdx > -1, 'startViewTransition should be referenced');
+
+      // The `if` condition that invokes startViewTransition must also
+      // check isQueryOnlyChange (either before or after the feature check).
+      // We grab the surrounding context to verify the guard is present.
+      const conditionRegion = source.slice(
+        Math.max(0, transitionIdx - 120),
+        transitionIdx + 80,
+      );
+      assert.ok(
+        conditionRegion.includes('isQueryOnlyChange'),
+        'startViewTransition must be guarded by isQueryOnlyChange — ' +
+        'query-only navigations must skip view transitions to preserve focus ' +
+        `(condition region: "${conditionRegion}")`,
+      );
+    });
+
     test('startViewTransition callback does not contain async fetch or import', () => {
       // Regression: the view transition callback must complete synchronously
       // (DOM swap only). Async work (fetch, module load) must happen BEFORE

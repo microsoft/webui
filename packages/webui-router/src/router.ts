@@ -336,11 +336,14 @@ export class WebUIRouter {
       };
 
       // DOM swap — wrapped in a view transition when available.
+      // Skip view transitions for query-only changes (issue #235): no
+      // components remount so there is nothing to animate, and the
+      // transition would blur the active element (e.g. search input).
       // Await updateCallbackDone (not .finished) so the Navigation API
       // handler resolves as soon as the DOM commit completes, without
       // waiting for the CSS animation to finish. This allows rapid
       // navigations to supersede each other without queuing.
-      if (document.startViewTransition) {
+      if (document.startViewTransition && !isQueryOnlyChange) {
         const transition = document.startViewTransition(commitNavigation);
         await transition.updateCallbackDone;
       } else {
