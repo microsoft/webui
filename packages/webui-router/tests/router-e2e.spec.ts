@@ -340,7 +340,7 @@ test.describe('ensureLoaded — non-route components', () => {
       return performance.now() - t0;
     });
 
-    // Should be < 5ms (no network round-trip)
+    // Should complete quickly — no network round-trip (< 50ms on CI)
     expect(start).toBeLessThan(50);
   });
 

@@ -293,7 +293,7 @@ export class WebUIRouter {
     // Batch-fetch missing templates in one request
     if (missing.length > 0) {
       const inv = this.inventory;
-      const fetchPromise = this.fetchComponentTemplates(missing, inv).then(() => {
+      const fetchPromise = this.fetchComponentTemplates(missing, inv).finally(() => {
         for (const tag of missing) this.loadPromises.delete(tag);
       });
       for (const tag of missing) this.loadPromises.set(tag, fetchPromise);
@@ -312,12 +312,15 @@ export class WebUIRouter {
   /**
    * Fetch component templates + CSS from the server and register them.
    * Reuses the same registration logic as fetchPartial.
+   * Throws on network or server errors so callers can handle failures.
    */
   private async fetchComponentTemplates(tags: string[], inventoryHex: string): Promise<void> {
     const endpoint = this.config.templateEndpoint ?? '/_webui/templates';
     const url = `${endpoint}?t=${tags.join(',')}&inv=${encodeURIComponent(inventoryHex)}`;
     const resp = await fetch(url);
-    if (!resp.ok) return;
+    if (!resp.ok) {
+      throw new Error(`[Router] ensureLoaded failed: ${resp.status} ${resp.statusText}`);
+    }
     const data = await resp.json();
 
     // Register using the same pipeline as partial navigation
@@ -368,7 +371,11 @@ export class WebUIRouter {
       }
     }
 
-    // 2. Template registration: execute JS IIFEs / insert DOM templates
+    // 2. Template registration: execute JS IIFEs / insert DOM templates.
+    //    TRUST BOUNDARY: template scripts come from the same-origin server
+    //    that compiled the protocol. The CSP nonce gates script execution.
+    //    If the server endpoint is compromised, this is an XSS vector —
+    //    same risk as the existing fetchPartial pipeline.
     if (data.templates) {
       let scriptBody = '';
       for (const tmpl of data.templates) {
@@ -761,9 +768,9 @@ export class WebUIRouter {
     // Register templates, styles, and CSS using the shared pipeline
     this.registerTemplatesAndStyles(data);
 
-    // Also handle legacy `css` field from older server responses
-    if ((data as unknown as Record<string, unknown>).css) {
-      for (const href of (data as unknown as Record<string, unknown>).css as string[]) {
+    // Inject CSS stylesheet links (used by some server implementations)
+    if (data.css) {
+      for (const href of data.css) {
         if (!document.querySelector(`link[href="${href}"]`)) {
           const link = document.createElement('link');
           link.rel = 'stylesheet';

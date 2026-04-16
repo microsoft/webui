@@ -538,31 +538,17 @@ pub fn render_component_templates(
     component_tags: &[&str],
     inventory_hex: &str,
 ) -> Value {
+    let requested: HashSet<String> = component_tags.iter().map(|s| s.to_string()).collect();
     let index = build_component_index(protocol);
-    let client_inv = parse_inventory(inventory_hex);
-    let mut updated_inv = client_inv.clone();
+    let (needed, updated_inv) = filter_needed_components(&requested, inventory_hex, &index);
 
-    // Filter out components the client already has
-    let mut needed: Vec<&str> = Vec::with_capacity(component_tags.len());
-    for &tag in component_tags {
-        if let Some(&idx) = index.get(tag) {
-            if has_component(&client_inv, idx) {
-                continue;
-            }
-            set_component(&mut updated_inv, idx);
-        }
-        needed.push(tag);
-    }
-
-    let (style_array, tmpl_array) = collect_component_assets(protocol, &needed);
+    let tag_refs: Vec<&str> = needed.iter().map(|s| s.as_str()).collect();
+    let (style_array, tmpl_array) = collect_component_assets(protocol, &tag_refs);
 
     let mut result = serde_json::Map::with_capacity(3);
     result.insert("templateStyles".into(), Value::Array(style_array));
     result.insert("templates".into(), Value::Array(tmpl_array));
-    result.insert(
-        "inventory".into(),
-        Value::String(encode_inventory(&updated_inv)),
-    );
+    result.insert("inventory".into(), Value::String(updated_inv));
     Value::Object(result)
 }
 
@@ -571,6 +557,7 @@ fn collect_component_assets(protocol: &WebUIProtocol, tags: &[&str]) -> (Vec<Val
     let mut style_array = Vec::new();
     let mut tmpl_array = Vec::new();
 
+    // Sort for deterministic output (reproducible responses, cache keys)
     let mut sorted_tags: Vec<&str> = tags.to_vec();
     sorted_tags.sort_unstable();
 
