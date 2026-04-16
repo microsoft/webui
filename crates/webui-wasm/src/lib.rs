@@ -271,7 +271,7 @@ pub(crate) enum BuildError {
     #[error("Entry file '{0}' not found")]
     MissingEntry(String),
 
-    #[error("Parse error: {0}")]
+    #[error("{0}")]
     Parse(#[from] webui_parser::ParserError),
 
     #[error("Protocol JSON error: {0}")]
@@ -280,7 +280,7 @@ pub(crate) enum BuildError {
     #[error("State JSON error: {0}")]
     State(serde_json::Error),
 
-    #[error("Render error: {0}")]
+    #[error("{0}")]
     Render(#[from] webui_handler::HandlerError),
 }
 

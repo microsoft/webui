@@ -27,7 +27,7 @@ pub enum WebUIError {
     ComponentDiscovery(String),
 
     /// HTML/CSS parsing failure with context about which file failed.
-    #[error("Parse error: {context}: {source}")]
+    #[error("{context}: {source}")]
     Parse {
         /// What was being parsed.
         context: String,
@@ -37,7 +37,7 @@ pub enum WebUIError {
     },
 
     /// Protocol serialization or deserialization failure.
-    #[error("Protocol error: {0}")]
+    #[error("{0}")]
     Protocol(#[from] webui_protocol::ProtocolError),
 
     /// JSON serialization failure.
@@ -45,6 +45,6 @@ pub enum WebUIError {
     Serialization(String),
 
     /// Handler rendering error.
-    #[error("Rendering error: {0}")]
+    #[error("{0}")]
     Rendering(#[from] webui_handler::HandlerError),
 }
