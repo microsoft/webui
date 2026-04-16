@@ -16,7 +16,7 @@ pub enum ParserError {
     Generic(String),
 
     /// I/O error with context.
-    #[error("I/O error: {context}")]
+    #[error("I/O error: {context}: {source}")]
     IO {
         /// What operation failed.
         context: String,

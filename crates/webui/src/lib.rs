@@ -255,7 +255,12 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         context: format!("Failed to read {}", entry_path.display()),
         source,
     })?;
-    parser.parse(&options.entry, &html_content)?;
+    parser
+        .parse(&options.entry, &html_content)
+        .map_err(|source| WebUIError::Parse {
+            context: format!("Failed to parse {}", options.entry),
+            source,
+        })?;
 
     // Snapshot CSS before consuming the parser
     let css_snapshot: Vec<(String, String)> = parser

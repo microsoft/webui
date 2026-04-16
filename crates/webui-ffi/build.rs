@@ -5,7 +5,7 @@ extern crate cbindgen;
 
 use std::env;
 use std::io::{Error, ErrorKind};
-use std::path::PathBuf; // Removed 'self' import
+use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get the crate directory with proper error handling
@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_crate(crate_dir)
         .with_config(config)
         .generate()
-        .map_err(|e| Error::other(format!("Unable to generate C bindings: {e}")))?;
+        .map_err(Error::other)?;
     bindings.write_to_file(out_dir.join("webui_ffi.h"));
 
     Ok(())

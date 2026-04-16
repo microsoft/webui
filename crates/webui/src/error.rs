@@ -9,7 +9,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum WebUIError {
     /// I/O error (file read/write failures).
-    #[error("I/O error: {context}")]
+    #[error("I/O error: {context}: {source}")]
     Io {
         /// What operation failed.
         context: String,
@@ -26,9 +26,15 @@ pub enum WebUIError {
     #[error("Component discovery error: {0}")]
     ComponentDiscovery(String),
 
-    /// HTML/CSS parsing failure.
-    #[error("Parse error: {0}")]
-    Parse(#[from] webui_parser::ParserError),
+    /// HTML/CSS parsing failure with context about which file failed.
+    #[error("Parse error: {context}: {source}")]
+    Parse {
+        /// What was being parsed.
+        context: String,
+        /// The underlying parse error.
+        #[source]
+        source: webui_parser::ParserError,
+    },
 
     /// Protocol serialization or deserialization failure.
     #[error("Protocol error: {0}")]
