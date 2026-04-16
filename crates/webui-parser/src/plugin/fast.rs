@@ -320,8 +320,8 @@ fn starts_with_tag_name(s: &str, name: &str) -> bool {
 /// Convert `<if condition="EXPR">` to `<f-when value="{{EXPR}}">`.
 /// Returns bytes consumed on success.
 fn convert_if_tag(tag_str: &str, result: &mut String) -> Option<usize> {
-    // Find the closing '>'
-    let close = tag_str.find('>')?;
+    // Find the closing '>' outside of quoted attribute values
+    let close = find_tag_close(tag_str)?;
     let tag_content = &tag_str[..=close];
 
     // Find condition="..." attribute
@@ -337,8 +337,8 @@ fn convert_if_tag(tag_str: &str, result: &mut String) -> Option<usize> {
 /// Convert `<for each="EXPR">` to `<f-repeat value="{{EXPR}}">`.
 /// Returns bytes consumed on success.
 fn convert_for_tag(tag_str: &str, result: &mut String) -> Option<usize> {
-    // Find the closing '>'
-    let close = tag_str.find('>')?;
+    // Find the closing '>' outside of quoted attribute values
+    let close = find_tag_close(tag_str)?;
     let tag_content = &tag_str[..=close];
 
     // Find each="..." attribute
@@ -355,7 +355,7 @@ fn convert_for_tag(tag_str: &str, result: &mut String) -> Option<usize> {
 /// Self-closing routes become `<webui-route ...></webui-route>` (empty).
 /// The component attribute is preserved for the client router.
 fn convert_route_tag(tag_str: &str, result: &mut String) -> Option<usize> {
-    let close = tag_str.find('>')?;
+    let close = find_tag_close(tag_str)?;
     let is_self_closing = tag_str[..=close].ends_with("/>");
     let tag = &tag_str[..=close];
 
@@ -403,6 +403,21 @@ fn convert_route_tag(tag_str: &str, result: &mut String) -> Option<usize> {
     Some(close + 1)
 }
 
+/// Find the position of the tag-closing `>` that is NOT inside a quoted
+/// attribute value.  Returns `None` when no unquoted `>` is found.
+fn find_tag_close(tag_str: &str) -> Option<usize> {
+    let bytes = tag_str.as_bytes();
+    let mut in_quote = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'"' => in_quote = !in_quote,
+            b'>' if !in_quote => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Extract the value of a named attribute from a tag string.
 /// Looks for `name="value"` and returns `value`.
 fn extract_attribute_value<'a>(tag: &'a str, attr_name: &str) -> Option<&'a str> {
@@ -442,8 +457,8 @@ fn extract_attribute_value<'a>(tag: &'a str, attr_name: &str) -> Option<&'a str>
 /// Replaces `{{expr}}` with `{expr}` in attribute values on `:` prefixed attributes.
 /// Returns bytes consumed on success, or `None` if no conversion needed.
 fn convert_complex_attrs(tag_str: &str, result: &mut String) -> Option<usize> {
-    // Find the closing '>'
-    let close = tag_str.find('>')?;
+    // Find the closing '>' outside of quoted attribute values
+    let close = find_tag_close(tag_str)?;
     let tag_content = &tag_str[..=close];
 
     // Quick check: does this tag have both a colon-prefixed attribute and `{{`?
@@ -559,8 +574,8 @@ fn minify_inter_tag_whitespace(input: &str) -> String {
 /// Strip `shadowrootmode` attribute from a `<template ...>` opening tag.
 /// Returns `Some(bytes_consumed)` if a `<template` tag was found and processed.
 fn strip_shadowrootmode(tag_str: &str, result: &mut String) -> Option<usize> {
-    // Find the closing '>'
-    let close = tag_str.find('>')?;
+    // Find the closing '>' outside of quoted attribute values
+    let close = find_tag_close(tag_str)?;
     let tag_content = &tag_str[..=close];
 
     // Only process if this tag contains shadowrootmode
@@ -943,6 +958,30 @@ mod tests {
     }
 
     #[test]
+    fn convert_if_with_greater_than() {
+        let input = r#"<if condition="vara > 2">Over two</if>"#;
+        let output = convert_btr_to_fast(input);
+        assert_eq!(output, r#"<f-when value="{{vara > 2}}">Over two</f-when>"#);
+    }
+
+    #[test]
+    fn convert_if_with_greater_than_or_equal() {
+        let input = r#"<if condition="vara >= 2">Two and over</if>"#;
+        let output = convert_btr_to_fast(input);
+        assert_eq!(
+            output,
+            r#"<f-when value="{{vara >= 2}}">Two and over</f-when>"#
+        );
+    }
+
+    #[test]
+    fn convert_if_with_less_than() {
+        let input = r#"<if condition="x < 10">small</if>"#;
+        let output = convert_btr_to_fast(input);
+        assert_eq!(output, r#"<f-when value="{{x < 10}}">small</f-when>"#);
+    }
+
+    #[test]
     fn convert_for_to_f_repeat() {
         let input = r#"<for each="tag in tags"><span>{{tag}}</span></for>"#;
         let output = convert_btr_to_fast(input);
@@ -1256,5 +1295,16 @@ mod tests {
             !result.contains("<for "),
             "Nested f-template should NOT contain <for>, got: {result}"
         );
+    }
+
+    #[test]
+    fn find_tag_close_skips_quoted_gt() {
+        assert_eq!(
+            find_tag_close(r#"<if condition="a > b">"#),
+            Some(21) // the `>` after the closing quote
+        );
+        assert_eq!(find_tag_close(r#"<if condition="a >= b">"#), Some(22));
+        assert_eq!(find_tag_close("<br>"), Some(3));
+        assert_eq!(find_tag_close("<br/>"), Some(4));
     }
 }
