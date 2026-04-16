@@ -127,6 +127,21 @@ char *webui_render_partial(const uint8_t *protocol_data,
                            const char *request_path,
                            const char *inventory_hex);
 
+/// Render templates and CSS for specific components by tag name.
+///
+/// Returns a JSON string with `{ templates, templateStyles, cssHrefs, inventory }`.
+/// The caller must free the returned string with [`webui_free`].
+///
+/// # Safety
+///
+/// All pointer arguments must be valid, non-null, null-terminated UTF-8 strings.
+/// `protocol_data` must point to `protocol_len` readable bytes.
+/// `component_tags_json` must be a JSON array of strings, e.g. `["settings-dialog"]`.
+char *webui_render_component_templates(const uint8_t *protocol_data,
+                                       uintptr_t protocol_len,
+                                       const char *component_tags_json,
+                                       const char *inventory_hex);
+
 /// Free a string returned by a WebUI FFI function.
 ///
 /// # Safety

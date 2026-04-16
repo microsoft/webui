@@ -59,3 +59,6 @@ if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {
     },
   });
 }
+
+// Expose Router for E2E tests
+(window as unknown as Record<string, unknown>).__testRouter = Router;

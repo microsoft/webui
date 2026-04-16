@@ -413,6 +413,7 @@ fn run(args: &ServeArgs) -> Result<()> {
                 }
 
                 app = app
+                    .route("/_webui/templates", web::get().to(handle_component_templates))
                     .route("/{tail:.*}", web::get().to(handle_asset))
                     .default_service(web::route().to(handle_not_found));
 
@@ -744,6 +745,39 @@ async fn handle_hmr(context: web::Data<ServerContext>) -> HttpResponse {
         .insert_header(("Expires", "0"))
         .content_type("text/plain; charset=utf-8")
         .body(version)
+}
+
+async fn handle_component_templates(
+    req: HttpRequest,
+    context: web::Data<ServerContext>,
+) -> HttpResponse {
+    let qs = req.query_string();
+    let mut tags: Vec<&str> = Vec::new();
+    let mut inv = String::new();
+    for pair in qs.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            match k {
+                "t" => tags.extend(v.split(',')),
+                "inv" => inv = v.to_string(),
+                _ => {}
+            }
+        }
+    }
+    if tags.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "missing ?t= parameter"}));
+    }
+    let state = context.state.lock().unwrap();
+    let Some(ref protocol) = state.protocol else {
+        return HttpResponse::InternalServerError().json(serde_json::json!({"error": "no protocol"}));
+    };
+    let result = webui_handler::route_handler::render_component_templates(
+        protocol,
+        &tags,
+        &inv,
+    );
+    HttpResponse::Ok()
+        .content_type("application/json")
+        .json(result)
 }
 
 async fn handle_asset(

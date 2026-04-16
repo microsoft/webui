@@ -171,6 +171,29 @@ pub fn render_partial(
         .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
 }
 
+#[napi]
+pub fn render_component_templates(
+    protocol_data: Buffer,
+    component_tags_json: String,
+    inventory_hex: String,
+) -> napi::Result<String> {
+    let protocol = WebUIProtocol::from_protobuf(&protocol_data)
+        .map_err(|e| NapiError::from_reason(format!("Protocol decode error: {e}")))?;
+
+    let tags: Vec<String> = serde_json::from_str(&component_tags_json)
+        .map_err(|e| NapiError::from_reason(format!("invalid tags JSON: {e}")))?;
+    let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+
+    let result = webui_handler::route_handler::render_component_templates(
+        &protocol,
+        &tag_refs,
+        &inventory_hex,
+    );
+
+    serde_json::to_string(&result)
+        .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
+}
+
 /// A writer that streams each rendered fragment to a JS callback.
 struct CallbackWriter<'a, 'env> {
     callback: &'a Function<'env, String, ()>,

@@ -534,6 +534,88 @@ pub unsafe extern "C" fn webui_render_partial(
     }
 }
 
+/// Render templates and CSS for specific components by tag name.
+///
+/// Returns a JSON string with `{ templates, templateStyles, cssHrefs, inventory }`.
+/// The caller must free the returned string with [`webui_free`].
+///
+/// # Safety
+///
+/// All pointer arguments must be valid, non-null, null-terminated UTF-8 strings.
+/// `protocol_data` must point to `protocol_len` readable bytes.
+/// `component_tags_json` must be a JSON array of strings, e.g. `["settings-dialog"]`.
+#[no_mangle]
+pub unsafe extern "C" fn webui_render_component_templates(
+    protocol_data: *const u8,
+    protocol_len: usize,
+    component_tags_json: *const c_char,
+    inventory_hex: *const c_char,
+) -> *mut c_char {
+    clear_last_error();
+
+    match std::panic::catch_unwind(|| {
+        if protocol_data.is_null() || component_tags_json.is_null() || inventory_hex.is_null() {
+            set_last_error("one or more required arguments are null");
+            return std::ptr::null_mut();
+        }
+
+        let protocol_bytes = unsafe { std::slice::from_raw_parts(protocol_data, protocol_len) };
+
+        let tags_str = match unsafe { CStr::from_ptr(component_tags_json) }.to_str() {
+            Ok(s) => s,
+            Err(e) => {
+                set_last_error(format!("invalid UTF-8 in component_tags_json: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        let tags: Vec<String> = match serde_json::from_str(tags_str) {
+            Ok(v) => v,
+            Err(e) => {
+                set_last_error(format!("invalid tags JSON: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+
+        let inv_str = match unsafe { CStr::from_ptr(inventory_hex) }.to_str() {
+            Ok(s) => s,
+            Err(e) => {
+                set_last_error(format!("invalid UTF-8 in inventory_hex: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        let protocol = match WebUIProtocol::from_protobuf(protocol_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                set_last_error(format!("failed to parse protobuf protocol: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        let result = webui_handler::route_handler::render_component_templates(
+            &protocol,
+            &tag_refs,
+            inv_str,
+        );
+
+        match CString::new(result.to_string()) {
+            Ok(s) => s.into_raw(),
+            Err(e) => {
+                set_last_error(format!("JSON output contains interior NUL byte: {e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }) {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("panic in webui_render_component_templates");
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Free a string returned by a WebUI FFI function.
 ///
 /// # Safety

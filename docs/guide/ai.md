@@ -303,6 +303,48 @@ onItemSelected(e: CustomEvent): void {
 }
 ```
 
+### Dynamic Component Loading
+
+Components like dialogs, overlays, and drawers are declared as routes but
+loaded on demand — not during initial navigation. Declare them in the route
+tree so the build compiles them into the protocol:
+
+```html
+<route path="/" component="app-shell">
+  <route path="" component="home-page" exact />
+  <route path="users/:id" component="user-detail" exact />
+  <!-- Compiled into protocol, but only loaded when needed -->
+  <route path="settings" component="settings-dialog" exact />
+</route>
+```
+
+Then load on demand with `Router.ensureLoaded` before creating the element:
+
+```typescript
+// Fetches template + CSS from /_webui/templates — no FOUC
+await Router.ensureLoaded('settings-dialog');
+this.showSettings = true;
+
+// Batch multiple in one request
+await Router.ensureLoaded('modal-a', 'modal-b', 'drawer-c');
+```
+
+The component's template is **not** sent during initial SSR or partial
+navigation — `collect_inventoryable_components` only walks the matched
+route, not siblings. Zero cost until requested.
+
+If a user navigates directly to `/settings` (deep link), the component
+renders normally in the outlet — it works both ways.
+
+Configure a custom endpoint if needed:
+
+```typescript
+Router.start({
+  templateEndpoint: '/api/templates', // default: '/_webui/templates'
+  loaders: { ... },
+});
+```
+
 ## Component CSS
 
 CSS is scoped per component via Shadow DOM. No CSS-in-JS.
@@ -691,6 +733,34 @@ button[data-active] { background: blue; color: white; }
 button:not([data-active]) { background: transparent; }
 ```
 
+### Lazy-loaded dialog
+
+Declare the component as a route (so it's compiled), then load dynamically:
+
+```html
+<!-- index.html — settings-dialog is in the protocol but not navigated to -->
+<route path="/" component="app-shell">
+  <route path="" component="home-page" exact />
+  <route path="settings" component="settings-dialog" exact />
+</route>
+```
+
+```typescript
+// Shell component — load template + CSS on demand
+async onOpenSettings(): Promise<void> {
+  await Router.ensureLoaded('settings-dialog');
+  await import('./settings-dialog/settings-dialog.js');
+  this.showSettings = true;
+}
+```
+
+```html
+<!-- Shell template — create the element dynamically -->
+<if condition="showSettings">
+  <settings-dialog @close="{onCloseSettings()}"></settings-dialog>
+</if>
+```
+
 ### Derived state (prefer template expressions over shadow observables)
 
 ```html
@@ -776,4 +846,16 @@ result := C.GoString(ptr)
 IntPtr ptr = webui_render(html, dataJson);
 string result = Marshal.PtrToStringUTF8(ptr);
 webui_free(ptr);
+```
+
+### Server Template Endpoint
+
+For `Router.ensureLoaded()`, expose `GET /_webui/templates?t=tag1,tag2`:
+
+```rust
+let result = route_handler::render_component_templates(&protocol, &tags, &inv);
+```
+
+```javascript
+const result = renderComponentTemplates(protocolBuf, JSON.stringify(tags), invHex);
 ```

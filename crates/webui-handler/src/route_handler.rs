@@ -508,35 +508,9 @@ pub fn render_partial(
     // Build the matched route chain
     let chain = collect_route_chain(protocol, entry_id, request_path);
 
-    // Build templateStyles (module CSS definitions) and templates (JS IIFEs)
-    // from the same inventory-filtered set. During SSR, module style definitions
-    // are emitted inline in each rendered component's light DOM — so only
-    // components the client actually rendered have their CSS definition in the
-    // document. For SPA partial navigation, we send templateStyles alongside
-    // templates so the router can append the missing definitions to <head>
-    // before executing the template scripts.
-    let mut style_array = Vec::new();
-    let mut tmpl_array = Vec::with_capacity(needed_names.len());
-    let mut sorted_names: Vec<&String> = needed_names.iter().collect();
-    sorted_names.sort_unstable();
-    for name in sorted_names {
-        let Some(component) = protocol.components.get(name) else {
-            continue;
-        };
-        if component.template.is_empty() {
-            continue;
-        }
-        if !component.css.is_empty() {
-            let mut s = String::with_capacity(40 + name.len() + component.css.len());
-            s.push_str("<style type=\"module\" specifier=\"");
-            s.push_str(name);
-            s.push_str("\">");
-            s.push_str(&component.css);
-            s.push_str("</style>");
-            style_array.push(Value::String(s));
-        }
-        tmpl_array.push(Value::String(component.template.clone()));
-    }
+    // Collect templates + CSS using the shared helper
+    let tag_refs: Vec<&str> = needed_names.iter().map(|s| s.as_str()).collect();
+    let (style_array, tmpl_array) = collect_component_assets(protocol, &tag_refs);
 
     let chain_array = Value::Array(chain.iter().map(RouteChainEntry::to_json).collect());
 
@@ -548,6 +522,78 @@ pub fn render_partial(
     result.insert("path".into(), Value::String(request_path.to_string()));
     result.insert("chain".into(), chain_array);
     Value::Object(result)
+}
+
+/// Return compiled templates and CSS for specific components by tag name.
+///
+/// This supports on-demand loading of components that aren't part of the
+/// route tree (e.g., dialogs, popovers) — the client calls this before
+/// creating the element so templates + styles are registered without FOUC.
+///
+/// Uses the same inventory bitfield as partial navigation to avoid sending
+/// templates the client already has.
+#[must_use]
+pub fn render_component_templates(
+    protocol: &WebUIProtocol,
+    component_tags: &[&str],
+    inventory_hex: &str,
+) -> Value {
+    let index = build_component_index(protocol);
+    let client_inv = parse_inventory(inventory_hex);
+    let mut updated_inv = client_inv.clone();
+
+    // Filter out components the client already has
+    let mut needed: Vec<&str> = Vec::with_capacity(component_tags.len());
+    for &tag in component_tags {
+        if let Some(&idx) = index.get(tag) {
+            if has_component(&client_inv, idx) {
+                continue;
+            }
+            set_component(&mut updated_inv, idx);
+        }
+        needed.push(tag);
+    }
+
+    let (style_array, tmpl_array) = collect_component_assets(protocol, &needed);
+
+    let mut result = serde_json::Map::with_capacity(3);
+    result.insert("templateStyles".into(), Value::Array(style_array));
+    result.insert("templates".into(), Value::Array(tmpl_array));
+    result.insert("inventory".into(), Value::String(encode_inventory(&updated_inv)));
+    Value::Object(result)
+}
+
+/// Shared helper: collect templates and module CSS styles for a set of component tags.
+fn collect_component_assets(
+    protocol: &WebUIProtocol,
+    tags: &[&str],
+) -> (Vec<Value>, Vec<Value>) {
+    let mut style_array = Vec::new();
+    let mut tmpl_array = Vec::new();
+
+    let mut sorted_tags: Vec<&str> = tags.to_vec();
+    sorted_tags.sort_unstable();
+
+    for tag in sorted_tags {
+        let Some(component) = protocol.components.get(tag) else {
+            continue;
+        };
+        if component.template.is_empty() {
+            continue;
+        }
+        if !component.css.is_empty() {
+            let mut s = String::with_capacity(40 + tag.len() + component.css.len());
+            s.push_str("<style type=\"module\" specifier=\"");
+            s.push_str(tag);
+            s.push_str("\">");
+            s.push_str(&component.css);
+            s.push_str("</style>");
+            style_array.push(Value::String(s));
+        }
+        tmpl_array.push(Value::String(component.template.clone()));
+    }
+
+    (style_array, tmpl_array)
 }
 
 // ── Route Chain ─────────────────────────────────────────────────────
@@ -1603,5 +1649,70 @@ mod tests {
         assert!(chain[0].allowed_query.is_empty());
         assert_eq!(chain[1].component, "compose-page");
         assert_eq!(chain[1].allowed_query, "action,to");
+    }
+
+    #[test]
+    fn test_render_component_templates_returns_template_and_css() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "settings-dialog".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<div class='dialog'>Settings</div>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        let comp = protocol
+            .components
+            .entry("settings-dialog".to_string())
+            .or_default();
+        comp.template = "(function(){window.__webui_templates['settings-dialog']={h:'<div>Settings</div>'};})();".to_string();
+        comp.css = ".dialog{position:fixed}".to_string();
+
+        let result = render_component_templates(&protocol, &["settings-dialog"], "");
+        let templates = result["templates"].as_array().expect("templates array");
+        let styles = result["templateStyles"].as_array().expect("styles array");
+
+        assert_eq!(templates.len(), 1);
+        assert!(templates[0].as_str().unwrap().contains("settings-dialog"));
+        assert_eq!(styles.len(), 1);
+        assert!(styles[0].as_str().unwrap().contains(".dialog{position:fixed}"));
+    }
+
+    #[test]
+    fn test_render_component_templates_respects_inventory() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "my-dialog".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<div>Dialog</div>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        let comp = protocol
+            .components
+            .entry("my-dialog".to_string())
+            .or_default();
+        comp.template = "(function(){})();".to_string();
+        comp.css = ".d{color:red}".to_string();
+
+        // First call: no inventory → should return the component
+        let result1 = render_component_templates(&protocol, &["my-dialog"], "");
+        let inv = result1["inventory"].as_str().expect("inventory string");
+        assert_eq!(result1["templates"].as_array().unwrap().len(), 1);
+
+        // Second call with inventory → component already loaded, should skip
+        let result2 = render_component_templates(&protocol, &["my-dialog"], inv);
+        assert_eq!(result2["templates"].as_array().unwrap().len(), 0);
+        assert_eq!(result2["templateStyles"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_render_component_templates_unknown_component_returns_empty() {
+        let fragments = HashMap::new();
+        let protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+
+        let result = render_component_templates(&protocol, &["nonexistent-widget"], "");
+        assert_eq!(result["templates"].as_array().unwrap().len(), 0);
+        assert_eq!(result["templateStyles"].as_array().unwrap().len(), 0);
     }
 }

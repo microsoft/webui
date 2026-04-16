@@ -144,6 +144,29 @@ pub fn render_partial(
         .map_err(|e| JsValue::from_str(&format!("JSON serialize error: {e}")))
 }
 
+#[wasm_bindgen]
+pub fn render_component_templates(
+    protocol_json: &str,
+    component_tags_json: &str,
+    inventory_hex: &str,
+) -> Result<String, JsValue> {
+    let protocol: WebUIProtocol = serde_json::from_str(protocol_json)
+        .map_err(|e| JsValue::from_str(&format!("Protocol JSON error: {e}")))?;
+
+    let tags: Vec<String> = serde_json::from_str(component_tags_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid tags JSON: {e}")))?;
+    let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+
+    let result = webui_handler::route_handler::render_component_templates(
+        &protocol,
+        &tag_refs,
+        inventory_hex,
+    );
+
+    serde_json::to_string(&result)
+        .map_err(|e| JsValue::from_str(&format!("JSON serialize error: {e}")))
+}
+
 fn build_protocol_inner(
     files: &HashMap<String, String>,
     entry: &str,

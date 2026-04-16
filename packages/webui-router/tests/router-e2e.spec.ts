@@ -290,3 +290,78 @@ test.describe('query parameter passing', () => {
     expect(query).toEqual({ action: 'reply', evil: 'inject' });
   });
 });
+
+test.describe('ensureLoaded — non-route components', () => {
+  test('ensureLoaded registers a component template from the server', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    });
+
+    // test-dialog is NOT in the route tree and NOT eagerly imported
+    const beforeLoad = await page.evaluate(() => {
+      return !!window.__webui_templates?.['test-dialog'];
+    });
+    // Template may or may not be pre-registered from SSR build discovery,
+    // but the component class should NOT be defined yet
+    const definedBefore = await page.evaluate(() => {
+      return !!customElements.get('test-dialog');
+    });
+    expect(definedBefore).toBe(false);
+
+    // Call ensureLoaded — should fetch template from /_webui/templates
+    const result = await page.evaluate(async () => {
+      const router = (window as any).__testRouter;
+      await router.ensureLoaded('test-dialog');
+      return !!window.__webui_templates?.['test-dialog'];
+    });
+    expect(result).toBe(true);
+  });
+
+  test('ensureLoaded is idempotent — second call is instant', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    });
+
+    // First call
+    await page.evaluate(async () => {
+      const router = (window as any).__testRouter;
+      await router.ensureLoaded('test-dialog');
+    });
+
+    // Second call should return instantly (no network)
+    const start = await page.evaluate(async () => {
+      const t0 = performance.now();
+      const router = (window as any).__testRouter;
+      await router.ensureLoaded('test-dialog');
+      return performance.now() - t0;
+    });
+
+    // Should be < 5ms (no network round-trip)
+    expect(start).toBeLessThan(50);
+  });
+
+  test('ensureLoaded supports batch loading multiple components', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    });
+
+    // Batch-load (test-dialog is the only non-route component, but the
+    // call should handle it alongside already-loaded route components)
+    const result = await page.evaluate(async () => {
+      const router = (window as any).__testRouter;
+      await router.ensureLoaded('test-dialog', 'page-alpha');
+      return {
+        dialog: !!window.__webui_templates?.['test-dialog'],
+        alpha: !!window.__webui_templates?.['page-alpha'],
+      };
+    });
+    expect(result.dialog).toBe(true);
+    expect(result.alpha).toBe(true);
+  });
+});

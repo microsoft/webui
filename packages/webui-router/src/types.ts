@@ -44,6 +44,19 @@ export interface RouterConfig {
 
   /** Enable development mode warnings for common routing mistakes. */
   dev?: boolean;
+
+  /**
+   * URL for the component template endpoint used by `Router.ensureLoaded()`.
+   * Component tags are appended as a comma-separated `t=` query parameter.
+   *
+   * @default "/_webui/templates"
+   * @example
+   * ```ts
+   * Router.start({ templateEndpoint: '/api/templates' });
+   * // ensureLoaded fetches: /api/templates?t=tag1,tag2&inv=...
+   * ```
+   */
+  templateEndpoint?: string;
 }
 
 /** Detail payload of the `webui:route:navigated` CustomEvent. */

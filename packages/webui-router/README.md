@@ -7,7 +7,7 @@ Client-side router for [WebUI](https://github.com/microsoft/webui) apps with nes
 ## How It Works
 
 1. **Server renders the full page** — the matched route chain is SSR'd with declarative shadow roots. The page is interactive before JavaScript loads.
-2. **Hydration completes** — FAST-HTML hydrates shell components.
+2. **Hydration completes** — WebUI Framework hydrates shell components.
 3. **Router starts** — reads the SSR'd active chain and intercepts link clicks via the Navigation API.
 4. **Client-side navigation** — fetches a JSON partial from the server, which includes the matched route chain. The client diffs old vs new chain and mounts only the changed component. Parent components stay mounted.
 
@@ -53,24 +53,19 @@ Child routes use **relative paths** (no leading `/`). The nesting is the route t
 **3. Start the router after hydration:**
 
 ```typescript
-import { TemplateElement } from '@microsoft/fast-html';
 import { Router } from '@microsoft/webui-router';
 
 import './app-shell.js';
 
-TemplateElement.options({
-  'app-shell': { observerMap: 'all' },
-}).config({
-  hydrationComplete() {
-    Router.start({
-      loaders: {
-        'home-page': () => import('./pages/home-page.js'),
-        'user-list': () => import('./pages/user-list.js'),
-        'user-detail': () => import('./pages/user-detail.js'),
-      },
-    });
-  },
-}).define({ name: 'f-template' });
+window.addEventListener('webui:hydration-complete', () => {
+  Router.start({
+    loaders: {
+      'home-page': () => import('./pages/home-page.js'),
+      'user-list': () => import('./pages/user-list.js'),
+      'user-detail': () => import('./pages/user-detail.js'),
+    },
+  });
+});
 ```
 
 Components in `loaders` are lazy-loaded on first navigation. Components not listed are assumed eagerly loaded.
@@ -108,6 +103,8 @@ Start the router. Call after hydration completes.
 |--------|------|-------------|
 | `basePath` | `string` | Prefix for all route URLs (e.g., `"/app"`) |
 | `loaders` | `Record<string, () => Promise<unknown>>` | Lazy-loading map: component tag → dynamic import |
+| `templateEndpoint` | `string` | URL for `ensureLoaded()` requests (default: `"/_webui/templates"`) |
+| `dev` | `boolean` | Enable development mode warnings |
 
 ### `Router.navigate(path)`
 
@@ -116,6 +113,28 @@ Programmatic navigation:
 ```typescript
 Router.navigate('/users/42');
 ```
+
+### `Router.ensureLoaded(...tags)`
+
+Load templates and CSS for components on demand. Components must be declared
+as routes so the build compiles them, but they don't need to be navigated to:
+
+```html
+<!-- Declared as a route — compiled into protocol -->
+<route path="settings" component="settings-dialog" exact />
+```
+
+```typescript
+// Load on demand — fetches from /_webui/templates
+await Router.ensureLoaded('settings-dialog');
+
+// Batch multiple in one request
+await Router.ensureLoaded('modal-a', 'modal-b', 'drawer-c');
+```
+
+Templates are not sent during initial SSR or partial navigation for
+unmatched routes — zero cost until explicitly requested. If a user navigates
+directly to the route path, the component renders normally in the outlet.
 
 ### View Transitions
 

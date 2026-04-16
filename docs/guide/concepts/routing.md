@@ -200,6 +200,37 @@ Router.start({
 - Each loader runs **at most once** - cached after first call
 - On SSR'd initial load, the lazy loader is skipped (content already rendered)
 
+## On-Demand Component Loading
+
+Components like dialogs and overlays can be declared as routes but loaded
+on demand instead of during navigation. Declare them in the route tree so
+the build compiles them:
+
+```html
+<route path="/" component="app-shell">
+  <route path="" component="home-page" exact />
+  <route path="settings" component="settings-dialog" exact />
+</route>
+```
+
+Then load dynamically before first use:
+
+```typescript
+await Router.ensureLoaded('settings-dialog');
+```
+
+The template is **not** sent during initial SSR or partial navigation —
+only when explicitly requested via `ensureLoaded`. If a user navigates
+directly to `/settings`, the component renders normally in the outlet.
+
+Configure a custom template endpoint:
+
+```typescript
+Router.start({
+  templateEndpoint: '/api/templates', // default: '/_webui/templates'
+});
+```
+
 ## Navigation Events
 
 ```typescript

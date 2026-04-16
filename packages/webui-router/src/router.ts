@@ -258,6 +258,141 @@ export class WebUIRouter {
     window.navigation.back();
   }
 
+  /** In-flight ensureLoaded promises — deduplicates concurrent requests. */
+  private loadPromises = new Map<string, Promise<void>>();
+
+  /**
+   * Ensure one or more components' templates + CSS are loaded before use.
+   * For non-route components (dialogs, overlays) that need their template
+   * and CSS registered before the element is created — avoids FOUC.
+   *
+   * Batch-fetches missing templates from `/_webui/templates` in a single
+   * request. Reuses the same template/style registration pipeline as
+   * partial navigation.
+   *
+   * @example
+   * ```ts
+   * await Router.ensureLoaded('settings-dialog');
+   * await Router.ensureLoaded('modal-a', 'modal-b');
+   * await Router.ensureLoaded(...componentList);
+   * ```
+   */
+  async ensureLoaded(...tags: string[]): Promise<void> {
+    const registry = window.__webui_templates;
+
+    // Split into already-registered vs missing
+    const missing: string[] = [];
+    for (const tag of tags) {
+      if (!registry?.[tag] && !this.loadPromises.has(tag)) {
+        missing.push(tag);
+      }
+    }
+
+    const promises: Promise<void>[] = [];
+
+    // Batch-fetch missing templates in one request
+    if (missing.length > 0) {
+      const inv = this.inventory;
+      const fetchPromise = this.fetchComponentTemplates(missing, inv).then(() => {
+        for (const tag of missing) this.loadPromises.delete(tag);
+      });
+      for (const tag of missing) this.loadPromises.set(tag, fetchPromise);
+      promises.push(fetchPromise);
+    }
+
+    // Wait for any in-flight requests from previous calls
+    for (const tag of tags) {
+      const existing = this.loadPromises.get(tag);
+      if (existing) promises.push(existing);
+    }
+
+    if (promises.length > 0) await Promise.all(promises);
+  }
+
+  /**
+   * Fetch component templates + CSS from the server and register them.
+   * Reuses the same registration logic as fetchPartial.
+   */
+  private async fetchComponentTemplates(tags: string[], inventoryHex: string): Promise<void> {
+    const endpoint = this.config.templateEndpoint ?? '/_webui/templates';
+    const url = `${endpoint}?t=${tags.join(',')}&inv=${encodeURIComponent(inventoryHex)}`;
+    const resp = await fetch(url);
+    if (!resp.ok) return;
+    const data = await resp.json();
+
+    // Register using the same pipeline as partial navigation
+    this.registerTemplatesAndStyles(data);
+  }
+
+  /**
+   * Register templates + inject CSS from a server response.
+   * Shared by fetchPartial and fetchComponentTemplates.
+   */
+  private registerTemplatesAndStyles(data: {
+    templates?: string[];
+    templateStyles?: string[];
+    inventory?: string;
+  }): void {
+    if (data.inventory) {
+      this.updateInventory(data.inventory);
+    }
+
+    // 1. Module CSS: inject <style type="module"> definitions into <head>
+    if (data.templateStyles) {
+      for (const styleMarkup of data.templateStyles) {
+        const trimmed = styleMarkup.trim();
+        if (!trimmed.startsWith('<style')) continue;
+
+        const openTagEnd = trimmed.indexOf('>');
+        const closeTagStart = trimmed.lastIndexOf('</style>');
+        if (openTagEnd < 0 || closeTagStart <= openTagEnd) continue;
+
+        const specifierToken = 'specifier="';
+        const specStart = trimmed.indexOf(specifierToken);
+        let specifier: string | null = null;
+        if (specStart >= 0) {
+          const valStart = specStart + specifierToken.length;
+          const valEnd = trimmed.indexOf('"', valStart);
+          if (valEnd > valStart) specifier = trimmed.substring(valStart, valEnd);
+        }
+
+        if (specifier && document.querySelector(`style[type="module"][specifier="${specifier}"]`)) {
+          continue;
+        }
+
+        const style = document.createElement('style');
+        style.type = 'module';
+        if (specifier) style.setAttribute('specifier', specifier);
+        style.textContent = trimmed.substring(openTagEnd + 1, closeTagStart);
+        document.head.appendChild(style);
+      }
+    }
+
+    // 2. Template registration: execute JS IIFEs / insert DOM templates
+    if (data.templates) {
+      let scriptBody = '';
+      for (const tmpl of data.templates) {
+        if (tmpl.startsWith('<')) {
+          const container = document.createDocumentFragment();
+          const temp = document.createElement('div');
+          temp.innerHTML = tmpl;
+          while (temp.firstChild) container.appendChild(temp.firstChild);
+          document.body.appendChild(container);
+        } else {
+          if (scriptBody) scriptBody += '\n';
+          scriptBody += tmpl;
+        }
+      }
+      if (scriptBody) {
+        const script = document.createElement('script');
+        if (this.nonce) script.nonce = this.nonce;
+        script.textContent = scriptBody;
+        document.head.appendChild(script);
+        document.head.removeChild(script);
+      }
+    }
+  }
+
   /**
    * Garbage-collect all cached templates to free memory. Clears every entry
    * from `window.__webui_templates` and resets the inventory so the server
@@ -623,80 +758,12 @@ export class WebUIRouter {
     // Bail out before applying side effects if this navigation was superseded.
     if (signal?.aborted) return null;
 
-    if (data.inventory) {
-      this.updateInventory(data.inventory);
-    }
+    // Register templates, styles, and CSS using the shared pipeline
+    this.registerTemplatesAndStyles(data);
 
-    // 1. Append module CSS definition tags before executing any template scripts.
-    //    During SSR, module styles are emitted inline in each component's light DOM.
-    //    During SPA navigation, the server sends new module styles in templateStyles[]
-    //    for components not yet in the document. We append them to <head> so the
-    //    framework's injectModuleStyle() can find them and create CSSStyleSheets
-    //    for newly mounted shadow roots.
-    if (data.templateStyles) {
-      for (const styleMarkup of data.templateStyles) {
-        const trimmed = styleMarkup.trim();
-        if (!trimmed.startsWith('<style')) continue;
-
-        const openTagEnd = trimmed.indexOf('>');
-        const closeTagStart = trimmed.lastIndexOf('</style>');
-        if (openTagEnd < 0 || closeTagStart <= openTagEnd) continue;
-
-        // Extract specifier for deduplication
-        const specifierToken = 'specifier="';
-        const specStart = trimmed.indexOf(specifierToken);
-        let specifier: string | null = null;
-        if (specStart >= 0) {
-          const valStart = specStart + specifierToken.length;
-          const valEnd = trimmed.indexOf('"', valStart);
-          if (valEnd > valStart) specifier = trimmed.substring(valStart, valEnd);
-        }
-
-        // Skip if already present
-        if (specifier && document.querySelector(`style[type="module"][specifier="${specifier}"]`)) {
-          continue;
-        }
-
-        const style = document.createElement('style');
-        style.type = 'module';
-        if (specifier) style.setAttribute('specifier', specifier);
-        style.textContent = trimmed.substring(openTagEnd + 1, closeTagStart);
-        document.head.appendChild(style);
-      }
-    }
-
-    // 2. Execute template registration. Partition DOM-based templates (FAST plugin)
-    //    from raw JS IIFEs (WebUI plugin) and batch JS into one nonce'd script tag.
-    let scriptBody = '';
-    for (const tmpl of data.templates) {
-      if (tmpl.startsWith('<')) {
-        // FAST / DOM-based templates — insert into document for processing
-        const container = document.createDocumentFragment();
-        const temp = document.createElement('div');
-        temp.innerHTML = tmpl;
-        while (temp.firstChild) {
-          container.appendChild(temp.firstChild);
-        }
-        document.body.appendChild(container);
-      } else {
-        // Raw JS IIFE — accumulate for batched execution
-        if (scriptBody) scriptBody += '\n';
-        scriptBody += tmpl;
-      }
-    }
-    if (scriptBody) {
-      const script = document.createElement('script');
-      if (this.nonce) script.nonce = this.nonce;
-      script.textContent = scriptBody;
-      document.head.appendChild(script);
-      document.head.removeChild(script);
-    }
-
-    // Inject CSS stylesheets provided by the server for this route's
-    // components.  The server decides which URLs to include based on
-    // the active CSS strategy (link / style / module).
-    if (data.css) {
-      for (const href of data.css) {
+    // Also handle legacy `css` field from older server responses
+    if ((data as unknown as Record<string, unknown>).css) {
+      for (const href of (data as unknown as Record<string, unknown>).css as string[]) {
         if (!document.querySelector(`link[href="${href}"]`)) {
           const link = document.createElement('link');
           link.rel = 'stylesheet';

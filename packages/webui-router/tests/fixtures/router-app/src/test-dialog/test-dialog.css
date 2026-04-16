@@ -1,0 +1,22 @@
+:host {
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+}
+
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dialog-box {
+  background: white;
+  padding: 24px;
+  border-radius: 8px;
+  min-width: 300px;
+}
