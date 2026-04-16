@@ -425,6 +425,7 @@ mod sys {
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 mod sys {
     use std::ffi::c_void;
     use std::process::{Child, Command};
