@@ -263,11 +263,16 @@ fn parse_literal(s: &str) -> Result<Value> {
     )))
 }
 
-// Compare two JSON values based on the comparison operator
+// Compare two JSON values based on the comparison operator.
+//
+// For `Equal` and `NotEqual`, applies type coercion when the operands have
+// different JSON types (e.g., `String("3")` vs `Number(3)`). HTML attributes
+// are always strings, but condition literals like `foo == 3` parse the
+// right-hand side as a number. Without coercion these would never match.
 fn compare_values(left: &Value, op: &ComparisonOperator, right: &Value) -> Result<bool> {
     match op {
-        ComparisonOperator::Equal => Ok(left == right),
-        ComparisonOperator::NotEqual => Ok(left != right),
+        ComparisonOperator::Equal => Ok(coerced_eq(left, right)),
+        ComparisonOperator::NotEqual => Ok(!coerced_eq(left, right)),
 
         // Handle numeric comparisons
         ComparisonOperator::GreaterThan => compare_ordered(left, right, |a, b| a > b),
@@ -277,6 +282,39 @@ fn compare_values(left: &Value, op: &ComparisonOperator, right: &Value) -> Resul
         ComparisonOperator::Unspecified => Err(ExpressionError::Evaluation(
             "Unspecified comparison operator".to_string(),
         )),
+    }
+}
+
+/// Loose equality that coerces across String/Number/Bool boundaries.
+///
+/// When both values have the same JSON type, delegates to `serde_json`
+/// structural equality. When they differ, attempts numeric coercion so
+/// that `String("3") == Number(3)` evaluates to `true`.
+fn coerced_eq(left: &Value, right: &Value) -> bool {
+    // Fast path: same type — use structural equality.
+    if std::mem::discriminant(left) == std::mem::discriminant(right) {
+        return left == right;
+    }
+
+    // Cross-type: try numeric comparison.
+    if let (Ok(l), Ok(r)) = (extract_number(left), extract_number(right)) {
+        return (l - r).abs() < f64::EPSILON;
+    }
+
+    // Fall back to string comparison.
+    let l_str = value_as_str(left);
+    let r_str = value_as_str(right);
+    l_str == r_str
+}
+
+/// Best-effort string representation of a JSON value for equality coercion.
+fn value_as_str(val: &Value) -> String {
+    match val {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => String::new(),
+        _ => format!("{val}"),
     }
 }
 
@@ -913,6 +951,59 @@ mod tests {
         assert!(
             matches!(result, Ok(true)),
             "Expected Ok(true), got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_string_number_coercion_equal() {
+        // HTML attributes are strings; condition literals may be numbers.
+        // String("3") == Number(3) should be true.
+        let state = test_json!({ "foo": "3" });
+        let condition = ConditionExpr::predicate("foo", ComparisonOperator::Equal, "3");
+        let result = evaluate(&condition, &state);
+        assert!(
+            matches!(result, Ok(true)),
+            "String '3' should equal number 3, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_string_number_coercion_not_equal() {
+        // String("3") != Number(3) should be false.
+        let state = test_json!({ "foo": "3" });
+        let condition = ConditionExpr::predicate("foo", ComparisonOperator::NotEqual, "3");
+        let result = evaluate(&condition, &state);
+        assert!(
+            matches!(result, Ok(false)),
+            "String '3' != number 3 should be false, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_string_number_coercion_not_equal_different_values() {
+        // String("4") != Number(3) should be true.
+        let state = test_json!({ "foo": "4" });
+        let condition = ConditionExpr::predicate("foo", ComparisonOperator::NotEqual, "3");
+        let result = evaluate(&condition, &state);
+        assert!(
+            matches!(result, Ok(true)),
+            "String '4' != number 3 should be true, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_bool_string_coercion_equal() {
+        // String("true") should equal Bool(true).
+        let state = test_json!({ "flag": "true" });
+        let condition = ConditionExpr::predicate("flag", ComparisonOperator::Equal, "true");
+        let result = evaluate(&condition, &state);
+        assert!(
+            matches!(result, Ok(true)),
+            "String 'true' should equal bool true, got {:?}",
             result
         );
     }
