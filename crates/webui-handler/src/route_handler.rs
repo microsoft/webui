@@ -559,15 +559,15 @@ pub fn render_component_templates(
     let mut result = serde_json::Map::with_capacity(3);
     result.insert("templateStyles".into(), Value::Array(style_array));
     result.insert("templates".into(), Value::Array(tmpl_array));
-    result.insert("inventory".into(), Value::String(encode_inventory(&updated_inv)));
+    result.insert(
+        "inventory".into(),
+        Value::String(encode_inventory(&updated_inv)),
+    );
     Value::Object(result)
 }
 
 /// Shared helper: collect templates and module CSS styles for a set of component tags.
-fn collect_component_assets(
-    protocol: &WebUIProtocol,
-    tags: &[&str],
-) -> (Vec<Value>, Vec<Value>) {
+fn collect_component_assets(protocol: &WebUIProtocol, tags: &[&str]) -> (Vec<Value>, Vec<Value>) {
     let mut style_array = Vec::new();
     let mut tmpl_array = Vec::new();
 
@@ -1675,7 +1675,10 @@ mod tests {
         assert_eq!(templates.len(), 1);
         assert!(templates[0].as_str().unwrap().contains("settings-dialog"));
         assert_eq!(styles.len(), 1);
-        assert!(styles[0].as_str().unwrap().contains(".dialog{position:fixed}"));
+        assert!(styles[0]
+            .as_str()
+            .unwrap()
+            .contains(".dialog{position:fixed}"));
     }
 
     #[test]

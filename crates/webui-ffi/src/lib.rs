@@ -594,11 +594,8 @@ pub unsafe extern "C" fn webui_render_component_templates(
             }
         };
 
-        let result = webui_handler::route_handler::render_component_templates(
-            &protocol,
-            &tag_refs,
-            inv_str,
-        );
+        let result =
+            webui_handler::route_handler::render_component_templates(&protocol, &tag_refs, inv_str);
 
         match CString::new(result.to_string()) {
             Ok(s) => s.into_raw(),
