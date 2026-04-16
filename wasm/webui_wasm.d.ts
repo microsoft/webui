@@ -48,6 +48,7 @@ export function build_protocol(files: any, entry: string): string;
  * The rendered HTML string, or throws a JS error on failure.
  */
 export function build_and_render(files: any, state_json: string, entry: string, request_path: string): string;
+export function render_component_templates(protocol_json: string, component_tags_json: string, inventory_hex: string): string;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -56,6 +57,7 @@ export interface InitOutput {
   readonly build_and_render: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
   readonly build_protocol: (a: number, b: number, c: number, d: number) => void;
   readonly render: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
+  readonly render_component_templates: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
   readonly render_partial: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
   readonly __wbindgen_export_0: (a: number, b: number) => number;
   readonly __wbindgen_export_1: (a: number, b: number, c: number, d: number) => number;
