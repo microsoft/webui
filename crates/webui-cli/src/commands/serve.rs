@@ -768,12 +768,18 @@ async fn handle_component_templates(
     }
     if tags.is_empty() {
         return HttpResponse::BadRequest()
-            .json(serde_json::json!({"error": "missing ?t= parameter"}));
+            .content_type("application/json")
+            .body(r#"{"error":"missing ?t= parameter"}"#);
     }
-    let state = context.state.lock().unwrap();
+    let Ok(state) = context.state.lock() else {
+        return HttpResponse::InternalServerError()
+            .content_type("application/json")
+            .body(r#"{"error":"lock poisoned"}"#);
+    };
     let Some(ref protocol) = state.protocol else {
         return HttpResponse::InternalServerError()
-            .json(serde_json::json!({"error": "no protocol"}));
+            .content_type("application/json")
+            .body(r#"{"error":"no protocol"}"#);
     };
     let result = webui_handler::route_handler::render_component_templates(protocol, &tags, &inv);
     HttpResponse::Ok()
