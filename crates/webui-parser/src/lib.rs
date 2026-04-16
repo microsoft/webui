@@ -851,8 +851,12 @@ impl HtmlParser {
                     self.add_raw_fragment(">");
                 }
             } else if !has_end {
-                // Void element (no end tag from parser) — just close the opening tag
+                // Void element (no end tag from parser) — just close the opening tag.
+                // Tree-sitter HTML may still attach following content as children
+                // of the void element (e.g., `<br>text {{binding}}`), so we must
+                // process those children to avoid dropping text and bindings.
                 self.add_raw_fragment(">");
+                self.process_content_children(node, source, fragments)?;
             } else {
                 self.add_raw_fragment(">");
 
@@ -4432,6 +4436,25 @@ mod tests {
                 signal_raw("body_start"),
                 signal_raw("body_end"),
                 raw("</body></html>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_text_with_binding_after_void_element() {
+        // Text nodes containing {{binding}} after void elements like <br>
+        // must be preserved. Regression test for content being dropped.
+        let (fragments, _) = parse_and_get_fragments(
+            "Part A: {{value1}}<button>Click</button><br>Part B: {{value2}}<button>Click2</button>",
+        );
+        assert_fragments!(
+            fragments,
+            [
+                raw("Part A: "),
+                signal("value1"),
+                raw("<button>Click</button><br>Part B: "),
+                signal("value2"),
+                raw("<button>Click2</button>"),
             ]
         );
     }
