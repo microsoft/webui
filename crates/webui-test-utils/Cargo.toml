@@ -20,3 +20,6 @@ mockall = { workspace = true }
 tokio-test = { workspace = true }
 tempfile = { workspace = true }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.9" }
+
+[lints]
+workspace = true

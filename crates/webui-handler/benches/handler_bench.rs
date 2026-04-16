@@ -1,6 +1,5 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
-
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde_json::json;
 use serde_json::Value;
@@ -148,7 +147,7 @@ fn handler_plugin_fast_bench(c: &mut Criterion) {
     let protocol = build_mixed_protocol();
     let state = build_state(120);
 
-    let mut baseline_handler = WebUIHandler::new();
+    let baseline_handler = WebUIHandler::new();
     let mut baseline_writer = BenchWriter::new(16 * 1024);
     baseline_handler
         .handle(
@@ -218,7 +217,7 @@ fn handler_loop_scaling_bench(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(writer.len() as u64));
 
         group.bench_with_input(BenchmarkId::new("items", count), &state, |b, st| {
-            let mut h = WebUIHandler::new();
+            let h = WebUIHandler::new();
             let mut w = BenchWriter::new(count * 80 + 1024);
 
             b.iter(|| {
@@ -327,7 +326,7 @@ fn handler_condition_variety_bench(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(writer.len() as u64));
 
     group.bench_function("all_true", |b| {
-        let mut h = WebUIHandler::new();
+        let h = WebUIHandler::new();
         let mut w = BenchWriter::new(1024);
         b.iter(|| {
             w.clear();
@@ -351,7 +350,7 @@ fn handler_condition_variety_bench(c: &mut Criterion) {
     });
 
     group.bench_function("mixed", |b| {
-        let mut h = WebUIHandler::new();
+        let h = WebUIHandler::new();
         let mut w = BenchWriter::new(1024);
         b.iter(|| {
             w.clear();
@@ -440,7 +439,7 @@ fn handler_nested_components_bench(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(writer.len() as u64));
 
     group.bench_function("three_levels_50_items", |b| {
-        let mut h = WebUIHandler::new();
+        let h = WebUIHandler::new();
         let mut w = BenchWriter::new(8 * 1024);
         b.iter(|| {
             w.clear();
@@ -494,7 +493,7 @@ fn handler_state_depth_bench(c: &mut Criterion) {
         let protocol = build_signal_protocol(path);
 
         group.bench_function(*label, |b| {
-            let mut h = WebUIHandler::new();
+            let h = WebUIHandler::new();
             let mut w = BenchWriter::new(256);
             b.iter(|| {
                 w.clear();

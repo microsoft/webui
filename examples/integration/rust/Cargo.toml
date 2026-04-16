@@ -13,3 +13,6 @@ serde_json = { workspace = true }
 microsoft-webui-protocol = { path = "../../../crates/webui-protocol" }
 microsoft-webui-handler = { path = "../../../crates/webui-handler" }
 anyhow = { workspace = true }
+
+[lints]
+workspace = true

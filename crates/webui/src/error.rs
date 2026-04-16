@@ -9,8 +9,14 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum WebUIError {
     /// I/O error (file read/write failures).
-    #[error("I/O error: {0}")]
-    Io(String),
+    #[error("I/O error: {context}")]
+    Io {
+        /// What operation failed.
+        context: String,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
 
     /// Component registration failure.
     #[error("Component registration error: {0}")]
@@ -22,11 +28,11 @@ pub enum WebUIError {
 
     /// HTML/CSS parsing failure.
     #[error("Parse error: {0}")]
-    Parse(String),
+    Parse(#[from] webui_parser::ParserError),
 
     /// Protocol serialization or deserialization failure.
     #[error("Protocol error: {0}")]
-    Protocol(String),
+    Protocol(#[from] webui_protocol::ProtocolError),
 
     /// JSON serialization failure.
     #[error("Serialization error: {0}")]
@@ -34,5 +40,5 @@ pub enum WebUIError {
 
     /// Handler rendering error.
     #[error("Rendering error: {0}")]
-    Rendering(String),
+    Rendering(#[from] webui_handler::HandlerError),
 }

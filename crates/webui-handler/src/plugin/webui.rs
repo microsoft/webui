@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_default_creates_instance() {
-        let _plugin = WebUIHydrationPlugin::default();
+        let _plugin = WebUIHydrationPlugin;
     }
 
     #[test]

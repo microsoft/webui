@@ -30,6 +30,8 @@ impl CssParser {
     /// Create a new CSS parser.
     pub fn new() -> Self {
         let mut parser = Parser::new();
+        // Grammar is statically linked — set_language cannot fail at runtime.
+        #[allow(clippy::disallowed_methods)]
         parser
             .set_language(&LANGUAGE.into())
             .expect("Error loading CSS grammar");
@@ -169,6 +171,7 @@ impl CssParser {
 
     /// Iteratively walk the CSS tree to collect var() usages and custom
     /// property definitions. Uses an explicit stack instead of recursion.
+    #[allow(clippy::cast_possible_truncation)] // tree-sitter child indices are u32
     fn walk_css_tree(
         root: Node<'_>,
         source: &str,
@@ -200,6 +203,7 @@ impl CssParser {
 
     /// If `node` is a `var()` call expression, extract its `plain_value`
     /// arguments as token names (stripping the `--` prefix).
+    #[allow(clippy::cast_possible_truncation)] // tree-sitter child indices are u32
     fn extract_var_tokens(node: Node<'_>, source: &str, tokens: &mut HashSet<String>) {
         let count = node.child_count();
         let is_var = (0..count).any(|i| {
@@ -256,6 +260,7 @@ impl Default for CssParser {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use std::collections::HashMap;

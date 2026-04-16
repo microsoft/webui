@@ -1,7 +1,13 @@
 disallowed-methods = [
   { path = "std::option::Option::unwrap", reason = "can panic; prefer handling the None case explicitly" },
   { path = "std::result::Result::unwrap", reason = "can panic; prefer handling the Err case explicitly" },
+  { path = "std::option::Option::expect", reason = "can panic; prefer handling the None case explicitly" },
+  { path = "std::result::Result::expect", reason = "can panic; prefer handling the Err case explicitly" },
+]
+disallowed-types = [
+  { path = "std::collections::LinkedList", reason = "poor cache locality; use Vec or VecDeque" },
 ]
 cognitive-complexity-threshold = 20
 too-many-arguments-threshold = 5
+large-error-threshold = 128
 

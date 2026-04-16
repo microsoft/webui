@@ -1,6 +1,5 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
-
 //! End-to-end benchmark for the contact-book-manager example application.
 //!
 //! Compiles the real contact-book-manager templates into a protocol binary at
@@ -173,7 +172,7 @@ fn generate_contact(idx: usize) -> Value {
     let group = GROUPS[idx % GROUPS.len()];
     let color = AVATAR_COLORS[idx % AVATAR_COLORS.len()];
     let city = CITIES[idx % CITIES.len()];
-    let favorite = idx % 3 == 0;
+    let favorite = idx.is_multiple_of(3);
 
     json!({
         "id": (idx + 1).to_string(),
@@ -186,7 +185,7 @@ fn generate_contact(idx: usize) -> Value {
         "favorite": favorite,
         "initials": initials,
         "avatarColor": color,
-        "notes": if idx % 2 == 0 { format!("Contact note for {} {}", first, last) } else { String::new() },
+        "notes": if idx.is_multiple_of(2) { format!("Contact note for {} {}", first, last) } else { String::new() },
         "address": format!("{} {} St, {}", (idx + 1) * 100, first, city),
     })
 }

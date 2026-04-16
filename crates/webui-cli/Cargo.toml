@@ -35,3 +35,6 @@ walkdir = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.9" }
+
+[lints]
+workspace = true

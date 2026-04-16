@@ -42,3 +42,6 @@ criterion = { workspace = true }
 [[bench]]
 name = "parser_bench"
 harness = false
+
+[lints]
+workspace = true

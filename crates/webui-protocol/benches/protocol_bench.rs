@@ -1,6 +1,5 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
-
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::collections::HashMap;
 use std::hint::black_box;
@@ -266,7 +265,7 @@ fn create_large_protocol(component_count: usize) -> WebUIProtocol {
             panel_id,
             FragmentList {
                 fragments: vec![
-                    WebUIFragment::raw(&format!("<section class=\"panel\" data-idx=\"{idx}\">")),
+                    WebUIFragment::raw(format!("<section class=\"panel\" data-idx=\"{idx}\">")),
                     WebUIFragment::raw("<h3>"),
                     WebUIFragment::signal("title", false),
                     WebUIFragment::raw("</h3>"),

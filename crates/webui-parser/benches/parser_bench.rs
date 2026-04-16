@@ -1,6 +1,5 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
-
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
 use webui_parser::{plugin::fast::FastParserPlugin, CssStrategy, HtmlParser};
@@ -71,14 +70,14 @@ fn build_component_heavy_template(components: usize) -> String {
 
     for idx in 0..components {
         let component_name = component_names[idx % component_names.len()];
-        html.push_str("<");
+        html.push('<');
         html.push_str(component_name);
         html.push_str(" title=\"{{title}}\" :props=\"{{props}}\" ?active=\"{{active}}\">");
         html.push_str("<span>slot ");
         html.push_str(&idx.to_string());
         html.push_str("</span></");
         html.push_str(component_name);
-        html.push_str(">");
+        html.push('>');
     }
 
     html.push_str("</body>");

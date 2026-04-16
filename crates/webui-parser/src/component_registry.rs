@@ -130,15 +130,19 @@ impl ComponentRegistry {
         }
 
         // Read HTML content
-        let html_content = fs::read_to_string(html_path)
-            .map_err(|e| ParserError::IO(format!("Failed to read HTML file: {}", e)))?;
+        let html_content = fs::read_to_string(html_path).map_err(|source| ParserError::IO {
+            context: "Failed to read HTML file".to_string(),
+            source,
+        })?;
 
         // Read CSS content and extract tokens if available
         let (css_content, css_tokens) = if let Some(css_path) = css_path {
             let css_path = css_path.as_ref();
             if css_path.exists() {
-                let content = fs::read_to_string(css_path)
-                    .map_err(|e| ParserError::IO(format!("Failed to read CSS file: {}", e)))?;
+                let content = fs::read_to_string(css_path).map_err(|source| ParserError::IO {
+                    context: "Failed to read CSS file".to_string(),
+                    source,
+                })?;
                 let tokens = self.extract_sorted_tokens(&content)?;
                 (Some(content), tokens)
             } else {

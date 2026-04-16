@@ -311,7 +311,7 @@ fn run(args: &ServeArgs) -> Result<()> {
         app_args: args.app_args.clone(),
         app_dir: paths.app_dir.clone(),
         state_file: paths.state_file.clone(),
-        token_css: token_css.clone(),
+        token_css,
     };
 
     output::header("WebUI Dev Server");
@@ -389,7 +389,7 @@ fn run(args: &ServeArgs) -> Result<()> {
         assets_dir: paths.serve_dir,
         api_port: args.api_port,
         plugin: args.app_args.plugin,
-        token_css: render_config.token_css.clone(),
+        token_css: render_config.token_css,
     });
 
     let has_api_proxy = server_context.api_port.is_some();

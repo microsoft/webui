@@ -113,10 +113,7 @@ pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
 
     let raw = build_protocol_inner(&options)?;
 
-    let protocol_bytes = raw
-        .protocol
-        .to_protobuf()
-        .map_err(|e| WebUIError::Serialization(e.to_string()))?;
+    let protocol_bytes = raw.protocol.to_protobuf()?;
 
     let stats = BuildStats {
         duration: started.elapsed(),
@@ -147,22 +144,22 @@ pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
 pub fn build_to_disk(options: BuildOptions, out_dir: &Path) -> Result<BuildStats, WebUIError> {
     let result = build(options)?;
 
-    fs::create_dir_all(out_dir)
-        .map_err(|e| WebUIError::Io(format!("Failed to create {}: {e}", out_dir.display())))?;
+    fs::create_dir_all(out_dir).map_err(|source| WebUIError::Io {
+        context: format!("Failed to create {}", out_dir.display()),
+        source,
+    })?;
 
-    fs::write(out_dir.join("protocol.bin"), &result.protocol_bytes).map_err(|e| {
-        WebUIError::Io(format!(
-            "Failed to write protocol.bin to {}: {e}",
-            out_dir.display()
-        ))
+    fs::write(out_dir.join("protocol.bin"), &result.protocol_bytes).map_err(|source| {
+        WebUIError::Io {
+            context: format!("Failed to write protocol.bin to {}", out_dir.display()),
+            source,
+        }
     })?;
 
     for (name, content) in &result.css_files {
-        fs::write(out_dir.join(name), content).map_err(|e| {
-            WebUIError::Io(format!(
-                "Failed to write {name} to {}: {e}",
-                out_dir.display()
-            ))
+        fs::write(out_dir.join(name), content).map_err(|source| WebUIError::Io {
+            context: format!("Failed to write {name} to {}", out_dir.display()),
+            source,
         })?;
     }
 
@@ -171,15 +168,16 @@ pub fn build_to_disk(options: BuildOptions, out_dir: &Path) -> Result<BuildStats
 
 /// Inspect a compiled WebUI protocol file and return its JSON representation.
 pub fn inspect(protocol_path: &Path) -> Result<String, WebUIError> {
-    let bytes = fs::read(protocol_path)
-        .map_err(|e| WebUIError::Io(format!("Failed to read {}: {e}", protocol_path.display())))?;
+    let bytes = fs::read(protocol_path).map_err(|source| WebUIError::Io {
+        context: format!("Failed to read {}", protocol_path.display()),
+        source,
+    })?;
     inspect_bytes(&bytes)
 }
 
 /// Inspect raw protocol bytes and return their JSON representation.
 pub fn inspect_bytes(protocol_bytes: &[u8]) -> Result<String, WebUIError> {
-    let protocol = WebUIProtocol::from_protobuf(protocol_bytes)
-        .map_err(|e| WebUIError::Protocol(e.to_string()))?;
+    let protocol = WebUIProtocol::from_protobuf(protocol_bytes)?;
     protocol
         .to_json_pretty()
         .map_err(|e| WebUIError::Serialization(e.to_string()))
@@ -253,11 +251,11 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
 
     // Parse entry HTML
     let entry_path = options.app_dir.join(&options.entry);
-    let html_content = fs::read_to_string(&entry_path)
-        .map_err(|e| WebUIError::Io(format!("Failed to read {}: {e}", entry_path.display())))?;
-    parser
-        .parse(&options.entry, &html_content)
-        .map_err(|e| WebUIError::Parse(format!("Failed to parse {}: {e}", options.entry)))?;
+    let html_content = fs::read_to_string(&entry_path).map_err(|source| WebUIError::Io {
+        context: format!("Failed to read {}", entry_path.display()),
+        source,
+    })?;
+    parser.parse(&options.entry, &html_content)?;
 
     // Snapshot CSS before consuming the parser
     let css_snapshot: Vec<(String, String)> = parser
@@ -547,7 +545,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, WebUIError::Io(_)));
+        assert!(matches!(err, WebUIError::Io { .. }));
     }
 
     #[test]
@@ -646,7 +644,7 @@ mod tests {
     fn test_inspect_missing_file() {
         let result = inspect(Path::new("/nonexistent/protocol.bin"));
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), WebUIError::Io(_)));
+        assert!(matches!(result.unwrap_err(), WebUIError::Io { .. }));
     }
 
     #[test]

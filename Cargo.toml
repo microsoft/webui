@@ -11,6 +11,7 @@ resolver = "2"
 [workspace.package]
 version = "0.0.9"
 edition = "2021"
+rust-version = "1.93"
 authors = ["Microsoft Edge"]
 license = "MIT"
 repository = "https://github.com/microsoft/webui"
@@ -65,6 +66,35 @@ tokio-test = "0.4.5"
 prost-build = "0.14.3"
 napi-build = "2"
 cbindgen = "0.29.2"
+
+[workspace.lints.clippy]
+# Lint groups (lower priority so individual lints can override)
+perf = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+# Performance
+large_enum_variant = "deny"
+large_stack_arrays = "deny"
+large_futures = "deny"
+needless_collect = "deny"
+redundant_clone = "deny"
+unnecessary_to_owned = "deny"
+inefficient_to_string = "deny"
+manual_memcpy = "deny"
+naive_bytecount = "deny"
+# Security & correctness
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+cast_possible_wrap = "deny"
+# Memory discipline
+rc_buffer = "deny"
+large_types_passed_by_value = "deny"
+vec_box = "deny"
+unnecessary_box_returns = "deny"
+# Documentation
+# doc_markdown = "warn"  # TODO: enable after fixing 101 existing violations
+
+[workspace.lints.rust]
+unsafe_code = "deny"
 
 [profile.release]
 lto = true

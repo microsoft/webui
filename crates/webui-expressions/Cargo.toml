@@ -28,3 +28,6 @@ criterion = { workspace = true }
 [[bench]]
 name = "expressions_bench"
 harness = false
+
+[lints]
+workspace = true

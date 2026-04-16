@@ -30,3 +30,6 @@ criterion = { workspace = true }
 [[bench]]
 name = "protocol_bench"
 harness = false
+
+[lints]
+workspace = true

@@ -333,13 +333,11 @@ mod tests {
 
     #[test]
     fn test_double_value_directly() {
-        let data = test_json!({ "double_value": 3.14159 });
+        let data = test_json!({ "double_value": 1.23 });
         let value = find_value_by_dotted_path("double_value", &data);
         assert_eq!(
             value,
-            Some(Value::Number(
-                serde_json::Number::from_f64(3.14159).unwrap()
-            ))
+            Some(Value::Number(serde_json::Number::from_f64(1.23).unwrap()))
         );
     }
 }

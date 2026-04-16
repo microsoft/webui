@@ -299,10 +299,11 @@ pub fn terminate_gracefully(managed: &mut ManagedChild) {
 pub fn wait_for_group(children: &mut [(&str, ManagedChild)]) -> ExitCode {
     let ctrlc = Arc::new(AtomicBool::new(false));
     let flag = ctrlc.clone();
-    ctrlc::set_handler(move || {
+    if let Err(e) = ctrlc::set_handler(move || {
         flag.store(true, Ordering::SeqCst);
-    })
-    .expect("failed to set Ctrl+C handler");
+    }) {
+        eprintln!("warning: failed to set Ctrl+C handler: {e}");
+    }
 
     loop {
         if ctrlc.load(Ordering::SeqCst) {
@@ -393,6 +394,7 @@ mod sys {
     use std::process::{Child, Command};
 
     /// Make the child a process-group leader so we can signal the entire tree.
+    #[allow(unsafe_code)]
     pub fn configure_process_group(command: &mut Command) {
         use std::os::unix::process::CommandExt;
 
@@ -408,6 +410,7 @@ mod sys {
 
     /// Send SIGTERM to the child's process group, falling back to the child PID
     /// directly if the group signal fails.
+    #[allow(unsafe_code)]
     pub fn send_graceful_stop(child: &Child) {
         #[allow(clippy::cast_possible_wrap)]
         let pid = child.id() as i32;

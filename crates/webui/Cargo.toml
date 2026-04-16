@@ -35,3 +35,6 @@ microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.9" }
 [[bench]]
 name = "contact_book_bench"
 harness = false
+
+[lints]
+workspace = true

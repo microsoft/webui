@@ -30,3 +30,6 @@ napi-build = { workspace = true }
 microsoft-webui-parser = { path = "../webui-parser", version = "0.0.9", default-features = false }
 microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.9" }
 tempfile = { workspace = true }
+
+[lints]
+workspace = true

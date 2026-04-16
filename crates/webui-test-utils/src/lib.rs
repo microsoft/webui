@@ -499,6 +499,7 @@ impl TestFileSystem {
     }
 
     /// Add a file to the test file system at the specified path
+    #[allow(clippy::disallowed_methods)] // Test helper — panicking on failure is intentional
     pub fn add_file(&mut self, path: &str, content: &str) -> PathBuf {
         // Create a new temporary directory for this file
         let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");

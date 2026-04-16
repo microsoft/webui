@@ -33,7 +33,12 @@ pub fn build_component_index(protocol: &WebUIProtocol) -> HashMap<String, u32> {
     sorted
         .iter()
         .enumerate()
-        .map(|(i, n)| ((*n).clone(), i as u32))
+        .map(|(i, n)| {
+            // Index count bounded by component registry size, well within u32 range
+            #[allow(clippy::cast_possible_truncation)]
+            let idx = i as u32;
+            ((*n).clone(), idx)
+        })
         .collect()
 }
 

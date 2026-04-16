@@ -209,6 +209,8 @@ impl HtmlParser {
     /// Create a new directive parser.
     pub fn new() -> Self {
         let mut parser = Parser::new();
+        // Grammar is statically linked — set_language cannot fail at runtime.
+        #[allow(clippy::disallowed_methods)]
         parser
             .set_language(&LANGUAGE.into())
             .expect("Error loading HTML grammar");
@@ -1816,7 +1818,9 @@ impl HtmlParser {
                 return Some(node);
             }
             let mut cursor = node.walk();
-            // Push children in reverse so first child is processed first
+            // Collect is required: cursor is mutably borrowed by the iterator,
+            // so we must collect before reversing to push children in DFS order.
+            #[allow(clippy::needless_collect)]
             let children: Vec<_> = node.children(&mut cursor).collect();
             for child in children.into_iter().rev() {
                 stack.push(child);
@@ -3129,7 +3133,7 @@ mod tests {
     fn test_doctype_preserved() {
         // DOCTYPE should be preserved as raw content
         let (fragments, _) = parse_and_get_fragments("<!DOCTYPE html><html><head></head></html>");
-        assert!(fragments.len() >= 1);
+        assert!(!fragments.is_empty());
         assert!(
             matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("<!DOCTYPE html>"))
         );

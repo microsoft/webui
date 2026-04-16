@@ -278,7 +278,7 @@ fn cart_response(
         let location = if options.open_cart {
             cart::with_cart_open(&stable_path, true)
         } else {
-            stable_path.clone()
+            stable_path
         };
         let mut redirect = HttpResponse::SeeOther();
         redirect.insert_header((LOCATION, location));

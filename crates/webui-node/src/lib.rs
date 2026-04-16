@@ -84,6 +84,7 @@ pub struct JsBuildOptions {
 ///
 /// Returns the compiled protocol bytes, CSS files, and build statistics.
 #[napi]
+#[allow(clippy::cast_possible_truncation)] // stats are bounded by component/file counts
 pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
     let css = options
         .css

@@ -202,14 +202,12 @@ fn render_inner(
 
     let mut writer = StringWriter::with_capacity(1024);
     let handler = create_handler(plugin)?;
-    handler
-        .render(
-            &protocol,
-            &state,
-            &RenderOptions::new(entry, request_path),
-            &mut writer,
-        )
-        .map_err(|e| BuildError::Render(e.to_string()))?;
+    handler.render(
+        &protocol,
+        &state,
+        &RenderOptions::new(entry, request_path),
+        &mut writer,
+    )?;
 
     Ok(writer.content)
 }
@@ -228,14 +226,12 @@ pub(crate) fn build_and_render_inner(
 
     let mut writer = StringWriter::with_capacity(1024);
     let handler = create_handler(None)?;
-    handler
-        .render(
-            &protocol,
-            &state,
-            &RenderOptions::new(entry, request_path),
-            &mut writer,
-        )
-        .map_err(|e| BuildError::Render(e.to_string()))?;
+    handler.render(
+        &protocol,
+        &state,
+        &RenderOptions::new(entry, request_path),
+        &mut writer,
+    )?;
 
     Ok(writer.content)
 }
@@ -261,15 +257,12 @@ fn parse_to_protocol(
                 let css = files.get(&css_key).map(|s| s.as_str());
                 parser
                     .component_registry_mut()
-                    .register_component(tag_name, content, css)
-                    .map_err(|e| BuildError::Parse(e.to_string()))?;
+                    .register_component(tag_name, content, css)?;
             }
         }
     }
 
-    parser
-        .parse(entry, entry_html)
-        .map_err(|e| BuildError::Parse(e.to_string()))?;
+    parser.parse(entry, entry_html)?;
 
     Ok(WebUIProtocol::new(parser.into_fragment_records()))
 }
@@ -293,6 +286,18 @@ impl std::fmt::Display for BuildError {
             BuildError::State(msg) => write!(f, "State JSON error: {msg}"),
             BuildError::Render(msg) => write!(f, "Render error: {msg}"),
         }
+    }
+}
+
+impl From<webui_parser::ParserError> for BuildError {
+    fn from(e: webui_parser::ParserError) -> Self {
+        BuildError::Parse(e.to_string())
+    }
+}
+
+impl From<webui_handler::HandlerError> for BuildError {
+    fn from(e: webui_handler::HandlerError) -> Self {
+        BuildError::Render(e.to_string())
     }
 }
 

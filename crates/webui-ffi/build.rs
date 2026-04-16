@@ -21,12 +21,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // C header
     let config = cbindgen::Config::default();
-    cbindgen::Builder::new()
+    let bindings = cbindgen::Builder::new()
         .with_crate(crate_dir)
         .with_config(config)
         .generate()
-        .expect("Unable to generate C bindings")
-        .write_to_file(out_dir.join("webui_ffi.h"));
+        .map_err(|e| Error::other(format!("Unable to generate C bindings: {e}")))?;
+    bindings.write_to_file(out_dir.join("webui_ffi.h"));
 
     Ok(())
 }

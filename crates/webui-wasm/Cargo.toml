@@ -29,3 +29,6 @@ serde-wasm-bindgen = { workspace = true }
 
 [dev-dependencies]
 microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.9" }
+
+[lints]
+workspace = true
