@@ -44,7 +44,35 @@ const propertyToAttribute: Record<string, string> = Object.assign(Object.create(
   useMap: 'usemap',
 });
 
-/** Convert camelCase to kebab-case for attribute reflection. */
+/**
+ * Convert a camelCase DOM property name into its kebab-case HTML attribute form.
+ *
+ * This function is optimized for framework-level hot paths where attribute
+ * normalization may run thousands of times per render. It performs three
+ * progressively cheaper checks:
+ *
+ * 1. **Direct lookup for irregular mappings**  
+ *    Many DOM properties (e.g., `readOnly`, `tabIndex`, `crossOrigin`) do not
+ *    follow simple camelCase → kebab-case rules. These are resolved through a
+ *    precomputed `propertyToAttribute` map for O(1) returns with no string
+ *    processing.
+ *
+ * 2. **Fast path for ARIA attributes**  
+ *    ARIA properties always begin with `aria` followed by an uppercase letter
+ *    (e.g., `ariaDescribedBy`). These map to `aria-` + the lowercase remainder.
+ *    This branch avoids the general loop and uses the engine-optimized
+ *    `.toLowerCase()` for the suffix.
+ *
+ * 3. **General camelCase → kebab-case conversion**  
+ *    For all other inputs, the function performs a tight ASCII-only scan:
+ *    uppercase A–Z (65–90) are converted to lowercase and prefixed with `-`,
+ *    while all other characters are copied as-is. This avoids regex engines,
+ *    callback allocations, and match objects, producing predictable,
+ *    allocation-minimal performance ideal for DOM attribute reflection.
+ *
+ * The result is a predictable, JIT-friendly transformation suitable for
+ * attribute diffing, SSR serialization, and runtime DOM patching.
+ */
 export function toKebabCase(str: string): string {
   const mapped = propertyToAttribute[str];
   if (mapped) return mapped;
@@ -52,7 +80,12 @@ export function toKebabCase(str: string): string {
   if (str.length > 4 && str.charCodeAt(0) === 97 /* a */ && str.startsWith('aria') && str.charCodeAt(4) >= 65 && str.charCodeAt(4) <= 90) {
     return 'aria-' + str.slice(4).toLowerCase();
   }
-  return str.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+  let out = '';
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    out += code >= 65 && code <= 90 ? '-' + String.fromCharCode(code + 32) : str[i];
+  }
+  return out;
 }
 
 /**
