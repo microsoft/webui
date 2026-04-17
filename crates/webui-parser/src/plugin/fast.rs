@@ -227,8 +227,7 @@ fn convert_btr_to_fast(input: &str) -> String {
         // Check for {{expr}} inside :attr values — handled at attribute level
         // in try_convert_tag. Outside of tags, double-braces are left as-is
         // (they're text content interpolation for FAST, kept unchanged).
-        result.push(bytes[i] as char);
-        i += 1;
+        i = push_char_at(input, i, &mut result);
     }
 
     result
@@ -498,8 +497,7 @@ fn convert_complex_attrs(tag_str: &str, result: &mut String) -> Option<usize> {
                 converted.push_str(&tag_content[attr_start..j]);
                 continue;
             }
-            converted.push(tag_bytes[j] as char);
-            j += 1;
+            j = push_char_at(tag_content, j, &mut converted);
         } else {
             // Inside a :attr value — convert {{expr}} to {expr}
             if tag_bytes[j] == b'"' {
@@ -523,14 +521,30 @@ fn convert_complex_attrs(tag_str: &str, result: &mut String) -> Option<usize> {
                     j += 2;
                 }
             } else {
-                converted.push(tag_bytes[j] as char);
-                j += 1;
+                j = push_char_at(tag_content, j, &mut converted);
             }
         }
     }
 
     result.push_str(&converted);
     Some(close + 1)
+}
+
+/// Push the single UTF-8 character starting at `pos` in `input` into `out`,
+/// returning the byte index immediately after it.
+fn push_char_at(input: &str, pos: usize, out: &mut String) -> usize {
+    let bytes = input.as_bytes();
+    if bytes[pos].is_ascii() {
+        out.push(bytes[pos] as char);
+        pos + 1
+    } else {
+        let mut end = pos + 1;
+        while end < bytes.len() && !input.is_char_boundary(end) {
+            end += 1;
+        }
+        out.push_str(&input[pos..end]);
+        end
+    }
 }
 
 /// Check if a byte is ASCII whitespace.
@@ -563,8 +577,7 @@ fn minify_inter_tag_whitespace(input: &str) -> String {
                 result.push_str(&input[ws_start..i]);
             }
         } else {
-            result.push(bytes[i] as char);
-            i += 1;
+            i = push_char_at(input, i, &mut result);
         }
     }
 
@@ -1294,6 +1307,51 @@ mod tests {
         assert!(
             !result.contains("<for "),
             "Nested f-template should NOT contain <for>, got: {result}"
+        );
+    }
+
+    #[test]
+    fn convert_btr_preserves_utf8_text_content() {
+        let input = "<span>✓ passed</span>";
+        let output = convert_btr_to_fast(input);
+        assert_eq!(output, "<span>✓ passed</span>");
+    }
+
+    #[test]
+    fn convert_btr_preserves_utf8_multibyte_chars() {
+        let input = "<span>✓ yes ✗ no ⭐ star</span>";
+        let output = convert_btr_to_fast(input);
+        assert_eq!(output, "<span>✓ yes ✗ no ⭐ star</span>");
+    }
+
+    #[test]
+    fn convert_btr_preserves_utf8_with_directives() {
+        let input = r#"<if condition="x"><span>✓</span></if>"#;
+        let output = convert_btr_to_fast(input);
+        assert_eq!(output, r#"<f-when value="{{x}}"><span>✓</span></f-when>"#);
+    }
+
+    #[test]
+    fn minify_preserves_utf8_text_content() {
+        let input = "<span>✓</span><span>✗</span>";
+        let output = minify_inter_tag_whitespace(input);
+        assert_eq!(output, "<span>✓</span><span>✗</span>");
+    }
+
+    #[test]
+    fn minify_preserves_utf8_between_elements() {
+        let input = "<div> ✓ </div>";
+        let output = minify_inter_tag_whitespace(input);
+        assert_eq!(output, "<div> ✓ </div>");
+    }
+
+    #[test]
+    fn convert_complex_attrs_preserves_utf8() {
+        let input = r#"<span :title="{{label}}" data-icon="⭐">text</span>"#;
+        let output = convert_btr_to_fast(input);
+        assert!(
+            output.contains("⭐"),
+            "UTF-8 star should be preserved: {output}"
         );
     }
 

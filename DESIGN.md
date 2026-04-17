@@ -730,6 +730,7 @@ pub trait ParserPlugin {
 - Emits `Plugin` fragments with u32 LE attribute binding counts
 - Tracks components and returns `<f-template>` artifacts after parsing
 - Converts syntax to FAST syntax: `<if condition="X">`→`<f-when value="{{X}}">`, `<for each="X">`→`<f-repeat value="{{X}}">`, `{{expr}}`→`{expr}` in `:attr` values
+- All byte-level scanning in template conversion preserves multi-byte UTF-8 characters (non-ASCII bytes are forwarded as complete code points, never cast individually to `char`)
 - FAST authoring details live in the canonical [FAST HTML README](https://github.com/microsoft/fast/blob/main/packages/fast-html/README.md)
 
 **Built-in plugin: `WebUIParserPlugin`**
