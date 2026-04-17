@@ -1,2 +1,0 @@
-#!/bin/sh
-echo "webui: binary not installed. Run 'pnpm build' or reinstall." >&2; exit 1

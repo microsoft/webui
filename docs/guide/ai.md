@@ -857,5 +857,10 @@ let result = route_handler::render_component_templates(&protocol, &tags, &inv);
 ```
 
 ```javascript
+// Node native addon
 const result = renderComponentTemplates(protocolBuf, JSON.stringify(tags), invHex);
+
+// @microsoft/webui npm package
+import { renderComponentTemplates } from '@microsoft/webui';
+const result = renderComponentTemplates(protocolBuf, ['settings-dialog'], invHex);
 ```

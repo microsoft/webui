@@ -8,7 +8,8 @@
 
 import { describe, test, before, after } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { build, render, renderStream, inspect } from '@microsoft/webui';
+import { build, render, renderStream, inspect, renderComponentTemplates } from '@microsoft/webui';
+import type { ComponentTemplatesResponse } from '@microsoft/webui';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -114,5 +115,24 @@ describe('renderStream', () => {
     });
     assert.ok(chunks.length > 0);
     assert.ok(chunks.join('').includes('Hello, Stream!'));
+  });
+});
+
+describe('renderComponentTemplates', () => {
+  test('returns valid response shape', () => {
+    const result = build({ appDir, entry: 'index2.html' });
+    const json = renderComponentTemplates(result.protocol, ['my-card'], '');
+    const parsed: ComponentTemplatesResponse = JSON.parse(json);
+    assert.ok(Array.isArray(parsed.templates));
+    assert.ok(Array.isArray(parsed.templateStyles));
+    assert.equal(typeof parsed.inventory, 'string');
+  });
+
+  test('returns empty arrays for unknown component', () => {
+    const result = build({ appDir });
+    const json = renderComponentTemplates(result.protocol, ['nonexistent-widget'], '');
+    const parsed: ComponentTemplatesResponse = JSON.parse(json);
+    assert.deepEqual(parsed.templates, []);
+    assert.deepEqual(parsed.templateStyles, []);
   });
 });

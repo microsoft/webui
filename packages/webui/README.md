@@ -85,6 +85,15 @@ console.log(JSON.parse(json));
 
 Produces a JSON partial response for client-side navigation, including state, templates, and route chain.
 
+### `renderComponentTemplates(protocol: Buffer, componentTags: string[], inventoryHex: string): string`
+
+Renders templates and styles for on-demand component loading (used by `Router.ensureLoaded()`). Returns a JSON string with `templateStyles`, `templates`, and `inventory`. Uses the same inventory bitfield as partial navigation to avoid sending duplicates.
+
+```js
+const json = renderComponentTemplates(protocol, ["settings-dialog"], inventoryHex);
+const { templates, templateStyles, inventory } = JSON.parse(json);
+```
+
 ## CLI
 
 The package also includes the `webui` CLI binary:

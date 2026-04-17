@@ -23,7 +23,7 @@ let result = route_handler::render_component_templates(
 // Returns: { templates: [...], templateStyles: [...], inventory: "..." }
 ```
 
-Available via all bindings: Rust (direct), Node (`renderComponentTemplates`), WASM (`render_component_templates`), FFI (`webui_render_component_templates`).
+Available via all bindings: Rust (direct), Node (`renderComponentTemplates`), WASM (`render_component_templates`), FFI (`webui_render_component_templates`), npm (`@microsoft/webui` — `renderComponentTemplates`).
 
 ## Documentation
 

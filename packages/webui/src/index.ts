@@ -63,6 +63,16 @@ export interface RenderOptions {
   plugin?: string;
 }
 
+/** Response from `renderComponentTemplates()` for on-demand component loading. */
+export interface ComponentTemplatesResponse {
+  /** Module CSS `<style>` strings for the requested components. */
+  templateStyles: string[];
+  /** `<f-template>` HTML strings for the requested components. */
+  templates: string[];
+  /** Updated hex bitmask of loaded component templates. */
+  inventory: string;
+}
+
 /** Complete JSON partial response from the server for client-side navigation. */
 export interface PartialResponse {
   /** Application state for the matched route. */
@@ -102,6 +112,7 @@ interface NativeAddon {
   }): BuildResult;
   inspect(protocolData: Buffer): string;
   renderPartial(protocolData: Buffer, stateJson: string, entryId: string, requestPath: string, inventoryHex: string): string;
+  renderComponentTemplates(protocolData: Buffer, componentTagsJson: string, inventoryHex: string): string;
 }
 
 let addon: NativeAddon | null = null;
@@ -279,6 +290,34 @@ export function renderPartial(
     return native.renderPartial(protocolData, stateJson, entryId, requestPath, inventoryHex);
   }
   throw new Error("[webui] renderPartial() requires the native addon.");
+}
+
+/**
+ * Render component templates and styles for on-demand loading.
+ *
+ * Used by `Router.ensureLoaded()` to fetch templates for components that
+ * are not part of the route tree (e.g., dialogs, popovers). Uses the same
+ * inventory bitfield as partial navigation to avoid sending duplicates.
+ *
+ * Returns a JSON string. Parse with the exported `ComponentTemplatesResponse` type:
+ * ```ts
+ * const resp: ComponentTemplatesResponse = JSON.parse(renderComponentTemplates(...));
+ * ```
+ */
+export function renderComponentTemplates(
+  protocolData: Buffer,
+  componentTags: string[],
+  inventoryHex: string,
+): string {
+  const native = loadAddon();
+  if (native?.renderComponentTemplates) {
+    return native.renderComponentTemplates(
+      protocolData,
+      JSON.stringify(componentTags),
+      inventoryHex,
+    );
+  }
+  throw new Error("[webui] renderComponentTemplates() requires the native addon.");
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

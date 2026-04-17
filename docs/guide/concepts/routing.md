@@ -231,6 +231,18 @@ Router.start({
 });
 ```
 
+On the server, handle the template endpoint with `renderComponentTemplates`:
+
+```javascript
+import { renderComponentTemplates } from '@microsoft/webui';
+
+app.get('/_webui/templates', (req, res) => {
+  const tags = (req.query.t ?? '').split(',').filter(Boolean);
+  const inv = req.get('X-WebUI-Inventory') ?? '';
+  res.type('json').send(renderComponentTemplates(protocol, tags, inv));
+});
+```
+
 ## Navigation Events
 
 ```typescript
