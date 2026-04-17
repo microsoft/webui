@@ -903,21 +903,23 @@ export class WebUIElement extends HTMLElement {
     scope: ScopeFrame | undefined,
   ): TemplateInstance | null {
     const rootTag = this.$rootTag(blockMeta);
-    if (rootTag) {
+    const tplDom = getTemplateDom(blockMeta);
+    if (rootTag && tplDom.children.length === 1) {
+      // Single-root optimisation: hydrate the element in-place (pathStart=1).
       const el = nextElement(condAnchor);
       if (el) {
-        const inst = this.$hydrate(el, blockMeta, getTemplateDom(blockMeta), scope, 1);
+        const inst = this.$hydrate(el, blockMeta, tplDom, scope, 1);
         this.$updateInstance(inst);
         return inst;
       }
       return null;
     }
-    // Text-only conditional: collect nodes between <!--wc--> and <!--/wc-->
+    // Multi-root or text-only conditional: collect nodes between <!--wc--> and <!--/wc-->
     const condNodes = this.$collectBetween(condAnchor, MARKER_COND_END);
     if (condNodes.length === 0) return null;
     const wrapper = document.createElement('div');
     for (let cn = 0; cn < condNodes.length; cn++) wrapper.appendChild(condNodes[cn]);
-    const inst = this.$hydrate(wrapper, blockMeta, getTemplateDom(blockMeta), scope);
+    const inst = this.$hydrate(wrapper, blockMeta, tplDom, scope);
     inst.nodes = childNodesArray(wrapper);
     let afterNode: Node = condAnchor;
     for (let cn = 0; cn < inst.nodes.length; cn++) {
