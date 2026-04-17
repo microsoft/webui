@@ -117,6 +117,30 @@ describe('WebUIRouter', () => {
     });
   });
 
+  describe('destroy', () => {
+    test('clears in-flight loadPromises so the router can be restarted cleanly', async () => {
+      const router = new WebUIRouter();
+
+      // Stub fetch to return a never-resolving promise (simulates in-flight request)
+      const origFetch = (globalThis as any).fetch;
+      (globalThis as any).fetch = () => new Promise<void>(() => {});
+
+      try {
+        // Start ensureLoaded without awaiting — leaves an in-flight promise in loadPromises
+        const loadPromises = (router as any).loadPromises as Map<string, Promise<void>>;
+        router.ensureLoaded('some-dialog');
+
+        assert.ok(loadPromises.size > 0, 'loadPromises should have in-flight entries');
+
+        router.destroy();
+
+        assert.equal(loadPromises.size, 0, 'destroy() should clear loadPromises for clean GC/restart');
+      } finally {
+        (globalThis as any).fetch = origFetch;
+      }
+    });
+  });
+
   describe('template execution in fetchPartial', () => {
     test('Function-based execution registers templates without DOM', () => {
       // Simulate what fetchPartial does with the template script string
