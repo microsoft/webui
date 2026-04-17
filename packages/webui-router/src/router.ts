@@ -542,17 +542,25 @@ export class WebUIRouter {
 
       // Pre-load all component modules in parallel before the DOM swap so
       // the view transition only covers the synchronous mount.
-      // Abort gate guards ensureComponentLoaded — cached promises resolve
-      // instantly for already-loaded components, so parallel is safe.
+      // Race against abort so a superseding navigation doesn't wait for
+      // in-flight imports from the aborted one. ensureComponentLoaded
+      // caches module promises, so any work done here is reused by the
+      // winning navigation.
       if (signal?.aborted) return;
-      await Promise.all(
+      const preload = Promise.all(
         newChain
           .filter(entry => entry.component)
-          .map(async entry => {
-            if (signal?.aborted) return;
-            await this.ensureComponentLoaded(entry.component);
-          }),
+          .map(entry => this.ensureComponentLoaded(entry.component)),
       );
+      if (signal) {
+        const aborted = new Promise<'aborted'>(resolve => {
+          signal.addEventListener('abort', () => resolve('aborted'), { once: true });
+        });
+        const result = await Promise.race([preload.then(() => 'loaded' as const), aborted]);
+        if (result === 'aborted') return;
+      } else {
+        await preload;
+      }
       if (signal?.aborted) return;
 
       const changeLevel = this.findChangeLevel(this.activeChain, newChain);
