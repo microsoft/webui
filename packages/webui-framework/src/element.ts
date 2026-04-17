@@ -84,8 +84,8 @@ import type {
 /** Parsed template cache — cloneNode(true) is faster than re-parsing. */
 const templateCache = new WeakMap<TemplateBlockMeta, DocumentFragment>();
 
-/** Parsed template DOM for SSR path mapping, keyed by meta.h string. */
-const templateDOMCache = new Map<string, Element>();
+/** Parsed template DOM for SSR path mapping, keyed by TemplateBlockMeta. */
+const templateDOMCache = new WeakMap<TemplateBlockMeta, Element>();
 
 /** Pre-computed ordinals for template nodes: childIndex → [nodeType, ordinal].
  *  Avoids re-counting element/text siblings on every $resolveSSR call. */
@@ -124,11 +124,11 @@ function childNodesArray(parent: Node): Node[] {
 // ── Helper: parse template HTML into a temp container ────────────
 
 function getTemplateDom(meta: TemplateBlockMeta): Element {
-  let cached = templateDOMCache.get(meta.h);
+  let cached = templateDOMCache.get(meta);
   if (cached) return cached;
   const div = document.createElement('div');
   div.innerHTML = meta.h;
-  templateDOMCache.set(meta.h, div);
+  templateDOMCache.set(meta, div);
   return div;
 }
 
@@ -267,7 +267,12 @@ export class WebUIElement extends HTMLElement {
     hydrationEnd();
   }
 
-  disconnectedCallback(): void {}
+  disconnectedCallback(): void {
+    // Note: event listeners wired by $addEvent target child nodes owned by
+    // this component — they will be GC'd together with the component.
+    // We intentionally do NOT remove them here because connectedCallback
+    // does not re-wire events when a hydrated component is reattached.
+  }
 
   /** Dispatch a bubbling custom event. Uses composed:true when in shadow DOM. */
   $emit(name: string, detail?: unknown): boolean {

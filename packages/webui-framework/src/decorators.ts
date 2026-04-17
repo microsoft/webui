@@ -15,44 +15,11 @@
 /**
  * Map of camelCase property names to their HTML attribute names.
  *
- * Covers two categories of irregular mappings:
- *
- * 1. Multi-word ARIA attributes — concatenated lowercase after `aria-`
- *    (e.g., `ariaDescribedBy` → `aria-describedby`), per the ARIAMixin spec.
- * 2. HTML global/element attributes — concatenated lowercase attribute names
- *    with camelCase property counterparts (e.g., `readOnly` → `readonly`).
+ * ARIA attributes (`ariaXxxYyy → aria-` + lowercase remainder) are handled
+ * algorithmically in `toKebabCase`. Only HTML global/element attributes
+ * with irregular mappings (concatenated lowercase) need explicit entries.
  */
 const propertyToAttribute: Record<string, string> = Object.assign(Object.create(null) as Record<string, string>, {
-  // --- ARIA (ARIAMixin) ---
-  ariaActiveDescendant: 'aria-activedescendant',
-  ariaAutoComplete: 'aria-autocomplete',
-  ariaBrailleLabel: 'aria-braillelabel',
-  ariaBrailleRoleDescription: 'aria-brailleroledescription',
-  ariaColCount: 'aria-colcount',
-  ariaColIndex: 'aria-colindex',
-  ariaColIndexText: 'aria-colindextext',
-  ariaColSpan: 'aria-colspan',
-  ariaDescribedBy: 'aria-describedby',
-  ariaDropEffect: 'aria-dropeffect',
-  ariaErrorMessage: 'aria-errormessage',
-  ariaFlowTo: 'aria-flowto',
-  ariaHasPopup: 'aria-haspopup',
-  ariaKeyShortcuts: 'aria-keyshortcuts',
-  ariaLabelledBy: 'aria-labelledby',
-  ariaMultiLine: 'aria-multiline',
-  ariaMultiSelectable: 'aria-multiselectable',
-  ariaPosInSet: 'aria-posinset',
-  ariaReadOnly: 'aria-readonly',
-  ariaRoleDescription: 'aria-roledescription',
-  ariaRowCount: 'aria-rowcount',
-  ariaRowIndex: 'aria-rowindex',
-  ariaRowIndexText: 'aria-rowindextext',
-  ariaRowSpan: 'aria-rowspan',
-  ariaSetSize: 'aria-setsize',
-  ariaValueMax: 'aria-valuemax',
-  ariaValueMin: 'aria-valuemin',
-  ariaValueNow: 'aria-valuenow',
-  ariaValueText: 'aria-valuetext',
   // --- HTML global/element attributes ---
   accessKey: 'accesskey',
   autoCapitalize: 'autocapitalize',
@@ -80,7 +47,12 @@ const propertyToAttribute: Record<string, string> = Object.assign(Object.create(
 /** Convert camelCase to kebab-case for attribute reflection. */
 export function toKebabCase(str: string): string {
   const mapped = propertyToAttribute[str];
-  return mapped ?? str.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+  if (mapped) return mapped;
+  // ARIA properties: ariaXxxYyy → aria- + lowercase remainder
+  if (str.length > 4 && str.charCodeAt(0) === 97 /* a */ && str.startsWith('aria') && str.charCodeAt(4) >= 65 && str.charCodeAt(4) <= 90) {
+    return 'aria-' + str.slice(4).toLowerCase();
+  }
+  return str.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
 }
 
 /**

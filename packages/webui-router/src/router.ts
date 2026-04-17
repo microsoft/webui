@@ -183,6 +183,46 @@ interface PartialResponse {
   css?: string[];
 }
 
+/**
+ * Apply route params, allowed query params, and initial state to a component.
+ * Shared by both initial mount and subsequent state updates. Stale query-param
+ * attributes from a previous navigation are automatically removed.
+ */
+function applyParamsQueryState(
+  component: Element,
+  routeEl: HTMLElement,
+  params: Record<string, string>,
+  data: PartialResponse,
+  query?: Record<string, string>,
+): void {
+  for (const [key, value] of Object.entries(params)) {
+    component.setAttribute(toKebab(key), value);
+  }
+
+  const allowed = routeAllowedQuery(routeEl);
+  const filtered = query ? filterQuery(query, allowed, params) : {};
+  const newAttrs = new Set<string>();
+  for (const [key, value] of Object.entries(filtered)) {
+    const attr = toKebab(key);
+    component.setAttribute(attr, value);
+    newAttrs.add(attr);
+  }
+
+  const prevAttrs = queryAttrsMap.get(component);
+  if (prevAttrs) {
+    for (const attr of prevAttrs) {
+      if (!newAttrs.has(attr)) {
+        component.removeAttribute(attr);
+      }
+    }
+  }
+  queryAttrsMap.set(component, newAttrs);
+
+  if (typeof (component as any).setInitialState === 'function') {
+    (component as any).setInitialState(data.state);
+  }
+}
+
 export class WebUIRouter {
   private config: RouterConfig = {};
   private started = false;
@@ -198,6 +238,12 @@ export class WebUIRouter {
   private loaderPromises = new Map<string, Promise<void>>();
   /** Current active route chain for reconciliation on next navigation. */
   private activeChain: RouteChainEntry[] = [];
+  /** Cached base path from config (avoids repeated nullish coalescing). */
+  private basePath = '';
+  /** In-memory dedup for injected CSS link hrefs (avoids DOM queries). */
+  private injectedCss = new Set<string>();
+  /** In-memory dedup for injected module style specifiers (avoids DOM queries). */
+  private injectedStyles = new Set<string>();
 
   /** The component tag of the currently active leaf route. */
   get activeComponent(): string {
@@ -217,6 +263,7 @@ export class WebUIRouter {
     this.started = true;
     this.config = config;
     this.loaders = config.loaders ?? {};
+    this.basePath = config.basePath ?? '';
 
     if (!customElements.get(ROUTE_SELECTOR)) {
       customElements.define(ROUTE_SELECTOR, WebUIRouteElement);
@@ -224,6 +271,14 @@ export class WebUIRouter {
 
     this.inventory = document.querySelector('meta[name="webui-inventory"]')?.getAttribute('content') ?? '';
     this.nonce = document.querySelector('meta[name="webui-nonce"]')?.getAttribute('content') ?? '';
+
+    // Seed dedup sets from SSR-injected elements
+    for (const link of document.querySelectorAll('link[rel="stylesheet"][href]')) {
+      this.injectedCss.add(link.getAttribute('href')!);
+    }
+    for (const style of document.querySelectorAll('style[type="module"][specifier]')) {
+      this.injectedStyles.add(style.getAttribute('specifier')!);
+    }
 
     const nav = window.navigation;
     const handler = (event: NavigateEvent) => {
@@ -233,7 +288,7 @@ export class WebUIRouter {
       event.intercept({
         handler: async () => {
           try {
-            await this.handleNavigation(buildNavigationTarget(url, this.config.basePath ?? ''), event.signal);
+            await this.handleNavigation(buildNavigationTarget(url, this.basePath), event.signal);
           } catch (err) {
             if (err instanceof DOMException && err.name === 'AbortError') return;
             console.error('[Router] Navigation error:', err);
@@ -249,7 +304,7 @@ export class WebUIRouter {
 
   /** Navigate to a new path. */
   navigate(path: string): void {
-    const fullPath = prependBasePath(path, this.config.basePath ?? '');
+    const fullPath = prependBasePath(path, this.basePath);
     window.navigation.navigate(fullPath);
   }
 
@@ -359,13 +414,16 @@ export class WebUIRouter {
           if (valEnd > valStart) specifier = trimmed.substring(valStart, valEnd);
         }
 
-        if (specifier && document.querySelector(`style[type="module"][specifier="${specifier}"]`)) {
+        if (specifier && this.injectedStyles.has(specifier)) {
           continue;
         }
 
         const style = document.createElement('style');
         style.type = 'module';
-        if (specifier) style.setAttribute('specifier', specifier);
+        if (specifier) {
+          style.setAttribute('specifier', specifier);
+          this.injectedStyles.add(specifier);
+        }
         style.textContent = trimmed.substring(openTagEnd + 1, closeTagStart);
         document.head.appendChild(style);
       }
@@ -418,11 +476,15 @@ export class WebUIRouter {
   /** Tear down. */
   destroy(): void {
     this.loaderPromises.clear();
+    this.loadPromises.clear();
     this.loaders = {};
     this.activeChain = [];
     for (const fn of this.cleanupFns) fn();
     this.cleanupFns = [];
     this.started = false;
+    this.ssrPreloadsCleared = false;
+    this.injectedCss.clear();
+    this.injectedStyles.clear();
   }
 
   // ── Route matching ──────────────────────────────────────────────
@@ -448,9 +510,11 @@ export class WebUIRouter {
       // SSR-bootstrap path again.
       this.isInitialNavigation = false;
       this.activeChain = this.buildChainFromSSR();
-      for (const entry of this.activeChain) {
-        if (entry.component) await this.ensureComponentLoaded(entry.component);
-      }
+      await Promise.all(
+        this.activeChain
+          .filter(entry => entry.component)
+          .map(entry => this.ensureComponentLoaded(entry.component)),
+      );
       if (this.config.dev) {
         this.validateRoutes();
       }
@@ -472,16 +536,24 @@ export class WebUIRouter {
 
       if (newChain.length === 0) {
         console.warn(`[Router] No route matched for path: ${requestPath}`);
-        window.location.href = prependBasePath(requestPath, this.config.basePath ?? '');
+        window.location.href = prependBasePath(requestPath, this.basePath);
         return;
       }
 
-      // Pre-load all component modules before the DOM swap so the
-      // view transition only covers the synchronous mount.
-      for (const entry of newChain) {
-        if (signal?.aborted) return;
-        if (entry.component) await this.ensureComponentLoaded(entry.component);
-      }
+      // Pre-load all component modules in parallel before the DOM swap so
+      // the view transition only covers the synchronous mount.
+      // Abort gate guards ensureComponentLoaded — cached promises resolve
+      // instantly for already-loaded components, so parallel is safe.
+      if (signal?.aborted) return;
+      await Promise.all(
+        newChain
+          .filter(entry => entry.component)
+          .map(async entry => {
+            if (signal?.aborted) return;
+            await this.ensureComponentLoaded(entry.component);
+          }),
+      );
+      if (signal?.aborted) return;
 
       const changeLevel = this.findChangeLevel(this.activeChain, newChain);
 
@@ -574,7 +646,11 @@ export class WebUIRouter {
     window.dispatchEvent(new CustomEvent('webui:route:navigated', { detail }));
   }
 
+  private ssrPreloadsCleared = false;
+
   private clearSsrPreloads(): void {
+    if (this.ssrPreloadsCleared) return;
+    this.ssrPreloadsCleared = true;
     for (const link of document.head.querySelectorAll(SSR_PRELOAD_SELECTOR)) {
       link.remove();
     }
@@ -744,7 +820,7 @@ export class WebUIRouter {
   // ── Fetch + Mount ──────────────────────────────────────────────
 
   private async fetchPartial(requestPath: string, signal?: AbortSignal): Promise<(PartialResponse & { inventory?: string }) | null> {
-    const fullPath = prependBasePath(requestPath, this.config.basePath ?? '');
+    const fullPath = prependBasePath(requestPath, this.basePath);
     const headers: Record<string, string> = { 'Accept': 'application/json' };
     if (this.inventory) headers['X-WebUI-Inventory'] = this.inventory;
     const resp = await fetch(fullPath, { headers, signal });
@@ -756,7 +832,7 @@ export class WebUIRouter {
       // Server returned HTML (e.g. login page) instead of JSON partial.
       // Trigger a full page navigation so the browser handles it.
       if (signal?.aborted) return null;
-      window.location.href = prependBasePath(requestPath, this.config.basePath ?? '');
+      window.location.href = prependBasePath(requestPath, this.basePath);
       return null;
     }
 
@@ -771,7 +847,8 @@ export class WebUIRouter {
     // Inject CSS stylesheet links (used by some server implementations)
     if (data.css) {
       for (const href of data.css) {
-        if (!document.querySelector(`link[href="${href}"]`)) {
+        if (!this.injectedCss.has(href)) {
+          this.injectedCss.add(href);
           const link = document.createElement('link');
           link.rel = 'stylesheet';
           link.href = href;
@@ -798,26 +875,7 @@ export class WebUIRouter {
     // connectedCallback fires synchronously on appendChild, populating
     // the component's light DOM immediately.
 
-    // Set route params as attributes (for @attr reflection)
-    for (const [key, value] of Object.entries(params)) {
-      component.setAttribute(toKebab(key), value);
-    }
-
-    // Set allowed query params as attributes (deny-by-default)
-    const allowed = routeAllowedQuery(routeEl);
-    const filtered = query ? filterQuery(query, allowed, params) : {};
-    const setAttrs = new Set<string>();
-    for (const [key, value] of Object.entries(filtered)) {
-      const attr = toKebab(key);
-      component.setAttribute(attr, value);
-      setAttrs.add(attr);
-    }
-    queryAttrsMap.set(component, setAttrs);
-
-    // Set state via the framework's setInitialState (handles @observable + flush)
-    if (typeof (component as any).setInitialState === 'function') {
-      (component as any).setInitialState(data.state);
-    }
+    applyParamsQueryState(component, routeEl, params, data, query);
   }
 
   /**
@@ -834,49 +892,7 @@ export class WebUIRouter {
     const compEl = entry.el.querySelector(entry.component) as any;
     if (!compEl) return;
 
-    // Set route params as attributes (for @attr reflection)
-    for (const [key, value] of Object.entries(entry.params)) {
-      compEl.setAttribute(toKebab(key), value);
-    }
-
-    // Set allowed query params as attributes (deny-by-default)
-    const allowed = routeAllowedQuery(entry.el);
-    const filtered = query ? filterQuery(query, allowed, entry.params) : {};
-    const newAttrs = new Set<string>();
-    for (const [key, value] of Object.entries(filtered)) {
-      const attr = toKebab(key);
-      compEl.setAttribute(attr, value);
-      newAttrs.add(attr);
-    }
-
-    // Remove stale query-param attributes from the previous navigation
-    const prevAttrs = queryAttrsMap.get(compEl);
-    if (prevAttrs) {
-      for (const attr of prevAttrs) {
-        if (!newAttrs.has(attr)) {
-          compEl.removeAttribute(attr);
-        }
-      }
-    }
-    queryAttrsMap.set(compEl, newAttrs);
-
-    // Set state via the framework's setInitialState (handles @observable + flush)
-    if (typeof compEl.setInitialState === 'function') {
-      compEl.setInitialState(data.state);
-    }
-  }
-
-  /**
-   * Wait for an element's light DOM to be populated with template content.
-   * defer-and-hydrate components render their template asynchronously after
-   * connectedCallback. After `whenDefined` resolves, a single animation frame
-   * is sufficient for the content to populate.
-   */
-  private waitForRenderReady(el: HTMLElement): Promise<void> {
-    if (el.children.length > 0) {
-      return Promise.resolve();
-    }
-    return new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    applyParamsQueryState(compEl, entry.el, entry.params, data, query);
   }
 
   // ── Lazy Loading ────────────────────────────────────────────────
@@ -974,7 +990,7 @@ export class WebUIRouter {
   }
 
   private currentTarget(): NavigationTarget {
-    return buildNavigationTarget(new URL(window.location.href), this.config.basePath ?? '');
+    return buildNavigationTarget(new URL(window.location.href), this.basePath);
   }
 
   // ── Component Inventory ────────────────────────────────────────

@@ -47,7 +47,7 @@ export function resolveRepeatValue(
   path: string,
 ): unknown {
   if (path === scopeVar) return scope;
-  if (!path.startsWith(`${scopeVar}.`)) return undefined;
+  if (path.length <= scopeVar.length || path.charCodeAt(scopeVar.length) !== 46 /* '.' */ || !path.startsWith(scopeVar)) return undefined;
   return dotWalk(scope, path, scopeVar.length + 1);
 }
 
