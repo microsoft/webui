@@ -1,19 +1,5 @@
 /* tslint:disable */
 /* eslint-disable */
-/**
- * Render a pre-built WebUI protocol with state data.
- *
- * # Arguments
- *
- * * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
- * * `state_json` — JSON string of the state data.
- * * `plugin` — Optional plugin identifier.
- *
- * # Returns
- *
- * The rendered HTML string, or throws a JS error on failure.
- */
-export function render(protocol_json: string, state_json: string, entry: string, request_path: string, plugin?: string | null): string;
 export function render_component_templates(protocol_json: string, component_tags_json: string, inventory_hex: string): string;
 /**
  * Build and render a WebUI application from virtual files.
@@ -33,6 +19,20 @@ export function render_component_templates(protocol_json: string, component_tags
  * The rendered HTML string, or throws a JS error on failure.
  */
 export function build_and_render(files: any, state_json: string, entry: string, request_path: string): string;
+/**
+ * Render a pre-built WebUI protocol with state data.
+ *
+ * # Arguments
+ *
+ * * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
+ * * `state_json` — JSON string of the state data.
+ * * `plugin` — Optional plugin identifier.
+ *
+ * # Returns
+ *
+ * The rendered HTML string, or throws a JS error on failure.
+ */
+export function render(protocol_json: string, state_json: string, entry: string, request_path: string, plugin?: string | null): string;
 /**
  * Produce a complete JSON partial response for client-side navigation.
  *
