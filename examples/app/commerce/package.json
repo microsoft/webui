@@ -4,8 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --outdir=dist --format=esm --splitting --sourcemap --minify",
-    "start:client": "esbuild src/index.ts --bundle --outdir=dist --splitting --format=esm --sourcemap --watch",
+    "build": "pnpm run build:deps && esbuild src/index.ts --bundle --outdir=dist --format=esm --splitting --sourcemap --minify",
+    "build:deps": "pnpm --filter @microsoft/webui-framework --filter @microsoft/webui-router run build",
+    "start:client": "pnpm run build:deps && esbuild src/index.ts --bundle --outdir=dist --splitting --format=esm --sourcemap --watch",
     "start:server": "cargo run -p marketplace-api -- --port 3004 --no-tls --css=link",
     "start": "cargo xtask dev commerce",
     "test": "playwright test",

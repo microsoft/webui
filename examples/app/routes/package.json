@@ -4,9 +4,10 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap",
+    "build": "pnpm run build:deps && esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap",
+    "build:deps": "pnpm --filter @microsoft/webui-framework --filter @microsoft/webui-router run build",
+    "start:client": "pnpm run build:deps && esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
     "start:api": "cd server && pnpm start",
-    "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
     "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --plugin=webui --servedir ./dist --port 3008 --api-port 3018 --watch",
     "start": "cargo xtask dev routes",
     "test": "playwright test",

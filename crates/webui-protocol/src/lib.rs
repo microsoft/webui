@@ -245,6 +245,7 @@ impl WebUiFragment {
             fragment: Some(web_ui_fragment::Fragment::Route(WebUiFragmentRoute {
                 path: path.into(),
                 fragment_id: fragment_id.into(),
+                keep_alive: false,
                 ..Default::default()
             })),
         }
@@ -787,6 +788,7 @@ mod tests {
                 exact: true,
                 children: Vec::new(),
                 allowed_query: "action,to,subject".to_string(),
+                keep_alive: false,
             })),
         };
         fragments.insert(
@@ -832,6 +834,7 @@ mod tests {
         let route_frag = WebUiFragment {
             fragment: Some(web_ui_fragment::Fragment::Route(WebUiFragmentRoute {
                 path: "/old-path".to_string(),
+                keep_alive: false,
                 ..Default::default()
             })),
         };

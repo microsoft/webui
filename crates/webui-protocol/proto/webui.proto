@@ -66,6 +66,9 @@ message WebUIFragmentRoute {
   // Comma-separated allowlist of query parameters forwarded as attributes.
   // Empty string means no query params are forwarded (deny-by-default).
   string allowed_query = 5;
+  // When true, the router preserves the mounted component instance across
+  // navigations instead of destroying and recreating it. Opt-in per route.
+  bool keep_alive = 6;
 }
 
 // Outlet placeholder — marks where matched child route content renders.

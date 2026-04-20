@@ -270,12 +270,14 @@ fn render_partial_returns_templates_inventory_and_chain() {
                     path: "/search/:category".to_string(),
                     fragment_id: "mp-search-page".to_string(),
                     exact: true,
+                    keep_alive: false,
                     ..Default::default()
                 }),
                 WebUIFragment::route_from(WebUiFragmentRoute {
                     path: "/product/:handle".to_string(),
                     fragment_id: "mp-product-page".to_string(),
                     exact: true,
+                    keep_alive: false,
                     ..Default::default()
                 }),
             ],

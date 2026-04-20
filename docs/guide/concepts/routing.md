@@ -111,6 +111,51 @@ export class ComposePage extends WebUIElement {
 }
 ```
 
+### The `keep-alive` Attribute
+
+Preserve a component's DOM and state across navigations instead of destroying and recreating it:
+
+```html
+<route path="/" component="app-shell">
+  <route path="./" component="mail-view" keep-alive>
+    <route path="" component="inbox-page" exact />
+  </route>
+  <route path="calendar" component="calendar-page" exact keep-alive />
+  <route path="settings" component="settings-page" exact />
+</route>
+```
+
+When navigating from Mail to Calendar and back:
+- **`mail-view` (keep-alive):** Hidden on deactivation, shown instantly on return. The folder pane, email list, and all local state survive the round trip. Fresh server state is applied via `setState()` — only changed data triggers DOM updates.
+- **`settings-page` (no keep-alive):** Destroyed on deactivation, recreated fresh on each visit.
+
+| Behavior | With `keep-alive` | Without |
+|----------|-------------------|---------|
+| Deactivate | `display: none` (stays in DOM) | `display: none` (stays in DOM) |
+| Reactivate | Reuses existing component + `setState()` | Destroys old, creates new component |
+| Local state | Preserved (scroll, input, timers) | Lost |
+| Server state | Applied reactively via `setState()` | Applied on mount |
+
+::: tip When to use
+Use on routes with expensive UI (lists, grids, trees) that users switch between frequently. Leaf routes with simple data-driven content rarely benefit — they're cheap to recreate.
+:::
+
+### Preload on Hover
+
+Opt-in speculative fetching — the router prefetches route data when the user hovers an internal link, so navigation on click is instant:
+
+```ts
+Router.start({ preload: true });
+```
+
+How it works:
+- On mouse hover over an internal `<a>`, the router speculatively calls `fetchPartial()` for that path
+- Templates, CSS, and state are cached (single-entry, 5-second TTL)
+- On click, the cached result is used immediately — no network wait
+- If the user clicks a different link, the cache is discarded and a fresh fetch happens
+
+Only mouse pointers trigger preload — touch taps fire simultaneously with the click event, making speculative fetching pointless.
+
 ## How It Works
 
 ### First Load (SSR)
@@ -268,14 +313,14 @@ When `Accept: application/json`:
   "path": "/users/42",
   "chain": [
     { "component": "app-shell", "path": "/" },
-    { "component": "user-detail", "path": "users/:id", "params": { "id": "42" }, "exact": true }
+    { "component": "user-detail", "path": "users/:id", "params": { "id": "42" }, "exact": true, "keepAlive": true }
   ]
 }
 ```
 
 The `templateStyles` array contains module CSS definition tags for CssStrategy::Module. The client appends these to `<head>` before evaluating template scripts so adopted stylesheets are available. For Link/Style modes, this array is empty.
 
-The `chain` field tells the client router which route components are active at each nesting level. The client uses this to diff against the previous chain and only remount what changed - it does **not** perform route matching itself.
+The `chain` field tells the client router which route components are active at each nesting level. Each entry can include a `keepAlive` boolean flag. The client uses this to diff against the previous chain and only remount what changed - it does **not** perform route matching itself.
 
 ### Full HTML (initial load)
 

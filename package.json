@@ -4,7 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "pnpm -r run build",
+    "build": "pnpm --filter @microsoft/webui --filter webui-framework --filter webui-router run build",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "engines": {

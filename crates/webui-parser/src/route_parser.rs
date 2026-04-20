@@ -23,6 +23,8 @@ pub(crate) struct RouteAttributes {
     pub exact: bool,
     /// Comma-separated allowlist of query parameters forwarded as attributes.
     pub query: String,
+    /// When true, the router keeps the component alive across navigations.
+    pub keep_alive: bool,
 }
 
 /// Iteratively extract `:param` and `*splat` tokens from a path template.
@@ -110,6 +112,7 @@ pub(crate) fn build_route_fragment(
         exact: attrs.exact,
         children,
         allowed_query: attrs.query.clone(),
+        keep_alive: attrs.keep_alive,
     }
 }
 

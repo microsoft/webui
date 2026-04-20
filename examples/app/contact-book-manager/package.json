@@ -4,8 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --outdir=dist --splitting --format=esm --sourcemap ",
-    "start:client": "esbuild src/index.ts --bundle --outdir=dist --splitting --format=esm --sourcemap --watch",
+    "build": "pnpm run build:deps && esbuild src/index.ts --bundle --outdir=dist --splitting --format=esm --sourcemap ",
+    "build:deps": "pnpm --filter @microsoft/webui-framework --filter @microsoft/webui-router run build",
+    "start:client": "pnpm run build:deps && esbuild src/index.ts --bundle --outdir=dist --splitting --format=esm --sourcemap --watch",
     "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --theme=@microsoft/webui-examples-theme --plugin=webui --servedir ./dist --port 3003 --api-port 3013 --watch",
     "start:api": "esbuild server/api.ts --bundle --platform=node --format=esm --outfile=dist/api.js --packages=external && node dist/api.js",
     "start": "cargo xtask dev contact-book-manager",

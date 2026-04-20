@@ -603,6 +603,8 @@ pub struct RouteChainEntry {
     pub exact: bool,
     /// Comma-separated allowlist of query parameters forwarded as attributes.
     pub allowed_query: String,
+    /// When true, the router keeps the component alive across navigations.
+    pub keep_alive: bool,
 }
 
 impl RouteChainEntry {
@@ -628,6 +630,9 @@ impl RouteChainEntry {
                 "allowedQuery".into(),
                 Value::String(self.allowed_query.clone()),
             );
+        }
+        if self.keep_alive {
+            obj.insert("keepAlive".into(), Value::Bool(true));
         }
         Value::Object(obj)
     }
@@ -699,6 +704,7 @@ pub fn collect_route_chain(
                                 params: rm.params.clone(),
                                 exact: route_frag.exact,
                                 allowed_query: route_frag.allowed_query.clone(),
+                                keep_alive: route_frag.keep_alive,
                             });
 
                             let child_route_base = route_matcher::compute_route_base(
@@ -763,6 +769,7 @@ fn collect_chain_from_children(
                 params: rm.params,
                 exact: matched.exact,
                 allowed_query: matched.allowed_query.clone(),
+                keep_alive: matched.keep_alive,
             });
             if !matched.children.is_empty() {
                 let child_base =
@@ -961,12 +968,14 @@ mod tests {
                         path: "/search/:category".into(),
                         fragment_id: "mp-search-page".into(),
                         exact: true,
+                        keep_alive: false,
                         ..Default::default()
                     }),
                     WebUIFragment::route_from(WebUiFragmentRoute {
                         path: "/product/:handle".into(),
                         fragment_id: "mp-product-page".into(),
                         exact: true,
+                        keep_alive: false,
                         ..Default::default()
                     }),
                 ],
@@ -1043,6 +1052,7 @@ mod tests {
                     path: "/account/*rest".into(),
                     fragment_id: "mp-account-shell".into(),
                     exact: false,
+                    keep_alive: false,
                     ..Default::default()
                 })],
             },
@@ -1056,12 +1066,14 @@ mod tests {
                         path: "/account/profile".into(),
                         fragment_id: "mp-profile-page".into(),
                         exact: true,
+                        keep_alive: false,
                         ..Default::default()
                     }),
                     WebUIFragment::route_from(WebUiFragmentRoute {
                         path: "/account/orders/:id".into(),
                         fragment_id: "mp-order-page".into(),
                         exact: true,
+                        keep_alive: false,
                         ..Default::default()
                     }),
                 ],
@@ -1137,6 +1149,7 @@ mod tests {
                     path: "/search".into(),
                     fragment_id: "mp-search-page".into(),
                     exact: true,
+                    keep_alive: false,
                     ..Default::default()
                 })],
             },
@@ -1211,6 +1224,7 @@ mod tests {
                     path: "/search".into(),
                     fragment_id: "mp-search-page".into(),
                     exact: true,
+                    keep_alive: false,
                     ..Default::default()
                 })],
             },
@@ -1514,6 +1528,7 @@ mod tests {
                         path: "/about".into(),
                         fragment_id: "page-about".into(),
                         exact: true,
+                        keep_alive: false,
                         ..Default::default()
                     }),
                     WebUIFragment::component("cart-panel"),
@@ -1579,6 +1594,7 @@ mod tests {
             params: HashMap::new(),
             exact: true,
             allowed_query: "action,to,subject".into(),
+            keep_alive: false,
         };
         let json = entry.to_json();
         assert_eq!(json["allowedQuery"], "action,to,subject");
@@ -1592,6 +1608,7 @@ mod tests {
             params: HashMap::new(),
             exact: true,
             allowed_query: String::new(),
+            keep_alive: false,
         };
         let json = entry.to_json();
         assert!(
@@ -1615,8 +1632,10 @@ mod tests {
                         fragment_id: "compose-page".into(),
                         exact: true,
                         allowed_query: "action,to".into(),
+                        keep_alive: false,
                         ..Default::default()
                     }],
+                    keep_alive: false,
                     ..Default::default()
                 })],
             },
