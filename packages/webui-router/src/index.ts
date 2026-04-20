@@ -18,4 +18,4 @@
  */
 
 export { Router, WebUIRouter, WebUIRouteElement } from './router.js';
-export type { RouterConfig, NavigationEvent } from './types.js';
+export type { RouterConfig, NavigationEvent, RouteLoaderContext } from './types.js';

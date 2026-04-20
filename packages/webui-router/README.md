@@ -106,6 +106,20 @@ Preserve a component across navigations instead of destroying and recreating it:
 
 When the user navigates away from a `keep-alive` route and returns, the existing component is reused — its DOM and local state (scroll position, input values, timers) survive the round trip. Fresh server state is applied via `setState()`, updating only what changed.
 
+### Route Loaders
+
+Define a static `loader()` on a component to fetch data from a custom source:
+
+```typescript
+export class LiveDashboard extends WebUIElement {
+  static async loader({ params, signal }: RouteLoaderContext) {
+    return fetch(`/api/dashboard/${params.id}`, { signal }).then(r => r.json());
+  }
+}
+```
+
+Loaders run before the view transition. On failure, the router falls back to server state.
+
 ## API
 
 ### `Router.start(config?)`

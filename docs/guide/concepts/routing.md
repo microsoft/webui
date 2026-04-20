@@ -156,6 +156,30 @@ How it works:
 
 Only mouse pointers trigger preload — touch taps fire simultaneously with the click event, making speculative fetching pointless.
 
+### Route Loaders
+
+Define a static `loader()` method on a component class to fetch data from a custom source instead of using server-provided state:
+
+```typescript
+import { WebUIElement } from '@microsoft/webui-framework';
+import type { RouteLoaderContext } from '@microsoft/webui-router';
+
+export class LiveDashboard extends WebUIElement {
+  static async loader({ params, signal }: RouteLoaderContext) {
+    const resp = await fetch(`/api/dashboard/${params.id}`, { signal });
+    return resp.json();
+  }
+}
+```
+
+How it works:
+- The router checks each route component's constructor for a static `loader()` method
+- Loaders run **before** the view transition — results are ready for synchronous DOM commit
+- The loader receives route `params`, `query`, and an `AbortSignal` tied to the navigation
+- If a loader fails, the router falls back to server-provided `data.state` with a console warning
+- Loaders run on both SSR bootstrap and SPA navigations for consistency
+- Components without a `loader()` use server state as before — fully backwards compatible
+
 ## How It Works
 
 ### First Load (SSR)

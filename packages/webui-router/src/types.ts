@@ -76,6 +76,23 @@ export interface RouterConfig {
   preload?: boolean;
 }
 
+/**
+ * Context passed to a component's static `loader()` method.
+ *
+ * Route loaders let components fetch their own data instead of using
+ * the server-provided state. The router calls the loader during
+ * navigation (before the view transition) and passes the result to
+ * `setState()`.
+ */
+export interface RouteLoaderContext {
+  /** Bound route parameters (e.g. `{ id: '42' }` for `/contacts/:id`). */
+  params: Record<string, string>;
+  /** Parsed query-string parameters. */
+  query: Record<string, string>;
+  /** Abort signal tied to the navigation — cancelled if the user navigates away. */
+  signal: AbortSignal;
+}
+
 /** Detail payload of the `webui:route:navigated` CustomEvent. */
 export interface NavigationEvent {
   component: string;

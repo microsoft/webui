@@ -799,6 +799,160 @@ describe('WebUIRouter', () => {
       );
     });
   });
+
+  describe('route loaders', () => {
+    test('resolveLoaders calls static loader() on registered components', async () => {
+      const router = new WebUIRouter();
+      const resolveLoaders = (router as any).resolveLoaders.bind(router) as (
+        chain: Array<{ component: string; params: Record<string, string> }>,
+        query: Record<string, string>,
+        signal?: AbortSignal,
+      ) => Promise<Map<string, Record<string, unknown>>>;
+
+      // Register a fake component with a static loader
+      const origGet = (globalThis as any).customElements.get;
+      (globalThis as any).customElements.get = (name: string) => {
+        if (name === 'dash-page') {
+          return class DashPage {
+            static async loader(ctx: { params: Record<string, string>; query: Record<string, string> }) {
+              return { dashId: ctx.params.id, source: 'loader' };
+            }
+          };
+        }
+        return origGet(name);
+      };
+
+      try {
+        const results = await resolveLoaders(
+          [{ component: 'dash-page', params: { id: '42' } }],
+          { filter: 'active' },
+        );
+        assert.ok(results.has('dash-page'), 'should have loader result for dash-page');
+        assert.deepEqual(results.get('dash-page'), { dashId: '42', source: 'loader' });
+      } finally {
+        (globalThis as any).customElements.get = origGet;
+      }
+    });
+
+    test('resolveLoaders skips components without static loader', async () => {
+      const router = new WebUIRouter();
+      const resolveLoaders = (router as any).resolveLoaders.bind(router) as (
+        chain: Array<{ component: string; params: Record<string, string> }>,
+        query: Record<string, string>,
+      ) => Promise<Map<string, Record<string, unknown>>>;
+
+      const origGet = (globalThis as any).customElements.get;
+      (globalThis as any).customElements.get = (name: string) => {
+        if (name === 'plain-page') return class PlainPage {};
+        return origGet(name);
+      };
+
+      try {
+        const results = await resolveLoaders(
+          [{ component: 'plain-page', params: {} }],
+          {},
+        );
+        assert.equal(results.size, 0, 'should have no results for components without loader');
+      } finally {
+        (globalThis as any).customElements.get = origGet;
+      }
+    });
+
+    test('resolveLoaders falls back gracefully on loader failure', async () => {
+      const router = new WebUIRouter();
+      const resolveLoaders = (router as any).resolveLoaders.bind(router) as (
+        chain: Array<{ component: string; params: Record<string, string> }>,
+        query: Record<string, string>,
+      ) => Promise<Map<string, Record<string, unknown>>>;
+
+      const origGet = (globalThis as any).customElements.get;
+      const origWarn = console.warn;
+      let warned = false;
+      console.warn = () => { warned = true; };
+
+      (globalThis as any).customElements.get = (name: string) => {
+        if (name === 'broken-page') {
+          return class BrokenPage {
+            static async loader() { throw new Error('API down'); }
+          };
+        }
+        return origGet(name);
+      };
+
+      try {
+        const results = await resolveLoaders(
+          [{ component: 'broken-page', params: {} }],
+          {},
+        );
+        assert.equal(results.size, 0, 'failed loader should not add a result');
+        assert.ok(warned, 'should log a warning on loader failure');
+      } finally {
+        (globalThis as any).customElements.get = origGet;
+        console.warn = origWarn;
+      }
+    });
+
+    test('resolveLoaders respects abort signal', async () => {
+      const router = new WebUIRouter();
+      const resolveLoaders = (router as any).resolveLoaders.bind(router) as (
+        chain: Array<{ component: string; params: Record<string, string> }>,
+        query: Record<string, string>,
+        signal?: AbortSignal,
+      ) => Promise<Map<string, Record<string, unknown>>>;
+
+      const origGet = (globalThis as any).customElements.get;
+      (globalThis as any).customElements.get = (name: string) => {
+        if (name === 'slow-page') {
+          return class SlowPage {
+            static async loader() {
+              await new Promise(r => setTimeout(r, 50));
+              return { data: 'loaded' };
+            }
+          };
+        }
+        return origGet(name);
+      };
+
+      try {
+        const controller = new AbortController();
+        controller.abort(); // Pre-abort
+        const results = await resolveLoaders(
+          [{ component: 'slow-page', params: {} }],
+          {},
+          controller.signal,
+        );
+        assert.equal(results.size, 0, 'aborted signal should prevent cache write');
+      } finally {
+        (globalThis as any).customElements.get = origGet;
+      }
+    });
+
+    test('applyParamsQueryState uses stateOverride when provided', () => {
+      const router = new WebUIRouter();
+      const source = (router as any).mountComponent.toString() as string;
+
+      // Verify mountComponent passes stateOverride to applyParamsQueryState
+      assert.ok(
+        source.includes('stateOverride'),
+        'mountComponent should accept and pass stateOverride',
+      );
+    });
+
+    test('commitWithData resolves loaders before commitNavigation', () => {
+      const router = new WebUIRouter();
+      const source = (router as any).commitWithData.toString() as string;
+
+      const resolveIdx = source.indexOf('resolveLoaders');
+      const commitIdx = source.indexOf('commitNavigation');
+
+      assert.ok(resolveIdx > -1, 'commitWithData should call resolveLoaders');
+      assert.ok(commitIdx > -1, 'commitWithData should define commitNavigation');
+      assert.ok(
+        resolveIdx < commitIdx,
+        'resolveLoaders must run before commitNavigation is defined',
+      );
+    });
+  });
 });
 
 // ── parseQuery unit tests ────────────────────────────────────────

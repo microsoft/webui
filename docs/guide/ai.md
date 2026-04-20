@@ -205,6 +205,7 @@ In the TypeScript class: `searchInput!: HTMLInputElement;`
 - Query param allowlist: `query="action,to,subject"` — only listed params are set as component attributes (deny-by-default)
 - `keep-alive` — preserves the component across navigations (hidden, not destroyed). Returns instantly with `setState()` on reactivation
 - Preload on hover: `Router.start({ preload: true })` — speculatively fetches route data on link hover for instant click navigation
+- Route loaders: static `loader({ params, query, signal })` on component class — fetches custom data instead of server state
 
 ### Outlet
 

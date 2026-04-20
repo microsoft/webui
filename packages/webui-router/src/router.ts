@@ -206,6 +206,7 @@ function applyParamsQueryState(
   params: Record<string, string>,
   data: PartialResponse,
   query?: Record<string, string>,
+  stateOverride?: Record<string, unknown>,
 ): void {
   for (const [key, value] of Object.entries(params)) {
     component.setAttribute(toKebab(key), value);
@@ -231,7 +232,7 @@ function applyParamsQueryState(
   queryAttrsMap.set(component, newAttrs);
 
   if (typeof (component as any).setState === 'function') {
-    (component as any).setState(data.state);
+    (component as any).setState(stateOverride ?? data.state);
   }
 }
 
@@ -611,6 +612,21 @@ export class WebUIRouter {
           .filter(entry => entry.component)
           .map(entry => this.ensureComponentLoaded(entry.component)),
       );
+
+      // Run static loaders for SSR-bootstrapped components.
+      // This ensures SSR and SPA navigations use the same data source
+      // when a component defines a loader.
+      const loaderStates = await this.resolveLoaders(this.activeChain, query);
+      for (const entry of this.activeChain) {
+        const state = loaderStates.get(entry.component);
+        if (state && entry.el) {
+          const compEl = entry.el.querySelector(entry.component);
+          if (compEl && typeof (compEl as any).setState === 'function') {
+            (compEl as any).setState(state);
+          }
+        }
+      }
+
       if (this.config.dev) {
         this.validateRoutes();
       }
@@ -903,6 +919,7 @@ export class WebUIRouter {
     data: PartialResponse,
     params: Record<string, string>,
     query?: Record<string, string>,
+    stateOverride?: Record<string, unknown>,
   ): void {
     const component = document.createElement(componentTag);
     routeEl.textContent = '';
@@ -912,7 +929,7 @@ export class WebUIRouter {
     // connectedCallback fires synchronously on appendChild, populating
     // the component's light DOM immediately.
 
-    applyParamsQueryState(component, routeEl, params, data, query);
+    applyParamsQueryState(component, routeEl, params, data, query, stateOverride);
   }
 
   /**
@@ -924,12 +941,17 @@ export class WebUIRouter {
    * also set as attributes; stale ones from the previous navigation
    * are removed.
    */
-  private applyState(entry: RouteChainEntry, data: PartialResponse, query?: Record<string, string>): void {
+  private applyState(
+    entry: RouteChainEntry,
+    data: PartialResponse,
+    query?: Record<string, string>,
+    loaderStates?: Map<string, Record<string, unknown>>,
+  ): void {
     if (!entry.component || !entry.el) return;
     const compEl = entry.el.querySelector(entry.component) as any;
     if (!compEl) return;
 
-    applyParamsQueryState(compEl, entry.el, entry.params, data, query);
+    applyParamsQueryState(compEl, entry.el, entry.params, data, query, loaderStates?.get(entry.component));
   }
 
   // ── Lazy Loading ────────────────────────────────────────────────
@@ -952,6 +974,56 @@ export class WebUIRouter {
       this.loaderPromises.set(tag, promise);
     }
     await promise;
+  }
+
+  // ── Route Loaders ──────────────────────────────────────────────
+
+  /**
+   * Resolve static `loader()` methods on route component constructors.
+   *
+   * Called **before** commitNavigation so loader results are available
+   * synchronously during the view transition. Components without a
+   * static `loader()` are skipped — they use server-provided state.
+   *
+   * On failure, the loader is skipped with a warning and the component
+   * falls back to `data.state` from the server partial.
+   */
+  private async resolveLoaders(
+    chain: RouteChainEntry[],
+    query: Record<string, string>,
+    signal?: AbortSignal,
+  ): Promise<Map<string, Record<string, unknown>>> {
+    const results = new Map<string, Record<string, unknown>>();
+
+    const tasks = chain
+      .filter(entry => entry.component)
+      .map(async entry => {
+        const ctor = customElements.get(entry.component) as (
+          (new () => HTMLElement) & { loader?: (ctx: import('./types.js').RouteLoaderContext) => Promise<Record<string, unknown>> }
+        ) | undefined;
+        if (!ctor || typeof ctor.loader !== 'function') return;
+
+        try {
+          const ctx = {
+            params: entry.params,
+            query,
+            signal: signal ?? new AbortController().signal,
+          };
+          const state = await ctor.loader(ctx);
+          if (!signal?.aborted && state) {
+            results.set(entry.component, state);
+          }
+        } catch (err: unknown) {
+          if (err instanceof DOMException && err.name === 'AbortError') return;
+          console.warn(
+            `[Router] Loader failed for <${entry.component}>, using server state:`,
+            err,
+          );
+        }
+      });
+
+    await Promise.all(tasks);
+    return results;
   }
 
   // ── Dev-mode Validation ─────────────────────────────────────────
@@ -1081,6 +1153,11 @@ export class WebUIRouter {
     }
     if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) return;
 
+    // Resolve static loader() methods on component constructors (pre-commit).
+    // Loader results replace server state for those components.
+    const loaderStates = await this.resolveLoaders(newChain, query, signal);
+    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) return;
+
     const changeLevel = this.findChangeLevel(this.activeChain, newChain);
     const isQueryOnlyChange = changeLevel === newChain.length && newChain.length > 0;
 
@@ -1095,7 +1172,7 @@ export class WebUIRouter {
       if (changeLevel > 0 || isQueryOnlyChange) {
         const end = isQueryOnlyChange ? newChain.length : changeLevel;
         for (let i = 0; i < end; i++) {
-          this.applyState(newChain[i], partialData, query);
+          this.applyState(newChain[i], partialData, query, loaderStates);
         }
       }
       for (let i = changeLevel; i < newChain.length; i++) {
@@ -1104,22 +1181,23 @@ export class WebUIRouter {
         const parent = i > 0 ? newChain[i - 1] : null;
         if (oldEntry?.component === entry.component && oldEntry?.el) {
           entry.el = oldEntry.el;
-          if (entry.component) this.applyState(entry, partialData, query);
+          if (entry.component) this.applyState(entry, partialData, query, loaderStates);
           activateRoute(entry.el, entry.params);
           continue;
         }
         const routeEl = this.findOrCreateRouteElement(parent, entry);
         entry.el = routeEl;
         if (entry.component) {
+          const override = loaderStates.get(entry.component);
           // Keep-alive: if the route has keep-alive and already has the correct
           // component mounted (from a previous visit), reuse it and apply fresh
           // state instead of destroying and recreating the component.
           const isKeepAlive = entry.keepAlive || routeEl.hasAttribute('keep-alive');
           const existingComp = routeEl.firstElementChild;
           if (isKeepAlive && existingComp?.matches(entry.component)) {
-            applyParamsQueryState(existingComp, routeEl, entry.params, partialData, query);
+            applyParamsQueryState(existingComp, routeEl, entry.params, partialData, query, override);
           } else {
-            this.mountComponent(routeEl, entry.component, partialData, entry.params, query);
+            this.mountComponent(routeEl, entry.component, partialData, entry.params, query, override);
           }
         }
         activateRoute(routeEl, entry.params);
