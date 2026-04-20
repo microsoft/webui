@@ -47,6 +47,7 @@ These apply to `packages/webui-framework` (the client-side Web Component runtime
 4. **Delegated events.** One listener per event type on the shadow root, not one closure per element. Reduces listener count by orders of magnitude.
 5. **Microtask coalescing.** Multiple property changes within the same synchronous block batch into a single DOM update via `queueMicrotask`.
 6. **Cursor-based repeat reconciliation.** `<for>` block updates use a diff algorithm that only calls `insertBefore` on nodes that actually moved. Append/prepend/remove are O(1).
+7. **No `for..in` on objects.** Use `Object.keys()` with an indexed `for` loop — faster and prototype-safe without needing `Object.hasOwn`. Applies to `setState`, `setInitialState`, and any code iterating user-provided objects.
 
 ### Memory
 
@@ -65,6 +66,20 @@ These apply to `packages/webui-router` (the client-side SPA router).
 1. **Server does route matching.** The client does not re-match routes. The server returns the matched `chain` array; the client diffs old vs new and mounts only changed components.
 2. **Lazy loading via dynamic import.** Route component JS is fetched only on first navigation to that route.
 3. **Chain diffing, not full remount.** Navigating between sibling routes preserves parent components. Only the changed level is remounted.
+4. **No `for..in` on objects.** Use `Object.keys()` with an indexed `for` loop. `for..in` walks the prototype chain (slow) and requires an `Object.hasOwn` guard to be safe — `Object.keys` is both faster and prototype-safe in one call:
+   ```typescript
+   // ✗ Bad: slow, prototype-unsafe without guard
+   for (const key in obj) { ... }
+
+   // ✗ Still bad: correct but slower than Object.keys
+   for (const key in obj) {
+     if (Object.hasOwn(obj, key)) { ... }
+   }
+
+   // ✓ Good: fast, prototype-safe, no guard needed
+   const keys = Object.keys(obj);
+   for (let i = 0; i < keys.length; i++) { ... }
+   ```
 
 ### Memory
 

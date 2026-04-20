@@ -295,7 +295,9 @@ export class WebUIElement extends HTMLElement {
    */
   setState(state: Record<string, unknown>): void {
     const names = getObservableNames(this.constructor as Function);
-    for (const key of Object.keys(state)) {
+    const keys = Object.keys(state);
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
       if (names.has(key)) {
         (this as Record<string, unknown>)[key] = state[key];
       }

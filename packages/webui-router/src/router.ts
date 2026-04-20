@@ -14,7 +14,7 @@
  * templates, instantiates the component, and mounts it into the route.
  */
 
-import { buildNavigationTarget, prependBasePath } from './navigation-path.js';
+import { buildNavigationTarget, prependBasePath, stripBaseFromPathname } from './navigation-path.js';
 import type { RouterConfig, NavigationEvent } from './types.js';
 import type { NavigationTarget } from './navigation-path.js';
 
@@ -23,6 +23,9 @@ const SSR_PRELOAD_SELECTOR = 'link[data-webui-ssr-preload]';
 
 /** Sentinel value indicating a loader existed but failed — fall back to server state. */
 const LOADER_FAILED = Symbol('LOADER_FAILED');
+
+/** Shared never-aborted signal for loaders called without an external signal. */
+const NOOP_SIGNAL = new AbortController().signal;
 
 /**
  * Get the render root of a component element.
@@ -67,6 +70,9 @@ const routeParamsMap = new WeakMap<Element, Record<string, string>>();
  */
 const queryAttrsMap = new WeakMap<Element, Set<string>>();
 
+/** Cached parsed query allowlist per route element — avoids re-splitting on every navigation. */
+const allowedQueryCache = new WeakMap<Element, Set<string> | null>();
+
 /** Convert a camelCase key to a kebab-case attribute name. */
 const toKebab = (k: string): string => k.replace(/[A-Z]/g, m => `-${m.toLowerCase()}`);
 
@@ -87,13 +93,19 @@ export function parseQuery(requestPath: string): Record<string, string> {
  * Returns null if no `query` attribute is present (deny-by-default).
  */
 function routeAllowedQuery(el: Element): Set<string> | null {
+  const cached = allowedQueryCache.get(el);
+  if (cached !== undefined) return cached;
   const raw = el.getAttribute('query');
-  if (raw == null) return null;
+  if (raw == null) {
+    allowedQueryCache.set(el, null);
+    return null;
+  }
   const set = new Set<string>();
   for (const part of raw.split(',')) {
     const trimmed = part.trim();
     if (trimmed) set.add(trimmed);
   }
+  allowedQueryCache.set(el, set);
   return set;
 }
 
@@ -113,13 +125,18 @@ export function filterQuery(
 ): Record<string, string> {
   if (!allowed) return {};
   // Build a set of kebab-cased route param attribute names for collision check
-  const paramAttrNames = routeParams
-    ? new Set(Object.keys(routeParams).map(toKebab))
-    : undefined;
+  let paramAttrNames: Set<string> | undefined;
+  if (routeParams) {
+    paramAttrNames = new Set<string>();
+    const rpKeys = Object.keys(routeParams);
+    for (let i = 0; i < rpKeys.length; i++) paramAttrNames.add(toKebab(rpKeys[i]));
+  }
   const result: Record<string, string> = {};
-  for (const [k, v] of Object.entries(query)) {
+  const qKeys = Object.keys(query);
+  for (let i = 0; i < qKeys.length; i++) {
+    const k = qKeys[i];
     if (allowed.has(k) && !(paramAttrNames && paramAttrNames.has(toKebab(k)))) {
-      result[k] = v;
+      result[k] = query[k];
     }
   }
   return result;
@@ -210,16 +227,29 @@ function applyParamsAndQuery(
   params: Record<string, string>,
   query?: Record<string, string>,
 ): void {
-  for (const [key, value] of Object.entries(params)) {
-    component.setAttribute(toKebab(key), value);
+  const paramKeys = Object.keys(params);
+  for (let i = 0; i < paramKeys.length; i++) {
+    component.setAttribute(toKebab(paramKeys[i]), params[paramKeys[i]]);
   }
 
   const allowed = routeAllowedQuery(routeEl);
-  const filtered = query ? filterQuery(query, allowed, params) : {};
+  if (!allowed || !query) {
+    // Fast path: no query params to process — just clean up stale attrs
+    const prevAttrs = queryAttrsMap.get(component);
+    if (prevAttrs) {
+      for (const attr of prevAttrs) component.removeAttribute(attr);
+      queryAttrsMap.delete(component);
+    }
+    return;
+  }
+
+  const filtered = filterQuery(query, allowed, params);
   const newAttrs = new Set<string>();
-  for (const [key, value] of Object.entries(filtered)) {
+  const filteredKeys = Object.keys(filtered);
+  for (let i = 0; i < filteredKeys.length; i++) {
+    const key = filteredKeys[i];
     const attr = toKebab(key);
-    component.setAttribute(attr, value);
+    component.setAttribute(attr, filtered[key]);
     newAttrs.add(attr);
   }
 
@@ -231,7 +261,11 @@ function applyParamsAndQuery(
       }
     }
   }
-  queryAttrsMap.set(component, newAttrs);
+  if (newAttrs.size > 0) {
+    queryAttrsMap.set(component, newAttrs);
+  } else {
+    queryAttrsMap.delete(component);
+  }
 }
 
 /**
@@ -282,6 +316,10 @@ export class WebUIRouter {
   private navGeneration = 0;
   /** Set of component tags known to have a static loader() method. */
   private loaderComponents = new Set<string>();
+  /** Cached comma-separated loader header — invalidated when loaderComponents changes. */
+  private loaderHeaderCache = '';
+  /** Cached current request path — updated on every navigation. Avoids URL allocation in hot paths. */
+  private currentRequestPath = '/';
   /** Cached preload result from a speculative hover fetch. */
   private preloadCache: { path: string; data: PartialResponse & { inventory?: string }; ts: number } | null = null;
   /** AbortController for the in-flight preload fetch. */
@@ -534,6 +572,8 @@ export class WebUIRouter {
     this.injectedCss.clear();
     this.injectedStyles.clear();
     this.loaderComponents.clear();
+    this.loaderHeaderCache = '';
+    this.currentRequestPath = '/';
     this.preloadCache = null;
     this.preloadController?.abort();
     this.preloadController = null;
@@ -566,27 +606,29 @@ export class WebUIRouter {
       if (e.pointerType !== 'mouse') return;
 
       // Walk composedPath to find the nearest <a> — works across shadow boundaries.
-      const anchor = (e.composedPath() as Element[]).find(
-        el => el?.tagName === 'A',
-      ) as HTMLAnchorElement | undefined;
+      // Use a for-loop instead of .find() to avoid closure allocation.
+      const path = e.composedPath();
+      let anchor: HTMLAnchorElement | undefined;
+      for (let i = 0; i < path.length; i++) {
+        if ((path[i] as Element)?.tagName === 'A') {
+          anchor = path[i] as HTMLAnchorElement;
+          break;
+        }
+      }
       if (!anchor) return;
 
+      // Use anchor's pre-parsed URL properties to avoid new URL() allocation.
       const href = anchor.getAttribute('href');
       if (!href || href.startsWith('#')) return;
+      if (anchor.origin !== location.origin) return;
 
-      let url: URL;
-      try {
-        url = new URL(href, location.href);
-      } catch {
-        return;
-      }
-      if (url.origin !== location.origin) return;
-
-      const target = buildNavigationTarget(url, this.basePath);
+      // Build request path from anchor properties — no URL allocation needed.
+      const stripped = stripBaseFromPathname(anchor.pathname, this.basePath);
+      const requestPath = (stripped + anchor.search) || '/';
 
       // Skip if already on this path or already cached for it
-      if (target.requestPath === this.currentTarget().requestPath) return;
-      if (this.preloadCache?.path === target.requestPath) return;
+      if (requestPath === this.currentRequestPath) return;
+      if (this.preloadCache?.path === requestPath) return;
 
       // Abort any in-flight speculative fetch and start a new one
       this.preloadController?.abort();
@@ -594,11 +636,11 @@ export class WebUIRouter {
       this.preloadController = controller;
       const gen = ++this.preloadGeneration;
 
-      this.fetchPartial(target.requestPath, controller.signal, true)
+      this.fetchPartial(requestPath, controller.signal, true)
         .then(data => {
           // Only cache if this is still the latest preload request
           if (data && gen === this.preloadGeneration && !controller.signal.aborted) {
-            this.preloadCache = { path: target.requestPath, data, ts: Date.now() };
+            this.preloadCache = { path: requestPath, data, ts: Date.now() };
           }
         })
         .catch(() => {}); // Speculative — silently discard errors
@@ -622,6 +664,7 @@ export class WebUIRouter {
    */
   private async handleNavigation(target: NavigationTarget, signal?: AbortSignal): Promise<void> {
     const { requestPath } = target;
+    this.currentRequestPath = requestPath;
     const query = parseQuery(requestPath);
 
     if (this.isInitialNavigation) {
@@ -881,11 +924,10 @@ export class WebUIRouter {
   }
 
   private paramsEqual(a: Record<string, string>, b: Record<string, string>): boolean {
-    const keysA = Object.keys(a);
-    const keysB = Object.keys(b);
-    if (keysA.length !== keysB.length) return false;
-    for (const key of keysA) {
-      if (a[key] !== b[key]) return false;
+    const aKeys = Object.keys(a);
+    if (aKeys.length !== Object.keys(b).length) return false;
+    for (let i = 0; i < aKeys.length; i++) {
+      if (a[aKeys[i]] !== b[aKeys[i]]) return false;
     }
     return true;
   }
@@ -905,8 +947,8 @@ export class WebUIRouter {
     // server does its own route matching and can check whether the TARGET
     // leaf component is in this list. If so, it may skip expensive state
     // computation and return state: {}.
-    if (this.loaderComponents.size > 0) {
-      headers['X-WebUI-Has-Loader'] = [...this.loaderComponents].join(',');
+    if (this.loaderHeaderCache) {
+      headers['X-WebUI-Has-Loader'] = this.loaderHeaderCache;
     }
 
     const resp = await fetch(fullPath, { headers, signal });
@@ -1020,7 +1062,7 @@ export class WebUIRouter {
 
     let promise = this.loaderPromises.get(tag);
     if (!promise) {
-      promise = loader().then(() => {});
+      promise = loader().then(() => {}).finally(() => { this.loaderPromises.delete(tag); });
       this.loaderPromises.set(tag, promise);
     }
     await promise;
@@ -1045,39 +1087,49 @@ export class WebUIRouter {
   ): Promise<Map<string, Record<string, unknown> | typeof LOADER_FAILED>> {
     const results = new Map<string, Record<string, unknown> | typeof LOADER_FAILED>();
 
-    const tasks = chain
-      .filter(entry => entry.component)
-      .map(async entry => {
-        const ctor = customElements.get(entry.component) as (
-          (new () => HTMLElement) & { loader?: (ctx: import('./types.js').RouteLoaderContext) => Promise<Record<string, unknown>> }
-        ) | undefined;
-        if (!ctor || typeof ctor.loader !== 'function') return;
+    // Collect only entries that have loaders — avoids creating promises for non-loader components
+    type LoaderEntry = { component: string; params: Record<string, string>; loaderFn: (ctx: import('./types.js').RouteLoaderContext) => Promise<Record<string, unknown>> };
+    const loaderEntries: LoaderEntry[] = [];
+    for (let i = 0; i < chain.length; i++) {
+      const entry = chain[i];
+      if (!entry.component) continue;
+      const ctor = customElements.get(entry.component) as (
+        (new () => HTMLElement) & { loader?: (ctx: import('./types.js').RouteLoaderContext) => Promise<Record<string, unknown>> }
+      ) | undefined;
+      if (!ctor || typeof ctor.loader !== 'function') continue;
 
-        // Track this component as having a loader for the X-WebUI-Has-Loader header
+      // Track this component as having a loader for the X-WebUI-Has-Loader header
+      if (!this.loaderComponents.has(entry.component)) {
         this.loaderComponents.add(entry.component);
+        this.loaderHeaderCache = [...this.loaderComponents].join(',');
+      }
 
-        try {
-          const ctx = {
-            params: entry.params,
-            query,
-            signal: signal ?? new AbortController().signal,
-          };
-          const state = await ctor.loader(ctx);
-          if (!signal?.aborted && state) {
-            results.set(entry.component, state);
-          }
-        } catch (err: unknown) {
-          if (err instanceof DOMException && err.name === 'AbortError') return;
-          console.warn(
-            `[Router] Loader failed for <${entry.component}>, using server state:`,
-            err,
-          );
-          // Mark as failed so callers fall back to server state (not local state)
-          results.set(entry.component, LOADER_FAILED);
+      loaderEntries.push({ component: entry.component, params: entry.params, loaderFn: ctor.loader });
+    }
+
+    // Early exit — no loaders in this chain
+    if (loaderEntries.length === 0) return results;
+
+    // Create a single fallback signal (not per-task)
+    const effectiveSignal = signal ?? NOOP_SIGNAL;
+
+    await Promise.all(loaderEntries.map(async ({ component, params, loaderFn }) => {
+      try {
+        const state = await loaderFn({ params, query, signal: effectiveSignal });
+        if (!effectiveSignal.aborted && state) {
+          results.set(component, state);
         }
-      });
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        console.warn(
+          `[Router] Loader failed for <${component}>, using server state:`,
+          err,
+        );
+        // Mark as failed so callers fall back to server state (not local state)
+        results.set(component, LOADER_FAILED);
+      }
+    }));
 
-    await Promise.all(tasks);
     return results;
   }
 
