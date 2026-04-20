@@ -789,6 +789,10 @@ mod tests {
                 children: Vec::new(),
                 allowed_query: "action,to,subject".to_string(),
                 keep_alive: false,
+                cache_tags: vec!["user:{id}".to_string(), "posts".to_string()],
+                invalidates: vec!["posts".to_string(), "counts".to_string()],
+                pending_component: "loading-skeleton".to_string(),
+                error_component: "error-page".to_string(),
             })),
         };
         fragments.insert(

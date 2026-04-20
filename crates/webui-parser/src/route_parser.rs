@@ -25,6 +25,17 @@ pub(crate) struct RouteAttributes {
     pub query: String,
     /// When true, the router keeps the component alive across navigations.
     pub keep_alive: bool,
+    /// Cache tag templates (e.g. `["thread:{threadId}", "inbox"]`).
+    /// Placeholders like `{param}` are resolved at render time.
+    pub cache_tags: Vec<String>,
+    /// Invalidation tag templates (e.g. `["inbox", "sent"]`).
+    /// After a mutation action, these tags are auto-invalidated.
+    /// Supports `{param}` placeholders resolved at render time.
+    pub invalidates: Vec<String>,
+    /// Component tag name for pending/loading UI.
+    pub pending_component: String,
+    /// Component tag name for error boundary UI.
+    pub error_component: String,
 }
 
 /// Iteratively extract `:param` and `*splat` tokens from a path template.
@@ -100,6 +111,96 @@ pub(crate) fn validate_attributes(attrs: &RouteAttributes) -> Result<()> {
     Ok(())
 }
 
+/// Parse a comma-separated list of cache tags or invalidation tags.
+///
+/// Splits on `,`, trims whitespace, and discards empty entries.
+pub(crate) fn parse_tag_list(raw: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    for part in raw.split(',') {
+        let trimmed = part.trim();
+        if !trimmed.is_empty() {
+            tags.push(trimmed.to_string());
+        }
+    }
+    tags
+}
+
+/// Extract `{param}` placeholder names from tag templates.
+///
+/// Returns the set of param names referenced in tags like `"thread:{threadId}"`.
+/// Validates that placeholder syntax is well-formed.
+pub(crate) fn extract_tag_placeholders(tags: &[String]) -> Result<HashSet<String>> {
+    let mut placeholders = HashSet::new();
+
+    for tag in tags {
+        let bytes = tag.as_bytes();
+        let len = bytes.len();
+        let mut i = 0;
+
+        while i < len {
+            if bytes[i] == b'{' {
+                let start = i + 1;
+                let end = tag[start..].find('}').map(|j| start + j);
+                match end {
+                    Some(end_idx) => {
+                        let name = &tag[start..end_idx];
+                        if name.is_empty() {
+                            return Err(ParserError::Directive(format!(
+                                "Empty placeholder '{{}}' in cache tag: {tag}"
+                            )));
+                        }
+                        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                            return Err(ParserError::Directive(format!(
+                                "Invalid placeholder name '{name}' in cache tag: {tag}"
+                            )));
+                        }
+                        placeholders.insert(name.to_string());
+                        i = end_idx + 1;
+                    }
+                    None => {
+                        return Err(ParserError::Directive(format!(
+                            "Unclosed placeholder '{{' in cache tag: {tag}"
+                        )));
+                    }
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    Ok(placeholders)
+}
+
+/// Validate that `{param}` placeholders in tags reference actual route params.
+///
+/// `available_params` should include params from this route AND all ancestor routes.
+pub(crate) fn validate_tag_placeholders(
+    tags: &[String],
+    available_params: &HashSet<String>,
+    attr_name: &str,
+    route_path: &str,
+) -> Result<()> {
+    let placeholders = extract_tag_placeholders(tags)?;
+    for name in &placeholders {
+        if !available_params.contains(name) {
+            return Err(ParserError::Directive(format!(
+                "Placeholder '{{{name}}}' in {attr_name} references unknown param \
+                 on route '{route_path}'. Available params: {available}",
+                available = if available_params.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    let mut sorted: Vec<&str> =
+                        available_params.iter().map(|s| s.as_str()).collect();
+                    sorted.sort_unstable();
+                    sorted.join(", ")
+                }
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Build a `WebUiFragmentRoute` from parsed attributes.
 pub(crate) fn build_route_fragment(
     attrs: &RouteAttributes,
@@ -113,6 +214,10 @@ pub(crate) fn build_route_fragment(
         children,
         allowed_query: attrs.query.clone(),
         keep_alive: attrs.keep_alive,
+        cache_tags: attrs.cache_tags.clone(),
+        invalidates: attrs.invalidates.clone(),
+        pending_component: attrs.pending_component.clone(),
+        error_component: attrs.error_component.clone(),
     }
 }
 
@@ -217,5 +322,116 @@ mod tests {
     fn test_extract_params_relative_splat() {
         let params = extract_params("./*rest").unwrap();
         assert_eq!(params, vec!["rest"]);
+    }
+
+    // ── Cache tag parsing tests ──
+
+    #[test]
+    fn test_parse_tag_list_simple() {
+        let tags = parse_tag_list("inbox,counts");
+        assert_eq!(tags, vec!["inbox", "counts"]);
+    }
+
+    #[test]
+    fn test_parse_tag_list_with_placeholders() {
+        let tags = parse_tag_list("thread:{threadId},inbox");
+        assert_eq!(tags, vec!["thread:{threadId}", "inbox"]);
+    }
+
+    #[test]
+    fn test_parse_tag_list_whitespace() {
+        let tags = parse_tag_list(" inbox , counts , drafts ");
+        assert_eq!(tags, vec!["inbox", "counts", "drafts"]);
+    }
+
+    #[test]
+    fn test_parse_tag_list_empty() {
+        let tags = parse_tag_list("");
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn test_parse_tag_list_trailing_comma() {
+        let tags = parse_tag_list("inbox,");
+        assert_eq!(tags, vec!["inbox"]);
+    }
+
+    #[test]
+    fn test_extract_tag_placeholders_simple() {
+        let tags = vec!["thread:{threadId}".to_string(), "inbox".to_string()];
+        let placeholders = extract_tag_placeholders(&tags).unwrap();
+        assert_eq!(placeholders.len(), 1);
+        assert!(placeholders.contains("threadId"));
+    }
+
+    #[test]
+    fn test_extract_tag_placeholders_multiple() {
+        let tags = vec!["folder:{folderId}".to_string(), "user:{userId}".to_string()];
+        let placeholders = extract_tag_placeholders(&tags).unwrap();
+        assert_eq!(placeholders.len(), 2);
+        assert!(placeholders.contains("folderId"));
+        assert!(placeholders.contains("userId"));
+    }
+
+    #[test]
+    fn test_extract_tag_placeholders_none() {
+        let tags = vec!["inbox".to_string(), "counts".to_string()];
+        let placeholders = extract_tag_placeholders(&tags).unwrap();
+        assert!(placeholders.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tag_placeholders_unclosed_brace() {
+        let tags = vec!["thread:{threadId".to_string()];
+        assert!(extract_tag_placeholders(&tags).is_err());
+    }
+
+    #[test]
+    fn test_extract_tag_placeholders_empty_placeholder() {
+        let tags = vec!["thread:{}".to_string()];
+        assert!(extract_tag_placeholders(&tags).is_err());
+    }
+
+    #[test]
+    fn test_extract_tag_placeholders_invalid_name() {
+        let tags = vec!["thread:{thread-id}".to_string()];
+        assert!(extract_tag_placeholders(&tags).is_err());
+    }
+
+    #[test]
+    fn test_validate_tag_placeholders_valid() {
+        let tags = vec!["thread:{threadId}".to_string(), "inbox".to_string()];
+        let mut params = HashSet::new();
+        params.insert("threadId".to_string());
+        assert!(
+            validate_tag_placeholders(&tags, &params, "cache-tags", "/email/:threadId").is_ok()
+        );
+    }
+
+    #[test]
+    fn test_validate_tag_placeholders_missing_param() {
+        let tags = vec!["thread:{threadId}".to_string()];
+        let params = HashSet::new();
+        let result = validate_tag_placeholders(&tags, &params, "cache-tags", "/email");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("threadId"),
+            "Error should mention the param: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_tag_placeholders_with_ancestor_params() {
+        let tags = vec![
+            "thread:{threadId}".to_string(),
+            "folder:{folderId}".to_string(),
+        ];
+        let mut params = HashSet::new();
+        params.insert("threadId".to_string());
+        params.insert("folderId".to_string());
+        assert!(
+            validate_tag_placeholders(&tags, &params, "cache-tags", "/email/:threadId").is_ok()
+        );
     }
 }

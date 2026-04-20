@@ -189,8 +189,31 @@ pub struct WebUIFragmentRoute {
     pub exact: bool,                           // Require exact path match
     pub children: Vec<WebUIFragmentRoute>,     // Nested child routes
     pub allowed_query: String,                 // Comma-separated allowlist of query params forwarded as attributes
+    pub keep_alive: bool,                      // Preserve component across navigations
+    pub cache_tags: Vec<String>,               // Cache tag templates (e.g., "thread:{threadId}")
+    pub invalidates: Vec<String>,              // Tags to auto-invalidate after mutation actions
+    pub pending_component: String,             // Component tag for loading UI (build-time validated)
+    pub error_component: String,               // Component tag for error boundary (build-time validated)
 }
 ```
+
+**Cache tags:** Declared via `cache-tags="thread:{threadId},inbox"` on `<route>`. Placeholders
+like `{param}` reference route path parameters and are resolved at render time with actual values.
+The handler includes resolved tags in the JSON partial response `cacheTags` array. The client
+caches responses tagged with these values and uses them for tag-based invalidation.
+
+**Invalidation tags:** Declared via `invalidates="inbox,sent,counts"` on `<route>`. After a
+mutation action (`static action()`) on this route, these tags are auto-invalidated from the
+client cache. Supports `{param}` placeholders. The compiler knows the full invalidation graph —
+developers cannot forget to invalidate related data.
+
+**Pending component:** Declared via `pending="mail-skeleton"` on `<route>`. The compiler validates
+the component exists at build time. During slow navigations (>150ms), the router mounts this
+component as a loading indicator. Skip for keep-alive and cached routes.
+
+**Error component:** Declared via `error="error-page"` on `<route>`. The compiler validates
+the component exists at build time. When a navigation fetch fails, the router mounts this
+component with error details as state (`{ error, status, path }`).
 
 There is no global route registry or route tree — routes are inline in the fragment graph
 via `WebUIFragmentRoute` nesting.
@@ -264,12 +287,23 @@ without a server round-trip.
 5. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
 6. Parent components and their state are preserved.
 
-**Partial response:** The server returns `{ state, templateStyles, templates, inventory, path, chain }`:
+**Partial response:** The server returns `{ state, templateStyles, templates, inventory, path, chain, cacheTags }`:
 - `state`: route params from all nesting levels injected into API state
 - `templateStyles`: module CSS definition tags (`<style type="module" specifier="...">`) for newly shipped components. Empty array for Link/Style modes. The client appends these to `<head>` before evaluating template scripts so adopted stylesheets are available
 - `templates`: client template script/markup payloads the client doesn't already have (filtered by inventory bitmask). Clean JS IIFEs for the WebUI plugin, `<f-template>` markup for the FAST plugin
 - `inventory`: updated hex bitmask of loaded templates
-- `chain`: matched route chain array — each entry has `component`, `path`, optional `params` and `exact`
+- `chain`: matched route chain array — each entry has `component`, `path`, optional `params`, `exact`, `pendingComponent`, `errorComponent`, and `invalidates`
+- `cacheTags`: resolved cache tags from the full route chain (union of all levels, deduplicated). The client tags its cache entry with these values for tag-based invalidation
+
+**Cache control:** The server can include `cacheControl: { staleTime: number }` in the partial response to override the client's default stale time for this specific route.
+
+**Navigation cache:** The client router maintains a tagged navigation cache. Partial responses are stored keyed by request path and tagged with `cacheTags`. On revisit within `staleTime`, the cache is used and the network fetch is skipped. After a mutation action, `Router.invalidateTags()` evicts all entries whose tags overlap with the invalidated tags. Configuration: `Router.start({ cache: { staleTime, gcTime, maxEntries } })`.
+
+**Mutation actions:** Components can declare `static action(ctx: RouteActionContext)` as the write counterpart to `static loader()`. The router intercepts `<form method="post">` submissions, finds the nearest route component's `static action()`, calls it, and auto-invalidates the cache using both the action's returned tags and the route's build-time `invalidates` attribute. This ensures the compiler-declared invalidation graph is always respected — developers cannot forget.
+
+**Pending UI:** Routes with a `pending` attribute show a loading component during slow navigations (>150ms). The pending component is a normal WebUI component — SSR'd and build-time validated. Keep-alive and cached routes skip pending (no delay to show).
+
+**Error boundaries:** Routes with an `error` attribute show an error component when the navigation fetch fails. The error component receives `{ error, status, path }` as state and can call `Router.navigate()` to recover.
 
 **Request headers sent by the client router:**
 

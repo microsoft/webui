@@ -260,6 +260,29 @@ fn collect_inventoryable_components(
                             route_base: child_route_base.clone(),
                         });
 
+                        // Include pending/error components in the inventory
+                        // so their templates are available on the client.
+                        if !route_frag.pending_component.is_empty() {
+                            stack.push(QueuedFragment {
+                                id: route_frag.pending_component.clone(),
+                                inventoryable: protocol
+                                    .components
+                                    .get(&route_frag.pending_component)
+                                    .is_some_and(|c| !c.template.is_empty()),
+                                route_base: child_route_base.clone(),
+                            });
+                        }
+                        if !route_frag.error_component.is_empty() {
+                            stack.push(QueuedFragment {
+                                id: route_frag.error_component.clone(),
+                                inventoryable: protocol
+                                    .components
+                                    .get(&route_frag.error_component)
+                                    .is_some_and(|c| !c.template.is_empty()),
+                                route_base: child_route_base.clone(),
+                            });
+                        }
+
                         // Walk nested child routes to find the next matched level.
                         // This mirrors the handler's outlet rendering: match children
                         // against the request path and follow the matched chain.
@@ -327,6 +350,28 @@ fn walk_route_children(
                 .is_some_and(|c| !c.template.is_empty()),
             route_base: child_base.clone(),
         });
+
+        // Include pending/error components in the inventory
+        if !matched.pending_component.is_empty() {
+            stack.push(QueuedFragment {
+                id: matched.pending_component.clone(),
+                inventoryable: protocol
+                    .components
+                    .get(&matched.pending_component)
+                    .is_some_and(|c| !c.template.is_empty()),
+                route_base: child_base.clone(),
+            });
+        }
+        if !matched.error_component.is_empty() {
+            stack.push(QueuedFragment {
+                id: matched.error_component.clone(),
+                inventoryable: protocol
+                    .components
+                    .get(&matched.error_component)
+                    .is_some_and(|c| !c.template.is_empty()),
+                route_base: child_base.clone(),
+            });
+        }
 
         if matched.children.is_empty() {
             break;
@@ -485,6 +530,49 @@ fn collect_params_from_children(
 
 // ── Partial Response ────────────────────────────────────────────────
 
+/// Resolve `{param}` placeholders in a list of tag templates.
+///
+/// Replaces `{paramName}` with the actual value from `params`.
+/// Tags without placeholders are returned as-is. Missing params
+/// result in the placeholder being left unresolved (defensive).
+fn resolve_tag_templates(templates: &[String], params: &HashMap<String, String>) -> Vec<String> {
+    let mut resolved = Vec::with_capacity(templates.len());
+    for template in templates {
+        if !template.contains('{') {
+            resolved.push(template.clone());
+            continue;
+        }
+        let mut result = String::with_capacity(template.len());
+        let bytes = template.as_bytes();
+        let len = bytes.len();
+        let mut i = 0;
+        while i < len {
+            if bytes[i] == b'{' {
+                if let Some(end) = template[i + 1..].find('}') {
+                    let name = &template[i + 1..i + 1 + end];
+                    if let Some(value) = params.get(name) {
+                        result.push_str(value);
+                    } else {
+                        // Leave unresolved — defensive
+                        result.push('{');
+                        result.push_str(name);
+                        result.push('}');
+                    }
+                    i = i + 1 + end + 1;
+                } else {
+                    result.push('{');
+                    i += 1;
+                }
+            } else {
+                result.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+        resolved.push(result);
+    }
+    resolved
+}
+
 /// Produce a complete JSON partial response for client-side navigation.
 ///
 /// Combines route templates, inventory, and matched route chain into a single
@@ -498,6 +586,7 @@ fn collect_params_from_children(
 /// - `inventory`: updated hex bitmask
 /// - `path`: the request path
 /// - `chain`: matched route chain array
+/// - `cacheTags`: resolved cache tags from the full route chain (union of all levels)
 #[must_use]
 pub fn render_partial(
     protocol: &WebUIProtocol,
@@ -513,19 +602,104 @@ pub fn render_partial(
     // Build the matched route chain
     let chain = collect_route_chain(protocol, entry_id, request_path);
 
+    // Resolve cache tags with accumulated params from the full chain.
+    // Each level can reference params from its own level AND all ancestors.
+    let mut accumulated_params: HashMap<String, String> = HashMap::new();
+    let mut all_resolved_tags: Vec<String> = Vec::new();
+    let mut resolved_chain: Vec<RouteChainEntry> = Vec::with_capacity(chain.len());
+
+    for entry in &chain {
+        // Accumulate params from all levels
+        for (k, v) in &entry.params {
+            accumulated_params.insert(k.clone(), v.clone());
+        }
+        // Resolve cache tags and invalidates with accumulated params
+        let resolved_tags = resolve_tag_templates(&entry.cache_tags, &accumulated_params);
+        let resolved_invalidates = resolve_tag_templates(&entry.invalidates, &accumulated_params);
+
+        all_resolved_tags.extend(resolved_tags.iter().cloned());
+
+        resolved_chain.push(RouteChainEntry {
+            cache_tags: resolved_tags,
+            invalidates: resolved_invalidates,
+            ..entry.clone()
+        });
+    }
+
     // Collect templates + CSS using the shared helper
     let tag_refs: Vec<&str> = needed_names.iter().map(|s| s.as_str()).collect();
     let (style_array, tmpl_array) = collect_component_assets(protocol, &tag_refs);
 
-    let chain_array = Value::Array(chain.iter().map(RouteChainEntry::to_json).collect());
+    let chain_array = Value::Array(
+        resolved_chain
+            .iter()
+            .map(RouteChainEntry::to_json)
+            .collect(),
+    );
 
-    let mut result = serde_json::Map::with_capacity(6);
+    let mut result = serde_json::Map::with_capacity(7);
     result.insert("state".into(), state);
     result.insert("templateStyles".into(), Value::Array(style_array));
     result.insert("templates".into(), Value::Array(tmpl_array));
     result.insert("inventory".into(), Value::String(updated_inv));
     result.insert("path".into(), Value::String(request_path.to_string()));
     result.insert("chain".into(), chain_array);
+    if !all_resolved_tags.is_empty() {
+        // Deduplicate while preserving order
+        let mut seen = HashSet::new();
+        let deduped: Vec<Value> = all_resolved_tags
+            .into_iter()
+            .filter(|t| seen.insert(t.clone()))
+            .map(Value::String)
+            .collect();
+        result.insert("cacheTags".into(), Value::Array(deduped));
+    }
+    Value::Object(result)
+}
+
+/// Produce a JSON response for a POST mutation action.
+///
+/// Walks the matched route chain, resolves `invalidates` tag templates
+/// with actual param values, and returns them alongside the application
+/// state. Host servers call this for `POST` requests to route paths.
+///
+/// Returns a `serde_json::Value` object with fields:
+/// - `state`: the application state passed through
+/// - `invalidateTags`: resolved invalidation tags from the matched leaf route
+/// - `path`: the request path
+#[must_use]
+pub fn render_action_response(
+    protocol: &WebUIProtocol,
+    state: Value,
+    entry_id: &str,
+    request_path: &str,
+) -> Value {
+    let chain = collect_route_chain(protocol, entry_id, request_path);
+
+    // Accumulate params across the chain for tag resolution
+    let mut accumulated_params: HashMap<String, String> = HashMap::new();
+    let mut all_invalidates: Vec<String> = Vec::new();
+
+    for entry in &chain {
+        for (k, v) in &entry.params {
+            accumulated_params.insert(k.clone(), v.clone());
+        }
+        let resolved = resolve_tag_templates(&entry.invalidates, &accumulated_params);
+        all_invalidates.extend(resolved);
+    }
+
+    // Deduplicate while preserving order
+    let mut seen = HashSet::new();
+    let deduped: Vec<Value> = all_invalidates
+        .into_iter()
+        .filter(|t| seen.insert(t.clone()))
+        .map(Value::String)
+        .collect();
+
+    let mut result = serde_json::Map::with_capacity(3);
+    result.insert("state".into(), state);
+    result.insert("invalidateTags".into(), Value::Array(deduped));
+    result.insert("path".into(), Value::String(request_path.to_string()));
     Value::Object(result)
 }
 
@@ -605,13 +779,21 @@ pub struct RouteChainEntry {
     pub allowed_query: String,
     /// When true, the router keeps the component alive across navigations.
     pub keep_alive: bool,
+    /// Cache tag templates from the proto (e.g. `["thread:{threadId}", "inbox"]`).
+    pub cache_tags: Vec<String>,
+    /// Invalidation tag templates from the proto.
+    pub invalidates: Vec<String>,
+    /// Component tag name for pending/loading UI.
+    pub pending_component: String,
+    /// Component tag name for error boundary UI.
+    pub error_component: String,
 }
 
 impl RouteChainEntry {
     /// Serialize this entry to a JSON value ready for inclusion in a partial response.
     #[must_use]
     pub fn to_json(&self) -> Value {
-        let mut obj = serde_json::Map::with_capacity(5);
+        let mut obj = serde_json::Map::with_capacity(9);
         obj.insert("component".into(), Value::String(self.component.clone()));
         obj.insert("path".into(), Value::String(self.path.clone()));
         if !self.params.is_empty() {
@@ -633,6 +815,29 @@ impl RouteChainEntry {
         }
         if self.keep_alive {
             obj.insert("keepAlive".into(), Value::Bool(true));
+        }
+        if !self.pending_component.is_empty() {
+            obj.insert(
+                "pendingComponent".into(),
+                Value::String(self.pending_component.clone()),
+            );
+        }
+        if !self.error_component.is_empty() {
+            obj.insert(
+                "errorComponent".into(),
+                Value::String(self.error_component.clone()),
+            );
+        }
+        if !self.invalidates.is_empty() {
+            obj.insert(
+                "invalidates".into(),
+                Value::Array(
+                    self.invalidates
+                        .iter()
+                        .map(|s| Value::String(s.clone()))
+                        .collect(),
+                ),
+            );
         }
         Value::Object(obj)
     }
@@ -705,6 +910,10 @@ pub fn collect_route_chain(
                                 exact: route_frag.exact,
                                 allowed_query: route_frag.allowed_query.clone(),
                                 keep_alive: route_frag.keep_alive,
+                                cache_tags: route_frag.cache_tags.clone(),
+                                invalidates: route_frag.invalidates.clone(),
+                                pending_component: route_frag.pending_component.clone(),
+                                error_component: route_frag.error_component.clone(),
                             });
 
                             let child_route_base = route_matcher::compute_route_base(
@@ -770,6 +979,10 @@ fn collect_chain_from_children(
                 exact: matched.exact,
                 allowed_query: matched.allowed_query.clone(),
                 keep_alive: matched.keep_alive,
+                cache_tags: matched.cache_tags.clone(),
+                invalidates: matched.invalidates.clone(),
+                pending_component: matched.pending_component.clone(),
+                error_component: matched.error_component.clone(),
             });
             if !matched.children.is_empty() {
                 let child_base =
@@ -1595,6 +1808,10 @@ mod tests {
             exact: true,
             allowed_query: "action,to,subject".into(),
             keep_alive: false,
+            cache_tags: Vec::new(),
+            invalidates: Vec::new(),
+            pending_component: String::new(),
+            error_component: String::new(),
         };
         let json = entry.to_json();
         assert_eq!(json["allowedQuery"], "action,to,subject");
@@ -1609,6 +1826,10 @@ mod tests {
             exact: true,
             allowed_query: String::new(),
             keep_alive: false,
+            cache_tags: Vec::new(),
+            invalidates: Vec::new(),
+            pending_component: String::new(),
+            error_component: String::new(),
         };
         let json = entry.to_json();
         assert!(
@@ -1728,5 +1949,251 @@ mod tests {
         let result = render_component_templates(&protocol, &["nonexistent-widget"], "");
         assert_eq!(result["templates"].as_array().unwrap().len(), 0);
         assert_eq!(result["templateStyles"].as_array().unwrap().len(), 0);
+    }
+
+    // ── resolve_tag_templates tests ──────────────────────────────────
+
+    #[test]
+    fn test_resolve_tag_templates_no_placeholders() {
+        let tags = vec!["inbox".to_string(), "counts".to_string()];
+        let params = HashMap::new();
+        let resolved = resolve_tag_templates(&tags, &params);
+        assert_eq!(resolved, vec!["inbox", "counts"]);
+    }
+
+    #[test]
+    fn test_resolve_tag_templates_with_params() {
+        let tags = vec!["thread:{threadId}".to_string(), "inbox".to_string()];
+        let mut params = HashMap::new();
+        params.insert("threadId".to_string(), "42".to_string());
+        let resolved = resolve_tag_templates(&tags, &params);
+        assert_eq!(resolved, vec!["thread:42", "inbox"]);
+    }
+
+    #[test]
+    fn test_resolve_tag_templates_multiple_params() {
+        let tags = vec!["folder:{folderId}:user:{userId}".to_string()];
+        let mut params = HashMap::new();
+        params.insert("folderId".to_string(), "drafts".to_string());
+        params.insert("userId".to_string(), "abc".to_string());
+        let resolved = resolve_tag_templates(&tags, &params);
+        assert_eq!(resolved, vec!["folder:drafts:user:abc"]);
+    }
+
+    #[test]
+    fn test_resolve_tag_templates_missing_param_left_unresolved() {
+        let tags = vec!["thread:{threadId}".to_string()];
+        let params = HashMap::new();
+        let resolved = resolve_tag_templates(&tags, &params);
+        assert_eq!(resolved, vec!["thread:{threadId}"]);
+    }
+
+    // ── Chain entry to_json with new fields ───────────────────────
+
+    #[test]
+    fn test_chain_entry_to_json_includes_new_fields() {
+        let entry = RouteChainEntry {
+            component: "mail-thread".into(),
+            path: "email/:threadId".into(),
+            params: {
+                let mut p = HashMap::new();
+                p.insert("threadId".to_string(), "42".to_string());
+                p
+            },
+            exact: true,
+            allowed_query: String::new(),
+            keep_alive: false,
+            cache_tags: vec!["thread:42".to_string()],
+            invalidates: vec!["inbox".to_string(), "counts".to_string()],
+            pending_component: "mail-skeleton".into(),
+            error_component: "error-page".into(),
+        };
+        let json = entry.to_json();
+        assert_eq!(json["pendingComponent"], "mail-skeleton");
+        assert_eq!(json["errorComponent"], "error-page");
+        let inv = json["invalidates"].as_array().unwrap();
+        assert_eq!(inv.len(), 2);
+        assert_eq!(inv[0], "inbox");
+        assert_eq!(inv[1], "counts");
+    }
+
+    #[test]
+    fn test_chain_entry_to_json_omits_empty_new_fields() {
+        let entry = RouteChainEntry {
+            component: "home-page".into(),
+            path: "/".into(),
+            params: HashMap::new(),
+            exact: true,
+            allowed_query: String::new(),
+            keep_alive: false,
+            cache_tags: Vec::new(),
+            invalidates: Vec::new(),
+            pending_component: String::new(),
+            error_component: String::new(),
+        };
+        let json = entry.to_json();
+        assert!(json.get("pendingComponent").is_none());
+        assert!(json.get("errorComponent").is_none());
+        assert!(json.get("invalidates").is_none());
+    }
+
+    // ── render_partial with cache tags ────────────────────────────
+
+    #[test]
+    fn test_render_partial_includes_resolved_cache_tags() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/".into(),
+                    fragment_id: "app-shell".into(),
+                    exact: false,
+                    children: vec![WebUiFragmentRoute {
+                        path: "email/:threadId".into(),
+                        fragment_id: "mail-thread".into(),
+                        exact: true,
+                        cache_tags: vec!["thread:{threadId}".to_string(), "inbox".to_string()],
+                        ..Default::default()
+                    }],
+                    cache_tags: vec!["folders".to_string()],
+                    ..Default::default()
+                })],
+            },
+        );
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+            },
+        );
+        fragments.insert(
+            "mail-thread".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Thread</p>")],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+
+        let partial = render_partial(
+            &protocol,
+            serde_json::json!({}),
+            "index.html",
+            "/email/42",
+            "",
+        );
+        let tags = partial["cacheTags"].as_array().unwrap();
+        let tag_strings: Vec<&str> = tags.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(
+            tag_strings.contains(&"folders"),
+            "should contain parent tags"
+        );
+        assert!(
+            tag_strings.contains(&"thread:42"),
+            "should resolve threadId param to 42"
+        );
+        assert!(tag_strings.contains(&"inbox"), "should contain static tags");
+    }
+
+    // ── render_action_response tests ─────────────────────────────
+
+    #[test]
+    fn test_render_action_response_returns_resolved_invalidation_tags() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/".into(),
+                    fragment_id: "app-shell".into(),
+                    exact: false,
+                    children: vec![WebUiFragmentRoute {
+                        path: "compose".into(),
+                        fragment_id: "compose-page".into(),
+                        exact: true,
+                        invalidates: vec![
+                            "inbox".to_string(),
+                            "sent".to_string(),
+                            "counts".to_string(),
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })],
+            },
+        );
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+            },
+        );
+        fragments.insert(
+            "compose-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Compose</p>")],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+
+        let result = render_action_response(
+            &protocol,
+            serde_json::json!({"ok": true}),
+            "index.html",
+            "/compose",
+        );
+
+        let tags = result["invalidateTags"].as_array().unwrap();
+        let tag_strings: Vec<&str> = tags.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(tag_strings, vec!["inbox", "sent", "counts"]);
+        assert_eq!(result["state"]["ok"], true);
+    }
+
+    #[test]
+    fn test_render_action_response_resolves_param_placeholders() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/".into(),
+                    fragment_id: "app-shell".into(),
+                    exact: false,
+                    children: vec![WebUiFragmentRoute {
+                        path: "email/:threadId/reply".into(),
+                        fragment_id: "reply-page".into(),
+                        exact: true,
+                        invalidates: vec!["thread:{threadId}".to_string(), "inbox".to_string()],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })],
+            },
+        );
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+            },
+        );
+        fragments.insert(
+            "reply-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Reply</p>")],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+
+        let result = render_action_response(
+            &protocol,
+            serde_json::json!({}),
+            "index.html",
+            "/email/42/reply",
+        );
+
+        let tags = result["invalidateTags"].as_array().unwrap();
+        let tag_strings: Vec<&str> = tags.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(tag_strings.contains(&"thread:42"));
+        assert!(tag_strings.contains(&"inbox"));
     }
 }
