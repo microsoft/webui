@@ -122,11 +122,13 @@ export function filterQuery(
   let paramAttrNames: Set<string> | undefined;
   if (routeParams) {
     paramAttrNames = new Set<string>();
-    for (const k in routeParams) paramAttrNames.add(toKebab(k));
+    for (const k in routeParams) {
+      if (Object.hasOwn(routeParams, k)) paramAttrNames.add(toKebab(k));
+    }
   }
   const result: Record<string, string> = {};
   for (const k in query) {
-    if (allowed.has(k) && !(paramAttrNames && paramAttrNames.has(toKebab(k)))) {
+    if (Object.hasOwn(query, k) && allowed.has(k) && !(paramAttrNames && paramAttrNames.has(toKebab(k)))) {
       result[k] = query[k];
     }
   }
@@ -226,6 +228,8 @@ interface CacheEntry {
   ts: number;
   /** Server-provided stale time override (ms), or undefined to use config default. */
   staleTime?: number;
+  /** True if this entry came from a speculative preload fetch. */
+  preload?: boolean;
 }
 
 /**
@@ -241,7 +245,7 @@ function applyParamsAndQuery(
   query?: Record<string, string>,
 ): void {
   for (const key in params) {
-    component.setAttribute(toKebab(key), params[key]);
+    if (Object.hasOwn(params, key)) component.setAttribute(toKebab(key), params[key]);
   }
 
   const allowed = routeAllowedQuery(routeEl);
@@ -258,9 +262,11 @@ function applyParamsAndQuery(
   const filtered = filterQuery(query, allowed, params);
   const newAttrs = new Set<string>();
   for (const key in filtered) {
-    const attr = toKebab(key);
-    component.setAttribute(attr, filtered[key]);
-    newAttrs.add(attr);
+    if (Object.hasOwn(filtered, key)) {
+      const attr = toKebab(key);
+      component.setAttribute(attr, filtered[key]);
+      newAttrs.add(attr);
+    }
   }
 
   const prevAttrs = queryAttrsMap.get(component);
@@ -342,6 +348,8 @@ export class WebUIRouter {
   private preloadGeneration = 0;
   /** Pending UI timer handle — cleared on commit or abort. */
   private pendingTimer: ReturnType<typeof setTimeout> | null = null;
+  /** AbortController for the in-flight mutation action. */
+  private actionController: AbortController | null = null;
 
   /** The component tag of the currently active leaf route. */
   get activeComponent(): string {
@@ -636,6 +644,8 @@ export class WebUIRouter {
     this.tagIndex.clear();
     this.preloadController?.abort();
     this.preloadController = null;
+    this.actionController?.abort();
+    this.actionController = null;
     if (this.pendingTimer) {
       clearTimeout(this.pendingTimer);
       this.pendingTimer = null;
@@ -655,8 +665,8 @@ export class WebUIRouter {
     const age = Date.now() - entry.ts;
     const staleTime = entry.staleTime ?? this.cacheConfig.staleTime;
 
-    // Use max of configured staleTime and preload TTL for speculative fetches
-    const effectiveStaleTime = Math.max(staleTime, WebUIRouter.PRELOAD_TTL);
+    // Preload entries get a minimum 5s freshness window; normal entries use staleTime as-is
+    const effectiveStaleTime = entry.preload ? Math.max(staleTime, WebUIRouter.PRELOAD_TTL) : staleTime;
     if (age > effectiveStaleTime) {
       return null; // Stale — let handleNavigation refetch
     }
@@ -668,9 +678,16 @@ export class WebUIRouter {
   }
 
   /** Store a partial response in the cache with its tags. */
-  private storeCacheEntry(requestPath: string, data: PartialResponse & { inventory?: string }): void {
+  private storeCacheEntry(
+    requestPath: string,
+    data: PartialResponse & { inventory?: string },
+    preload?: boolean,
+  ): void {
     const tags = data.cacheTags ?? [];
     const staleTime = data.cacheControl?.staleTime;
+
+    // Clean up old tag-index references before overwriting
+    this.evictCacheEntry(requestPath);
 
     // Evict LRU entries if at capacity
     while (this.cache.size >= this.cacheConfig.maxEntries) {
@@ -682,7 +699,7 @@ export class WebUIRouter {
       }
     }
 
-    this.cache.set(requestPath, { data, tags, ts: Date.now(), staleTime });
+    this.cache.set(requestPath, { data, tags, ts: Date.now(), staleTime, preload });
 
     // Build reverse tag index
     for (const tag of tags) {
@@ -767,10 +784,12 @@ export class WebUIRouter {
       const formData = new FormData(form);
       const params = getRouteParams(routeEl);
       const controller = new AbortController();
+      this.actionController = controller;
 
-      // Get the route's build-time invalidates from DOM attr
-      const routeInvalidates = routeEl.getAttribute('invalidates')
-        ?.split(',').map(s => s.trim()).filter(Boolean) ?? [];
+      // Get resolved invalidation tags from the active chain entry
+      // (not from DOM attr which has unresolved {param} templates)
+      const chainEntry = this.activeChain.find(e => e.component === componentTag);
+      const routeInvalidates = chainEntry?.invalidates ?? [];
 
       ctor.action({ formData, params, signal: controller.signal })
         .then((result: RouteActionResult | void) => {
@@ -826,38 +845,64 @@ export class WebUIRouter {
   }
 
   /**
-   * Find the pending component for a target route by reading SSR'd DOM.
-   * Looks at hidden `<webui-route>` stubs for a matching `pending` attribute.
+   * Find the pending component for a target route.
+   * Walks SSR'd `<webui-route>` stubs looking for ones whose path
+   * could match the target, preferring the deepest match.
    */
-  private findPendingComponent(_requestPath: string): string | null {
-    // Check the current active chain first (parent routes)
+  private findPendingComponent(requestPath: string): string | null {
+    // Check active chain (parent routes that already have metadata from partial)
     for (let i = this.activeChain.length - 1; i >= 0; i--) {
       if (this.activeChain[i].pendingComponent) {
         return this.activeChain[i].pendingComponent!;
       }
     }
-    // Walk all route elements in the DOM for a matching pending attr
-    for (const el of document.querySelectorAll(ROUTE_SELECTOR)) {
-      const pending = el.getAttribute('pending');
-      if (pending) return pending;
+    // Walk SSR'd route stubs scoped to the deepest active leaf's children
+    const leaf = this.activeChain[this.activeChain.length - 1];
+    if (leaf?.el) {
+      const compEl = leaf.el.querySelector(leaf.component);
+      if (compEl) {
+        const root = (compEl as HTMLElement).shadowRoot ?? compEl;
+        for (const el of root.querySelectorAll(ROUTE_SELECTOR)) {
+          const pending = el.getAttribute('pending');
+          if (pending) return pending;
+        }
+      }
     }
     return null;
   }
 
   /**
-   * Find the error component for a target route by reading SSR'd DOM.
+   * Find the error component for a target route.
+   * Same scoping strategy as findPendingComponent.
    */
-  private findErrorComponent(_requestPath: string): string | null {
+  private findErrorComponent(requestPath: string): string | null {
     for (let i = this.activeChain.length - 1; i >= 0; i--) {
       if (this.activeChain[i].errorComponent) {
         return this.activeChain[i].errorComponent!;
       }
     }
-    for (const el of document.querySelectorAll(ROUTE_SELECTOR)) {
-      const error = el.getAttribute('error');
-      if (error) return error;
+    const leaf = this.activeChain[this.activeChain.length - 1];
+    if (leaf?.el) {
+      const compEl = leaf.el.querySelector(leaf.component);
+      if (compEl) {
+        const root = (compEl as HTMLElement).shadowRoot ?? compEl;
+        for (const el of root.querySelectorAll(ROUTE_SELECTOR)) {
+          const error = el.getAttribute('error');
+          if (error) return error;
+        }
+      }
     }
     return null;
+  }
+
+  /** Remove any pending/error elements left over from a previous navigation. */
+  private clearPendingElements(): void {
+    for (const el of document.querySelectorAll('[data-webui-pending]')) {
+      el.remove();
+    }
+    for (const el of document.querySelectorAll('[data-webui-error]')) {
+      el.remove();
+    }
   }
 
   /**
@@ -938,6 +983,7 @@ export class WebUIRouter {
     }
 
     const errorEl = document.createElement(componentTag);
+    errorEl.setAttribute('data-webui-error', '');
     container.appendChild(errorEl);
     if (typeof (errorEl as any).setState === 'function') {
       (errorEl as any).setState(errorState);
@@ -983,8 +1029,8 @@ export class WebUIRouter {
       if (anchor.origin !== location.origin) return;
 
       // Build request path from anchor properties — no URL allocation needed.
-      const requestPath = stripBaseFromPathname(anchor.pathname, this.basePath)
-        + anchor.search || '/';
+      const stripped = stripBaseFromPathname(anchor.pathname, this.basePath);
+      const requestPath = (stripped + anchor.search) || '/';
 
       // Skip if already on this path or already cached for it
       if (requestPath === this.currentRequestPath) return;
@@ -1000,7 +1046,7 @@ export class WebUIRouter {
         .then(data => {
           // Only cache if this is still the latest preload request
           if (data && gen === this.preloadGeneration && !controller.signal.aborted) {
-            this.storeCacheEntry(requestPath, data);
+            this.storeCacheEntry(requestPath, data, true);
           }
         })
         .catch(() => {}); // Speculative — silently discard errors
@@ -1059,6 +1105,10 @@ export class WebUIRouter {
       }
     } else {
       this.clearSsrPreloads();
+      this.actionController?.abort();
+      this.actionController = null;
+      this.clearPendingElements();
+      this.gcCache();
       const thisGen = ++this.navGeneration;
 
       // Check unified cache for a fresh hit
@@ -1318,12 +1368,15 @@ export class WebUIRouter {
   private paramsEqual(a: Record<string, string>, b: Record<string, string>): boolean {
     let countA = 0;
     for (const key in a) {
-      if (a[key] !== b[key]) return false;
-      countA++;
+      if (Object.hasOwn(a, key)) {
+        if (a[key] !== b[key]) return false;
+        countA++;
+      }
     }
-    // Ensure b doesn't have extra keys
     let countB = 0;
-    for (const _ in b) countB++;
+    for (const key in b) {
+      if (Object.hasOwn(b, key)) countB++;
+    }
     return countA === countB;
   }
 

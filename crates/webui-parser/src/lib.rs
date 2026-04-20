@@ -1439,10 +1439,7 @@ impl HtmlParser {
         // Validate attributes (component is required)
         route_parser::validate_attributes(&attrs)?;
 
-        // Extract params from path template (validation only)
-        route_parser::extract_params(&path)?;
-
-        // Validate {param} placeholders in cache-tags and invalidates
+        // Extract params from path template and validate
         let route_params: std::collections::HashSet<String> =
             route_parser::extract_params(&path)?.into_iter().collect();
         if !attrs.cache_tags.is_empty() {
@@ -1546,9 +1543,8 @@ impl HtmlParser {
         };
 
         route_parser::validate_attributes(&attrs)?;
-        route_parser::extract_params(&path)?;
 
-        // Validate {param} placeholders in cache-tags and invalidates
+        // Extract params from path template and validate
         let route_params: std::collections::HashSet<String> =
             route_parser::extract_params(&path)?.into_iter().collect();
         if !attrs.cache_tags.is_empty() {

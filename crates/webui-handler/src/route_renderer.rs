@@ -8,7 +8,49 @@
 
 use crate::route_matcher;
 use crate::{ResponseWriter, Result};
-use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment};
+use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUiFragmentRoute};
+
+/// Write comma-separated items directly to the writer without allocating a joined string.
+fn write_comma_separated(writer: &mut dyn ResponseWriter, items: &[String]) -> Result<()> {
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            writer.write(",")?;
+        }
+        writer.write(item)?;
+    }
+    Ok(())
+}
+
+/// Write cache/invalidation/pending/error attributes for a route fragment.
+///
+/// Shared by `process_route`, `process_outlet` (matched child), and
+/// `process_outlet` (hidden siblings) to avoid divergence.
+pub(crate) fn write_route_cache_attrs(
+    writer: &mut dyn ResponseWriter,
+    route: &WebUiFragmentRoute,
+) -> Result<()> {
+    if !route.cache_tags.is_empty() {
+        writer.write(" cache-tags=\"")?;
+        write_comma_separated(writer, &route.cache_tags)?;
+        writer.write("\"")?;
+    }
+    if !route.invalidates.is_empty() {
+        writer.write(" invalidates=\"")?;
+        write_comma_separated(writer, &route.invalidates)?;
+        writer.write("\"")?;
+    }
+    if !route.pending_component.is_empty() {
+        writer.write(" pending=\"")?;
+        writer.write(&route.pending_component)?;
+        writer.write("\"")?;
+    }
+    if !route.error_component.is_empty() {
+        writer.write(" error=\"")?;
+        writer.write(&route.error_component)?;
+        writer.write("\"")?;
+    }
+    Ok(())
+}
 
 /// Escape HTML special characters in an attribute value and write directly to the writer.
 ///

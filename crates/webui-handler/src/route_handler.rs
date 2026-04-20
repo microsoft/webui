@@ -543,29 +543,28 @@ fn resolve_tag_templates(templates: &[String], params: &HashMap<String, String>)
             continue;
         }
         let mut result = String::with_capacity(template.len());
-        let bytes = template.as_bytes();
-        let len = bytes.len();
-        let mut i = 0;
-        while i < len {
-            if bytes[i] == b'{' {
+        let mut chars = template.char_indices().peekable();
+        while let Some((i, ch)) = chars.next() {
+            if ch == '{' {
                 if let Some(end) = template[i + 1..].find('}') {
                     let name = &template[i + 1..i + 1 + end];
                     if let Some(value) = params.get(name) {
                         result.push_str(value);
                     } else {
-                        // Leave unresolved — defensive
                         result.push('{');
                         result.push_str(name);
                         result.push('}');
                     }
-                    i = i + 1 + end + 1;
+                    // Skip past the closing '}'
+                    let skip_to = i + 1 + end + 1;
+                    while chars.peek().is_some_and(|(idx, _)| *idx < skip_to) {
+                        chars.next();
+                    }
                 } else {
                     result.push('{');
-                    i += 1;
                 }
             } else {
-                result.push(bytes[i] as char);
-                i += 1;
+                result.push(ch);
             }
         }
         resolved.push(result);

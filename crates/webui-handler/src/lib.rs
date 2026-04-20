@@ -392,26 +392,7 @@ impl WebUIHandler {
                 if matched_child.keep_alive {
                     context.writer.write(" keep-alive")?;
                 }
-                if !matched_child.cache_tags.is_empty() {
-                    context.writer.write(" cache-tags=\"")?;
-                    context.writer.write(&matched_child.cache_tags.join(","))?;
-                    context.writer.write("\"")?;
-                }
-                if !matched_child.invalidates.is_empty() {
-                    context.writer.write(" invalidates=\"")?;
-                    context.writer.write(&matched_child.invalidates.join(","))?;
-                    context.writer.write("\"")?;
-                }
-                if !matched_child.pending_component.is_empty() {
-                    context.writer.write(" pending=\"")?;
-                    context.writer.write(&matched_child.pending_component)?;
-                    context.writer.write("\"")?;
-                }
-                if !matched_child.error_component.is_empty() {
-                    context.writer.write(" error=\"")?;
-                    context.writer.write(&matched_child.error_component)?;
-                    context.writer.write("\"")?;
-                }
+                route_renderer::write_route_cache_attrs(context.writer, matched_child)?;
                 context.writer.write(" active>")?;
 
                 context.writer.write("<")?;
@@ -462,26 +443,7 @@ impl WebUIHandler {
                 if child.keep_alive {
                     context.writer.write(" keep-alive")?;
                 }
-                if !child.cache_tags.is_empty() {
-                    context.writer.write(" cache-tags=\"")?;
-                    context.writer.write(&child.cache_tags.join(","))?;
-                    context.writer.write("\"")?;
-                }
-                if !child.invalidates.is_empty() {
-                    context.writer.write(" invalidates=\"")?;
-                    context.writer.write(&child.invalidates.join(","))?;
-                    context.writer.write("\"")?;
-                }
-                if !child.pending_component.is_empty() {
-                    context.writer.write(" pending=\"")?;
-                    context.writer.write(&child.pending_component)?;
-                    context.writer.write("\"")?;
-                }
-                if !child.error_component.is_empty() {
-                    context.writer.write(" error=\"")?;
-                    context.writer.write(&child.error_component)?;
-                    context.writer.write("\"")?;
-                }
+                route_renderer::write_route_cache_attrs(context.writer, child)?;
                 context
                     .writer
                     .write(" style=\"display:none\"></webui-route>")?;
@@ -558,26 +520,7 @@ impl WebUIHandler {
         if route_frag.keep_alive {
             context.writer.write(" keep-alive")?;
         }
-        if !route_frag.cache_tags.is_empty() {
-            context.writer.write(" cache-tags=\"")?;
-            context.writer.write(&route_frag.cache_tags.join(","))?;
-            context.writer.write("\"")?;
-        }
-        if !route_frag.invalidates.is_empty() {
-            context.writer.write(" invalidates=\"")?;
-            context.writer.write(&route_frag.invalidates.join(","))?;
-            context.writer.write("\"")?;
-        }
-        if !route_frag.pending_component.is_empty() {
-            context.writer.write(" pending=\"")?;
-            context.writer.write(&route_frag.pending_component)?;
-            context.writer.write("\"")?;
-        }
-        if !route_frag.error_component.is_empty() {
-            context.writer.write(" error=\"")?;
-            context.writer.write(&route_frag.error_component)?;
-            context.writer.write("\"")?;
-        }
+        route_renderer::write_route_cache_attrs(context.writer, route_frag)?;
 
         if is_matched {
             context.writer.write(" active>")?;

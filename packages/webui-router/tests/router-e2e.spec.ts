@@ -20,7 +20,7 @@ test.describe('SSR deep links', () => {
   test('root page renders shell with nav links', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('h1')).toContainText('Router Test');
-    await expect(page.locator('nav a')).toHaveCount(8);
+    await expect(page.locator('nav a')).toHaveCount(10);
   });
 
   test('alpha page renders via SSR', async ({ page }) => {
@@ -394,7 +394,7 @@ test.describe('keep-alive state preservation', () => {
 
     // Navigate away to alpha
     await page.click('a[href="/alpha"]');
-    await expect(page.locator('h2')).toContainText('Alpha Page');
+    await expect(page.locator('page-alpha h2')).toContainText('Alpha Page');
 
     // Navigate back to keep-alive page
     await page.click('a[href="/keepalive"]');
