@@ -15,7 +15,7 @@
  */
 
 import { buildNavigationTarget, prependBasePath, stripBaseFromPathname } from './navigation-path.js';
-import type { RouterConfig, NavigationEvent } from './types.js';
+import type { RouterConfig, NavigationEvent, CacheConfig, RouteActionContext, RouteActionResult, ActionCompleteEvent } from './types.js';
 import type { NavigationTarget } from './navigation-path.js';
 
 const ROUTE_SELECTOR = 'webui-route';
@@ -181,6 +181,12 @@ interface RouteChainEntry {
   allowedQuery?: string;
   /** When true, the component is preserved across navigations instead of re-created. */
   keepAlive?: boolean;
+  /** Component tag for pending/loading UI. */
+  pendingComponent?: string;
+  /** Component tag for error boundary UI. */
+  errorComponent?: string;
+  /** Invalidation tags from the build-time proto (already resolved with params). */
+  invalidates?: string[];
 }
 
 /** Static route manifest entry — built once at startup from <webui-route> tree. */
@@ -204,6 +210,22 @@ interface PartialResponse {
   chain?: RouteChainEntry[];
   /** CSS stylesheet URLs to inject into `<head>` for this route's components. */
   css?: string[];
+  /** Resolved cache tags for this route chain (union of all levels). */
+  cacheTags?: string[];
+  /** Server-provided cache control overrides. */
+  cacheControl?: { staleTime?: number };
+}
+
+/** A single entry in the navigation cache. */
+interface CacheEntry {
+  /** The full partial response data. */
+  data: PartialResponse & { inventory?: string };
+  /** Cache tags associated with this entry (from server response). */
+  tags: string[];
+  /** Timestamp when this entry was stored. */
+  ts: number;
+  /** Server-provided stale time override (ms), or undefined to use config default. */
+  staleTime?: number;
 }
 
 /**
@@ -308,12 +330,18 @@ export class WebUIRouter {
   private loaderHeaderCache = '';
   /** Cached current request path — updated on every navigation. Avoids URL allocation in hot paths. */
   private currentRequestPath = '/';
-  /** Cached preload result from a speculative hover fetch. */
-  private preloadCache: { path: string; data: PartialResponse & { inventory?: string }; ts: number } | null = null;
+  /** Tagged navigation cache — keyed by requestPath. */
+  private cache = new Map<string, CacheEntry>();
+  /** Reverse index: tag → set of cache keys. Enables O(1) tag invalidation. */
+  private tagIndex = new Map<string, Set<string>>();
+  /** Cache configuration (staleTime/gcTime/maxEntries). */
+  private cacheConfig: Required<CacheConfig> = { staleTime: 0, gcTime: 300_000, maxEntries: 50 };
   /** AbortController for the in-flight preload fetch. */
   private preloadController: AbortController | null = null;
   /** Monotonic preload generation — prevents stale hover fetches from overwriting the cache. */
   private preloadGeneration = 0;
+  /** Pending UI timer handle — cleared on commit or abort. */
+  private pendingTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** The component tag of the currently active leaf route. */
   get activeComponent(): string {
@@ -334,6 +362,14 @@ export class WebUIRouter {
     this.config = config;
     this.loaders = config.loaders ?? {};
     this.basePath = config.basePath ?? '';
+
+    if (config.cache) {
+      this.cacheConfig = {
+        staleTime: config.cache.staleTime ?? 0,
+        gcTime: config.cache.gcTime ?? 300_000,
+        maxEntries: config.cache.maxEntries ?? 50,
+      };
+    }
 
     if (!customElements.get(ROUTE_SELECTOR)) {
       customElements.define(ROUTE_SELECTOR, WebUIRouteElement);
@@ -373,6 +409,8 @@ export class WebUIRouter {
       this.setupPreloadListeners();
     }
 
+    this.setupFormInterception();
+
     this.handleNavigation(this.currentTarget());
   }
 
@@ -385,6 +423,38 @@ export class WebUIRouter {
   /** Navigate back. */
   back(): void {
     window.navigation.back();
+  }
+
+  /**
+   * Invalidate all cache entries whose tags overlap with the given tags.
+   * Use after mutations to ensure stale data is evicted.
+   */
+  invalidateTags(tags: string[]): void {
+    if (tags.length === 0) return;
+    const pathsToEvict = new Set<string>();
+    for (const tag of tags) {
+      const paths = this.tagIndex.get(tag);
+      if (paths) {
+        for (const path of paths) pathsToEvict.add(path);
+      }
+    }
+    for (const path of pathsToEvict) {
+      this.evictCacheEntry(path);
+    }
+  }
+
+  /**
+   * Invalidate cache entries by path, or all entries if no path is given.
+   * Escape hatch for cases where tag-based invalidation isn't sufficient.
+   */
+  invalidate(path?: string): void {
+    if (path) {
+      this.evictCacheEntry(path);
+    } else {
+      for (const key of [...this.cache.keys()]) {
+        this.evictCacheEntry(key);
+      }
+    }
   }
 
   /** In-flight ensureLoaded promises — deduplicates concurrent requests. */
@@ -562,15 +632,317 @@ export class WebUIRouter {
     this.loaderComponents.clear();
     this.loaderHeaderCache = '';
     this.currentRequestPath = '/';
-    this.preloadCache = null;
+    this.cache.clear();
+    this.tagIndex.clear();
     this.preloadController?.abort();
     this.preloadController = null;
+    if (this.pendingTimer) {
+      clearTimeout(this.pendingTimer);
+      this.pendingTimer = null;
+    }
   }
 
-  // ── Preload on hover ──────────────────────────────────────────
+  // ── Navigation Cache ──────────────────────────────────────────
 
   /** Maximum age (ms) for a preloaded partial before it's considered stale. */
   private static readonly PRELOAD_TTL = 5_000;
+
+  /** Look up a cache entry. Returns null if missing or stale. */
+  private lookupCache(requestPath: string): (PartialResponse & { inventory?: string }) | null {
+    const entry = this.cache.get(requestPath);
+    if (!entry) return null;
+
+    const age = Date.now() - entry.ts;
+    const staleTime = entry.staleTime ?? this.cacheConfig.staleTime;
+
+    // Use max of configured staleTime and preload TTL for speculative fetches
+    const effectiveStaleTime = Math.max(staleTime, WebUIRouter.PRELOAD_TTL);
+    if (age > effectiveStaleTime) {
+      return null; // Stale — let handleNavigation refetch
+    }
+
+    // LRU: delete + reinsert to move to end (most recently used)
+    this.cache.delete(requestPath);
+    this.cache.set(requestPath, entry);
+    return entry.data;
+  }
+
+  /** Store a partial response in the cache with its tags. */
+  private storeCacheEntry(requestPath: string, data: PartialResponse & { inventory?: string }): void {
+    const tags = data.cacheTags ?? [];
+    const staleTime = data.cacheControl?.staleTime;
+
+    // Evict LRU entries if at capacity
+    while (this.cache.size >= this.cacheConfig.maxEntries) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest !== undefined) {
+        this.evictCacheEntry(oldest);
+      } else {
+        break;
+      }
+    }
+
+    this.cache.set(requestPath, { data, tags, ts: Date.now(), staleTime });
+
+    // Build reverse tag index
+    for (const tag of tags) {
+      let paths = this.tagIndex.get(tag);
+      if (!paths) {
+        paths = new Set();
+        this.tagIndex.set(tag, paths);
+      }
+      paths.add(requestPath);
+    }
+  }
+
+  /** Evict a single cache entry and clean up its tag index references. */
+  private evictCacheEntry(requestPath: string): void {
+    const entry = this.cache.get(requestPath);
+    if (!entry) return;
+    this.cache.delete(requestPath);
+    for (const tag of entry.tags) {
+      const paths = this.tagIndex.get(tag);
+      if (paths) {
+        paths.delete(requestPath);
+        if (paths.size === 0) this.tagIndex.delete(tag);
+      }
+    }
+  }
+
+  /** Run GC: evict entries older than gcTime. */
+  private gcCache(): void {
+    const now = Date.now();
+    const gcTime = this.cacheConfig.gcTime;
+    for (const [path, entry] of this.cache) {
+      if (now - entry.ts > gcTime) {
+        this.evictCacheEntry(path);
+      }
+    }
+  }
+
+  // ── Form Interception (Mutation Actions) ──────────────────────
+
+  /**
+   * Set up delegated form submission interception.
+   * Intercepts `<form method="post">` submissions, finds the nearest
+   * route component's `static action()`, and auto-invalidates cache.
+   */
+  private setupFormInterception(): void {
+    const onSubmit = (e: SubmitEvent): void => {
+      // Walk composedPath to find the form — works across shadow boundaries
+      const path = e.composedPath();
+      let form: HTMLFormElement | undefined;
+      for (let i = 0; i < path.length; i++) {
+        const el = path[i] as Element;
+        if (el?.tagName === 'FORM' && (el as HTMLFormElement).method?.toLowerCase() === 'post') {
+          form = el as HTMLFormElement;
+          break;
+        }
+      }
+      if (!form) return;
+
+      // Find the nearest ancestor <webui-route> with a component
+      let routeEl: HTMLElement | null = null;
+      for (let i = 0; i < path.length; i++) {
+        const el = path[i] as Element;
+        if (el?.tagName === 'WEBUI-ROUTE' && el.getAttribute('component')) {
+          routeEl = el as HTMLElement;
+          break;
+        }
+      }
+      if (!routeEl) return;
+
+      const componentTag = routeEl.getAttribute('component');
+      if (!componentTag) return;
+
+      // Check if the component has a static action() method
+      const ctor = customElements.get(componentTag) as (
+        (new () => HTMLElement) & { action?: (ctx: RouteActionContext) => Promise<RouteActionResult | void> }
+      ) | undefined;
+      if (!ctor || typeof ctor.action !== 'function') return;
+
+      // Prevent default form submission
+      e.preventDefault();
+
+      const formData = new FormData(form);
+      const params = getRouteParams(routeEl);
+      const controller = new AbortController();
+
+      // Get the route's build-time invalidates from DOM attr
+      const routeInvalidates = routeEl.getAttribute('invalidates')
+        ?.split(',').map(s => s.trim()).filter(Boolean) ?? [];
+
+      ctor.action({ formData, params, signal: controller.signal })
+        .then((result: RouteActionResult | void) => {
+          if (controller.signal.aborted) return;
+
+          // Apply optimistic state if provided
+          if (result?.state) {
+            const compEl = routeEl!.querySelector(componentTag!) as any;
+            if (compEl && typeof compEl.setState === 'function') {
+              compEl.setState(result.state);
+            }
+          }
+
+          // Merge action-returned tags with route's build-time invalidates
+          const allTags = new Set<string>();
+          for (const tag of routeInvalidates) allTags.add(tag);
+          if (result?.invalidateTags) {
+            for (const tag of result.invalidateTags) allTags.add(tag);
+          }
+          const mergedTags = [...allTags];
+
+          // Invalidate cache
+          if (mergedTags.length > 0) {
+            this.invalidateTags(mergedTags);
+          }
+
+          // Dispatch completion event
+          const detail: ActionCompleteEvent = {
+            component: componentTag!,
+            invalidatedTags: mergedTags,
+            path: this.currentRequestPath,
+          };
+          window.dispatchEvent(new CustomEvent('webui:route:action-complete', { detail }));
+        })
+        .catch((err: unknown) => {
+          if (err instanceof DOMException && err.name === 'AbortError') return;
+          console.error(`[Router] Action failed for <${componentTag}>:`, err);
+        });
+    };
+
+    document.addEventListener('submit', onSubmit);
+    this.cleanupFns.push(() => document.removeEventListener('submit', onSubmit));
+  }
+
+  // ── Pending UI ────────────────────────────────────────────────
+
+  /** Clear the pending UI timer. */
+  private clearPendingTimer(): void {
+    if (this.pendingTimer) {
+      clearTimeout(this.pendingTimer);
+      this.pendingTimer = null;
+    }
+  }
+
+  /**
+   * Find the pending component for a target route by reading SSR'd DOM.
+   * Looks at hidden `<webui-route>` stubs for a matching `pending` attribute.
+   */
+  private findPendingComponent(_requestPath: string): string | null {
+    // Check the current active chain first (parent routes)
+    for (let i = this.activeChain.length - 1; i >= 0; i--) {
+      if (this.activeChain[i].pendingComponent) {
+        return this.activeChain[i].pendingComponent!;
+      }
+    }
+    // Walk all route elements in the DOM for a matching pending attr
+    for (const el of document.querySelectorAll(ROUTE_SELECTOR)) {
+      const pending = el.getAttribute('pending');
+      if (pending) return pending;
+    }
+    return null;
+  }
+
+  /**
+   * Find the error component for a target route by reading SSR'd DOM.
+   */
+  private findErrorComponent(_requestPath: string): string | null {
+    for (let i = this.activeChain.length - 1; i >= 0; i--) {
+      if (this.activeChain[i].errorComponent) {
+        return this.activeChain[i].errorComponent!;
+      }
+    }
+    for (const el of document.querySelectorAll(ROUTE_SELECTOR)) {
+      const error = el.getAttribute('error');
+      if (error) return error;
+    }
+    return null;
+  }
+
+  /**
+   * Find the target route's `<webui-route>` element in the DOM.
+   * Searches hidden stubs for a route matching the component tag.
+   */
+  private findTargetRouteElement(componentTag: string): HTMLElement | null {
+    // Search SSR'd route stubs for the target component
+    for (const el of document.querySelectorAll(ROUTE_SELECTOR)) {
+      if (el.getAttribute('component') === componentTag) {
+        return el as HTMLElement;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Mount a pending/loading component in the outlet area.
+   * Finds the target route's parent (deepest active leaf) and appends
+   * the pending component in its outlet container.
+   */
+  private mountPendingComponent(componentTag: string): void {
+    // Find the deepest active route's component, then look for the
+    // outlet area to mount the pending component.
+    const leaf = this.activeChain[this.activeChain.length - 1];
+    if (!leaf?.el) return;
+
+    // Don't show pending for keep-alive routes (they activate instantly)
+    if (leaf.keepAlive) return;
+
+    const existing = leaf.el.querySelector(componentTag);
+    if (existing) return; // Already showing
+
+    // Mount inside the leaf's component's outlet area (where child routes go)
+    const compEl = leaf.el.querySelector(leaf.component);
+    if (!compEl) return;
+
+    const root = (compEl as HTMLElement).shadowRoot ?? compEl;
+
+    // Find existing sibling route elements or an outlet marker
+    const siblingRoutes = root.querySelectorAll(ROUTE_SELECTOR);
+    const container = siblingRoutes.length > 0
+      ? siblingRoutes[siblingRoutes.length - 1].parentElement
+      : (root.querySelector('outlet')?.parentElement ?? root);
+    if (!container) return;
+
+    const pending = document.createElement(componentTag);
+    pending.setAttribute('data-webui-pending', '');
+    container.appendChild(pending);
+  }
+
+  /**
+   * Mount an error boundary component in the outlet area.
+   * Passes error details as state.
+   */
+  private mountErrorComponent(
+    componentTag: string,
+    errorState: { error: string; status: number; path: string },
+  ): void {
+    const leaf = this.activeChain[this.activeChain.length - 1];
+    if (!leaf?.el) return;
+
+    const compEl = leaf.el.querySelector(leaf.component);
+    if (!compEl) return;
+
+    const root = (compEl as HTMLElement).shadowRoot ?? compEl;
+
+    // Find existing sibling route elements or an outlet marker
+    const siblingRoutes = root.querySelectorAll(ROUTE_SELECTOR);
+    const container = siblingRoutes.length > 0
+      ? siblingRoutes[siblingRoutes.length - 1].parentElement
+      : (root.querySelector('outlet')?.parentElement ?? root);
+    if (!container) return;
+
+    // Hide all existing route children
+    for (const child of container.querySelectorAll(ROUTE_SELECTOR)) {
+      (child as HTMLElement).style.display = 'none';
+    }
+
+    const errorEl = document.createElement(componentTag);
+    container.appendChild(errorEl);
+    if (typeof (errorEl as any).setState === 'function') {
+      (errorEl as any).setState(errorState);
+    }
+  }
 
   /**
    * Register a delegated `pointerover` listener that speculatively fetches
@@ -582,7 +954,7 @@ export class WebUIRouter {
    * at the document level. `pointermove` fires on every position change,
    * giving us reliable detection across all shadow DOM boundaries.
    *
-   * The handler is naturally debounced: the `preloadCache` path check
+   * The handler is naturally debounced: the cache lookup
    * ensures we only fetch once per unique link, and the early returns
    * for non-anchor targets keep the hot path fast (one `composedPath()`
    * walk that exits immediately when no `<a>` is found).
@@ -616,7 +988,7 @@ export class WebUIRouter {
 
       // Skip if already on this path or already cached for it
       if (requestPath === this.currentRequestPath) return;
-      if (this.preloadCache?.path === requestPath) return;
+      if (this.cache.has(requestPath)) return;
 
       // Abort any in-flight speculative fetch and start a new one
       this.preloadController?.abort();
@@ -628,7 +1000,7 @@ export class WebUIRouter {
         .then(data => {
           // Only cache if this is still the latest preload request
           if (data && gen === this.preloadGeneration && !controller.signal.aborted) {
-            this.preloadCache = { path: requestPath, data, ts: Date.now() };
+            this.storeCacheEntry(requestPath, data);
           }
         })
         .catch(() => {}); // Speculative — silently discard errors
@@ -689,21 +1061,50 @@ export class WebUIRouter {
       this.clearSsrPreloads();
       const thisGen = ++this.navGeneration;
 
-      // Use preloaded data if we have a fresh cache hit for this path
+      // Check unified cache for a fresh hit
       let partialData: (PartialResponse & { inventory?: string }) | null = null;
-      const cached = this.preloadCache;
-      if (cached && cached.path === requestPath &&
-          Date.now() - cached.ts < WebUIRouter.PRELOAD_TTL) {
-        partialData = cached.data;
-        this.preloadCache = null;
+      const cached = this.lookupCache(requestPath);
+      if (cached) {
+        partialData = cached;
       } else {
         // Cancel any in-flight speculative fetch — we're doing a real navigation
         this.preloadController?.abort();
-        this.preloadCache = null;
+
+        // Pending UI: start a timer. If the fetch takes longer than 150ms,
+        // mount the pending component (if the target route declares one).
+        const pendingTag = this.findPendingComponent(requestPath);
+        if (pendingTag) {
+          this.pendingTimer = setTimeout(() => {
+            this.mountPendingComponent(pendingTag);
+          }, 150);
+        }
+
         partialData = await this.fetchPartial(requestPath, signal);
+        this.clearPendingTimer();
+
+        // Error boundary: if fetch returned null (HTTP error), mount error component
+        if (!partialData && !signal?.aborted && thisGen === this.navGeneration) {
+          const errorTag = this.findErrorComponent(requestPath);
+          if (errorTag) {
+            this.mountErrorComponent(errorTag, {
+              error: 'Navigation failed',
+              status: 0,
+              path: requestPath,
+            });
+            return;
+          }
+          console.warn('[Router] Navigation fetch failed for:', requestPath);
+          return;
+        }
       }
 
       if (!partialData || signal?.aborted || thisGen !== this.navGeneration) return;
+
+      // Store in cache with tags
+      if (!cached) {
+        this.storeCacheEntry(requestPath, partialData);
+      }
+
       await this.commitWithData(partialData, requestPath, query, signal, thisGen);
     }
 
@@ -846,6 +1247,9 @@ export class WebUIRouter {
         el: activeEl,
         allowedQuery: activeEl.getAttribute('query') ?? undefined,
         keepAlive: activeEl.hasAttribute('keep-alive'),
+        pendingComponent: activeEl.getAttribute('pending') ?? undefined,
+        errorComponent: activeEl.getAttribute('error') ?? undefined,
+        invalidates: activeEl.getAttribute('invalidates')?.split(',').map(s => s.trim()).filter(Boolean) ?? undefined,
       });
       activateRoute(activeEl, params);
 
@@ -1206,6 +1610,9 @@ export class WebUIRouter {
       exact: e.exact,
       allowedQuery: e.allowedQuery,
       keepAlive: e.keepAlive,
+      pendingComponent: e.pendingComponent,
+      errorComponent: e.errorComponent,
+      invalidates: e.invalidates,
     }));
 
     if (newChain.length === 0) {

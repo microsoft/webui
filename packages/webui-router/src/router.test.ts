@@ -705,31 +705,31 @@ describe('WebUIRouter', () => {
       const priv = router as any;
 
       const cachedData = { state: { msg: 'preloaded' }, templates: [], path: '/about', chain: [{ component: 'about-page', path: '/about', params: {} }] };
-      priv.preloadCache = { path: '/about', data: cachedData, ts: Date.now() };
+      // Store in unified cache via storeCacheEntry
+      priv.storeCacheEntry('/about', cachedData);
 
-      // handleNavigation reads from preloadCache via requestPath matching
-      // Verify the cache structure is correct
-      assert.equal(priv.preloadCache.path, '/about');
-      assert.deepEqual(priv.preloadCache.data.state, { msg: 'preloaded' });
+      // Verify the cache entry exists
+      const entry = priv.cache.get('/about');
+      assert.ok(entry, 'cache should have entry for /about');
+      assert.deepEqual(entry.data.state, { msg: 'preloaded' });
 
-      // Simulate consumption by clearing
-      const consumed = priv.preloadCache;
-      priv.preloadCache = null;
-      assert.equal(priv.preloadCache, null, 'cache should be cleared after consumption');
-      assert.deepEqual(consumed.data.state, { msg: 'preloaded' });
+      // Simulate consumption by lookupCache + evict
+      const consumed = priv.lookupCache('/about');
+      assert.deepEqual(consumed.state, { msg: 'preloaded' });
+      priv.evictCacheEntry('/about');
+      assert.equal(priv.cache.size, 0, 'cache should be empty after eviction');
     });
 
     test('stale preload cache (>TTL) is not consumed', () => {
       const router = new WebUIRouter();
       const priv = router as any;
 
-      // Cache entry that is 10 seconds old
-      const staleTs = Date.now() - 10_000;
-      priv.preloadCache = { path: '/about', data: { state: {} }, ts: staleTs };
+      // Cache entry that is 10 seconds old — stored directly for test
+      priv.cache.set('/about', { data: { state: {} }, tags: [], ts: Date.now() - 10_000 });
 
-      // The TTL check: Date.now() - ts < PRELOAD_TTL (5000ms)
-      const isFresh = Date.now() - priv.preloadCache.ts < 5_000;
-      assert.ok(!isFresh, 'cache older than 5s should be considered stale');
+      // lookupCache should return null for stale entries
+      const result = priv.lookupCache('/about');
+      assert.equal(result, null, 'cache older than TTL should be considered stale');
     });
 
     test('preload generation guard prevents stale cache writes', async () => {
@@ -752,13 +752,14 @@ describe('WebUIRouter', () => {
       const router = new WebUIRouter();
       const priv = router as any;
 
-      priv.preloadCache = { path: '/test', data: {}, ts: Date.now() };
+      // Store an entry in the unified cache
+      priv.cache.set('/test', { data: {}, tags: [], ts: Date.now() });
       priv.preloadController = new AbortController();
       priv.preloadGeneration = 5;
 
       router.destroy();
 
-      assert.equal(priv.preloadCache, null, 'cache should be cleared');
+      assert.equal(priv.cache.size, 0, 'cache should be cleared');
       assert.equal(priv.preloadController, null, 'controller should be cleared');
     });
 
@@ -784,18 +785,18 @@ describe('WebUIRouter', () => {
       }
     });
 
-    test('handleNavigation source checks preloadCache before fetchPartial', () => {
+    test('handleNavigation source checks cache before fetchPartial', () => {
       const router = new WebUIRouter();
       const source = (router as any).handleNavigation.toString() as string;
 
-      const cacheIdx = source.indexOf('preloadCache');
+      const cacheIdx = source.indexOf('lookupCache');
       const fetchIdx = source.indexOf('fetchPartial');
 
-      assert.ok(cacheIdx > -1, 'handleNavigation should reference preloadCache');
+      assert.ok(cacheIdx > -1, 'handleNavigation should reference lookupCache');
       assert.ok(fetchIdx > -1, 'handleNavigation should reference fetchPartial');
       assert.ok(
         cacheIdx < fetchIdx,
-        'preloadCache check should come before fetchPartial call',
+        'lookupCache check should come before fetchPartial call',
       );
     });
   });

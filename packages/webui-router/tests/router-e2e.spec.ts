@@ -450,3 +450,120 @@ test.describe('route loaders', () => {
     expect(typeof hasLoaderHeader === 'string' || hasLoaderHeader === undefined).toBeTruthy();
   });
 });
+
+test.describe('pending UI', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    }, null);
+    await page.waitForFunction(
+      () => !!(window as any).navigation,
+      null,
+      { timeout: 5000 },
+    );
+    await page.waitForTimeout(300);
+  });
+
+  test('shows pending skeleton during slow navigation then replaces with real content', async ({ page }) => {
+    // Intercept the partial JSON fetch for /slow and delay it by 500ms
+    await page.route('**/slow', async (route) => {
+      const request = route.request();
+      if (request.headers()['accept']?.includes('application/json')) {
+        // Delay the response to trigger pending UI (threshold is 150ms)
+        await new Promise(r => setTimeout(r, 500));
+        await route.continue();
+      } else {
+        await route.continue();
+      }
+    });
+
+    // Navigate to the slow page
+    await page.click('a[href="/slow"]');
+
+    // The loading skeleton element should appear after ~150ms
+    await expect(page.locator('loading-skeleton')).toBeVisible({ timeout: 3000 });
+
+    // After the fetch completes (~500ms), real content should replace the skeleton
+    await expect(page.locator('[data-testid="page-slow"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('h2')).toContainText('Slow Page');
+  });
+
+  test('skips pending for fast navigations', async ({ page }) => {
+    // No fetch delay — navigation should be fast enough to skip pending
+    let skeletonSeen = false;
+
+    // Monitor for the skeleton element
+    page.on('console', (msg) => {
+      if (msg.text().includes('skeleton-mounted')) skeletonSeen = true;
+    });
+
+    await page.evaluate(() => {
+      const observer = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          for (const node of m.addedNodes) {
+            if ((node as Element)?.tagName === 'LOADING-SKELETON') {
+              console.log('skeleton-mounted');
+            }
+          }
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    });
+
+    await page.click('a[href="/slow"]');
+    await expect(page.locator('[data-testid="page-slow"]')).toBeVisible({ timeout: 5000 });
+
+    // The skeleton should NOT have appeared for a fast navigation
+    expect(skeletonSeen).toBe(false);
+  });
+});
+
+test.describe('error boundaries', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    }, null);
+    await page.waitForFunction(
+      () => !!(window as any).navigation,
+      null,
+      { timeout: 5000 },
+    );
+    await page.waitForTimeout(300);
+  });
+
+  test('shows error component when navigation fetch fails', async ({ page }) => {
+    // Intercept the partial JSON fetch for /failing and return a 500 error
+    await page.route('**/failing', async (route) => {
+      const request = route.request();
+      if (request.headers()['accept']?.includes('application/json')) {
+        await route.fulfill({
+          status: 500,
+          contentType: 'text/plain',
+          body: 'Internal Server Error',
+        });
+      } else {
+        await route.continue();
+      }
+    });
+
+    // Navigate to the failing page
+    await page.click('a[href="/failing"]');
+
+    // The error display element should be mounted
+    await expect(page.locator('error-display')).toBeVisible({ timeout: 5000 });
+  });
+
+  test('error component does not appear for successful navigations', async ({ page }) => {
+    // Normal navigation to alpha — no error should appear
+    await page.click('a[href="/alpha"]');
+    await expect(page.locator('h2')).toContainText('Alpha Page');
+
+    // Error display should not be in the DOM
+    const errorCount = await page.locator('[data-testid="error-display"]').count();
+    expect(errorCount).toBe(0);
+  });
+});
