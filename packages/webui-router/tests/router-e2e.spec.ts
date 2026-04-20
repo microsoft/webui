@@ -20,7 +20,7 @@ test.describe('SSR deep links', () => {
   test('root page renders shell with nav links', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('h1')).toContainText('Router Test');
-    await expect(page.locator('nav a')).toHaveCount(6);
+    await expect(page.locator('nav a')).toHaveCount(8);
   });
 
   test('alpha page renders via SSR', async ({ page }) => {
@@ -363,5 +363,89 @@ test.describe('ensureLoaded — non-route components', () => {
     });
     expect(result.dialog).toBe(true);
     expect(result.alpha).toBe(true);
+  });
+});
+
+test.describe('keep-alive state preservation', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    }, null);
+    await page.waitForFunction(
+      () => !!(window as any).navigation,
+      null,
+      { timeout: 5000 },
+    );
+    await page.waitForTimeout(300);
+  });
+
+  test('keep-alive preserves local state across navigations', async ({ page }) => {
+    // Navigate to the keep-alive page
+    await page.click('a[href="/keepalive"]');
+    await expect(page.locator('.counter')).toContainText('Counter: 0');
+
+    // Increment the counter (local state change)
+    await page.click('.increment');
+    await expect(page.locator('.counter')).toContainText('Counter: 1');
+    await page.click('.increment');
+    await expect(page.locator('.counter')).toContainText('Counter: 2');
+
+    // Navigate away to alpha
+    await page.click('a[href="/alpha"]');
+    await expect(page.locator('page-alpha h2')).toContainText('Alpha Page');
+
+    // Navigate back to keep-alive page
+    await page.click('a[href="/keepalive"]');
+    await expect(page.locator('.counter')).toContainText('Counter: 2',
+      { timeout: 3000 },
+    );
+  });
+});
+
+test.describe('route loaders', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    }, null);
+    await page.waitForFunction(
+      () => !!(window as any).navigation,
+      null,
+      { timeout: 5000 },
+    );
+    await page.waitForTimeout(300);
+  });
+
+  test('static loader provides component state on SPA navigation', async ({ page }) => {
+    // Navigate to loader page
+    await page.click('a[href="/loader"]');
+    await expect(page.locator('.source')).toContainText('Source: client-loader');
+    await expect(page.locator('.loader-data')).toContainText('Data fetched by static loader');
+  });
+
+  test('X-WebUI-Has-Loader header is sent when leaf has loader', async ({ page }) => {
+    // First navigate to the loader page so the router discovers its loader
+    await page.click('a[href="/loader"]');
+    await expect(page.locator('.source')).toContainText('Source: client-loader');
+
+    // Now navigate again — the router should send the X-WebUI-Has-Loader header
+    const [request] = await Promise.all([
+      page.waitForRequest(req =>
+        req.url().includes('/alpha') &&
+        req.headers()['accept']?.includes('application/json'),
+      ),
+      page.click('a[href="/alpha"]'),
+    ]);
+
+    // The header should be present since page-loader was the previous leaf
+    // and it has a static loader. Note: the header signals the PREVIOUS
+    // leaf had a loader, which tells the server the current nav might too.
+    // The actual value depends on whether the router detected loaders.
+    const hasLoaderHeader = request.headers()['x-webui-has-loader'];
+    expect(hasLoaderHeader).toBeDefined();
+    expect(hasLoaderHeader).toContain('page-loader');
   });
 });

@@ -104,21 +104,76 @@ Preserve a component across navigations instead of destroying and recreating it:
 <route path="calendar" component="calendar-page" exact keep-alive />
 ```
 
-When the user navigates away from a `keep-alive` route and returns, the existing component is reused — its DOM and local state (scroll position, input values, timers) survive the round trip. Fresh server state is applied via `setState()`, updating only what changed.
+When the user navigates away from a `keep-alive` route and returns, the existing component is reused — its DOM and local state (scroll position, input values, timers) survive the round trip.
 
-### Route Loaders
+**State is preserved by default.** The router only updates route param and query param attributes on reactivation — it does NOT call `setState()` with server data. This means your component's `@observable` properties, scroll position, form inputs, and any client-computed state all survive.
 
-Define a static `loader()` on a component to fetch data from a custom source:
+To refresh data on reactivation, define a [route loader](#route-loaders):
 
 ```typescript
-export class LiveDashboard extends WebUIElement {
-  static async loader({ params, signal }: RouteLoaderContext) {
-    return fetch(`/api/dashboard/${params.id}`, { signal }).then(r => r.json());
+export class MailView extends WebUIElement {
+  @observable messages = [];
+
+  static async loader({ signal }: RouteLoaderContext) {
+    const resp = await fetch('/api/messages', { signal });
+    return { messages: await resp.json() };
   }
 }
 ```
 
-Loaders run before the view transition. On failure, the router falls back to server state.
+### Route Loaders
+
+Define a static `loader()` on a component to fetch data from a custom source instead of using server-provided state:
+
+```typescript
+import type { RouteLoaderContext } from '@microsoft/webui-router';
+
+export class LiveDashboard extends WebUIElement {
+  @observable source = '';
+  @observable metrics = {};
+
+  static async loader({ params, query, signal }: RouteLoaderContext) {
+    const resp = await fetch(`/api/dashboard/${params.id}`, { signal });
+    return { source: 'client', metrics: await resp.json() };
+  }
+}
+```
+
+**How it works:**
+- The router checks each route component's constructor for a static `loader()` method
+- Loaders run **before** the view transition — results are ready for synchronous DOM commit
+- The loader receives route `params`, parsed `query`, and an `AbortSignal` tied to the navigation
+- If a loader fails, the router falls back to server-provided state with a console warning
+- Loaders run on both SSR bootstrap and SPA navigations for consistency
+
+**When to use loaders:**
+- WebSocket-driven dashboards that manage their own data stream
+- Components that fetch from a different API than the SSR server
+- Keep-alive components that need fresh data on reactivation
+- Any component that wants full control over its state source
+
+### Preload on Hover
+
+Opt-in speculative fetching for instant click navigation:
+
+```typescript
+Router.start({ preload: true });
+```
+
+When enabled, the router prefetches JSON partials (templates, CSS, state) when the user hovers over internal links. On click, the cached result is used immediately. Only mouse pointers trigger preload (5-second TTL, single-entry cache).
+
+### Controlling State
+
+The router gives you three levers to control how state flows:
+
+| Need | Mechanism |
+|------|-----------|
+| **Server provides all state** (default) | No changes needed — `setState(data.state)` on every navigation |
+| **I fetch my own data** | Define `static loader()` on the component class |
+| **Preserve local state across navigations** | Add `keep-alive` to the route |
+| **Preserve DOM, but refresh data my way** | `keep-alive` + `static loader()` |
+
+The router also sends `X-WebUI-Has-Loader` as a comma-separated list of component tags that have loaders (e.g., `X-WebUI-Has-Loader: dash-page,mail-view`). The host server can check whether the target leaf component is in this list and skip expensive state computation by returning `state: {}`.
 
 ## API
 

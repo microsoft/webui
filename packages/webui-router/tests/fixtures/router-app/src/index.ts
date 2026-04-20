@@ -3,6 +3,7 @@
 
 import { WebUIElement, observable, attr } from '@microsoft/webui-framework';
 import { Router } from '@microsoft/webui-router';
+import type { RouteLoaderContext } from '@microsoft/webui-router';
 
 // ── Shell component ──────────────────────────────────────────────
 
@@ -35,6 +36,34 @@ export class PageCompose extends WebUIElement {
 }
 PageCompose.define('page-compose');
 
+// ── Keep-alive test component ────────────────────────────────────
+// Has local state (clickCount) that should survive keep-alive reactivation.
+
+export class PageKeepAlive extends WebUIElement {
+  @observable clickCount = 0;
+
+  onIncrement = (): void => {
+    this.clickCount++;
+  };
+}
+PageKeepAlive.define('page-keepalive');
+
+// ── Loader test component ────────────────────────────────────────
+// Has a static loader() that provides client-side state.
+
+export class PageLoader extends WebUIElement {
+  @observable source = '';
+  @observable loaderMessage = '';
+
+  static async loader(_ctx: RouteLoaderContext): Promise<Record<string, unknown>> {
+    return {
+      source: 'client-loader',
+      loaderMessage: 'Data fetched by static loader',
+    };
+  }
+}
+PageLoader.define('page-loader');
+
 // ── Start router after hydration ─────────────────────────────────
 
 window.addEventListener('webui:hydration-complete', () => {
@@ -44,6 +73,8 @@ window.addEventListener('webui:hydration-complete', () => {
       'page-beta': () => Promise.resolve(),
       'page-detail': () => Promise.resolve(),
       'page-compose': () => Promise.resolve(),
+      'page-keepalive': () => Promise.resolve(),
+      'page-loader': () => Promise.resolve(),
     },
   });
 });
@@ -56,6 +87,8 @@ if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {
       'page-beta': () => Promise.resolve(),
       'page-detail': () => Promise.resolve(),
       'page-compose': () => Promise.resolve(),
+      'page-keepalive': () => Promise.resolve(),
+      'page-loader': () => Promise.resolve(),
     },
   });
 }

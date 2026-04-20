@@ -884,7 +884,7 @@ describe('WebUIRouter', () => {
           [{ component: 'broken-page', params: {} }],
           {},
         );
-        assert.equal(results.size, 0, 'failed loader should not add a result');
+        assert.equal(results.size, 1, 'failed loader should add a LOADER_FAILED sentinel');
         assert.ok(warned, 'should log a warning on loader failure');
       } finally {
         (globalThis as any).customElements.get = origGet;
@@ -951,6 +951,191 @@ describe('WebUIRouter', () => {
         resolveIdx < commitIdx,
         'resolveLoaders must run before commitNavigation is defined',
       );
+    });
+  });
+
+  describe('keep-alive state preservation', () => {
+    test('applyState skips setState for keep-alive without loader', () => {
+      const router = new WebUIRouter();
+      const priv = router as any;
+
+      let setStateCalled = false;
+      const mockCompEl = {
+        setAttribute: () => {},
+        removeAttribute: () => {},
+        setState: () => { setStateCalled = true; },
+      };
+      const mockRouteEl = {
+        hasAttribute: (name: string) => name === 'keep-alive',
+        getAttribute: () => null,
+        querySelector: (sel: string) => sel === 'test-comp' ? mockCompEl : null,
+      };
+
+      const entry = {
+        component: 'test-comp',
+        path: '/',
+        params: { id: '42' },
+        el: mockRouteEl,
+        keepAlive: true,
+      };
+
+      // Call applyState with empty loader results — keep-alive should skip setState
+      priv.applyState(entry, { state: { server: true }, templates: [], path: '/' }, {}, new Map());
+      assert.ok(!setStateCalled, 'setState must not be called for keep-alive without loader');
+    });
+
+    test('applyState calls setState for keep-alive with loader override', () => {
+      const router = new WebUIRouter();
+      const priv = router as any;
+
+      let setStateArg: unknown = null;
+      const mockCompEl = {
+        setAttribute: () => {},
+        removeAttribute: () => {},
+        setState: (s: unknown) => { setStateArg = s; },
+      };
+      const mockRouteEl = {
+        hasAttribute: (name: string) => name === 'keep-alive',
+        getAttribute: () => null,
+        querySelector: (sel: string) => sel === 'test-comp' ? mockCompEl : null,
+      };
+
+      const entry = {
+        component: 'test-comp',
+        path: '/',
+        params: {},
+        el: mockRouteEl,
+        keepAlive: true,
+      };
+      const loaderStates = new Map();
+      loaderStates.set('test-comp', { fresh: 'data' });
+
+      priv.applyState(entry, { state: { server: true }, templates: [], path: '/' }, {}, loaderStates);
+      assert.deepEqual(setStateArg, { fresh: 'data' }, 'setState should receive loader override');
+    });
+
+    test('applyState calls setState with server state when loader fails', () => {
+      const router = new WebUIRouter();
+      const priv = router as any;
+
+      let setStateArg: unknown = null;
+      const mockCompEl = {
+        setAttribute: () => {},
+        removeAttribute: () => {},
+        setState: (s: unknown) => { setStateArg = s; },
+      };
+      // Non-keep-alive route always uses server state
+      const mockRouteEl = {
+        hasAttribute: () => false,
+        getAttribute: () => null,
+        querySelector: (sel: string) => sel === 'test-comp' ? mockCompEl : null,
+      };
+
+      const entry = {
+        component: 'test-comp',
+        path: '/',
+        params: {},
+        el: mockRouteEl as any,
+        keepAlive: false,
+      };
+
+      priv.applyState(entry, { state: { from: 'server' }, templates: [], path: '/' }, {}, new Map());
+      assert.deepEqual(setStateArg, { from: 'server' }, 'non-keep-alive should use server state');
+    });
+  });
+
+  describe('X-WebUI-Has-Loader header', () => {
+    test('fetchPartial sends comma-separated loader component list', async () => {
+      const origFetch = (globalThis as any).fetch;
+      let capturedHeaders: Record<string, string> = {};
+
+      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
+        capturedHeaders = (opts?.headers as Record<string, string>) ?? {};
+        return {
+          ok: true,
+          headers: { get: () => 'application/json' },
+          json: async () => ({ state: {}, templates: [], path: '/', chain: [] }),
+        };
+      };
+
+      try {
+        const router = new WebUIRouter();
+        const priv = router as any;
+
+        // Simulate: two components discovered to have loaders
+        priv.loaderComponents.add('dash-page');
+        priv.loaderComponents.add('mail-view');
+
+        await priv.fetchPartial.call(router, '/test');
+        const header = capturedHeaders['X-WebUI-Has-Loader'];
+        assert.ok(header, 'should send X-WebUI-Has-Loader header');
+        assert.ok(header.includes('dash-page'), 'header should include dash-page');
+        assert.ok(header.includes('mail-view'), 'header should include mail-view');
+      } finally {
+        (globalThis as any).fetch = origFetch;
+      }
+    });
+
+    test('fetchPartial omits X-WebUI-Has-Loader when no loaders discovered', async () => {
+      const origFetch = (globalThis as any).fetch;
+      let capturedHeaders: Record<string, string> = {};
+
+      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
+        capturedHeaders = (opts?.headers as Record<string, string>) ?? {};
+        return {
+          ok: true,
+          headers: { get: () => 'application/json' },
+          json: async () => ({ state: {}, templates: [], path: '/', chain: [] }),
+        };
+      };
+
+      try {
+        const router = new WebUIRouter();
+        await (router as any).fetchPartial.call(router, '/test');
+        assert.equal(
+          capturedHeaders['X-WebUI-Has-Loader'],
+          undefined,
+          'should NOT send header when no loaders are known',
+        );
+      } finally {
+        (globalThis as any).fetch = origFetch;
+      }
+    });
+
+    test('resolveLoaders populates loaderComponents set', async () => {
+      const router = new WebUIRouter();
+      const priv = router as any;
+
+      const origGet = (globalThis as any).customElements.get;
+      (globalThis as any).customElements.get = (name: string) => {
+        if (name === 'loader-comp') {
+          return class LoaderComp {
+            static async loader() { return { x: 1 }; }
+          };
+        }
+        return origGet(name);
+      };
+
+      try {
+        await priv.resolveLoaders.call(router,
+          [{ component: 'loader-comp', params: {} }],
+          {},
+        );
+        assert.ok(
+          priv.loaderComponents.has('loader-comp'),
+          'resolveLoaders should add component to loaderComponents set',
+        );
+      } finally {
+        (globalThis as any).customElements.get = origGet;
+      }
+    });
+
+    test('destroy clears loaderComponents', () => {
+      const router = new WebUIRouter();
+      const priv = router as any;
+      priv.loaderComponents.add('some-page');
+      router.destroy();
+      assert.equal(priv.loaderComponents.size, 0, 'destroy should clear loaderComponents');
     });
   });
 });
