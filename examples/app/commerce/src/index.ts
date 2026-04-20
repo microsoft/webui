@@ -28,6 +28,7 @@ function onHydrationComplete(): void {
 
   // Start client-side router after hydration — page components lazy-loaded
   Router.start({
+    preload: true,
     loaders: {
       'mp-page-home': () => import('#pages/mp-page-home/mp-page-home.js'),
       'mp-page-search': () => import('#pages/mp-page-search/mp-page-search.js'),

@@ -1419,6 +1419,7 @@ impl HtmlParser {
             component: component.clone(),
             exact,
             query,
+            keep_alive: self.has_element_attribute(node, "keep-alive", source)?,
         };
 
         // Validate attributes (component is required)
@@ -1484,6 +1485,7 @@ impl HtmlParser {
             component: component.clone(),
             exact,
             query,
+            keep_alive: self.has_element_attribute(node, "keep-alive", source)?,
         };
 
         route_parser::validate_attributes(&attrs)?;

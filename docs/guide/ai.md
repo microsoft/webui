@@ -203,6 +203,8 @@ In the TypeScript class: `searchInput!: HTMLInputElement;`
 - Omit `exact` on parent routes that have `<outlet />`
 - Path params: `:id` (required), `:query?` (optional), `*path` (catch-all)
 - Query param allowlist: `query="action,to,subject"` — only listed params are set as component attributes (deny-by-default)
+- `keep-alive` — preserves the component across navigations (hidden, not destroyed). Returns instantly with `setState()` on reactivation
+- Preload on hover: `Router.start({ preload: true })` — speculatively fetches route data on link hover for instant click navigation
 
 ### Outlet
 
@@ -281,7 +283,7 @@ MyComponent.define('my-component');
 | `this.$emit(name, detail?)` | Dispatch a CustomEvent that bubbles up |
 | `this.$update()` | Force a reactive update cycle |
 | `this.$flushUpdates()` | Synchronously flush pending updates |
-| `setInitialState(state, params?)` | Populate from router navigation state |
+| `setState(state)` | Populate from router navigation state |
 | `static define(tagName)` | Register as a custom element |
 
 ### Emitting custom events

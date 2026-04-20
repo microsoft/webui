@@ -125,7 +125,7 @@ Base class for framework components.
 | `static define(tagName)` | Register the class as a custom element |
 | `$emit(name, detail?)` | Dispatch a bubbling, composed `CustomEvent` |
 | `$update()` | Force a reactive update (normally called automatically) |
-| `setInitialState(state, params?)` | Populate `@observable` properties from router state |
+| `setState(state)` | Populate `@observable` properties from router/server state |
 | `disconnectedCallback()` | Override for cleanup (global listeners, etc.) |
 
 In most components you do not call `$update()` directly. Property changes through `@observable` and `@attr` trigger updates for you.

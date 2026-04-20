@@ -57,6 +57,23 @@ export interface RouterConfig {
    * ```
    */
   templateEndpoint?: string;
+
+  /**
+   * Preload routes on link hover. When enabled, the router listens for
+   * pointer events on internal `<a>` links and speculatively fetches the
+   * JSON partial response. If the user clicks the link, the cached result
+   * is used instantly — eliminating the navigation fetch latency.
+   *
+   * Only mouse pointers trigger preload (touch taps fire too late to benefit).
+   * The cache holds a single entry with a 5-second TTL.
+   *
+   * @default false
+   * @example
+   * ```ts
+   * Router.start({ preload: true });
+   * ```
+   */
+  preload?: boolean;
 }
 
 /** Detail payload of the `webui:route:navigated` CustomEvent. */

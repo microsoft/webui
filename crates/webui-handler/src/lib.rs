@@ -389,6 +389,9 @@ impl WebUIHandler {
                     context.writer.write(&matched_child.allowed_query)?;
                     context.writer.write("\"")?;
                 }
+                if matched_child.keep_alive {
+                    context.writer.write(" keep-alive")?;
+                }
                 context.writer.write(" active>")?;
 
                 context.writer.write("<")?;
@@ -435,6 +438,9 @@ impl WebUIHandler {
                     context.writer.write(" query=\"")?;
                     context.writer.write(&child.allowed_query)?;
                     context.writer.write("\"")?;
+                }
+                if child.keep_alive {
+                    context.writer.write(" keep-alive")?;
                 }
                 context
                     .writer
@@ -508,6 +514,9 @@ impl WebUIHandler {
             context.writer.write(" query=\"")?;
             context.writer.write(&route_frag.allowed_query)?;
             context.writer.write("\"")?;
+        }
+        if route_frag.keep_alive {
+            context.writer.write(" keep-alive")?;
         }
 
         if is_matched {
@@ -5297,12 +5306,14 @@ mod tests {
                         path: "/".into(),
                         fragment_id: "dash-page".into(),
                         exact: true,
+                        keep_alive: false,
                         ..Default::default()
                     }),
                     WebUIFragment::route_from(WebUiFragmentRoute {
                         path: "/contacts/:id".into(),
                         fragment_id: "detail-page".into(),
                         exact: true,
+                        keep_alive: false,
                         ..Default::default()
                     }),
                 ],
@@ -5349,10 +5360,13 @@ mod tests {
                             fragment_id: "topic-comp".into(),
                             exact: true,
                             children: vec![],
+                            keep_alive: false,
                             ..Default::default()
                         }],
+                        keep_alive: false,
                         ..Default::default()
                     }],
+                    keep_alive: false,
                     ..Default::default()
                 })],
             },
@@ -6408,15 +6422,18 @@ mod tests {
                             fragment_id: "compose-page".into(),
                             exact: true,
                             allowed_query: "action,to,subject".into(),
+                            keep_alive: false,
                             ..Default::default()
                         },
                         WebUiFragmentRoute {
                             path: "settings".into(),
                             fragment_id: "settings-page".into(),
                             exact: true,
+                            keep_alive: false,
                             ..Default::default()
                         },
                     ],
+                    keep_alive: false,
                     ..Default::default()
                 })],
             },

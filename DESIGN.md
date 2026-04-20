@@ -238,7 +238,7 @@ optional parameters. Exact matches (most literal segments) take precedence over 
 For the WebUI framework path, matched route components do **not** receive route
 state as scalar attributes or `data-state`. Initial SSR state comes from the
 rendered DOM plus hydration markers, and client-side navigations apply fresh
-state through the partial-response `setInitialState(...)` path.
+state through the partial-response `setState(...)` path.
 
 When the handler encounters `Fragment::Outlet`:
 1. Take children from the currently active route.

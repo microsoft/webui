@@ -286,14 +286,14 @@ export class WebUIElement extends HTMLElement {
     );
   }
 
-  /** Populate @observable properties from router state.
+  /** Populate @observable properties from server or router state.
    *
    * Each property is set through its reactive setter, which coalesces
    * updates into a single pending microtask. We then synchronously
    * flush those pending path updates so the DOM is current before any
    * view-transition snapshot captures it.
    */
-  setInitialState(state: Record<string, unknown>): void {
+  setState(state: Record<string, unknown>): void {
     const names = getObservableNames(this.constructor as Function);
     for (const key of Object.keys(state)) {
       if (names.has(key)) {

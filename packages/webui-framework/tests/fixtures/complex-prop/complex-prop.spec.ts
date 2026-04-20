@@ -5,7 +5,7 @@
  * Regression test: complex property bindings (:prop) propagate parent
  * observable changes to child <for> loops.
  *
- * When a parent's @observable array is replaced (e.g. via setInitialState
+ * When a parent's @observable array is replaced (e.g. via setState
  * during SPA navigation), the complex binding `:items="{{items}}"` must
  * push the new array to the child, causing the child's <for> loop to
  * re-render with the updated data.
@@ -79,11 +79,11 @@ test.describe('complex-prop: parent array changes propagate to child for-loop', 
     expect(count).toBe(0);
   });
 
-  test('setInitialState on parent propagates to child for-loop', async ({ page }) => {
+  test('setState on parent propagates to child for-loop', async ({ page }) => {
     // Simulate what the router does during SPA navigation
     await page.evaluate(() => {
       const host = document.querySelector('#host') as any;
-      host.setInitialState({ items: [{ name: 'X' }, { name: 'Y' }] });
+      host.setState({ items: [{ name: 'X' }, { name: 'Y' }] });
     });
 
     await page.waitForFunction(() => {
@@ -103,13 +103,13 @@ test.describe('complex-prop: parent array changes propagate to child for-loop', 
     expect(items).toEqual(['X', 'Y']);
   });
 
-  test('setInitialState propagates to child synchronously (no microtask needed)', async ({ page }) => {
-    // The critical case: after setInitialState, the child DOM must be
+  test('setState propagates to child synchronously (no microtask needed)', async ({ page }) => {
+    // The critical case: after setState, the child DOM must be
     // updated synchronously — no microtask wait. This matters for view
     // transitions which snapshot the DOM right after the sync callback.
     const result = await page.evaluate(() => {
       const host = document.querySelector('#host') as any;
-      host.setInitialState({ items: [{ name: 'Sync1' }, { name: 'Sync2' }, { name: 'Sync3' }] });
+      host.setState({ items: [{ name: 'Sync1' }, { name: 'Sync2' }, { name: 'Sync3' }] });
 
       // Check IMMEDIATELY — no await, no microtask, no setTimeout
       const list = host?.shadowRoot?.querySelector('test-item-list');

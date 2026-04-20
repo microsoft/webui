@@ -1,0 +1,6 @@
+{
+  "items": [
+    { "name": "Email 1", "htmlContent": "<p>Hello <strong>World</strong></p>" },
+    { "name": "Email 2", "htmlContent": "<p>Test <em>italic</em> and <a href=\"#\">link</a></p>" }
+  ]
+}

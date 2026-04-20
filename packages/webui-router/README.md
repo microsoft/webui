@@ -93,6 +93,19 @@ Navigating from `/settings/profile` to `/settings/billing` only remounts the bil
 
 Without `exact`, a route matches any URL that starts with its path — which is what parent routes need.
 
+### The `keep-alive` Attribute
+
+Preserve a component across navigations instead of destroying and recreating it:
+
+```html
+<route path="./" component="mail-view" keep-alive>
+  <route path="" component="inbox-page" exact />
+</route>
+<route path="calendar" component="calendar-page" exact keep-alive />
+```
+
+When the user navigates away from a `keep-alive` route and returns, the existing component is reused — its DOM and local state (scroll position, input values, timers) survive the round trip. Fresh server state is applied via `setState()`, updating only what changed.
+
 ## API
 
 ### `Router.start(config?)`
@@ -105,6 +118,7 @@ Start the router. Call after hydration completes.
 | `loaders` | `Record<string, () => Promise<unknown>>` | Lazy-loading map: component tag → dynamic import |
 | `templateEndpoint` | `string` | URL for `ensureLoaded()` requests (default: `"/_webui/templates"`) |
 | `dev` | `boolean` | Enable development mode warnings |
+| `preload` | `boolean` | Preload routes on link hover for instant navigation |
 
 ### `Router.navigate(path)`
 

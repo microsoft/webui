@@ -146,6 +146,7 @@ export class WebUIRouteElement extends HTMLElement {
   get exact(): boolean { return this.hasAttribute('exact'); }
   get component(): string { return this.getAttribute('component') ?? ''; }
   get isActive(): boolean { return this.hasAttribute('active'); }
+  get keepAlive(): boolean { return this.hasAttribute('keep-alive'); }
   get params(): Record<string, string> { return getRouteParams(this); }
   /** Comma-separated allowlist of query params forwarded as attributes. */
   get query(): string { return this.getAttribute('query') ?? ''; }
@@ -167,6 +168,17 @@ interface RouteChainEntry {
   el?: HTMLElement;
   /** Comma-separated allowlist of query params forwarded as attributes. */
   allowedQuery?: string;
+  /** When true, the component is preserved across navigations instead of re-created. */
+  keepAlive?: boolean;
+}
+
+/** Static route manifest entry — built once at startup from <webui-route> tree. */
+interface RouteManifestEntry {
+  component: string;
+  path: string;
+  exact: boolean;
+  allowedQuery?: string;
+  children: RouteManifestEntry[];
 }
 
 // ── Router ───────────────────────────────────────────────────────
@@ -218,8 +230,8 @@ function applyParamsQueryState(
   }
   queryAttrsMap.set(component, newAttrs);
 
-  if (typeof (component as any).setInitialState === 'function') {
-    (component as any).setInitialState(data.state);
+  if (typeof (component as any).setState === 'function') {
+    (component as any).setState(data.state);
   }
 }
 
@@ -244,6 +256,14 @@ export class WebUIRouter {
   private injectedCss = new Set<string>();
   /** In-memory dedup for injected module style specifiers (avoids DOM queries). */
   private injectedStyles = new Set<string>();
+  /** Monotonic navigation generation — guards against stale async completions. */
+  private navGeneration = 0;
+  /** Cached preload result from a speculative hover fetch. */
+  private preloadCache: { path: string; data: PartialResponse & { inventory?: string }; ts: number } | null = null;
+  /** AbortController for the in-flight preload fetch. */
+  private preloadController: AbortController | null = null;
+  /** Monotonic preload generation — prevents stale hover fetches from overwriting the cache. */
+  private preloadGeneration = 0;
 
   /** The component tag of the currently active leaf route. */
   get activeComponent(): string {
@@ -298,6 +318,10 @@ export class WebUIRouter {
     };
     nav.addEventListener('navigate', handler);
     this.cleanupFns.push(() => nav.removeEventListener('navigate', handler));
+
+    if (config.preload) {
+      this.setupPreloadListeners();
+    }
 
     this.handleNavigation(this.currentTarget());
   }
@@ -485,6 +509,78 @@ export class WebUIRouter {
     this.ssrPreloadsCleared = false;
     this.injectedCss.clear();
     this.injectedStyles.clear();
+    this.preloadCache = null;
+    this.preloadController?.abort();
+    this.preloadController = null;
+  }
+
+  // ── Preload on hover ──────────────────────────────────────────
+
+  /** Maximum age (ms) for a preloaded partial before it's considered stale. */
+  private static readonly PRELOAD_TTL = 5_000;
+
+  /**
+   * Register a delegated `pointerover` listener that speculatively fetches
+   * the JSON partial for internal links on mouse hover.
+   *
+   * Uses `pointermove` (bubbles + composed + fires continuously) because
+   * `pointerover` only fires once when entering a shadow host — subsequent
+   * moves between child elements inside the shadow root don't re-trigger it
+   * at the document level. `pointermove` fires on every position change,
+   * giving us reliable detection across all shadow DOM boundaries.
+   *
+   * The handler is naturally debounced: the `preloadCache` path check
+   * ensures we only fetch once per unique link, and the early returns
+   * for non-anchor targets keep the hot path fast (one `composedPath()`
+   * walk that exits immediately when no `<a>` is found).
+   *
+   * Only mouse pointers trigger preload — touch fires too late to benefit.
+   */
+  private setupPreloadListeners(): void {
+    const onPointerMove = (e: PointerEvent): void => {
+      if (e.pointerType !== 'mouse') return;
+
+      // Walk composedPath to find the nearest <a> — works across shadow boundaries.
+      const anchor = (e.composedPath() as Element[]).find(
+        el => el?.tagName === 'A',
+      ) as HTMLAnchorElement | undefined;
+      if (!anchor) return;
+
+      const href = anchor.getAttribute('href');
+      if (!href || href.startsWith('#')) return;
+
+      let url: URL;
+      try {
+        url = new URL(href, location.href);
+      } catch {
+        return;
+      }
+      if (url.origin !== location.origin) return;
+
+      const target = buildNavigationTarget(url, this.basePath);
+
+      // Skip if already on this path or already cached for it
+      if (target.requestPath === this.currentTarget().requestPath) return;
+      if (this.preloadCache?.path === target.requestPath) return;
+
+      // Abort any in-flight speculative fetch and start a new one
+      this.preloadController?.abort();
+      const controller = new AbortController();
+      this.preloadController = controller;
+      const gen = ++this.preloadGeneration;
+
+      this.fetchPartial(target.requestPath, controller.signal, true)
+        .then(data => {
+          // Only cache if this is still the latest preload request
+          if (data && gen === this.preloadGeneration && !controller.signal.aborted) {
+            this.preloadCache = { path: target.requestPath, data, ts: Date.now() };
+          }
+        })
+        .catch(() => {}); // Speculative — silently discard errors
+    };
+
+    document.addEventListener('pointermove', onPointerMove);
+    this.cleanupFns.push(() => document.removeEventListener('pointermove', onPointerMove));
   }
 
   // ── Route matching ──────────────────────────────────────────────
@@ -520,128 +616,24 @@ export class WebUIRouter {
       }
     } else {
       this.clearSsrPreloads();
-      const partialData = await this.fetchPartial(requestPath, signal);
-      if (!partialData) return;
+      const thisGen = ++this.navGeneration;
 
-      // Bail out if a newer navigation has superseded this one.
-      if (signal?.aborted) return;
-
-      const newChain: RouteChainEntry[] = (partialData.chain ?? []).map(e => ({
-        component: e.component ?? '',
-        path: e.path ?? '',
-        params: e.params ?? {},
-        exact: e.exact,
-        allowedQuery: e.allowedQuery,
-      }));
-
-      if (newChain.length === 0) {
-        console.warn(`[Router] No route matched for path: ${requestPath}`);
-        window.location.href = prependBasePath(requestPath, this.basePath);
-        return;
-      }
-
-      // Pre-load all component modules in parallel before the DOM swap so
-      // the view transition only covers the synchronous mount.
-      // Race against abort so a superseding navigation doesn't wait for
-      // in-flight imports from the aborted one. ensureComponentLoaded
-      // caches module promises, so any work done here is reused by the
-      // winning navigation.
-      if (signal?.aborted) return;
-      const preload = Promise.all(
-        newChain
-          .filter(entry => entry.component)
-          .map(entry => this.ensureComponentLoaded(entry.component)),
-      );
-      if (signal) {
-        const aborted = new Promise<'aborted'>(resolve => {
-          signal.addEventListener('abort', () => resolve('aborted'), { once: true });
-        });
-        const result = await Promise.race([preload.then(() => 'loaded' as const), aborted]);
-        if (result === 'aborted') return;
+      // Use preloaded data if we have a fresh cache hit for this path
+      let partialData: (PartialResponse & { inventory?: string }) | null = null;
+      const cached = this.preloadCache;
+      if (cached && cached.path === requestPath &&
+          Date.now() - cached.ts < WebUIRouter.PRELOAD_TTL) {
+        partialData = cached.data;
+        this.preloadCache = null;
       } else {
-        await preload;
+        // Cancel any in-flight speculative fetch — we're doing a real navigation
+        this.preloadController?.abort();
+        this.preloadCache = null;
+        partialData = await this.fetchPartial(requestPath, signal);
       }
-      if (signal?.aborted) return;
 
-      const changeLevel = this.findChangeLevel(this.activeChain, newChain);
-
-      // When only query params change (same route, different ?sort= etc.),
-      // changeLevel equals chain length so nothing remounts. Detect this
-      // and re-apply state to all components in the chain from the server's
-      // fresh partial response.
-      const isQueryOnlyChange = changeLevel === newChain.length && newChain.length > 0;
-
-      // DOM swap — synchronous, safe inside view transitions.
-      // All async work (fetch, import) is done above.
-      const commitNavigation = (): void => {
-        // Deactivate old chain from leaf up
-        for (let i = this.activeChain.length - 1; i >= changeLevel; i--) {
-          if (this.activeChain[i].el) {
-            deactivateRoute(this.activeChain[i].el!);
-          }
-        }
-
-        // Transfer DOM elements to retained levels
-        for (let i = 0; i < changeLevel; i++) {
-          newChain[i].el = this.activeChain[i].el;
-        }
-
-        // Re-apply state to retained (non-remounted) parent components.
-        if (changeLevel > 0 || isQueryOnlyChange) {
-          const end = isQueryOnlyChange ? newChain.length : changeLevel;
-          for (let i = 0; i < end; i++) {
-            this.applyState(newChain[i], partialData, query);
-          }
-        }
-
-        // Mount from the change level down
-        for (let i = changeLevel; i < newChain.length; i++) {
-          const entry = newChain[i];
-          const oldEntry = i < this.activeChain.length ? this.activeChain[i] : null;
-          const parent = i > 0 ? newChain[i - 1] : null;
-
-          // Same component tag at this level → reuse instance, update state
-          if (
-            oldEntry &&
-            oldEntry.component === entry.component &&
-            oldEntry.el
-          ) {
-            entry.el = oldEntry.el;
-            if (entry.component && partialData) {
-              this.applyState(entry, partialData, query);
-            }
-            activateRoute(entry.el, entry.params);
-            continue;
-          }
-
-          // Different component (or no old entry) → full mount
-          const routeEl = this.findOrCreateRouteElement(parent, entry);
-          entry.el = routeEl;
-
-          if (entry.component && partialData) {
-            this.mountComponent(routeEl, entry.component, partialData, entry.params, query);
-          }
-
-          activateRoute(routeEl, entry.params);
-        }
-
-        this.activeChain = newChain;
-      };
-
-      // DOM swap — wrapped in a view transition when available.
-      // Skip view transitions for query-only changes (issue #235): no
-      // components remount so there is nothing to animate, and the
-      // transition would blur the active element (e.g. search input).
-      // Await updateCallbackDone (not .finished) so the Navigation API
-      // handler resolves as soon as the DOM commit completes, without
-      // waiting for the CSS animation to finish. This allows rapid
-      // navigations to supersede each other without queuing.
-      if (document.startViewTransition && !isQueryOnlyChange) {
-        const transition = document.startViewTransition(commitNavigation);
-        await transition.updateCallbackDone;
-      } else {
-        commitNavigation();
-      }
+      if (!partialData || signal?.aborted || thisGen !== this.navGeneration) return;
+      await this.commitWithData(partialData, requestPath, query, signal, thisGen);
     }
 
     const leaf = this.activeChain[this.activeChain.length - 1];
@@ -669,6 +661,13 @@ export class WebUIRouter {
    * For top-level routes, searches direct children of `<body>`.
    * For nested routes, searches the parent component's render root
    * (shadow root or light DOM).
+   *
+   * When creating a new stub, placement strategy:
+   *  1. Sibling routes: insert next to existing `<webui-route>` elements
+   *     (handles SSR'd shadow roots where `<outlet>` was replaced by routes).
+   *  2. `<outlet>` marker: insert after it (handles freshly created components
+   *     whose f-template still contains `<outlet></outlet>`).
+   *  3. Fallback: append to render root.
    */
   private findOrCreateRouteElement(
     parent: RouteChainEntry | null,
@@ -692,20 +691,45 @@ export class WebUIRouter {
       const compEl = parent.el.querySelector(parent.component);
       if (compEl) {
         const root = renderRoot(compEl);
-        for (const child of root.querySelectorAll(ROUTE_SELECTOR)) {
+        const allRoutes = root.querySelectorAll(ROUTE_SELECTOR);
+
+        // Match by component + path for stronger identity
+        for (const child of allRoutes) {
+          if (child.getAttribute('component') === entry.component &&
+              child.getAttribute('path') === (entry.path || null)) {
+            return child as HTMLElement;
+          }
+        }
+        // Fallback: match by component only (backwards compat)
+        for (const child of allRoutes) {
           if (child.getAttribute('component') === entry.component) {
             return child as HTMLElement;
           }
         }
 
-        // Not found — create in the outlet area of parent component
+        // Not found — create stub and place in the correct container
         const stub = createRouteStub(entry);
+
+        // Strategy 1: use the parent container of existing sibling routes.
+        // In SSR'd shadow roots, <outlet> is replaced by <webui-route> elements
+        // so we infer the outlet container from their parentElement.
+        if (allRoutes.length > 0) {
+          const container = allRoutes[allRoutes.length - 1].parentElement;
+          if (container) {
+            container.appendChild(stub);
+            return stub;
+          }
+        }
+
+        // Strategy 2: insert after the <outlet> marker (f-template components)
         const outletMarker = root.querySelector('outlet');
         if (outletMarker?.parentElement) {
           outletMarker.parentElement.insertBefore(stub, outletMarker.nextSibling);
-        } else {
-          root.appendChild(stub);
+          return stub;
         }
+
+        // Strategy 3: fallback — append to render root
+        root.appendChild(stub);
         return stub;
       }
     }
@@ -750,6 +774,7 @@ export class WebUIRouter {
         exact: isExact(activeEl),
         el: activeEl,
         allowedQuery: activeEl.getAttribute('query') ?? undefined,
+        keepAlive: activeEl.hasAttribute('keep-alive'),
       });
       activateRoute(activeEl, params);
 
@@ -827,7 +852,11 @@ export class WebUIRouter {
 
   // ── Fetch + Mount ──────────────────────────────────────────────
 
-  private async fetchPartial(requestPath: string, signal?: AbortSignal): Promise<(PartialResponse & { inventory?: string }) | null> {
+  private async fetchPartial(
+    requestPath: string,
+    signal?: AbortSignal,
+    speculative?: boolean,
+  ): Promise<(PartialResponse & { inventory?: string }) | null> {
     const fullPath = prependBasePath(requestPath, this.basePath);
     const headers: Record<string, string> = { 'Accept': 'application/json' };
     if (this.inventory) headers['X-WebUI-Inventory'] = this.inventory;
@@ -838,8 +867,8 @@ export class WebUIRouter {
     const contentType = resp.headers.get('content-type') ?? '';
     if (!contentType.includes('application/json')) {
       // Server returned HTML (e.g. login page) instead of JSON partial.
-      // Trigger a full page navigation so the browser handles it.
-      if (signal?.aborted) return null;
+      // Speculative fetches never redirect — just bail out silently.
+      if (speculative || signal?.aborted) return null;
       window.location.href = prependBasePath(requestPath, this.basePath);
       return null;
     }
@@ -888,7 +917,7 @@ export class WebUIRouter {
 
   /**
    * Apply partial state to a mounted route component.
-   * Calls the framework's built-in `setInitialState` which sets
+   * Calls the framework's built-in `setState` which sets
    * `@observable` properties and flushes DOM updates synchronously.
    * Route params are set as HTML attributes for `@attr` reflection.
    * Allowed query params (declared via `query` attr on the route) are
@@ -1006,6 +1035,106 @@ export class WebUIRouter {
   private updateInventory(serverInventory: string): void {
     this.inventory = serverInventory;
   }
+
+  /**
+   * Commit a navigation using server-confirmed data (the standard fetch-first path).
+   * Used both as fallback for first visits and when the server responds within the
+   * optimistic delay budget.
+   */
+  private async commitWithData(
+    partialData: PartialResponse & { inventory?: string },
+    requestPath: string,
+    query: Record<string, string>,
+    signal?: AbortSignal,
+    generation?: number,
+  ): Promise<void> {
+    const newChain: RouteChainEntry[] = (partialData.chain ?? []).map(e => ({
+      component: e.component ?? '',
+      path: e.path ?? '',
+      params: e.params ?? {},
+      exact: e.exact,
+      allowedQuery: e.allowedQuery,
+      keepAlive: e.keepAlive,
+    }));
+
+    if (newChain.length === 0) {
+      console.warn(`[Router] No route matched for path: ${requestPath}`);
+      window.location.href = prependBasePath(requestPath, this.basePath);
+      return;
+    }
+
+    // Pre-load component modules
+    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) return;
+    const preload = Promise.all(
+      newChain
+        .filter(entry => entry.component)
+        .map(entry => this.ensureComponentLoaded(entry.component)),
+    );
+    if (signal) {
+      const aborted = new Promise<'aborted'>(resolve => {
+        signal.addEventListener('abort', () => resolve('aborted'), { once: true });
+      });
+      const result = await Promise.race([preload.then(() => 'loaded' as const), aborted]);
+      if (result === 'aborted') return;
+    } else {
+      await preload;
+    }
+    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) return;
+
+    const changeLevel = this.findChangeLevel(this.activeChain, newChain);
+    const isQueryOnlyChange = changeLevel === newChain.length && newChain.length > 0;
+
+    const commitNavigation = (): void => {
+      // Deactivate old chain from leaf up
+      for (let i = this.activeChain.length - 1; i >= changeLevel; i--) {
+        if (this.activeChain[i].el) deactivateRoute(this.activeChain[i].el!);
+      }
+      for (let i = 0; i < changeLevel; i++) {
+        newChain[i].el = this.activeChain[i].el;
+      }
+      if (changeLevel > 0 || isQueryOnlyChange) {
+        const end = isQueryOnlyChange ? newChain.length : changeLevel;
+        for (let i = 0; i < end; i++) {
+          this.applyState(newChain[i], partialData, query);
+        }
+      }
+      for (let i = changeLevel; i < newChain.length; i++) {
+        const entry = newChain[i];
+        const oldEntry = i < this.activeChain.length ? this.activeChain[i] : null;
+        const parent = i > 0 ? newChain[i - 1] : null;
+        if (oldEntry?.component === entry.component && oldEntry?.el) {
+          entry.el = oldEntry.el;
+          if (entry.component) this.applyState(entry, partialData, query);
+          activateRoute(entry.el, entry.params);
+          continue;
+        }
+        const routeEl = this.findOrCreateRouteElement(parent, entry);
+        entry.el = routeEl;
+        if (entry.component) {
+          // Keep-alive: if the route has keep-alive and already has the correct
+          // component mounted (from a previous visit), reuse it and apply fresh
+          // state instead of destroying and recreating the component.
+          const isKeepAlive = entry.keepAlive || routeEl.hasAttribute('keep-alive');
+          const existingComp = routeEl.firstElementChild;
+          if (isKeepAlive && existingComp?.matches(entry.component)) {
+            applyParamsQueryState(existingComp, routeEl, entry.params, partialData, query);
+          } else {
+            this.mountComponent(routeEl, entry.component, partialData, entry.params, query);
+          }
+        }
+        activateRoute(routeEl, entry.params);
+      }
+      this.activeChain = newChain;
+    };
+
+    if (document.startViewTransition && !isQueryOnlyChange) {
+      const transition = document.startViewTransition(commitNavigation);
+      await transition.updateCallbackDone;
+    } else {
+      commitNavigation();
+    }
+  }
+
 }
 
 /** Singleton router instance. */
