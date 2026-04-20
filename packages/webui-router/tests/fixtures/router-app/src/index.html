@@ -17,6 +17,8 @@
     <route path="items/:itemId" component="page-detail" exact />
     <route path="compose" component="page-compose" query="action,to,subject" exact />
     <route path="dialog" component="test-dialog" exact />
+    <route path="keepalive" component="page-keepalive" exact keep-alive />
+    <route path="loader" component="page-loader" exact />
   </route>
 
   <script type="module" src="/index.js"></script>

@@ -196,17 +196,16 @@ interface PartialResponse {
 }
 
 /**
- * Apply route params, allowed query params, and initial state to a component.
- * Shared by both initial mount and subsequent state updates. Stale query-param
- * attributes from a previous navigation are automatically removed.
+ * Apply route params and query params as HTML attributes on a component.
+ * Does NOT call setState — used for keep-alive reactivation where local
+ * state should be preserved. Stale query-param attributes from a previous
+ * navigation are automatically removed.
  */
-function applyParamsQueryState(
+function applyParamsAndQuery(
   component: Element,
   routeEl: HTMLElement,
   params: Record<string, string>,
-  data: PartialResponse,
   query?: Record<string, string>,
-  stateOverride?: Record<string, unknown>,
 ): void {
   for (const [key, value] of Object.entries(params)) {
     component.setAttribute(toKebab(key), value);
@@ -230,6 +229,25 @@ function applyParamsQueryState(
     }
   }
   queryAttrsMap.set(component, newAttrs);
+}
+
+/**
+ * Apply route params, allowed query params, and state to a component.
+ * Shared by both initial mount and subsequent state updates. Stale query-param
+ * attributes from a previous navigation are automatically removed.
+ *
+ * For keep-alive reactivation without a loader, use {@link applyParamsAndQuery}
+ * instead — it updates attributes without overwriting component state.
+ */
+function applyParamsQueryState(
+  component: Element,
+  routeEl: HTMLElement,
+  params: Record<string, string>,
+  data: PartialResponse,
+  query?: Record<string, string>,
+  stateOverride?: Record<string, unknown>,
+): void {
+  applyParamsAndQuery(component, routeEl, params, query);
 
   if (typeof (component as any).setState === 'function') {
     (component as any).setState(stateOverride ?? data.state);
@@ -259,6 +277,8 @@ export class WebUIRouter {
   private injectedStyles = new Set<string>();
   /** Monotonic navigation generation — guards against stale async completions. */
   private navGeneration = 0;
+  /** Set of component tags known to have a static loader() method. */
+  private loaderComponents = new Set<string>();
   /** Cached preload result from a speculative hover fetch. */
   private preloadCache: { path: string; data: PartialResponse & { inventory?: string }; ts: number } | null = null;
   /** AbortController for the in-flight preload fetch. */
@@ -510,6 +530,7 @@ export class WebUIRouter {
     this.ssrPreloadsCleared = false;
     this.injectedCss.clear();
     this.injectedStyles.clear();
+    this.loaderComponents.clear();
     this.preloadCache = null;
     this.preloadController?.abort();
     this.preloadController = null;
@@ -876,6 +897,15 @@ export class WebUIRouter {
     const fullPath = prependBasePath(requestPath, this.basePath);
     const headers: Record<string, string> = { 'Accept': 'application/json' };
     if (this.inventory) headers['X-WebUI-Inventory'] = this.inventory;
+
+    // Send the set of component tags that have static loaders. The host
+    // server does its own route matching and can check whether the TARGET
+    // leaf component is in this list. If so, it may skip expensive state
+    // computation and return state: {}.
+    if (this.loaderComponents.size > 0) {
+      headers['X-WebUI-Has-Loader'] = [...this.loaderComponents].join(',');
+    }
+
     const resp = await fetch(fullPath, { headers, signal });
 
     if (!resp.ok) return null;
@@ -1002,6 +1032,9 @@ export class WebUIRouter {
           (new () => HTMLElement) & { loader?: (ctx: import('./types.js').RouteLoaderContext) => Promise<Record<string, unknown>> }
         ) | undefined;
         if (!ctor || typeof ctor.loader !== 'function') return;
+
+        // Track this component as having a loader for the X-WebUI-Has-Loader header
+        this.loaderComponents.add(entry.component);
 
         try {
           const ctx = {
@@ -1195,7 +1228,13 @@ export class WebUIRouter {
           const isKeepAlive = entry.keepAlive || routeEl.hasAttribute('keep-alive');
           const existingComp = routeEl.firstElementChild;
           if (isKeepAlive && existingComp?.matches(entry.component)) {
-            applyParamsQueryState(existingComp, routeEl, entry.params, partialData, query, override);
+            // Keep-alive reactivation: preserve local state by default.
+            // Only call setState if a loader provided fresh data (override).
+            if (override) {
+              applyParamsQueryState(existingComp, routeEl, entry.params, partialData, query, override);
+            } else {
+              applyParamsAndQuery(existingComp, routeEl, entry.params, query);
+            }
           } else {
             this.mountComponent(routeEl, entry.component, partialData, entry.params, query, override);
           }

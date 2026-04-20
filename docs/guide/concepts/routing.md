@@ -126,18 +126,22 @@ Preserve a component's DOM and state across navigations instead of destroying an
 ```
 
 When navigating from Mail to Calendar and back:
-- **`mail-view` (keep-alive):** Hidden on deactivation, shown instantly on return. The folder pane, email list, and all local state survive the round trip. Fresh server state is applied via `setState()` — only changed data triggers DOM updates.
+- **`mail-view` (keep-alive):** Hidden on deactivation, shown instantly on return. The folder pane, email list, and all local state survive the round trip. Route param and query param attributes are updated, but `setState()` is **not called** — your component's `@observable` properties are preserved.
 - **`settings-page` (no keep-alive):** Destroyed on deactivation, recreated fresh on each visit.
 
 | Behavior | With `keep-alive` | Without |
 |----------|-------------------|---------|
 | Deactivate | `display: none` (stays in DOM) | `display: none` (stays in DOM) |
-| Reactivate | Reuses existing component + `setState()` | Destroys old, creates new component |
-| Local state | Preserved (scroll, input, timers) | Lost |
-| Server state | Applied reactively via `setState()` | Applied on mount |
+| Reactivate | Reuses existing component — params updated, state preserved | Destroys old, creates new component |
+| Local state | ✅ Preserved (scroll, input, timers, observables) | Lost |
+| Server state | **Skipped** — use a [loader](#route-loaders) to refresh | Applied on mount via `setState()` |
 
 ::: tip When to use
 Use on routes with expensive UI (lists, grids, trees) that users switch between frequently. Leaf routes with simple data-driven content rarely benefit — they're cheap to recreate.
+:::
+
+::: tip Refreshing data on reactivation
+If a keep-alive component needs fresh data when reactivated, define a static `loader()` method. The router calls it on every navigation (including reactivation) and applies the result via `setState()`.
 :::
 
 ### Preload on Hover
@@ -179,6 +183,31 @@ How it works:
 - If a loader fails, the router falls back to server-provided `data.state` with a console warning
 - Loaders run on both SSR bootstrap and SPA navigations for consistency
 - Components without a `loader()` use server state as before — fully backwards compatible
+
+### Controlling State
+
+The router provides three mechanisms for controlling how state flows to your components:
+
+| Need | Mechanism | What happens |
+|------|-----------|-------------|
+| **Server provides all state** | Default (no changes) | `setState(data.state)` on every navigation |
+| **I fetch my own data** | `static loader()` on component | Loader runs pre-commit, result passed to `setState()` |
+| **Preserve local state** | `keep-alive` on route | Params/query attrs updated, `setState()` skipped |
+| **Preserve DOM + refresh data** | `keep-alive` + `static loader()` | DOM preserved, loader result applied via `setState()` |
+
+**Server-side optimization:** The router sends `X-WebUI-Has-Loader` as a comma-separated list of component tags that have loaders (e.g., `X-WebUI-Has-Loader: live-dashboard,mail-view`). The host server does its own route matching and can check whether the target leaf component is in this list. If so, it may skip expensive state computation and return `state: {}`.
+
+```typescript
+// Express example — skip DB query when target component fetches its own data
+app.get('*', (req, res) => {
+  const loaderTags = req.headers['x-webui-has-loader']?.split(',') ?? [];
+  const leafComponent = getMatchedLeafComponent(req.path); // your route matching
+  const skipState = loaderTags.includes(leafComponent);
+  const state = skipState ? {} : await db.getPageState(req.path);
+  const partial = handler.renderPartial(protocol, state, req.path);
+  res.json(partial);
+});
+```
 
 ## How It Works
 
@@ -345,6 +374,14 @@ When `Accept: application/json`:
 The `templateStyles` array contains module CSS definition tags for CssStrategy::Module. The client appends these to `<head>` before evaluating template scripts so adopted stylesheets are available. For Link/Style modes, this array is empty.
 
 The `chain` field tells the client router which route components are active at each nesting level. Each entry can include a `keepAlive` boolean flag. The client uses this to diff against the previous chain and only remount what changed - it does **not** perform route matching itself.
+
+**Request headers the router sends:**
+
+| Header | Value | Purpose |
+|--------|-------|---------|
+| `Accept` | `application/json` | Requests JSON partial instead of HTML |
+| `X-WebUI-Inventory` | Hex bitmask | Templates the client already has — server skips re-sending them |
+| `X-WebUI-Has-Loader` | Comma-separated tags | Components with a `static loader()` — server can check if the target leaf is in this list to skip state computation |
 
 ### Full HTML (initial load)
 

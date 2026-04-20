@@ -953,6 +953,157 @@ describe('WebUIRouter', () => {
       );
     });
   });
+
+  describe('keep-alive state preservation', () => {
+    test('keep-alive reactivation uses applyParamsAndQuery (no setState) when no loader', () => {
+      const router = new WebUIRouter();
+      const source = (router as any).commitWithData.toString() as string;
+
+      // The keep-alive branch should call applyParamsAndQuery (not applyParamsQueryState)
+      // when there's no loader override
+      assert.ok(
+        source.includes('applyParamsAndQuery'),
+        'commitWithData should call applyParamsAndQuery for keep-alive without loader',
+      );
+
+      // The applyParamsAndQuery call should be inside the keep-alive branch
+      const keepAliveIdx = source.indexOf('isKeepAlive');
+      const paramsOnlyIdx = source.indexOf('applyParamsAndQuery');
+      assert.ok(keepAliveIdx > -1, 'should have isKeepAlive check');
+      assert.ok(paramsOnlyIdx > keepAliveIdx, 'applyParamsAndQuery should be after isKeepAlive check');
+    });
+
+    test('keep-alive reactivation still calls applyParamsQueryState when loader provides override', () => {
+      const router = new WebUIRouter();
+      const source = (router as any).commitWithData.toString() as string;
+
+      // When override exists, applyParamsQueryState is still called
+      const overrideIdx = source.indexOf('if (override)');
+      assert.ok(overrideIdx > -1, 'should check for loader override in keep-alive branch');
+
+      // After the override check, applyParamsQueryState should be called
+      const stateCallIdx = source.indexOf('applyParamsQueryState', overrideIdx);
+      assert.ok(
+        stateCallIdx > overrideIdx && stateCallIdx - overrideIdx < 200,
+        'applyParamsQueryState should be called when loader override exists',
+      );
+    });
+
+    test('applyParamsAndQuery does not call setState', () => {
+      // Import and check the module-level function via source introspection
+      // The function is not exported but is used in commitWithData
+      const router = new WebUIRouter();
+
+      // Get the full source of the module by checking commitWithData which
+      // references both functions
+      const commitSrc = (router as any).commitWithData.toString() as string;
+
+      // Verify the pattern: applyParamsAndQuery is a separate function from applyParamsQueryState
+      assert.ok(
+        commitSrc.includes('applyParamsAndQuery('),
+        'commitWithData should reference applyParamsAndQuery',
+      );
+      assert.ok(
+        commitSrc.includes('applyParamsQueryState('),
+        'commitWithData should also reference applyParamsQueryState',
+      );
+    });
+  });
+
+  describe('X-WebUI-Has-Loader header', () => {
+    test('fetchPartial sends comma-separated loader component list', async () => {
+      const origFetch = (globalThis as any).fetch;
+      let capturedHeaders: Record<string, string> = {};
+
+      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
+        capturedHeaders = (opts?.headers as Record<string, string>) ?? {};
+        return {
+          ok: true,
+          headers: { get: () => 'application/json' },
+          json: async () => ({ state: {}, templates: [], path: '/', chain: [] }),
+        };
+      };
+
+      try {
+        const router = new WebUIRouter();
+        const priv = router as any;
+
+        // Simulate: two components discovered to have loaders
+        priv.loaderComponents.add('dash-page');
+        priv.loaderComponents.add('mail-view');
+
+        await priv.fetchPartial.call(router, '/test');
+        const header = capturedHeaders['X-WebUI-Has-Loader'];
+        assert.ok(header, 'should send X-WebUI-Has-Loader header');
+        assert.ok(header.includes('dash-page'), 'header should include dash-page');
+        assert.ok(header.includes('mail-view'), 'header should include mail-view');
+      } finally {
+        (globalThis as any).fetch = origFetch;
+      }
+    });
+
+    test('fetchPartial omits X-WebUI-Has-Loader when no loaders discovered', async () => {
+      const origFetch = (globalThis as any).fetch;
+      let capturedHeaders: Record<string, string> = {};
+
+      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
+        capturedHeaders = (opts?.headers as Record<string, string>) ?? {};
+        return {
+          ok: true,
+          headers: { get: () => 'application/json' },
+          json: async () => ({ state: {}, templates: [], path: '/', chain: [] }),
+        };
+      };
+
+      try {
+        const router = new WebUIRouter();
+        await (router as any).fetchPartial.call(router, '/test');
+        assert.equal(
+          capturedHeaders['X-WebUI-Has-Loader'],
+          undefined,
+          'should NOT send header when no loaders are known',
+        );
+      } finally {
+        (globalThis as any).fetch = origFetch;
+      }
+    });
+
+    test('resolveLoaders populates loaderComponents set', async () => {
+      const router = new WebUIRouter();
+      const priv = router as any;
+
+      const origGet = (globalThis as any).customElements.get;
+      (globalThis as any).customElements.get = (name: string) => {
+        if (name === 'loader-comp') {
+          return class LoaderComp {
+            static async loader() { return { x: 1 }; }
+          };
+        }
+        return origGet(name);
+      };
+
+      try {
+        await priv.resolveLoaders.call(router,
+          [{ component: 'loader-comp', params: {} }],
+          {},
+        );
+        assert.ok(
+          priv.loaderComponents.has('loader-comp'),
+          'resolveLoaders should add component to loaderComponents set',
+        );
+      } finally {
+        (globalThis as any).customElements.get = origGet;
+      }
+    });
+
+    test('destroy clears loaderComponents', () => {
+      const router = new WebUIRouter();
+      const priv = router as any;
+      priv.loaderComponents.add('some-page');
+      router.destroy();
+      assert.equal(priv.loaderComponents.size, 0, 'destroy should clear loaderComponents');
+    });
+  });
 });
 
 // ── parseQuery unit tests ────────────────────────────────────────

@@ -203,9 +203,11 @@ In the TypeScript class: `searchInput!: HTMLInputElement;`
 - Omit `exact` on parent routes that have `<outlet />`
 - Path params: `:id` (required), `:query?` (optional), `*path` (catch-all)
 - Query param allowlist: `query="action,to,subject"` — only listed params are set as component attributes (deny-by-default)
-- `keep-alive` — preserves the component across navigations (hidden, not destroyed). Returns instantly with `setState()` on reactivation
+- `keep-alive` — preserves DOM and local state across navigations (hidden, not destroyed). On reactivation, only param/query attrs are updated — `setState()` is NOT called (preserves scroll, forms, observables)
+- Route loaders: static `loader({ params, query, signal })` on component class — fetches custom data instead of server state. Runs pre-commit. Falls back to server state on failure
+- Keep-alive + loader: DOM preserved, loader provides fresh data via `setState()` on reactivation
 - Preload on hover: `Router.start({ preload: true })` — speculatively fetches route data on link hover for instant click navigation
-- Route loaders: static `loader({ params, query, signal })` on component class — fetches custom data instead of server state
+- `X-WebUI-Has-Loader` header: comma-separated list of component tags with loaders — host server can check if the target leaf is in this list to skip state computation
 
 ### Outlet
 

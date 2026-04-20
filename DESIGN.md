@@ -271,6 +271,14 @@ without a server round-trip.
 - `inventory`: updated hex bitmask of loaded templates
 - `chain`: matched route chain array — each entry has `component`, `path`, optional `params` and `exact`
 
+**Request headers sent by the client router:**
+
+| Header | Value | Purpose |
+|--------|-------|---------|
+| `Accept` | `application/json` | Requests JSON partial instead of full HTML |
+| `X-WebUI-Inventory` | Hex bitmask | Templates already loaded — server skips re-sending them |
+| `X-WebUI-Has-Loader` | Comma-separated tags | Components with a static `loader()` — host server may check if the target leaf is in this list and skip state computation |
+
 The `chain` field is produced by `render_partial()` in the handler, which walks the
 fragment graph and matches routes at each nesting level. Host servers call this once per partial
 response. Available via FFI as `webui_render_partial()` for C/.NET/Node hosts.
