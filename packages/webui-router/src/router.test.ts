@@ -1031,6 +1031,7 @@ describe('WebUIRouter', () => {
         // Simulate: two components discovered to have loaders
         priv.loaderComponents.add('dash-page');
         priv.loaderComponents.add('mail-view');
+        priv.loaderHeaderCache = [...priv.loaderComponents].join(',');
 
         await priv.fetchPartial.call(router, '/test');
         const header = capturedHeaders['X-WebUI-Has-Loader'];
@@ -1102,6 +1103,26 @@ describe('WebUIRouter', () => {
       priv.loaderComponents.add('some-page');
       router.destroy();
       assert.equal(priv.loaderComponents.size, 0, 'destroy should clear loaderComponents');
+    });
+
+    test('loaderPromises entries are deleted after loader completes', async () => {
+      const router = new WebUIRouter();
+      const priv = router as any;
+
+      // Set up a lazy loader that resolves immediately
+      priv.loaders = { 'lazy-comp': () => Promise.resolve() };
+      const loaderPromises = priv.loaderPromises as Map<string, Promise<void>>;
+
+      // Before loading, map is empty
+      assert.equal(loaderPromises.size, 0, 'should start empty');
+
+      // Call ensureComponentLoaded — adds entry to loaderPromises
+      const loadPromise = priv.ensureComponentLoaded('lazy-comp');
+      assert.equal(loaderPromises.size, 1, 'should have in-flight entry');
+
+      // After the loader resolves, the entry should be cleaned up
+      await loadPromise;
+      assert.equal(loaderPromises.size, 0, 'entry should be deleted after completion');
     });
   });
 });
