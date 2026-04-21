@@ -1,6 +1,8 @@
 # @microsoft/webui-router
 
-Client-side router for [WebUI](https://github.com/microsoft/webui) apps with nested route support. Uses the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navigation_API) to intercept link clicks and loads components on demand — preserving server-rendered content on initial load and fetching JSON partials for subsequent navigations. The server provides the matched route chain; the client does not perform route matching.
+Build-time compiled router for [WebUI](https://github.com/microsoft/webui) apps. Routes, cache tags, invalidation graphs, pending states, and error boundaries are declared as HTML attributes, validated by the Rust compiler, and baked into the binary protocol — zero runtime JavaScript for routing policy.
+
+Uses the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navigation_API) for client-side transitions. The server provides the matched route chain; the client does not perform route matching.
 
 > 📖 **Full documentation at [microsoft.github.io/webui](https://microsoft.github.io/webui)** — see the [Routing Guide](https://microsoft.github.io/webui/guide/concepts/routing) for setup and usage.
 
@@ -160,20 +162,100 @@ Opt-in speculative fetching for instant click navigation:
 Router.start({ preload: true });
 ```
 
-When enabled, the router prefetches JSON partials (templates, CSS, state) when the user hovers over internal links. On click, the cached result is used immediately. Only mouse pointers trigger preload (5-second TTL, single-entry cache).
+When enabled, the router prefetches JSON partials (templates, CSS, state) when the user hovers over internal links. On click, the cached result is used immediately. Preloaded entries are stored in the [tagged cache](#tagged-cache) with a 5-second minimum freshness. Only mouse pointers trigger preload.
+
+### Tagged Cache
+
+Cache partial responses with server-provided tags for precise invalidation:
+
+```typescript
+Router.start({
+  cache: {
+    staleTime: 30_000,   // ms before refetch (default: 0 = disabled)
+    gcTime: 300_000,     // ms before eviction from memory (default: 5 min)
+    maxEntries: 50,      // LRU cap (default: 50)
+  },
+});
+```
+
+Declare cache tags on routes as HTML attributes:
+
+```html
+<route path="email/:threadId" component="thread-page" exact
+       cache-tags="thread:{threadId},inbox" />
+```
+
+The `{threadId}` placeholder is resolved at render time by the Rust handler. The server includes resolved `cacheTags` in the JSON partial. On revisit within `staleTime`, the cached response is used instantly.
+
+### Tag-Based Invalidation
+
+Declare which tags a route invalidates after mutations:
+
+```html
+<route path="compose" component="compose-page" exact
+       invalidates="inbox,sent,counts,drafts" />
+```
+
+Programmatic invalidation:
+
+```typescript
+Router.invalidateTags(['inbox', 'thread:42']);  // evict by tag
+Router.invalidate('/email/42');                  // evict by path
+Router.invalidate();                             // evict everything
+```
+
+### Mutation Actions
+
+The write counterpart to `static loader()`. The router intercepts `<form method="post">` and auto-invalidates the cache:
+
+```typescript
+import type { RouteActionContext, RouteActionResult } from '@microsoft/webui-router';
+
+export class ComposePage extends WebUIElement {
+  static async action({ formData, params, signal }: RouteActionContext): Promise<RouteActionResult> {
+    await fetch('/api/send', { method: 'POST', body: formData, signal });
+    return {
+      invalidateTags: ['sent'],           // merged with route's invalidates attr
+      state: { status: 'Message sent' },  // optimistic UI (optional)
+    };
+  }
+}
+```
+
+The action's returned tags are merged with the route's build-time `invalidates` attribute. Only same-origin forms are intercepted.
+
+### Pending UI
+
+Show a loading component during slow navigations (>150ms):
+
+```html
+<route path="inbox" component="inbox-page" exact pending="mail-skeleton" />
+```
+
+The `pending` component is validated at build time. Keep-alive and cached routes skip pending.
+
+### Error Boundaries
+
+Show an error component when navigation fails:
+
+```html
+<route path="dashboard" component="dashboard-page" exact error="error-display" />
+```
+
+The error component receives `{ error, status, path }` as state. It can call `Router.navigate()` to retry.
 
 ### Controlling State
 
-The router gives you three levers to control how state flows:
-
 | Need | Mechanism |
 |------|-----------|
-| **Server provides all state** (default) | No changes needed — `setState(data.state)` on every navigation |
-| **I fetch my own data** | Define `static loader()` on the component class |
-| **Preserve local state across navigations** | Add `keep-alive` to the route |
-| **Preserve DOM, but refresh data my way** | `keep-alive` + `static loader()` |
-
-The router also sends `X-WebUI-Has-Loader` as a comma-separated list of component tags that have loaders (e.g., `X-WebUI-Has-Loader: dash-page,mail-view`). The host server can check whether the target leaf component is in this list and skip expensive state computation by returning `state: {}`.
+| **Server provides all state** (default) | No changes needed |
+| **I fetch my own data** | `static loader()` on component class |
+| **Preserve local state** | `keep-alive` on route |
+| **Preserve DOM, refresh data** | `keep-alive` + `static loader()` |
+| **Handle form submissions** | `static action()` on component class |
+| **Cache responses** | `cache` config on `Router.start()` |
+| **Show loading state** | `pending` attr on route |
+| **Handle failures** | `error` attr on route |
 
 ## API
 
@@ -188,6 +270,7 @@ Start the router. Call after hydration completes.
 | `templateEndpoint` | `string` | URL for `ensureLoaded()` requests (default: `"/_webui/templates"`) |
 | `dev` | `boolean` | Enable development mode warnings |
 | `preload` | `boolean` | Preload routes on link hover for instant navigation |
+| `cache` | `CacheConfig` | Tagged navigation cache: `{ staleTime, gcTime, maxEntries }` |
 
 ### `Router.navigate(path)`
 
@@ -248,6 +331,23 @@ The router awaits `transition.updateCallbackDone` (not `.finished`), so rapid na
 
 Navigate back in history.
 
+### `Router.invalidateTags(tags)`
+
+Evict all cache entries whose tags overlap with the given tags:
+
+```typescript
+Router.invalidateTags(['inbox', 'thread:42']);
+```
+
+### `Router.invalidate(path?)`
+
+Evict cache entries by path, or all entries if no path is given:
+
+```typescript
+Router.invalidate('/email/42');  // one entry
+Router.invalidate();             // everything
+```
+
 ### `Router.activeComponent`
 
 Component tag of the active leaf route:
@@ -285,18 +385,25 @@ Router.gc();
 The framework's internal `templateCache` (`WeakMap`) is keyed by the same
 meta objects, so its entries become GC-eligible automatically.
 
-### Navigation Event
+### Navigation Events
 
 Dispatched on `window` after each navigation:
 
 ```typescript
 window.addEventListener('webui:route:navigated', (e) => {
   const { component, params, query, path } = (e as CustomEvent).detail;
-  console.log(`Navigated to ${component}`, params, query);
 });
 ```
 
-> **Note:** `query` contains **all** URL query parameters (unfiltered). Only
+Dispatched after a mutation action completes:
+
+```typescript
+window.addEventListener('webui:route:action-complete', (e) => {
+  const { component, invalidatedTags, path } = (e as CustomEvent).detail;
+});
+```
+
+> **Note:** The `query` in `navigated` contains **all** URL query parameters (unfiltered). Only
 > parameters declared via the `query` attribute on `<route>` are set as DOM
 > attributes — the event exposes the full set for programmatic use.
 
@@ -354,14 +461,15 @@ On client-side navigation, the router sends:
 GET /users/42
 Accept: application/json
 X-WebUI-Inventory: <hex bitmask>
+X-WebUI-Has-Loader: <comma-separated tags>
 ```
 
 The server should return:
 
-- **`Accept: application/json`** → JSON partial: `{ state, templateStyles, templates, inventory, path, chain }` - returned directly from `renderPartial()`, no assembly required
-- **Otherwise** → Full SSR'd HTML page (handler emits a `<meta name="webui-inventory">` tag in `<head>` so the client knows which templates are loaded)
+- **`Accept: application/json`** → JSON partial: `{ state, templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }` - returned directly from `renderPartial()`, no assembly required
+- **Otherwise** → Full SSR'd HTML page
 
-When `templateStyles` is present (CssStrategy::Module), the router appends those module CSS definition tags to `<head>` before evaluating the batched template scripts. The `chain` field contains the matched route chain - the client uses it to diff against the previous chain and only remount what changed. The `X-WebUI-Inventory` header is a bitmask of component templates the client already has - the server uses it to avoid sending duplicate templates.
+The `chain` field contains the matched route chain with `component`, `path`, `params`, `exact`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`. The `cacheTags` array contains resolved cache tags from the full chain. The optional `cacheControl` object can override `staleTime` per-response.
 
 See the [Routing guide](https://github.com/microsoft/webui/blob/main/docs/guide/concepts/routing.md) for complete server implementation examples.
 

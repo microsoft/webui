@@ -2,5 +2,5 @@
   <h2>Something went wrong</h2>
   <p class="error-message">{{errorMessage}}</p>
   <p class="error-path">Path: {{errorPath}}</p>
-  <button class="retry" onclick="{{onRetry}}">Retry</button>
+  <button class="retry" @click="{onRetry()}">Retry</button>
 </div>

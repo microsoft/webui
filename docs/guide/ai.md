@@ -198,16 +198,43 @@ In the TypeScript class: `searchInput!: HTMLInputElement;`
 </route>
 ```
 
+**Path & matching:**
 - Child paths are relative to parent (no leading `/`)
 - Use `exact` on leaf routes (no children)
 - Omit `exact` on parent routes that have `<outlet />`
 - Path params: `:id` (required), `:query?` (optional), `*path` (catch-all)
-- Query param allowlist: `query="action,to,subject"` — only listed params are set as component attributes (deny-by-default)
-- `keep-alive` — preserves DOM and local state across navigations (hidden, not destroyed). On reactivation, only param/query attrs are updated — `setState()` is NOT called (preserves scroll, forms, observables)
-- Route loaders: static `loader({ params, query, signal })` on component class — fetches custom data instead of server state. Runs pre-commit. Falls back to server state on failure
+
+**Attributes on `<route>`:**
+
+| Attribute | Example | Description |
+|-----------|---------|-------------|
+| `path` | `"users/:id"` | URL path template (relative to parent) |
+| `component` | `"user-detail"` | Component tag to mount |
+| `exact` | (boolean) | Require exact path match (use on leaf routes) |
+| `query` | `"action,to,subject"` | Allowlist of query params set as component attributes (deny-by-default) |
+| `keep-alive` | (boolean) | Preserve DOM and local state across navigations |
+| `cache-tags` | `"thread:{threadId},inbox"` | Cache tag templates - `{param}` resolved at render time |
+| `invalidates` | `"inbox,sent,counts"` | Tags to auto-invalidate after mutation actions |
+| `pending` | `"loading-skeleton"` | Component for loading UI during slow navigations (>150ms) |
+| `error` | `"error-display"` | Component for error boundary on fetch failure |
+
+All attributes are validated at build time. Referencing a non-existent `pending` or `error` component is a compile error.
+
+**State flow:**
+- `keep-alive` — preserves DOM and local state. On reactivation, only param/query attrs are updated - `setState()` is NOT called
+- Route loaders: `static loader({ params, query, signal })` on component class - fetches custom data instead of server state. Runs pre-commit. Falls back to server state on failure
 - Keep-alive + loader: DOM preserved, loader provides fresh data via `setState()` on reactivation
-- Preload on hover: `Router.start({ preload: true })` — speculatively fetches route data on link hover for instant click navigation
-- `X-WebUI-Has-Loader` header: comma-separated list of component tags with loaders — host server can check if the target leaf is in this list to skip state computation
+- Route actions: `static action({ formData, params, signal })` on component class - handles `<form method="post">`. Returns `{ invalidateTags?, state? }`. Auto-invalidates cache with merged tags
+
+**Cache & preload:**
+- Preload on hover: `Router.start({ preload: true })` - speculatively fetches on link hover
+- Tagged cache: `Router.start({ cache: { staleTime, gcTime, maxEntries } })` - responses cached by path, tagged with `cacheTags`
+- `Router.invalidateTags(tags)` - evict cache entries by tag
+- `Router.invalidate(path?)` - evict by path or all
+
+**Server headers:**
+- `X-WebUI-Has-Loader` header: comma-separated list of component tags with loaders - host server can skip state computation
+- `X-WebUI-Inventory` header: hex bitmask of loaded templates - server skips re-sending
 
 ### Outlet
 

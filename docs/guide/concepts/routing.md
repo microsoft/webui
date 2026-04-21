@@ -1,6 +1,13 @@
 # Routing
 
-WebUI provides nested SSR routing with client-side navigation. Routes are declared as a tree in `index.html`, components use `<outlet />` to render child routes, and the `@microsoft/webui-router` package handles client-side transitions after the initial SSR.
+WebUI routes are **declared in HTML and compiled at build time**. The Rust compiler parses your `<route>` tree, validates every attribute, and bakes it all into the binary protocol. Cache tags, invalidation graphs, pending states, error boundaries - everything is known before a single request is served.
+
+This means:
+- **Zero runtime JavaScript for routing policy.** Cache semantics, invalidation rules, and loading states are HTML attributes - not framework configuration objects.
+- **Build-time validation.** A typo in `pending="loadnig-skeleton"` is a compile error, not a blank screen in production.
+- **Server and client both know the full graph.** The server resolves cache tags with real param values. The client invalidates by tag after mutations. Neither needs runtime discovery.
+
+At its simplest, routing is three lines of HTML and one line of TypeScript. At its most advanced, it's declarative tagged caching with compiler-enforced invalidation graphs - and everything in between uses the same `<route>` element.
 
 ## Installation
 
@@ -154,9 +161,9 @@ Router.start({ preload: true });
 
 How it works:
 - On mouse hover over an internal `<a>`, the router speculatively calls `fetchPartial()` for that path
-- Templates, CSS, and state are cached (single-entry, 5-second TTL)
-- On click, the cached result is used immediately — no network wait
-- If the user clicks a different link, the cache is discarded and a fresh fetch happens
+- Results are stored in the [tagged cache](#tagged-cache) with a 5-second minimum freshness
+- On click, the cached result is used immediately - no network wait
+- If the user hovers a different link, the previous preload is cancelled and a new one starts
 
 Only mouse pointers trigger preload — touch taps fire simultaneously with the click event, making speculative fetching pointless.
 
@@ -211,6 +218,150 @@ app.get('*', async (req, res) => {
 });
 ```
 
+### Tagged Cache
+
+The router caches partial responses and tags them with server-provided cache tags for precise invalidation. Enable caching at startup:
+
+```typescript
+Router.start({
+  cache: {
+    staleTime: 30_000,   // ms before refetch (default: 0 = disabled)
+    gcTime: 300_000,     // ms before eviction from memory (default: 5 min)
+    maxEntries: 50,      // LRU cap (default: 50)
+  },
+});
+```
+
+Declare cache tags on routes as HTML attributes. Placeholders like `{threadId}` reference route path parameters and are resolved at render time:
+
+```html
+<route path="/" component="mail-app">
+  <route path="./" component="mail-view" keep-alive
+         cache-tags="folders,counts">
+    <route path="" component="inbox-page" exact
+           cache-tags="inbox,counts" />
+    <route path="email/:threadId" component="thread-page" exact
+           cache-tags="thread:{threadId}" />
+  </route>
+</route>
+```
+
+| Behavior | Description |
+|----------|-------------|
+| **Build time** | The Rust compiler validates `{param}` placeholders match actual route params |
+| **Render time** | The handler resolves `thread:{threadId}` to `thread:42` using matched params |
+| **Response** | Resolved tags are included in the `cacheTags` array of the JSON partial |
+| **Client** | The router stores the response keyed by path, tagged with resolved values |
+| **Revisit** | Within `staleTime`, the cached response is used instantly - no network fetch |
+| **Server override** | The server can include `cacheControl: { staleTime: 60000 }` to override per-response |
+
+::: tip Preload + cache interaction
+When `preload: true` is enabled, hover fetches write to the same cache. Preloaded entries get a minimum 5-second freshness window even when `staleTime` is 0 (disabled).
+:::
+
+### Tag-Based Invalidation
+
+Declare which tags a route invalidates after mutations:
+
+```html
+<route path="compose" component="compose-page" exact
+       invalidates="inbox,sent,counts,drafts" />
+
+<route path="email/:threadId/reply" component="reply-page" exact
+       invalidates="thread:{threadId},inbox" />
+```
+
+The compiler builds the full invalidation graph at build time. Developers declare intent in HTML - the framework ensures correctness.
+
+Programmatic invalidation:
+
+```typescript
+Router.invalidateTags(['inbox', 'thread:42']);  // evict by tag
+Router.invalidate('/email/42');                  // evict by path
+Router.invalidate();                             // evict everything
+```
+
+### Mutation Actions
+
+The write counterpart to `static loader()`. Components define `static action()` to handle form submissions, and the router auto-invalidates the cache:
+
+```typescript
+import { WebUIElement } from '@microsoft/webui-framework';
+import type { RouteActionContext, RouteActionResult } from '@microsoft/webui-router';
+
+export class ComposePage extends WebUIElement {
+  static async action({ formData, params, signal }: RouteActionContext): Promise<RouteActionResult> {
+    await fetch('/api/send', { method: 'POST', body: formData, signal });
+    return {
+      invalidateTags: ['sent'],           // merged with route's invalidates attr
+      state: { status: 'Message sent' },  // optimistic UI (optional)
+    };
+  }
+}
+```
+
+The router intercepts `<form method="post">` submissions via a delegated listener:
+
+| Step | What happens |
+|------|-------------|
+| **1. Intercept** | Walks `composedPath()` to find the form and nearest `<webui-route>` (shadow DOM safe) |
+| **2. Guard** | Skips forms with external `action` URLs or `target` other than `_self` |
+| **3. Call** | Invokes `static action({ formData, params, signal })` on the component class |
+| **4. Invalidate** | Merges the action's returned tags with the route's build-time `invalidates` attribute |
+| **5. Update** | Applies optimistic `result.state` via `setState()` if provided |
+| **6. Event** | Dispatches `webui:route:action-complete` on `window` |
+
+### Pending UI
+
+Show a loading component during slow navigations. The component is validated at build time - a typo causes a build error, not a runtime blank screen:
+
+```html
+<route path="inbox" component="inbox-page" exact
+       pending="mail-skeleton" />
+```
+
+| Behavior | Description |
+|----------|-------------|
+| **Threshold** | Pending component appears after 150ms - fast navigations never flash |
+| **Mount** | Rendered in the parent route's outlet area |
+| **Replace** | Real content replaces the skeleton when the fetch completes |
+| **Keep-alive** | Skipped - keep-alive routes activate instantly from the DOM |
+| **Cached** | Skipped - cached navigations have no fetch delay |
+
+Pending components are normal WebUI components - SSR'd, compiled, and part of the protocol. No special API needed.
+
+### Error Boundaries
+
+Show an error component when navigation fails. Like `pending`, the component is validated at build time:
+
+```html
+<route path="dashboard" component="dashboard-page" exact
+       error="error-display" />
+```
+
+The error component receives details as state:
+
+```typescript
+export class ErrorDisplay extends WebUIElement {
+  @observable error = '';    // "Navigation failed"
+  @observable status = 0;    // HTTP status code (0 if network error)
+  @observable path = '';     // the path that failed
+
+  onRetry = () => Router.navigate(this.path);
+}
+```
+
+```html
+<!-- error-display.html -->
+<div class="error">
+  <h2>Something went wrong</h2>
+  <p>{{error}}</p>
+  <button @click="{onRetry()}">Try again</button>
+</div>
+```
+
+If no `error` attribute is declared on the route, the router falls back to its default behavior (`console.warn` + stale content preserved).
+
 ## How It Works
 
 ### First Load (SSR)
@@ -239,8 +390,14 @@ Starts the router. Call after hydration completes.
 
 ```typescript
 Router.start({
-  basePath: '/app',   // optional: prefix for all route URLs
-  loaders: { ... },   // optional: lazy-loading map
+  basePath: '/app',           // prefix for all route URLs
+  loaders: { ... },           // lazy-loading map (component tag → async import)
+  preload: true,              // speculative fetch on link hover
+  cache: {                    // tagged navigation cache
+    staleTime: 30_000,        // ms before refetch (0 = disabled)
+    gcTime: 300_000,          // ms before memory eviction
+    maxEntries: 50,           // LRU cap
+  },
 });
 ```
 
@@ -256,6 +413,31 @@ Router.navigate('/users/42');
 Router.back();
 ```
 
+### `Router.invalidateTags(tags)`
+
+Evict all cache entries whose tags overlap with the given tags:
+
+```typescript
+Router.invalidateTags(['inbox', 'thread:42']);
+```
+
+### `Router.invalidate(path?)`
+
+Evict cache entries by path, or all entries if no path is given:
+
+```typescript
+Router.invalidate('/email/42');  // evict one entry
+Router.invalidate();             // evict everything
+```
+
+### `Router.activeComponent`
+
+The component tag of the currently active leaf route:
+
+```typescript
+console.log(Router.activeComponent); // "user-detail"
+```
+
 ### `Router.activeParams`
 
 The bound parameters of the current route:
@@ -266,21 +448,18 @@ console.log(Router.activeParams); // { id: "42" }
 
 ### `Router.destroy()`
 
-Tears down the router and removes event listeners.
+Tears down the router, removes event listeners, and clears the cache.
 
 ### `Router.gc()`
 
 Release all cached component templates to free memory. Removes all entries from `window.__webui_templates` and clears their inventory bits so the server will re-send them on the next navigation that needs them.
 
 ```typescript
-// Release all non-active templates
 Router.gc();
 ```
 
-The framework's internal template cache is a `WeakMap` keyed by the same meta objects, so its entries become GC-eligible automatically when the template is released.
-
 ::: tip When to use this
-Most apps don't need this - the number of unique component templates is bounded by the route tree (typically 10–30). The server's inventory system already prevents duplicate downloads. Use `gc()` in long-lived SPAs with many routes where memory pressure is a concern.
+Most apps don't need this - the number of unique component templates is bounded by the route tree (typically 10-30). The server's inventory system already prevents duplicate downloads. Use `gc()` in long-lived SPAs with many routes where memory pressure is a concern.
 :::
 
 ## Lazy Loading
@@ -347,7 +526,11 @@ app.get('/_webui/templates', (req, res) => {
 
 ```typescript
 window.addEventListener('webui:route:navigated', (event) => {
-  const { component, params, path } = event.detail;
+  const { component, params, query, path } = event.detail;
+});
+
+window.addEventListener('webui:route:action-complete', (event) => {
+  const { component, invalidatedTags, path } = event.detail;
 });
 ```
 
@@ -362,20 +545,37 @@ When `Accept: application/json`:
 ```json
 {
   "state": { "name": "Alice", "email": "alice@example.com" },
-  "templateStyles": ["<style type=\"module\" specifier=\"user-detail\">.user-detail{display:block}</style>"],
+  "templateStyles": ["<style type=\"module\" specifier=\"user-detail\">...</style>"],
   "templates": ["(function(){var w=window.__webui_templates||...})();"],
   "inventory": "04000400...",
   "path": "/users/42",
   "chain": [
     { "component": "app-shell", "path": "/" },
-    { "component": "user-detail", "path": "users/:id", "params": { "id": "42" }, "exact": true, "keepAlive": true }
-  ]
+    {
+      "component": "user-detail", "path": "users/:id",
+      "params": { "id": "42" }, "exact": true, "keepAlive": true,
+      "pendingComponent": "loading-skeleton",
+      "errorComponent": "error-page",
+      "invalidates": ["user:42", "users"]
+    }
+  ],
+  "cacheTags": ["user:42", "users"],
+  "cacheControl": { "staleTime": 60000 }
 }
 ```
 
-The `templateStyles` array contains module CSS definition tags for CssStrategy::Module. The client appends these to `<head>` before evaluating template scripts so adopted stylesheets are available. For Link/Style modes, this array is empty.
+| Field | Description |
+|-------|-------------|
+| `state` | Application state for the matched route |
+| `templateStyles` | Module CSS definition tags (empty for Link/Style modes) |
+| `templates` | Client template payloads filtered by inventory bitmask |
+| `inventory` | Updated hex bitmask of loaded templates |
+| `path` | The matched request path |
+| `chain` | Matched route chain - one entry per nesting level |
+| `cacheTags` | Resolved cache tags from the full chain (union of all levels) |
+| `cacheControl` | Optional per-response cache overrides |
 
-The `chain` field tells the client router which route components are active at each nesting level. Each entry can include a `keepAlive` boolean flag. The client uses this to diff against the previous chain and only remount what changed - it does **not** perform route matching itself.
+Each `chain` entry can include: `component`, `path`, `params`, `exact`, `keepAlive`, `allowedQuery`, `pendingComponent`, `errorComponent`, and `invalidates`.
 
 **Request headers the router sends:**
 
