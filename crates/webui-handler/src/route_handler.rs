@@ -2045,12 +2045,7 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
 
-        let partial = render_partial(
-            &protocol,
-            "index.html",
-            "/email/42",
-            "",
-        );
+        let partial = render_partial(&protocol, "index.html", "/email/42", "");
         let tags = partial["cacheTags"].as_array().unwrap();
         let tag_strings: Vec<&str> = tags.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(

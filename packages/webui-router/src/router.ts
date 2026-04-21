@@ -1635,6 +1635,9 @@ export class WebUIRouter {
         } catch { /* ignore */ }
       }
     } finally {
+      // Release the stream lock and clear the deferred reference
+      reader.releaseLock();
+      this.deferredReader = null;
       // Mark cache entry as complete
       const cacheEntry = this.cache.get(requestPath);
       if (cacheEntry) cacheEntry.complete = true;
