@@ -358,6 +358,10 @@ export class WebUIRouter {
   private pendingTimer: ReturnType<typeof setTimeout> | null = null;
   /** AbortController for the in-flight mutation action. */
   private actionController: AbortController | null = null;
+  /** Direct reference to mounted pending element for O(1) cleanup. */
+  private pendingElement: HTMLElement | null = null;
+  /** Direct reference to mounted error element for O(1) cleanup. */
+  private errorElement: HTMLElement | null = null;
 
   /** The component tag of the currently active leaf route. */
   get activeComponent(): string {
@@ -658,6 +662,8 @@ export class WebUIRouter {
       clearTimeout(this.pendingTimer);
       this.pendingTimer = null;
     }
+    this.pendingElement = null;
+    this.errorElement = null;
   }
 
   // ── Navigation Cache ──────────────────────────────────────────
@@ -765,6 +771,20 @@ export class WebUIRouter {
         }
       }
       if (!form) return;
+
+      // Only intercept forms without an explicit action or targeting same-origin.
+      // Forms with external action URLs (payment, auth, etc.) must not be hijacked.
+      const formAction = form.action; // resolved absolute URL
+      if (formAction) {
+        try {
+          const actionUrl = new URL(formAction);
+          if (actionUrl.origin !== location.origin) return;
+        } catch {
+          return; // malformed action — don't intercept
+        }
+      }
+      // Forms with a target attribute submit to a different browsing context
+      if (form.target && form.target !== '_self') return;
 
       // Find the nearest ancestor <webui-route> with a component
       let routeEl: HTMLElement | null = null;
@@ -905,11 +925,13 @@ export class WebUIRouter {
 
   /** Remove any pending/error elements left over from a previous navigation. */
   private clearPendingElements(): void {
-    for (const el of document.querySelectorAll('[data-webui-pending]')) {
-      el.remove();
+    if (this.pendingElement) {
+      this.pendingElement.remove();
+      this.pendingElement = null;
     }
-    for (const el of document.querySelectorAll('[data-webui-error]')) {
-      el.remove();
+    if (this.errorElement) {
+      this.errorElement.remove();
+      this.errorElement = null;
     }
   }
 
@@ -960,6 +982,7 @@ export class WebUIRouter {
     const pending = document.createElement(componentTag);
     pending.setAttribute('data-webui-pending', '');
     container.appendChild(pending);
+    this.pendingElement = pending;
   }
 
   /**
@@ -993,6 +1016,7 @@ export class WebUIRouter {
     const errorEl = document.createElement(componentTag);
     errorEl.setAttribute('data-webui-error', '');
     container.appendChild(errorEl);
+    this.errorElement = errorEl;
     if (typeof (errorEl as any).setState === 'function') {
       (errorEl as any).setState(errorState);
     }
@@ -1157,6 +1181,16 @@ export class WebUIRouter {
       }
 
       if (!partialData || signal?.aborted || thisGen !== this.navGeneration) return;
+
+      // Verify response pathname matches request to prevent cache poisoning.
+      // Compare only the pathname (before '?') since the server path omits query strings.
+      if (partialData.path) {
+        const requestPathname = requestPath.split('?')[0];
+        if (partialData.path !== requestPathname && partialData.path !== requestPath) {
+          console.warn(`[Router] Response path mismatch: expected ${requestPathname}, got ${partialData.path}`);
+          return;
+        }
+      }
 
       // Store in cache with tags
       if (!cached) {

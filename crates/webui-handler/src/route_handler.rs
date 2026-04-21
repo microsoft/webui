@@ -599,42 +599,28 @@ pub fn render_partial(
         get_needed_components_for_request(protocol, entry_id, request_path, inventory_hex);
 
     // Build the matched route chain
-    let chain = collect_route_chain(protocol, entry_id, request_path);
+    let mut chain = collect_route_chain(protocol, entry_id, request_path);
 
     // Resolve cache tags with accumulated params from the full chain.
     // Each level can reference params from its own level AND all ancestors.
+    // Mutates in place to avoid cloning chain entries.
     let mut accumulated_params: HashMap<String, String> = HashMap::new();
     let mut all_resolved_tags: Vec<String> = Vec::new();
-    let mut resolved_chain: Vec<RouteChainEntry> = Vec::with_capacity(chain.len());
 
-    for entry in &chain {
-        // Accumulate params from all levels
+    for entry in &mut chain {
         for (k, v) in &entry.params {
             accumulated_params.insert(k.clone(), v.clone());
         }
-        // Resolve cache tags and invalidates with accumulated params
-        let resolved_tags = resolve_tag_templates(&entry.cache_tags, &accumulated_params);
-        let resolved_invalidates = resolve_tag_templates(&entry.invalidates, &accumulated_params);
-
-        all_resolved_tags.extend(resolved_tags.iter().cloned());
-
-        resolved_chain.push(RouteChainEntry {
-            cache_tags: resolved_tags,
-            invalidates: resolved_invalidates,
-            ..entry.clone()
-        });
+        entry.cache_tags = resolve_tag_templates(&entry.cache_tags, &accumulated_params);
+        entry.invalidates = resolve_tag_templates(&entry.invalidates, &accumulated_params);
+        all_resolved_tags.extend(entry.cache_tags.iter().cloned());
     }
 
     // Collect templates + CSS using the shared helper
     let tag_refs: Vec<&str> = needed_names.iter().map(|s| s.as_str()).collect();
     let (style_array, tmpl_array) = collect_component_assets(protocol, &tag_refs);
 
-    let chain_array = Value::Array(
-        resolved_chain
-            .iter()
-            .map(RouteChainEntry::to_json)
-            .collect(),
-    );
+    let chain_array = Value::Array(chain.iter().map(RouteChainEntry::to_json).collect());
 
     let mut result = serde_json::Map::with_capacity(7);
     result.insert("state".into(), state);
