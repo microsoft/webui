@@ -543,30 +543,25 @@ fn resolve_tag_templates(templates: &[String], params: &HashMap<String, String>)
             continue;
         }
         let mut result = String::with_capacity(template.len());
-        let mut chars = template.char_indices().peekable();
-        while let Some((i, ch)) = chars.next() {
-            if ch == '{' {
-                if let Some(end) = template[i + 1..].find('}') {
-                    let name = &template[i + 1..i + 1 + end];
-                    if let Some(value) = params.get(name) {
-                        result.push_str(value);
-                    } else {
-                        result.push('{');
-                        result.push_str(name);
-                        result.push('}');
-                    }
-                    // Skip past the closing '}'
-                    let skip_to = i + 1 + end + 1;
-                    while chars.peek().is_some_and(|(idx, _)| *idx < skip_to) {
-                        chars.next();
-                    }
+        let mut rest = template.as_str();
+        while let Some(open) = rest.find('{') {
+            result.push_str(&rest[..open]);
+            rest = &rest[open + 1..];
+            if let Some(close) = rest.find('}') {
+                let name = &rest[..close];
+                if let Some(value) = params.get(name) {
+                    result.push_str(value);
                 } else {
                     result.push('{');
+                    result.push_str(name);
+                    result.push('}');
                 }
+                rest = &rest[close + 1..];
             } else {
-                result.push(ch);
+                result.push('{');
             }
         }
+        result.push_str(rest);
         resolved.push(result);
     }
     resolved
