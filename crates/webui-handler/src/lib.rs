@@ -392,6 +392,7 @@ impl WebUIHandler {
                 if matched_child.keep_alive {
                     context.writer.write(" keep-alive")?;
                 }
+                route_renderer::write_route_cache_attrs(context.writer, matched_child)?;
                 context.writer.write(" active>")?;
 
                 context.writer.write("<")?;
@@ -442,6 +443,7 @@ impl WebUIHandler {
                 if child.keep_alive {
                     context.writer.write(" keep-alive")?;
                 }
+                route_renderer::write_route_cache_attrs(context.writer, child)?;
                 context
                     .writer
                     .write(" style=\"display:none\"></webui-route>")?;
@@ -518,6 +520,7 @@ impl WebUIHandler {
         if route_frag.keep_alive {
             context.writer.write(" keep-alive")?;
         }
+        route_renderer::write_route_cache_attrs(context.writer, route_frag)?;
 
         if is_matched {
             context.writer.write(" active>")?;

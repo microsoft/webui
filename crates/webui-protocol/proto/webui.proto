@@ -69,6 +69,19 @@ message WebUIFragmentRoute {
   // When true, the router preserves the mounted component instance across
   // navigations instead of destroying and recreating it. Opt-in per route.
   bool keep_alive = 6;
+  // Cache tag templates for this route (e.g. "thread:{threadId}", "inbox").
+  // Placeholders like {param} are resolved at render time with actual param values.
+  repeated string cache_tags = 7;
+  // Invalidation tag templates (e.g. "inbox", "thread:{threadId}").
+  // After a mutation action on this route, these tags are auto-invalidated.
+  // Supports {param} placeholders resolved at render time.
+  repeated string invalidates = 8;
+  // Component tag name for the pending/loading UI (e.g. "mail-skeleton").
+  // Validated at build time — build fails if the component does not exist.
+  string pending_component = 9;
+  // Component tag name for the error boundary UI (e.g. "error-page").
+  // Validated at build time — build fails if the component does not exist.
+  string error_component = 10;
 }
 
 // Outlet placeholder — marks where matched child route content renders.

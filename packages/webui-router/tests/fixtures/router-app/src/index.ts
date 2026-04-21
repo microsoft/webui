@@ -64,6 +64,33 @@ export class PageLoader extends WebUIElement {
 }
 PageLoader.define('page-loader');
 
+// ── Pending UI test: skeleton component ──────────────────────────
+
+export class LoadingSkeleton extends WebUIElement {}
+LoadingSkeleton.define('loading-skeleton');
+
+// ── Pending UI test: slow-loading page component ─────────────────
+
+export class PageSlow extends WebUIElement {}
+PageSlow.define('page-slow');
+
+// ── Error boundary test: error display component ─────────────────
+
+export class ErrorDisplay extends WebUIElement {
+  @observable errorMessage = '';
+  @observable errorPath = '';
+
+  onRetry = (): void => {
+    (window as any).navigation.navigate('/');
+  };
+}
+ErrorDisplay.define('error-display');
+
+// ── Error boundary test: failing page component ──────────────────
+
+export class PageFailing extends WebUIElement {}
+PageFailing.define('page-failing');
+
 // ── Start router after hydration ─────────────────────────────────
 
 window.addEventListener('webui:hydration-complete', () => {
@@ -75,6 +102,10 @@ window.addEventListener('webui:hydration-complete', () => {
       'page-compose': () => Promise.resolve(),
       'page-keepalive': () => Promise.resolve(),
       'page-loader': () => Promise.resolve(),
+      'page-slow': () => Promise.resolve(),
+      'page-failing': () => Promise.resolve(),
+      'loading-skeleton': () => Promise.resolve(),
+      'error-display': () => Promise.resolve(),
     },
   });
 });
@@ -89,6 +120,10 @@ if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {
       'page-compose': () => Promise.resolve(),
       'page-keepalive': () => Promise.resolve(),
       'page-loader': () => Promise.resolve(),
+      'page-slow': () => Promise.resolve(),
+      'page-failing': () => Promise.resolve(),
+      'loading-skeleton': () => Promise.resolve(),
+      'error-display': () => Promise.resolve(),
     },
   });
 }

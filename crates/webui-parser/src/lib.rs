@@ -1420,13 +1420,53 @@ impl HtmlParser {
             exact,
             query,
             keep_alive: self.has_element_attribute(node, "keep-alive", source)?,
+            cache_tags: self
+                .get_element_attribute(node, "cache-tags", source)?
+                .map(|v| route_parser::parse_tag_list(&v))
+                .unwrap_or_default(),
+            invalidates: self
+                .get_element_attribute(node, "invalidates", source)?
+                .map(|v| route_parser::parse_tag_list(&v))
+                .unwrap_or_default(),
+            pending_component: self
+                .get_element_attribute(node, "pending", source)?
+                .unwrap_or_default(),
+            error_component: self
+                .get_element_attribute(node, "error", source)?
+                .unwrap_or_default(),
         };
 
         // Validate attributes (component is required)
         route_parser::validate_attributes(&attrs)?;
 
-        // Extract params from path template (validation only)
-        route_parser::extract_params(&path)?;
+        // Extract params from path template and validate
+        let route_params: std::collections::HashSet<String> =
+            route_parser::extract_params(&path)?.into_iter().collect();
+        if !attrs.cache_tags.is_empty() {
+            route_parser::validate_tag_placeholders(
+                &attrs.cache_tags,
+                &route_params,
+                "cache-tags",
+                &path,
+            )?;
+        }
+        if !attrs.invalidates.is_empty() {
+            route_parser::validate_tag_placeholders(
+                &attrs.invalidates,
+                &route_params,
+                "invalidates",
+                &path,
+            )?;
+        }
+
+        // Validate pending component exists in the registry
+        if !attrs.pending_component.is_empty() {
+            self.ensure_route_component_parsed(&attrs.pending_component)?;
+        }
+        // Validate error component exists in the registry
+        if !attrs.error_component.is_empty() {
+            self.ensure_route_component_parsed(&attrs.error_component)?;
+        }
 
         // Ensure the component's template is parsed and registered
         self.ensure_route_component_parsed(&component)?;
@@ -1486,10 +1526,51 @@ impl HtmlParser {
             exact,
             query,
             keep_alive: self.has_element_attribute(node, "keep-alive", source)?,
+            cache_tags: self
+                .get_element_attribute(node, "cache-tags", source)?
+                .map(|v| route_parser::parse_tag_list(&v))
+                .unwrap_or_default(),
+            invalidates: self
+                .get_element_attribute(node, "invalidates", source)?
+                .map(|v| route_parser::parse_tag_list(&v))
+                .unwrap_or_default(),
+            pending_component: self
+                .get_element_attribute(node, "pending", source)?
+                .unwrap_or_default(),
+            error_component: self
+                .get_element_attribute(node, "error", source)?
+                .unwrap_or_default(),
         };
 
         route_parser::validate_attributes(&attrs)?;
-        route_parser::extract_params(&path)?;
+
+        // Extract params from path template and validate
+        let route_params: std::collections::HashSet<String> =
+            route_parser::extract_params(&path)?.into_iter().collect();
+        if !attrs.cache_tags.is_empty() {
+            route_parser::validate_tag_placeholders(
+                &attrs.cache_tags,
+                &route_params,
+                "cache-tags",
+                &path,
+            )?;
+        }
+        if !attrs.invalidates.is_empty() {
+            route_parser::validate_tag_placeholders(
+                &attrs.invalidates,
+                &route_params,
+                "invalidates",
+                &path,
+            )?;
+        }
+
+        // Validate pending/error components exist
+        if !attrs.pending_component.is_empty() {
+            self.ensure_route_component_parsed(&attrs.pending_component)?;
+        }
+        if !attrs.error_component.is_empty() {
+            self.ensure_route_component_parsed(&attrs.error_component)?;
+        }
 
         // Ensure the component's template is parsed
         self.ensure_route_component_parsed(&component)?;

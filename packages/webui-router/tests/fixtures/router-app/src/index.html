@@ -19,6 +19,8 @@
     <route path="dialog" component="test-dialog" exact />
     <route path="keepalive" component="page-keepalive" exact keep-alive />
     <route path="loader" component="page-loader" exact />
+    <route path="slow" component="page-slow" exact pending="loading-skeleton" />
+    <route path="failing" component="page-failing" exact error="error-display" />
   </route>
 
   <script type="module" src="/index.js"></script>

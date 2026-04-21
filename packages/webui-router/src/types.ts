@@ -65,7 +65,6 @@ export interface RouterConfig {
    * is used instantly — eliminating the navigation fetch latency.
    *
    * Only mouse pointers trigger preload (touch taps fire too late to benefit).
-   * The cache holds a single entry with a 5-second TTL.
    *
    * @default false
    * @example
@@ -74,6 +73,21 @@ export interface RouterConfig {
    * ```
    */
   preload?: boolean;
+
+  /**
+   * Navigation cache configuration. When enabled, partial responses are
+   * cached by path and tagged with server-provided cache tags for
+   * tag-based invalidation.
+   *
+   * @default undefined (caching disabled — staleTime defaults to 0)
+   * @example
+   * ```ts
+   * Router.start({
+   *   cache: { staleTime: 30_000, gcTime: 300_000, maxEntries: 50 },
+   * });
+   * ```
+   */
+  cache?: CacheConfig;
 }
 
 /**
@@ -100,5 +114,69 @@ export interface NavigationEvent {
   /** Parsed query-string parameters (e.g. `?action=reply&to=x` → `{ action: 'reply', to: 'x' }`). */
   query: Record<string, string>;
   /** The navigated path, including the query string when present. */
+  path: string;
+}
+
+/** Configuration for the router's navigation cache. */
+export interface CacheConfig {
+  /**
+   * Maximum age (ms) before a cached response is considered stale and refetched.
+   * @default 0 (always fresh — caching disabled)
+   */
+  staleTime?: number;
+  /**
+   * Maximum age (ms) before a cached entry is evicted from memory.
+   * @default 300000 (5 minutes)
+   */
+  gcTime?: number;
+  /**
+   * Maximum number of entries in the cache. Evicts LRU when exceeded.
+   * @default 50
+   */
+  maxEntries?: number;
+}
+
+/**
+ * Context passed to a component's static `action()` method.
+ *
+ * Route actions handle form submissions (the write counterpart to loaders).
+ * The router intercepts `<form method="post">` submissions and calls the
+ * nearest route component's `static action()`.
+ */
+export interface RouteActionContext {
+  /** The submitted form data. */
+  formData: FormData;
+  /** Bound route parameters (e.g. `{ id: '42' }` for `/contacts/:id`). */
+  params: Record<string, string>;
+  /** Abort signal — cancelled if the user navigates away during the action. */
+  signal: AbortSignal;
+}
+
+/**
+ * Result returned from a component's static `action()` method.
+ *
+ * The router uses this to determine what to invalidate and optionally
+ * apply optimistic state updates.
+ */
+export interface RouteActionResult {
+  /**
+   * Tags to invalidate after the action completes.
+   * Merged with the route's `invalidates` attribute (declared at build time).
+   */
+  invalidateTags?: string[];
+  /**
+   * Optimistic state to apply immediately (before server confirmation).
+   * Passed to the component's `setState()`.
+   */
+  state?: Record<string, unknown>;
+}
+
+/** Detail payload of the `webui:route:action-complete` CustomEvent. */
+export interface ActionCompleteEvent {
+  /** The component tag that handled the action. */
+  component: string;
+  /** Tags that were invalidated. */
+  invalidatedTags: string[];
+  /** The route path where the action occurred. */
   path: string;
 }
