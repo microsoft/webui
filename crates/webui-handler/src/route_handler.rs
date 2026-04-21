@@ -567,14 +567,14 @@ fn resolve_tag_templates(templates: &[String], params: &HashMap<String, String>)
     resolved
 }
 
-/// Produce a complete JSON partial response for client-side navigation.
+/// Produce a JSON partial response for client-side navigation.
 ///
-/// Combines route templates, inventory, and matched route chain into a single
-/// JSON value. Host servers include this directly in their response alongside
-/// the application `state`.
+/// Returns the matched route chain, templates, inventory, and cache tags.
+/// **State is not included** — the caller is responsible for adding
+/// application state to the response (e.g. as a top-level `"state"` field
+/// for non-streaming, or as NDJSON Chunk 2 for streaming).
 ///
 /// Returns a `serde_json::Value` object with fields:
-/// - `state`: the application state passed through
 /// - `templateStyles`: module CSS definition tags for inventory-new components (empty for Link/Style)
 /// - `templates`: client template payloads the client doesn't already have (inventory-filtered)
 /// - `inventory`: updated hex bitmask
@@ -584,21 +584,16 @@ fn resolve_tag_templates(templates: &[String], params: &HashMap<String, String>)
 #[must_use]
 pub fn render_partial(
     protocol: &WebUIProtocol,
-    state: Value,
     entry_id: &str,
     request_path: &str,
     inventory_hex: &str,
 ) -> Value {
-    // Filter by inventory — only send components the client doesn't have.
     let (needed_names, updated_inv) =
         get_needed_components_for_request(protocol, entry_id, request_path, inventory_hex);
 
-    // Build the matched route chain
     let mut chain = collect_route_chain(protocol, entry_id, request_path);
 
-    // Resolve cache tags with accumulated params from the full chain.
-    // Each level can reference params from its own level AND all ancestors.
-    // Mutates in place to avoid cloning chain entries.
+    // Resolve cache tags and invalidation templates with accumulated params.
     let mut accumulated_params: HashMap<String, String> = HashMap::new();
     let mut all_resolved_tags: Vec<String> = Vec::new();
 
@@ -611,21 +606,18 @@ pub fn render_partial(
         all_resolved_tags.extend(entry.cache_tags.iter().cloned());
     }
 
-    // Collect templates + CSS using the shared helper
     let tag_refs: Vec<&str> = needed_names.iter().map(|s| s.as_str()).collect();
     let (style_array, tmpl_array) = collect_component_assets(protocol, &tag_refs);
 
     let chain_array = Value::Array(chain.iter().map(RouteChainEntry::to_json).collect());
 
-    let mut result = serde_json::Map::with_capacity(7);
-    result.insert("state".into(), state);
+    let mut result = serde_json::Map::with_capacity(6);
     result.insert("templateStyles".into(), Value::Array(style_array));
     result.insert("templates".into(), Value::Array(tmpl_array));
     result.insert("inventory".into(), Value::String(updated_inv));
     result.insert("path".into(), Value::String(request_path.to_string()));
     result.insert("chain".into(), chain_array);
     if !all_resolved_tags.is_empty() {
-        // Deduplicate while preserving order
         let mut seen = HashSet::new();
         let deduped: Vec<Value> = all_resolved_tags
             .into_iter()
@@ -1476,9 +1468,7 @@ mod tests {
             "(function(){window.__webui_templates['my-page']={h:'<p>page</p>'};})();".to_string();
         component.css = ".page{color:red}".to_string();
 
-        let partial = render_partial(&protocol, serde_json::json!({}), "index.html", "/", "");
-
-        // templateStyles should contain the separated module style tag
+        let partial = render_partial(&protocol, "index.html", "/", "");
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -1543,7 +1533,7 @@ mod tests {
         component.css_href = "/my-page.css".to_string();
         // css is empty — Link strategy stores href, not content
 
-        let partial = render_partial(&protocol, serde_json::json!({}), "index.html", "/", "");
+        let partial = render_partial(&protocol, "index.html", "/", "");
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -1588,7 +1578,7 @@ mod tests {
                 .to_string();
         // css is empty for Style strategy
 
-        let partial = render_partial(&protocol, serde_json::json!({}), "index.html", "/", "");
+        let partial = render_partial(&protocol, "index.html", "/", "");
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -1634,7 +1624,7 @@ mod tests {
         component.template = "(function(){})();".to_string();
         // No CSS — simulates Link or Style mode
 
-        let partial = render_partial(&protocol, serde_json::json!({}), "index.html", "/", "");
+        let partial = render_partial(&protocol, "index.html", "/", "");
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -1669,7 +1659,7 @@ mod tests {
         component.css = ".page{color:red}".to_string();
 
         // First call to establish inventory
-        let partial1 = render_partial(&protocol, serde_json::json!({}), "index.html", "/", "");
+        let partial1 = render_partial(&protocol, "index.html", "/", "");
         let inv = partial1["inventory"].as_str().unwrap_or_default();
         assert!(!inv.is_empty());
 
@@ -1677,7 +1667,7 @@ mod tests {
         // because the inventory covers this component.  The SSR handler emits all
         // module style definitions in <head> for inventoried components, so the
         // client already has the CSS definition.
-        let partial2 = render_partial(&protocol, serde_json::json!({}), "index.html", "/", inv);
+        let partial2 = render_partial(&protocol, "index.html", "/", inv);
         let styles = partial2["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -2057,7 +2047,6 @@ mod tests {
 
         let partial = render_partial(
             &protocol,
-            serde_json::json!({}),
             "index.html",
             "/email/42",
             "",

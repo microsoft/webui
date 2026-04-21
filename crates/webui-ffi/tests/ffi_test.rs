@@ -366,10 +366,10 @@ fn render_partial_returns_templates_inventory_and_chain() {
         let value: serde_json::Value =
             serde_json::from_str(&json).expect("ffi response should be valid json");
 
-        // Should have state, templates, inventory, path, and chain fields
+        // State is at top level (caller adds it), not per-entry in chain
         assert!(
             value.get("state").is_some(),
-            "partial response should contain 'state' field"
+            "partial response should contain top-level 'state' field"
         );
         assert!(value["state"].is_object(), "state should be an object");
         assert_eq!(

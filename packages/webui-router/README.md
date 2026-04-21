@@ -459,14 +459,14 @@ On client-side navigation, the router sends:
 
 ```
 GET /users/42
-Accept: application/json
+Accept: application/x-ndjson, application/json
 X-WebUI-Inventory: <hex bitmask>
-X-WebUI-Has-Loader: <comma-separated tags>
 ```
 
 The server should return:
 
-- **`Accept: application/json`** → JSON partial: `{ state, templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }` - returned directly from `renderPartial()`, no assembly required
+- **`Accept: application/x-ndjson`** → NDJSON streaming: Chunk 1 `{ templateStyles, templates, inventory, path, chain, cacheTags }`, Chunk 2 `{ states: [...] }` — or fall back to single JSON
+- **`Accept: application/json`** → JSON partial: `{ state, templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }` — `state` is added by the caller; `render_partial()` returns everything else
 - **Otherwise** → Full SSR'd HTML page
 
 The `chain` field contains the matched route chain with `component`, `path`, `params`, `exact`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`. The `cacheTags` array contains resolved cache tags from the full chain. The optional `cacheControl` object can override `staleTime` per-response.

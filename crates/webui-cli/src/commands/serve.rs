@@ -908,15 +908,18 @@ async fn handle_json_partial(
         .unwrap_or_default()
         .to_string();
 
-    // Build the complete partial response (state, templateStyles, templates, inventory, path, chain)
+    // Build the complete partial response (templateStyles, templates, inventory, path, chain)
     let partial = if let Some(proto) = &protocol {
-        webui_handler::route_handler::render_partial(
+        let mut p = webui_handler::route_handler::render_partial(
             proto,
-            state_data,
             &entry,
             &paths.route_path,
             &client_inv_hex,
-        )
+        );
+        if let Some(obj) = p.as_object_mut() {
+            obj.insert("state".into(), state_data);
+        }
+        p
     } else {
         Value::Object(serde_json::Map::new())
     };

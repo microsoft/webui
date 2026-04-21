@@ -197,23 +197,18 @@ The router provides four mechanisms for controlling how state flows to your comp
 
 | Need | Mechanism | What happens |
 |------|-----------|-------------|
-| **Server provides all state** | Default (no changes) | `setState(data.state)` on every navigation |
+| **Server provides all state** | Default (no changes) | `setState(state)` on every navigation |
 | **I fetch my own data** | `static loader()` on component | Loader runs pre-commit, result passed to `setState()` |
 | **Preserve local state** | `keep-alive` on route | Params/query attrs updated, `setState()` skipped |
 | **Preserve DOM + refresh data** | `keep-alive` + `static loader()` | DOM preserved, loader result applied via `setState()` |
 
-**Server-side optimization:** The router sends `X-WebUI-Has-Loader` as a comma-separated list of component tags that have loaders (e.g., `X-WebUI-Has-Loader: live-dashboard,mail-view`). The host server does its own route matching and can check whether the target leaf component is in this list. If so, it may skip expensive state computation and return `state: {}`.
-
-> **Note:** The header reflects *previously discovered* loaders — components whose `static loader()` was seen during a prior navigation. The very first navigation to a loader route won't advertise it. This is a best-effort optimization, not an exhaustive manifest.
-
 ```typescript
-// Express example — skip DB query when target component fetches its own data
+// Express example — render_partial returns chain + templates (no state).
+// Caller adds state to the response.
 app.get('*', async (req, res) => {
-  const loaderTags = req.headers['x-webui-has-loader']?.split(',') ?? [];
-  const leafComponent = getMatchedLeafComponent(req.path); // your route matching
-  const skipState = loaderTags.includes(leafComponent);
-  const state = skipState ? {} : await db.getPageState(req.path);
-  const partial = handler.renderPartial(protocol, state, req.path);
+  const state = await db.getPageState(req.path);
+  const partial = handler.renderPartial(protocol, req.path, invHex);
+  partial.state = state;
   res.json(partial);
 });
 ```
@@ -540,7 +535,7 @@ The server handles two request types for each route:
 
 ### JSON Partial (client navigation)
 
-When `Accept: application/json`:
+When `Accept: application/json` or `application/x-ndjson`:
 
 ```json
 {
@@ -566,7 +561,7 @@ When `Accept: application/json`:
 
 | Field | Description |
 |-------|-------------|
-| `state` | Application state for the matched route |
+| `state` | Application state (added by the caller, not by `render_partial`) |
 | `templateStyles` | Module CSS definition tags (empty for Link/Style modes) |
 | `templates` | Client template payloads filtered by inventory bitmask |
 | `inventory` | Updated hex bitmask of loaded templates |
@@ -581,9 +576,8 @@ Each `chain` entry can include: `component`, `path`, `params`, `exact`, `keepAli
 
 | Header | Value | Purpose |
 |--------|-------|---------|
-| `Accept` | `application/json` | Requests JSON partial instead of HTML |
+| `Accept` | `application/x-ndjson, application/json` | Requests NDJSON streaming or JSON partial instead of HTML |
 | `X-WebUI-Inventory` | Hex bitmask | Templates the client already has — server skips re-sending them |
-| `X-WebUI-Has-Loader` | Comma-separated tags | Components with a `static loader()` — server can check if the target leaf is in this list to skip state computation |
 
 ### Full HTML (initial load)
 
@@ -591,22 +585,28 @@ Without `Accept: application/json`, return the full SSR'd page. The handler auto
 
 ### Building the chain
 
-Use `render_partial()` (Rust) or `webui_render_partial()` (FFI) to get the complete partial response - state, templateStyles, templates, inventory, path, and chain - in a single call:
+Use `render_partial()` (Rust) or `webui_render_partial()` (FFI) to get the partial response — chain, templateStyles, templates, inventory, path, and cacheTags. The caller adds application state to the result:
 
 ```rust
-// Rust
-let partial = route_handler::render_partial(&protocol, state, &entry, &path, &inventory_hex);
+// Rust — render_partial returns chain + templates (no state)
+let mut partial = route_handler::render_partial(&protocol, &entry, &path, &inventory_hex);
+// Caller adds state to the response
+if let Some(obj) = partial.as_object_mut() {
+    obj.insert("state".into(), state);
+}
 // partial contains: { "state": {...}, "templateStyles": [...], "templates": [...], "inventory": "...", "path": "...", "chain": [...] }
 ```
 
 ```csharp
 // C#
-string partialJson = handler.RenderPartial(protocol, stateJson, entryId, requestPath, inventoryHex);
+string partialJson = handler.RenderPartial(protocol, entryId, requestPath, inventoryHex);
+// Caller merges state into the JSON before sending
 ```
 
 ```javascript
 // Node.js
-const partialJson = webui.renderPartial(protocol, stateJson, entryId, requestPath, inventoryHex);
+const partialJson = webui.renderPartial(protocol, entryId, requestPath, inventoryHex);
+// Caller adds state before sending
 ```
 
 ### Express Example
@@ -616,9 +616,11 @@ app.get('/users/:id', (req, res) => {
   const state = { name: getUser(req.params.id).name };
 
   if (req.accepts('json')) {
-    // renderPartial() returns the complete response - no assembly required
-    const stateJson = JSON.stringify(state);
-    res.type('json').send(webui.renderPartial(protocol, stateJson, 'index.html', req.path, req.get('X-WebUI-Inventory') ?? ''));
+    // renderPartial() returns chain + templates; caller adds state
+    const inv = req.get('X-WebUI-Inventory') ?? '';
+    const partial = JSON.parse(webui.renderPartial(protocol, 'index.html', req.path, inv));
+    partial.state = state;
+    res.type('json').send(JSON.stringify(partial));
   } else {
     res.type('html').send(handler.render(protocol, state, 'index.html', req.path));
   }

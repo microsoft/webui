@@ -160,13 +160,15 @@ pub fn render_partial(
     let state: serde_json::Value = serde_json::from_str(&state_json)
         .map_err(|e| NapiError::from_reason(format!("invalid state JSON: {e}")))?;
 
-    let result = webui_handler::route_handler::render_partial(
+    let mut result = webui_handler::route_handler::render_partial(
         &protocol,
-        state,
         &entry_id,
         &request_path,
         &inventory_hex,
     );
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("state".into(), state);
+    }
 
     serde_json::to_string(&result)
         .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
