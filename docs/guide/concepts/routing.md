@@ -727,22 +727,19 @@ Hidden routes use `style="display:none"` inline. If your CSS sets
 
 ```typescript
 // index.ts
-import { TemplateElement } from '@microsoft/fast-html';
 import { Router } from '@microsoft/webui-router';
-import './app-shell.js';
 
-TemplateElement.options({
-  'app-shell': { observerMap: 'all' },
-}).config({
-  hydrationComplete() {
-    Router.start({
-      loaders: {
-        'home-page': () => import('./pages/home-page.js'),
-        'contacts-page': () => import('./pages/contacts-page.js'),
-        'contact-form': () => import('./pages/contact-form.js'),
-        'contact-detail': () => import('./pages/contact-detail.js'),
-      },
-    });
-  },
-}).define({ name: 'f-template' });
+window.addEventListener('webui:hydration-complete', () => {
+  Router.start({
+    loaders: {
+      'home-page': () => import('./pages/home-page.js'),
+      'contacts-page': () => import('./pages/contacts-page.js'),
+      'contact-form': () => import('./pages/contact-form.js'),
+      'contact-detail': () => import('./pages/contact-detail.js'),
+    },
+  });
+});
+
+// Shell component — eagerly loaded (registers custom element, triggers hydration)
+import './app-shell.js';
 ```
