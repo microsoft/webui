@@ -198,14 +198,16 @@ pub struct WebUIFragmentRoute {
 ```
 
 **Cache tags:** Declared via `cache-tags="thread:{threadId},inbox"` on `<route>`. Placeholders
-like `{param}` reference route path parameters and are resolved at render time with actual values.
-The handler includes resolved tags in the JSON partial response `cacheTags` array. The client
-caches responses tagged with these values and uses them for tag-based invalidation.
+like `{param}` reference route path parameters from the current route or any ancestor route,
+and are resolved at render time with actual values. The parser validates placeholders against
+the accumulated params from the full route ancestry at build time. The handler includes resolved
+tags in the JSON partial response `cacheTags` array. The client caches responses tagged with
+these values and uses them for tag-based invalidation.
 
 **Invalidation tags:** Declared via `invalidates="inbox,sent,counts"` on `<route>`. After a
 mutation action (`static action()`) on this route, these tags are auto-invalidated from the
-client cache. Supports `{param}` placeholders. The compiler knows the full invalidation graph —
-developers cannot forget to invalidate related data.
+client cache. Supports `{param}` placeholders (including ancestor params). The compiler knows
+the full invalidation graph - developers cannot forget to invalidate related data.
 
 **Pending component:** Declared via `pending="mail-skeleton"` on `<route>`. The compiler validates
 the component exists at build time. During slow navigations (>150ms), the router mounts this

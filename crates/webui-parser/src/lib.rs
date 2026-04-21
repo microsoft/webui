@@ -1471,8 +1471,10 @@ impl HtmlParser {
         // Ensure the component's template is parsed and registered
         self.ensure_route_component_parsed(&component)?;
 
-        // Recursively parse nested <route> children
-        let children = self.parse_child_routes(node, source)?;
+        // Recursively parse nested <route> children, passing accumulated params
+        let mut all_params = std::collections::HashSet::new();
+        all_params.extend(route_params);
+        let children = self.parse_child_routes(node, source, &all_params)?;
 
         // Flush any pending raw content before the route fragment
         self.flush_raw_buffer(fragments);
@@ -1488,7 +1490,12 @@ impl HtmlParser {
     }
 
     /// Parse nested `<route>` children of a route element.
-    fn parse_child_routes(&mut self, node: Node, source: &str) -> Result<Vec<WebUiFragmentRoute>> {
+    fn parse_child_routes(
+        &mut self,
+        node: Node,
+        source: &str,
+        ancestor_params: &std::collections::HashSet<String>,
+    ) -> Result<Vec<WebUiFragmentRoute>> {
         let mut children = Vec::new();
         let mut cursor = node.walk();
 
@@ -1496,7 +1503,8 @@ impl HtmlParser {
             if child.kind() == "element" {
                 if let Ok(tag) = self.get_element_tag_name(child, source) {
                     if tag == "route" {
-                        let child_route = self.parse_route_as_fragment(child, source)?;
+                        let child_route =
+                            self.parse_route_as_fragment(child, source, ancestor_params)?;
                         children.push(child_route);
                     }
                 }
@@ -1507,7 +1515,12 @@ impl HtmlParser {
     }
 
     /// Parse a `<route>` element into a `WebUiFragmentRoute` (for nesting).
-    fn parse_route_as_fragment(&mut self, node: Node, source: &str) -> Result<WebUiFragmentRoute> {
+    fn parse_route_as_fragment(
+        &mut self,
+        node: Node,
+        source: &str,
+        ancestor_params: &std::collections::HashSet<String>,
+    ) -> Result<WebUiFragmentRoute> {
         let path = self
             .get_element_attribute(node, "path", source)?
             .unwrap_or_default();
@@ -1544,13 +1557,16 @@ impl HtmlParser {
 
         route_parser::validate_attributes(&attrs)?;
 
-        // Extract params from path template and validate
-        let route_params: std::collections::HashSet<String> =
+        // Extract params from path template and validate placeholders
+        // against both this route's own params AND ancestor params
+        let own_params: std::collections::HashSet<String> =
             route_parser::extract_params(&path)?.into_iter().collect();
+        let mut all_params = ancestor_params.clone();
+        all_params.extend(own_params.iter().cloned());
         if !attrs.cache_tags.is_empty() {
             route_parser::validate_tag_placeholders(
                 &attrs.cache_tags,
-                &route_params,
+                &all_params,
                 "cache-tags",
                 &path,
             )?;
@@ -1558,7 +1574,7 @@ impl HtmlParser {
         if !attrs.invalidates.is_empty() {
             route_parser::validate_tag_placeholders(
                 &attrs.invalidates,
-                &route_params,
+                &all_params,
                 "invalidates",
                 &path,
             )?;
@@ -1575,8 +1591,8 @@ impl HtmlParser {
         // Ensure the component's template is parsed
         self.ensure_route_component_parsed(&component)?;
 
-        // Recursively parse nested children
-        let children = self.parse_child_routes(node, source)?;
+        // Recursively parse nested children, passing accumulated params
+        let children = self.parse_child_routes(node, source, &all_params)?;
 
         Ok(route_parser::build_route_fragment(
             &attrs, component, children,
