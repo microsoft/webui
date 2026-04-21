@@ -141,21 +141,6 @@ fn resolve_single(
         )
     })?;
 
-    // Verify resolved path is still within node_modules (prevent symlink escape)
-    let node_modules_canon = fs::canonicalize(node_modules).with_context(|| {
-        format!(
-            "Failed to resolve node_modules path: {}",
-            node_modules.display()
-        )
-    })?;
-    if !pkg_dir.starts_with(&node_modules_canon) {
-        bail!(
-            "Package symlink escapes node_modules directory: {} resolves to {}",
-            name,
-            pkg_dir.display()
-        );
-    }
-
     if !pkg_dir.is_dir() {
         bail!("Package path is not a directory: {}", pkg_dir.display());
     }
@@ -646,6 +631,95 @@ mod tests {
         assert!(validate_relative_path("./dist/template.html", "exports").is_ok());
         assert!(validate_relative_path("template-webui.html", "exports").is_ok());
         assert!(validate_relative_path("dist/nested/file.css", "exports").is_ok());
+    }
+
+    #[test]
+    fn test_resolve_symlinked_package() {
+        // Simulates pnpm-style layout where node_modules/@scope/pkg is a symlink
+        // to node_modules/.pnpm/@scope+pkg@version/node_modules/@scope/pkg.
+        let tmp = TempDir::new().unwrap();
+        let nm = tmp.path().join("node_modules");
+        fs::create_dir(&nm).unwrap();
+
+        // Create the real package inside .pnpm store
+        let pnpm_store = nm
+            .join(".pnpm")
+            .join("my-widget@1.0.0")
+            .join("node_modules");
+        fs::create_dir_all(&pnpm_store).unwrap();
+        create_npm_package(
+            &pnpm_store,
+            "my-widget",
+            "my-widget",
+            "<div>symlinked</div>",
+            Some(".w { color: red; }"),
+        );
+
+        // Create a symlink: node_modules/my-widget -> .pnpm store location
+        let link_path = nm.join("my-widget");
+        let target_path = pnpm_store.join("my-widget");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_path, &link_path).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&target_path, &link_path).unwrap();
+
+        let mut cache = DiscoveryCache::open().unwrap();
+        let result = resolve("my-widget", tmp.path(), &mut cache);
+        assert!(
+            result.is_ok(),
+            "symlinked package should resolve: {result:?}"
+        );
+
+        let components = result.unwrap();
+        assert_eq!(components.len(), 1);
+        assert_eq!(components[0].tag_name, "my-widget");
+        assert_eq!(components[0].html_content, "<div>symlinked</div>");
+    }
+
+    #[test]
+    fn test_resolve_scoped_symlinked_package() {
+        // Simulates pnpm layout for scoped packages:
+        // node_modules/@scope/pkg -> .pnpm/@scope+pkg@ver/node_modules/@scope/pkg
+        let tmp = TempDir::new().unwrap();
+        let nm = tmp.path().join("node_modules");
+        let scope_dir = nm.join("@mai-ui");
+        fs::create_dir_all(&scope_dir).unwrap();
+
+        // Real package inside .pnpm store
+        let pnpm_store = nm
+            .join(".pnpm")
+            .join("@mai-ui+button@1.8.3")
+            .join("node_modules")
+            .join("@mai-ui");
+        fs::create_dir_all(&pnpm_store).unwrap();
+        create_npm_package(
+            &pnpm_store,
+            "button",
+            "mai-button",
+            "<button><slot></slot></button>",
+            None,
+        );
+
+        // Symlink: node_modules/@mai-ui/button -> .pnpm store
+        let link_path = scope_dir.join("button");
+        let target_path = pnpm_store.join("button");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_path, &link_path).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&target_path, &link_path).unwrap();
+
+        let mut cache = DiscoveryCache::open().unwrap();
+        let result = resolve("@mai-ui", tmp.path(), &mut cache);
+        assert!(
+            result.is_ok(),
+            "scoped symlinked package should resolve: {result:?}"
+        );
+
+        let components = result.unwrap();
+        assert_eq!(components.len(), 1);
+        assert_eq!(components[0].tag_name, "mai-button");
     }
 
     #[test]

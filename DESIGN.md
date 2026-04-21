@@ -653,7 +653,7 @@ Conditional exports are resolved with deterministic priority: `default` → `imp
 
 #### Security
 - **Path traversal**: Export paths are validated — absolute paths and `..` components are rejected
-- **Symlink escape**: Resolved package paths must remain within `node_modules/` after `fs::canonicalize()`
+- **Symlink resolution**: Package symlinks are resolved via `fs::canonicalize()` to support pnpm, npm workspaces, and yarn link layouts. Path traversal safety is enforced on `package.json` export paths (not on the symlink target)
 - **File size limits**: Manifests and templates are capped at 10 MB to prevent denial-of-service
 
 #### Discovery Cache
