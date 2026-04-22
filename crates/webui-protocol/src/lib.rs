@@ -323,6 +323,8 @@ impl WebUiProtocol {
             fragments,
             tokens: Vec::new(),
             components: HashMap::new(),
+            css_strategy: 0,
+            dom_strategy: 0,
         }
     }
 
@@ -332,6 +334,8 @@ impl WebUiProtocol {
             fragments,
             tokens,
             components: HashMap::new(),
+            css_strategy: 0,
+            dom_strategy: 0,
         }
     }
 }

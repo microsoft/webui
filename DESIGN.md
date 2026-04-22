@@ -36,6 +36,10 @@ pub struct WebUIProtocol {
     pub tokens: Vec<String>,
     /// Per-component data keyed by tag name (client template + CSS).
     pub components: HashMap<String, ComponentData>,
+    /// Build-wide CSS delivery strategy (Link, Style, or Module).
+    pub css_strategy: CssStrategy,
+    /// Build-wide DOM encapsulation strategy (Shadow or Light).
+    pub dom_strategy: DomStrategy,
 }
 
 /// Per-component metadata populated by the active parser plugin at build time.
@@ -49,8 +53,12 @@ pub struct ComponentData {
     /// Component CSS content for the Module strategy.
     pub css: String,
     /// External stylesheet href for the Link CSS strategy (e.g. "/my-card.css").
+    /// Always set when CssStrategy::Link is active and the component has CSS.
     /// Empty for Style/Module strategies and for components without CSS.
-    /// The handler emits a `<link>` tag in `<head>` only when this is non-empty.
+    /// The handler uses `css_strategy` and `dom_strategy` on `WebUIProtocol` to
+    /// decide what to emit in `<head>`:
+    ///   Link + Shadow → `<link rel="preload">` (shadow root has the stylesheet)
+    ///   Link + Light  → `<link rel="stylesheet">` (no shadow root to host it)
     pub css_href: String,
 }
 

@@ -201,8 +201,7 @@ fn inject_head_preload_tags(mut html: String, image_urls: &[String]) -> String {
         return html;
     };
 
-    let css_hrefs = css_preload_hrefs_from_html(&html);
-    let preloads = build_head_preload_tags(image_urls, &css_hrefs);
+    let preloads = build_head_preload_tags(image_urls);
     if preloads.is_empty() {
         return html;
     }
@@ -211,39 +210,14 @@ fn inject_head_preload_tags(mut html: String, image_urls: &[String]) -> String {
     html
 }
 
-fn css_preload_hrefs_from_html(html: &str) -> Vec<String> {
-    const STYLESHEET_LINK: &str = r#"<link rel="stylesheet" href=""#;
-
-    let mut hrefs = Vec::new();
-    let mut remaining = html;
-    while let Some(start) = remaining.find(STYLESHEET_LINK) {
-        let href_start = start + STYLESHEET_LINK.len();
-        let after_marker = &remaining[href_start..];
-        let Some(end) = after_marker.find('"') else {
-            break;
-        };
-        let href = &after_marker[..end];
-        if hrefs.iter().all(|existing| existing != href) {
-            hrefs.push(href.to_string());
-        }
-        remaining = &after_marker[end + 1..];
-    }
-
-    hrefs
-}
-
-/// Build SSR-only `<link rel="preload">` tags that match the initial HTML.
+/// Build SSR-only `<link rel="preload">` tags for images and scripts.
+/// CSS preloads are handled by the framework via protocol strategy fields —
+/// no custom logic needed here.
 /// The router removes these managed tags on SPA navigations so preloads never
 /// leak across routes.
-fn build_head_preload_tags(image_urls: &[String], css_hrefs: &[String]) -> String {
-    let capacity = 80 + css_hrefs.len() * 90 + image_urls.len() * 120;
+fn build_head_preload_tags(image_urls: &[String]) -> String {
+    let capacity = 80 + image_urls.len() * 120;
     let mut buf = String::with_capacity(capacity);
-
-    for href in css_hrefs {
-        buf.push_str(r#"<link rel="preload" as="style" href=""#);
-        buf.push_str(href);
-        buf.push_str(r#"" data-webui-ssr-preload="style">"#);
-    }
 
     buf.push_str(r#"<link rel="modulepreload" href="/index.js" data-webui-ssr-preload="script">"#);
 
@@ -338,8 +312,12 @@ mod tests {
 
         assert!(html.contains("mp-page-search"));
         assert!(html.contains("mp-navbar"));
-        assert!(html.contains(r#"data-webui-ssr-preload="style""#));
-        assert!(html.contains(r#"href="/mp-app.css""#));
+        // CSS preloads are now emitted by the framework (via protocol strategy
+        // not the custom server. Verify the framework-emitted preload is present.
+        assert!(
+            html.contains(r#"data-webui-ssr-preload="style""#),
+            "Framework should emit CSS preload with data-webui-ssr-preload: {html}"
+        );
         assert!(html.contains(r#"href="/_image/t-shirt-1?w=640&q=75""#));
         assert!(
             !html.contains(r#"\"data-webui-ssr-preload\""#),

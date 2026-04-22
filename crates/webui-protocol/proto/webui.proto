@@ -18,11 +18,27 @@ message ComponentData {
   // or inline <style> tags baked into raw fragments by the parser).
   string css = 2;
   // External stylesheet href for the Link CSS strategy.
-  // Set to e.g. "/my-card.css" when CssStrategy::Link is active and the
-  // component has a CSS file. Empty for Style/Module strategies and for
-  // components without CSS. The handler emits a <link> tag only when
-  // this field is non-empty.
+  // Set to e.g. "/my-card.css" when the component has a CSS file and the
+  // build used CssStrategy::Link. Empty for Style/Module strategies and
+  // for components without CSS.
+  // The handler uses css_strategy and dom_strategy on WebUIProtocol to
+  // decide what to emit in <head>:
+  //   Link + Shadow → <link rel="preload"> (shadow root has the stylesheet)
+  //   Link + Light  → <link rel="stylesheet"> (no shadow root to host it)
   string css_href = 3;
+}
+
+// CSS delivery strategy chosen at build time.
+enum CssStrategy {
+  CSS_STRATEGY_LINK = 0;
+  CSS_STRATEGY_STYLE = 1;
+  CSS_STRATEGY_MODULE = 2;
+}
+
+// DOM encapsulation strategy chosen at build time.
+enum DomStrategy {
+  DOM_STRATEGY_SHADOW = 0;
+  DOM_STRATEGY_LIGHT = 1;
 }
 
 message WebUIProtocol {
@@ -33,6 +49,12 @@ message WebUIProtocol {
   repeated string tokens = 2;
   // Per-component data keyed by tag name (f-template + CSS).
   map<string, ComponentData> components = 3;
+  // Build-wide CSS delivery strategy. Determines how the handler emits
+  // CSS-related tags in <head> for components with css_href.
+  CssStrategy css_strategy = 4;
+  // Build-wide DOM encapsulation strategy. Combined with css_strategy to
+  // decide preload vs stylesheet emission.
+  DomStrategy dom_strategy = 5;
 }
 
 // A list of fragments (needed because protobuf maps cannot have repeated values directly).

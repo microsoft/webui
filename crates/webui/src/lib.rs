@@ -288,13 +288,21 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
 
     let mut protocol = WebUIProtocol::with_tokens(fragment_records, tokens);
 
+    // Record build-wide strategies so the handler can decide rendering behavior.
+    protocol.set_css_strategy(match options.css {
+        CssStrategy::Link => webui_protocol::CssStrategy::Link,
+        CssStrategy::Style => webui_protocol::CssStrategy::Style,
+        CssStrategy::Module => webui_protocol::CssStrategy::Module,
+    });
+    protocol.set_dom_strategy(match options.dom {
+        DomStrategy::Shadow => webui_protocol::DomStrategy::Shadow,
+        DomStrategy::Light => webui_protocol::DomStrategy::Light,
+    });
+
     // Process component CSS in a single pass: store Module CSS content,
     // set Link-strategy css_href, and collect external CSS files.
     let is_module = options.css == CssStrategy::Module;
     let is_link = options.css == CssStrategy::Link;
-    // css_href is only used for Light DOM — Shadow DOM components embed
-    // their own <link> inside the shadow root template at parse time.
-    let needs_head_link = is_link && options.dom == DomStrategy::Light;
     let mut css_files: Vec<(String, String)> = Vec::new();
     for (tag, css) in css_snapshot {
         if !protocol.fragments.contains_key(&tag) {
@@ -304,9 +312,8 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             protocol.components.entry(tag).or_default().css = css.trim().to_string();
         } else if is_link {
             let safe_tag = tag.replace(['/', '\\'], "-");
-            if needs_head_link {
-                protocol.components.entry(tag).or_default().css_href = format!("/{safe_tag}.css");
-            }
+            let href = format!("/{safe_tag}.css");
+            protocol.components.entry(tag).or_default().css_href = href;
             css_files.push((format!("{safe_tag}.css"), css));
         }
         // Style strategy: CSS is already baked into raw fragments by the
@@ -442,9 +449,10 @@ mod tests {
     }
 
     #[test]
-    fn test_css_href_empty_for_shadow_dom_link_strategy() {
-        // Shadow×Link: the parser embeds <link> inside each shadow root template,
-        // so css_href must be empty to avoid duplicate <link> tags in <head>.
+    fn test_shadow_dom_link_strategy_sets_css_href() {
+        // Shadow×Link: css_href is always set for Link-strategy components.
+        // The handler uses protocol.css_strategy + dom_strategy to decide
+        // whether to emit preload (Shadow) or stylesheet (Light) in <head>.
         let app = create_app_dir(&[
             ("index.html", "<my-card>A</my-card>"),
             ("my-card.html", "<p><slot></slot></p>"),
@@ -452,18 +460,23 @@ mod tests {
         ]);
         let result = build(default_options(app.path())).unwrap();
 
-        let href = result
-            .protocol
-            .components
-            .get("my-card")
-            .map(|c| c.css_href.as_str())
-            .unwrap_or("");
-        assert!(
-            href.is_empty(),
-            "Shadow×Link should not set css_href — link is in shadow root"
+        let comp = result.protocol.components.get("my-card").unwrap();
+        assert_eq!(
+            comp.css_href, "/my-card.css",
+            "Shadow×Link should set css_href"
         );
 
-        // But CSS file should still be emitted for the server to serve
+        // Strategy fields on protocol
+        assert_eq!(
+            result.protocol.css_strategy(),
+            webui_protocol::CssStrategy::Link,
+        );
+        assert_eq!(
+            result.protocol.dom_strategy(),
+            webui_protocol::DomStrategy::Shadow,
+        );
+
+        // CSS file should still be emitted for the server to serve
         assert_eq!(
             result.css_files.len(),
             1,

@@ -741,27 +741,47 @@ impl WebUIHandler {
             }
 
             // Emit CSS <link> tags in <head> for Link-strategy components.
-            // Only Link-strategy components have css_href set.
+            //
+            // The protocol carries css_strategy and dom_strategy set at build
+            // time. For components with a non-empty css_href:
+            //   Link + Shadow → <link rel="preload"> (stylesheet is in shadow root)
+            //   Link + Light  → <link rel="stylesheet"> (no shadow root)
+            //
             // Style-strategy embeds CSS inside the shadow DOM template.
             // Module-strategy emits <style type="module"> inline in each
             // component's light DOM during rendering (via emit_css_module).
-            let (needed_components, _) = crate::route_handler::get_needed_components_for_request(
-                context.protocol,
-                &context.entry_id,
-                &context.request_path,
-                "",
-            );
-            for name in &needed_components {
-                if let Some(href) = context
-                    .protocol
-                    .components
-                    .get(name)
-                    .map(|c| &c.css_href)
-                    .filter(|h| !h.is_empty())
-                {
-                    context.writer.write("<link rel=\"stylesheet\" href=\"")?;
-                    context.writer.write(href)?;
-                    context.writer.write("\">")?;
+            let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
+            let is_shadow = context.protocol.dom_strategy() == webui_protocol::DomStrategy::Shadow;
+
+            if is_link {
+                let (needed_components, _) =
+                    crate::route_handler::get_needed_components_for_request(
+                        context.protocol,
+                        &context.entry_id,
+                        &context.request_path,
+                        "",
+                    );
+
+                for name in &needed_components {
+                    if let Some(href) = context
+                        .protocol
+                        .components
+                        .get(name)
+                        .map(|c| c.css_href.as_str())
+                        .filter(|h| !h.is_empty())
+                    {
+                        if is_shadow {
+                            context.writer.write("<link rel=\"preload\" href=\"")?;
+                            context.writer.write(href)?;
+                            context
+                                .writer
+                                .write("\" as=\"style\" data-webui-ssr-preload=\"style\">")?;
+                        } else {
+                            context.writer.write("<link rel=\"stylesheet\" href=\"")?;
+                            context.writer.write(href)?;
+                            context.writer.write("\">")?;
+                        }
+                    }
                 }
             }
         }
@@ -6007,7 +6027,9 @@ mod tests {
     }
 
     #[test]
-    fn test_link_strategy_emits_link_tag_in_head() {
+    fn test_link_strategy_light_dom_emits_stylesheet_in_head() {
+        // Light DOM + Link strategy: handler emits <link rel="stylesheet">
+        // in <head>. No preload tag — the stylesheet itself fetches.
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -6031,6 +6053,9 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        protocol.set_dom_strategy(webui_protocol::DomStrategy::Light);
+
         let comp = protocol
             .components
             .entry("my-card".to_string())
@@ -6055,11 +6080,104 @@ mod tests {
         let link_pos = html.find(r#"<link rel="stylesheet" href="/my-card.css">"#);
         assert!(
             link_pos.is_some_and(|p| p < head_end),
-            "Link strategy should emit <link> in <head>: {html}"
+            "Light DOM Link strategy should emit <link rel=stylesheet> in <head>: {html}"
+        );
+        assert!(
+            !html.contains(r#"<link rel="preload""#),
+            "Light DOM Link strategy should NOT emit preload (stylesheet already fetches): {html}"
         );
         assert!(
             !html.contains(r#"<style type="module""#),
             "Link strategy should not emit module CSS: {html}"
+        );
+    }
+
+    #[test]
+    fn test_link_strategy_shadow_dom_emits_preload_in_head() {
+        // Shadow DOM + Link strategy: handler emits <link rel="preload">
+        // with data-webui-ssr-preload in <head>. No stylesheet — the shadow
+        // root template already contains <link rel="stylesheet">.
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::raw("</head><body><o-loading-state>".to_string()),
+                    WebUIFragment::component("o-loading-state"),
+                    WebUIFragment::raw("</o-loading-state><my-card>".to_string()),
+                    WebUIFragment::component("my-card"),
+                    WebUIFragment::raw("</my-card>".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        fragments.insert(
+            "o-loading-state".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<div>loading</div>".to_string())],
+            },
+        );
+        fragments.insert(
+            "my-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<div>card</div>".to_string())],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        protocol.set_dom_strategy(webui_protocol::DomStrategy::Shadow);
+
+        let comp1 = protocol
+            .components
+            .entry("o-loading-state".to_string())
+            .or_default();
+        comp1.css_href = "/o-loading-state.css".to_string();
+        comp1.template = "(function(){})();".to_string();
+
+        let comp2 = protocol
+            .components
+            .entry("my-card".to_string())
+            .or_default();
+        comp2.css_href = "/my-card.css".to_string();
+        comp2.template = "(function(){})();".to_string();
+
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        let html = writer.get_content();
+        let head_end = html.find("</head>").expect("</head> missing");
+        let head_section = &html[..head_end];
+
+        // Both preload hints must be present with data-webui-ssr-preload attr
+        assert!(
+            head_section.contains(
+                r#"<link rel="preload" href="/o-loading-state.css" as="style" data-webui-ssr-preload="style">"#
+            ),
+            "Missing preload for o-loading-state.css in <head>: {html}"
+        );
+        assert!(
+            head_section.contains(
+                r#"<link rel="preload" href="/my-card.css" as="style" data-webui-ssr-preload="style">"#
+            ),
+            "Missing preload for my-card.css in <head>: {html}"
+        );
+
+        // No stylesheet links — shadow root handles that
+        assert!(
+            !head_section.contains(r#"<link rel="stylesheet""#),
+            "Shadow DOM should NOT emit <link rel=stylesheet> in <head>: {html}"
         );
     }
 
@@ -6218,6 +6336,9 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        protocol.set_dom_strategy(webui_protocol::DomStrategy::Light);
+
         // Only has-css has an external stylesheet (Link strategy)
         protocol
             .components
@@ -6243,7 +6364,7 @@ mod tests {
         let html = writer.get_content();
         assert!(
             html.contains(r#"<link rel="stylesheet" href="/has-css.css">"#),
-            "Component with CSS should get a <link> in <head>: {html}"
+            "Component with CSS should get a <link rel=stylesheet> in <head>: {html}"
         );
         assert!(
             !html.contains("no-css.css"),
