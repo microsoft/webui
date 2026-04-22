@@ -1536,7 +1536,6 @@ name = "microsoft-webui-handler"
 version = "0.0.10"
 dependencies = [
  "criterion",
- "html-escape",
  "microsoft-webui-expressions",
  "microsoft-webui-protocol",
  "microsoft-webui-state",
