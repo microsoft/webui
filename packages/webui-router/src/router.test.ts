@@ -705,12 +705,13 @@ describe('WebUIRouter', () => {
       const priv = router as any;
 
       const cachedData = { state: { msg: 'preloaded' }, templates: [], path: '/about', chain: [{ component: 'about-page', path: '/about', params: {} }] };
-      // Store in unified cache via storeCacheEntry
-      priv.storeCacheEntry('/about', cachedData);
+      // Store in unified cache via storeCacheEntry (preload=true for 5s TTL)
+      priv.storeCacheEntry('/about', cachedData, true);
 
-      // Verify the cache entry exists
+      // Mark the entry as complete so lookupCache considers it ready
       const entry = priv.cache.get('/about');
       assert.ok(entry, 'cache should have entry for /about');
+      entry.complete = true;
       assert.deepEqual(entry.data.state, { msg: 'preloaded' });
 
       // Simulate consumption by lookupCache + evict
