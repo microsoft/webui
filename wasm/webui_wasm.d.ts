@@ -20,6 +20,12 @@ export function render_component_templates(protocol_json: string, component_tags
  */
 export function build_and_render(files: any, state_json: string, entry: string, request_path: string): string;
 /**
+ * Build the protocol JSON from virtual files without rendering.
+ *
+ * Returns the serialized `WebUIProtocol` as a JSON string.
+ */
+export function build_protocol(files: any, entry: string): string;
+/**
  * Render a pre-built WebUI protocol with state data.
  *
  * # Arguments
@@ -43,12 +49,6 @@ export function render(protocol_json: string, state_json: string, entry: string,
  * Host servers return this directly — no assembly required.
  */
 export function render_partial(protocol_json: string, state_json: string, entry_id: string, request_path: string, inventory_hex: string): string;
-/**
- * Build the protocol JSON from virtual files without rendering.
- *
- * Returns the serialized `WebUIProtocol` as a JSON string.
- */
-export function build_protocol(files: any, entry: string): string;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
