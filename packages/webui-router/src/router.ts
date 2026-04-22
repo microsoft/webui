@@ -27,6 +27,19 @@ const LOADER_FAILED = Symbol('LOADER_FAILED');
 /** Shared never-aborted signal for loaders called without an external signal. */
 const NOOP_SIGNAL = new AbortController().signal;
 
+/** Maximum buffered NDJSON line size before aborting the stream (256 KiB). */
+const MAX_NDJSON_BUFFER = 256 * 1024;
+
+/**
+ * Check if a state value is meaningful (non-null, non-empty).
+ * Returns false for null, undefined, or `{}`.
+ */
+function hasState(state?: Record<string, unknown> | null): state is Record<string, unknown> {
+  if (state == null) return false;
+  const keys = Object.keys(state);
+  return keys.length > 0;
+}
+
 /**
  * Get the render root of a component element.
  * Returns shadowRoot if present, otherwise the element itself.
@@ -196,6 +209,13 @@ interface RouteChainEntry {
   errorComponent?: string;
   /** Invalidation tags from the build-time proto (already resolved with params). */
   invalidates?: string[];
+  /**
+   * Per-component state from the server.
+   * - `undefined` → skip setState (preserve component's current state)
+   * - `null` → skip setState (preserve component's current state)
+   * - `{...}` → call setState with this data
+   */
+  state?: Record<string, unknown> | null;
 }
 
 /** Static route manifest entry — built once at startup from <webui-route> tree. */
@@ -211,7 +231,8 @@ interface RouteManifestEntry {
 
 /** JSON partial response from the server. */
 interface PartialResponse {
-  state: Record<string, unknown>;
+  /** Top-level application state (non-streaming responses). */
+  state?: Record<string, unknown>;
   /** Module CSS definitions to append before executing template scripts. */
   templateStyles?: string[];
   templates: string[];
@@ -237,6 +258,8 @@ interface CacheEntry {
   staleTime?: number;
   /** True if this entry came from a speculative preload fetch. */
   preload?: boolean;
+  /** Whether both streaming chunks have been received. */
+  complete: boolean;
 }
 
 /**
@@ -304,14 +327,13 @@ function applyParamsQueryState(
   component: Element,
   routeEl: HTMLElement,
   params: Record<string, string>,
-  data: PartialResponse,
+  state?: Record<string, unknown> | null,
   query?: Record<string, string>,
-  stateOverride?: Record<string, unknown>,
 ): void {
   applyParamsAndQuery(component, routeEl, params, query);
 
-  if (typeof (component as any).setState === 'function') {
-    (component as any).setState(stateOverride ?? data.state);
+  if (hasState(state) && typeof (component as any).setState === 'function') {
+    (component as any).setState(state);
   }
 }
 
@@ -338,10 +360,7 @@ export class WebUIRouter {
   private injectedStyles = new Set<string>();
   /** Monotonic navigation generation — guards against stale async completions. */
   private navGeneration = 0;
-  /** Set of component tags known to have a static loader() method. */
-  private loaderComponents = new Set<string>();
-  /** Cached comma-separated loader header — invalidated when loaderComponents changes. */
-  private loaderHeaderCache = '';
+
   /** Cached current request path — updated on every navigation. Avoids URL allocation in hot paths. */
   private currentRequestPath = '/';
   /** Tagged navigation cache — keyed by requestPath. */
@@ -358,6 +377,10 @@ export class WebUIRouter {
   private pendingTimer: ReturnType<typeof setTimeout> | null = null;
   /** AbortController for the in-flight mutation action. */
   private actionController: AbortController | null = null;
+  /** In-flight deferred state reader from streaming Chunk 2. */
+  private deferredReader: Promise<void> | null = null;
+  /** Generation at which the deferred reader was started. */
+  private deferredGeneration = 0;
   /** Direct reference to mounted pending element for O(1) cleanup. */
   private pendingElement: HTMLElement | null = null;
   /** Direct reference to mounted error element for O(1) cleanup. */
@@ -649,8 +672,7 @@ export class WebUIRouter {
     this.ssrPreloadsCleared = false;
     this.injectedCss.clear();
     this.injectedStyles.clear();
-    this.loaderComponents.clear();
-    this.loaderHeaderCache = '';
+
     this.currentRequestPath = '/';
     this.cache.clear();
     this.tagIndex.clear();
@@ -664,6 +686,7 @@ export class WebUIRouter {
     }
     this.pendingElement = null;
     this.errorElement = null;
+    this.deferredReader = null;
   }
 
   // ── Navigation Cache ──────────────────────────────────────────
@@ -671,10 +694,10 @@ export class WebUIRouter {
   /** Maximum age (ms) for a preloaded partial before it's considered stale. */
   private static readonly PRELOAD_TTL = 5_000;
 
-  /** Look up a cache entry. Returns null if missing or stale. */
+  /** Look up a cache entry. Returns null if missing, stale, or incomplete. */
   private lookupCache(requestPath: string): (PartialResponse & { inventory?: string }) | null {
     const entry = this.cache.get(requestPath);
-    if (!entry) return null;
+    if (!entry || !entry.complete) return null;
 
     const age = Date.now() - entry.ts;
     const staleTime = entry.staleTime ?? this.cacheConfig.staleTime;
@@ -696,6 +719,7 @@ export class WebUIRouter {
     requestPath: string,
     data: PartialResponse & { inventory?: string },
     preload?: boolean,
+    streaming?: boolean,
   ): void {
     const tags = data.cacheTags ?? [];
     const staleTime = data.cacheControl?.staleTime;
@@ -713,7 +737,10 @@ export class WebUIRouter {
       }
     }
 
-    this.cache.set(requestPath, { data, tags, ts: Date.now(), staleTime, preload });
+    this.cache.set(requestPath, {
+      data, tags, ts: Date.now(), staleTime, preload,
+      complete: !preload && !streaming,
+    });
 
     // Build reverse tag index
     for (const tag of tags) {
@@ -1194,10 +1221,18 @@ export class WebUIRouter {
 
       // Store in cache with tags
       if (!cached) {
-        this.storeCacheEntry(requestPath, partialData);
+        // Streaming entries are incomplete until Chunk 2 finishes (has _deferredStates or active reader)
+        const isStreaming = this.deferredReader !== null && this.deferredGeneration === thisGen;
+        this.storeCacheEntry(requestPath, partialData, undefined, isStreaming);
       }
 
       await this.commitWithData(partialData, requestPath, query, signal, thisGen);
+
+      // Apply deferred states from streaming Chunk 2 (if both chunks arrived together)
+      const deferredStates = (partialData as any)._deferredStates;
+      if (deferredStates) {
+        this.applyDeferredStates(deferredStates, requestPath);
+      }
     }
 
     const leaf = this.activeChain[this.activeChain.length - 1];
@@ -1424,39 +1459,223 @@ export class WebUIRouter {
     speculative?: boolean,
   ): Promise<(PartialResponse & { inventory?: string }) | null> {
     const fullPath = prependBasePath(requestPath, this.basePath);
-    const headers: Record<string, string> = { 'Accept': 'application/json' };
+    const headers: Record<string, string> = { 'Accept': 'application/x-ndjson, application/json' };
     if (this.inventory) headers['X-WebUI-Inventory'] = this.inventory;
-
-    // Send the set of component tags that have static loaders. The host
-    // server does its own route matching and can check whether the TARGET
-    // leaf component is in this list. If so, it may skip expensive state
-    // computation and return state: {}.
-    if (this.loaderHeaderCache) {
-      headers['X-WebUI-Has-Loader'] = this.loaderHeaderCache;
-    }
 
     const resp = await fetch(fullPath, { headers, signal });
 
     if (!resp.ok) return null;
 
     const contentType = resp.headers.get('content-type') ?? '';
-    if (!contentType.includes('application/json')) {
-      // Server returned HTML (e.g. login page) instead of JSON partial.
-      // Speculative fetches never redirect — just bail out silently.
+
+    // HTML response (e.g. login page) — redirect
+    if (!contentType.includes('json') && !contentType.includes('ndjson')) {
       if (speculative || signal?.aborted) return null;
       window.location.href = prependBasePath(requestPath, this.basePath);
       return null;
     }
 
+    // Streaming NDJSON response — read Chunk 1, spawn background Chunk 2 reader
+    if (contentType.includes('ndjson') && resp.body) {
+      return this.readStreamingPartial(resp, requestPath, signal, speculative);
+    }
+
+    // Fallback: standard JSON response (non-streaming server)
     const data = await resp.json() as PartialResponse & { inventory?: string };
-
-    // Bail out before applying side effects if this navigation was superseded.
     if (signal?.aborted) return null;
-
-    // Register templates, styles, and CSS using the shared pipeline
     this.registerTemplatesAndStyles(data);
+    this.injectCssLinks(data);
+    return data;
+  }
 
-    // Inject CSS stylesheet links (used by some server implementations)
+  /**
+   * Read a streaming NDJSON partial response.
+   * Returns after Chunk 1 (chain + templates) for immediate navigation commit.
+   * Spawns a background reader for Chunk 2 (deferred per-component state).
+   */
+  private async readStreamingPartial(
+    resp: Response,
+    requestPath: string,
+    signal?: AbortSignal,
+    speculative?: boolean,
+  ): Promise<(PartialResponse & { inventory?: string }) | null> {
+    const reader = resp.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let chunk1: (PartialResponse & { inventory?: string }) | null = null;
+
+    // Read until we get Chunk 1 (has 'chain' field)
+    while (!chunk1) {
+      const { done, value } = await reader.read();
+      if (signal?.aborted) break;
+      if (done) {
+        // Flush remaining buffer on stream end
+        buffer += decoder.decode();
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+
+      if (buffer.length > MAX_NDJSON_BUFFER) {
+        console.warn('[Router] NDJSON buffer exceeded limit, aborting stream');
+        reader.cancel().catch(() => {});
+        return null;
+      }
+
+      const lines = buffer.split('\n');
+      buffer = lines.pop()!; // keep incomplete last line
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed.chain) {
+            chunk1 = parsed;
+          } else if (parsed.states && chunk1) {
+            // Chunk 2 arrived in same read batch — store for post-commit application
+            (chunk1 as any)._deferredStates = parsed.states;
+          }
+        } catch {
+          // Malformed line — skip
+        }
+      }
+    }
+
+    // Process any final incomplete line left in buffer
+    if (!chunk1 && buffer.trim()) {
+      try {
+        const parsed = JSON.parse(buffer);
+        if (parsed.chain) chunk1 = parsed;
+      } catch { /* ignore */ }
+      buffer = '';
+    }
+
+    if (!chunk1 || signal?.aborted) {
+      reader.cancel().catch(() => {});
+      return null;
+    }
+
+    // Register templates/styles from Chunk 1
+    this.registerTemplatesAndStyles(chunk1);
+    this.injectCssLinks(chunk1);
+
+    // Spawn background reader for remaining chunks (Chunk 2 state)
+    const gen = this.navGeneration;
+    this.deferredGeneration = gen;
+    this.deferredReader = this.continueDeferredRead(reader, decoder, buffer, requestPath, gen, signal)
+      .catch((err) => {
+        if (!signal?.aborted) {
+          console.warn('[Router] Deferred state reader failed:', err);
+        }
+      });
+
+    return chunk1;
+  }
+
+  /**
+   * Continue reading the NDJSON stream for Chunk 2 (deferred state).
+   * Runs in the background after Chunk 1 has been committed.
+   */
+  private async continueDeferredRead(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    decoder: TextDecoder,
+    initialBuffer: string,
+    requestPath: string,
+    generation: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    let buffer = initialBuffer;
+    try {
+      while (true) {
+        if (signal?.aborted || generation !== this.navGeneration) {
+          reader.cancel().catch(() => {});
+          return;
+        }
+        const { done, value } = await reader.read();
+        if (done) {
+          // Flush remaining bytes from the decoder
+          buffer += decoder.decode();
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+
+        if (buffer.length > MAX_NDJSON_BUFFER) {
+          console.warn('[Router] NDJSON deferred buffer exceeded limit, aborting');
+          reader.cancel().catch(() => {});
+          return;
+        }
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop()!;
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          if (generation !== this.navGeneration) return; // Stale — stop
+          try {
+            const parsed = JSON.parse(line);
+            if (parsed.states) {
+              this.applyDeferredStates(parsed.states, requestPath);
+            } else if (parsed.error) {
+              console.warn('[Router] Streaming state error:', parsed.error);
+            }
+          } catch {
+            // Malformed line — skip
+          }
+        }
+      }
+
+      // Process final incomplete line
+      if (buffer.trim() && generation === this.navGeneration) {
+        try {
+          const parsed = JSON.parse(buffer);
+          if (parsed.states) {
+            this.applyDeferredStates(parsed.states, requestPath);
+          } else if (parsed.error) {
+            console.warn('[Router] Streaming state error:', parsed.error);
+          }
+        } catch { /* ignore */ }
+      }
+    } finally {
+      // Release the stream lock and clear the deferred reference
+      reader.releaseLock();
+      this.deferredReader = null;
+      // Mark cache entry as complete
+      const cacheEntry = this.cache.get(requestPath);
+      if (cacheEntry) cacheEntry.complete = true;
+    }
+  }
+
+  /**
+   * Apply deferred per-component states from streaming Chunk 2.
+   * States array is matched 1:1 to activeChain entries by position.
+   * null entries are skipped (component keeps current state).
+   */
+  private applyDeferredStates(
+    states: (Record<string, unknown> | null)[],
+    requestPath: string,
+  ): void {
+    if (requestPath !== this.currentRequestPath) return; // Stale
+    for (let i = 0; i < states.length && i < this.activeChain.length; i++) {
+      const state = states[i];
+      if (!hasState(state)) continue;
+      const entry = this.activeChain[i];
+      if (!entry.el || !entry.component) continue;
+
+      // Don't override loader results
+      const ctor = customElements.get(entry.component) as
+        ((new () => HTMLElement) & { loader?: Function }) | undefined;
+      if (ctor && typeof ctor.loader === 'function') continue;
+
+      const compEl = entry.el.querySelector(entry.component);
+      if (compEl && typeof (compEl as any).setState === 'function') {
+        (compEl as any).setState(state);
+      }
+      // Update the chain entry's state for cache consistency
+      entry.state = state;
+    }
+  }
+
+  /** Inject CSS stylesheet links from a partial response. */
+  private injectCssLinks(data: PartialResponse): void {
     if (data.css) {
       for (const href of data.css) {
         if (!this.injectedCss.has(href)) {
@@ -1468,41 +1687,27 @@ export class WebUIRouter {
         }
       }
     }
-
-    return data;
   }
 
   private mountComponent(
     routeEl: HTMLElement,
     componentTag: string,
-    data: PartialResponse,
     params: Record<string, string>,
+    state?: Record<string, unknown> | null,
     query?: Record<string, string>,
-    stateOverride?: Record<string, unknown>,
   ): void {
     const component = document.createElement(componentTag);
     routeEl.textContent = '';
     routeEl.appendChild(component);
-
-    // Component module is pre-loaded and defined before commitNavigation.
-    // connectedCallback fires synchronously on appendChild, populating
-    // the component's light DOM immediately.
-
-    applyParamsQueryState(component, routeEl, params, data, query, stateOverride);
+    applyParamsQueryState(component, routeEl, params, state, query);
   }
 
   /**
-   * Apply partial state to a mounted route component.
-   * Calls the framework's built-in `setState` which sets
-   * `@observable` properties and flushes DOM updates synchronously.
-   * Route params are set as HTML attributes for `@attr` reflection.
-   * Allowed query params (declared via `query` attr on the route) are
-   * also set as attributes; stale ones from the previous navigation
-   * are removed.
+   * Apply state to a mounted route component using per-entry state.
+   * State resolution: loader override > per-entry state > keep-alive preserve.
    */
   private applyState(
     entry: RouteChainEntry,
-    data: PartialResponse,
     query?: Record<string, string>,
     loaderStates?: Map<string, Record<string, unknown> | typeof LOADER_FAILED>,
   ): void {
@@ -1517,16 +1722,21 @@ export class WebUIRouter {
 
     if (isKeepAlive) {
       if (effectiveOverride) {
-        applyParamsQueryState(compEl, entry.el, entry.params, data, query, effectiveOverride);
+        applyParamsQueryState(compEl, entry.el, entry.params, effectiveOverride, query);
       } else if (loaderExists) {
-        // Loader failed → fall back to server state
-        applyParamsQueryState(compEl, entry.el, entry.params, data, query);
+        // Loader failed → fall back to per-entry server state
+        applyParamsQueryState(compEl, entry.el, entry.params, entry.state, query);
+      } else if (hasState(entry.state)) {
+        // Server provided meaningful per-entry state → apply it
+        applyParamsQueryState(compEl, entry.el, entry.params, entry.state, query);
       } else {
-        // No loader → preserve local state
+        // null or empty state → preserve local state, only update attrs
         applyParamsAndQuery(compEl, entry.el, entry.params, query);
       }
     } else {
-      applyParamsQueryState(compEl, entry.el, entry.params, data, query, effectiveOverride);
+      // Non-keep-alive: apply state
+      const stateToApply = effectiveOverride ?? entry.state;
+      applyParamsQueryState(compEl, entry.el, entry.params, stateToApply, query);
     }
   }
 
@@ -1562,7 +1772,7 @@ export class WebUIRouter {
    * static `loader()` are skipped — they use server-provided state.
    *
    * On failure, the loader is skipped with a warning and the component
-   * falls back to `data.state` from the server partial.
+   * falls back to server-provided per-entry state.
    */
   private async resolveLoaders(
     chain: RouteChainEntry[],
@@ -1581,12 +1791,6 @@ export class WebUIRouter {
         (new () => HTMLElement) & { loader?: (ctx: import('./types.js').RouteLoaderContext) => Promise<Record<string, unknown>> }
       ) | undefined;
       if (!ctor || typeof ctor.loader !== 'function') continue;
-
-      // Track this component as having a loader for the X-WebUI-Has-Loader header
-      if (!this.loaderComponents.has(entry.component)) {
-        this.loaderComponents.add(entry.component);
-        this.loaderHeaderCache = [...this.loaderComponents].join(',');
-      }
 
       loaderEntries.push({ component: entry.component, params: entry.params, loaderFn: ctor.loader });
     }
@@ -1711,6 +1915,7 @@ export class WebUIRouter {
     signal?: AbortSignal,
     generation?: number,
   ): Promise<void> {
+    const topState = partialData.state ?? null;
     const newChain: RouteChainEntry[] = (partialData.chain ?? []).map(e => ({
       component: e.component ?? '',
       path: e.path ?? '',
@@ -1721,6 +1926,8 @@ export class WebUIRouter {
       pendingComponent: e.pendingComponent,
       errorComponent: e.errorComponent,
       invalidates: e.invalidates,
+      // Per-entry state (streaming Chunk 2) > top-level state (non-streaming) > null
+      state: e.state ?? topState,
     }));
 
     if (newChain.length === 0) {
@@ -1766,7 +1973,7 @@ export class WebUIRouter {
       if (changeLevel > 0 || isQueryOnlyChange) {
         const end = isQueryOnlyChange ? newChain.length : changeLevel;
         for (let i = 0; i < end; i++) {
-          this.applyState(newChain[i], partialData, query, loaderStates);
+          this.applyState(newChain[i], query, loaderStates);
         }
       }
       for (let i = changeLevel; i < newChain.length; i++) {
@@ -1775,7 +1982,7 @@ export class WebUIRouter {
         const parent = i > 0 ? newChain[i - 1] : null;
         if (oldEntry?.component === entry.component && oldEntry?.el) {
           entry.el = oldEntry.el;
-          if (entry.component) this.applyState(entry, partialData, query, loaderStates);
+          if (entry.component) this.applyState(entry, query, loaderStates);
           activateRoute(entry.el, entry.params);
           continue;
         }
@@ -1783,28 +1990,20 @@ export class WebUIRouter {
         entry.el = routeEl;
         if (entry.component) {
           const override = loaderStates.get(entry.component);
-          // Resolve the effective state override:
-          // - undefined = no loader exists → keep-alive preserves local state
-          // - LOADER_FAILED = loader existed but threw → fall back to server state
-          // - object = loader succeeded → use loader result
           const effectiveOverride = override === LOADER_FAILED ? undefined : override;
-          const loaderExists = override !== undefined;
 
           const isKeepAlive = entry.keepAlive || routeEl.hasAttribute('keep-alive');
           const existingComp = routeEl.firstElementChild;
           if (isKeepAlive && existingComp?.matches(entry.component)) {
-            if (effectiveOverride) {
-              // Loader succeeded → apply fresh data
-              applyParamsQueryState(existingComp, routeEl, entry.params, partialData, query, effectiveOverride);
-            } else if (loaderExists) {
-              // Loader failed → fall back to server state
-              applyParamsQueryState(existingComp, routeEl, entry.params, partialData, query);
+            const stateToApply = effectiveOverride ?? entry.state;
+            if (hasState(stateToApply)) {
+              applyParamsQueryState(existingComp, routeEl, entry.params, stateToApply, query);
             } else {
-              // No loader → preserve local state, only update attrs
               applyParamsAndQuery(existingComp, routeEl, entry.params, query);
             }
           } else {
-            this.mountComponent(routeEl, entry.component, partialData, entry.params, query, effectiveOverride);
+            const stateToApply = effectiveOverride ?? entry.state;
+            this.mountComponent(routeEl, entry.component, entry.params, stateToApply, query);
           }
         }
         activateRoute(routeEl, entry.params);

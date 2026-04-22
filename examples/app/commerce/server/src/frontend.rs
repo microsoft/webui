@@ -83,13 +83,12 @@ impl FrontendRuntime {
         inventory_hex: &str,
         state: Value,
     ) -> Value {
-        route_handler::render_partial(
-            &self.protocol,
-            state,
-            &self.entry,
-            route_path,
-            inventory_hex,
-        )
+        let mut partial =
+            route_handler::render_partial(&self.protocol, &self.entry, route_path, inventory_hex);
+        if let Some(obj) = partial.as_object_mut() {
+            obj.insert("state".into(), state);
+        }
+        partial
     }
 
     #[must_use]

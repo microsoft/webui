@@ -928,14 +928,12 @@ describe('WebUIRouter', () => {
       }
     });
 
-    test('applyParamsQueryState uses stateOverride when provided', () => {
+    test('mountComponent calls applyParamsQueryState with state', () => {
       const router = new WebUIRouter();
       const source = (router as any).mountComponent.toString() as string;
-
-      // Verify mountComponent passes stateOverride to applyParamsQueryState
       assert.ok(
-        source.includes('stateOverride'),
-        'mountComponent should accept and pass stateOverride',
+        source.includes('applyParamsQueryState'),
+        'mountComponent should call applyParamsQueryState',
       );
     });
 
@@ -956,7 +954,7 @@ describe('WebUIRouter', () => {
   });
 
   describe('keep-alive state preservation', () => {
-    test('applyState skips setState for keep-alive without loader', () => {
+    test('applyState skips setState for keep-alive with null state', () => {
       const router = new WebUIRouter();
       const priv = router as any;
 
@@ -978,11 +976,11 @@ describe('WebUIRouter', () => {
         params: { id: '42' },
         el: mockRouteEl,
         keepAlive: true,
+        state: null,  // null = skip setState
       };
 
-      // Call applyState with empty loader results — keep-alive should skip setState
-      priv.applyState(entry, { state: { server: true }, templates: [], path: '/' }, {}, new Map());
-      assert.ok(!setStateCalled, 'setState must not be called for keep-alive without loader');
+      priv.applyState(entry, {}, new Map());
+      assert.ok(!setStateCalled, 'setState must not be called for keep-alive with null state');
     });
 
     test('applyState calls setState for keep-alive with loader override', () => {
@@ -1007,15 +1005,16 @@ describe('WebUIRouter', () => {
         params: {},
         el: mockRouteEl,
         keepAlive: true,
+        state: null,
       };
       const loaderStates = new Map();
       loaderStates.set('test-comp', { fresh: 'data' });
 
-      priv.applyState(entry, { state: { server: true }, templates: [], path: '/' }, {}, loaderStates);
+      priv.applyState(entry, {}, loaderStates);
       assert.deepEqual(setStateArg, { fresh: 'data' }, 'setState should receive loader override');
     });
 
-    test('applyState calls setState with server state when loader fails', () => {
+    test('applyState uses per-entry state for non-keep-alive', () => {
       const router = new WebUIRouter();
       const priv = router as any;
 
@@ -1025,7 +1024,6 @@ describe('WebUIRouter', () => {
         removeAttribute: () => {},
         setState: (s: unknown) => { setStateArg = s; },
       };
-      // Non-keep-alive route always uses server state
       const mockRouteEl = {
         hasAttribute: () => false,
         getAttribute: () => null,
@@ -1038,47 +1036,16 @@ describe('WebUIRouter', () => {
         params: {},
         el: mockRouteEl as any,
         keepAlive: false,
+        state: { from: 'server' },
       };
 
-      priv.applyState(entry, { state: { from: 'server' }, templates: [], path: '/' }, {}, new Map());
-      assert.deepEqual(setStateArg, { from: 'server' }, 'non-keep-alive should use server state');
+      priv.applyState(entry, {}, new Map());
+      assert.deepEqual(setStateArg, { from: 'server' }, 'non-keep-alive should use per-entry state');
     });
   });
 
-  describe('X-WebUI-Has-Loader header', () => {
-    test('fetchPartial sends comma-separated loader component list', async () => {
-      const origFetch = (globalThis as any).fetch;
-      let capturedHeaders: Record<string, string> = {};
-
-      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
-        capturedHeaders = (opts?.headers as Record<string, string>) ?? {};
-        return {
-          ok: true,
-          headers: { get: () => 'application/json' },
-          json: async () => ({ state: {}, templates: [], path: '/', chain: [] }),
-        };
-      };
-
-      try {
-        const router = new WebUIRouter();
-        const priv = router as any;
-
-        // Simulate: two components discovered to have loaders
-        priv.loaderComponents.add('dash-page');
-        priv.loaderComponents.add('mail-view');
-        priv.loaderHeaderCache = [...priv.loaderComponents].join(',');
-
-        await priv.fetchPartial.call(router, '/test');
-        const header = capturedHeaders['X-WebUI-Has-Loader'];
-        assert.ok(header, 'should send X-WebUI-Has-Loader header');
-        assert.ok(header.includes('dash-page'), 'header should include dash-page');
-        assert.ok(header.includes('mail-view'), 'header should include mail-view');
-      } finally {
-        (globalThis as any).fetch = origFetch;
-      }
-    });
-
-    test('fetchPartial omits X-WebUI-Has-Loader when no loaders discovered', async () => {
+  describe('fetchPartial NDJSON support', () => {
+    test('fetchPartial sends Accept header for both NDJSON and JSON', async () => {
       const origFetch = (globalThis as any).fetch;
       let capturedHeaders: Record<string, string> = {};
 
@@ -1094,52 +1061,17 @@ describe('WebUIRouter', () => {
       try {
         const router = new WebUIRouter();
         await (router as any).fetchPartial.call(router, '/test');
-        assert.equal(
-          capturedHeaders['X-WebUI-Has-Loader'],
-          undefined,
-          'should NOT send header when no loaders are known',
-        );
+        const accept = capturedHeaders['Accept'];
+        assert.ok(accept, 'should send Accept header');
+        assert.ok(accept.includes('application/x-ndjson'), 'Accept should include ndjson');
+        assert.ok(accept.includes('application/json'), 'Accept should include json');
       } finally {
         (globalThis as any).fetch = origFetch;
       }
     });
+  });
 
-    test('resolveLoaders populates loaderComponents set', async () => {
-      const router = new WebUIRouter();
-      const priv = router as any;
-
-      const origGet = (globalThis as any).customElements.get;
-      (globalThis as any).customElements.get = (name: string) => {
-        if (name === 'loader-comp') {
-          return class LoaderComp {
-            static async loader() { return { x: 1 }; }
-          };
-        }
-        return origGet(name);
-      };
-
-      try {
-        await priv.resolveLoaders.call(router,
-          [{ component: 'loader-comp', params: {} }],
-          {},
-        );
-        assert.ok(
-          priv.loaderComponents.has('loader-comp'),
-          'resolveLoaders should add component to loaderComponents set',
-        );
-      } finally {
-        (globalThis as any).customElements.get = origGet;
-      }
-    });
-
-    test('destroy clears loaderComponents', () => {
-      const router = new WebUIRouter();
-      const priv = router as any;
-      priv.loaderComponents.add('some-page');
-      router.destroy();
-      assert.equal(priv.loaderComponents.size, 0, 'destroy should clear loaderComponents');
-    });
-
+  describe('loaderPromises cleanup', () => {
     test('loaderPromises entries are deleted after loader completes', async () => {
       const router = new WebUIRouter();
       const priv = router as any;

@@ -513,13 +513,15 @@ pub unsafe extern "C" fn webui_render_partial(
             }
         };
 
-        let result = webui_handler::route_handler::render_partial(
+        let mut result = webui_handler::route_handler::render_partial(
             &protocol,
-            state,
             entry_str,
             request_path_str,
             inv_str,
         );
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert("state".into(), state);
+        }
 
         match CString::new(result.to_string()) {
             Ok(s) => s.into_raw(),

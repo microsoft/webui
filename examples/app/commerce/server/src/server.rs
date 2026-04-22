@@ -391,12 +391,13 @@ mod tests {
             Err(error) => panic!("{error}"),
         };
 
-        // Page-specific state present
+        // State is at top level (caller adds it), not per-entry in chain
+        assert!(json.get("state").is_some(), "should have top-level state");
         assert!(json["state"].get("products").is_some());
         assert!(json["state"].get("categories").is_some());
         assert!(json["state"].get("sortOptions").is_some());
 
-        // Shell state excluded from partials
+        // Shell state excluded from page-specific state
         assert!(json["state"].get("storeName").is_none());
         assert!(json["state"].get("cartItems").is_none());
         assert!(json["state"].get("cartItemCount").is_none());

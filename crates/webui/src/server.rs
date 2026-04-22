@@ -89,15 +89,11 @@ pub fn serve_request(
 
     if request.accept_json {
         // JSON partial response for client-side navigation.
-        // render_partial() produces the complete response shape including
-        // separated templateStyles and templates arrays.
-        let partial = route_handler::render_partial(
-            protocol,
-            data,
-            entry,
-            request.path,
-            request.inventory_hex,
-        );
+        let mut partial =
+            route_handler::render_partial(protocol, entry, request.path, request.inventory_hex);
+        if let Some(obj) = partial.as_object_mut() {
+            obj.insert("state".into(), data);
+        }
         Ok(ServeResponse::Json(partial))
     } else {
         // Full HTML SSR

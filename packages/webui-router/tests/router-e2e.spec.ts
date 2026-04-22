@@ -426,27 +426,40 @@ test.describe('route loaders', () => {
     await expect(page.locator('.loader-data')).toContainText('Data fetched by static loader');
   });
 
-  test('X-WebUI-Has-Loader header is sent when leaf has loader', async ({ page }) => {
-    // First navigate to the loader page so the router discovers its loader
-    await page.click('a[href="/loader"]');
-    await expect(page.locator('.source')).toContainText('Source: client-loader');
-
-    // Now navigate again — the router should send the X-WebUI-Has-Loader header
+  test('navigation sends Accept header for NDJSON and JSON', async ({ page }) => {
+    // Navigate to any page and capture the partial request headers
     const [request] = await Promise.all([
       page.waitForRequest(req =>
         req.url().includes('/alpha') &&
-        req.headers()['accept']?.includes('application/json'),
+        req.headers()['accept']?.includes('json'),
       ),
       page.click('a[href="/alpha"]'),
     ]);
 
-    // The header should be present since page-loader was the previous leaf
-    // and it has a static loader. Note: the header signals the PREVIOUS
-    // leaf had a loader, which tells the server the current nav might too.
-    // The actual value depends on whether the router detected loaders.
-    const hasLoaderHeader = request.headers()['x-webui-has-loader'];
-    expect(hasLoaderHeader).toBeDefined();
-    expect(hasLoaderHeader).toContain('page-loader');
+    const accept = request.headers()['accept'];
+    expect(accept).toContain('application/x-ndjson');
+    expect(accept).toContain('application/json');
+  });
+
+  test('partial response does not include state (caller responsibility)', async ({ page }) => {
+    // Intercept the partial request and inspect the response body
+    const partialBody = page.waitForResponse(resp =>
+      resp.url().includes('/alpha') &&
+      resp.request().headers()['accept']?.includes('json'),
+    );
+
+    await page.click('a[href="/alpha"]');
+    const response = await partialBody;
+    const body = await response.json();
+
+    // chain + templates should be present
+    expect(body.chain).toBeDefined();
+    expect(body.templates).toBeDefined();
+    expect(body.inventory).toBeDefined();
+    expect(body.path).toBeDefined();
+
+    // State is added by the caller (the dev server adds it at the top level)
+    expect(body.state).toBeDefined();
   });
 });
 

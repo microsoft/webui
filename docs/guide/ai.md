@@ -233,7 +233,6 @@ All attributes are validated at build time. Referencing a non-existent `pending`
 - `Router.invalidate(path?)` - evict by path or all
 
 **Server headers:**
-- `X-WebUI-Has-Loader` header: comma-separated list of component tags with loaders - host server can skip state computation
 - `X-WebUI-Inventory` header: hex bitmask of loaded templates - server skips re-sending
 
 ### Outlet

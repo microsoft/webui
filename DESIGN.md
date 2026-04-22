@@ -283,19 +283,21 @@ without a server round-trip.
 
 **Client-side navigation:**
 1. On initial load, the router builds the active chain from SSR'd `<webui-route active>` elements.
-2. On navigation, fetches a JSON partial (`Accept: application/json`) from the server.
+2. On navigation, fetches a partial response (`Accept: application/x-ndjson, application/json`) from the server.
 3. The server returns the matched route chain — the client does NOT perform route matching.
 4. Reconciles old vs new chain — finds first changed level.
 5. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
 6. Parent components and their state are preserved.
 
-**Partial response:** The server returns `{ state, templateStyles, templates, inventory, path, chain, cacheTags }`:
-- `state`: route params from all nesting levels injected into API state
+**Partial response:** `render_partial()` returns `{ templateStyles, templates, inventory, path, chain, cacheTags }`. The caller adds application state to the response (e.g. as a top-level `state` field for non-streaming, or as an NDJSON Chunk 2 for streaming):
+- `state`: (added by caller) route-scoped application data — the router applies it to components via `setState()`
 - `templateStyles`: module CSS definition tags (`<style type="module" specifier="...">`) for newly shipped components. Empty array for Link/Style modes. The client appends these to `<head>` before evaluating template scripts so adopted stylesheets are available
 - `templates`: client template script/markup payloads the client doesn't already have (filtered by inventory bitmask). Clean JS IIFEs for the WebUI plugin, `<f-template>` markup for the FAST plugin
 - `inventory`: updated hex bitmask of loaded templates
 - `chain`: matched route chain array — each entry has `component`, `path`, optional `params`, `exact`, `pendingComponent`, `errorComponent`, and `invalidates`
 - `cacheTags`: resolved cache tags from the full route chain (union of all levels, deduplicated). The client tags its cache entry with these values for tag-based invalidation
+
+**NDJSON streaming:** For servers that support it, the partial can be split into two NDJSON lines. Chunk 1 (chain + templates) flushes immediately for instant navigation commit. Chunk 2 (per-component states) arrives when the backend data is ready. The router reads Chunk 1, commits navigation, then applies Chunk 2 states in the background.
 
 **Cache control:** The server can include `cacheControl: { staleTime: number }` in the partial response to override the client's default stale time for this specific route.
 
@@ -311,20 +313,12 @@ without a server round-trip.
 
 | Header | Value | Purpose |
 |--------|-------|---------|
-| `Accept` | `application/json` | Requests JSON partial instead of full HTML |
+| `Accept` | `application/x-ndjson, application/json` | Requests NDJSON streaming or JSON partial instead of full HTML |
 | `X-WebUI-Inventory` | Hex bitmask | Templates already loaded — server skips re-sending them |
-| `X-WebUI-Has-Loader` | Comma-separated tags | Components with a static `loader()` — host server may check if the target leaf is in this list and skip state computation |
-
-**Request headers sent by the client router:**
-
-| Header | Value | Purpose |
-|--------|-------|---------|
-| `Accept` | `application/json` | Requests JSON partial instead of full HTML |
-| `X-WebUI-Inventory` | Hex bitmask | Templates already loaded — server skips re-sending them |
-| `X-WebUI-Has-Loader` | Comma-separated tags | Components with a static `loader()` — host server may check if the target leaf is in this list and skip state computation |
 
 The `chain` field is produced by `render_partial()` in the handler, which walks the
-fragment graph and matches routes at each nesting level. Host servers call this once per partial
+fragment graph and matches routes at each nesting level. The function returns chain + templates
+without state — the caller adds state to the response. Host servers call this once per partial
 response. Available via FFI as `webui_render_partial()` for C/.NET/Node hosts.
 
 **Partial-template selection:** During client navigation, servers derive template names from the
@@ -1220,7 +1214,7 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 | `webui_handler_create()` | Create a reusable handler (no plugin). |
 | `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin (e.g. `"fast"`). Returns `NULL` on error. |
 | `webui_handler_render(handler, data, len, json, entry_id, request_path)` | Render a pre-compiled protocol with route matching. `request_path` controls which route is active. Returns heap-allocated string. |
-| `webui_render_partial(protocol_data, len, state_json, entry_id, request_path, inventory_hex)` | Produce a complete JSON partial response (state, templateStyles, templates, inventory, path, and matched route chain) in a single call. Returns heap-allocated JSON string. |
+| `webui_render_partial(protocol_data, len, entry_id, request_path, inventory_hex)` | Produce a JSON partial response (templateStyles, templates, inventory, path, and matched route chain) in a single call. Caller adds state. Returns heap-allocated JSON string. |
 | `webui_handler_destroy(handler)` | Destroy a handler. `NULL` is a safe no-op. |
 | `webui_free(ptr)` | Free a string returned by any render function. `NULL` is a safe no-op. |
 | `webui_last_error()` | Return per-thread error message. Caller must **not** free. |

@@ -572,12 +572,14 @@ mod sys {
 
             // SAFETY: `info` is a valid, zero-initialised
             // `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` with only `LimitFlags` set.
+            #[allow(clippy::cast_possible_truncation)]
+            let info_size = std::mem::size_of::<ExtendedLimitInfo>() as u32;
             unsafe {
                 SetInformationJobObject(
                     job,
                     JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
                     std::ptr::addr_of!(info).cast(),
-                    std::mem::size_of::<ExtendedLimitInfo>() as u32,
+                    info_size,
                 );
             }
 
@@ -630,12 +632,14 @@ mod sys {
 
             // SAFETY: `info` points to a valid writable buffer of the requested
             // type and `self.0` is a valid job handle.
+            #[allow(clippy::cast_possible_truncation)]
+            let info_size = std::mem::size_of::<BasicAccountingInfo>() as u32;
             let ok = unsafe {
                 QueryInformationJobObject(
                     self.0,
                     JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
                     std::ptr::addr_of_mut!(info).cast(),
-                    std::mem::size_of::<BasicAccountingInfo>() as u32,
+                    info_size,
                     std::ptr::addr_of_mut!(returned_len),
                 )
             };
