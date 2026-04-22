@@ -1,6 +1,5 @@
-// Copyright (C) Microsoft Corporation. All rights reserved.
-// Use of this source code is governed by a MIT license that can be
-// found in the LICENSE file.
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
 
 //! Minimal HTML entity encoding for safe embedding of dynamic values.
 //!
@@ -109,10 +108,7 @@ mod tests {
 
     #[test]
     fn escapes_all_special_chars() {
-        assert_eq!(
-            encode_safe(r#"&<>"'/"#),
-            "&amp;&lt;&gt;&quot;&#x27;&#x2F;"
-        );
+        assert_eq!(encode_safe(r#"&<>"'/"#), "&amp;&lt;&gt;&quot;&#x27;&#x2F;");
     }
 
     #[test]

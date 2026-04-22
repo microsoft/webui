@@ -6,7 +6,7 @@
 //! This crate provides functionality to process and render WebUI protocols
 //! into final HTML output based on provided data.
 
-pub mod html_encode;
+pub(crate) mod html_encode;
 pub mod plugin;
 pub mod route_handler;
 pub mod route_matcher;
@@ -737,7 +737,9 @@ impl WebUIHandler {
                 context
                     .writer
                     .write("<meta name=\"webui-nonce\" content=\"")?;
-                context.writer.write(&crate::html_encode::encode_safe(nonce))?;
+                context
+                    .writer
+                    .write(&crate::html_encode::encode_safe(nonce))?;
                 context.writer.write("\">")?;
             }
 
@@ -1018,14 +1020,22 @@ impl WebUIHandler {
                 // markers (data-fe-b-N) match the DOM node structure.
                 match &value {
                     Some(Value::String(s)) => {
-                        write_attr(context.writer, &attr.name, &crate::html_encode::encode_safe(s))?;
+                        write_attr(
+                            context.writer,
+                            &attr.name,
+                            &crate::html_encode::encode_safe(s),
+                        )?;
                     }
                     Some(Value::Null) | None => {
                         write_attr(context.writer, &attr.name, "")?;
                     }
                     Some(other) => {
                         let s = other.to_string();
-                        write_attr(context.writer, &attr.name, &crate::html_encode::encode_safe(&s))?;
+                        write_attr(
+                            context.writer,
+                            &attr.name,
+                            &crate::html_encode::encode_safe(&s),
+                        )?;
                     }
                 }
 
@@ -2428,12 +2438,11 @@ mod tests {
 
     #[test]
     fn test_escape_single_quote() {
-        // crate::html_encode::encode_safe escapes ' as &#x27;
+        // encode_safe escapes ' as &#x27;
         let result = render_signal("'");
-        assert!(
-            result == "&#39;" || result == "&#x27;" || result == "'",
-            "Expected escaped single quote, got: {}",
-            result
+        assert_eq!(
+            result, "&#x27;",
+            "Expected &#x27; for single quote, got: {result}"
         );
     }
 
