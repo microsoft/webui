@@ -28,6 +28,7 @@ use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol, WebUiFragmentRo
 
 /// Call `webui_render` and return a Rust `String`, freeing the C
 /// string afterwards. Panics if the function returns `NULL`.
+#[cfg(feature = "parser")]
 unsafe fn render(html: &str, json: &str) -> String {
     let c_html = CString::new(html).expect("test html should not contain NUL");
     let c_json = CString::new(json).expect("test json should not contain NUL");
@@ -53,9 +54,10 @@ unsafe fn last_error_string() -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: webui_render (happy paths)
+// Tests: webui_render (happy paths) — requires `parser` feature
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "parser")]
 #[test]
 fn simple_html_passthrough() {
     unsafe {
@@ -64,6 +66,7 @@ fn simple_html_passthrough() {
     }
 }
 
+#[cfg(feature = "parser")]
 #[test]
 fn signal_substitution() {
     unsafe {
@@ -72,6 +75,7 @@ fn signal_substitution() {
     }
 }
 
+#[cfg(feature = "parser")]
 #[test]
 fn for_loop() {
     unsafe {
@@ -82,6 +86,7 @@ fn for_loop() {
     }
 }
 
+#[cfg(feature = "parser")]
 #[test]
 fn if_condition_true() {
     unsafe {
@@ -92,6 +97,7 @@ fn if_condition_true() {
     }
 }
 
+#[cfg(feature = "parser")]
 #[test]
 fn if_condition_false() {
     unsafe {
@@ -102,6 +108,7 @@ fn if_condition_false() {
     }
 }
 
+#[cfg(feature = "parser")]
 #[test]
 fn html_escaping() {
     unsafe {
@@ -116,6 +123,7 @@ fn html_escaping() {
     }
 }
 
+#[cfg(feature = "parser")]
 #[test]
 fn raw_signal_unescaped() {
     unsafe {
@@ -126,6 +134,7 @@ fn raw_signal_unescaped() {
     }
 }
 
+#[cfg(feature = "parser")]
 #[test]
 fn empty_data_object() {
     unsafe {
@@ -135,9 +144,10 @@ fn empty_data_object() {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: error cases
+// Tests: error cases — webui_render (requires `parser` feature)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "parser")]
 #[test]
 fn null_html_returns_null_and_sets_error() {
     unsafe {
@@ -158,6 +168,7 @@ fn null_html_returns_null_and_sets_error() {
     }
 }
 
+#[cfg(feature = "parser")]
 #[test]
 fn null_json_returns_null_and_sets_error() {
     unsafe {
@@ -170,6 +181,7 @@ fn null_json_returns_null_and_sets_error() {
     }
 }
 
+#[cfg(feature = "parser")]
 #[test]
 fn invalid_json_returns_null_and_sets_error() {
     unsafe {
@@ -186,6 +198,7 @@ fn invalid_json_returns_null_and_sets_error() {
     }
 }
 
+#[cfg(feature = "parser")]
 #[test]
 fn successful_call_clears_previous_error() {
     unsafe {
@@ -435,9 +448,10 @@ fn render_partial_returns_templates_inventory_and_chain() {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: fixture file
+// Tests: fixture file (requires `parser` feature)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "parser")]
 #[test]
 fn fixture_file_renders_correctly() {
     let html = include_str!("fixtures/simple.html");
@@ -458,5 +472,30 @@ fn fixture_file_renders_correctly() {
 fn free_string_null_is_safe() {
     unsafe {
         webui_free(std::ptr::null_mut()); // should not crash
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests: webui_render without `parser` feature returns error stub
+// ---------------------------------------------------------------------------
+
+#[cfg(not(feature = "parser"))]
+#[test]
+fn webui_render_without_parser_returns_null_with_error() {
+    unsafe {
+        let c_html = CString::new("<p>hi</p>").expect("static string");
+        let c_json = CString::new("{}").expect("static string");
+
+        let ptr = webui_render(c_html.as_ptr(), c_json.as_ptr());
+        assert!(
+            ptr.is_null(),
+            "webui_render should return NULL without parser feature"
+        );
+
+        let err = last_error_string().expect("error should be set without parser feature");
+        assert!(
+            err.contains("parser"),
+            "error should mention parser feature, got: {err}"
+        );
     }
 }

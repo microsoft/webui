@@ -81,6 +81,10 @@ char *webui_handler_render(void *handler_ptr,
 /// This is the **recommended entry point** for Go, C#, and Python consumers.
 /// It eliminates the need for callers to deal with protobuf serialisation.
 ///
+/// Requires the `parser` feature (enabled by default). When built without
+/// the `parser` feature, this function always returns `NULL` and sets an
+/// error via [`webui_last_error`].
+///
 /// # Arguments
 ///
 /// * `html`      - Null-terminated UTF-8 string containing the HTML template.

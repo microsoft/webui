@@ -1218,7 +1218,7 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 
 | Function | Description |
 |----------|-------------|
-| `webui_render(html, data_json)` | Parse + render in one call. Returns heap-allocated string (caller frees with `webui_free`). |
+| `webui_render(html, data_json)` | Parse + render in one call (requires `parser` feature; returns `NULL` when absent). Returns heap-allocated string (caller frees with `webui_free`). |
 | `webui_handler_create()` | Create a reusable handler (no plugin). |
 | `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin (e.g. `"fast"`). Returns `NULL` on error. |
 | `webui_handler_render(handler, data, len, json, entry_id, request_path)` | Render a pre-compiled protocol with route matching. `request_path` controls which route is active. Returns heap-allocated string. |

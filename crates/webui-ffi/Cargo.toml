@@ -15,9 +15,13 @@ categories = ["api-bindings", "web-programming"]
 name = "webui_ffi"
 crate-type = ["cdylib", "staticlib", "lib"]
 
+[features]
+default = ["parser"]
+parser = ["dep:microsoft-webui-parser"]
+
 [dependencies]
 microsoft-webui-handler = { path = "../webui-handler", version = "0.0.10" }
-microsoft-webui-parser = { path = "../webui-parser", version = "0.0.10" }
+microsoft-webui-parser = { path = "../webui-parser", version = "0.0.10", optional = true }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.10" }
 serde = { workspace = true }
 serde_json = { workspace = true }

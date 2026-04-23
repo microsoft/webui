@@ -37,6 +37,7 @@ use std::os::raw::{c_char, c_void};
 use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
+#[cfg(feature = "parser")]
 use webui_parser::HtmlParser;
 use webui_protocol::WebUIProtocol;
 
@@ -323,6 +324,10 @@ pub unsafe extern "C" fn webui_handler_render(
 /// This is the **recommended entry point** for Go, C#, and Python consumers.
 /// It eliminates the need for callers to deal with protobuf serialisation.
 ///
+/// Requires the `parser` feature (enabled by default). When built without
+/// the `parser` feature, this function always returns `NULL` and sets an
+/// error via [`webui_last_error`].
+///
 /// # Arguments
 ///
 /// * `html`      - Null-terminated UTF-8 string containing the HTML template.
@@ -349,7 +354,30 @@ pub unsafe extern "C" fn webui_render(
         return std::ptr::null_mut();
     }
 
+    #[cfg(not(feature = "parser"))]
+    {
+        let _ = (html, data_json);
+        set_last_error(
+            "webui_render requires the \"parser\" feature, which was not enabled at build time",
+        );
+        return std::ptr::null_mut();
+    }
+
+    #[cfg(feature = "parser")]
+    match std::panic::catch_unwind(|| webui_render_impl(html, data_json)) {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("panic in webui_render");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Inner implementation of [`webui_render`], compiled only with the `parser` feature.
+#[cfg(feature = "parser")]
+unsafe fn webui_render_impl(html: *const c_char, data_json: *const c_char) -> *mut c_char {
     // --- Extract C strings ---------------------------------------------------
+    // SAFETY: caller (webui_render) already verified non-null.
     let html_str = match CStr::from_ptr(html).to_str() {
         Ok(s) => s,
         Err(e) => {
@@ -358,6 +386,7 @@ pub unsafe extern "C" fn webui_render(
         }
     };
 
+    // SAFETY: caller (webui_render) already verified non-null.
     let data_str = match CStr::from_ptr(data_json).to_str() {
         Ok(s) => s,
         Err(e) => {
