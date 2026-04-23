@@ -513,12 +513,22 @@ pub unsafe extern "C" fn webui_render_partial(
             }
         };
 
-        let mut result = webui_handler::route_handler::render_partial(
+        // Per-request index — see ProtocolIndex doc for caching guidance.
+        let mut index = webui_handler::route_handler::ProtocolIndex::new(&protocol);
+
+        let mut result = match webui_handler::route_handler::render_partial(
             &protocol,
             entry_str,
             request_path_str,
             inv_str,
-        );
+            &mut index,
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                set_last_error(format!("render_partial failed: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
         if let Some(obj) = result.as_object_mut() {
             obj.insert("state".into(), state);
         }
@@ -599,8 +609,18 @@ pub unsafe extern "C" fn webui_render_component_templates(
             }
         };
 
-        let result =
-            webui_handler::route_handler::render_component_templates(&protocol, &tag_refs, inv_str);
+        // Per-request index — see ProtocolIndex doc for caching guidance.
+        let index = webui_handler::route_handler::ProtocolIndex::new(&protocol);
+
+        let result = match webui_handler::route_handler::render_component_templates(
+            &protocol, &tag_refs, inv_str, &index,
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                set_last_error(format!("render_component_templates failed: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
 
         match CString::new(result.to_string()) {
             Ok(s) => s.into_raw(),

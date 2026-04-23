@@ -207,7 +207,7 @@ The router provides four mechanisms for controlling how state flows to your comp
 // Caller adds state to the response.
 app.get('*', async (req, res) => {
   const state = await db.getPageState(req.path);
-  const partial = handler.renderPartial(protocol, req.path, invHex);
+  const partial = handler.renderPartial(protocol, index, req.path, invHex);
   partial.state = state;
   res.json(partial);
 });
@@ -362,10 +362,69 @@ If no `error` attribute is declared on the route, the router falls back to its d
 ### First Load (SSR)
 
 1. Browser requests `/sections/1/topics/react`
-2. Server matches the full route chain: `app-shell → section-page → topic-page`
+2. Server matches the full route chain: `app-shell - section-page - topic-page`
 3. Renders all matched components nested at their outlets
 4. Browser displays fully rendered HTML - no JavaScript needed yet
-5. JavaScript loads, hydration runs, router starts and reads the SSR'd active chain
+5. JavaScript loads, hydration runs, router starts and reads `window.__webui`
+
+#### SSR Output
+
+The server renders `<webui-route>` elements with these DOM attributes:
+
+| Attribute | Purpose |
+|-----------|---------|
+| `path` | The route's path pattern |
+| `component` | The component tag name |
+| `active` | Present on matched routes |
+| `exact` | Present on leaf routes |
+| `pending` | Pending component tag (if declared) |
+| `error` | Error component tag (if declared) |
+| `data-ri` | Route index for O(1) element binding during hydration |
+
+Build-time attributes like `query`, `keep-alive`, `cache-tags`, and `invalidates` are **not** emitted as DOM attributes on `<webui-route>` elements. They are compiled into the binary protocol and delivered to the client via `window.__webui.chain` JSON data. The `<route>` source attributes remain valid and unchanged - the compiler just delivers them through JSON instead of the DOM.
+
+The server also emits a `window.__webui` script containing the SSR chain, template inventory, and CSS metadata. This replaces the previous `<meta name="webui-inventory">` tag (which is still supported as a fallback for older servers).
+
+```html
+<script>window.__webui = {
+  chain: [
+    { "component": "app-shell", "path": "/", "keepAlive": false },
+    { "component": "topic-page", "path": "topics/:topicId", "params": { "topicId": "react" }, "exact": true }
+  ],
+  inventory: "04000400...",
+  nonce: "abc123",
+  css: ["/styles/main.css"],
+  styles: ["app-shell", "topic-page"]
+};</script>
+```
+
+#### Client Hydration
+
+At startup, the router reads `window.__webui` instead of walking the DOM:
+
+1. **Chain**: The SSR chain is provided as JSON in `window.__webui.chain`, eliminating DOM walking and URLPattern usage
+2. **Element binding**: `data-ri` attributes on `<webui-route>` elements enable O(1) lookup by chain index - no component-name matching needed
+3. **Inventory**: `window.__webui.inventory` provides the template bitmask (falls back to `<meta name="webui-inventory">` for older servers)
+4. **CSS/Styles**: `window.__webui.css` and `window.__webui.styles` track injected assets
+
+#### SSR Fresh / Loaders
+
+By default, `Router.start({ ssrFresh: true })` skips running route loaders on the initial SSR-bootstrapped navigation. The server-rendered state is considered authoritative, so there is no redundant client-side fetch on first load.
+
+Components that need to run their loader even during SSR bootstrap can opt in:
+
+```typescript
+export class LiveDashboard extends WebUIElement {
+  static ssrLoader = true; // loader runs even on SSR boot
+
+  static async loader({ params, signal }: RouteLoaderContext) {
+    const resp = await fetch(`/api/dashboard/${params.id}`, { signal });
+    return resp.json();
+  }
+}
+```
+
+Loaders always run on subsequent client-side navigations regardless of the `ssrFresh` setting.
 
 ### Client Navigation
 
@@ -386,8 +445,9 @@ Starts the router. Call after hydration completes.
 ```typescript
 Router.start({
   basePath: '/app',           // prefix for all route URLs
-  loaders: { ... },           // lazy-loading map (component tag → async import)
+  loaders: { ... },           // lazy-loading map (component tag -> async import)
   preload: true,              // speculative fetch on link hover
+  ssrFresh: true,             // skip initial loader replay (default: true)
   cache: {                    // tagged navigation cache
     staleTime: 30_000,        // ms before refetch (0 = disabled)
     gcTime: 300_000,          // ms before memory eviction
@@ -447,7 +507,7 @@ Tears down the router, removes event listeners, and clears the cache.
 
 ### `Router.gc()`
 
-Release all cached component templates to free memory. Removes all entries from `window.__webui_templates` and clears their inventory bits so the server will re-send them on the next navigation that needs them.
+Release all cached component templates to free memory. Removes all entries from `window.__webui.templates` and clears their inventory bits so the server will re-send them on the next navigation that needs them.
 
 ```typescript
 Router.gc();
@@ -541,7 +601,7 @@ When `Accept: application/json` or `application/x-ndjson`:
 {
   "state": { "name": "Alice", "email": "alice@example.com" },
   "templateStyles": ["<style type=\"module\" specifier=\"user-detail\">...</style>"],
-  "templates": ["(function(){var w=window.__webui_templates||...})();"],
+  "templates": ["(function(){var w=window.__webui.templates||...})();"],
   "inventory": "04000400...",
   "path": "/users/42",
   "chain": [
@@ -581,44 +641,50 @@ Each `chain` entry can include: `component`, `path`, `params`, `exact`, `keepAli
 
 ### Full HTML (initial load)
 
-Without `Accept: application/json`, return the full SSR'd page. The handler automatically emits a `<meta name="webui-inventory">` tag in `<head>` so the client router knows which templates are already loaded.
+Without `Accept: application/json`, return the full SSR'd page. The handler emits a `window.__webui` script in `<head>` containing the SSR chain, template inventory, and CSS metadata so the client router can bootstrap without DOM walking.
 
-### Building the chain
+### Partial Navigation
 
-Use `render_partial()` (Rust) or `webui_render_partial()` (FFI) to get the partial response — chain, templateStyles, templates, inventory, path, and cacheTags. The caller adds application state to the result:
+The partial response format is unchanged. Use `render_partial()` (Rust) or `webui_render_partial()` (FFI) to get the partial response - chain, templateStyles, templates, inventory, path, and cacheTags. The caller adds application state to the result.
+
+`render_partial()` now requires a `ProtocolIndex` parameter - a pre-computed index that caches expensive lookups (component bit-index maps, compiled route templates, and component closures). Build it once per protocol at startup and reuse it across requests:
 
 ```rust
-// Rust — render_partial returns chain + templates (no state)
-let mut partial = route_handler::render_partial(&protocol, &entry, &path, &inventory_hex);
+// Rust - build the index once, reuse across requests
+let mut index = ProtocolIndex::new(&protocol);
+
+let mut partial = route_handler::render_partial(&protocol, &entry, &path, &inventory_hex, &mut index);
 // Caller adds state to the response
 if let Some(obj) = partial.as_object_mut() {
     obj.insert("state".into(), state);
 }
-// partial contains: { "state": {...}, "templateStyles": [...], "templates": [...], "inventory": "...", "path": "...", "chain": [...] }
 ```
 
 ```csharp
 // C#
-string partialJson = handler.RenderPartial(protocol, entryId, requestPath, inventoryHex);
+string partialJson = handler.RenderPartial(protocol, index, entryId, requestPath, inventoryHex);
 // Caller merges state into the JSON before sending
 ```
 
 ```javascript
 // Node.js
-const partialJson = webui.renderPartial(protocol, entryId, requestPath, inventoryHex);
+const partialJson = webui.renderPartial(protocol, index, entryId, requestPath, inventoryHex);
 // Caller adds state before sending
 ```
 
 ### Express Example
 
 ```javascript
+// Build index once at startup
+const index = webui.createIndex(protocol);
+
 app.get('/users/:id', (req, res) => {
   const state = { name: getUser(req.params.id).name };
 
   if (req.accepts('json')) {
     // renderPartial() returns chain + templates; caller adds state
     const inv = req.get('X-WebUI-Inventory') ?? '';
-    const partial = JSON.parse(webui.renderPartial(protocol, 'index.html', req.path, inv));
+    const partial = JSON.parse(webui.renderPartial(protocol, index, 'index.html', req.path, inv));
     partial.state = state;
     res.type('json').send(JSON.stringify(partial));
   } else {

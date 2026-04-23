@@ -98,6 +98,20 @@ pub trait HandlerPlugin {
     ) -> Result<()> {
         emit_component_templates(protocol, components, writer)
     }
+
+    /// Return raw JS template source strings for the given components.
+    ///
+    /// Plugins whose templates are executable JS (e.g. WebUI IIFEs) override
+    /// this so `lib.rs` can embed them in the consolidated `window.__webui`
+    /// script block — eliminating a separate `<script>` tag.  Returns `None`
+    /// when templates are non-JS (e.g. HTML `<f-template>` tags).
+    fn collect_template_js(
+        &self,
+        _protocol: &WebUIProtocol,
+        _components: &HashSet<String>,
+    ) -> Option<Vec<String>> {
+        None
+    }
 }
 
 /// Default template emission: write each non-empty template verbatim.

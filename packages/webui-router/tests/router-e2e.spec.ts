@@ -301,7 +301,7 @@ test.describe('ensureLoaded — non-route components', () => {
 
     // test-dialog is NOT in the route tree and NOT eagerly imported
     const beforeLoad = await page.evaluate(() => {
-      return !!window.__webui_templates?.['test-dialog'];
+      return !!window.__webui?.templates?.['test-dialog'];
     });
     // Template may or may not be pre-registered from SSR build discovery,
     // but the component class should NOT be defined yet
@@ -314,7 +314,7 @@ test.describe('ensureLoaded — non-route components', () => {
     const result = await page.evaluate(async () => {
       const router = (window as any).__testRouter;
       await router.ensureLoaded('test-dialog');
-      return !!window.__webui_templates?.['test-dialog'];
+      return !!window.__webui?.templates?.['test-dialog'];
     });
     expect(result).toBe(true);
   });
@@ -357,8 +357,8 @@ test.describe('ensureLoaded — non-route components', () => {
       const router = (window as any).__testRouter;
       await router.ensureLoaded('test-dialog', 'page-alpha');
       return {
-        dialog: !!window.__webui_templates?.['test-dialog'],
-        alpha: !!window.__webui_templates?.['page-alpha'],
+        dialog: !!window.__webui?.templates?.['test-dialog'],
+        alpha: !!window.__webui?.templates?.['page-alpha'],
       };
     });
     expect(result.dialog).toBe(true);

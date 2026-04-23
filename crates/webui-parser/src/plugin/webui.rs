@@ -18,7 +18,7 @@
 //! # Metadata object format
 //!
 //! ```js
-//! window.__webui_templates['my-component'] = {
+//! window.__webui.templates['my-component'] = {
 //!   h: "<button class=\"item\"><span></span></button>",
 //!   tx: [[[[0, 0], 0], [["title"]]]],
 //!   a: [["title", 0, "title"]],
@@ -120,7 +120,7 @@ impl WebUIParserPlugin {
     /// Compile all tracked components and return `(tag_name, script_block)` pairs.
     ///
     /// Each script block is a self-executing IIFE that registers a metadata
-    /// object into `window.__webui_templates[tagName]`. Call this after all
+    /// object into `window.__webui.templates[tagName]`. Call this after all
     /// HTML parsing is complete.
     #[must_use]
     pub fn take_component_templates(&self) -> Vec<(String, String)> {
@@ -304,7 +304,7 @@ enum CompiledAttrPart {
 /// Generate a compiled template as a raw JS IIFE string.
 ///
 /// The output is a self-executing function that registers the component's
-/// metadata on `window.__webui_templates[tagName]`.  During SSR, the
+/// metadata on `window.__webui.templates[tagName]`.  During SSR, the
 /// handler wraps one or more of these in a single `<script>` tag.  During
 /// SPA partial navigation, the router evaluates them directly.
 ///
@@ -314,7 +314,7 @@ enum CompiledAttrPart {
 /// 2. Strip the `<template shadowrootmode="…">` wrapper if present.
 /// 3. Compile the inner body via [`compile_to_metadata`].
 /// 4. Serialize into a self-executing IIFE that registers the metadata
-///    on `window.__webui_templates[tagName]`.
+///    on `window.__webui.templates[tagName]`.
 ///
 /// # Compilation rules
 ///
@@ -348,7 +348,7 @@ fn generate_compiled_template_with_root_source(
     let meta = compile_to_metadata(body, root_events);
 
     let mut out = String::with_capacity(512 + html_content.len());
-    out.push_str("(function(){var w=window.__webui_templates||(window.__webui_templates={});w['");
+    out.push_str("(function(){var w=window.__webui.templates;w['");
     out.push_str(tag_name);
     out.push_str("']={");
 
@@ -2608,7 +2608,7 @@ mod tests {
     #[test]
     fn test_empty_template() {
         let result = generate_compiled_template("my-comp", "");
-        assert!(result.contains("__webui_templates"));
+        assert!(result.contains("__webui.templates"));
         assert!(result.contains("h:\"\""), "empty html expected");
         // No optional arrays should be present
         assert!(!result.contains(",t:"), "no text bindings");
@@ -2621,7 +2621,7 @@ mod tests {
     #[test]
     fn test_whitespace_only_template() {
         let result = generate_compiled_template("my-comp", "   \n  ");
-        assert!(result.contains("__webui_templates"));
+        assert!(result.contains("__webui.templates"));
         assert!(
             result.contains("h:\"\""),
             "whitespace-only should produce empty html"

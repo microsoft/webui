@@ -3,7 +3,15 @@
 
 declare global {
   interface Window {
-    __webui_templates?: Record<string, unknown>;
+    __webui?: {
+      chain?: unknown[];
+      inventory?: string;
+      nonce?: string;
+      css?: string[];
+      styles?: string[];
+      state?: Record<string, unknown>;
+      templates?: Record<string, unknown>;
+    };
   }
 }
 
@@ -75,6 +83,20 @@ export interface RouterConfig {
   preload?: boolean;
 
   /**
+   * Path prefixes that the router should NOT intercept.
+   * Navigations to these paths are handled as full-page loads by the browser.
+   * Useful for server-side auth endpoints (e.g. `/auth/`) that are not SPA routes.
+   *
+   * @default []
+   * @example
+   * ```ts
+   * Router.start({ excludePaths: ['/auth/', '/api/'] });
+   * // Navigating to /auth/logout does a full-page load instead of SPA fetch
+   * ```
+   */
+  excludePaths?: string[];
+
+  /**
    * Navigation cache configuration. When enabled, partial responses are
    * cached by path and tagged with server-provided cache tags for
    * tag-based invalidation.
@@ -88,6 +110,17 @@ export interface RouterConfig {
    * ```
    */
   cache?: CacheConfig;
+
+  /**
+   * Skip running route loaders on the initial SSR-bootstrapped navigation.
+   * When true, the server-rendered state is considered authoritative.
+   * Loaders still run on subsequent client-side navigations.
+   * Components that declare `static ssrLoader = true` still have their
+   * loader invoked even when this is enabled.
+   *
+   * @default true
+   */
+  ssrFresh?: boolean;
 }
 
 /**
@@ -179,4 +212,17 @@ export interface ActionCompleteEvent {
   invalidatedTags: string[];
   /** The route path where the action occurred. */
   path: string;
+}
+
+/**
+ * An HTML element that supports WebUI's `setState()` protocol.
+ * Used by the router to update component state during navigation.
+ */
+export interface StatefulElement extends HTMLElement {
+  setState(state: Record<string, unknown>): void;
+}
+
+/** Type guard for elements that implement setState. */
+export function isStateful(el: Element): el is StatefulElement {
+  return typeof (el as StatefulElement).setState === 'function';
 }

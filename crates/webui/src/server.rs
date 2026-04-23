@@ -28,7 +28,8 @@
 //! ```
 
 use crate::{ResponseWriter, WebUIHandler};
-use webui_handler::route_handler;
+use webui_handler::route_handler::{self, ProtocolIndex};
+use webui_handler::route_matcher::CompiledRouteCache;
 use webui_handler::RenderOptions;
 use webui_protocol::WebUIProtocol;
 
@@ -54,8 +55,9 @@ pub enum ServeResponse {
 
 /// Handle a server request with automatic route handling.
 ///
-/// For HTML requests: renders the full page with route-matched SSR,
-/// injects `__webui_state` and `__webui_templates`.
+/// For HTML requests: renders the full page with route-matched SSR.
+/// The handler emits a consolidated `window.__webui` script block
+/// containing state, chain, inventory, and template metadata.
 ///
 /// For JSON requests: returns a partial response with route-scoped state,
 /// needed templates, and inventory for the `webui-router` client.
@@ -79,7 +81,9 @@ pub fn serve_request(
     request: &ServeRequest<'_>,
 ) -> Result<ServeResponse, String> {
     // Extract route params and inject into state
-    let params = route_handler::collect_nested_route_params(protocol, entry, request.path);
+    let mut cache = CompiledRouteCache::new();
+    let params =
+        route_handler::collect_nested_route_params(protocol, entry, request.path, &mut cache);
     let mut data = state;
     if let Some(map) = data.as_object_mut() {
         for (k, v) in &params {
@@ -89,27 +93,30 @@ pub fn serve_request(
 
     if request.accept_json {
         // JSON partial response for client-side navigation.
-        let mut partial =
-            route_handler::render_partial(protocol, entry, request.path, request.inventory_hex);
+        // Per-request index — ideally cached alongside protocol for server lifetime.
+        let mut index = ProtocolIndex::new(protocol);
+        let mut partial = route_handler::render_partial(
+            protocol,
+            entry,
+            request.path,
+            request.inventory_hex,
+            &mut index,
+        )
+        .map_err(|e| format!("render_partial failed: {e}"))?;
         if let Some(obj) = partial.as_object_mut() {
             obj.insert("state".into(), data);
         }
         Ok(ServeResponse::Json(partial))
     } else {
-        // Full HTML SSR
+        // Full HTML SSR — handler emits the consolidated window.__webui
+        // script block (state, chain, inventory, templates) automatically.
         let mut writer = MemWriter::with_capacity(131_072);
         let opts = RenderOptions::new(entry, request.path);
         handler
             .handle(protocol, &data, &opts, &mut writer)
             .map_err(|e| format!("render failed: {e}"))?;
 
-        let state_json =
-            serde_json::to_string(&data).map_err(|e| format!("serialize failed: {e}"))?;
-        let safe_json = state_json.replace("</", "<\\/");
-        let script = format!("<script>window.__webui_state={safe_json}</script>");
-        let html = writer.buf.replace("</body>", &format!("{script}</body>"));
-
-        Ok(ServeResponse::Html(html))
+        Ok(ServeResponse::Html(writer.buf))
     }
 }
 
@@ -165,7 +172,7 @@ mod tests {
             .entry("my-page".to_string())
             .or_default();
         component.template =
-            "(function(){window.__webui_templates['my-page']={h:'<p>page</p>'};})();".to_string();
+            "(function(){window.__webui.templates['my-page']={h:'<p>page</p>'};})();".to_string();
         component.css = ".page{color:red}".to_string();
 
         let handler = WebUIHandler::new();
@@ -273,7 +280,7 @@ mod tests {
             .entry("my-page".to_string())
             .or_default();
         // Style strategy: CSS is inlined in the template IIFE
-        comp.template = "(function(){var w=window.__webui_templates;w['my-page']={h:'<style>.p{color:red}</style><p/>'};})();".to_string();
+        comp.template = "(function(){var w=window.__webui.templates;w['my-page']={h:'<style>.p{color:red}</style><p/>'};})();".to_string();
 
         let handler = WebUIHandler::new();
         let request = ServeRequest {

@@ -8,10 +8,116 @@
 //! current request path, while conservatively traversing `if`, `for`, and
 //! attribute-template edges without evaluating runtime state.
 
-use crate::route_matcher;
+use crate::{route_matcher, route_renderer, HandlerError};
+use route_matcher::CompiledRouteCache;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUIFragmentRoute, WebUIProtocol};
+use webui_protocol::{web_ui_fragment::Fragment, WebUIFragmentRoute, WebUIProtocol};
+
+// ── Protocol Index ──────────────────────────────────────────────────────
+
+/// Pre-computed index for a protocol, caching expensive lookups.
+///
+/// Both the component bit-index map and the compiled route template cache
+/// are deterministic for a given protocol. Building them once avoids
+/// redundant work on every request.
+///
+/// The `component_closure` map pre-computes which components are reachable
+/// from each fragment via non-route edges (Component/ForLoop/IfCond/Attribute).
+/// At request time, the walker only needs to follow the matched route spine
+/// and union the pre-computed closures — eliminating the O(graph) BFS.
+pub struct ProtocolIndex {
+    /// Component name → bit index for inventory tracking.
+    pub component_index: HashMap<String, u32>,
+    /// Compiled route template patterns (lazily populated on first match).
+    pub route_cache: CompiledRouteCache,
+    /// Fragment ID → set of inventoryable component names reachable via
+    /// non-route edges (Component, ForLoop, IfCond, Attribute). Does NOT
+    /// cross Route boundaries — the route spine is walked separately at
+    /// request time to avoid over-shipping templates for unmatched routes.
+    pub component_closure: HashMap<String, HashSet<String>>,
+}
+
+impl ProtocolIndex {
+    /// Build a protocol index from a compiled protocol.
+    #[must_use]
+    pub fn new(protocol: &WebUIProtocol) -> Self {
+        Self {
+            component_index: build_component_index(protocol),
+            route_cache: CompiledRouteCache::new(),
+            component_closure: build_component_closure(protocol),
+        }
+    }
+}
+
+/// Pre-compute the set of inventoryable components reachable from each
+/// fragment via non-route edges (Component, ForLoop, IfCond, Attribute).
+///
+/// Stops at Route fragment boundaries — those are walked at request time
+/// based on the matched route chain. This ensures we don't include
+/// components from unmatched sibling routes.
+fn build_component_closure(protocol: &WebUIProtocol) -> HashMap<String, HashSet<String>> {
+    let mut closures: HashMap<String, HashSet<String>> = HashMap::new();
+
+    for fragment_id in protocol.fragments.keys() {
+        if closures.contains_key(fragment_id) {
+            continue;
+        }
+        let closure = compute_non_route_closure(protocol, fragment_id);
+        closures.insert(fragment_id.clone(), closure);
+    }
+
+    closures
+}
+
+/// BFS from a single fragment, following Component/ForLoop/IfCond/Attribute
+/// edges but NOT Route edges. Returns the set of component names reachable.
+fn compute_non_route_closure(protocol: &WebUIProtocol, start_id: &str) -> HashSet<String> {
+    let mut visited = HashSet::new();
+    let mut components = HashSet::new();
+    let mut stack = vec![start_id.to_string()];
+
+    while let Some(frag_id) = stack.pop() {
+        if frag_id.is_empty() || !visited.insert(frag_id.clone()) {
+            continue;
+        }
+
+        let Some(frag_list) = protocol.fragments.get(&frag_id) else {
+            continue;
+        };
+
+        for frag in &frag_list.fragments {
+            match frag.fragment.as_ref() {
+                Some(Fragment::Component(component)) => {
+                    // Component edges are inventoryable
+                    if protocol
+                        .components
+                        .get(&component.fragment_id)
+                        .is_some_and(|c| !c.template.is_empty())
+                    {
+                        components.insert(component.fragment_id.clone());
+                    }
+                    stack.push(component.fragment_id.clone());
+                }
+                Some(Fragment::ForLoop(for_loop)) => {
+                    stack.push(for_loop.fragment_id.clone());
+                }
+                Some(Fragment::IfCond(if_cond)) => {
+                    stack.push(if_cond.fragment_id.clone());
+                }
+                Some(Fragment::Attribute(attr)) if !attr.template.is_empty() => {
+                    stack.push(attr.template.clone());
+                }
+                // STOP at Route boundaries — don't follow Route edges.
+                // The route spine is walked at request time.
+                Some(Fragment::Route(_)) => {}
+                _ => {}
+            }
+        }
+    }
+
+    components
+}
 
 // ── Component Inventory ─────────────────────────────────────────────────
 
@@ -60,24 +166,38 @@ fn set_component(inventory: &mut Vec<u8>, index: u32) {
 }
 
 /// Parse a hex-encoded inventory string into bytes.
-pub fn parse_inventory(hex: &str) -> Vec<u8> {
+///
+/// Returns an error if the hex string has odd length or contains non-hex characters.
+pub fn parse_inventory(hex: &str) -> Result<Vec<u8>, HandlerError> {
+    if hex.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !hex.len().is_multiple_of(2) {
+        return Err(HandlerError::Protocol(
+            webui_protocol::ProtocolError::Validation(format!(
+                "inventory hex has odd length: {}",
+                hex.len()
+            )),
+        ));
+    }
     let mut bytes = Vec::with_capacity(hex.len() / 2);
     let mut chars = hex.bytes();
     while let (Some(hi), Some(lo)) = (chars.next(), chars.next()) {
-        if let (Some(h), Some(l)) = (hex_nibble(hi), hex_nibble(lo)) {
-            bytes.push((h << 4) | l);
-        }
+        let h = route_matcher::hex_val(hi).ok_or_else(|| {
+            HandlerError::Protocol(webui_protocol::ProtocolError::Validation(format!(
+                "invalid hex digit in inventory: {:#04x}",
+                hi
+            )))
+        })?;
+        let l = route_matcher::hex_val(lo).ok_or_else(|| {
+            HandlerError::Protocol(webui_protocol::ProtocolError::Validation(format!(
+                "invalid hex digit in inventory: {:#04x}",
+                lo
+            )))
+        })?;
+        bytes.push((h << 4) | l);
     }
-    bytes
-}
-
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
+    Ok(bytes)
 }
 
 /// Encode an inventory bitfield as a hex string.
@@ -98,10 +218,16 @@ pub fn get_needed_components(
     protocol: &WebUIProtocol,
     entry_id: &str,
     inventory_hex: &str,
-) -> (Vec<String>, String) {
-    let component_names = collect_inventoryable_components(protocol, entry_id, None, true);
-    let index = build_component_index(protocol);
-    filter_needed_components(&component_names, inventory_hex, &index)
+    component_index: &HashMap<String, u32>,
+) -> Result<(Vec<String>, String), HandlerError> {
+    let component_names = collect_inventoryable_components(
+        protocol,
+        entry_id,
+        None,
+        true,
+        &mut CompiledRouteCache::new(),
+    );
+    filter_needed_components(&component_names, inventory_hex, component_index)
 }
 
 /// Walk the protocol from the persistent `entry_id` and return the component
@@ -113,24 +239,28 @@ pub fn get_needed_components_for_request(
     entry_id: &str,
     request_path: &str,
     inventory_hex: &str,
-) -> (Vec<String>, String) {
-    let component_names =
-        collect_inventoryable_components(protocol, entry_id, Some(request_path), false);
-    let index = build_component_index(protocol);
-    filter_needed_components(&component_names, inventory_hex, &index)
+    component_index: &HashMap<String, u32>,
+) -> Result<(Vec<String>, String), HandlerError> {
+    let component_names = collect_inventoryable_components(
+        protocol,
+        entry_id,
+        Some(request_path),
+        false,
+        &mut CompiledRouteCache::new(),
+    );
+    filter_needed_components(&component_names, inventory_hex, component_index)
 }
 
 /// Filter components against the client's inventory bitfield using sequential indices.
 /// Zero collisions — each component has a unique bit.
 ///
 /// Returns the missing component names and the updated inventory hex string.
-#[must_use]
 pub fn filter_needed_components(
     component_names: &HashSet<String>,
     inventory_hex: &str,
     index: &HashMap<String, u32>,
-) -> (Vec<String>, String) {
-    let client_inv = parse_inventory(inventory_hex);
+) -> Result<(Vec<String>, String), HandlerError> {
+    let client_inv = parse_inventory(inventory_hex)?;
     let mut updated_inv = client_inv.clone();
 
     let mut ordered_names: Vec<&String> = component_names.iter().collect();
@@ -151,7 +281,7 @@ pub fn filter_needed_components(
         }
     }
 
-    (needed, encode_inventory(&updated_inv))
+    Ok((needed, encode_inventory(&updated_inv)))
 }
 
 #[derive(Debug)]
@@ -160,6 +290,14 @@ struct QueuedFragment {
     inventoryable: bool,
     /// Base path for resolving relative route paths at this level.
     route_base: String,
+}
+
+/// Shared context for route child walkers, bundling common parameters
+/// to stay within the 5-argument clippy limit.
+struct ChildWalkCtx<'a> {
+    request_path: &'a str,
+    protocol: &'a WebUIProtocol,
+    cache: &'a mut CompiledRouteCache,
 }
 
 /// Walk the fragment graph from `entry_id` and collect all inventoryable component names.
@@ -176,6 +314,7 @@ fn collect_inventoryable_components(
     entry_id: &str,
     request_path: Option<&str>,
     root_inventoryable: bool,
+    cache: &mut CompiledRouteCache,
 ) -> HashSet<String> {
     let mut visited_fragments = HashSet::new();
     let mut component_ids = HashSet::new();
@@ -202,8 +341,14 @@ fn collect_inventoryable_components(
             continue;
         };
 
-        let matched_route = request_path
-            .and_then(|path| find_best_route_match(&frag_list.fragments, path, &queued.route_base));
+        let matched_route = request_path.and_then(|path| {
+            route_renderer::find_best_route_match(
+                &frag_list.fragments,
+                path,
+                &queued.route_base,
+                cache,
+            )
+        });
 
         for frag in &frag_list.fragments {
             match frag.fragment.as_ref() {
@@ -238,7 +383,7 @@ fn collect_inventoryable_components(
                 Some(Fragment::Route(route_frag)) => {
                     let is_selected = matched_route
                         .as_ref()
-                        .is_some_and(|(best_key, _)| best_key == route_fragment_key(route_frag));
+                        .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         // Compute new route base from consumed segments
                         let child_route_base = if let Some((_, ref rm)) = matched_route {
@@ -290,10 +435,13 @@ fn collect_inventoryable_components(
                             if let Some(path) = request_path {
                                 walk_route_children(
                                     &route_frag.children,
-                                    path,
                                     &child_route_base,
-                                    protocol,
                                     &mut stack,
+                                    &mut ChildWalkCtx {
+                                        request_path: path,
+                                        protocol,
+                                        cache,
+                                    },
                                 );
                             }
                         }
@@ -307,55 +455,72 @@ fn collect_inventoryable_components(
     component_ids
 }
 
+/// Select the best-matching child route among siblings by specificity.
+///
+/// Returns the index and match result of the highest-specificity match,
+/// preserving first-match-wins for equal specificity (declaration order).
+fn select_best_child_route(
+    children: &[WebUIFragmentRoute],
+    request_path: &str,
+    route_base: &str,
+    cache: &mut CompiledRouteCache,
+) -> Option<(usize, route_matcher::RouteMatch)> {
+    let mut best: Option<(usize, route_matcher::RouteMatch)> = None;
+    for (idx, child) in children.iter().enumerate() {
+        let resolved = route_matcher::resolve_route_path(&child.path, route_base);
+        if let Some(m) =
+            route_matcher::match_route_cached(cache, &resolved, request_path, child.exact)
+        {
+            let is_better = best
+                .as_ref()
+                .is_none_or(|(_, prev)| m.specificity > prev.specificity);
+            if is_better {
+                best = Some((idx, m));
+            }
+        }
+    }
+    best
+}
+
 /// Walk nested route children to find matched routes and add their
 /// components to the inventory stack. Mirrors the handler's outlet rendering.
 fn walk_route_children(
     children: &[WebUIFragmentRoute],
-    request_path: &str,
     route_base: &str,
-    protocol: &WebUIProtocol,
     stack: &mut Vec<QueuedFragment>,
+    ctx: &mut ChildWalkCtx<'_>,
 ) {
     let mut current = children;
     let mut base = route_base.to_string();
 
     loop {
-        let mut best: Option<(usize, route_matcher::RouteMatch)> = None;
-        for (idx, child) in current.iter().enumerate() {
-            let resolved = route_matcher::resolve_route_path(&child.path, &base);
-            if let Some(m) = route_matcher::match_single_route(&resolved, request_path, child.exact)
-            {
-                let is_better = best
-                    .as_ref()
-                    .is_none_or(|(_, prev)| m.specificity > prev.specificity);
-                if is_better {
-                    best = Some((idx, m));
-                }
-            }
-        }
-
-        let Some((idx, ref rm)) = best else { break };
+        let Some((idx, ref rm)) =
+            select_best_child_route(current, ctx.request_path, &base, ctx.cache)
+        else {
+            break;
+        };
         let matched = &current[idx];
         if matched.fragment_id.is_empty() {
             break;
         }
 
-        let child_base = route_matcher::compute_route_base(request_path, rm.consumed_segments);
+        let child_base = route_matcher::compute_route_base(ctx.request_path, rm.consumed_segments);
 
         stack.push(QueuedFragment {
             id: matched.fragment_id.clone(),
-            inventoryable: protocol
+            inventoryable: ctx
+                .protocol
                 .components
                 .get(&matched.fragment_id)
                 .is_some_and(|c| !c.template.is_empty()),
             route_base: child_base.clone(),
         });
 
-        // Include pending/error components in the inventory
         if !matched.pending_component.is_empty() {
             stack.push(QueuedFragment {
                 id: matched.pending_component.clone(),
-                inventoryable: protocol
+                inventoryable: ctx
+                    .protocol
                     .components
                     .get(&matched.pending_component)
                     .is_some_and(|c| !c.template.is_empty()),
@@ -365,7 +530,8 @@ fn walk_route_children(
         if !matched.error_component.is_empty() {
             stack.push(QueuedFragment {
                 id: matched.error_component.clone(),
-                inventoryable: protocol
+                inventoryable: ctx
+                    .protocol
                     .components
                     .get(&matched.error_component)
                     .is_some_and(|c| !c.template.is_empty()),
@@ -381,40 +547,6 @@ fn walk_route_children(
     }
 }
 
-/// Pre-scan sibling route fragments and return the best match info.
-///
-/// `route_base` is used to resolve relative paths (starting with `./`).
-fn find_best_route_match(
-    fragments: &[WebUIFragment],
-    request_path: &str,
-    route_base: &str,
-) -> Option<(String, route_matcher::RouteMatch)> {
-    let mut best: Option<(String, route_matcher::RouteMatch)> = None;
-
-    for item in fragments {
-        if let Some(Fragment::Route(route_frag)) = item.fragment.as_ref() {
-            let resolved_path = route_matcher::resolve_route_path(&route_frag.path, route_base);
-            if let Some(m) =
-                route_matcher::match_single_route(&resolved_path, request_path, route_frag.exact)
-            {
-                let is_better = best
-                    .as_ref()
-                    .is_none_or(|(_, prev)| m.specificity > prev.specificity);
-
-                if is_better {
-                    best = Some((route_fragment_key(route_frag).to_string(), m));
-                }
-            }
-        }
-    }
-
-    best
-}
-
-fn route_fragment_key(route_frag: &WebUIFragmentRoute) -> &str {
-    route_frag.fragment_id.as_str()
-}
-
 /// Walk the fragment graph following matched routes and collect all route
 /// parameters from every level of the active route chain.
 ///
@@ -423,6 +555,7 @@ pub fn collect_nested_route_params(
     protocol: &WebUIProtocol,
     entry_id: &str,
     request_path: &str,
+    cache: &mut CompiledRouteCache,
 ) -> HashMap<String, String> {
     let mut all_params = HashMap::new();
     let mut visited_fragments = HashSet::new();
@@ -441,8 +574,12 @@ pub fn collect_nested_route_params(
             continue;
         };
 
-        let matched_route =
-            find_best_route_match(&frag_list.fragments, request_path, &queued.route_base);
+        let matched_route = route_renderer::find_best_route_match(
+            &frag_list.fragments,
+            request_path,
+            &queued.route_base,
+            cache,
+        );
 
         for frag in &frag_list.fragments {
             match frag.fragment.as_ref() {
@@ -456,7 +593,7 @@ pub fn collect_nested_route_params(
                 Some(Fragment::Route(route_frag)) => {
                     let is_selected = matched_route
                         .as_ref()
-                        .is_some_and(|(best_key, _)| best_key == route_fragment_key(route_frag));
+                        .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         if let Some((_, ref rm)) = matched_route {
                             // Collect params from this route level
@@ -479,6 +616,7 @@ pub fn collect_nested_route_params(
                                 request_path,
                                 &child_route_base,
                                 &mut all_params,
+                                cache,
                             );
                         }
                     }
@@ -491,32 +629,21 @@ pub fn collect_nested_route_params(
     all_params
 }
 
-/// Recursively collect route params from nested route children.
+/// Iteratively collect route params from nested route children.
 fn collect_params_from_children(
     children: &[WebUIFragmentRoute],
     request_path: &str,
     route_base: &str,
     all_params: &mut HashMap<String, String>,
+    cache: &mut CompiledRouteCache,
 ) {
     let mut current = children;
     let mut base = route_base.to_string();
 
     loop {
-        let mut best: Option<(usize, route_matcher::RouteMatch)> = None;
-        for (idx, child) in current.iter().enumerate() {
-            let resolved = route_matcher::resolve_route_path(&child.path, &base);
-            if let Some(m) = route_matcher::match_single_route(&resolved, request_path, child.exact)
-            {
-                let is_better = best
-                    .as_ref()
-                    .is_none_or(|(_, prev)| m.specificity > prev.specificity);
-                if is_better {
-                    best = Some((idx, m));
-                }
-            }
-        }
-
-        let Some((idx, rm)) = best else { break };
+        let Some((idx, rm)) = select_best_child_route(current, request_path, &base, cache) else {
+            break;
+        };
         all_params.extend(rm.params);
         let matched = &current[idx];
         if matched.children.is_empty() {
@@ -567,6 +694,241 @@ fn resolve_tag_templates(templates: &[String], params: &HashMap<String, String>)
     resolved
 }
 
+/// Single-pass graph walk that collects both inventoryable component names
+/// and the matched route chain. Eliminates the duplicate graph traversal
+/// that previously existed in `render_partial`.
+fn collect_inventory_and_chain(
+    protocol: &WebUIProtocol,
+    entry_id: &str,
+    request_path: &str,
+    index: &mut ProtocolIndex,
+) -> (HashSet<String>, Vec<RouteChainEntry>) {
+    let mut visited_fragments = HashSet::new();
+    let mut component_ids = HashSet::new();
+    let mut chain = Vec::new();
+    let mut stack = vec![QueuedFragment {
+        id: entry_id.to_string(),
+        inventoryable: false,
+        route_base: "/".to_string(),
+    }];
+
+    while let Some(queued) = stack.pop() {
+        if queued.id.is_empty() {
+            continue;
+        }
+
+        if queued.inventoryable {
+            component_ids.insert(queued.id.clone());
+        }
+
+        if !visited_fragments.insert(queued.id.clone()) {
+            continue;
+        }
+
+        let Some(frag_list) = protocol.fragments.get(&queued.id) else {
+            continue;
+        };
+
+        let matched_route = route_renderer::find_best_route_match(
+            &frag_list.fragments,
+            request_path,
+            &queued.route_base,
+            &mut index.route_cache,
+        );
+
+        for frag in &frag_list.fragments {
+            match frag.fragment.as_ref() {
+                Some(Fragment::Component(component)) => {
+                    // Inventory: components are inventoryable
+                    stack.push(QueuedFragment {
+                        id: component.fragment_id.clone(),
+                        inventoryable: true,
+                        route_base: queued.route_base.clone(),
+                    });
+                }
+                Some(Fragment::ForLoop(for_loop)) => {
+                    // Inventory: follow control-flow edges conservatively
+                    stack.push(QueuedFragment {
+                        id: for_loop.fragment_id.clone(),
+                        inventoryable: false,
+                        route_base: queued.route_base.clone(),
+                    });
+                }
+                Some(Fragment::IfCond(if_cond)) => {
+                    stack.push(QueuedFragment {
+                        id: if_cond.fragment_id.clone(),
+                        inventoryable: false,
+                        route_base: queued.route_base.clone(),
+                    });
+                }
+                Some(Fragment::Attribute(attr)) if !attr.template.is_empty() => {
+                    stack.push(QueuedFragment {
+                        id: attr.template.clone(),
+                        inventoryable: false,
+                        route_base: queued.route_base.clone(),
+                    });
+                }
+                Some(Fragment::Route(route_frag)) => {
+                    let is_selected = matched_route
+                        .as_ref()
+                        .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
+                    if is_selected && !route_frag.fragment_id.is_empty() {
+                        if let Some((_, ref rm)) = matched_route {
+                            // Chain: record matched route entry
+                            chain.push(RouteChainEntry {
+                                component: route_frag.fragment_id.clone(),
+                                path: route_frag.path.clone(),
+                                params: rm.params.clone(),
+                                exact: route_frag.exact,
+                                allowed_query: route_frag.allowed_query.clone(),
+                                keep_alive: route_frag.keep_alive,
+                                cache_tags: route_frag.cache_tags.clone(),
+                                invalidates: route_frag.invalidates.clone(),
+                                pending_component: route_frag.pending_component.clone(),
+                                error_component: route_frag.error_component.clone(),
+                            });
+
+                            let child_route_base = route_matcher::compute_route_base(
+                                request_path,
+                                rm.consumed_segments,
+                            );
+
+                            // Inventory: follow matched route component
+                            let is_inventoryable = protocol
+                                .components
+                                .get(&route_frag.fragment_id)
+                                .is_some_and(|c| !c.template.is_empty());
+                            stack.push(QueuedFragment {
+                                id: route_frag.fragment_id.clone(),
+                                inventoryable: is_inventoryable,
+                                route_base: child_route_base.clone(),
+                            });
+
+                            // Inventory: pending/error components
+                            if !route_frag.pending_component.is_empty() {
+                                stack.push(QueuedFragment {
+                                    id: route_frag.pending_component.clone(),
+                                    inventoryable: protocol
+                                        .components
+                                        .get(&route_frag.pending_component)
+                                        .is_some_and(|c| !c.template.is_empty()),
+                                    route_base: child_route_base.clone(),
+                                });
+                            }
+                            if !route_frag.error_component.is_empty() {
+                                stack.push(QueuedFragment {
+                                    id: route_frag.error_component.clone(),
+                                    inventoryable: protocol
+                                        .components
+                                        .get(&route_frag.error_component)
+                                        .is_some_and(|c| !c.template.is_empty()),
+                                    route_base: child_route_base.clone(),
+                                });
+                            }
+
+                            // Both: walk nested child routes
+                            if !route_frag.children.is_empty() {
+                                walk_children_for_inventory_and_chain(
+                                    &route_frag.children,
+                                    &child_route_base,
+                                    &mut stack,
+                                    &mut chain,
+                                    &mut ChildWalkCtx {
+                                        request_path,
+                                        protocol,
+                                        cache: &mut index.route_cache,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    (component_ids, chain)
+}
+
+/// Walk nested route children, collecting both inventory and chain entries.
+fn walk_children_for_inventory_and_chain(
+    children: &[WebUIFragmentRoute],
+    route_base: &str,
+    stack: &mut Vec<QueuedFragment>,
+    chain: &mut Vec<RouteChainEntry>,
+    ctx: &mut ChildWalkCtx<'_>,
+) {
+    let mut current = children;
+    let mut base = route_base.to_string();
+
+    loop {
+        let Some((idx, ref rm)) =
+            select_best_child_route(current, ctx.request_path, &base, ctx.cache)
+        else {
+            break;
+        };
+        let matched = &current[idx];
+        if matched.fragment_id.is_empty() {
+            break;
+        }
+
+        let child_base = route_matcher::compute_route_base(ctx.request_path, rm.consumed_segments);
+
+        chain.push(RouteChainEntry {
+            component: matched.fragment_id.clone(),
+            path: matched.path.clone(),
+            params: rm.params.clone(),
+            exact: matched.exact,
+            allowed_query: matched.allowed_query.clone(),
+            keep_alive: matched.keep_alive,
+            cache_tags: matched.cache_tags.clone(),
+            invalidates: matched.invalidates.clone(),
+            pending_component: matched.pending_component.clone(),
+            error_component: matched.error_component.clone(),
+        });
+
+        stack.push(QueuedFragment {
+            id: matched.fragment_id.clone(),
+            inventoryable: ctx
+                .protocol
+                .components
+                .get(&matched.fragment_id)
+                .is_some_and(|c| !c.template.is_empty()),
+            route_base: child_base.clone(),
+        });
+
+        if !matched.pending_component.is_empty() {
+            stack.push(QueuedFragment {
+                id: matched.pending_component.clone(),
+                inventoryable: ctx
+                    .protocol
+                    .components
+                    .get(&matched.pending_component)
+                    .is_some_and(|c| !c.template.is_empty()),
+                route_base: child_base.clone(),
+            });
+        }
+        if !matched.error_component.is_empty() {
+            stack.push(QueuedFragment {
+                id: matched.error_component.clone(),
+                inventoryable: ctx
+                    .protocol
+                    .components
+                    .get(&matched.error_component)
+                    .is_some_and(|c| !c.template.is_empty()),
+                route_base: child_base.clone(),
+            });
+        }
+
+        if matched.children.is_empty() {
+            break;
+        }
+        current = &matched.children;
+        base = child_base;
+    }
+}
+
 /// Produce a JSON partial response for client-side navigation.
 ///
 /// Returns the matched route chain, templates, inventory, and cache tags.
@@ -581,17 +943,19 @@ fn resolve_tag_templates(templates: &[String], params: &HashMap<String, String>)
 /// - `path`: the request path
 /// - `chain`: matched route chain array
 /// - `cacheTags`: resolved cache tags from the full route chain (union of all levels)
-#[must_use]
 pub fn render_partial(
     protocol: &WebUIProtocol,
     entry_id: &str,
     request_path: &str,
     inventory_hex: &str,
-) -> Value {
-    let (needed_names, updated_inv) =
-        get_needed_components_for_request(protocol, entry_id, request_path, inventory_hex);
+    index: &mut ProtocolIndex,
+) -> Result<Value, HandlerError> {
+    // Single-pass walk: collect both inventory components and route chain.
+    let (component_ids, mut chain) =
+        collect_inventory_and_chain(protocol, entry_id, request_path, index);
 
-    let mut chain = collect_route_chain(protocol, entry_id, request_path);
+    let (needed_names, updated_inv) =
+        filter_needed_components(&component_ids, inventory_hex, &index.component_index)?;
 
     // Resolve cache tags and invalidation templates with accumulated params.
     let mut accumulated_params: HashMap<String, String> = HashMap::new();
@@ -626,7 +990,7 @@ pub fn render_partial(
             .collect();
         result.insert("cacheTags".into(), Value::Array(deduped));
     }
-    Value::Object(result)
+    Ok(Value::Object(result))
 }
 
 /// Produce a JSON response for a POST mutation action.
@@ -639,14 +1003,14 @@ pub fn render_partial(
 /// - `state`: the application state passed through
 /// - `invalidateTags`: resolved invalidation tags from the matched leaf route
 /// - `path`: the request path
-#[must_use]
 pub fn render_action_response(
     protocol: &WebUIProtocol,
     state: Value,
     entry_id: &str,
     request_path: &str,
+    index: &mut ProtocolIndex,
 ) -> Value {
-    let chain = collect_route_chain(protocol, entry_id, request_path);
+    let chain = collect_route_chain(protocol, entry_id, request_path, &mut index.route_cache);
 
     // Accumulate params across the chain for tag resolution
     let mut accumulated_params: HashMap<String, String> = HashMap::new();
@@ -683,15 +1047,15 @@ pub fn render_action_response(
 ///
 /// Uses the same inventory bitfield as partial navigation to avoid sending
 /// templates the client already has.
-#[must_use]
 pub fn render_component_templates(
     protocol: &WebUIProtocol,
     component_tags: &[&str],
     inventory_hex: &str,
-) -> Value {
+    index: &ProtocolIndex,
+) -> Result<Value, HandlerError> {
     let requested: HashSet<String> = component_tags.iter().map(|s| s.to_string()).collect();
-    let index = build_component_index(protocol);
-    let (needed, updated_inv) = filter_needed_components(&requested, inventory_hex, &index);
+    let (needed, updated_inv) =
+        filter_needed_components(&requested, inventory_hex, &index.component_index)?;
 
     let tag_refs: Vec<&str> = needed.iter().map(|s| s.as_str()).collect();
     let (style_array, tmpl_array) = collect_component_assets(protocol, &tag_refs);
@@ -700,7 +1064,7 @@ pub fn render_component_templates(
     result.insert("templateStyles".into(), Value::Array(style_array));
     result.insert("templates".into(), Value::Array(tmpl_array));
     result.insert("inventory".into(), Value::String(updated_inv));
-    Value::Object(result)
+    Ok(Value::Object(result))
 }
 
 /// Shared helper: collect templates and module CSS styles for a set of component tags.
@@ -815,22 +1179,6 @@ impl RouteChainEntry {
     }
 }
 
-/// Collect the matched route chain as a JSON array value.
-///
-/// Convenience wrapper around [`collect_route_chain`] that serializes the
-/// result into a `serde_json::Value::Array` ready for inclusion in a JSON
-/// partial response. Host servers in any language can include this directly
-/// without reimplementing the serialization.
-#[must_use]
-pub fn collect_route_chain_json(
-    protocol: &WebUIProtocol,
-    entry_id: &str,
-    request_path: &str,
-) -> Value {
-    let chain = collect_route_chain(protocol, entry_id, request_path);
-    Value::Array(chain.iter().map(RouteChainEntry::to_json).collect())
-}
-
 /// Collect the matched route chain for a request path.
 ///
 /// Walks the fragment graph from `entry_id`, follows the matched route at
@@ -839,6 +1187,7 @@ pub fn collect_route_chain(
     protocol: &WebUIProtocol,
     entry_id: &str,
     request_path: &str,
+    cache: &mut CompiledRouteCache,
 ) -> Vec<RouteChainEntry> {
     let mut chain = Vec::new();
     let mut visited_fragments = HashSet::new();
@@ -857,8 +1206,12 @@ pub fn collect_route_chain(
             continue;
         };
 
-        let matched_route =
-            find_best_route_match(&frag_list.fragments, request_path, &queued.route_base);
+        let matched_route = route_renderer::find_best_route_match(
+            &frag_list.fragments,
+            request_path,
+            &queued.route_base,
+            cache,
+        );
 
         for frag in &frag_list.fragments {
             match frag.fragment.as_ref() {
@@ -872,7 +1225,7 @@ pub fn collect_route_chain(
                 Some(Fragment::Route(route_frag)) => {
                     let is_selected = matched_route
                         .as_ref()
-                        .is_some_and(|(best_key, _)| best_key == route_fragment_key(route_frag));
+                        .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         if let Some((_, ref rm)) = matched_route {
                             chain.push(RouteChainEntry {
@@ -905,6 +1258,7 @@ pub fn collect_route_chain(
                                 request_path,
                                 &child_route_base,
                                 &mut chain,
+                                cache,
                             );
                         }
                     }
@@ -923,26 +1277,13 @@ fn collect_chain_from_children(
     request_path: &str,
     route_base: &str,
     chain: &mut Vec<RouteChainEntry>,
+    cache: &mut CompiledRouteCache,
 ) {
     let mut pending: Vec<(&[WebUIFragmentRoute], String)> =
         vec![(children, route_base.to_string())];
 
     while let Some((current, base)) = pending.pop() {
-        let mut best: Option<(usize, route_matcher::RouteMatch)> = None;
-        for (idx, child) in current.iter().enumerate() {
-            let resolved = route_matcher::resolve_route_path(&child.path, &base);
-            if let Some(m) = route_matcher::match_single_route(&resolved, request_path, child.exact)
-            {
-                let is_better = best
-                    .as_ref()
-                    .is_none_or(|(_, prev)| m.specificity > prev.specificity);
-                if is_better {
-                    best = Some((idx, m));
-                }
-            }
-        }
-
-        if let Some((idx, rm)) = best {
+        if let Some((idx, rm)) = select_best_child_route(current, request_path, &base, cache) {
             let matched = &current[idx];
             chain.push(RouteChainEntry {
                 component: matched.fragment_id.clone(),
@@ -975,8 +1316,26 @@ mod tests {
     fn test_parse_encode_inventory_roundtrip() {
         let original = vec![0xABu8, 0xCD, 0xEF, 0x01];
         let hex = encode_inventory(&original);
-        let decoded = parse_inventory(&hex);
+        let decoded = parse_inventory(&hex).unwrap();
         assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn test_parse_inventory_empty() {
+        let result = parse_inventory("").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_inventory_rejects_odd_length() {
+        let result = parse_inventory("abc");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_inventory_rejects_invalid_hex() {
+        let result = parse_inventory("zz");
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1011,7 +1370,7 @@ mod tests {
         set_component(&mut inv, 1); // o-button
         let inv_hex = encode_inventory(&inv);
 
-        let (needed, _) = filter_needed_components(&names, &inv_hex, &index);
+        let (needed, _) = filter_needed_components(&names, &inv_hex, &index).unwrap();
         assert_eq!(needed.len(), 1);
         assert!(
             needed.contains(&"email-message".to_string()),
@@ -1036,7 +1395,9 @@ mod tests {
         );
 
         let protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
-        let (needed, _inv) = get_needed_components(&protocol, "app-shell", "");
+        let comp_index = build_component_index(&protocol);
+        let (needed, _inv) =
+            get_needed_components(&protocol, "app-shell", "", &comp_index).unwrap();
         assert!(needed.contains(&"app-shell".to_string()));
         assert!(needed.contains(&"my-card".to_string()));
     }
@@ -1069,8 +1430,11 @@ mod tests {
             .or_default()
             .template = "<t></t>".to_string();
 
-        let (_needed, inv_hex) = get_needed_components(&protocol, "app-shell", "");
-        let (needed2, _) = get_needed_components(&protocol, "app-shell", &inv_hex);
+        let comp_index = build_component_index(&protocol);
+        let (_needed, inv_hex) =
+            get_needed_components(&protocol, "app-shell", "", &comp_index).unwrap();
+        let (needed2, _) =
+            get_needed_components(&protocol, "app-shell", &inv_hex, &comp_index).unwrap();
         assert!(needed2.is_empty());
     }
 
@@ -1122,10 +1486,13 @@ mod tests {
         );
 
         let protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
-        let needed: HashSet<String> = get_needed_components(&protocol, "app-shell", "")
-            .0
-            .into_iter()
-            .collect();
+        let comp_index = build_component_index(&protocol);
+        let needed: HashSet<String> =
+            get_needed_components(&protocol, "app-shell", "", &comp_index)
+                .unwrap()
+                .0
+                .into_iter()
+                .collect();
 
         assert!(needed.contains("app-shell"));
         assert!(needed.contains("mp-category-nav"));
@@ -1209,8 +1576,15 @@ mod tests {
             .or_default()
             .template = "<mp-product-page></mp-product-page>".to_string();
 
-        let (needed, _inv) =
-            get_needed_components_for_request(&protocol, "index.html", "/search/shirts", "");
+        let comp_index = build_component_index(&protocol);
+        let (needed, _inv) = get_needed_components_for_request(
+            &protocol,
+            "index.html",
+            "/search/shirts",
+            "",
+            &comp_index,
+        )
+        .unwrap();
         let needed: HashSet<String> = needed.into_iter().collect();
 
         assert!(needed.contains("mp-app"));
@@ -1306,8 +1680,15 @@ mod tests {
             .or_default()
             .template = "<mp-order-page></mp-order-page>".to_string();
 
-        let (needed, _inv) =
-            get_needed_components_for_request(&protocol, "index.html", "/account/orders/42", "");
+        let comp_index = build_component_index(&protocol);
+        let (needed, _inv) = get_needed_components_for_request(
+            &protocol,
+            "index.html",
+            "/account/orders/42",
+            "",
+            &comp_index,
+        )
+        .unwrap();
         let needed: HashSet<String> = needed.into_iter().collect();
 
         assert!(needed.contains("mp-app"));
@@ -1383,8 +1764,10 @@ mod tests {
             .or_default()
             .template = "<mp-search-page></mp-search-page>".to_string();
 
+        let comp_index = build_component_index(&protocol);
         let (needed, _inv) =
-            get_needed_components_for_request(&protocol, "index.html", "/search", "");
+            get_needed_components_for_request(&protocol, "index.html", "/search", "", &comp_index)
+                .unwrap();
         let needed: HashSet<String> = needed.into_iter().collect();
 
         assert!(needed.contains("mp-app"));
@@ -1436,10 +1819,18 @@ mod tests {
                 .template = format!("<f-template id=\"{name}\"></f-template>");
         }
 
+        let comp_index = build_component_index(&protocol);
         let (_needed, inventory) =
-            get_needed_components_for_request(&protocol, "index.html", "/search", "");
-        let (needed_again, _) =
-            get_needed_components_for_request(&protocol, "index.html", "/search", &inventory);
+            get_needed_components_for_request(&protocol, "index.html", "/search", "", &comp_index)
+                .unwrap();
+        let (needed_again, _) = get_needed_components_for_request(
+            &protocol,
+            "index.html",
+            "/search",
+            &inventory,
+            &comp_index,
+        )
+        .unwrap();
         assert!(needed_again.is_empty());
     }
 
@@ -1465,10 +1856,11 @@ mod tests {
             .entry("my-page".to_string())
             .or_default();
         component.template =
-            "(function(){window.__webui_templates['my-page']={h:'<p>page</p>'};})();".to_string();
+            "(function(){window.__webui.templates['my-page']={h:'<p>page</p>'};})();".to_string();
         component.css = ".page{color:red}".to_string();
 
-        let partial = render_partial(&protocol, "index.html", "/", "");
+        let mut index = ProtocolIndex::new(&protocol);
+        let partial = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -1533,7 +1925,8 @@ mod tests {
         component.css_href = "/my-page.css".to_string();
         // css is empty — Link strategy stores href, not content
 
-        let partial = render_partial(&protocol, "index.html", "/", "");
+        let mut index = ProtocolIndex::new(&protocol);
+        let partial = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -1574,11 +1967,12 @@ mod tests {
             .or_default();
         // Style strategy: CSS is inside the template HTML, not in component.css
         component.template =
-            "(function(){var w=window.__webui_templates;w['my-page']={h:'<style>.p{color:red}</style><p>page</p>'};})();"
+            "(function(){var w=window.__webui.templates;w['my-page']={h:'<style>.p{color:red}</style><p>page</p>'};})();"
                 .to_string();
         // css is empty for Style strategy
 
-        let partial = render_partial(&protocol, "index.html", "/", "");
+        let mut index = ProtocolIndex::new(&protocol);
+        let partial = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -1624,7 +2018,8 @@ mod tests {
         component.template = "(function(){})();".to_string();
         // No CSS — simulates Link or Style mode
 
-        let partial = render_partial(&protocol, "index.html", "/", "");
+        let mut index = ProtocolIndex::new(&protocol);
+        let partial = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -1658,8 +2053,9 @@ mod tests {
         component.template = "(function(){})();".to_string();
         component.css = ".page{color:red}".to_string();
 
+        let mut index = ProtocolIndex::new(&protocol);
         // First call to establish inventory
-        let partial1 = render_partial(&protocol, "index.html", "/", "");
+        let partial1 = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
         let inv = partial1["inventory"].as_str().unwrap_or_default();
         assert!(!inv.is_empty());
 
@@ -1667,7 +2063,7 @@ mod tests {
         // because the inventory covers this component.  The SSR handler emits all
         // module style definitions in <head> for inventoried components, so the
         // client already has the CSS definition.
-        let partial2 = render_partial(&protocol, "index.html", "/", inv);
+        let partial2 = render_partial(&protocol, "index.html", "/", inv, &mut index).unwrap();
         let styles = partial2["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -1746,8 +2142,10 @@ mod tests {
             comp.css = format!(".{name}{{display:block}}");
         }
 
+        let comp_index = build_component_index(&protocol);
         let (needed, _inv) =
-            get_needed_components_for_request(&protocol, "index.html", "/about", "");
+            get_needed_components_for_request(&protocol, "index.html", "/about", "", &comp_index)
+                .unwrap();
 
         assert!(
             needed.contains(&"app-shell".to_string()),
@@ -1845,7 +2243,12 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
 
-        let chain = collect_route_chain(&protocol, "index.html", "/compose");
+        let chain = collect_route_chain(
+            &protocol,
+            "index.html",
+            "/compose",
+            &mut CompiledRouteCache::new(),
+        );
         assert_eq!(chain.len(), 2);
         assert_eq!(chain[0].component, "app-shell");
         assert!(chain[0].allowed_query.is_empty());
@@ -1867,10 +2270,12 @@ mod tests {
             .components
             .entry("settings-dialog".to_string())
             .or_default();
-        comp.template = "(function(){window.__webui_templates['settings-dialog']={h:'<div>Settings</div>'};})();".to_string();
+        comp.template = "(function(){window.__webui.templates['settings-dialog']={h:'<div>Settings</div>'};})();".to_string();
         comp.css = ".dialog{position:fixed}".to_string();
 
-        let result = render_component_templates(&protocol, &["settings-dialog"], "");
+        let index = ProtocolIndex::new(&protocol);
+        let result =
+            render_component_templates(&protocol, &["settings-dialog"], "", &index).unwrap();
         let templates = result["templates"].as_array().expect("templates array");
         let styles = result["templateStyles"].as_array().expect("styles array");
 
@@ -1900,13 +2305,14 @@ mod tests {
         comp.template = "(function(){})();".to_string();
         comp.css = ".d{color:red}".to_string();
 
+        let index = ProtocolIndex::new(&protocol);
         // First call: no inventory → should return the component
-        let result1 = render_component_templates(&protocol, &["my-dialog"], "");
+        let result1 = render_component_templates(&protocol, &["my-dialog"], "", &index).unwrap();
         let inv = result1["inventory"].as_str().expect("inventory string");
         assert_eq!(result1["templates"].as_array().unwrap().len(), 1);
 
         // Second call with inventory → component already loaded, should skip
-        let result2 = render_component_templates(&protocol, &["my-dialog"], inv);
+        let result2 = render_component_templates(&protocol, &["my-dialog"], inv, &index).unwrap();
         assert_eq!(result2["templates"].as_array().unwrap().len(), 0);
         assert_eq!(result2["templateStyles"].as_array().unwrap().len(), 0);
     }
@@ -1916,7 +2322,9 @@ mod tests {
         let fragments = HashMap::new();
         let protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
 
-        let result = render_component_templates(&protocol, &["nonexistent-widget"], "");
+        let index = ProtocolIndex::new(&protocol);
+        let result =
+            render_component_templates(&protocol, &["nonexistent-widget"], "", &index).unwrap();
         assert_eq!(result["templates"].as_array().unwrap().len(), 0);
         assert_eq!(result["templateStyles"].as_array().unwrap().len(), 0);
     }
@@ -2045,7 +2453,8 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
 
-        let partial = render_partial(&protocol, "index.html", "/email/42", "");
+        let mut index = ProtocolIndex::new(&protocol);
+        let partial = render_partial(&protocol, "index.html", "/email/42", "", &mut index).unwrap();
         let tags = partial["cacheTags"].as_array().unwrap();
         let tag_strings: Vec<&str> = tags.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(
@@ -2100,11 +2509,13 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
 
+        let mut index = ProtocolIndex::new(&protocol);
         let result = render_action_response(
             &protocol,
             serde_json::json!({"ok": true}),
             "index.html",
             "/compose",
+            &mut index,
         );
 
         let tags = result["invalidateTags"].as_array().unwrap();
@@ -2148,11 +2559,13 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
 
+        let mut index = ProtocolIndex::new(&protocol);
         let result = render_action_response(
             &protocol,
             serde_json::json!({}),
             "index.html",
             "/email/42/reply",
+            &mut index,
         );
 
         let tags = result["invalidateTags"].as_array().unwrap();

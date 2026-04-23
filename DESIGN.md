@@ -265,7 +265,7 @@ optional parameters. Exact matches (most literal segments) take precedence over 
 
 **Server-side rendering:** When the handler encounters `Fragment::Route`:
 1. Pre-scan siblings, pick the best match by specificity.
-2. Matched route: emit `<webui-route path="..." component="..." active>`, render component, recurse into children.
+2. Matched route: emit `<webui-route path="..." component="..." active data-ri="N">` (where N is the route chain index), render component, recurse into children. Attributes emitted on matched routes: `path`, `component`, `active`, `exact`, `pending`, `error`, `data-ri`. Routing metadata (`query`, `keep-alive`, `cache-tags`, `invalidates`) is **not** emitted as DOM attributes — it is included in the SSR `window.__webui` chain JSON instead.
 3. Non-matched routes: emit `<webui-route ... style="display:none">`.
 
 For the WebUI framework path, matched route components do **not** receive route
@@ -278,9 +278,24 @@ When the handler encounters `Fragment::Outlet`:
 2. Match children against the request path (relative to route base).
 3. Emit `<webui-outlet>` containing matched child `<webui-route>` with component, and hidden stubs for siblings.
 
-The handler also emits `<meta name="webui-inventory">` in `<head>` with the initial component
-inventory bitmask (covering only **rendered** components), so the client router can tell the server
-which templates it already has on the first client-side navigation. Note that **templates** and
+The handler also emits a `<meta name="webui-nonce">` tag in `<head>` for backward compatibility,
+and a nonce'd inline `<script>` containing a `window.__webui` object with the SSR metadata:
+
+```js
+window.__webui = {
+  chain: RouteChainEntry[],  // matched route chain with component, path, params, exact,
+                              // allowedQuery, keepAlive, pendingComponent, errorComponent,
+                              // invalidates
+  inventory: string,          // hex-encoded component bitmask (rendered components only)
+  nonce: string,              // CSP nonce value
+  css: string[],              // CSS link hrefs emitted during SSR
+  styles: string[],           // module CSS specifiers emitted during SSR
+};
+```
+
+This replaces the previous `<meta name="webui-inventory">` and `<script id="webui-chain">` tags
+with a single consolidated object. The client router reads `window.__webui` at startup instead
+of querying the DOM for metadata elements. Note that **templates** and
 **CSS module definitions** are emitted for all **reachable** components (including those in false
 `<if>` blocks), not just rendered ones — this ensures client-side conditional activation works
 without a server round-trip.
@@ -290,19 +305,20 @@ without a server round-trip.
 - `<webui-outlet>` — light DOM custom element, marks insertion point for child route content
 
 **Client-side navigation:**
-1. On initial load, the router builds the active chain from SSR'd `<webui-route active>` elements.
-2. On navigation, fetches a partial response (`Accept: application/x-ndjson, application/json`) from the server.
-3. The server returns the matched route chain — the client does NOT perform route matching.
-4. Reconciles old vs new chain — finds first changed level.
-5. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
-6. Parent components and their state are preserved.
+1. On initial load, the router reads `window.__webui` for the SSR chain, inventory, and nonce. It hydrates matched `<webui-route>` elements using the `data-ri` attribute for O(1) indexed lookup instead of DOM walking.
+2. `RouterConfig` supports `ssrFresh?: boolean` (default `true`) — when set, the router skips the initial loader replay because SSR state is authoritative. Components can opt into loader replay at startup by declaring `static ssrLoader = true`.
+3. On navigation, fetches a partial response (`Accept: application/x-ndjson, application/json`) from the server.
+4. The server returns the matched route chain — the client does NOT perform route matching.
+5. Reconciles old vs new chain — finds first changed level.
+6. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
+7. Parent components and their state are preserved.
 
-**Partial response:** `render_partial()` returns `{ templateStyles, templates, inventory, path, chain, cacheTags }`. The caller adds application state to the response (e.g. as a top-level `state` field for non-streaming, or as an NDJSON Chunk 2 for streaming):
+**Partial response:** `render_partial()` returns `{ templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }`. The caller adds application state to the response (e.g. as a top-level `state` field for non-streaming, or as an NDJSON Chunk 2 for streaming):
 - `state`: (added by caller) route-scoped application data — the router applies it to components via `setState()`
 - `templateStyles`: module CSS definition tags (`<style type="module" specifier="...">`) for newly shipped components. Empty array for Link/Style modes. The client appends these to `<head>` before evaluating template scripts so adopted stylesheets are available
 - `templates`: client template script/markup payloads the client doesn't already have (filtered by inventory bitmask). Clean JS IIFEs for the WebUI plugin, `<f-template>` markup for the FAST plugin
 - `inventory`: updated hex bitmask of loaded templates
-- `chain`: matched route chain array — each entry has `component`, `path`, optional `params`, `exact`, `pendingComponent`, `errorComponent`, and `invalidates`
+- `chain`: matched route chain array — each entry has `component`, `path`, optional `params`, `exact`, `allowedQuery`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`
 - `cacheTags`: resolved cache tags from the full route chain (union of all levels, deduplicated). The client tags its cache entry with these values for tag-based invalidation
 
 **NDJSON streaming:** For servers that support it, the partial can be split into two NDJSON lines. Chunk 1 (chain + templates) flushes immediately for instant navigation commit. Chunk 2 (per-component states) arrives when the backend data is ready. The router reads Chunk 1, commits navigation, then applies Chunk 2 states in the background.
@@ -325,9 +341,11 @@ without a server round-trip.
 | `X-WebUI-Inventory` | Hex bitmask | Templates already loaded — server skips re-sending them |
 
 The `chain` field is produced by `render_partial()` in the handler, which walks the
-fragment graph and matches routes at each nesting level. The function returns chain + templates
-without state — the caller adds state to the response. Host servers call this once per partial
-response. Available via FFI as `webui_render_partial()` for C/.NET/Node hosts.
+fragment graph and matches routes at each nesting level using a `ProtocolIndex` for
+cached route matching (see [ProtocolIndex](#protocolindex)). The function returns
+chain + templates without state — the caller adds state to the response. Host servers
+call this once per partial response. Available via FFI as `webui_render_partial()` for
+C/.NET/Node hosts.
 
 **Partial-template selection:** During client navigation, servers derive template names from the
 normal render fragment graph starting at the persistent entry fragment. The traversal is
@@ -492,6 +510,106 @@ impl WebUIHandler {
         writer: &mut dyn ResponseWriter,
     ) -> Result<()>;
 }
+```
+
+#### ProtocolIndex
+
+`ProtocolIndex` is a pre-computed index over a `WebUIProtocol` that accelerates
+repeated render and partial operations. It is built once from a protocol and
+reused across requests:
+
+```rust
+pub struct ProtocolIndex {
+    /// Maps component tag name → bit position in the inventory bitmask.
+    pub component_index: HashMap<String, u32>,
+    /// Pre-compiled route segment patterns for O(1) route matching.
+    pub route_cache: CompiledRouteCache,
+    /// Transitive closure of all components reachable from each root component
+    /// (keyed by tag name). Used by `render_component_templates()` to emit
+    /// templates for conditional/loop-hidden components.
+    pub component_closure: HashMap<String, Vec<String>>,
+}
+
+impl ProtocolIndex {
+    pub fn new(protocol: &WebUIProtocol) -> Self;
+}
+```
+
+`CompiledRouteCache` stores pre-compiled route segment patterns extracted from
+the protocol's `WebUIFragmentRoute` tree. Route matching via `match_route_cached()`
+uses these compiled patterns instead of re-parsing path templates on every request:
+
+```rust
+pub struct CompiledRouteCache { /* internal */ }
+
+/// Match a request path against compiled route patterns. Returns the matched
+/// route and extracted path parameters, or `None` if no route matches.
+pub fn match_route_cached(
+    routes: &[WebUIFragmentRoute],
+    request_path: &str,
+    cache: &CompiledRouteCache,
+) -> Option<RouteMatch>;
+```
+
+#### Partial and Action Response Functions
+
+```rust
+/// Produce a JSON partial response for client-side navigation.
+/// `protocol_index` provides cached route matching and component indices.
+pub fn render_partial(
+    handler: &mut WebUIHandler,
+    protocol: &WebUIProtocol,
+    protocol_index: &mut ProtocolIndex,
+    options: &RenderOptions<'_>,
+    inventory_hex: &str,
+) -> Result<PartialResponse, HandlerError>;
+
+/// Produce a response for a mutation action (POST).
+/// `protocol_index` provides cached route matching and component indices.
+pub fn render_action_response(
+    handler: &mut WebUIHandler,
+    protocol: &WebUIProtocol,
+    protocol_index: &mut ProtocolIndex,
+    options: &RenderOptions<'_>,
+    inventory_hex: &str,
+) -> Result<ActionResponse, HandlerError>;
+
+/// Emit client template scripts/markup for the given components.
+/// `protocol_index` provides the component closure for reachable templates.
+pub fn render_component_templates(
+    handler: &WebUIHandler,
+    protocol: &WebUIProtocol,
+    protocol_index: &ProtocolIndex,
+    components: &[String],
+) -> Vec<String>;
+```
+
+#### Component Inventory Functions
+
+```rust
+/// Parse a hex inventory bitmask into a byte vector.
+pub fn parse_inventory(hex: &str) -> Result<Vec<u8>, HandlerError>;
+
+/// Determine which components the client needs and return a filtered list
+/// plus an updated inventory hex string.
+pub fn filter_needed_components(
+    needed: &[String],
+    inventory: &[u8],
+    component_index: &HashMap<String, u32>,
+) -> Result<(Vec<String>, String), HandlerError>;
+
+/// Get the list of components needed for a set of route entries.
+pub fn get_needed_components(
+    chain: &[RouteChainEntry],
+    component_index: &HashMap<String, u32>,
+) -> Vec<String>;
+
+/// Get the list of components needed for a specific request path.
+pub fn get_needed_components_for_request(
+    protocol: &WebUIProtocol,
+    request_path: &str,
+    component_index: &HashMap<String, u32>,
+) -> Vec<String>;
 ```
 
 **Route-aware rendering:** The handler performs server-side route matching during
@@ -790,7 +908,7 @@ pub trait ParserPlugin {
 **Built-in plugin: `WebUIParserPlugin`**
 - Skips WebUI Framework runtime attributes (`@click`, `@keydown`, etc.) without counting them as attribute bindings
 - Tracks per-element event count; emits 12-byte `WebUIElementData` `Plugin` fragments encoding `[binding_count, event_start, event_count]`
-- Tracks components and compiles templates into raw JS IIFE strings registered in `window.__webui_templates`. During SSR the handler emits templates for all reachable components on the active route (including those inside false `<if>` and empty `<for>` blocks) in a single `<script>` tag. During SPA navigation the router appends any `templateStyles` first, then evaluates the batched template scripts in one nonce-friendly `<script>` tag.
+- Tracks components and compiles templates into raw JS IIFE strings registered in `window.__webui.templates`. During SSR the handler emits templates for all reachable components on the active route (including those inside false `<if>` and empty `<for>` blocks) in a single `<script>` tag. During SPA navigation the router appends any `templateStyles` first, then evaluates the batched template scripts in one nonce-friendly `<script>` tag.
 - Public framework authoring, decorators, and package entrypoints live in [packages/webui-framework/README.md](packages/webui-framework/README.md)
 
 **Usage:**
@@ -1020,7 +1138,7 @@ It intentionally does **not** duplicate package tutorials or framework API docs.
 
 ### Metadata object format
 
-Each component's compiled template is registered in `window.__webui_templates[tagName]` as a marker-free metadata object consumed by the browser runtime:
+Each component's compiled template is registered in `window.__webui.templates[tagName]` as a marker-free metadata object consumed by the browser runtime:
 
 | Field | Type                              | Description                                        |
 |-------|-----------------------------------|----------------------------------------------------|
@@ -1222,7 +1340,7 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 | `webui_handler_create()` | Create a reusable handler (no plugin). |
 | `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin (e.g. `"fast"`). Returns `NULL` on error. |
 | `webui_handler_render(handler, data, len, json, entry_id, request_path)` | Render a pre-compiled protocol with route matching. `request_path` controls which route is active. Returns heap-allocated string. |
-| `webui_render_partial(protocol_data, len, entry_id, request_path, inventory_hex)` | Produce a JSON partial response (templateStyles, templates, inventory, path, and matched route chain) in a single call. Caller adds state. Returns heap-allocated JSON string. |
+| `webui_render_partial(protocol_data, len, entry_id, request_path, inventory_hex)` | Produce a JSON partial response (templateStyles, templates, inventory, path, matched route chain, cacheTags, cacheControl) in a single call. Uses an internal `ProtocolIndex` for cached route matching. Caller adds state. Returns heap-allocated JSON string. |
 | `webui_handler_destroy(handler)` | Destroy a handler. `NULL` is a safe no-op. |
 | `webui_free(ptr)` | Free a string returned by any render function. `NULL` is a safe no-op. |
 | `webui_last_error()` | Return per-thread error message. Caller must **not** free. |

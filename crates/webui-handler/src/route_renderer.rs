@@ -7,38 +7,20 @@
 //! matching route among sibling route fragments.
 
 use crate::route_matcher;
+use crate::route_matcher::CompiledRouteCache;
 use crate::{ResponseWriter, Result};
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUiFragmentRoute};
 
-/// Write comma-separated items directly to the writer without allocating a joined string.
-fn write_comma_separated(writer: &mut dyn ResponseWriter, items: &[String]) -> Result<()> {
-    for (i, item) in items.iter().enumerate() {
-        if i > 0 {
-            writer.write(",")?;
-        }
-        writer.write(item)?;
-    }
-    Ok(())
-}
-
-/// Write cache/invalidation/pending/error attributes for a route fragment.
+/// Write pending/error attributes for a route fragment.
 ///
-/// Shared by `process_route`, `process_outlet` (matched child), and
-/// `process_outlet` (hidden siblings) to avoid divergence.
-pub(crate) fn write_route_cache_attrs(
+/// Cache-related attributes (cache-tags, invalidates) and query/keep-alive
+/// are omitted from the DOM — they're delivered via the inline SSR chain JSON.
+/// Only pending/error are kept as DOM attributes because the client needs them
+/// for descendant fallback scanning on first navigation into unvisited subtrees.
+pub(crate) fn write_route_pending_attrs(
     writer: &mut dyn ResponseWriter,
     route: &WebUiFragmentRoute,
 ) -> Result<()> {
-    if !route.cache_tags.is_empty() {
-        writer.write(" cache-tags=\"")?;
-        write_comma_separated(writer, &route.cache_tags)?;
-        writer.write("\"")?;
-    }
-    if !route.invalidates.is_empty() {
-        writer.write(" invalidates=\"")?;
-        write_comma_separated(writer, &route.invalidates)?;
-        writer.write("\"")?;
-    }
     if !route.pending_component.is_empty() {
         writer.write(" pending=\"")?;
         writer.write(&route.pending_component)?;
@@ -94,15 +76,19 @@ pub(crate) fn find_best_route_match(
     fragments: &[WebUIFragment],
     request_path: &str,
     route_base: &str,
+    cache: &mut CompiledRouteCache,
 ) -> Option<(String, route_matcher::RouteMatch)> {
     let mut best: Option<(String, route_matcher::RouteMatch)> = None;
 
     for item in fragments {
         if let Some(Fragment::Route(route_frag)) = item.fragment.as_ref() {
             let resolved_path = route_matcher::resolve_route_path(&route_frag.path, route_base);
-            if let Some(m) =
-                route_matcher::match_single_route(&resolved_path, request_path, route_frag.exact)
-            {
+            if let Some(m) = route_matcher::match_route_cached(
+                cache,
+                &resolved_path,
+                request_path,
+                route_frag.exact,
+            ) {
                 let is_better = best
                     .as_ref()
                     .is_none_or(|(_, prev)| m.specificity > prev.specificity);

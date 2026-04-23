@@ -38,13 +38,15 @@ import type { TemplateMeta } from './template-types.js';
 
 declare global {
   interface Window {
-    __webui_templates?: Record<string, TemplateMeta>;
-    __webui_state?: Record<string, unknown>;
-    /** When true, all client-created components use shadow DOM. */
-    __webui_shadow?: boolean;
+    /** Consolidated SSR bootstrap object — single script block. */
+    __webui?: {
+      state?: Record<string, unknown>;
+      templates?: Record<string, TemplateMeta>;
+      [key: string]: unknown;
+    };
   }
 }
 
 export function getTemplate(name: string): TemplateMeta | undefined {
-  return window.__webui_templates?.[name];
+  return window.__webui?.templates?.[name];
 }

@@ -671,8 +671,12 @@ async fn render_page_response(
 
     // Inject route params (nested) into state for SSR
     if let Value::Object(ref mut map) = state {
-        let nested_params =
-            webui_handler::route_handler::collect_nested_route_params(&proto, &entry, route_path);
+        let nested_params = webui_handler::route_handler::collect_nested_route_params(
+            &proto,
+            &entry,
+            route_path,
+            &mut webui_handler::route_matcher::CompiledRouteCache::new(),
+        );
         for (k, v) in &nested_params {
             map.insert(k.clone(), Value::String(v.clone()));
         }
@@ -781,7 +785,18 @@ async fn handle_component_templates(
             .content_type("application/json")
             .body(r#"{"error":"no protocol"}"#);
     };
-    let result = webui_handler::route_handler::render_component_templates(protocol, &tags, &inv);
+    // Per-request index — see ProtocolIndex doc for caching guidance.
+    let index = webui_handler::route_handler::ProtocolIndex::new(protocol);
+    let result = match webui_handler::route_handler::render_component_templates(
+        protocol, &tags, &inv, &index,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            return HttpResponse::InternalServerError()
+                .content_type("application/json")
+                .body(format!(r#"{{"error":"{}"}}"#, e));
+        }
+    };
     HttpResponse::Ok()
         .content_type("application/json")
         .json(result)
@@ -893,6 +908,7 @@ async fn handle_json_partial(
                 proto,
                 &entry,
                 &paths.route_path,
+                &mut webui_handler::route_matcher::CompiledRouteCache::new(),
             );
             for (k, v) in &nested_params {
                 map.insert(k.clone(), Value::String(v.clone()));
@@ -910,12 +926,22 @@ async fn handle_json_partial(
 
     // Build the complete partial response (templateStyles, templates, inventory, path, chain)
     let partial = if let Some(proto) = &protocol {
-        let mut p = webui_handler::route_handler::render_partial(
+        // Per-request index — ideally cached alongside protocol for server lifetime.
+        let mut index = webui_handler::route_handler::ProtocolIndex::new(proto);
+        let mut p = match webui_handler::route_handler::render_partial(
             proto,
             &entry,
             &paths.route_path,
             &client_inv_hex,
-        );
+            &mut index,
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                return HttpResponse::InternalServerError()
+                    .content_type("application/json")
+                    .body(format!(r#"{{"error":"{}"}}"#, e));
+            }
+        };
         if let Some(obj) = p.as_object_mut() {
             obj.insert("state".into(), state_data);
         }
@@ -936,12 +962,15 @@ fn collect_needed_template_names(
     request_path: &str,
     inventory_hex: &str,
 ) -> (Vec<String>, String) {
+    let component_index = webui_handler::route_handler::build_component_index(protocol);
     webui_handler::route_handler::get_needed_components_for_request(
         protocol,
         entry_fragment_id,
         request_path,
         inventory_hex,
+        &component_index,
     )
+    .unwrap()
 }
 
 /// Forward requests under `/api/*` to the user's API server.

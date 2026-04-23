@@ -17,7 +17,9 @@
  * @packageDocumentation
  */
 
-export { Router, WebUIRouter, WebUIRouteElement } from './router.js';
+export { Router, WebUIRouter } from './router.js';
+export { WebUIRouteElement, parseQuery, filterQuery } from './route-element.js';
+export { isStateful } from './types.js';
 export type {
   RouterConfig,
   NavigationEvent,
@@ -26,4 +28,5 @@ export type {
   RouteActionContext,
   RouteActionResult,
   ActionCompleteEvent,
+  StatefulElement,
 } from './types.js';

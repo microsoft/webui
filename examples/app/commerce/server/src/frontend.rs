@@ -58,7 +58,12 @@ impl FrontendRuntime {
 
     /// Collect route params from the nested route tree for a given path.
     pub fn collect_route_params(&self, route_path: &str) -> HashMap<String, String> {
-        route_handler::collect_nested_route_params(&self.protocol, &self.entry, route_path)
+        route_handler::collect_nested_route_params(
+            &self.protocol,
+            &self.entry,
+            route_path,
+            &mut webui_handler::route_matcher::CompiledRouteCache::new(),
+        )
     }
 
     pub fn render_html(&self, route_path: &str, state: &Value, nonce: &str) -> Result<String> {
@@ -83,8 +88,15 @@ impl FrontendRuntime {
         inventory_hex: &str,
         state: Value,
     ) -> Value {
-        let mut partial =
-            route_handler::render_partial(&self.protocol, &self.entry, route_path, inventory_hex);
+        let mut index = route_handler::ProtocolIndex::new(&self.protocol);
+        let mut partial = route_handler::render_partial(
+            &self.protocol,
+            &self.entry,
+            route_path,
+            inventory_hex,
+            &mut index,
+        )
+        .unwrap_or_else(|e| serde_json::json!({"error": format!("render_partial failed: {e}")}));
         if let Some(obj) = partial.as_object_mut() {
             obj.insert("state".into(), state);
         }

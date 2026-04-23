@@ -11,8 +11,6 @@ use std::collections::HashMap;
 /// Result of matching a request path against a route path template.
 #[derive(Debug, Clone)]
 pub struct RouteMatch {
-    /// The matched route name (or fragment ID).
-    pub route_key: String,
     /// Bound parameter values from the path.
     pub params: HashMap<String, String>,
     /// How many literal (non-param) segments matched exactly.
@@ -33,6 +31,48 @@ enum SegmentPattern {
     OptionalParam(String),
     /// Splat / catch-all (e.g., `*rest` or `*`).
     Splat(String),
+}
+
+/// Cache of pre-compiled route template patterns.
+///
+/// Route templates are static strings from the protocol. By parsing them once
+/// into `Vec<SegmentPattern>` and caching the result, we avoid per-request
+/// allocations in the route-matching hot path.
+#[derive(Debug, Default)]
+pub struct CompiledRouteCache {
+    cache: HashMap<String, Vec<SegmentPattern>>,
+}
+
+impl CompiledRouteCache {
+    /// Create a new empty cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            cache: HashMap::new(),
+        }
+    }
+
+    /// Get or compile a route template into segment patterns.
+    fn get_or_compile(&mut self, template: &str) -> &[SegmentPattern] {
+        // Entry API avoids double lookup
+        self.cache
+            .entry(template.to_string())
+            .or_insert_with(|| parse_template(template))
+    }
+}
+
+/// Match a route template against a request path using a compiled cache.
+///
+/// Reuses cached segment patterns to avoid per-request parsing allocations.
+pub fn match_route_cached(
+    cache: &mut CompiledRouteCache,
+    template: &str,
+    request_path: &str,
+    exact: bool,
+) -> Option<RouteMatch> {
+    let request_segments = split_path(request_path);
+    let patterns = cache.get_or_compile(template);
+    try_match(patterns, &request_segments, exact)
 }
 
 /// Parse a path template string into segment patterns.
@@ -71,7 +111,7 @@ fn split_path(path: &str) -> Vec<&str> {
 }
 
 /// Convert an ASCII hex digit to its numeric value.
-fn hex_val(b: u8) -> Option<u8> {
+pub(crate) fn hex_val(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
         b'a'..=b'f' => Some(b - b'a' + 10),
@@ -126,7 +166,6 @@ fn validate_param(value: &str) -> Option<String> {
 ///
 /// Returns `Some(RouteMatch)` if the path matches, `None` otherwise.
 fn try_match(
-    route_key: &str,
     patterns: &[SegmentPattern],
     request_segments: &[&str],
     exact: bool,
@@ -192,7 +231,6 @@ fn try_match(
     }
 
     Some(RouteMatch {
-        route_key: route_key.to_string(),
         params,
         specificity,
         consumed_segments: req_idx,
@@ -206,7 +244,7 @@ fn try_match(
 pub fn match_single_route(template: &str, request_path: &str, exact: bool) -> Option<RouteMatch> {
     let request_segments = split_path(request_path);
     let patterns = parse_template(template);
-    try_match("", &patterns, &request_segments, exact)
+    try_match(&patterns, &request_segments, exact)
 }
 
 /// Check whether a route path is relative (does NOT start with `/`).
@@ -521,5 +559,168 @@ mod tests {
         assert!(
             match_single_route("/files/*path", "/files/docs/%2e%2e/etc/passwd", false).is_none()
         );
+    }
+
+    // ── Parity golden tests ──
+    // These lock down route-matching semantics that must stay consistent
+    // between the Rust server and the TypeScript client.
+
+    #[test]
+    fn parity_root_exact() {
+        let m = match_single_route("/", "/", true).unwrap();
+        assert!(m.params.is_empty());
+        assert_eq!(m.consumed_segments, 0);
+        assert_eq!(m.specificity, 0);
+    }
+
+    #[test]
+    fn parity_root_prefix_matches_anything() {
+        let m = match_single_route("/", "/any/path/here", false).unwrap();
+        assert_eq!(m.consumed_segments, 0);
+    }
+
+    #[test]
+    fn parity_root_exact_rejects_non_root() {
+        assert!(match_single_route("/", "/something", true).is_none());
+    }
+
+    #[test]
+    fn parity_optional_param_present() {
+        let m = match_single_route("/search/:query?", "/search/hello", true).unwrap();
+        assert_eq!(m.params["query"], "hello");
+        assert_eq!(m.consumed_segments, 2);
+    }
+
+    #[test]
+    fn parity_optional_param_absent() {
+        let m = match_single_route("/search/:query?", "/search", true).unwrap();
+        assert!(!m.params.contains_key("query"));
+        assert_eq!(m.consumed_segments, 1);
+    }
+
+    #[test]
+    fn parity_splat_captures_all_remaining() {
+        let m = match_single_route("/files/*path", "/files/a/b/c/d.txt", false).unwrap();
+        assert_eq!(m.params["path"], "a/b/c/d.txt");
+        assert_eq!(m.consumed_segments, 5);
+    }
+
+    #[test]
+    fn parity_splat_captures_empty() {
+        let m = match_single_route("/files/*path", "/files", false).unwrap();
+        assert_eq!(m.params["path"], "");
+        assert_eq!(m.consumed_segments, 1);
+    }
+
+    #[test]
+    fn parity_unnamed_splat_defaults_to_rest() {
+        let m = match_single_route("/files/*", "/files/a/b", false).unwrap();
+        assert_eq!(m.params["rest"], "a/b");
+    }
+
+    #[test]
+    fn parity_percent_encoded_space() {
+        let m = match_single_route("/items/:name", "/items/hello%20world", true).unwrap();
+        assert_eq!(m.params["name"], "hello world");
+    }
+
+    #[test]
+    fn parity_percent_encoded_slash() {
+        let m = match_single_route("/items/:name", "/items/a%2Fb", true).unwrap();
+        assert_eq!(m.params["name"], "a/b");
+    }
+
+    #[test]
+    fn parity_unicode_path() {
+        let m = match_single_route("/pages/:title", "/pages/caf%C3%A9", true).unwrap();
+        assert_eq!(m.params["title"], "café");
+    }
+
+    #[test]
+    fn parity_specificity_literal_beats_param() {
+        // "/contacts/add" (specificity 2) must beat "/contacts/:id" (specificity 1)
+        let add = match_single_route("/contacts/add", "/contacts/add", true).unwrap();
+        let param = match_single_route("/contacts/:id", "/contacts/add", true).unwrap();
+        assert!(add.specificity > param.specificity);
+    }
+
+    #[test]
+    fn parity_equal_specificity_first_wins() {
+        // Two patterns with same specificity — first declared wins.
+        // This test validates the contract at the caller level (find_best_route_match).
+        let m1 = match_single_route("/items/:a", "/items/x", true).unwrap();
+        let m2 = match_single_route("/items/:b", "/items/x", true).unwrap();
+        assert_eq!(m1.specificity, m2.specificity, "equal specificity expected");
+    }
+
+    #[test]
+    fn parity_relative_path_resolution() {
+        assert_eq!(
+            resolve_route_path("./topics/:id", "/sections/1"),
+            "/sections/1/topics/:id"
+        );
+        assert_eq!(
+            resolve_route_path("topics/:id", "/sections/1"),
+            "/sections/1/topics/:id"
+        );
+        assert_eq!(resolve_route_path("/absolute", "/any/base"), "/absolute");
+        assert_eq!(resolve_route_path("", "/base"), "/base");
+        assert_eq!(resolve_route_path("./", "/base"), "/base");
+    }
+
+    #[test]
+    fn parity_compute_route_base_various() {
+        assert_eq!(compute_route_base("/", 0), "/");
+        assert_eq!(compute_route_base("/a/b/c", 1), "/a");
+        assert_eq!(compute_route_base("/a/b/c", 2), "/a/b");
+        assert_eq!(compute_route_base("/a/b/c", 3), "/a/b/c");
+        assert_eq!(compute_route_base("/a/b/c", 99), "/a/b/c");
+    }
+
+    #[test]
+    fn parity_nested_route_matching() {
+        // Simulate: parent route "/sections/:id" matches "/sections/1/topics/react"
+        let parent =
+            match_single_route("/sections/:id", "/sections/1/topics/react", false).unwrap();
+        assert_eq!(parent.params["id"], "1");
+        assert_eq!(parent.consumed_segments, 2);
+
+        // Child route is relative: "topics/:topicId" resolved against base "/sections/1"
+        let base = compute_route_base("/sections/1/topics/react", parent.consumed_segments);
+        assert_eq!(base, "/sections/1");
+
+        let child_path = resolve_route_path("./topics/:topicId", &base);
+        assert_eq!(child_path, "/sections/1/topics/:topicId");
+
+        let child = match_single_route(&child_path, "/sections/1/topics/react", true).unwrap();
+        assert_eq!(child.params["topicId"], "react");
+        assert_eq!(child.consumed_segments, 4);
+    }
+
+    #[test]
+    fn parity_non_exact_prefix_with_extra_segments() {
+        let m = match_single_route("/app", "/app/dashboard/settings", false).unwrap();
+        assert_eq!(m.consumed_segments, 1);
+        assert_eq!(m.specificity, 1);
+    }
+
+    #[test]
+    fn parity_exact_rejects_extra_segments() {
+        assert!(match_single_route("/app", "/app/dashboard", true).is_none());
+    }
+
+    #[test]
+    fn parity_multiple_optional_params() {
+        let m = match_single_route("/search/:q?/:page?", "/search", true).unwrap();
+        assert!(!m.params.contains_key("q"));
+        assert!(!m.params.contains_key("page"));
+
+        let m = match_single_route("/search/:q?/:page?", "/search/rust", true).unwrap();
+        assert_eq!(m.params["q"], "rust");
+        assert!(!m.params.contains_key("page"));
+
+        let m = match_single_route("/search/:q?/:page?", "/search/rust/2", true).unwrap();
+        assert_eq!(m.params["q"], "rust");
+        assert_eq!(m.params["page"], "2");
     }
 }

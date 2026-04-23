@@ -37,7 +37,7 @@ test.describe('SSR rendering', () => {
   test('compiled templates registered in global registry', async ({ page }) => {
     await page.goto('/');
     const templateNames = await page.evaluate(
-      () => Object.keys(window.__webui_templates ?? {}),
+      () => Object.keys(window.__webui?.templates ?? {}),
     );
     expect(templateNames).toContain('todo-app');
     expect(templateNames).toContain('todo-item');
@@ -46,7 +46,7 @@ test.describe('SSR rendering', () => {
   test('compiled template is a metadata object', async ({ page }) => {
     await page.goto('/');
     const meta = await page.evaluate(() => {
-      const template = window.__webui_templates?.['todo-app'];
+      const template = window.__webui?.templates?.['todo-app'];
       const textPaths = Array.isArray(template?.tx)
         ? template.tx
           .flatMap(([, parts]) => parts)

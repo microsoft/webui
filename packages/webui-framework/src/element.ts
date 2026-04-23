@@ -180,7 +180,7 @@ export class WebUIElement extends HTMLElement {
     if (!meta) {
       console.warn(
         `[WebUI] Template metadata for <${tag}> not found. ` +
-        `Ensure the component is included in the SSR output or registered via __webui_templates.`,
+        `Ensure the component is included in the SSR output or registered via __webui.templates.`,
       );
       return;
     }
@@ -207,7 +207,7 @@ export class WebUIElement extends HTMLElement {
 
     // Auto-detect shadow vs light DOM
     const hasShadow = !!this.shadowRoot;
-    const wantShadow = hasShadow || !!meta.sd || !!window.__webui_shadow;
+    const wantShadow = hasShadow || !!meta.sd;
 
     let root: Node;
     let isSSR: boolean;
@@ -306,18 +306,18 @@ export class WebUIElement extends HTMLElement {
   }
 
   /**
-   * Apply SSR state from the global `window.__webui_state` object.
+   * Apply SSR state from `window.__webui.state`.
    *
-   * Passing the same props to both server render and client
-   * hydrate, this ensures component observables match the server-rendered
-   * DOM. The handler emits the state as a `<script>` tag at the end of
-   * the page. Only observable properties are set — unknown keys are ignored.
+   * The handler emits all SSR metadata in a single consolidated
+   * `window.__webui` script block. State lives at `.state` — the same
+   * props passed to the server render so observables match the DOM.
+   * Only observable properties are set — unknown keys are ignored.
    *
    * Writes directly to the backing field (`_prop`) to avoid triggering
    * reactive updates before bindings are wired.
    */
   private $applySSRState(): void {
-    const state = window.__webui_state;
+    const state = window.__webui?.state;
     if (!state || typeof state !== 'object') return;
     const names = getObservableNames(this.constructor as Function);
     for (const key of Object.keys(state)) {

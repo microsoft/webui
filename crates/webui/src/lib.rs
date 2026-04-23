@@ -32,7 +32,9 @@ pub use error::WebUIError;
 // Re-export core types from downstream crates
 pub use webui_handler::route_handler::{
     encode_inventory, get_needed_components, get_needed_components_for_request, parse_inventory,
+    ProtocolIndex,
 };
+pub use webui_handler::route_matcher::CompiledRouteCache;
 pub use webui_handler::{plugin::HandlerPlugin, HandlerError, ResponseWriter, WebUIHandler};
 pub use webui_parser::CssStrategy;
 pub use webui_parser::DomStrategy;

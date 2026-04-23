@@ -96,6 +96,11 @@ impl HandlerPlugin for WebUIHydrationPlugin {
     /// stored in the protocol — the `<script>` tag is only added here for
     /// the SSR HTML output.  Partial SPA responses send the raw JS directly
     /// and the router evaluates it client-side.
+    ///
+    /// NOTE: When `collect_template_js` returns `Some(...)`, `lib.rs` merges
+    /// the templates into the consolidated `window.__webui` script block and
+    /// this method is **not** called.  It remains as a fallback for
+    /// non-consolidated code paths.
     fn emit_templates(
         &self,
         protocol: &WebUIProtocol,
@@ -133,6 +138,32 @@ impl HandlerPlugin for WebUIHydrationPlugin {
         writer.write("</script>\n")?;
 
         Ok(())
+    }
+
+    /// Collect raw JS template IIFE strings for embedding in the consolidated
+    /// `window.__webui` script block.  Returns `Some(vec)` with non-empty
+    /// template sources, or `None` if there are no templates to emit.
+    fn collect_template_js(
+        &self,
+        protocol: &WebUIProtocol,
+        components: &HashSet<String>,
+    ) -> Option<Vec<String>> {
+        let mut templates: Vec<String> = Vec::with_capacity(components.len());
+        for name in components {
+            if let Some(template) = protocol
+                .components
+                .get(name)
+                .map(|component| component.template.as_str())
+                .filter(|t| !t.is_empty())
+            {
+                templates.push(template.to_string());
+            }
+        }
+        if templates.is_empty() {
+            None
+        } else {
+            Some(templates)
+        }
     }
 }
 
@@ -324,9 +355,7 @@ mod tests {
     }
 
     fn iife_template(tag: &str, body: &str) -> String {
-        format!(
-            "(function(){{var w=window.__webui_templates||(window.__webui_templates={{}});w['{tag}']={{{body}}}}})();\n"
-        )
+        format!("(function(){{var w=window.__webui.templates;w['{tag}']={{{body}}}}})();\n")
     }
 
     #[test]

@@ -24,13 +24,14 @@ export function registerCompiledTemplate(
   name: string,
   meta: TemplateMeta,
 ): void {
-  const w = window as unknown as { __webui_templates?: Record<string, TemplateMeta> };
-  const templates = w.__webui_templates ?? (w.__webui_templates = {});
-  templates[name] = meta;
+  const w = window as unknown as { __webui?: { templates?: Record<string, TemplateMeta>; [k: string]: unknown } };
+  if (!w.__webui) w.__webui = {};
+  if (!w.__webui.templates) w.__webui.templates = {};
+  w.__webui.templates[name] = meta;
 }
 
 /** Render a template registration as an inline `<script>` tag. */
 export function renderTemplateScript(name: string, meta: TemplateMeta): string {
-  return `<script>(function(){var w=window.__webui_templates||(window.__webui_templates={});w[${JSON.stringify(name)}]=${JSON.stringify(meta)};})();</script>`;
+  return `<script>(function(){var w=window.__webui.templates;w[${JSON.stringify(name)}]=${JSON.stringify(meta)};})();</script>`;
 }
 

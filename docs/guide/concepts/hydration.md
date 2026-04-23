@@ -41,7 +41,7 @@ At build time, the WebUI compiler produces a metadata object for each component 
 
 ```javascript
 (function () {
-  var w = window.__webui_templates || (window.__webui_templates = {});
+  var w = window.__webui.templates || (window.__webui.templates = {});
   w['todo-app'] = {
     h:  '<div class="todo"><ul></ul></div>',  // Marker-free HTML for client-created DOM
     tx: [/* text binding runs */],

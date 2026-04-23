@@ -14,8 +14,10 @@ describe('template registry helpers', () => {
     try {
       Object.defineProperty(globalThis, 'window', {
         value: {
-          __webui_templates: {
-            greeting: template,
+          __webui: {
+            templates: {
+              greeting: template,
+            },
           },
         },
         configurable: true,

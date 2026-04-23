@@ -8,7 +8,7 @@ This package is the browser-side runtime used by `webui build --plugin=webui`. I
 - `@observable`, `@attr`, and `@volatile` decorators
 - compiled template path mapping for direct DOM binding resolution
 - light DOM or shadow DOM rendering (`--dom=light|shadow` flag)
-- SSR state seeding from `window.__webui_state` (like Preact's props)
+- SSR state seeding from `window.__webui.state` (like Preact's props)
 
 If you are building WebUI apps in this repo, this is the component model used by examples like `examples/app/todo-webui`, `examples/app/commerce`, and `examples/app/contact-book-manager`.
 
@@ -93,7 +93,7 @@ Build with `--dom=shadow` (default) to wrap in a declarative shadow root, or `--
 cargo run -p microsoft-webui-cli -- build ./src --out ./dist --plugin=webui
 ```
 
-The compiler/plugin generates the template metadata consumed by the runtime. In normal app code, you should not need to hand-author `window.__webui_templates`.
+The compiler/plugin generates the template metadata consumed by the runtime. In normal app code, you should not need to hand-author `window.__webui.templates`.
 
 ### DOM strategy (`--dom`)
 
@@ -107,7 +107,7 @@ The `--dom` flag controls how the server renders component content:
 The runtime auto-detects which mode was used at hydration time:
 - If a `shadowRoot` already exists → shadow DOM SSR path
 - If `childNodes` exist but no shadow root → light DOM SSR path
-- If neither → client-created path (uses `meta.sd` or `window.__webui_shadow` to decide)
+- If neither → client-created path (uses `meta.sd` to decide)
 
 Light DOM is useful for simpler styling (CSS inheritance works naturally) and
 better search-engine indexing.  Shadow DOM provides style encapsulation.
@@ -300,7 +300,7 @@ When contributing to the runtime, avoid these patterns:
 │                      │     │   (Rust/Go/C#/…)      │      │                      │
 │  HTML template       │     │                       │      │  SSR HTML (light or  │
 │  + expressions       │────▶│  TemplateMeta (JSON)  │────▶│  shadow DOM) +       │
-│  + @if / @for        │     │  + state data         │      │  __webui_state JSON  │
+│  + @if / @for        │     │  + state data         │      │  __webui.state JSON  │
 │                      │     │                       │      │                      │
 │  Outputs:            │     │  Renders:             │      │  Hydrates:           │
 │  • TemplateMeta      │     │  • Full HTML page     │      │  • Path-based DOM    │
@@ -329,7 +329,7 @@ flowchart LR
     subgraph Serve ["Server (Any Language)"]
         M --> R[Route Handler]
         S[State Data] --> R
-        R --> HTML["Full SSR HTML<br/>(shadow or light DOM)<br/>+ TemplateMeta &lt;script&gt;<br/>+ __webui_state &lt;script&gt;"]
+        R --> HTML["Full SSR HTML<br/>(shadow or light DOM)<br/>+ TemplateMeta &lt;script&gt;<br/>+ __webui.state &lt;script&gt;"]
     end
 
     subgraph Browser ["Browser"]
@@ -377,7 +377,7 @@ graph TD
 ### SSR Hydration Path
 
 When the server renders a component, it emits HTML content (as a declarative
-shadow root or as light DOM children) along with a `window.__webui_state`
+shadow root or as light DOM children) along with a `window.__webui.state`
 JSON payload.  The browser parses this DOM before any JavaScript runs.
 When the component's JS loads and `connectedCallback` fires, the framework
 uses compiled template paths to resolve SSR DOM nodes without any marker
@@ -390,13 +390,13 @@ sequenceDiagram
     participant CE as Custom Element
     participant FW as Framework
 
-    Server->>Browser: HTML (shadow or light DOM)<br/>+ __webui_state JSON
+    Server->>Browser: HTML (shadow or light DOM)<br/>+ __webui.state JSON
     Browser->>Browser: Parse HTML → DOM exists
     Browser->>CE: Custom element upgrade
     CE->>CE: attributeChangedCallback (pre-existing attrs)
     CE->>FW: connectedCallback() → $mount()
     FW->>FW: SSR DOM detected (shadow root or children exist)
-    FW->>FW: $applySSRState() — seed observables from __webui_state
+    FW->>FW: $applySSRState() — seed observables from __webui.state
     FW->>FW: $hydrate() — template-parallel path resolution
     FW->>FW: $resolveSSR() — match SSR nodes via ordinal traversal
     FW->>FW: $wireEvents() + $wireRefs()
@@ -552,7 +552,7 @@ browser sees `42` in the DOM but the JavaScript property `this.count` is still
 `0` (the class default).  Without seeding, the first `$update()` would
 overwrite the SSR content with the wrong value.
 
-State seeding uses `window.__webui_state` — a JSON object emitted by the
+State seeding uses `window.__webui.state` — a JSON object emitted by the
 server handler as a `<script>` tag.  Like Preact's props, this delivers the
 same data used for SSR rendering to the client.  During `$mount()`,
 `$applySSRState()` writes matching keys directly to observable backing fields
@@ -560,7 +560,7 @@ before any bindings are wired:
 
 ```mermaid
 flowchart LR
-    SCRIPT["&lt;script&gt;<br/>window.__webui_state = {<br/>  count: 42,<br/>  title: 'Hello'<br/>}"] --> APPLY["$applySSRState()"]
+    SCRIPT["&lt;script&gt;<br/>window.__webui.state = {<br/>  count: 42,<br/>  title: 'Hello'<br/>}"] --> APPLY["$applySSRState()"]
     APPLY --> SEED["Write to backing fields:<br/>this._count = 42<br/>this._title = 'Hello'"]
     SEED --> HYDRATE["$hydrate() — bindings match<br/>server-rendered DOM"]
 ```
@@ -611,7 +611,7 @@ are removed; new items are appended.
 On initial hydration, the repeat system walks existing SSR children and
 reconstructs collection instances by matching them against the compiled
 template via `$resolveSSR` path traversal.  State is already seeded from
-`window.__webui_state`, so repeat items reflect the server-rendered list
+`window.__webui.state`, so repeat items reflect the server-rendered list
 without parsing marker comments.
 
 ---

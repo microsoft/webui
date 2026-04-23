@@ -36,7 +36,7 @@ test.describe('split repeat fixture', () => {
     await expect(page.locator('test-split-repeat .secondary .primary-item')).toHaveCount(0);
 
     const compiledMarkers = await page.evaluate(() => {
-      const meta = window.__webui_templates?.['test-split-repeat'];
+      const meta = window.__webui?.templates?.['test-split-repeat'];
       const rootHtml = meta?.h ?? '';
       const blockHtml = (meta?.b ?? []).map((block) => block.h).join('');
       return {

@@ -160,12 +160,20 @@ pub fn render_partial(
     let state: serde_json::Value = serde_json::from_str(&state_json)
         .map_err(|e| NapiError::from_reason(format!("invalid state JSON: {e}")))?;
 
+    // TODO: ProtocolIndex is created per-request here because the Node binding
+    // receives the protocol fresh each call. Ideally the host should cache it
+    // alongside the protocol for the lifetime of the server — it's deterministic
+    // per protocol and avoids rebuilding the component index + route cache.
+    let mut index = webui_handler::route_handler::ProtocolIndex::new(&protocol);
+
     let mut result = webui_handler::route_handler::render_partial(
         &protocol,
         &entry_id,
         &request_path,
         &inventory_hex,
-    );
+        &mut index,
+    )
+    .map_err(|e| NapiError::from_reason(format!("render_partial failed: {e}")))?;
     if let Some(obj) = result.as_object_mut() {
         obj.insert("state".into(), state);
     }
@@ -187,11 +195,16 @@ pub fn render_component_templates(
         .map_err(|e| NapiError::from_reason(format!("invalid tags JSON: {e}")))?;
     let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
 
+    // Per-request index — see ProtocolIndex doc for caching guidance.
+    let index = webui_handler::route_handler::ProtocolIndex::new(&protocol);
+
     let result = webui_handler::route_handler::render_component_templates(
         &protocol,
         &tag_refs,
         &inventory_hex,
-    );
+        &index,
+    )
+    .map_err(|e| NapiError::from_reason(format!("render_component_templates failed: {e}")))?;
 
     serde_json::to_string(&result)
         .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
