@@ -21,21 +21,11 @@ use webui_protocol::{web_ui_fragment::Fragment, WebUIFragmentRoute, WebUIProtoco
 /// Both the component bit-index map and the compiled route template cache
 /// are deterministic for a given protocol. Building them once avoids
 /// redundant work on every request.
-///
-/// The `component_closure` map pre-computes which components are reachable
-/// from each fragment via non-route edges (Component/ForLoop/IfCond/Attribute).
-/// At request time, the walker only needs to follow the matched route spine
-/// and union the pre-computed closures — eliminating the O(graph) BFS.
 pub struct ProtocolIndex {
     /// Component name → bit index for inventory tracking.
     pub component_index: HashMap<String, u32>,
     /// Compiled route template patterns (lazily populated on first match).
     pub route_cache: CompiledRouteCache,
-    /// Fragment ID → set of inventoryable component names reachable via
-    /// non-route edges (Component, ForLoop, IfCond, Attribute). Does NOT
-    /// cross Route boundaries — the route spine is walked separately at
-    /// request time to avoid over-shipping templates for unmatched routes.
-    pub component_closure: HashMap<String, HashSet<String>>,
 }
 
 impl ProtocolIndex {
@@ -45,78 +35,8 @@ impl ProtocolIndex {
         Self {
             component_index: build_component_index(protocol),
             route_cache: CompiledRouteCache::new(),
-            component_closure: build_component_closure(protocol),
         }
     }
-}
-
-/// Pre-compute the set of inventoryable components reachable from each
-/// fragment via non-route edges (Component, ForLoop, IfCond, Attribute).
-///
-/// Stops at Route fragment boundaries — those are walked at request time
-/// based on the matched route chain. This ensures we don't include
-/// components from unmatched sibling routes.
-fn build_component_closure(protocol: &WebUIProtocol) -> HashMap<String, HashSet<String>> {
-    let mut closures: HashMap<String, HashSet<String>> = HashMap::new();
-
-    for fragment_id in protocol.fragments.keys() {
-        if closures.contains_key(fragment_id) {
-            continue;
-        }
-        let closure = compute_non_route_closure(protocol, fragment_id);
-        closures.insert(fragment_id.clone(), closure);
-    }
-
-    closures
-}
-
-/// BFS from a single fragment, following Component/ForLoop/IfCond/Attribute
-/// edges but NOT Route edges. Returns the set of component names reachable.
-fn compute_non_route_closure(protocol: &WebUIProtocol, start_id: &str) -> HashSet<String> {
-    let mut visited = HashSet::new();
-    let mut components = HashSet::new();
-    let mut stack = vec![start_id.to_string()];
-
-    while let Some(frag_id) = stack.pop() {
-        if frag_id.is_empty() || !visited.insert(frag_id.clone()) {
-            continue;
-        }
-
-        let Some(frag_list) = protocol.fragments.get(&frag_id) else {
-            continue;
-        };
-
-        for frag in &frag_list.fragments {
-            match frag.fragment.as_ref() {
-                Some(Fragment::Component(component)) => {
-                    // Component edges are inventoryable
-                    if protocol
-                        .components
-                        .get(&component.fragment_id)
-                        .is_some_and(|c| !c.template.is_empty())
-                    {
-                        components.insert(component.fragment_id.clone());
-                    }
-                    stack.push(component.fragment_id.clone());
-                }
-                Some(Fragment::ForLoop(for_loop)) => {
-                    stack.push(for_loop.fragment_id.clone());
-                }
-                Some(Fragment::IfCond(if_cond)) => {
-                    stack.push(if_cond.fragment_id.clone());
-                }
-                Some(Fragment::Attribute(attr)) if !attr.template.is_empty() => {
-                    stack.push(attr.template.clone());
-                }
-                // STOP at Route boundaries — don't follow Route edges.
-                // The route spine is walked at request time.
-                Some(Fragment::Route(_)) => {}
-                _ => {}
-            }
-        }
-    }
-
-    components
 }
 
 // ── Component Inventory ─────────────────────────────────────────────────
@@ -465,12 +385,16 @@ fn select_best_child_route(
     route_base: &str,
     cache: &mut CompiledRouteCache,
 ) -> Option<(usize, route_matcher::RouteMatch)> {
+    let request_segments = route_matcher::split_request_path(request_path);
     let mut best: Option<(usize, route_matcher::RouteMatch)> = None;
     for (idx, child) in children.iter().enumerate() {
         let resolved = route_matcher::resolve_route_path(&child.path, route_base);
-        if let Some(m) =
-            route_matcher::match_route_cached(cache, &resolved, request_path, child.exact)
-        {
+        if let Some(m) = route_matcher::match_route_cached_with_segments(
+            cache,
+            &resolved,
+            &request_segments,
+            child.exact,
+        ) {
             let is_better = best
                 .as_ref()
                 .is_none_or(|(_, prev)| m.specificity > prev.specificity);
@@ -1967,7 +1891,7 @@ mod tests {
             .or_default();
         // Style strategy: CSS is inside the template HTML, not in component.css
         component.template =
-            "(function(){var w=window.__webui.templates;w['my-page']={h:'<style>.p{color:red}</style><p>page</p>'};})();"
+            "(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w['my-page']={h:'<style>.p{color:red}</style><p>page</p>'};})();"
                 .to_string();
         // css is empty for Style strategy
 

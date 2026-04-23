@@ -355,7 +355,7 @@ mod tests {
     }
 
     fn iife_template(tag: &str, body: &str) -> String {
-        format!("(function(){{var w=window.__webui.templates;w['{tag}']={{{body}}}}})();\n")
+        format!("(function(){{var w=(window.__webui||(window.__webui={{}})).templates||(window.__webui.templates={{}});w['{tag}']={{{body}}}}})();\n")
     }
 
     #[test]

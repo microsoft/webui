@@ -62,8 +62,8 @@ test.describe('SSR routing', () => {
 
   test('webui-route elements have correct active state in SSR', async ({ page }) => {
     const html = await (await page.goto('/sections/frontend'))!.text();
-    expect(html).toContain('path="/" component="routes-app" active>');
-    expect(html).toContain('path="sections/:sectionId" component="section-page" active>');
+    expect(html).toContain('path="/" component="routes-app" data-ri="0" active>');
+    expect(html).toContain('path="sections/:sectionId" component="section-page" data-ri="1" active>');
     expect(html).toContain('component="topic-page" style="display:none">');
   });
 

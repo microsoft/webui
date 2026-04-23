@@ -348,7 +348,7 @@ fn generate_compiled_template_with_root_source(
     let meta = compile_to_metadata(body, root_events);
 
     let mut out = String::with_capacity(512 + html_content.len());
-    out.push_str("(function(){var w=window.__webui.templates;w['");
+    out.push_str("(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w['");
     out.push_str(tag_name);
     out.push_str("']={");
 

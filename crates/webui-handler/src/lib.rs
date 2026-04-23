@@ -362,12 +362,16 @@ impl WebUIHandler {
         }
 
         // Find the best matching child route
+        let request_segments = route_matcher::split_request_path(&context.request_path);
         let mut best: Option<(usize, route_matcher::RouteMatch)> = None;
         for (idx, child) in children.iter().enumerate() {
             let resolved = route_matcher::resolve_route_path(&child.path, &context.route_base);
-            if let Some(m) =
-                route_matcher::match_single_route(&resolved, &context.request_path, child.exact)
-            {
+            if let Some(m) = route_matcher::match_route_cached_with_segments(
+                &mut context.route_cache,
+                &resolved,
+                &request_segments,
+                child.exact,
+            ) {
                 let is_better = best
                     .as_ref()
                     .is_none_or(|(_, prev)| m.specificity > prev.specificity);
@@ -901,10 +905,7 @@ impl WebUIHandler {
             );
 
             // State — emitted as window.__webui.state
-            let state_json = serde_json::to_string(context.state).unwrap_or_default();
-            if let Ok(state_val) = serde_json::from_str::<serde_json::Value>(&state_json) {
-                webui_obj.insert("state".into(), state_val);
-            }
+            webui_obj.insert("state".into(), context.state.clone());
 
             // Chain
             let chain = crate::route_handler::collect_route_chain(
@@ -6572,7 +6573,7 @@ mod tests {
         for name in ["app-shell", "cart-panel", "product-card"] {
             let comp = protocol.components.entry(name.to_string()).or_default();
             comp.template = format!(
-                "(function(){{var w=window.__webui.templates;w['{name}']={{h:'<div/>'}};}})();\n"
+                "(function(){{var w=(window.__webui||(window.__webui={{}})).templates||(window.__webui.templates={{}});w['{name}']={{h:'<div/>'}};}})();\n"
             );
             comp.css = format!(".{name}{{display:block}}");
         }

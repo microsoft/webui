@@ -280,7 +280,7 @@ mod tests {
             .entry("my-page".to_string())
             .or_default();
         // Style strategy: CSS is inlined in the template IIFE
-        comp.template = "(function(){var w=window.__webui.templates;w['my-page']={h:'<style>.p{color:red}</style><p/>'};})();".to_string();
+        comp.template = "(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w['my-page']={h:'<style>.p{color:red}</style><p/>'};})();".to_string();
 
         let handler = WebUIHandler::new();
         let request = ServeRequest {

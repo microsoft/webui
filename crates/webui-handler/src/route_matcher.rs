@@ -71,8 +71,31 @@ pub fn match_route_cached(
     exact: bool,
 ) -> Option<RouteMatch> {
     let request_segments = split_path(request_path);
+    match_route_cached_with_segments(cache, template, &request_segments, exact)
+}
+
+/// Match a route template against pre-split request path segments.
+///
+/// Use this variant in loops that match multiple templates against the same
+/// request path — split the path once with [`split_request_path`] and reuse
+/// the segments across all calls.
+pub fn match_route_cached_with_segments(
+    cache: &mut CompiledRouteCache,
+    template: &str,
+    request_segments: &[&str],
+    exact: bool,
+) -> Option<RouteMatch> {
     let patterns = cache.get_or_compile(template);
-    try_match(patterns, &request_segments, exact)
+    try_match(patterns, request_segments, exact)
+}
+
+/// Split a request path into segments, filtering empty parts.
+///
+/// Intended to be called once before a loop of
+/// [`match_route_cached_with_segments`] calls to avoid per-iteration
+/// allocation.
+pub fn split_request_path(path: &str) -> Vec<&str> {
+    split_path(path)
 }
 
 /// Parse a path template string into segment patterns.

@@ -290,6 +290,8 @@ window.__webui = {
   nonce: string,              // CSP nonce value
   css: string[],              // CSS link hrefs emitted during SSR
   styles: string[],           // module CSS specifiers emitted during SSR
+  state: object,              // SSR state for hydration (consumed by framework on load)
+  templates: Record<string, TemplateMetadata>,  // component template metadata (populated by IIFEs)
 };
 ```
 
@@ -524,10 +526,6 @@ pub struct ProtocolIndex {
     pub component_index: HashMap<String, u32>,
     /// Pre-compiled route segment patterns for O(1) route matching.
     pub route_cache: CompiledRouteCache,
-    /// Transitive closure of all components reachable from each root component
-    /// (keyed by tag name). Used by `render_component_templates()` to emit
-    /// templates for conditional/loop-hidden components.
-    pub component_closure: HashMap<String, Vec<String>>,
 }
 
 impl ProtocolIndex {
@@ -575,7 +573,7 @@ pub fn render_action_response(
 ) -> Result<ActionResponse, HandlerError>;
 
 /// Emit client template scripts/markup for the given components.
-/// `protocol_index` provides the component closure for reachable templates.
+/// `protocol_index` provides the component index for inventory tracking.
 pub fn render_component_templates(
     handler: &WebUIHandler,
     protocol: &WebUIProtocol,

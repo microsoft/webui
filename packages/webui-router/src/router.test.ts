@@ -156,7 +156,7 @@ describe('WebUIRouter', () => {
     test('Function-based execution registers templates without DOM', () => {
       // Simulate what fetchPartial does with the template script string
       const tmpl =
-        '<script>(function(){var w=window.__webui.templates;' +
+        '<script>(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});' +
         "w['test-comp']={h:\"<div>hello</div>\"};" +
         '})();</script>';
 
@@ -204,8 +204,8 @@ describe('WebUIRouter', () => {
             '<style type="module" specifier="beta">.beta{color:blue}</style>',
           ],
           templates: [
-            '(function(){var w=window.__webui.templates;w["alpha"]={h:"<div>a</div>"};})();',
-            '(function(){var w=window.__webui.templates;w["beta"]={h:"<div>b</div>"};})();',
+            '(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w["alpha"]={h:"<div>a</div>"};})();',
+            '(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w["beta"]={h:"<div>b</div>"};})();',
           ],
           path: '/',
           chain: [],
@@ -287,7 +287,7 @@ describe('WebUIRouter', () => {
           state: {},
           templateStyles: [],
           templates: [
-            '(function(){var w=window.__webui.templates;w["link-comp"]={h:"<div/>"};})();',
+            '(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w["link-comp"]={h:"<div/>"};})();',
           ],
           path: '/',
           chain: [],

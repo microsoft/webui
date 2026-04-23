@@ -166,6 +166,7 @@ export class WebUIRouter {
     this.cleanupFns.push(() => nav.removeEventListener('navigate', handler));
 
     if (config.preload) {
+      const self = this;
       const cleanup = setupPreloadListeners({
         basePath: this.basePath,
         excludePaths: this.excludePaths,
@@ -175,18 +176,16 @@ export class WebUIRouter {
         storeCache: (p, d, pre) => this.navCache.store(p, d, pre),
         fetchPartial: (p, s, spec) => this.fetchPartial(p, s, spec),
       });
-      // Capture `this` for the getter closures above
-      const self = this;
       this.cleanupFns.push(cleanup);
     }
 
+    const selfAction = this;
     this.cleanupFns.push(setupFormInterception({
       get activeChain() { return selfAction.activeChain; },
       get currentRequestPath() { return selfAction.currentRequestPath; },
       setActionController: (c) => { this.actionController = c; },
       invalidateTags: (tags) => this.invalidateTags(tags),
     }));
-    const selfAction = this;
 
     this.handleNavigation(this.currentTarget());
   }
@@ -290,6 +289,7 @@ export class WebUIRouter {
 
     if (this.isInitialNavigation) {
       this.isInitialNavigation = false;
+      const thisGen = ++this.navGeneration;
       this.activeChain = buildChainFromSSR();
       // Chain was one-shot SSR data — free it now that we've hydrated
       delete window.__webui!.chain;
@@ -299,9 +299,12 @@ export class WebUIRouter {
           .filter(entry => entry.component)
           .map(entry => ensureComponentLoaded(entry.component, this.loaders, this.loaderPromises)),
       );
+      if (thisGen !== this.navGeneration) return;
 
       const ssrFresh = this.config.ssrFresh !== false;
       const loaderStates = await resolveLoaders(this.activeChain, query, undefined, ssrFresh);
+      if (thisGen !== this.navGeneration) return;
+
       for (const entry of this.activeChain) {
         const state = loaderStates.get(entry.component);
         if (state && state !== LOADER_FAILED && entry.el) {
