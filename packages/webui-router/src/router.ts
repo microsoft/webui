@@ -434,6 +434,11 @@ export class WebUIRouter {
     state?: Record<string, unknown> | null,
     query?: Record<string, string>,
   ): void {
+    // Destroy existing component bindings before clearing DOM
+    const existing = routeEl.firstElementChild;
+    if (existing && typeof (existing as unknown as { $destroy?: () => void }).$destroy === 'function') {
+      (existing as unknown as { $destroy: () => void }).$destroy();
+    }
     const component = document.createElement(componentTag);
     routeEl.textContent = '';
     routeEl.appendChild(component);
@@ -596,6 +601,7 @@ export class WebUIRouter {
       // Deactivate old chain from leaf up
       for (let i = this.activeChain.length - 1; i >= changeLevel; i--) {
         if (this.activeChain[i].el) deactivateRoute(this.activeChain[i].el!);
+        this.activeChain[i].compEl = undefined; // Release component reference
       }
       for (let i = 0; i < changeLevel; i++) {
         newChain[i].el = this.activeChain[i].el;

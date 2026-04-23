@@ -87,6 +87,9 @@ const templateCache = new WeakMap<TemplateBlockMeta, DocumentFragment>();
 /** Parsed template DOM for SSR path mapping, keyed by TemplateBlockMeta. */
 const templateDOMCache = new WeakMap<TemplateBlockMeta, Element>();
 
+/** Cached root tag name extracted from meta.h before it's released. */
+const rootTagCache = new WeakMap<TemplateBlockMeta, string | null>();
+
 /** Pre-computed ordinals for template nodes: childIndex → [nodeType, ordinal].
  *  Avoids re-counting element/text siblings on every $resolveSSR call. */
 const tplOrdinalCache = new WeakMap<Node, Map<number, [nodeType: number, ordinal: number]>>();
@@ -268,10 +271,49 @@ export class WebUIElement extends HTMLElement {
   }
 
   disconnectedCallback(): void {
-    // Note: event listeners wired by $addEvent target child nodes owned by
-    // this component — they will be GC'd together with the component.
-    // We intentionally do NOT remove them here because connectedCallback
-    // does not re-wire events when a hydrated component is reattached.
+    // Schedule teardown on microtask — if the element is re-connected
+    // before then (e.g. repeat reconciliation), skip the cleanup.
+    if (this.$root) {
+      queueMicrotask(() => {
+        if (!this.isConnected) this.$destroy();
+      });
+    }
+  }
+
+  /**
+   * Permanently destroy this component's own bindings and DOM references.
+   * Each component is responsible for its own cleanup — child WebUI
+   * elements handle theirs via their own `disconnectedCallback`.
+   */
+  $destroy(): void {
+    if (!this.$root) return;
+    this.$teardown(this.$root);
+    this.$root = null;
+    this.$pathIndex = undefined;
+    this.$wildcardBindings = undefined;
+    this.$dirtyPaths = null;
+    this.$pendingFlush = false;
+    this.$ready = false;
+  }
+
+  /** Break all DOM references held by a binding instance and its nested blocks. */
+  private $teardown(instance: TemplateInstance): void {
+    for (const c of instance.conds) {
+      if (c.instance) this.$teardown(c.instance);
+      c.instance = null;
+    }
+    for (const r of instance.repeats) {
+      for (const item of r.instances) this.$teardown(item.instance);
+      r.instances.length = 0;
+      r.container = null;
+      r.start = null;
+      r.end = null;
+    }
+    instance.nodes.length = 0;
+    instance.texts.length = 0;
+    instance.attrs.length = 0;
+    instance.conds.length = 0;
+    instance.repeats.length = 0;
   }
 
   /** Dispatch a bubbling custom event. Uses composed:true when in shadow DOM. */
@@ -982,15 +1024,22 @@ export class WebUIElement extends HTMLElement {
 
   /** Extract root tag name from block metadata. */
   private $rootTag(meta: TemplateBlockMeta): string | null {
+    let cached = rootTagCache.get(meta);
+    if (cached !== undefined) return cached;
     const h = meta.h;
-    if (!h || h.charCodeAt(0) !== 60) return null;
+    if (!h || h.charCodeAt(0) !== 60) {
+      rootTagCache.set(meta, null);
+      return null;
+    }
     let end = 1;
     while (end < h.length) {
       const c = h.charCodeAt(end);
       if (c === 32 || c === 62 || c === 47) break;
       end++;
     }
-    return h.slice(1, end).toLowerCase();
+    const tag = h.slice(1, end).toLowerCase();
+    rootTagCache.set(meta, tag);
+    return tag;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1051,14 +1100,10 @@ export class WebUIElement extends HTMLElement {
   }
 
   /** Attach a single event listener. */
-  private $addEvent(target: EventTarget, eventName: string, handlerName: string, needsEvent: number): void {
+  private $addEvent(target: EventTarget, eventName: string, handlerName: string, _needsEvent: number): void {
     const method = (this as Record<string, unknown>)[handlerName];
     if (typeof method !== 'function') return;
-    const self = this;
-    target.addEventListener(eventName, needsEvent
-      ? (e: Event) => (method as (e: Event) => void).call(self, e)
-      : () => (method as () => void).call(self),
-    );
+    target.addEventListener(eventName, (method as Function).bind(this));
   }
 
   /** Find w-ref attributes and assign to component properties. */
@@ -1357,3 +1402,4 @@ export class WebUIElement extends HTMLElement {
     return seen ? { path, prefix, suffix } : null;
   }
 }
+
