@@ -62,10 +62,12 @@ async fn handle_frontend_request(
     })
     .ok_or(ServerError::NotFound)?;
 
-    // Inject basePath into state — default "/" for correct CSS resolution.
+    // Inject basePath into state for <base href="{{basePath}}">.
     if let Value::Object(ref mut map) = page_state {
-        let bp = data.base_path().unwrap_or("/");
-        map.insert("basePath".into(), Value::String(bp.to_string()));
+        map.insert(
+            "basePath".into(),
+            Value::String(data.base_path().to_string()),
+        );
     }
 
     if context.wants_json() {
@@ -79,7 +81,7 @@ async fn handle_frontend_request(
         .map_err(ServerError::RenderFailed)?;
     Ok(html_response(
         &context,
-        inject_head_preload_tags(html, &image_preloads, data.base_path()),
+        inject_head_preload_tags(html, &image_preloads),
         &nonce,
     ))
 }
@@ -202,16 +204,12 @@ fn html_response(context: &RequestContext, html: String, nonce: &str) -> HttpRes
     builder.body(html)
 }
 
-fn inject_head_preload_tags(
-    mut html: String,
-    image_urls: &[String],
-    base_path: Option<&str>,
-) -> String {
+fn inject_head_preload_tags(mut html: String, image_urls: &[String]) -> String {
     let Some(head_end) = html.find("</head>") else {
         return html;
     };
 
-    let preloads = build_head_preload_tags(image_urls, base_path);
+    let preloads = build_head_preload_tags(image_urls);
     if preloads.is_empty() {
         return html;
     }
@@ -225,31 +223,15 @@ fn inject_head_preload_tags(
 /// no custom logic needed here.
 /// The router removes these managed tags on SPA navigations so preloads never
 /// leak across routes.
-fn build_head_preload_tags(image_urls: &[String], base_path: Option<&str>) -> String {
+fn build_head_preload_tags(image_urls: &[String]) -> String {
     let capacity = 80 + image_urls.len() * 120;
     let mut buf = String::with_capacity(capacity);
 
-    // When base_path is set, strip leading `/` so paths are relative
-    // and the browser resolves them against <base href>.
-    let make_relative = base_path.is_some();
-
-    let js_href = if make_relative {
-        "index.js"
-    } else {
-        "/index.js"
-    };
-    buf.push_str("<link rel=\"modulepreload\" href=\"");
-    buf.push_str(js_href);
-    buf.push_str("\" data-webui-ssr-preload=\"script\">");
+    buf.push_str(r#"<link rel="modulepreload" href="index.js" data-webui-ssr-preload="script">"#);
 
     for (i, url) in image_urls.iter().enumerate() {
         buf.push_str(r#"<link rel="preload" as="image" href=""#);
-        let href = if make_relative {
-            url.strip_prefix('/').unwrap_or(url)
-        } else {
-            url.as_str()
-        };
-        buf.push_str(href);
+        buf.push_str(url);
         if i == 0 {
             buf.push_str(r#"" fetchpriority="high" data-webui-ssr-preload="image">"#);
         } else {
@@ -344,7 +326,7 @@ mod tests {
             html.contains(r#"data-webui-ssr-preload="style""#),
             "Framework should emit CSS preload with data-webui-ssr-preload: {html}"
         );
-        assert!(html.contains(r#"href="/_image/t-shirt-1?w=640&q=75""#));
+        assert!(html.contains(r#"href="_image/t-shirt-1?w=640&q=75""#));
         assert!(
             !html.contains(r#"\"data-webui-ssr-preload\""#),
             "server-only preload tags should not leak into serialized client state"

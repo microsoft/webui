@@ -14,22 +14,13 @@ pub(crate) struct AppState {
     frontend: FrontendRuntime,
     rate_limiter: RateLimiter,
     image_cache: ImageCache,
-    base_path: Option<String>,
+    base_path: String,
 }
 
 impl AppState {
-    pub(crate) fn load(
-        app_root: &Path,
-        css: webui::CssStrategy,
-        base_path: Option<&str>,
-    ) -> Result<Self> {
+    pub(crate) fn load(app_root: &Path, css: webui::CssStrategy, base_path: &str) -> Result<Self> {
         let frontend = FrontendRuntime::load(app_root, css)?;
-        let image_prefix = if base_path.is_some() {
-            "_image/"
-        } else {
-            "/_image/"
-        };
-        let catalog = Catalog::generate(image_prefix);
+        let catalog = Catalog::generate();
         // 60 mutation requests per IP per minute
         let rate_limiter = RateLimiter::new(60, 60);
         let image_cache = ImageCache::load(&app_root.join("images"))?;
@@ -38,8 +29,13 @@ impl AppState {
             frontend,
             rate_limiter,
             image_cache,
-            base_path: base_path.map(String::from),
+            base_path: base_path.to_string(),
         })
+    }
+
+    #[must_use]
+    pub(crate) fn base_path(&self) -> &str {
+        &self.base_path
     }
 
     #[must_use]
@@ -71,11 +67,6 @@ impl AppState {
     pub(crate) fn rate_limiter(&self) -> &RateLimiter {
         &self.rate_limiter
     }
-
-    #[must_use]
-    pub(crate) fn base_path(&self) -> Option<&str> {
-        self.base_path.as_deref()
-    }
 }
 
 #[cfg(test)]
@@ -88,7 +79,7 @@ pub(crate) fn test_state_with_css(css: webui::CssStrategy) -> actix_web::web::Da
     let app_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("server crate should live under the app directory");
-    let state = match AppState::load(app_root, css, None) {
+    let state = match AppState::load(app_root, css, "/") {
         Ok(state) => state,
         Err(error) => panic!("Failed to build the commerce WebUI protocol: {error:#}"),
     };

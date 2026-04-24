@@ -39,7 +39,7 @@ mod tests {
 
     #[test]
     fn product_state_includes_default_variant_fields() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
         let mut cart = StoredCart::default();
         add_item(&mut cart, "acme-t-shirt", "Black", "M", 1);
         let cart_state = build_cart_state(&cart, &catalog, "/product/acme-t-shirt");
@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn content_routes_only_need_shell_state() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/about");
         let params = std::collections::HashMap::new();
 
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn category_state_includes_current_category_label() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/search/footware");
         let params =
             std::collections::HashMap::from([("category".to_string(), "footware".to_string())]);
@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn partial_response_excludes_shell_state() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/search/shirts");
         let params =
             std::collections::HashMap::from([("category".to_string(), "shirts".to_string())]);
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn home_state_returns_image_preloads() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/");
         let params = std::collections::HashMap::new();
 
@@ -165,7 +165,7 @@ mod tests {
             "home page should preload only the primary hero image"
         );
         assert!(
-            image_preloads[0].contains("/_image/"),
+            image_preloads[0].contains("_image/"),
             "image preloads should reference image proxy"
         );
         assert_eq!(
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn home_partial_returns_no_image_preloads() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/");
         let params = std::collections::HashMap::new();
 
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn product_state_returns_image_preloads() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
         let cart_state =
             build_cart_state(&StoredCart::default(), &catalog, "/product/acme-t-shirt");
         let params =
@@ -233,12 +233,12 @@ mod tests {
             1,
             "product page should preload hero image"
         );
-        assert!(image_preloads[0].contains("/_image/"));
+        assert!(image_preloads[0].contains("_image/"));
     }
 
     #[test]
     fn search_state_returns_image_preloads() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/search");
         let params = std::collections::HashMap::new();
 
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn category_state_returns_image_preloads() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
         let cart_state = build_cart_state(&StoredCart::default(), &catalog, "/search/shirts");
         let params =
             std::collections::HashMap::from([("category".to_string(), "shirts".to_string())]);

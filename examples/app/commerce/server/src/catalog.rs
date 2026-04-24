@@ -557,7 +557,7 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    pub fn generate(image_prefix: &str) -> Self {
+    pub fn generate() -> Self {
         let mut products = Vec::with_capacity(PRODUCT_DEFS.len());
         let mut handle_index = HashMap::with_capacity(PRODUCT_DEFS.len());
         let mut category_index = HashMap::with_capacity(CATEGORY_DEFS.len());
@@ -654,12 +654,12 @@ impl Catalog {
                 category: primary_collection.to_string(),
                 gradient,
                 gradient_alt,
-                image_url: format!("{}{}", image_prefix, def.image_url),
-                image_alt_url: format!("{}{}", image_prefix, image_alt_url),
+                image_url: format!("_image/{}", def.image_url),
+                image_alt_url: format!("_image/{}", image_alt_url),
                 gallery_image_urls: def
                     .gallery_image_urls
                     .iter()
-                    .map(|url| format!("{}{}", image_prefix, url))
+                    .map(|url| format!("_image/{}", url))
                     .collect(),
                 available: true,
                 tags,
@@ -1061,7 +1061,7 @@ mod tests {
 
     #[test]
     fn catalog_matches_live_collection_counts() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
 
         assert_eq!(catalog.product_count(), 18);
         assert_eq!(catalog.by_category("bags").len(), 1);
@@ -1079,7 +1079,7 @@ mod tests {
 
     #[test]
     fn product_can_belong_to_multiple_collections() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
         let product = catalog
             .by_handle("acme-baby-cap")
             .expect("baby cap should exist");
@@ -1090,7 +1090,7 @@ mod tests {
 
     #[test]
     fn products_without_variants_emit_empty_option_groups() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
         let keyboard = catalog
             .by_handle("acme-mechanical-keyboard")
             .expect("keyboard should exist");
@@ -1120,7 +1120,7 @@ mod tests {
 
     #[test]
     fn home_featured_matches_live_order() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
         let handles = catalog
             .home_featured()
             .iter()
@@ -1139,7 +1139,7 @@ mod tests {
 
     #[test]
     fn home_carousel_matches_live_order() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
         let handles = catalog
             .home_carousel()
             .iter()
@@ -1167,7 +1167,7 @@ mod tests {
 
     #[test]
     fn scraped_product_data_is_embedded_in_catalog() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
         let cowboy_hat = catalog
             .by_handle("acme-cowboy-hat")
             .expect("cowboy hat should exist");
@@ -1189,7 +1189,7 @@ mod tests {
 
     #[test]
     fn search_is_case_insensitive_after_indexing() {
-        let catalog = Catalog::generate("/_image/");
+        let catalog = Catalog::generate();
 
         let shirts = catalog.search("PRISM");
         let stickers = catalog.search("stickers");

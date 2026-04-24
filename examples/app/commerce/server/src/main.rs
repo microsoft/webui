@@ -50,8 +50,9 @@ struct ApiArgs {
     tls_key: Option<String>,
 
     /// Base path for sub-path deployment (e.g., `/commerce/`).
-    #[arg(long)]
-    base_path: Option<String>,
+    /// Injected as `basePath` in template state for `<base href="{{basePath}}">`.
+    #[arg(long, default_value = "/")]
+    base_path: String,
 }
 
 fn main() -> Result<()> {
@@ -67,7 +68,7 @@ fn main() -> Result<()> {
     };
     let app_root = std::env::current_dir().context("Failed to determine commerce app directory")?;
 
-    let app_state = AppState::load(&app_root, css, args.base_path.as_deref())?;
+    let app_state = AppState::load(&app_root, css, &args.base_path)?;
 
     eprintln!(
         "Commerce server: {} products, {} images ({} variants)",
