@@ -187,10 +187,10 @@ test.describe('client-side navigation', () => {
     const logo = page.locator('mp-navbar .logo-link');
     const cartButton = page.locator('mp-navbar .cart-btn');
 
-    await expect(logo).toHaveAttribute('href', '/');
+    await expect(logo).toHaveAttribute('href', './');
     await cartButton.click();
     await page.locator('mp-cart-panel .close-btn').click();
-    await expect(logo).toHaveAttribute('href', '/');
+    await expect(logo).toHaveAttribute('href', './');
 
     await logo.click();
     await expect(page).toHaveURL('/');
