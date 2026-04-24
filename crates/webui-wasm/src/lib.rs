@@ -152,6 +152,19 @@ pub fn render_partial(
         .map_err(|e| JsValue::from_str(&format!("JSON serialize error: {e}")))
 }
 
+/// Extract the CSS token name list from a protocol JSON string.
+///
+/// Returns a JavaScript array of token name strings, preserving the original
+/// order from the build step.
+#[wasm_bindgen]
+pub fn protocol_tokens(protocol_json: &str) -> Result<JsValue, JsValue> {
+    let protocol: WebUIProtocol = serde_json::from_str(protocol_json)
+        .map_err(|e| JsValue::from_str(&format!("Protocol JSON error: {e}")))?;
+
+    serde_wasm_bindgen::to_value(&protocol.tokens)
+        .map_err(|e| JsValue::from_str(&format!("Serialization error: {e}")))
+}
+
 #[wasm_bindgen]
 pub fn render_component_templates(
     protocol_json: &str,
@@ -444,5 +457,34 @@ mod tests {
 
         let result = build_and_render_inner(&files, "{}", "index.html", "/");
         assert_eq!(result.unwrap(), "<h1>Static</h1><p>Content</p>");
+    }
+
+    #[test]
+    fn test_protocol_tokens_empty() {
+        let protocol = WebUIProtocol::new(HashMap::new());
+        let json = serde_json::to_string(&protocol).unwrap();
+        let decoded: WebUIProtocol = serde_json::from_str(&json).unwrap();
+        assert!(decoded.tokens.is_empty());
+    }
+
+    #[test]
+    fn test_protocol_tokens_roundtrip() {
+        let tokens = vec![
+            "colorBrandBackground".to_string(),
+            "fontSizeBase300".to_string(),
+        ];
+        let protocol = WebUIProtocol::with_tokens(HashMap::new(), tokens.clone());
+        let json = serde_json::to_string(&protocol).unwrap();
+        let decoded: WebUIProtocol = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.tokens, tokens);
+    }
+
+    #[test]
+    fn test_protocol_tokens_preserves_order() {
+        let tokens = vec!["zeta".to_string(), "alpha".to_string(), "zeta".to_string()];
+        let protocol = WebUIProtocol::with_tokens(HashMap::new(), tokens.clone());
+        let json = serde_json::to_string(&protocol).unwrap();
+        let decoded: WebUIProtocol = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.tokens, tokens);
     }
 }

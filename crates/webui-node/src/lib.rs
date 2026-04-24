@@ -210,6 +210,18 @@ pub fn render_component_templates(
         .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
 }
 
+/// Extract the CSS token name list from a compiled protocol.
+///
+/// Returns the tokens as a JavaScript string array, preserving the original
+/// order from the build step.
+#[napi]
+pub fn protocol_tokens(protocol_data: Buffer) -> napi::Result<Vec<String>> {
+    let protocol = WebUIProtocol::from_protobuf(&protocol_data)
+        .map_err(|e| NapiError::from_reason(format!("Protocol decode error: {e}")))?;
+
+    Ok(protocol.tokens)
+}
+
 /// A writer that streams each rendered fragment to a JS callback.
 struct CallbackWriter<'a, 'env> {
     callback: &'a Function<'env, String, ()>,
@@ -535,6 +547,38 @@ mod tests {
     #[test]
     fn test_inspect_invalid_protocol() {
         let result = inspect(napi::bindgen_prelude::Buffer::from(vec![0xFF, 0xFF]));
+        assert!(result.is_err());
+    }
+
+    // ── Tests for protocol_tokens napi export ────────────────────────
+
+    #[test]
+    fn test_protocol_tokens_empty() {
+        let proto = build_protocol("<p>Hello</p>");
+        let tokens = protocol_tokens(napi::bindgen_prelude::Buffer::from(proto)).unwrap();
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn test_protocol_tokens_returns_parsed_tokens() {
+        // Build from a protocol that has CSS tokens via with_tokens constructor.
+        let mut parser = HtmlParser::new();
+        parser.parse("index.html", "<p>Hi</p>").expect("parse");
+        let protocol = WebUIProtocol::with_tokens(
+            parser.into_fragment_records(),
+            vec![
+                "colorBrandBackground".to_string(),
+                "fontSizeBase300".to_string(),
+            ],
+        );
+        let proto = protocol.to_protobuf().expect("encode");
+        let tokens = protocol_tokens(napi::bindgen_prelude::Buffer::from(proto)).unwrap();
+        assert_eq!(tokens, vec!["colorBrandBackground", "fontSizeBase300"]);
+    }
+
+    #[test]
+    fn test_protocol_tokens_invalid_protobuf() {
+        let result = protocol_tokens(napi::bindgen_prelude::Buffer::from(vec![0xFF, 0xFF]));
         assert!(result.is_err());
     }
 }
