@@ -11,7 +11,7 @@
 import express from 'express';
 
 const app = express();
-const PORT = 3018;
+const PORT = Number(process.env.PORT) || 3018;
 
 // ── Data ─────────────────────────────────────────────────────────
 

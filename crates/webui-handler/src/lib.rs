@@ -6198,7 +6198,7 @@ mod tests {
             .components
             .entry("my-card".to_string())
             .or_default();
-        comp.css_href = "/my-card.css".to_string();
+        comp.css_href = "my-card.css".to_string();
         comp.template = "(function(){})();".to_string();
 
         let state = test_json!({});
@@ -6215,7 +6215,7 @@ mod tests {
         let html = writer.get_content();
 
         let head_end = html.find("</head>").expect("</head> missing");
-        let link_pos = html.find(r#"<link rel="stylesheet" href="/my-card.css">"#);
+        let link_pos = html.find(r#"<link rel="stylesheet" href="my-card.css">"#);
         assert!(
             link_pos.is_some_and(|p| p < head_end),
             "Light DOM Link strategy should emit <link rel=stylesheet> in <head>: {html}"
@@ -6273,14 +6273,14 @@ mod tests {
             .components
             .entry("o-loading-state".to_string())
             .or_default();
-        comp1.css_href = "/o-loading-state.css".to_string();
+        comp1.css_href = "o-loading-state.css".to_string();
         comp1.template = "(function(){})();".to_string();
 
         let comp2 = protocol
             .components
             .entry("my-card".to_string())
             .or_default();
-        comp2.css_href = "/my-card.css".to_string();
+        comp2.css_href = "my-card.css".to_string();
         comp2.template = "(function(){})();".to_string();
 
         let state = test_json!({});
@@ -6301,13 +6301,13 @@ mod tests {
         // Both preload hints must be present with data-webui-ssr-preload attr
         assert!(
             head_section.contains(
-                r#"<link rel="preload" href="/o-loading-state.css" as="style" data-webui-ssr-preload="style">"#
+                r#"<link rel="preload" href="o-loading-state.css" as="style" data-webui-ssr-preload="style">"#
             ),
             "Missing preload for o-loading-state.css in <head>: {html}"
         );
         assert!(
             head_section.contains(
-                r#"<link rel="preload" href="/my-card.css" as="style" data-webui-ssr-preload="style">"#
+                r#"<link rel="preload" href="my-card.css" as="style" data-webui-ssr-preload="style">"#
             ),
             "Missing preload for my-card.css in <head>: {html}"
         );
@@ -6482,7 +6482,7 @@ mod tests {
             .components
             .entry("has-css".to_string())
             .or_default()
-            .css_href = "/has-css.css".to_string();
+            .css_href = "has-css.css".to_string();
 
         let state = test_json!({});
         let mut writer = TestWriter::new();
@@ -6501,7 +6501,7 @@ mod tests {
 
         let html = writer.get_content();
         assert!(
-            html.contains(r#"<link rel="stylesheet" href="/has-css.css">"#),
+            html.contains(r#"<link rel="stylesheet" href="has-css.css">"#),
             "Component with CSS should get a <link rel=stylesheet> in <head>: {html}"
         );
         assert!(

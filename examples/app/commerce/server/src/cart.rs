@@ -496,7 +496,11 @@ mod tests {
     fn cart_state_resolves_prices_from_catalog() {
         let mut cart = StoredCart::default();
         add_item(&mut cart, "acme-t-shirt", "Black", "M", 2);
-        let state = build_cart_state(&cart, &Catalog::generate(), "/product/acme-t-shirt");
+        let state = build_cart_state(
+            &cart,
+            &Catalog::generate("/_image/"),
+            "/product/acme-t-shirt",
+        );
 
         assert_eq!(state.cart_item_count, 2);
         assert!(!state.cart_empty);

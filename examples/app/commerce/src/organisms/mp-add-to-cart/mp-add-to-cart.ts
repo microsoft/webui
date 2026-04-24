@@ -27,7 +27,7 @@ export class MpAddToCart extends WebUIElement {
   }
 
   private async submitCart(): Promise<void> {
-    const response = await fetch('/cart/add', {
+    const response = await fetch('./cart/add', {
       method: 'POST',
       headers: {
         Accept: 'application/json',

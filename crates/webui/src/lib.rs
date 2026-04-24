@@ -314,7 +314,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             protocol.components.entry(tag).or_default().css = css.trim().to_string();
         } else if is_link {
             let safe_tag = tag.replace(['/', '\\'], "-");
-            let href = format!("/{safe_tag}.css");
+            let href = format!("{safe_tag}.css");
             protocol.components.entry(tag).or_default().css_href = href;
             css_files.push((format!("{safe_tag}.css"), css));
         }
@@ -434,7 +434,7 @@ mod tests {
             .map(|c| c.css_href.as_str())
             .unwrap_or("");
         assert_eq!(
-            href, "/has-css.css",
+            href, "has-css.css",
             "Light×Link component with CSS should have css_href"
         );
 
@@ -464,7 +464,7 @@ mod tests {
 
         let comp = result.protocol.components.get("my-card").unwrap();
         assert_eq!(
-            comp.css_href, "/my-card.css",
+            comp.css_href, "my-card.css",
             "Shadow×Link should set css_href"
         );
 

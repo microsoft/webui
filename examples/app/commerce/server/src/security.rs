@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(crate) fn security_headers() -> DefaultHeaders {
     DefaultHeaders::new()
         .add(("X-Content-Type-Options", "nosniff"))
-        .add(("X-Frame-Options", "DENY"))
+        .add(("X-Frame-Options", "SAMEORIGIN"))
         .add(("Referrer-Policy", "strict-origin-when-cross-origin"))
         .add((
             "Permissions-Policy",
@@ -39,7 +39,7 @@ pub(crate) fn csp_header(nonce: &str) -> String {
          style-src 'self' 'unsafe-inline'; \
          img-src 'self'; \
          font-src 'self'; \
-         frame-ancestors 'none'"
+         frame-ancestors 'self'"
     )
 }
 

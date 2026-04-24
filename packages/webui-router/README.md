@@ -23,7 +23,20 @@ npm install @microsoft/webui-router
 
 ## Quick Start
 
-**1. Declare nested routes in `index.html`:**
+**1. Add `<base href="/">` in your `<head>`:**
+
+```html
+<head>
+  <meta charset="utf-8">
+  <base href="/">
+</head>
+```
+
+All WebUI apps with routes **must** include `<base href="/">`. Without it, relative asset paths (CSS, JS) break on nested routes — the browser resolves `app.css` against `/contacts/123/` → `/contacts/app.css` instead of `/app.css`.
+
+For sub-path deployments, set the base to the sub-path: `<base href="/my-app/">`.
+
+**2. Declare nested routes in `index.html`:**
 
 ```html
 <body>
@@ -32,7 +45,7 @@ npm install @microsoft/webui-router
     <route path="users" component="user-list" exact />
     <route path="users/:id" component="user-detail" exact />
   </route>
-  <script type="module" src="/index.js"></script>
+  <script type="module" src="index.js"></script>
 </body>
 ```
 
@@ -154,6 +167,22 @@ export class LiveDashboard extends WebUIElement {
 - Keep-alive components that need fresh data on reactivation
 - Any component that wants full control over its state source
 
+### Base Path (Sub-Path Deployment)
+
+Every WebUI app with routes needs `<base href="/">` in its `<head>` (see Quick Start above). This ensures relative asset paths resolve correctly on nested routes.
+
+For sub-path deployments (e.g., `https://example.com/commerce/`), change it to the sub-path:
+
+```html
+<head>
+  <base href="/commerce/">
+</head>
+```
+
+The `<base>` tag is a core web platform feature. It makes the browser resolve all relative URLs (`<a href>`, `<link href>`, `fetch()`) against the base path. The router detects it at startup and uses it to strip/prepend the prefix on navigation URLs.
+
+When using `webui serve --base-path /commerce/`, the `<base>` tag is emitted automatically.
+
 ### Preload on Hover
 
 Opt-in speculative fetching for instant click navigation:
@@ -265,7 +294,6 @@ Start the router. Call after hydration completes.
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `basePath` | `string` | Prefix for all route URLs (e.g., `"/app"`) |
 | `loaders` | `Record<string, () => Promise<unknown>>` | Lazy-loading map: component tag -> dynamic import |
 | `templateEndpoint` | `string` | URL for `ensureLoaded()` requests (default: `"/_webui/templates"`) |
 | `dev` | `boolean` | Enable development mode warnings |

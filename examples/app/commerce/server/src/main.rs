@@ -48,6 +48,10 @@ struct ApiArgs {
     /// Path to TLS private key PEM file.
     #[arg(long)]
     tls_key: Option<String>,
+
+    /// Base path for sub-path deployment (e.g., `/commerce/`).
+    #[arg(long)]
+    base_path: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -63,7 +67,7 @@ fn main() -> Result<()> {
     };
     let app_root = std::env::current_dir().context("Failed to determine commerce app directory")?;
 
-    let app_state = AppState::load(&app_root, css)?;
+    let app_state = AppState::load(&app_root, css, args.base_path.as_deref())?;
 
     eprintln!(
         "Commerce server: {} products, {} images ({} variants)",

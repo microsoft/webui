@@ -5,7 +5,7 @@ import { WebUIElement, attr } from '@microsoft/webui-framework';
 import { Router } from '@microsoft/webui-router';
 
 export class MpSearchBar extends WebUIElement {
-  @attr action = '/search';
+  @attr action = './search';
   @attr query = '';
   @attr placeholder = 'Search for products...';
   @attr variant = 'desktop';

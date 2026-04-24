@@ -1846,7 +1846,7 @@ mod tests {
             .entry("my-page".to_string())
             .or_default();
         component.template = "(function(){})();".to_string();
-        component.css_href = "/my-page.css".to_string();
+        component.css_href = "my-page.css".to_string();
         // css is empty — Link strategy stores href, not content
 
         let mut index = ProtocolIndex::new(&protocol);

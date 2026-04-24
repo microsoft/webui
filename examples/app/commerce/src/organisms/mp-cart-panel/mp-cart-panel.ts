@@ -58,7 +58,7 @@ export class MpCartPanel extends WebUIElement {
       return;
     }
 
-    await this.submitCartMutation('/cart/update', {
+    await this.submitCartMutation('./cart/update', {
       handle,
       color,
       size,

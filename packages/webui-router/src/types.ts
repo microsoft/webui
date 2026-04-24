@@ -22,12 +22,6 @@ declare global {
 /** Configuration passed to `Router.start()`. */
 export interface RouterConfig {
   /**
-   * Base path prepended to all route URLs.
-   * @default ""
-   */
-  basePath?: string;
-
-  /**
    * Optional lazy-loading map: component tag → async loader function.
    *
    * When a route's `component` attribute matches a key in this map, the

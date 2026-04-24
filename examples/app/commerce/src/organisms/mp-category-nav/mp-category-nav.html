@@ -9,7 +9,7 @@
           <p class="mobile-link" ?active="{{allActive}}" @click="{closeMobileDropdown()}">All</p>
         </if>
         <if condition="!allActive">
-          <a href="/search" class="mobile-link" @click="{closeMobileDropdown()}">All</a>
+          <a href="./search" class="mobile-link" @click="{closeMobileDropdown()}">All</a>
         </if>
       </li>
       <for each="cat in categories">
@@ -18,7 +18,7 @@
             <p class="mobile-link" ?active="{{cat.active}}" @click="{closeMobileDropdown()}">{{cat.title}}</p>
           </if>
           <if condition="!cat.active">
-            <a href="/search/{{cat.handle}}" class="mobile-link"
+            <a href="./search/{{cat.handle}}" class="mobile-link"
               @click="{closeMobileDropdown()}">{{cat.title}}</a>
           </if>
         </li>
@@ -29,21 +29,21 @@
   <ul class="list desktop-list">
     <li>
       <if condition="allActive">
-        <p class="link" ?active="{{allActive}}" data-handle="" data-href="/search">All</p>
+        <p class="link" ?active="{{allActive}}" data-handle="" data-href="./search">All</p>
       </if>
       <if condition="!allActive">
-        <a href="/search" class="link" data-handle="" data-href="/search">All</a>
+        <a href="./search" class="link" data-handle="" data-href="./search">All</a>
       </if>
     </li>
     <for each="cat in categories">
       <li>
         <if condition="cat.active">
-          <p class="link" ?active="{{cat.active}}" data-handle="{{cat.handle}}" data-href="/search/{{cat.handle}}">{{cat.title}}
+          <p class="link" ?active="{{cat.active}}" data-handle="{{cat.handle}}" data-href="./search/{{cat.handle}}">{{cat.title}}
           </p>
         </if>
         <if condition="!cat.active">
-          <a href="/search/{{cat.handle}}" class="link" data-handle="{{cat.handle}}"
-            data-href="/search/{{cat.handle}}">{{cat.title}}</a>
+          <a href="./search/{{cat.handle}}" class="link" data-handle="{{cat.handle}}"
+            data-href="./search/{{cat.handle}}">{{cat.title}}</a>
         </if>
       </li>
     </for>

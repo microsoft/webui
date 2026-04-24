@@ -69,13 +69,9 @@ impl FrontendRuntime {
     pub fn render_html(&self, route_path: &str, state: &Value, nonce: &str) -> Result<String> {
         let mut writer = MemoryWriter::with_capacity(16_384);
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        let opts = RenderOptions::new(&self.entry, route_path).with_nonce(nonce);
         handler
-            .handle(
-                &self.protocol,
-                state,
-                &RenderOptions::new(&self.entry, route_path).with_nonce(nonce),
-                &mut writer,
-            )
+            .handle(&self.protocol, state, &opts, &mut writer)
             .with_context(|| format!("Failed to render HTML for {route_path}"))?;
         Ok(writer.buf)
     }

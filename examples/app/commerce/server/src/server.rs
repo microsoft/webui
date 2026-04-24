@@ -52,7 +52,7 @@ async fn handle_frontend_request(
     let stable_path = cart::without_cart(context.request_path());
     let cart_state = build_cart_state(&context.cart_read().cart, data.catalog(), &stable_path);
     let is_partial = context.wants_json();
-    let (page_state, image_preloads) = state::build_route_state(&state::RouteStateRequest {
+    let (mut page_state, image_preloads) = state::build_route_state(&state::RouteStateRequest {
         catalog: data.catalog(),
         route_path: context.route_path(),
         params: &route_params,
@@ -61,6 +61,12 @@ async fn handle_frontend_request(
         is_partial,
     })
     .ok_or(ServerError::NotFound)?;
+
+    // Inject basePath into state — default "/" for correct CSS resolution.
+    if let Value::Object(ref mut map) = page_state {
+        let bp = data.base_path().unwrap_or("/");
+        map.insert("basePath".into(), Value::String(bp.to_string()));
+    }
 
     if context.wants_json() {
         return Ok(partial_response(&context, data.get_ref(), &page_state));
@@ -73,7 +79,7 @@ async fn handle_frontend_request(
         .map_err(ServerError::RenderFailed)?;
     Ok(html_response(
         &context,
-        inject_head_preload_tags(html, &image_preloads),
+        inject_head_preload_tags(html, &image_preloads, data.base_path()),
         &nonce,
     ))
 }
@@ -196,12 +202,16 @@ fn html_response(context: &RequestContext, html: String, nonce: &str) -> HttpRes
     builder.body(html)
 }
 
-fn inject_head_preload_tags(mut html: String, image_urls: &[String]) -> String {
+fn inject_head_preload_tags(
+    mut html: String,
+    image_urls: &[String],
+    base_path: Option<&str>,
+) -> String {
     let Some(head_end) = html.find("</head>") else {
         return html;
     };
 
-    let preloads = build_head_preload_tags(image_urls);
+    let preloads = build_head_preload_tags(image_urls, base_path);
     if preloads.is_empty() {
         return html;
     }
@@ -215,15 +225,31 @@ fn inject_head_preload_tags(mut html: String, image_urls: &[String]) -> String {
 /// no custom logic needed here.
 /// The router removes these managed tags on SPA navigations so preloads never
 /// leak across routes.
-fn build_head_preload_tags(image_urls: &[String]) -> String {
+fn build_head_preload_tags(image_urls: &[String], base_path: Option<&str>) -> String {
     let capacity = 80 + image_urls.len() * 120;
     let mut buf = String::with_capacity(capacity);
 
-    buf.push_str(r#"<link rel="modulepreload" href="/index.js" data-webui-ssr-preload="script">"#);
+    // When base_path is set, strip leading `/` so paths are relative
+    // and the browser resolves them against <base href>.
+    let make_relative = base_path.is_some();
+
+    let js_href = if make_relative {
+        "index.js"
+    } else {
+        "/index.js"
+    };
+    buf.push_str("<link rel=\"modulepreload\" href=\"");
+    buf.push_str(js_href);
+    buf.push_str("\" data-webui-ssr-preload=\"script\">");
 
     for (i, url) in image_urls.iter().enumerate() {
         buf.push_str(r#"<link rel="preload" as="image" href=""#);
-        buf.push_str(url);
+        let href = if make_relative {
+            url.strip_prefix('/').unwrap_or(url)
+        } else {
+            url.as_str()
+        };
+        buf.push_str(href);
         if i == 0 {
             buf.push_str(r#"" fetchpriority="high" data-webui-ssr-preload="image">"#);
         } else {

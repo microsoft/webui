@@ -2406,10 +2406,10 @@ mod tests {
     fn test_compiled_template_preserves_link_node_in_static_html() {
         let result = generate_compiled_template(
             "my-comp",
-            r#"<template shadowrootmode="open"><link rel="stylesheet" href="/my-comp.css"><p>hi</p></template>"#,
+            r#"<template shadowrootmode="open"><link rel="stylesheet" href="my-comp.css"><p>hi</p></template>"#,
         );
         assert!(result.contains(r#"rel=\"stylesheet\""#));
-        assert!(result.contains(r#"href=\"/my-comp.css\""#));
+        assert!(result.contains(r#"href=\"my-comp.css\""#));
         assert!(result.contains(r#"<p>hi</p>"#));
         assert!(!result.contains(",css:"));
     }
@@ -2449,13 +2449,13 @@ mod tests {
             .register_component_template(
                 "test-el",
                 &comp,
-                r#"<template shadowrootmode="open"><link rel="stylesheet" href="/test-el.css"><p>hi</p></template>"#,
+                r#"<template shadowrootmode="open"><link rel="stylesheet" href="test-el.css"><p>hi</p></template>"#,
             )
             .unwrap();
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
         assert!(templates[0].1.contains(r#"rel=\"stylesheet\""#));
-        assert!(templates[0].1.contains(r#"href=\"/test-el.css\""#));
+        assert!(templates[0].1.contains(r#"href=\"test-el.css\""#));
         assert!(templates[0].1.contains(r#"<p>hi</p>"#));
     }
 
@@ -2478,7 +2478,7 @@ mod tests {
             .register_component_template(
                 "test-el",
                 &comp,
-                r#"<template shadowrootmode="open"><link rel="stylesheet" href="/test-el.css"><p>hi</p></template>"#,
+                r#"<template shadowrootmode="open"><link rel="stylesheet" href="test-el.css"><p>hi</p></template>"#,
             )
             .unwrap();
         let templates = plugin.take_component_templates();

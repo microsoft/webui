@@ -5,6 +5,7 @@ members = [
     "examples/integration/rust",
     "examples/integration/ssr-performance-showdown",
     "examples/app/commerce/server",
+    "examples/demo/server",
 ]
 resolver = "2"
 
@@ -48,6 +49,7 @@ tree-sitter-language = "0.1.7"
 tree-sitter-html = "0.23.2"
 tree-sitter-css = "0.25.0"
 walkdir = "2.5.0"
+toml = "0.8"
 libc = "0.2.183"
 which = "8.0.2"
 windows = { version = "0.62.2", features = [

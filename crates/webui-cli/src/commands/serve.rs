@@ -54,6 +54,12 @@ pub struct ServeArgs {
     /// when the value doesn't point to a file on disk.
     #[arg(long)]
     pub theme: Option<String>,
+
+    /// Base path for sub-path deployment (e.g., `/commerce/`).
+    /// Emits a `<base href>` tag and makes asset paths relative so the
+    /// app can be served behind a reverse proxy under a sub-path.
+    #[arg(long)]
+    pub base_path: Option<String>,
 }
 
 /// Resolved paths for `webui serve`.
@@ -312,6 +318,7 @@ fn run(args: &ServeArgs) -> Result<()> {
         app_dir: paths.app_dir.clone(),
         state_file: paths.state_file.clone(),
         token_css,
+        base_path: args.base_path.clone(),
     };
 
     output::header("WebUI Dev Server");
@@ -390,6 +397,7 @@ fn run(args: &ServeArgs) -> Result<()> {
         api_port: args.api_port,
         plugin: args.app_args.plugin,
         token_css: render_config.token_css,
+        base_path: args.base_path.clone(),
     });
 
     let has_api_proxy = server_context.api_port.is_some();
@@ -472,6 +480,8 @@ struct RenderConfig {
     /// Pre-resolved per-theme CSS strings. Computed once at startup and reused
     /// for every build-and-render cycle (initial + file-watcher rebuilds).
     token_css: Option<HashMap<String, String>>,
+    /// Base path for sub-path deployment (e.g., `/commerce/`).
+    base_path: Option<String>,
 }
 
 /// Result of a build-and-render cycle.
@@ -503,6 +513,15 @@ fn build_and_render(
     // Inject pre-resolved token CSS into state
     if let Some(ref token_css) = config.token_css {
         webui_tokens::inject_token_css(&mut state, token_css);
+    }
+
+    // Inject basePath into state so templates can use {{basePath}}.
+    // Default to "/" when no --base-path is set — relative CSS paths
+    // like "foo.css" need <base href="/"> to resolve correctly on
+    // nested routes (e.g., /contacts/123 → /foo.css, not /contacts/foo.css).
+    if let Value::Object(ref mut map) = state {
+        let bp = config.base_path.as_deref().unwrap_or("/").to_string();
+        map.insert("basePath".into(), Value::String(bp));
     }
 
     // Render to memory
@@ -562,6 +581,8 @@ struct ServerContext {
     plugin: Option<Plugin>,
     /// Pre-resolved token CSS keyed by theme name, injected into state at render time.
     token_css: Option<HashMap<String, String>>,
+    /// Base path for sub-path deployment.
+    base_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -646,6 +667,12 @@ async fn resolve_state(context: &ServerContext, request_path: &str) -> Value {
     // whether state came from a static file or the API server.
     if let Some(ref token_css) = context.token_css {
         webui_tokens::inject_token_css(&mut state, token_css);
+    }
+
+    // Inject basePath into state — default "/" for correct CSS resolution.
+    if let Value::Object(ref mut map) = state {
+        let bp = context.base_path.as_deref().unwrap_or("/").to_string();
+        map.insert("basePath".into(), Value::String(bp));
     }
 
     state
@@ -1194,6 +1221,7 @@ mod tests {
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
             token_css: None,
+            base_path: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
@@ -1218,6 +1246,7 @@ mod tests {
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
             token_css: None,
+            base_path: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
@@ -1239,6 +1268,7 @@ mod tests {
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
             token_css: None,
+            base_path: None,
         };
         let BuildRenderResult { html, .. } = build_and_render(&config, None).unwrap();
         assert!(!html.contains("/hmr"));
@@ -1272,6 +1302,7 @@ mod tests {
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
             token_css: None,
+            base_path: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let result = build_and_render(&config, Some(&hmr));
@@ -1293,6 +1324,7 @@ mod tests {
             app_dir: app.path().to_path_buf(),
             state_file: None,
             token_css: None,
+            base_path: None,
         };
         let result = build_and_render(&config, None).unwrap();
         assert!(result.html.contains("<h1>Hello</h1>"));
@@ -1313,6 +1345,7 @@ mod tests {
             app_dir: app.path().to_path_buf(),
             state_file: Some(app.path().join("state.json")),
             token_css: None,
+            base_path: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let result = build_and_render(&config, Some(&hmr));
@@ -1570,6 +1603,7 @@ mod tests {
             app_dir,
             state_file: Some(manifest_dir.join("../../examples/app/hello-world/data/state.json")),
             token_css: None,
+            base_path: None,
         };
         let hmr = PollingHmrBackend::new("/hmr", 1000);
         let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
@@ -1612,6 +1646,7 @@ mod tests {
             api_port: None,
             plugin: None,
             token_css: None,
+            base_path: None,
         });
 
         let app = actix_test::init_service(

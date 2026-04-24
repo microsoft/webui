@@ -31,7 +31,7 @@ use webui_protocol::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum CssStrategy {
-    /// Emit `<link rel="stylesheet" href="/component.css">` tags (default).
+    /// Emit `<link rel="stylesheet" href="component.css">` tags (default).
     #[default]
     Link,
     /// Embed CSS content in `<style>` tags within the component.
@@ -1765,9 +1765,7 @@ impl HtmlParser {
                 // In light DOM mode, CSS links go in <head> (emitted by handler),
                 // not inside each component template.
                 if css_content.is_some() && self.dom_strategy == DomStrategy::Shadow {
-                    Some(format!(
-                        "<link rel=\"stylesheet\" href=\"/{tag_name}.css\">"
-                    ))
+                    Some(format!("<link rel=\"stylesheet\" href=\"{tag_name}.css\">"))
                 } else {
                     None
                 }
@@ -3442,7 +3440,7 @@ mod tests {
             })
             .collect();
         assert!(
-            raw_text.contains(r#"<link rel="stylesheet" href="/my-card.css">"#),
+            raw_text.contains(r#"<link rel="stylesheet" href="my-card.css">"#),
             "Expected external <link> tag in: {}",
             raw_text
         );

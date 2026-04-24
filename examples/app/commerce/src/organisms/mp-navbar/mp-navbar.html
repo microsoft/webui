@@ -8,7 +8,7 @@
         <path d="M4 18h16"></path>
       </svg>
     </button>
-    <a href="/" class="logo-link">
+    <a href="./" class="logo-link">
       <div class="logo-square">
         <svg class="logo-mark" xmlns="http://www.w3.org/2000/svg" aria-label="Acme Store logo" viewBox="0 0 32 28">
           <path d="M21.5758 9.75769L16 0L0 28H11.6255L21.5758 9.75769Z"></path>
@@ -18,14 +18,14 @@
       <span class="store-name">ACME STORE</span>
     </a>
     <ul class="nav-links">
-      <li><a href="/search" class="nav-link">All</a></li>
+      <li><a href="./search" class="nav-link">All</a></li>
       <for each="cat in navCategories">
-        <li><a href="/search/{{cat.handle}}" class="nav-link">{{cat.title}}</a></li>
+        <li><a href="./search/{{cat.handle}}" class="nav-link">{{cat.title}}</a></li>
       </for>
     </ul>
   </div>
   <div class="center">
-    <mp-search-bar query="{{searchQuery}}" action="/search" placeholder="Search for products..."
+    <mp-search-bar query="{{searchQuery}}" action="./search" placeholder="Search for products..."
       label="Search for products"></mp-search-bar>
   </div>
   <div class="right">

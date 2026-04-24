@@ -149,7 +149,7 @@ pub fn generate_f_template(
     let css_injection = match css_strategy {
         CssStrategy::Link => css_content.map(|_| {
             let mut s = String::with_capacity(40 + tag_name.len());
-            s.push_str("<link rel=\"stylesheet\" href=\"/");
+            s.push_str("<link rel=\"stylesheet\" href=\"");
             s.push_str(tag_name);
             s.push_str(".css\">");
             s
@@ -777,7 +777,7 @@ mod tests {
         assert!(html.contains("</f-template>"));
         assert!(html.contains("<template>"));
         assert!(html.contains("</template>"));
-        assert!(html.contains("<link rel=\"stylesheet\" href=\"/my-comp.css\">"));
+        assert!(html.contains("<link rel=\"stylesheet\" href=\"my-comp.css\">"));
         assert!(html.contains("<div>hello</div>"));
     }
 

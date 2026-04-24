@@ -44,7 +44,7 @@
                 <mp-product-image gradient="{{item.gradient}}" image-url="{{item.imageUrl}}" alt="{{item.title}}" loading="lazy" decoding="async" proxy-width="64" proxy-height="64"></mp-product-image>
               </div>
               <div class="item-info">
-                <a href="/product/{{item.handle}}" class="item-title">{{item.title}}</a>
+                <a href="./product/{{item.handle}}" class="item-title">{{item.title}}</a>
                 <if condition="item.variantLabel">
                   <p class="item-variant">{{item.variantLabel}}</p>
                 </if>
@@ -54,7 +54,7 @@
                   <mp-price value="{{item.price}}" variant="plain" size="sm" currency-code="USD"></mp-price>
                 </div>
                 <div class="qty-control">
-                <form method="post" action="/cart/update" class="qty-form">
+                <form method="post" action="./cart/update" class="qty-form">
                   <input type="hidden" name="handle" value="{{item.handle}}" />
                   <input type="hidden" name="color" value="{{item.color}}" />
                   <input type="hidden" name="size" value="{{item.size}}" />
@@ -67,7 +67,7 @@
                    </button>
                  </form>
                 <span class="qty-count">{{item.quantity}}</span>
-                <form method="post" action="/cart/update" class="qty-form">
+                <form method="post" action="./cart/update" class="qty-form">
                   <input type="hidden" name="handle" value="{{item.handle}}" />
                   <input type="hidden" name="color" value="{{item.color}}" />
                   <input type="hidden" name="size" value="{{item.size}}" />

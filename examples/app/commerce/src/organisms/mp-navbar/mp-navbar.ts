@@ -8,7 +8,7 @@ import '#molecules/mp-search-bar/mp-search-bar.js';
 export class MpNavbar extends WebUIElement {
   @attr({ attribute: 'store-name' }) storeName = 'Acme Store';
   @attr({ attribute: 'search-query' }) searchQuery = '';
-  @attr({ attribute: 'cart-href' }) cartHref = '/?cart=open';
+  @attr({ attribute: 'cart-href' }) cartHref = './?cart=open';
   @observable cartItems!: unknown[];
   @observable navCategories: { handle: string; title: string }[] = [];
 

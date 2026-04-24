@@ -95,7 +95,7 @@ export class WebUIRouter {
     this.started = true;
     this.config = config;
     this.loaders = config.loaders ?? {};
-    this.basePath = config.basePath ?? '';
+    this.basePath = document.querySelector('base')?.getAttribute('href')?.replace(/\/+$/, '') ?? '';
     this.excludePaths = config.excludePaths ?? [];
 
     if (config.cache) {

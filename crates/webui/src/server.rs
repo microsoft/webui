@@ -228,7 +228,7 @@ mod tests {
             .entry("my-page".to_string())
             .or_default();
         comp.template = "(function(){})();".to_string();
-        comp.css_href = "/my-page.css".to_string();
+        comp.css_href = "my-page.css".to_string();
         // No css content — Link strategy
 
         let handler = WebUIHandler::new();

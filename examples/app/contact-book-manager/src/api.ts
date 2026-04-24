@@ -5,7 +5,7 @@
  * API client for the contact-book-manager backend.
  */
 
-const API_BASE = '/api';
+const API_BASE = './api';
 
 export interface Contact {
   id: string;

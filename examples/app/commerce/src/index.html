@@ -3,6 +3,7 @@
 
 <head>
   <meta charset="UTF-8" />
+  <base href="{{basePath}}">
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{storeName}}</title>
   <meta name="description" content="High-performance SSR marketplace powered by WebUI and Rust." />
@@ -173,7 +174,7 @@
     <route path="privacy-policy" component="mp-page-privacy" exact />
     <route path="frequently-asked-questions" component="mp-page-faq" exact />
   </route>
-  <script src="/index.js" type="module"></script>
+  <script src="./index.js" type="module"></script>
 </body>
 
 </html>
