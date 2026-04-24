@@ -680,3 +680,60 @@ pub unsafe extern "C" fn webui_free(string_ptr: *mut c_char) {
         let _ = CString::from_raw(string_ptr);
     }
 }
+
+/// Extract the CSS token name list from a serialized WebUI protocol.
+///
+/// Returns a heap-allocated newline-delimited string of token names,
+/// e.g. `"colorBrandBackground\nfontSizeBase300"`.
+///
+/// Returns an empty string `""` when the protocol has no tokens.
+/// Returns `NULL` only on error (call [`webui_last_error`] for details).
+///
+/// The caller must free the returned string with [`webui_free`].
+///
+/// # Safety
+///
+/// * `protocol_data` must point to `protocol_len` valid bytes.
+/// * The returned pointer must be freed with [`webui_free`].
+#[no_mangle]
+pub unsafe extern "C" fn webui_protocol_tokens(
+    protocol_data: *const u8,
+    protocol_len: usize,
+) -> *mut c_char {
+    clear_last_error();
+
+    match std::panic::catch_unwind(|| {
+        if protocol_data.is_null() {
+            set_last_error("protocol_data is null");
+            return std::ptr::null_mut();
+        }
+
+        // SAFETY: caller guarantees protocol_data points to protocol_len readable bytes.
+        let proto_bytes = unsafe { std::slice::from_raw_parts(protocol_data, protocol_len) };
+
+        let protocol = match WebUIProtocol::from_protobuf(proto_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                set_last_error(format!("failed to parse protobuf: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        // join() on an empty vec produces "", which is a valid success result.
+        let joined = protocol.tokens.join("\n");
+
+        match CString::new(joined) {
+            Ok(cs) => cs.into_raw(),
+            Err(e) => {
+                set_last_error(format!("token string contains null byte: {e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }) {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("panic in webui_protocol_tokens");
+            std::ptr::null_mut()
+        }
+    }
+}

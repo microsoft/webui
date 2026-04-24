@@ -155,4 +155,20 @@ char *webui_render_component_templates(const uint8_t *protocol_data,
 /// (in which case this function is a no-op).
 void webui_free(char *string_ptr);
 
+/// Extract the CSS token name list from a serialized WebUI protocol.
+///
+/// Returns a heap-allocated newline-delimited string of token names,
+/// e.g. `"colorBrandBackground\nfontSizeBase300"`.
+///
+/// Returns an empty string `""` when the protocol has no tokens.
+/// Returns `NULL` only on error (call [`webui_last_error`] for details).
+///
+/// The caller must free the returned string with [`webui_free`].
+///
+/// # Safety
+///
+/// * `protocol_data` must point to `protocol_len` valid bytes.
+/// * The returned pointer must be freed with [`webui_free`].
+char *webui_protocol_tokens(const uint8_t *protocol_data, uintptr_t protocol_len);
+
 }  // extern "C"

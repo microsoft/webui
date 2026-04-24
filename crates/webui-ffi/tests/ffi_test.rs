@@ -18,7 +18,7 @@ use std::ffi::{CStr, CString};
 // against the rlib and call the `pub extern "C"` functions.
 use webui_ffi::{
     webui_free, webui_handler_create, webui_handler_destroy, webui_handler_render,
-    webui_last_error, webui_render, webui_render_partial,
+    webui_last_error, webui_protocol_tokens, webui_render, webui_render_partial,
 };
 use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol, WebUiFragmentRoute};
 
@@ -496,6 +496,158 @@ fn webui_render_without_parser_returns_null_with_error() {
         assert!(
             err.contains("parser"),
             "error should mention parser feature, got: {err}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests: webui_protocol_tokens
+// ---------------------------------------------------------------------------
+
+#[test]
+fn protocol_tokens_empty_vec_returns_empty_string() {
+    // A protocol needs at least one fragment to produce non-zero protobuf bytes.
+    let mut fragments = HashMap::new();
+    fragments.insert(
+        "index.html".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::raw("<p>hello</p>")],
+        },
+    );
+    let protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+    let bytes = protocol.to_protobuf().expect("serialize");
+    assert!(
+        !bytes.is_empty(),
+        "protobuf with a fragment should be non-empty"
+    );
+
+    unsafe {
+        let ptr = webui_protocol_tokens(bytes.as_ptr(), bytes.len());
+        assert!(
+            !ptr.is_null(),
+            "empty tokens should return non-null empty string"
+        );
+        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        assert_eq!(result, "");
+        webui_free(ptr);
+    }
+}
+
+#[test]
+fn protocol_tokens_single_token() {
+    let mut fragments = HashMap::new();
+    fragments.insert(
+        "index.html".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::raw("<p>hello</p>")],
+        },
+    );
+    let protocol = WebUIProtocol::with_tokens(fragments, vec!["colorBrandBackground".to_string()]);
+    let bytes = protocol.to_protobuf().expect("serialize");
+
+    unsafe {
+        let ptr = webui_protocol_tokens(bytes.as_ptr(), bytes.len());
+        assert!(!ptr.is_null());
+        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        assert_eq!(result, "colorBrandBackground");
+        webui_free(ptr);
+    }
+}
+
+#[test]
+fn protocol_tokens_multiple_tokens_newline_delimited() {
+    let mut fragments = HashMap::new();
+    fragments.insert(
+        "index.html".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::raw("<p>hello</p>")],
+        },
+    );
+    let protocol = WebUIProtocol::with_tokens(
+        fragments,
+        vec![
+            "colorBrandBackground".to_string(),
+            "fontSizeBase300".to_string(),
+            "spacingHorizontalM".to_string(),
+        ],
+    );
+    let bytes = protocol.to_protobuf().expect("serialize");
+
+    unsafe {
+        let ptr = webui_protocol_tokens(bytes.as_ptr(), bytes.len());
+        assert!(!ptr.is_null());
+        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        assert_eq!(
+            result,
+            "colorBrandBackground\nfontSizeBase300\nspacingHorizontalM"
+        );
+        webui_free(ptr);
+    }
+}
+
+#[test]
+fn protocol_tokens_preserves_order_and_duplicates() {
+    let mut fragments = HashMap::new();
+    fragments.insert(
+        "index.html".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::raw("<p>hello</p>")],
+        },
+    );
+    let protocol = WebUIProtocol::with_tokens(
+        fragments,
+        vec!["zeta".to_string(), "alpha".to_string(), "zeta".to_string()],
+    );
+    let bytes = protocol.to_protobuf().expect("serialize");
+
+    unsafe {
+        let ptr = webui_protocol_tokens(bytes.as_ptr(), bytes.len());
+        assert!(!ptr.is_null());
+        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        assert_eq!(result, "zeta\nalpha\nzeta");
+        webui_free(ptr);
+    }
+}
+
+#[test]
+fn protocol_tokens_null_data_returns_null() {
+    unsafe {
+        let ptr = webui_protocol_tokens(std::ptr::null(), 0);
+        assert!(ptr.is_null());
+        let err = last_error_string().expect("error should be set for null input");
+        assert!(
+            err.contains("null"),
+            "error should mention null, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn protocol_tokens_zero_length_returns_empty_string() {
+    // A non-null pointer with len 0 should decode as an empty protocol (no tokens).
+    let dummy: u8 = 0;
+    unsafe {
+        let ptr = webui_protocol_tokens(&dummy as *const u8, 0);
+        assert!(
+            !ptr.is_null(),
+            "zero-length input should succeed, not return null"
+        );
+        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        assert_eq!(result, "");
+        webui_free(ptr);
+    }
+}
+
+#[test]
+fn protocol_tokens_invalid_protobuf_returns_null() {
+    let garbage: &[u8] = &[0xFF, 0xFE, 0xFD];
+    unsafe {
+        let ptr = webui_protocol_tokens(garbage.as_ptr(), garbage.len());
+        assert!(ptr.is_null());
+        let err = last_error_string().expect("error should be set for bad protobuf");
+        assert!(
+            err.contains("protobuf") || err.contains("parse"),
+            "error should mention parse failure, got: {err}"
         );
     }
 }
