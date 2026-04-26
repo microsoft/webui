@@ -1,6 +1,12 @@
 /* tslint:disable */
 /* eslint-disable */
-export function render_component_templates(protocol_json: string, component_tags_json: string, inventory_hex: string): string;
+/**
+ * Extract the CSS token name list from a protocol JSON string.
+ *
+ * Returns a JavaScript array of token name strings, preserving the original
+ * order from the build step.
+ */
+export function protocol_tokens(protocol_json: string): any;
 /**
  * Build and render a WebUI application from virtual files.
  *
@@ -39,6 +45,7 @@ export function build_protocol(files: any, entry: string): string;
  * The rendered HTML string, or throws a JS error on failure.
  */
 export function render(protocol_json: string, state_json: string, entry: string, request_path: string, plugin?: string | null): string;
+export function render_component_templates(protocol_json: string, component_tags_json: string, inventory_hex: string): string;
 /**
  * Produce a complete JSON partial response for client-side navigation.
  *
@@ -56,6 +63,7 @@ export interface InitOutput {
   readonly memory: WebAssembly.Memory;
   readonly build_and_render: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
   readonly build_protocol: (a: number, b: number, c: number, d: number) => void;
+  readonly protocol_tokens: (a: number, b: number, c: number) => void;
   readonly render: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
   readonly render_component_templates: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
   readonly render_partial: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
