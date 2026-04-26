@@ -2,8 +2,8 @@
 layout: home
 hero:
   name: "WebUI Framework"
-  text: "Compiled Templates. Any Backend. Interactive Web Components."
-  tagline: Compile HTML templates to binary at build time. Render from Rust, Node, Go, C#, or Python at 4.3× the speed of Fastify. Hydrate only what's interactive.
+  text: "Server-render Web Components from any language — 4× faster than Node."
+  tagline: The first SSR framework that doesn't need JavaScript on the server. Templates compile to a binary protocol; Rust, Go, Python, C#, or Node just stream bytes. The browser hydrates without a runtime.
   actions:
     - theme: brand
       text: Get Started →
@@ -12,26 +12,29 @@ hero:
       text: Why WebUI?
       link: /guide/why
     - theme: alt
+      text: See benchmarks
+      link: /guide/concepts/performance
+    - theme: alt
       text: View on GitHub
       link: https://github.com/microsoft/webui
 
 features:
-  - icon: 🏝️
-    title: Islands Architecture
-    details: Each Web Component is an interactive island. Static content stays server-rendered with zero client-side JavaScript. Only components that need interactivity ship code to the browser.
   - icon: ⚡
-    title: Compiled to Binary Protocol
-    details: Templates are compiled at build time into Protocol Buffer binaries - no parsing, no AST walking, no interpretation at runtime. Static and dynamic content are separated once and never re-analyzed.
+    title: Compiled, not interpreted
+    details: Templates and Web Components compile at build time into a binary Protocol Buffer. The server's hot path is just filling holes and streaming bytes — no template parsing, no AST walking, no interpretation at runtime.
   - icon: 🌐
-    title: Language Agnostic
-    details: Render from Rust, Node, Bun, Deno, C#, Python, Go - or any language via FFI. The compiled protocol is just bytes; any backend that can read bytes and write strings can serve pages.
+    title: Render from any language
+    details: SSR has historically been a Node-only privilege. WebUI breaks that ceiling. Stream pages from Rust, Go, Python, C#, Bun, Deno — or Node, if you must. The protocol is just bytes; any language that can read bytes and write strings can serve a site.
+  - icon: 🪶
+    title: Zero runtime, on either side
+    details: No framework on the server. No framework on the page. Static content is plain HTML; interactive Web Components hydrate against the existing DOM using the native browser primitives. Your users download the page, not the framework.
   - icon: 🧩
-    title: Web Components
-    details: Built on native Web Components with Declarative Shadow DOM. No virtual DOM, no proprietary component model - just the web platform with style encapsulation built in. Light DOM optionally available.
-  - icon: 📐
-    title: Declarative Templates
-    details: HTML for structure, CSS for styling, TypeScript for behavior - in separate files. No JSX, no template literals, no CSS-in-JS. WebUI keeps concerns separated for performance and clarity.
-  - icon: 🔌
-    title: Plugin System
-    details: Extensible parser and handler plugins for hydration strategies, custom directives, and framework-specific behavior. Control exactly how and when each island becomes interactive.
+    title: webui-framework
+    details: A tiny client runtime for Web Components, tuned for rendering speed and low memory. Built on Declarative Shadow DOM and the native browser primitives — no virtual DOM, no proprietary component model, no JSX.
+  - icon: 🧭
+    title: webui-router
+    details: A client-side router that hydrates incrementally, route by route, from server-delivered templates. Navigation reuses the same compiled protocol as the initial render — no double work, no waterfalls, no bundle splitting tax.
+  - icon: 📰
+    title: webui-press
+    details: A blazing-fast static site generator powered by the framework itself. Compiles markdown and components in parallel into a fully static site — perfect for GitHub Pages, CDNs, and anywhere else that just serves files. (You're reading a site built with it.)
 ---
