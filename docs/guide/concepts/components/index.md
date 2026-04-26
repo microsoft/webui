@@ -59,7 +59,7 @@ When WebUI discovers components:
 
 1. **Build Time**:
    - The component's HTML is parsed and tokenized
-   - Any directives (`<if>`, `<for>`, etc.) and signals (<code v-pre>{{}}</code>) are processed
+   - Any directives (`<if>`, `<for>`, etc.) and signals (`{{}}`) are processed
    - The component's CSS is analyzed and included in the protocol
    - A unique `fragmentId` is assigned to each component
 

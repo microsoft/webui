@@ -1,0 +1,34 @@
+:host {
+  display: block;
+  position: relative;
+}
+
+.wrapper {
+  position: relative;
+}
+
+.copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: var(--docs-font-sans);
+  background: var(--docs-color-bg-alt);
+  color: var(--docs-color-text-3);
+  border: 1px solid var(--docs-color-border);
+  border-radius: var(--docs-radius-s);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 1;
+}
+
+:host(:hover) .copy-btn {
+  opacity: 1;
+}
+
+.copy-btn:hover {
+  color: var(--docs-color-text);
+  border-color: var(--docs-color-text-3);
+}

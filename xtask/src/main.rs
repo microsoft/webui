@@ -258,7 +258,11 @@ impl Step {
     };
     const DOCS: Self = Self {
         name: "docs",
-        run: || run_command_quiet("pnpm", &["--filter", "@webui/docs", "build"], None),
+        run: || {
+            // Build the standalone webui-press binary
+            run_command_quiet("cargo", &["build", "-p", "microsoft-webui-press"], None)?;
+            run_command_quiet("pnpm", &["--filter", "@webui/docs", "build"], None)
+        },
     };
     const BENCH_VALIDATE: Self = Self {
         name: "bench (validate)",

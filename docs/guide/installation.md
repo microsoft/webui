@@ -10,19 +10,32 @@ The `@microsoft/webui` npm package is the primary way to use WebUI. It gives you
 - **`import { build, render } from '@microsoft/webui'`** - a programmatic API for Node.js
 - **Native performance** via platform-specific binaries (no compilation required)
 
-::: code-group
-```bash [npm]
+<webui-tabs>
+<webui-tab slot="tab" active>npm</webui-tab>
+<webui-tab slot="tab">yarn</webui-tab>
+<webui-tab slot="tab">pnpm</webui-tab>
+<webui-tab-panel active>
+
+```bash
 npm install @microsoft/webui
 ```
 
-```bash [yarn]
+</webui-tab-panel>
+<webui-tab-panel>
+
+```bash
 yarn add @microsoft/webui
 ```
 
-```bash [pnpm]
+</webui-tab-panel>
+<webui-tab-panel>
+
+```bash
 pnpm add @microsoft/webui
 ```
-:::
+
+</webui-tab-panel>
+</webui-tabs>
 
 ### Configure package.json
 
@@ -51,19 +64,32 @@ The npm package uses platform-specific optional dependencies to deliver native b
 
 For interactive Web Components with Islands Architecture, install the framework runtime:
 
-::: code-group
-```bash [npm]
+<webui-tabs>
+<webui-tab slot="tab" active>npm</webui-tab>
+<webui-tab slot="tab">yarn</webui-tab>
+<webui-tab slot="tab">pnpm</webui-tab>
+<webui-tab-panel active>
+
+```bash
 npm install @microsoft/webui-framework
 ```
 
-```bash [yarn]
+</webui-tab-panel>
+<webui-tab-panel>
+
+```bash
 yarn add @microsoft/webui-framework
 ```
 
-```bash [pnpm]
+</webui-tab-panel>
+<webui-tab-panel>
+
+```bash
 pnpm add @microsoft/webui-framework
 ```
-:::
+
+</webui-tab-panel>
+</webui-tabs>
 
 This gives you:
 - **`WebUIElement`** base class for interactive Web Components
@@ -71,27 +97,42 @@ This gives you:
 - Automatic SSR hydration with zero manual DOM reading
 - Path-indexed targeted updates for minimal DOM mutations
 
-::: tip Not every app needs this
+<webui-blockquote appearance="tip" title="Not every app needs this" icon="💡">
+
 If your pages are purely informational with no client-side interactivity, you only need `@microsoft/webui` for building and rendering. The framework runtime is only needed when components have event handlers, reactive state, or user input.
-:::
+
+</webui-blockquote>
 
 ## Client-Side Router (Optional)
 
 For single-page navigation with client-side route transitions, install the router package:
 
-::: code-group
-```bash [npm]
+<webui-tabs>
+<webui-tab slot="tab" active>npm</webui-tab>
+<webui-tab slot="tab">yarn</webui-tab>
+<webui-tab slot="tab">pnpm</webui-tab>
+<webui-tab-panel active>
+
+```bash
 npm install @microsoft/webui-router
 ```
 
-```bash [yarn]
+</webui-tab-panel>
+<webui-tab-panel>
+
+```bash
 yarn add @microsoft/webui-router
 ```
 
-```bash [pnpm]
+</webui-tab-panel>
+<webui-tab-panel>
+
+```bash
 pnpm add @microsoft/webui-router
 ```
-:::
+
+</webui-tab-panel>
+</webui-tabs>
 
 The router works with both WebUI Framework (`@microsoft/webui-framework`) and FAST-HTML (`@microsoft/fast-html`) components. It's a separate package because it's only needed for apps with client-side navigation.
 

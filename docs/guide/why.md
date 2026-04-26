@@ -63,7 +63,7 @@ The result: dramatically less JavaScript, faster time-to-interactive, and better
 
 WebUI enforces a strict separation of concerns:
 
-- **HTML** for structure - clean, semantic markup with template directives (`<if>`, `<for>`, <code v-pre>{{}}</code>)
+- **HTML** for structure - clean, semantic markup with template directives (`<if>`, `<for>`, `{{}}`)
 - **CSS** for styling - standard stylesheets with Shadow DOM encapsulation
 - **TypeScript** for behavior - only in interactive island components
 

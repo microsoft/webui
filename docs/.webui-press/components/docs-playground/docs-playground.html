@@ -1,0 +1,52 @@
+<div class="pg">
+  <div class="editor-pane">
+    <div class="tab-bar">
+      <div class="tab-strip">
+        <for each="file in files">
+          <button
+            class="tab"
+            ?active="{{file.active}}"
+            title="{{file.name}}"
+            data-name="{{file.name}}"
+            @click="{selectTab(e)}"
+          >
+            <span class="tab-name">{{file.name}}</span>
+            <span class="tab-close-btn" role="button" title="Close file" data-name="{{file.name}}" @click="{closeFile(e)}">×</span>
+          </button>
+        </for>
+      </div>
+      <button class="tab-add-btn" type="button" title="New file" @click="{openNewFileInput()}">+</button>
+    </div>
+    <if condition="newFileVisible">
+      <div class="new-file-row">
+        <input
+          class="new-file-input"
+          type="text"
+          placeholder="filename.html"
+          @keydown="{onNewFileKey(e)}"
+          @blur="{cancelNewFile()}"
+        />
+      </div>
+    </if>
+    <div class="editor-wrap" w-ref="{editorWrap}"></div>
+  </div>
+  <div class="panel-divider"></div>
+  <div class="preview-pane">
+    <div class="preview-header">
+      <div class="preview-header-left">
+        <span class="preview-title">Preview</span>
+        <span class="preview-badge live">Live</span>
+      </div>
+      <div class="preview-stats">
+        <if condition="hasStats">
+          <span class="stat-badge build">Build {{buildMs}}ms</span>
+          <span class="stat-badge render">Render {{renderMs}}ms</span>
+        </if>
+      </div>
+    </div>
+    <if condition="errorMessage">
+      <div class="error-bar">{{errorMessage}}</div>
+    </if>
+    <iframe sandbox="allow-scripts" class="preview-frame" srcdoc="{{previewSrcdoc}}"></iframe>
+  </div>
+</div>

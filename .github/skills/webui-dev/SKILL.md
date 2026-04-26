@@ -13,7 +13,7 @@ Use this skill when building or modifying WebUI applications.
 2. **HTML, CSS, TypeScript are separate files.** No JSX. No CSS-in-JS. No JS in templates.
 3. **The `<template>` tag is optional.** The build tool auto-injects it. Include it only for root host events (`@custom-event` on the shadow root).
 4. **Components inside `<for>` loops do NOT inherit loop variables.** Pass data via attributes.
-5. **No ternary in templates.** No function calls in bindings. No mixed `&&`/`||`.
+5. **Expressions in bindings: comparisons and logic OK; ternaries NOT.** `{{count > 0}}`, `?active="{{section == 'guide'}}"`, `<if condition="a && b">` all work. Operators: `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `||`, `!`. **Forbidden:** ternary (`? :`), function calls, mixing `&&` with `||`, more than 5 logical operators. See `docs/guide/ai.md` for full rules.
 6. **No `this.querySelector()` for reactive state.** Use `@observable` + template bindings.
 7. **Decorators: `@attr` (HTML attribute), `@observable` (reactive state).** Both work in SSR.
 8. **`@attr({ mode: 'boolean' })` for true/false.** Present = true, absent = false. Never use string `"false"`.

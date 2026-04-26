@@ -1,0 +1,612 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+//! Content pipeline: reads markdown files, parses frontmatter, builds page state.
+
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+
+use serde_json::{Map, Value};
+
+use crate::error::Result;
+use crate::markdown::{render_markdown, Highlighter};
+use crate::types::{DocsConfig, PageDescriptor, SidebarItem, SidebarSection};
+
+/// Normalize a config link (e.g. `/guide/intro/` or `/guide/intro`) to a
+/// canonical URL path that includes the site's `base_path` prefix and
+/// **never** has a trailing slash (except for root, which is just the base).
+/// GitHub Pages and most static hosts auto-redirect `/foo` → `/foo/index.html`,
+/// so trailing slashes are unnecessary and pollute internal hrefs.
+fn normalize_link(base: &str, link: &str) -> String {
+    if link.is_empty() {
+        return String::new();
+    }
+    let stripped = &link[1..]; // Remove leading /
+    if link.contains('#') {
+        // Fragment link — preserve original shape, don't touch the slash.
+        return format!("{base}{stripped}");
+    }
+    let cleaned = stripped.trim_end_matches('/');
+    if cleaned.is_empty() {
+        // Root: `base` already ends with '/'.
+        base.to_string()
+    } else {
+        format!("{base}{cleaned}")
+    }
+}
+
+/// Build a JSON object from key-value pairs without using `json!` (which calls `unwrap`).
+fn json_obj<const N: usize>(entries: [(&str, Value); N]) -> Value {
+    let mut map = Map::with_capacity(N);
+    for (k, v) in entries {
+        map.insert(k.to_string(), v);
+    }
+    Value::Object(map)
+}
+
+/// Top-level state keys reserved by the docs renderer. Custom-page `stateFile`
+/// objects whose top-level fields are flattened onto the page state must not
+/// shadow these names — collisions are silently skipped so the canonical docs
+/// state always wins.
+const RESERVED_STATE_KEYS: &[&str] = &[
+    "site",
+    "navigation",
+    "sidebar",
+    "page",
+    "hero",
+    "footer",
+    "prev",
+    "next",
+    "pageData",
+];
+
+/// Parsed frontmatter from a markdown file.
+struct Frontmatter {
+    title: Option<String>,
+    description: Option<String>,
+    layout: Option<String>,
+}
+
+fn parse_frontmatter(content: &str) -> (Frontmatter, &str) {
+    if !content.starts_with("---\n") {
+        return (
+            Frontmatter {
+                title: None,
+                description: None,
+                layout: None,
+            },
+            content,
+        );
+    }
+
+    let end = content[4..]
+        .find("\n---")
+        .map(|i| i + 4)
+        .unwrap_or(content.len());
+    let yaml_str = &content[4..end];
+    let body = if end + 4 < content.len() {
+        &content[end + 4..]
+    } else {
+        ""
+    };
+
+    let yaml: HashMap<String, serde_yaml::Value> =
+        serde_yaml::from_str(yaml_str).unwrap_or_default();
+
+    (
+        Frontmatter {
+            title: yaml.get("title").and_then(|v| v.as_str()).map(String::from),
+            description: yaml
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            layout: yaml
+                .get("layout")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+        },
+        body,
+    )
+}
+
+fn extract_h1(content: &str) -> Option<String> {
+    for line in content.lines() {
+        if let Some(heading) = line.strip_prefix("# ") {
+            return Some(heading.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Collect all links from a sidebar item and its children (iterative).
+fn collect_sidebar_links(items: &[SidebarItem]) -> Vec<&str> {
+    let mut links = Vec::new();
+    let mut stack: Vec<&SidebarItem> = items.iter().rev().collect();
+    while let Some(item) = stack.pop() {
+        if !item.link.is_empty() {
+            links.push(item.link.as_str());
+        }
+        for child in item.items.iter().rev() {
+            stack.push(child);
+        }
+    }
+    links
+}
+
+/// Build the page registry from sidebar config.
+fn build_page_registry(
+    content_dir: &Path,
+    base_path: &str,
+    all_sidebars: &[&[SidebarSection]],
+) -> Vec<(String, std::path::PathBuf)> {
+    let mut pages = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    let mut add_page = |link: &str| {
+        // Skip fragment-only links (#section) — they point within another page
+        if link.contains('#') {
+            return;
+        }
+        let src_file = if link.ends_with('/') {
+            format!("{}index.md", &link[1..])
+        } else {
+            format!("{}.md", &link[1..])
+        };
+
+        let url_path = normalize_link(base_path, link);
+
+        let mut full_path = content_dir.join(&src_file);
+        if !full_path.exists() {
+            // Fallback: check for directory/index.md
+            let alt = format!("{}/index.md", &link[1..]);
+            let alt_path = content_dir.join(&alt);
+            if alt_path.exists() {
+                full_path = alt_path;
+            }
+        }
+
+        if full_path.exists() && seen.insert(url_path.clone()) {
+            pages.push((url_path, full_path));
+        }
+    };
+
+    for sidebar in all_sidebars {
+        for section in *sidebar {
+            for link in collect_sidebar_links(&section.items) {
+                add_page(link);
+            }
+        }
+    }
+    add_page("/");
+
+    pages
+}
+
+fn build_sidebar_state(url_path: &str, config: &DocsConfig) -> serde_json::Value {
+    let base = &config.base_path;
+
+    // Determine active sidebar
+    let active_sidebar = config
+        .sidebar_groups
+        .iter()
+        .find(|(prefix, _)| {
+            let full_prefix = format!("{}{}", base, prefix.strip_prefix('/').unwrap_or(prefix));
+            let trimmed = full_prefix.trim_end_matches('/');
+            url_path == trimmed || url_path.starts_with(&format!("{trimmed}/"))
+        })
+        .map(|(_, s)| s.as_slice())
+        .unwrap_or(&config.sidebar);
+
+    // Convert a SidebarItem to a JSON value (iterative via stack for children)
+    let item_to_value = |item: &SidebarItem| -> Value {
+        let item_path = normalize_link(base, &item.link);
+        let active = !item_path.is_empty() && item_path == url_path;
+        let children: Vec<Value> = item
+            .items
+            .iter()
+            .map(|child| {
+                let child_path = normalize_link(base, &child.link);
+                let child_active = !child_path.is_empty() && child_path == url_path;
+                json_obj([
+                    ("text", Value::String(child.text.clone())),
+                    ("link", Value::String(child_path)),
+                    ("active", Value::Bool(child_active)),
+                    ("hasChildren", Value::Bool(false)),
+                    ("children", Value::Array(vec![])),
+                ])
+            })
+            .collect();
+        json_obj([
+            ("text", Value::String(item.text.clone())),
+            ("link", Value::String(item_path)),
+            ("active", Value::Bool(active)),
+            ("hasChildren", Value::Bool(!children.is_empty())),
+            ("children", Value::Array(children)),
+        ])
+    };
+
+    let sections: Vec<Value> = active_sidebar
+        .iter()
+        .map(|section| {
+            let items: Vec<Value> = section.items.iter().map(item_to_value).collect();
+            json_obj([
+                ("title", Value::String(section.title.clone())),
+                ("items", Value::Array(items)),
+            ])
+        })
+        .collect();
+
+    json_obj([("sections", Value::Array(sections))])
+}
+
+fn find_sidebar_text(url_path: &str, config: &DocsConfig) -> Option<String> {
+    let base = &config.base_path;
+    let all: Vec<&[SidebarSection]> = std::iter::once(config.sidebar.as_slice())
+        .chain(config.sidebar_groups.values().map(|v| v.as_slice()))
+        .collect();
+
+    for sidebar in all {
+        for section in sidebar {
+            // Use iterative stack to search nested items
+            let mut stack: Vec<&SidebarItem> = section.items.iter().collect();
+            while let Some(item) = stack.pop() {
+                if !item.link.is_empty() {
+                    let item_path = normalize_link(base, &item.link);
+                    if item_path == url_path {
+                        return Some(item.text.clone());
+                    }
+                }
+                for child in &item.items {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolve and load every custom page's `stateFile` once, returning a map keyed
+/// by the custom-page link (e.g. `/playground/`) holding the parsed JSON value.
+/// Inline `state` values are passed through untouched.
+///
+/// State files are cached by canonical filesystem path so that two custom pages
+/// pointing at the same file only read and parse it once.
+fn load_custom_page_states(
+    config: &DocsConfig,
+    config_dir: &Path,
+) -> Result<HashMap<String, Value>> {
+    let mut cache: HashMap<std::path::PathBuf, Value> = HashMap::new();
+    let mut out: HashMap<String, Value> = HashMap::with_capacity(config.custom_pages.len());
+
+    for (link, page) in &config.custom_pages {
+        let inline = page.inline_state();
+        let path = page.state_file();
+
+        if inline.is_some() && path.is_some() {
+            return Err(crate::error::Error::Build(format!(
+                "Custom page {link}: 'state' and 'stateFile' are mutually exclusive — pick one."
+            )));
+        }
+
+        if let Some(value) = inline {
+            out.insert(link.clone(), value.clone());
+            continue;
+        }
+
+        if let Some(rel) = path {
+            let abs = config_dir.join(rel);
+            let key = fs::canonicalize(&abs).unwrap_or_else(|_| abs.clone());
+            let value = if let Some(cached) = cache.get(&key) {
+                cached.clone()
+            } else {
+                let raw = fs::read_to_string(&abs).map_err(|e| {
+                    crate::error::Error::Build(format!(
+                        "Custom page {link}: cannot read stateFile {}: {e}",
+                        abs.display()
+                    ))
+                })?;
+                let parsed: Value = serde_json::from_str(&raw).map_err(|e| {
+                    crate::error::Error::Build(format!(
+                        "Custom page {link}: stateFile {} is not valid JSON: {e}",
+                        abs.display()
+                    ))
+                })?;
+                cache.insert(key, parsed.clone());
+                parsed
+            };
+            out.insert(link.clone(), value);
+        }
+    }
+
+    Ok(out)
+}
+
+/// Process all content files and return page descriptors.
+///
+/// `config_dir` is the directory containing `config.json`; relative paths
+/// declared in the config (such as a custom page's `stateFile`) are resolved
+/// against it.
+pub fn process_content(
+    config: &DocsConfig,
+    config_dir: &Path,
+    highlighter: &Highlighter,
+) -> Result<Vec<PageDescriptor>> {
+    let content_dir = Path::new(&config.content_dir);
+    let base_path = &config.base_path;
+
+    // Load custom-page state once (with caching) before the parallel pipeline.
+    let custom_states = load_custom_page_states(config, config_dir)?;
+
+    let nav_links: Vec<Value> = config
+        .nav
+        .iter()
+        .map(|item| {
+            let (link, section) = if item.link.starts_with("http") {
+                // External links can never match a docs section. Use the URL
+                // itself as a unique sentinel so the equality check below
+                // never matches any page's section slug.
+                (item.link.clone(), item.link.clone())
+            } else {
+                let full = format!("{}{}", base_path, &item.link[1..]);
+                // Derive a section slug from the raw config link, e.g. "/guide/" -> "guide".
+                let slug = item
+                    .link
+                    .trim_start_matches('/')
+                    .split('/')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                (full, slug)
+            };
+            json_obj([
+                ("text", Value::String(item.text.clone())),
+                ("link", Value::String(link)),
+                ("section", Value::String(section)),
+            ])
+        })
+        .collect();
+
+    // Collect all sidebars for page discovery
+    let sidebar_refs: Vec<&[SidebarSection]> = std::iter::once(config.sidebar.as_slice())
+        .chain(config.sidebar_groups.values().map(|v| v.as_slice()))
+        .collect();
+
+    let mut registry = build_page_registry(content_dir, base_path, &sidebar_refs);
+
+    // Register custom pages
+    for page_link in config.custom_pages.keys() {
+        let normalized = if page_link.ends_with('/') {
+            page_link.clone()
+        } else {
+            format!("{}/", page_link)
+        };
+        let url_path = format!("{}{}", base_path, &normalized[1..]);
+        let src_file = format!("{}index.md", &normalized[1..]);
+        let full_path = content_dir.join(&src_file);
+        if !registry.iter().any(|(p, _)| p == &url_path) {
+            registry.push((url_path, full_path));
+        }
+    }
+
+    use rayon::prelude::*;
+
+    let mut pages: Vec<PageDescriptor> = registry
+        .par_iter()
+        .map(|(url_path, full_path)| -> Result<PageDescriptor> {
+            let mut is_home = false;
+            let mut html = String::new();
+            let mut title = config.site.title.clone();
+            let mut description = config.site.description.clone();
+            let mut layout = "doc".to_string();
+
+            // Check custom page override
+            let logical_path = format!("/{}", &url_path[base_path.len()..]);
+            let custom_entry = config
+                .custom_pages
+                .get(&logical_path)
+                .or_else(|| config.custom_pages.get(logical_path.trim_end_matches('/')));
+
+            if let Some(entry) = custom_entry {
+                html = entry.html().to_string();
+                layout = entry.layout().to_string();
+            } else if full_path.exists() {
+                let raw = fs::read_to_string(full_path)
+                    .map_err(|e| crate::error::Error::Io(e.to_string()))?;
+                let (fm, body) = parse_frontmatter(&raw);
+
+                is_home = fm.layout.as_deref() == Some("home");
+                layout = if is_home {
+                    "home".to_string()
+                } else {
+                    fm.layout.unwrap_or_else(|| "doc".to_string())
+                };
+
+                if !is_home {
+                    html = render_markdown(body, highlighter, base_path)?;
+                }
+
+                if let Some(d) = fm.description {
+                    description = d;
+                }
+
+                let h1 = extract_h1(body);
+                let sidebar_text = find_sidebar_text(url_path, config);
+                title = fm
+                    .title
+                    .or(h1)
+                    .or(sidebar_text)
+                    .unwrap_or_else(|| config.site.title.clone());
+            }
+
+            let hero_val = if is_home {
+                config
+                    .hero
+                    .as_ref()
+                    .map(|h| {
+                        json_obj([
+                            ("tagline", Value::String(h.tagline.clone())),
+                            (
+                                "actions",
+                                Value::Array(
+                                    h.actions
+                                        .iter()
+                                        .map(|a| {
+                                            json_obj([
+                                                ("text", Value::String(a.text.clone())),
+                                                ("link", Value::String(a.link.clone())),
+                                                ("brand", Value::Bool(a.brand)),
+                                            ])
+                                        })
+                                        .collect(),
+                                ),
+                            ),
+                            (
+                                "features",
+                                Value::Array(
+                                    h.features
+                                        .iter()
+                                        .map(|f| {
+                                            json_obj([
+                                                ("icon", Value::String(f.icon.clone())),
+                                                ("title", Value::String(f.title.clone())),
+                                                (
+                                                    "description",
+                                                    Value::String(f.description.clone()),
+                                                ),
+                                            ])
+                                        })
+                                        .collect(),
+                                ),
+                            ),
+                        ])
+                    })
+                    .unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            };
+
+            let footer_val = config
+                .footer
+                .as_ref()
+                .map(|f| json_obj([("html", Value::String(f.html.clone()))]))
+                .unwrap_or(Value::Null);
+
+            // Top-level section slug for the current page, derived from the
+            // first path segment after the base. Used by the nav template to
+            // mark the active link via `?active="{{link.section == page.section}}"`.
+            let page_section = logical_path
+                .trim_start_matches('/')
+                .split('/')
+                .next()
+                .unwrap_or("")
+                .to_string();
+
+            let state = json_obj([
+                (
+                    "site",
+                    json_obj([
+                        ("title", Value::String(config.site.title.clone())),
+                        ("base", Value::String(base_path.to_string())),
+                    ]),
+                ),
+                ("navigation", Value::Array(nav_links.clone())),
+                ("sidebar", build_sidebar_state(url_path, config)),
+                (
+                    "page",
+                    json_obj([
+                        ("title", Value::String(title.clone())),
+                        ("description", Value::String(description.clone())),
+                        ("content", Value::String(html.clone())),
+                        ("isHome", Value::Bool(is_home)),
+                        ("layout", Value::String(layout)),
+                        ("section", Value::String(page_section)),
+                    ]),
+                ),
+                ("hero", hero_val),
+                ("footer", footer_val),
+                ("prev", Value::Null),
+                ("next", Value::Null),
+                (
+                    "pageData",
+                    custom_states
+                        .get(&logical_path)
+                        .or_else(|| custom_states.get(logical_path.trim_end_matches('/')))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                ),
+            ]);
+
+            // Flatten the loaded custom-page state object onto the top-level
+            // page state so component templates can bind directly to its
+            // fields (e.g. `<for each="item in files">`). This is what enables
+            // SSR for components driven by a `stateFile`. Reserved keys are
+            // never overwritten.
+            let state = if let Some(Value::Object(extra)) = custom_states
+                .get(&logical_path)
+                .or_else(|| custom_states.get(logical_path.trim_end_matches('/')))
+            {
+                let mut map = match state {
+                    Value::Object(m) => m,
+                    other => {
+                        let mut m = Map::new();
+                        m.insert("_root".to_string(), other);
+                        m
+                    }
+                };
+                for (k, v) in extra {
+                    if !RESERVED_STATE_KEYS.contains(&k.as_str()) && !map.contains_key(k) {
+                        map.insert(k.clone(), v.clone());
+                    }
+                }
+                Value::Object(map)
+            } else {
+                state
+            };
+
+            Ok(PageDescriptor {
+                path: url_path.clone(),
+                title,
+                is_home,
+                state,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    // Build prev/next links from primary sidebar (flatten nested items)
+    let all_sidebar_items: Vec<SidebarItem> = config
+        .sidebar
+        .iter()
+        .flat_map(|s| s.items.clone())
+        .collect();
+    let flat_links = collect_sidebar_links(&all_sidebar_items);
+    let all_links: Vec<(String, String)> = flat_links
+        .iter()
+        .map(|link| {
+            let path = normalize_link(base_path, link);
+            let text = find_sidebar_text(&path, config).unwrap_or_default();
+            (path, text)
+        })
+        .collect();
+
+    for page in &mut pages {
+        if let Some(idx) = all_links.iter().position(|(p, _)| p == &page.path) {
+            if idx > 0 {
+                let (link, text) = &all_links[idx - 1];
+                page.state["prev"] = json_obj([
+                    ("link", Value::String(link.clone())),
+                    ("text", Value::String(text.clone())),
+                ]);
+            }
+            if idx + 1 < all_links.len() {
+                let (link, text) = &all_links[idx + 1];
+                page.state["next"] = json_obj([
+                    ("link", Value::String(link.clone())),
+                    ("text", Value::String(text.clone())),
+                ]);
+            }
+        }
+    }
+
+    Ok(pages)
+}

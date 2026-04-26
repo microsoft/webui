@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="base" content="{{site.base}}" />
+  <title>{{page.title}} | {{site.title}}</title>
+  <meta name="description" content="{{page.description}}" />
+  <meta property="og:title" content="{{page.title}} | {{site.title}}" />
+  <meta property="og:description" content="{{page.description}}" />
+  <meta property="og:type" content="website" />
+  <meta name="twitter:card" content="summary" />
+  <link rel="icon" href="{{site.base}}logo.svg" />
+  {{{headTags}}}
+</head>
+
+<body data-layout="{{page.layout}}">
+  <header class="nav-bar">
+    <a href="{{site.base}}" class="logo">
+      <img src="{{site.base}}logo.svg" alt="{{site.title}}" />
+      <span>{{site.title}}</span>
+    </a>
+    <nav class="nav-links">
+      <for each="link in navigation">
+        <a href="{{link.link}}" class="nav-link" ?active="{{link.section == page.section}}">{{link.text}}</a>
+      </for>
+      <docs-search></docs-search>
+      <docs-theme-toggle></docs-theme-toggle>
+      <button class="mobile-menu-btn" id="mobile-menu-btn" aria-label="Toggle menu">☰</button>
+    </nav>
+  </header>
+
+  <if condition="page.isHome">
+    <main class="main-content" style="max-width:960px;margin:0 auto;">
+      <if condition="hero">
+        <div class="home-hero">
+          <h1>{{site.title}}</h1>
+          <p class="tagline">{{hero.tagline}}</p>
+          <div class="home-actions">
+            <for each="action in hero.actions">
+              <if condition="action.brand">
+                <a href="{{action.link}}" class="btn-brand">{{action.text}}</a>
+              </if>
+              <if condition="!action.brand">
+                <a href="{{action.link}}" class="btn-alt">{{action.text}}</a>
+              </if>
+            </for>
+          </div>
+        </div>
+        <div class="features-grid">
+          <for each="feature in hero.features">
+            <div class="feature-card">
+              <div class="feature-icon">{{feature.icon}}</div>
+              <h3>{{feature.title}}</h3>
+              <p>{{feature.description}}</p>
+            </div>
+          </for>
+        </div>
+      </if>
+    </main>
+  </if>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <for each="section in sidebar.sections">
+        <div class="sidebar-group">
+          <h3 class="sidebar-title">{{section.title}}</h3>
+          <ul class="sidebar-items">
+            <for each="item in section.items">
+              <li>
+                <if condition="item.hasChildren">
+                  <if condition="item.link">
+                    <if condition="item.active">
+                      <a href="{{item.link}}" class="sidebar-link sidebar-link-active">{{item.text}}</a>
+                    </if>
+                    <if condition="!item.active">
+                      <a href="{{item.link}}" class="sidebar-link">{{item.text}}</a>
+                    </if>
+                  </if>
+                  <if condition="!item.link">
+                    <span class="sidebar-parent-label">{{item.text}}</span>
+                  </if>
+                  <ul class="sidebar-children">
+                    <for each="child in item.children">
+                      <li>
+                        <if condition="child.active">
+                          <a href="{{child.link}}" class="sidebar-link sidebar-link-active">{{child.text}}</a>
+                        </if>
+                        <if condition="!child.active">
+                          <a href="{{child.link}}" class="sidebar-link">{{child.text}}</a>
+                        </if>
+                      </li>
+                    </for>
+                  </ul>
+                </if>
+                <if condition="!item.hasChildren">
+                  <if condition="item.active">
+                    <a href="{{item.link}}" class="sidebar-link sidebar-link-active">{{item.text}}</a>
+                  </if>
+                  <if condition="!item.active">
+                    <a href="{{item.link}}" class="sidebar-link">{{item.text}}</a>
+                  </if>
+                </if>
+              </li>
+            </for>
+          </ul>
+        </div>
+      </for>
+    </aside>
+
+    <main class="main-content">
+      <article class="doc-content">
+        {{{page.content}}}
+      </article>
+
+      <nav class="page-nav">
+        <if condition="prev">
+          <a href="{{prev.link}}">← {{prev.text}}</a>
+        </if>
+        <if condition="!prev">
+          <span></span>
+        </if>
+        <if condition="next">
+          <a href="{{next.link}}">{{next.text}} →</a>
+        </if>
+      </nav>
+    </main>
+  </div>
+
+  <if condition="footer">
+    <footer class="site-footer">
+      {{{footer.html}}}
+    </footer>
+  </if>
+
+  <script>
+    // Load component JS bundle for hydration
+    (function () {
+      var b = document.querySelector('meta[name="base"]');
+      var base = b ? b.getAttribute('content') : '/';
+      var s = document.createElement('script');
+      s.type = 'module';
+      s.src = base + 'components.js';
+      document.head.appendChild(s);
+    })();
+  </script>
+</body>
+
+</html>

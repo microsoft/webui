@@ -17,7 +17,7 @@ During the build, WebUI:
 
 1. **Parses HTML templates** - scans component directories for `.html`, `.css`, and `.ts` files
 2. **Discovers web components** - identifies custom elements by their hyphenated tag names
-3. **Compiles expressions** - resolves <code v-pre>{{bindings}}</code>, `<if>` conditions, `<for>` loops, and attribute directives into indexed slots
+3. **Compiles expressions** - resolves `{{bindings}}`, `<if>` conditions, `<for>` loops, and attribute directives into indexed slots
 4. **Separates static from dynamic content** - static HTML becomes pre-serialized byte fragments; dynamic content becomes keyed slots that map to state values
 5. **Emits output artifacts**:
    - `protocol.bin` - binary Protocol Buffer containing the compiled template structure
@@ -80,7 +80,7 @@ After the browser renders the server HTML, JavaScript loads and Web Components *
 
 1. **Custom elements upgrade** - the browser calls `connectedCallback` for each registered Web Component
 2. **Shadow root detection** - the framework finds the existing Declarative Shadow DOM root (it does **not** recreate the DOM)
-3. **Bindings wired** - template expressions (<code v-pre>{{count}}</code>, `?disabled`) are connected to class properties
+3. **Bindings wired** - template expressions (`{{count}}`, `?disabled`) are connected to class properties
 4. **Events connected** - `@click`, `@keydown`, and other event handlers are attached
 5. **Reactive state activated** - `@observable` properties become live; changes trigger targeted DOM updates
 
@@ -113,7 +113,7 @@ Understanding the relationship between server and client is critical for buildin
 
 ### The server is the source of truth for the initial render
 
-Every value bound in a template - <code v-pre>{{expression}}</code>, `<for each="item in items">`, `<if condition="expr">` - must have a corresponding key in the server state JSON. The handler resolves bindings by looking up keys in this JSON object. If a key is missing, the binding renders empty or the condition evaluates to false.
+Every value bound in a template - `{{expression}}`, `<for each="item in items">`, `<if condition="expr">` - must have a corresponding key in the server state JSON. The handler resolves bindings by looking up keys in this JSON object. If a key is missing, the binding renders empty or the condition evaluates to false.
 
 ### Derived state belongs in the server or the template
 

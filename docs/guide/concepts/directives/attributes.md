@@ -4,7 +4,7 @@ WebUI provides several ways to bind dynamic data to HTML attributes. When an att
 
 ## Simple Dynamic Attributes
 
-Use <code v-pre>{{}}</code> inside an attribute value to bind it to a state value:
+Use `{{}}` inside an attribute value to bind it to a state value:
 
 ```html
 <a href="{{url}}">{{linkText}}</a>
@@ -35,7 +35,7 @@ Prefix an attribute name with `?` to make it conditional. The attribute is only 
 <input type="checkbox" ?checked={{isSelected}} />
 ```
 
-The value **must** be a pure handlebars expression (e.g., <code v-pre>{{signalName}}</code>). If the value contains plain text or mixed content, the attribute is silently dropped.
+The value **must** be a pure handlebars expression (e.g., `{{signalName}}`). If the value contains plain text or mixed content, the attribute is silently dropped.
 
 ### Dotted Paths
 

@@ -12,8 +12,13 @@ serde_json = "1"
 
 ## Examples
 
-::: code-group
-```rust [Actix Web]
+<webui-tabs>
+<webui-tab slot="tab" active>Actix Web</webui-tab>
+<webui-tab slot="tab">Axum</webui-tab>
+<webui-tab slot="tab">Hyper</webui-tab>
+<webui-tab-panel active>
+
+```rust
 use actix_web::{web, App, HttpServer, HttpRequest, HttpResponse};
 use webui::{WebUIHandler, RenderOptions, ResponseWriter, WebUIProtocol};
 use serde_json::json;
@@ -53,7 +58,10 @@ async fn main() -> std::io::Result<()> {
 }
 ```
 
-```rust [Axum]
+</webui-tab-panel>
+<webui-tab-panel>
+
+```rust
 use axum::{routing::get, Router, extract::{State, Request}};
 use webui::{WebUIHandler, RenderOptions, ResponseWriter, WebUIProtocol};
 use serde_json::json;
@@ -90,7 +98,10 @@ async fn main() {
 }
 ```
 
-```rust [Hyper]
+</webui-tab-panel>
+<webui-tab-panel>
+
+```rust
 use hyper::{server::conn::http1, service::service_fn, body::Bytes, Request, Response};
 use hyper_util::rt::TokioIo;
 use http_body_util::Full;
@@ -136,7 +147,9 @@ async fn main() {
     }
 }
 ```
-:::
+
+</webui-tab-panel>
+</webui-tabs>
 
 ## API Reference
 

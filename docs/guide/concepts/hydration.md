@@ -8,9 +8,11 @@ WebUI compiles templates at build time and renders HTML at runtime (server-rende
 
 WebUI uses an **islands architecture**: only interactive components ship JavaScript. If a page has ten components but only two need click handlers, only those two ship a framework. Everything else stays as static HTML with zero runtime cost.
 
-::: tip Authoring vs. mechanism
+<webui-blockquote appearance="tip" title="Authoring vs. mechanism" icon="💡">
+
 This page explains **how hydration works** under the hood - markers, DOM walks, and metadata. For how to _write_ interactive components (decorators, events, refs, template syntax), see [Interactivity](/guide/concepts/interactivity).
-:::
+
+</webui-blockquote>
 
 ## How Hydration Works
 

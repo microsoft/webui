@@ -368,5 +368,5 @@ Discovered npm package components are cached at `~/.webui/cache/components/` to 
 
 - [Hello World Tutorial](/tutorials/hello-world) - Build your first WebUI app
 - [Components](/guide/concepts/components/) - Learn about web components
-- [Template Directives](/guide/concepts/directives/) - `<for>`, `<if>`, and <code v-pre>{{}}</code>
+- [Template Directives](/guide/concepts/directives/) - `<for>`, `<if>`, and `{{}}`
 - [Platform Handlers](/guide/concepts/handlers/) - Render protocols with state at runtime

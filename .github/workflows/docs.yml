@@ -8,10 +8,12 @@ on:
     branches: [ "main" ]
     paths:
       - 'docs/**'
-      - 'crates/webui-wasm/**'
+      - 'packages/webui-press/**'
       - 'crates/webui-parser/**'
       - 'crates/webui-handler/**'
       - 'crates/webui-protocol/**'
+      - 'crates/webui-node/**'
+      - 'packages/webui/**'
   workflow_dispatch:
 
 jobs:
@@ -22,8 +24,19 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Build WASM playground
-        uses: ./.github/actions/setup-wasm
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+
+      - name: Build webui-press
+        run: cargo build -p microsoft-webui-press --release
 
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -37,13 +50,13 @@ jobs:
           run_install: false
 
       - name: Install Dependencies
-        run: cd docs && pnpm install
+        run: pnpm install
 
-      - name: Build Site
+      - name: Build Docs
         run: cd docs && pnpm build
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: docs/.vitepress/dist
+          publish_dir: docs/dist

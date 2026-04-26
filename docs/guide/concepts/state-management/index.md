@@ -59,8 +59,8 @@ Inside a `<for>` directive, each iteration creates a scoped state context. Loop 
 
 - **Loop items** are accessed via their moniker (e.g. `item.label`, `item.id`); global state remains accessible alongside them
 - **Global state** is always accessible throughout a template
-- **Nested loops**: all active loop items remain accessible by their monikers (e.g. <code v-pre>{{category.name}}</code> inside a `product` loop). Inner loop monikers can shadow global state keys but do not hide outer loop monikers.
-- **Components inside loops**: do **not** automatically inherit loop-item fields. Pass the data you need via component attributes (e.g. <code v-pre>&lt;contact-card name="{{contact.name}}"&gt;</code>), and inside the component template use the attribute names (e.g. <code v-pre>{{name}}</code>).
+- **Nested loops**: all active loop items remain accessible by their monikers (e.g. `{{category.name}}` inside a `product` loop). Inner loop monikers can shadow global state keys but do not hide outer loop monikers.
+- **Components inside loops**: do **not** automatically inherit loop-item fields. Pass the data you need via component attributes (e.g. `&lt;contact-card name="{{contact.name}}"&gt;`), and inside the component template use the attribute names (e.g. `{{name}}`).
 
 ```html
 <for each="category in categories">
@@ -143,7 +143,7 @@ Unlike client-side frameworks that fetch data on mount, WebUI renders in a singl
 ### SSR State Completeness for Route Pages
 
 When using routing, each route page template has its own bindings. Every
-`<for>`, `<if>`, and <code v-pre>{{binding}}</code> in the page template must have its key
+`<for>`, `<if>`, and `{{binding}}` in the page template must have its key
 populated in the server state JSON.
 
 ```html
@@ -169,10 +169,12 @@ If `messages` is an empty array `[]`, the `<for>` loop correctly renders
 zero items - even if the client would populate it later. The server is
 the source of truth for the initial render.
 
-::: tip Rule of thumb
-Check every `<for>`, `<if>`, and <code v-pre>{{binding}}</code> in your route page template.
+<webui-blockquote appearance="tip" title="Rule of thumb" icon="💡">
+
+Check every `<for>`, `<if>`, and `{{binding}}` in your route page template.
 Every key must be present in the server state JSON.
-:::
+
+</webui-blockquote>
 
 ### Use boolean flags for conditionals
 
@@ -201,8 +203,8 @@ By default, signal values are HTML-escaped to prevent XSS:
 
 | Syntax | Escaping | Use case |
 |--------|----------|----------|
-| <code v-pre>{{value}}</code> | Escaped | User-provided text, names, labels |
-| <code v-pre>{{{value}}}</code> | Raw (unescaped) | Pre-sanitized HTML content |
+| `{{value}}` | Escaped | User-provided text, names, labels |
+| `{{{value}}}` | Raw (unescaped) | Pre-sanitized HTML content |
 
 > ⚠️ Never use triple braces for user input or URL parameters. An attacker could inject `<script>` tags.
 

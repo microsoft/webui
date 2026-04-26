@@ -2,9 +2,9 @@
 
 WebUI provides two types of signals for inserting dynamic values into your templates: escaped signals and raw signals.
 
-## Escaped Signals: <code v-pre>{{}}</code>
+## Escaped Signals: `{{}}`
 
-The double curly braces syntax (<code v-pre>{{}}</code>) inserts a value from the state object with HTML escaping applied:
+The double curly braces syntax (`{{}}`) inserts a value from the state object with HTML escaping applied:
 
 ```html
 <p>Hello, {{user.name}}!</p>
@@ -28,9 +28,9 @@ Output:
 <p>Hello, John &lt;script&gt;alert('XSS')&lt;/script&gt;!</p>
 ```
 
-## Raw Signals: <code v-pre>{{{}}}</code>
+## Raw Signals: `{{{}}}`
 
-The triple curly braces syntax (<code v-pre>`{{{}}}`</code>) inserts a value from the state object without HTML escaping:
+The triple curly braces syntax (``{{{}}}``) inserts a value from the state object without HTML escaping:
 
 ```html
 <div>{{{rawHtmlContent}}}</div>

@@ -10,8 +10,13 @@ npm install @microsoft/webui
 
 ## Examples
 
-::: code-group
-```js [Node.js]
+<webui-tabs>
+<webui-tab slot="tab" active>Node.js</webui-tab>
+<webui-tab slot="tab">Bun</webui-tab>
+<webui-tab slot="tab">Deno</webui-tab>
+<webui-tab-panel active>
+
+```js
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { render } from '@microsoft/webui';
@@ -28,7 +33,10 @@ const server = createServer((req, res) => {
 server.listen(3000);
 ```
 
-```ts [Bun]
+</webui-tab-panel>
+<webui-tab-panel>
+
+```ts
 import { render } from '@microsoft/webui';
 
 const protocol = Bun.file('./dist/protocol.bin');
@@ -48,7 +56,10 @@ Bun.serve({
 });
 ```
 
-```ts [Deno]
+</webui-tab-panel>
+<webui-tab-panel>
+
+```ts
 import { render } from '@microsoft/webui';
 
 const protocol = Deno.readFileSync('./dist/protocol.bin');
@@ -64,7 +75,9 @@ Deno.serve({ port: 3000 }, (req) => {
   });
 });
 ```
-:::
+
+</webui-tab-panel>
+</webui-tabs>
 
 ## API Reference
 

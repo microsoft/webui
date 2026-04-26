@@ -6,7 +6,7 @@ This page covers proven patterns and common pitfalls when building WebUI applica
 
 Every binding in your template must have a corresponding key in the server state JSON. The handler resolves bindings by looking up keys - if a key is missing, the binding renders empty or the condition evaluates to false.
 
-**The rule:** check every <code v-pre>{{binding}}</code>, `<if condition>`, and `<for each>` in your template and ensure the server provides the data.
+**The rule:** check every `{{binding}}`, `<if condition>`, and `<for each>` in your template and ensure the server provides the data.
 
 ```html
 <!-- Template bindings -->
@@ -98,11 +98,14 @@ Bind boolean attributes in templates with the `?` prefix:
 
 ### The String `"false"` Trap
 
-::: danger
+<webui-blockquote appearance="danger" title="Danger" icon="🚨">
+
 Never use the string `"false"` for boolean attributes. In HTML and JavaScript, a non-empty string is truthy.
-:::
+
+</webui-blockquote>
 
 ```html
+
 <!-- ❌ WRONG - "false" is a truthy string, button will be disabled -->
 <button disabled="false">Submit</button>
 
@@ -155,9 +158,11 @@ The `<if>` directive evaluates conditions using standard JavaScript truthiness r
 </if>
 ```
 
-::: tip
+<webui-blockquote appearance="tip" title="Tip" icon="💡">
+
 Always use `.length` to check whether an array is empty. An empty array `[]` is truthy - only its `.length` (which is `0`) is falsy.
-:::
+
+</webui-blockquote>
 
 ## React Patterns to Avoid
 
@@ -394,9 +399,11 @@ webui build ./src --out ./dist --dom=light
 
 In Rust handler configuration, use `DomStrategy::Light`.
 
-::: tip
+<webui-blockquote appearance="tip" title="Tip" icon="💡">
+
 Start with Shadow DOM (the default). Switch individual components or pages to Light DOM only when profiling shows a measurable benefit.
-:::
+
+</webui-blockquote>
 
 ## Summary
 

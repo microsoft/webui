@@ -1,0 +1,25 @@
+{
+  "entry": "index.html",
+  "files": [
+    {
+      "name": "index.html",
+      "active": true,
+      "content": "<h1>Hello, {{name}}!</h1>\n<p>Welcome to the WebUI Playground.</p>\n\n<if condition=\"showGreeting\">\n  <p>{{greeting}}</p>\n</if>\n\n<h2>Team</h2>\n<for each=\"person in people\">\n  <person-card>{{person.name}} - {{person.role}}</person-card>\n</for>\n"
+    },
+    {
+      "name": "person-card.html",
+      "active": false,
+      "content": "<div class=\"card\">\n  <slot></slot>\n</div>\n"
+    },
+    {
+      "name": "person-card.css",
+      "active": false,
+      "content": ".card {\n  padding: 8px 16px;\n  margin: 4px 0;\n  border-left: 3px solid #646cff;\n}\n"
+    },
+    {
+      "name": "state.json",
+      "active": false,
+      "content": "{\n  \"name\": \"WebUI\",\n  \"greeting\": \"This framework rocks!\",\n  \"showGreeting\": true,\n  \"people\": [\n    { \"name\": \"Alice\", \"role\": \"Engineer\" },\n    { \"name\": \"Bob\", \"role\": \"Designer\" },\n    { \"name\": \"Charlie\", \"role\": \"PM\" }\n  ]\n}"
+    }
+  ]
+}

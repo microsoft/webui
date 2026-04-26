@@ -1,0 +1,26 @@
+:host {
+  display: inline-block;
+}
+
+.tab-btn {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: var(--docs-color-text-3, #8e99a4);
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+  font-family: inherit;
+}
+
+.tab-btn:hover {
+  color: var(--docs-color-text, #213547);
+}
+
+:host([active]) .tab-btn {
+  color: var(--docs-color-brand, #4f46e5);
+  border-bottom-color: var(--docs-color-brand, #4f46e5);
+  font-weight: 600;
+}

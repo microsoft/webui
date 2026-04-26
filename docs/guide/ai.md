@@ -35,7 +35,7 @@ webui build         + JSON state          hydrate as islands
 ### Rules
 
 1. **Every template binding must exist in the server state JSON.**
-   If your template uses <code v-pre>{{title}}</code>, the server must provide
+   If your template uses `{{title}}`, the server must provide
    `{ "title": "..." }`.
 
 2. **Derived state belongs in the server or the template.** Use template
@@ -111,8 +111,8 @@ This is the delegated event pattern for parent-child communication.
 <p>{{items.length}} items</p>
 ```
 
-- <code v-pre>{{expr}}</code> - HTML-escaped output (safe for user input)
-- <code v-pre>{{{expr}}}</code> - raw/unescaped output (only for trusted content)
+- `{{expr}}` - HTML-escaped output (safe for user input)
+- `{{{expr}}}` - raw/unescaped output (only for trusted content)
 
 ### Conditionals
 
@@ -679,10 +679,10 @@ The handler resolves `tokens.light` from the state, outputting:
 
 ## Things You CANNOT Do
 
-1. **No ternary in templates.** <code v-pre>{{x ? 'yes' : 'no'}}</code> does not work.
+1. **No ternary in templates.** `{{x ? 'yes' : 'no'}}` does not work.
    Use `<if>` blocks or boolean attributes instead.
 
-2. **No function calls in bindings.** <code v-pre>{{formatDate(item.date)}}</code> does not
+2. **No function calls in bindings.** `{{formatDate(item.date)}}` does not
    work. Compute the value on the server or in an event handler.
 
 3. **No mixed `&&` and `||`.** `<if condition="a && b || c">` is invalid.

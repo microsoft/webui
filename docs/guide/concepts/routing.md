@@ -21,6 +21,19 @@ Only needed when your app has client-side navigation. Server-only apps with full
 
 **1. Declare routes in `index.html`:**
 
+**1. Add `<base href="/">` in your `<head>`:**
+
+```html
+<head>
+  <meta charset="utf-8">
+  <base href="/">
+</head>
+```
+
+All WebUI apps with routes **must** include `<base href="/">`. Without it, relative asset paths (CSS, JS) break on nested routes — the browser resolves `app.css` against `/users/123/` → `/users/app.css` instead of `/app.css`.
+
+**2. Declare routes in `index.html`:**
+
 ```html
 <body>
   <route path="/" component="app-shell">
@@ -28,7 +41,7 @@ Only needed when your app has client-side navigation. Server-only apps with full
     <route path="users" component="user-list" exact />
     <route path="users/:id" component="user-detail" exact />
   </route>
-  <script type="module" src="/index.js"></script>
+  <script type="module" src="index.js"></script>
 </body>
 ```
 
@@ -143,13 +156,17 @@ When navigating from Mail to Calendar and back:
 | Local state | ✅ Preserved (scroll, input, timers, observables) | Lost |
 | Server state | **Skipped** — use a [loader](#route-loaders) to refresh | Applied on mount via `setState()` |
 
-::: tip When to use
-Use on routes with expensive UI (lists, grids, trees) that users switch between frequently. Leaf routes with simple data-driven content rarely benefit — they're cheap to recreate.
-:::
+<webui-blockquote appearance="tip" title="When to use" icon="💡">
 
-::: tip Refreshing data on reactivation
+Use on routes with expensive UI (lists, grids, trees) that users switch between frequently. Leaf routes with simple data-driven content rarely benefit — they're cheap to recreate.
+
+</webui-blockquote>
+
+<webui-blockquote appearance="tip" title="Refreshing data on reactivation" icon="💡">
+
 If a keep-alive component needs fresh data when reactivated, define a static `loader()` method. The router calls it on every navigation (including reactivation) and applies the result via `setState()`.
-:::
+
+</webui-blockquote>
 
 ### Preload on Hover
 
@@ -250,9 +267,11 @@ Declare cache tags on routes as HTML attributes. Placeholders like `{threadId}` 
 | **Revisit** | Within `staleTime`, the cached response is used instantly - no network fetch |
 | **Server override** | The server can include `cacheControl: { staleTime: 60000 }` to override per-response |
 
-::: tip Preload + cache interaction
+<webui-blockquote appearance="tip" title="Preload + cache interaction" icon="💡">
+
 When `preload: true` is enabled, hover fetches write to the same cache. Preloaded entries get a minimum 5-second freshness window even when `staleTime` is 0 (disabled).
-:::
+
+</webui-blockquote>
 
 ### Tag-Based Invalidation
 
@@ -444,7 +463,6 @@ Starts the router. Call after hydration completes.
 
 ```typescript
 Router.start({
-  basePath: '/app',           // prefix for all route URLs
   loaders: { ... },           // lazy-loading map (component tag -> async import)
   preload: true,              // speculative fetch on link hover
   ssrFresh: true,             // skip initial loader replay (default: true)
@@ -455,6 +473,8 @@ Router.start({
   },
 });
 ```
+
+> **Base path:** The router automatically reads `<base href>` from the DOM. No `basePath` config needed — just set `<base href="/my-app/">` in your HTML.
 
 ### `Router.navigate(path)`
 
@@ -513,9 +533,11 @@ Release all cached component templates to free memory. Removes all entries from 
 Router.gc();
 ```
 
-::: tip When to use this
+<webui-blockquote appearance="tip" title="When to use this" icon="💡">
+
 Most apps don't need this - the number of unique component templates is bounded by the route tree (typically 10-30). The server's inventory system already prevents duplicate downloads. Use `gc()` in long-lived SPAs with many routes where memory pressure is a concern.
-:::
+
+</webui-blockquote>
 
 ## Lazy Loading
 
@@ -695,9 +717,9 @@ app.get('/users/:id', (req, res) => {
 
 ## Security
 
-Route parameters (`:id`, `:name`, etc.) are extracted from URLs and injected into component state. They are automatically HTML-escaped when rendered with double braces (<code v-pre>{{param}}</code>), but **not** when rendered with triple braces (<code v-pre>{{{param}}}</code>).
+Route parameters (`:id`, `:name`, etc.) are extracted from URLs and injected into component state. They are automatically HTML-escaped when rendered with double braces (`{{param}}`), but **not** when rendered with triple braces (`{{{param}}}`).
 
-> ⚠️ Never use triple braces (<code v-pre>{{{...}}}</code>) to render route parameters. An attacker could craft a URL like `/users/<script>alert(1)</script>` to inject arbitrary HTML.
+> ⚠️ Never use triple braces (`{{{...}}}`) to render route parameters. An attacker could craft a URL like `/users/<script>alert(1)</script>` to inject arbitrary HTML.
 
 Always validate route parameters on the server before including them in state.
 

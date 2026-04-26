@@ -14,7 +14,7 @@ use std::{env, fs};
 /// Build the webui-wasm package for the playground.
 pub fn run() -> Result<(), String> {
     let crate_dir = Path::new("crates/webui-wasm");
-    let out_dir = Path::new("docs/public/wasm");
+    let out_dir = Path::new("docs/.webui-press/public/wasm");
 
     // 1. Ensure wasm-pack is installed (auto-install if missing)
     ensure_cargo_install("wasm-pack", "wasm-pack")?;

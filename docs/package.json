@@ -2,14 +2,13 @@
   "name": "@webui/docs",
   "version": "0.1.0",
   "description": "WebUI Framework Documentation",
+  "private": true,
   "type": "module",
   "scripts": {
-    "build:wasm": "cargo xtask build-wasm --manifest-path ../Cargo.toml",
-    "start": "vitepress dev",
-    "build": "vitepress build",
-    "preview": "vitepress preview"
+    "build": "cargo run -p microsoft-webui-press -- build",
+    "preview": "npx serve dist -l 3333"
   },
-  "devDependencies": {
+  "dependencies": {
     "@codemirror/commands": "catalog:",
     "@codemirror/lang-css": "catalog:",
     "@codemirror/lang-html": "catalog:",
@@ -18,7 +17,7 @@
     "@codemirror/state": "catalog:",
     "@codemirror/theme-one-dark": "catalog:",
     "@codemirror/view": "catalog:",
-    "vitepress": "catalog:",
-    "vue": "catalog:"
+    "@microsoft/webui-framework": "workspace:*",
+    "esbuild": "catalog:"
   }
 }

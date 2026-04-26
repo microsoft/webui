@@ -1,1 +1,3 @@
-public/wasm
+dist/
+node_modules/
+.webui-docs/public/wasm

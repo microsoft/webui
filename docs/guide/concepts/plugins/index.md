@@ -36,8 +36,13 @@ When `--plugin=fast` is specified:
 
 ## Using Plugins with Handlers
 
-::: code-group
-```rust [Rust]
+<webui-tabs>
+<webui-tab slot="tab" active>Rust</webui-tab>
+<webui-tab slot="tab">Node.js</webui-tab>
+<webui-tab slot="tab">FFI (C API)</webui-tab>
+<webui-tab-panel active>
+
+```rust
 use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui::WebUIHandler;
 
@@ -45,17 +50,25 @@ let handler = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()))
 handler.handle(&protocol, &state, &options, &mut writer)?;
 ```
 
-```js [Node.js]
+</webui-tab-panel>
+<webui-tab-panel>
+
+```js
 import { renderStream } from '@microsoft/webui';
 
 renderStream(protocolData, state, (chunk) => res.write(chunk), 'fast');
 ```
 
-```c [FFI (C API)]
+</webui-tab-panel>
+<webui-tab-panel>
+
+```c
 void *handler = webui_handler_create_with_plugin("fast");
 char *html = webui_handler_render(handler, protocol_data, protocol_len, state_json);
 ```
-:::
+
+</webui-tab-panel>
+</webui-tabs>
 
 ## Built-in Plugin: FAST-HTML
 
@@ -78,7 +91,7 @@ The plugin converts WebUI template syntax to FAST equivalents inside `<f-templat
 |-------------|-------------|
 | `<if condition="EXPR">` | `<f-when value="{EXPR}">` |
 | `<for each="item in items">` | `<f-repeat value="{items}">` |
-| <code v-pre>{{expr}}</code> in `:attr` values | `{expr}` |
+| `{{expr}}` in `:attr` values | `{expr}` |
 
 ### Handler Side (`FastHydrationPlugin`)
 
