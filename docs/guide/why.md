@@ -1,8 +1,26 @@
 # Why WebUI?
 
+## Origin
+
+WebUI started inside Microsoft Edge.
+
+Edge is built on Chromium, a C++ codebase. When the Edge team needed to render dynamic UI for in-browser surfaces, the first answer was a client-rendered application: React, then Web Components. The migration to Web Components improved First Contentful Paint and Largest Contentful Paint, but the experience still felt slow. The reason was structural. When HTML and CSS are bundled inside a JavaScript application, the browser cannot paint until that JavaScript downloads, parses, and executes.
+
+The fix was server-side rendering. The conventional answer for SSR was "spin up a Node.js process and run Next.js, Nuxt, or Remix." That answer never made it past the architecture review.
+
+A C++ application embedding a JavaScript engine, to render JavaScript components, that ultimately produce HTML, is three layers of indirection too many. It is slow to start, heavy on memory, and operationally expensive. Edge needed something native: code that could run *inside* Chromium's process model and produce rendered HTML without spawning a JavaScript runtime at all.
+
+So the team asked a different question. **What if server-side rendering did not need JavaScript on the server?**
+
+The answer was already in the platform. Web Components are native to the browser, and they are fast because they are native. Declarative Shadow DOM makes encapsulated, server-rendered components possible without any JavaScript on the page. The piece that did not exist was a renderer: a tiny, native, language-agnostic component that could fill HTML templates with per-request data without parsing, without an AST, and without a JavaScript engine.
+
+That renderer is WebUI.
+
+It runs inside Chromium. It also runs in Rust services, Go binaries, Python web apps, C# APIs, and on every JavaScript runtime worth caring about: Node.js, Bun, and Deno. Because the protocol it streams is just bytes, the host language does not matter. The framework that had to exist for Microsoft Edge turned out to be the framework everyone else has been waiting for.
+
 ## The Problem
 
-Server-side rendering has two costs that compound at scale.
+What Edge ran into is the wall every SSR-heavy team eventually hits. Conventional server-side rendering carries two costs that compound at scale.
 
 **On the server**, traditional SSR frameworks re-parse templates on every request - tokenizing, building an AST, evaluating expressions, and serializing output. This work is redundant: the template structure hasn't changed since the last request, only the data has. JavaScript-based SSR (Next.js, Nuxt, Remix) adds a second layer of overhead by requiring a Node.js runtime - with garbage collection pauses, JIT warmup costs, and memory pressure that grow worse under load.
 

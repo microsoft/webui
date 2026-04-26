@@ -1,6 +1,25 @@
 /* Copyright (c) Microsoft Corporation. */
 /* Licensed under the MIT license. */
 
+/* ── Cross-document view transitions ──────────────────
+   Soft cross-fade between pages on same-origin navigations.
+   Chromium-only; gracefully ignored elsewhere. */
+@view-transition {
+  navigation: auto;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 180ms;
+  animation-timing-function: ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @view-transition {
+    navigation: none;
+  }
+}
+
 :root,
 [data-theme="light"] {
   /* ── Spacing ───────────────────────── */
@@ -525,7 +544,7 @@ body {
 
 .home-hero {
   text-align: center;
-  padding: var(--docs-space-3xl) 0 var(--docs-space-2xl);
+  padding: var(--docs-space-l) 0 var(--docs-space-2xl);
 }
 
 .home-hero h1 {
@@ -537,6 +556,16 @@ body {
   -webkit-text-fill-color: transparent;
   background-clip: text;
   margin-bottom: var(--docs-space-m);
+}
+
+.home-hero .hero-text {
+  font-size: var(--docs-font-size-2xl);
+  font-weight: var(--docs-font-weight-bold);
+  color: var(--docs-color-text);
+  max-width: 760px;
+  margin: 0 auto var(--docs-space-l);
+  line-height: 1.25;
+  letter-spacing: -0.01em;
 }
 
 .home-hero .tagline {
@@ -585,9 +614,19 @@ body {
   color: var(--docs-color-brand);
 }
 
+.hero-manifesto {
+  text-align: center;
+  font-style: italic;
+  font-size: var(--docs-font-size-m);
+  color: var(--docs-color-text-3);
+  max-width: 720px;
+  margin: var(--docs-space-2xl) auto 0;
+  line-height: 1.6;
+}
+
 .features-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(3, 1fr);
   gap: var(--docs-space-l);
   padding: var(--docs-space-xl) 0 var(--docs-space-3xl);
 }
@@ -606,15 +645,22 @@ body {
   box-shadow: var(--docs-card-hover-shadow);
 }
 
+.feature-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--docs-space-m);
+  margin-bottom: var(--docs-space-s);
+}
+
 .feature-icon {
   font-size: 28px;
-  margin-bottom: var(--docs-space-m);
+  line-height: 1;
 }
 
 .feature-card h3 {
   font-size: var(--docs-font-size-base);
   font-weight: var(--docs-font-weight-semibold);
-  margin-bottom: var(--docs-space-s);
+  margin: 0;
 }
 
 .feature-card p {
@@ -652,6 +698,12 @@ body {
 
   .features-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1024px) {
+  .features-grid {
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 

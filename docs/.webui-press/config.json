@@ -231,7 +231,9 @@
     }
   },
   "hero": {
-    "tagline": "A language-agnostic server-side rendering framework that compiles HTML templates into a binary protocol.",
+    "text": "SSR without JavaScript on the server.",
+    "tagline": "No virtual DOM. No JSX. Just HTML, streamed from any language.",
+    "manifesto": "HTML for structure. CSS for style. TypeScript for behavior. The way the web was meant to work.",
     "actions": [
       {
         "text": "Get Started →",
@@ -244,6 +246,11 @@
         "brand": false
       },
       {
+        "text": "See benchmarks",
+        "link": "/webui/guide/concepts/performance/",
+        "brand": false
+      },
+      {
         "text": "GitHub",
         "link": "https://github.com/microsoft/webui",
         "brand": false
@@ -251,34 +258,34 @@
     ],
     "features": [
       {
-        "icon": "🏝️",
-        "title": "Islands Architecture",
-        "description": "Each Web Component is an interactive island. Static content stays server-rendered with zero client-side JavaScript."
-      },
-      {
         "icon": "⚡",
-        "title": "Compiled to Binary",
-        "description": "Templates compiled at build time into Protocol Buffer binaries — no parsing, no interpretation at runtime."
+        "title": "Compiled, not interpreted",
+        "description": "Templates and Web Components compile at build time into a binary Protocol Buffer. The server's hot path is just filling holes and streaming bytes. No template parsing, no AST walking, no interpretation at runtime."
       },
       {
         "icon": "🌐",
-        "title": "Language Agnostic",
-        "description": "Render from Rust, Node, Go, C#, Python — any language via FFI. The compiled protocol is just bytes."
+        "title": "Render from any language",
+        "description": "SSR has historically been a Node.js privilege. WebUI changes that. Stream pages from Rust, Go, Python, C#, Bun, Deno, Node.js, or WASM running at the edge or in the browser. The protocol is just bytes; any runtime that can read bytes and write strings can serve a site."
+      },
+      {
+        "icon": "🔄",
+        "title": "Truly isomorphic",
+        "description": "Same Web Components run on the server and the client. The server renders dynamic, per-request HTML by filling compiled templates with live state, with no JavaScript runtime needed. The browser streams a fully-rendered page, then hydrates the same components against the existing DOM. Isomorphic apps without the Node.js dependency."
       },
       {
         "icon": "🧩",
-        "title": "Web Components",
-        "description": "Built on native Web Components with Declarative Shadow DOM. No virtual DOM, no proprietary component model."
+        "title": "webui-framework",
+        "description": "A tiny client runtime for Web Components, tuned for rendering speed and low memory. Built on Declarative Shadow DOM and native browser APIs. No virtual DOM, no proprietary component model, no JSX."
       },
       {
-        "icon": "📐",
-        "title": "Declarative Templates",
-        "description": "HTML for structure, CSS for styling, TypeScript for behavior — in separate files. No JSX, no CSS-in-JS."
+        "icon": "🧭",
+        "title": "webui-router",
+        "description": "Routes declared in HTML and compiled at build time. The server matches every navigation and returns the route chain as JSON; the client diffs against the current chain and remounts only the level that changed. Tagged caching and invalidation graphs are validated by the compiler, not configured at runtime."
       },
       {
-        "icon": "🔌",
-        "title": "Plugin System",
-        "description": "Extensible parser and handler plugins for hydration strategies, custom directives, and framework-specific behavior."
+        "icon": "📰",
+        "title": "webui-press",
+        "description": "A blazing-fast static site generator powered by the framework itself. Compiles markdown and components in parallel into a fully static site. Perfect for GitHub Pages, CDNs, and anywhere that just serves files. (You are reading a site built with it.)"
       }
     ]
   },

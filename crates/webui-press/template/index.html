@@ -32,10 +32,13 @@
   </header>
 
   <if condition="page.isHome">
-    <main class="main-content" style="max-width:960px;margin:0 auto;">
+    <main class="main-content" style="max-width:1152px;margin:0 auto;">
       <if condition="hero">
         <div class="home-hero">
           <h1>{{site.title}}</h1>
+          <if condition="hero.text">
+            <p class="hero-text">{{hero.text}}</p>
+          </if>
           <p class="tagline">{{hero.tagline}}</p>
           <div class="home-actions">
             <for each="action in hero.actions">
@@ -48,11 +51,16 @@
             </for>
           </div>
         </div>
+        <if condition="hero.manifesto">
+          <p class="hero-manifesto">{{hero.manifesto}}</p>
+        </if>
         <div class="features-grid">
           <for each="feature in hero.features">
             <div class="feature-card">
-              <div class="feature-icon">{{feature.icon}}</div>
-              <h3>{{feature.title}}</h3>
+              <div class="feature-card-header">
+                <div class="feature-icon">{{feature.icon}}</div>
+                <h3>{{feature.title}}</h3>
+              </div>
               <p>{{feature.description}}</p>
             </div>
           </for>
@@ -61,7 +69,8 @@
     </main>
   </if>
 
-  <div class="layout">
+  <if condition="!page.isHome">
+    <div class="layout">
     <aside class="sidebar">
       <for each="section in sidebar.sections">
         <div class="sidebar-group">
@@ -127,6 +136,7 @@
       </nav>
     </main>
   </div>
+  </if>
 
   <if condition="footer">
     <footer class="site-footer">

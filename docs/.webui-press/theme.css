@@ -49,6 +49,9 @@
   --docs-color-code-text: #e6edf3;
   --docs-color-code-hl: rgba(151, 171, 234, .08);
   --docs-nav-bg: rgba(14, 17, 27, 0.85);
+  --docs-card-bg: #161a27;
+  --docs-card-shadow: 0 1px 3px rgba(0, 0, 0, 0.30);
+  --docs-card-hover-shadow: 0 8px 32px rgba(0, 0, 0, 0.40);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -66,5 +69,8 @@
     --docs-color-code-text: #e6edf3;
     --docs-color-code-hl: rgba(151, 171, 234, .08);
     --docs-nav-bg: rgba(14, 17, 27, 0.85);
+    --docs-card-bg: #161a27;
+    --docs-card-shadow: 0 1px 3px rgba(0, 0, 0, 0.30);
+    --docs-card-hover-shadow: 0 8px 32px rgba(0, 0, 0, 0.40);
   }
 }

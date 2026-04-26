@@ -114,7 +114,11 @@ impl CustomPage {
 
 #[derive(Debug, Deserialize)]
 pub struct HeroConfig {
+    #[serde(default)]
+    pub text: Option<String>,
     pub tagline: String,
+    #[serde(default)]
+    pub manifesto: Option<String>,
     pub actions: Vec<HeroAction>,
     pub features: Vec<HeroFeature>,
 }

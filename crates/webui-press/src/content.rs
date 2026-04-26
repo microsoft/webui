@@ -445,7 +445,19 @@ pub fn process_content(
                     .as_ref()
                     .map(|h| {
                         json_obj([
+                            (
+                                "text",
+                                h.text
+                                    .as_ref()
+                                    .map_or(Value::Null, |t| Value::String(t.clone())),
+                            ),
                             ("tagline", Value::String(h.tagline.clone())),
+                            (
+                                "manifesto",
+                                h.manifesto
+                                    .as_ref()
+                                    .map_or(Value::Null, |m| Value::String(m.clone())),
+                            ),
                             (
                                 "actions",
                                 Value::Array(
