@@ -7,6 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
+use console::style;
 use rayon::prelude::*;
 use serde_json::{Map, Value};
 use webui::BuildOptions;
@@ -16,6 +17,49 @@ use crate::content::process_content;
 use crate::error::{Error, Result};
 use crate::markdown::Highlighter;
 use crate::types::{BuildStats, DocsConfig};
+
+// ── Output helpers ──────────────────────────────────────────────
+//
+// Mirrors the styling vocabulary in `crates/webui-cli/src/utils/output.rs`
+// so webui-press feels at home in a workspace where users may also see
+// `webui build` / `webui serve` output.
+
+fn print_header(title: &str) {
+    eprintln!(
+        "\n  {} {}",
+        style("⚡").cyan().bold(),
+        style(title).cyan().bold()
+    );
+}
+
+fn print_field(label: &str, value: &str) {
+    eprintln!(
+        "  {} {}",
+        style(format!("▸ {label:<10}")).dim(),
+        style(value).bold()
+    );
+}
+
+fn print_success(message: &str) {
+    eprintln!("  {} {message}", style("✔").green());
+}
+
+fn print_finish(message: &str) {
+    eprintln!("\n  {} {message}\n", style("✨").green());
+}
+
+/// Format a byte count as a human-readable string (KB / MB).
+fn format_bytes(bytes: usize) -> String {
+    const KB: usize = 1024;
+    const MB: usize = KB * 1024;
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.0} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
 
 /// Build a JSON object from key-value pairs without using `json!` (which calls `unwrap`).
 fn json_obj<const N: usize>(entries: [(&str, Value); N]) -> Value {
@@ -80,22 +124,20 @@ pub fn build_docs(
         .and_then(|p| fs::read_to_string(p).ok())
         .unwrap_or_default();
 
-    if !custom_css.is_empty() {
-        println!("   Custom CSS: {}", config.css.as_deref().unwrap_or(""));
+    print_header(&config.site.title);
+    if let Some(css_path) = config.css.as_deref() {
+        if !custom_css.is_empty() {
+            print_field("Theme CSS", css_path);
+        }
     }
-
-    println!("=== {} — Docs Build ===\n", config.site.title);
+    eprintln!();
 
     // Step 1: Process content
-    println!("1. Processing content...");
     let highlighter = Highlighter::new();
 
     let mut pages = process_content(config, config_dir, &highlighter)?;
-    println!("   {} pages processed", pages.len());
 
     // Step 2: Resolve component sources for the per-page builds
-    println!("2. Resolving components...");
-
     let mut component_sources: Vec<String> = Vec::new();
     // Built-in component library (e.g. crates/webui-press/components/)
     let builtin_components = template_dir.parent().map(|p| p.join("components"));
@@ -119,7 +161,6 @@ pub fn build_docs(
         .map_err(|e| Error::Build(format!("Failed to read template: {e}")))?;
 
     // Step 3: Pre-render pages in parallel
-    println!("3. Pre-rendering pages...");
     if out_dir.exists() {
         fs::remove_dir_all(out_dir)
             .map_err(|e| Error::Io(format!("Cannot clean output dir: {e}")))?;
@@ -188,7 +229,7 @@ pub fn build_docs(
     let template_dir_owned = template_dir.to_path_buf();
     let component_sources_clone = component_sources.clone();
     let site_dir_clone = site_dir.clone();
-    let bundle_handle = std::thread::spawn(move || -> Result<()> {
+    let bundle_handle = std::thread::spawn(move || -> Result<usize> {
         let node_modules = std::env::current_dir()
             .unwrap_or_default()
             .join("node_modules");
@@ -210,6 +251,8 @@ pub fn build_docs(
     // template metadata to `window.__webui.templates` for client-side
     // hydration — no manual registration tricks required.
     let total_bytes = std::sync::atomic::AtomicUsize::new(0);
+    let component_css: std::sync::Mutex<std::collections::HashMap<String, String>> =
+        std::sync::Mutex::new(std::collections::HashMap::new());
     pages.par_iter().try_for_each(|page| -> Result<()> {
         let content = page.state["page"]["content"].as_str().unwrap_or("");
 
@@ -239,7 +282,7 @@ pub fn build_docs(
         let build_result = webui::build(BuildOptions {
             app_dir: page_tmp.clone(),
             entry: "index.html".to_string(),
-            css: webui::CssStrategy::Style,
+            css: webui::CssStrategy::Link,
             dom: webui::DomStrategy::Shadow,
             plugin: Some(webui::Plugin::WebUI),
             components: component_sources.clone(),
@@ -250,6 +293,19 @@ pub fn build_docs(
             build_result.protocol_bytes.len(),
             std::sync::atomic::Ordering::Relaxed,
         );
+
+        // Collect per-component CSS files (Link strategy emits one .css
+        // per component used on the page). Multiple pages share components,
+        // so we dedupe by filename in a shared map and write once after
+        // the parallel pass completes.
+        if !build_result.css_files.is_empty() {
+            let mut css_map = component_css
+                .lock()
+                .map_err(|e| Error::Build(format!("css mutex poisoned: {e}")))?;
+            for (name, content) in build_result.css_files {
+                css_map.entry(name).or_insert(content);
+            }
+        }
 
         let mut writer = StringWriter::with_capacity(8192);
         handler
@@ -273,12 +329,9 @@ pub fn build_docs(
         Ok(())
     })?;
 
-    for page in &pages {
-        println!("   {}", page.path);
-    }
+    print_success(&format!("Rendered {} pages", pages.len()));
 
     // Step 4: Search index (parallel)
-    println!("4. Generating search index...");
     let search_index: Vec<serde_json::Value> = pages
         .par_iter()
         .filter(|p| !p.is_home)
@@ -315,17 +368,15 @@ pub fn build_docs(
             .map_err(|e| Error::Build(format!("JSON error: {e}")))?,
     )
     .map_err(|e| Error::Io(e.to_string()))?;
-    println!("   {} pages indexed", search_index.len());
+    print_success(&format!("Indexed {} pages for search", search_index.len()));
 
     // Step 5: Copy static assets
-    println!("5. Copying static assets...");
     let public_dir = Path::new(&config.public_dir);
     if public_dir.exists() {
         copy_dir(public_dir, &site_dir)?;
     }
 
     // Step 6: Generate 404 page
-    println!("6. Generating 404 page...");
     let nav_val = pages
         .first()
         .map(|p| p.state["navigation"].clone())
@@ -385,12 +436,27 @@ pub fn build_docs(
     let nf_build = webui::build(BuildOptions {
         app_dir: nf_tmp.clone(),
         entry: "index.html".to_string(),
-        css: webui::CssStrategy::Style,
+        css: webui::CssStrategy::Link,
         dom: webui::DomStrategy::Shadow,
         plugin: Some(webui::Plugin::WebUI),
         components: component_sources.clone(),
     })
     .map_err(|e| Error::Build(format!("404 build failed: {e}")))?;
+
+    // Fold the 404 page's component CSS into the shared map, then write
+    // all per-component stylesheets at site root in one pass. The handler
+    // emits relative hrefs like `<link rel="stylesheet" href="code-block.css">`;
+    // the template's <base href="{site.base}"> resolves them against site root.
+    {
+        let mut css_map = component_css
+            .lock()
+            .map_err(|e| Error::Build(format!("css mutex poisoned: {e}")))?;
+        for (name, content) in &nf_build.css_files {
+            css_map
+                .entry(name.clone())
+                .or_insert_with(|| content.clone());
+        }
+    }
 
     let mut writer_404 = StringWriter::with_capacity(4096);
     handler
@@ -404,21 +470,34 @@ pub fn build_docs(
 
     fs::write(out_dir.join("404.html"), writer_404.buf).map_err(|e| Error::Io(e.to_string()))?;
     fs::remove_dir_all(&nf_tmp).ok();
-    println!("   404.html");
+    print_success("Generated 404 page");
+
+    // Write deduped per-component stylesheets gathered during page + 404 builds.
+    let css_map = component_css
+        .into_inner()
+        .map_err(|e| Error::Build(format!("css mutex poisoned: {e}")))?;
+    let css_count = css_map.len();
+    for (name, content) in css_map {
+        fs::write(site_dir.join(&name), content)
+            .map_err(|e| Error::Io(format!("Cannot write {name}: {e}")))?;
+    }
+    if css_count > 0 {
+        print_success(&format!("Wrote {css_count} component stylesheets"));
+    }
 
     // Step 7: Wait for the background bundling thread.
-    println!("7. Bundling components...");
-    bundle_handle
+    let component_count = bundle_handle
         .join()
         .map_err(|_| Error::Build("Bundle thread panicked".to_string()))??;
+    print_success(&format!("Bundled {component_count} components"));
 
     let elapsed = start.elapsed();
     let total_bytes = total_bytes.load(std::sync::atomic::Ordering::Relaxed);
-    println!(
-        "\n=== Build complete: {} pages + 404 in {:.1}s ===",
-        pages.len(),
+    print_finish(&format!(
+        "Built in {:.1}s · {} protocol",
         elapsed.as_secs_f64(),
-    );
+        format_bytes(total_bytes),
+    ));
 
     Ok(BuildStats {
         pages: pages.len(),
@@ -484,12 +563,13 @@ fn collect_ts_files(dir: &Path) -> Vec<std::path::PathBuf> {
 }
 
 /// Bundle component TypeScript files into a single `components.js` via esbuild.
+/// Returns the number of components bundled.
 fn bundle_components(
     template_dir: &Path,
     component_sources: &[String],
     site_dir: &Path,
     node_modules: &Path,
-) -> Result<()> {
+) -> Result<usize> {
     let mut ts_files = Vec::new();
 
     // Collect from user component directories
@@ -510,7 +590,7 @@ fn bundle_components(
     }
 
     if ts_files.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
 
     // Generate the entry file content
@@ -549,8 +629,7 @@ fn bundle_components(
         return Err(Error::Build(format!("esbuild error: {stderr}")));
     }
 
-    println!("   components.js ({} components)", ts_files.len());
-    Ok(())
+    Ok(ts_files.len())
 }
 
 /// Replace `<pre …>…</pre>` blocks with placeholder comments so the WebUI

@@ -209,6 +209,7 @@ pub struct PageDescriptor {
 }
 
 /// Build output statistics.
+#[allow(dead_code)] // Public lib API; the binary's main.rs does not consume the fields.
 pub struct BuildStats {
     pub pages: usize,
     pub protocol_bytes: usize,

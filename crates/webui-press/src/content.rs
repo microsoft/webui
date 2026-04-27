@@ -156,10 +156,7 @@ fn collect_sidebar_links(items: &[SidebarItem]) -> Vec<&str> {
 ///
 /// Discovery is filesystem-driven: any markdown file under content_dir becomes
 /// a page. The sidebar/nav config controls navigation, not discovery.
-fn build_page_registry(
-    content_dir: &Path,
-    base_path: &str,
-) -> Vec<(String, std::path::PathBuf)> {
+fn build_page_registry(content_dir: &Path, base_path: &str) -> Vec<(String, std::path::PathBuf)> {
     let mut pages = Vec::new();
     let mut stack: Vec<std::path::PathBuf> = vec![content_dir.to_path_buf()];
 
@@ -618,8 +615,11 @@ pub fn process_content(
             .sidebar_groups
             .iter()
             .find(|(prefix, _)| {
-                let full_prefix =
-                    format!("{}{}", base_path, prefix.strip_prefix('/').unwrap_or(prefix));
+                let full_prefix = format!(
+                    "{}{}",
+                    base_path,
+                    prefix.strip_prefix('/').unwrap_or(prefix)
+                );
                 let trimmed = full_prefix.trim_end_matches('/');
                 page_path == trimmed || page_path.starts_with(&format!("{trimmed}/"))
             })

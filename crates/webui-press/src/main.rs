@@ -95,14 +95,7 @@ fn run_build(config_path: &str, template_dir: Option<&str>) -> Result<()> {
         }
     };
 
-    let stats = build::build_docs(&docs_config, &config_dir, &template)?;
-
-    println!(
-        "{} {} pages, {} protocol bytes",
-        style("✔").green().bold(),
-        style(stats.pages).bold(),
-        style(stats.protocol_bytes).bold(),
-    );
+    let _stats = build::build_docs(&docs_config, &config_dir, &template)?;
 
     Ok(())
 }
