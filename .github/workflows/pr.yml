@@ -132,22 +132,12 @@ jobs:
   docs:
     name: Docs
     runs-on: ubuntu-latest
+    needs: build-linux
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+      - uses: ./.github/actions/build
         with:
-          run_install: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install
+          shared-cache-key: ubuntu-build
 
       - name: Build docs
-        run: cargo build -p microsoft-webui-press && pnpm --filter @webui/docs build
+        run: pnpm --filter @webui/docs build
