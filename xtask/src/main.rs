@@ -261,7 +261,12 @@ impl Step {
         run: || {
             // Build the standalone webui-press binary
             run_command_quiet("cargo", &["build", "-p", "microsoft-webui-press"], None)?;
-            run_command_quiet("pnpm", &["--filter", "@webui/docs", "build"], None)
+            // `@webui/docs...` builds the docs package AND all of its workspace
+            // dependencies (e.g. `@microsoft/webui-framework`'s tsc compile)
+            // so that esbuild can resolve their `exports` to real .js files.
+            // Without this, a fresh checkout would fail with
+            // "Could not resolve @microsoft/webui-framework".
+            run_command_quiet("pnpm", &["--filter", "@webui/docs...", "build"], None)
         },
     };
     const BENCH_VALIDATE: Self = Self {
