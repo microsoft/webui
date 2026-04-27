@@ -1195,7 +1195,19 @@ impl HtmlParser {
         source: &str,
         fragments: &mut Vec<WebUIFragment>,
     ) -> Result<()> {
-        self.add_raw_fragment("<body>");
+        let tag_node = self.find_tag_node(node);
+        if let Some(tag_node) = tag_node {
+            self.add_raw_fragment("<body");
+            let binding_count = self.process_tag_attributes(tag_node, source, fragments, false)?;
+            if let Some(ref mut p) = self.plugin {
+                if let Some(data) = p.finish_element(binding_count) {
+                    self.add_fragment(WebUIFragment::plugin(data), fragments);
+                }
+            }
+            self.add_raw_fragment(">");
+        } else {
+            self.add_raw_fragment("<body>");
+        }
         self.flush_raw_buffer(fragments);
         fragments.push(WebUIFragment::signal("body_start", true));
         self.process_content_children(node, source, fragments)?;
@@ -3568,6 +3580,53 @@ mod tests {
                 raw("</head><body>"),
                 signal_raw("body_start"),
                 raw("<div>Content</div><p>More</p>"),
+                signal_raw("body_end"),
+                raw("</body></html>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_body_preserves_static_attributes() {
+        // The <body> tag's attributes must be carried through to the rendered
+        // HTML, otherwise host frames (e.g. webui-press's `<body data-layout="…">`)
+        // lose their styling hooks. Earlier versions of `process_body_with_signals`
+        // emitted a bare `<body>` and dropped every attribute on the element.
+        let html = r#"<html><head><title>T</title></head><body data-layout="doc" class="page"><p>x</p></body></html>"#;
+        let (fragments, _) = parse_and_get_fragments(html);
+
+        assert_fragments!(
+            fragments,
+            [
+                raw("<html><head><title>T</title>"),
+                signal_raw("head_end"),
+                raw(r#"</head><body data-layout="doc" class="page">"#),
+                signal_raw("body_start"),
+                raw("<p>x</p>"),
+                signal_raw("body_end"),
+                raw("</body></html>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_body_preserves_dynamic_attributes() {
+        // Dynamic attributes on <body> (e.g. `data-layout="{{layout}}"`) must
+        // emit attribute fragments rather than being inlined as literal text,
+        // so the handler binds them to runtime state at render time.
+        let html = r#"<html><head><title>T</title></head><body data-layout="{{layout}}"><p>x</p></body></html>"#;
+        let (fragments, _) = parse_and_get_fragments(html);
+
+        assert_fragments!(
+            fragments,
+            [
+                raw("<html><head><title>T</title>"),
+                signal_raw("head_end"),
+                raw("</head><body"),
+                attr("data-layout", "layout"),
+                raw(">"),
+                signal_raw("body_start"),
+                raw("<p>x</p>"),
                 signal_raw("body_end"),
                 raw("</body></html>"),
             ]
