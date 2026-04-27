@@ -1,7 +1,7 @@
 {
   "site": {
     "title": "WebUI Framework",
-    "description": "A language-agnostic server-side rendering framework that compiles HTML templates into a binary protocol."
+    "description": "SSR without JavaScript on the server. No virtual DOM. No JSX. Just HTML, streamed from any language."
   },
   "basePath": "/webui/",
   "contentDir": ".",

@@ -7,14 +7,6 @@
 import "./docs-theme-toggle/docs-theme-toggle.js";
 import "./docs-search/docs-search.js";
 
-// Load site-specific component bundle (if exists)
-const base =
-  document.querySelector("meta[name='base']")?.getAttribute("content") || "/";
-const s = document.createElement("script");
-s.type = "module";
-s.src = base + "components.js";
-document.head.appendChild(s);
-
 // Hash anchor scrolling
 if (window.location.hash) {
   const el = document.querySelector(window.location.hash);
