@@ -442,7 +442,9 @@ pub fn build_docs(
         )
         .map_err(|e| Error::Render(format!("404: {e}")))?;
 
-    fs::write(out_dir.join("404.html"), writer_404.buf).map_err(|e| Error::Io(e.to_string()))?;
+    // Write 404.html into site_dir so GitHub Pages (and any host that maps
+    // its publish root to `<basePath>`) serves it for unmatched URLs.
+    fs::write(site_dir.join("404.html"), writer_404.buf).map_err(|e| Error::Io(e.to_string()))?;
     fs::remove_dir_all(&nf_tmp).ok();
     print_success("Generated 404 page");
 
