@@ -280,6 +280,6 @@
     ]
   },
   "footer": {
-    "html": "Released under the <a href=\"https://opensource.org/licenses/MIT\">MIT License</a>. Built with <a href=\"https://github.com/microsoft/webui\">WebUI Framework</a>."
+    "html": "Released under the <a href=\"https://opensource.org/licenses/MIT\">MIT License</a>. Built with <a href=\"https://github.com/microsoft/webui/blob/main/crates/webui-press/README.md\">WebUI Framework Static Site Generator</a>."
   }
 }
