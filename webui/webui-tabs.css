@@ -1,0 +1,32 @@
+:host {
+  display: block;
+  margin: var(--docs-space-m, 16px) 0;
+  border: 1px solid var(--docs-color-border, #e2e2e3);
+  border-radius: var(--docs-radius-l, 8px);
+  overflow: hidden;
+}
+
+.tabs-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.tab-bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--docs-color-border, #e2e2e3);
+  background: var(--docs-color-bg-alt, #f6f6f7);
+  overflow-x: auto;
+}
+
+.tab-panels {
+  position: relative;
+}
+
+::slotted(webui-tab-panel) {
+  display: none;
+}
+
+::slotted(webui-tab-panel[active]) {
+  display: block;
+}

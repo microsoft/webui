@@ -1,0 +1,17 @@
+:host {
+  display: none;
+}
+
+:host([active]) {
+  display: block;
+}
+
+.panel ::slotted(pre) {
+  margin: 0;
+  border-radius: 0;
+}
+
+.panel ::slotted(.code-block) {
+  margin: 0;
+  border-radius: 0;
+}

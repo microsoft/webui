@@ -1,0 +1,78 @@
+/* WebUI Docs — Custom Theme
+   Overrides design tokens only. No layout or selector changes. */
+
+:root, [data-theme="light"] {
+  --docs-max-width: none;
+  
+  /* Brand */
+  --docs-color-brand: #a25a02;
+  --docs-color-brand-hover: #c87b0a;
+  --docs-color-brand-bg: rgba(162, 90, 2, 0.06);
+
+  /* Surfaces */
+  --docs-color-bg: #efeae7;
+  --docs-color-bg-alt: #ddd7d1;
+  --docs-color-text: #272320;
+  --docs-color-text-2: rgba(39, 35, 32, 0.70);
+  --docs-color-text-3: rgba(39, 35, 32, 0.44);
+  --docs-color-border: rgba(39, 35, 32, 0.10);
+
+  /* Code */
+  --docs-color-code-bg: #e5dfd9;
+  --docs-color-code-text: #272320;
+  --docs-color-code-hl: rgba(162, 90, 2, .06);
+
+  /* Typography */
+  --docs-font-mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono',
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Components */
+  --docs-btn-brand-bg: #272320;
+  --docs-btn-brand-hover-bg: #3d3833;
+  --docs-card-bg: #ffffff;
+  --docs-card-shadow: 0 1px 3px rgba(39, 35, 32, 0.04);
+  --docs-card-hover-shadow: 0 8px 32px rgba(39, 35, 32, 0.06);
+  --docs-nav-bg: rgba(239, 234, 231, 0.85);
+  --docs-nav-backdrop: blur(12px);
+  --docs-hero-gradient: linear-gradient(135deg, #a25a02, #c87b0a 40%, #8a4b03);
+}
+
+[data-theme="dark"] {
+  --docs-color-bg: #0e111b;
+  --docs-color-bg-alt: #0b0d15;
+  --docs-color-text: #d4cfc7;
+  --docs-color-text-2: rgba(212, 207, 199, 0.70);
+  --docs-color-text-3: rgba(212, 207, 199, 0.44);
+  --docs-color-border: rgba(212, 207, 199, 0.10);
+  --docs-color-brand: #c87b0a;
+  --docs-color-brand-hover: #e0a040;
+  --docs-color-brand-bg: rgba(200, 123, 10, 0.10);
+  --docs-color-code-bg: #161a27;
+  --docs-color-code-text: #e6edf3;
+  --docs-color-code-hl: rgba(151, 171, 234, .08);
+  --docs-nav-bg: rgba(14, 17, 27, 0.85);
+  --docs-card-bg: #161a27;
+  --docs-card-shadow: 0 1px 3px rgba(0, 0, 0, 0.30);
+  --docs-card-hover-shadow: 0 8px 32px rgba(0, 0, 0, 0.40);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --docs-color-bg: #0e111b;
+    --docs-color-bg-alt: #0b0d15;
+    --docs-color-text: #d4cfc7;
+    --docs-color-text-2: rgba(212, 207, 199, 0.70);
+    --docs-color-text-3: rgba(212, 207, 199, 0.44);
+    --docs-color-border: rgba(212, 207, 199, 0.10);
+    --docs-color-brand: #c87b0a;
+    --docs-color-brand-hover: #e0a040;
+    --docs-color-brand-bg: rgba(200, 123, 10, 0.10);
+    --docs-color-code-bg: #161a27;
+    --docs-color-code-text: #e6edf3;
+    --docs-color-code-hl: rgba(151, 171, 234, .08);
+    --docs-nav-bg: rgba(14, 17, 27, 0.85);
+    --docs-card-bg: #161a27;
+    --docs-card-shadow: 0 1px 3px rgba(0, 0, 0, 0.30);
+    --docs-card-hover-shadow: 0 8px 32px rgba(0, 0, 0, 0.40);
+  }
+}
