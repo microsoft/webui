@@ -124,12 +124,9 @@ pub fn build_docs(
         fs::remove_dir_all(out_dir)
             .map_err(|e| Error::Io(format!("Cannot clean output dir: {e}")))?;
     }
-
-    // Pre-create all directories
-    for page in &pages {
-        let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
-        fs::create_dir_all(&page_dir).map_err(|e| Error::Io(format!("Cannot create dir: {e}")))?;
-    }
+    // The site root must exist before we copy CSS into it; per-page subdirs
+    // are created later, just before parallel rendering.
+    fs::create_dir_all(&site_dir).map_err(|e| Error::Io(format!("Cannot create site dir: {e}")))?;
 
     // Copy base stylesheet to output and build head injection
     let base_css_src = template_dir.join("docs.css");
@@ -565,7 +562,7 @@ fn protect_pre_blocks(content: &str) -> (String, Vec<String>) {
     let mut blocks: Vec<String> = Vec::new();
     let mut out = String::with_capacity(content.len());
     let mut cursor = 0;
-    while let Some(rel_start) = content[cursor..].find("<pre ") {
+    while let Some(rel_start) = find_pre_open(&content[cursor..]) {
         let start = cursor + rel_start;
         if let Some(rel_end) = content[start..].find("</pre>") {
             let end = start + rel_end + "</pre>".len();
@@ -582,6 +579,22 @@ fn protect_pre_blocks(content: &str) -> (String, Vec<String>) {
     }
     out.push_str(&content[cursor..]);
     (out, blocks)
+}
+
+/// Find the next opening `<pre` tag where the next byte is one of `>`, ` `,
+/// `\t`, `\n`, or `\r`. Avoids matching `<presentation`, `<pretend`, etc.
+fn find_pre_open(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while let Some(rel) = s[i..].find("<pre") {
+        let pos = i + rel;
+        let after = pos + 4;
+        match bytes.get(after) {
+            Some(b'>' | b' ' | b'\t' | b'\n' | b'\r') => return Some(pos),
+            _ => i = after,
+        }
+    }
+    None
 }
 
 /// Single-pass restoration of `<!--PRE_BLOCK_N-->` placeholders to their
@@ -627,4 +640,87 @@ fn fxhash(s: &str) -> u64 {
         hash = hash.wrapping_mul(0x100_0000_01b3);
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- truncate_utf8 ---------------------------------------------------
+
+    #[test]
+    fn truncate_utf8_short_string_unchanged() {
+        assert_eq!(truncate_utf8("hello", 100), "hello");
+    }
+
+    #[test]
+    fn truncate_utf8_ascii_at_exact_boundary() {
+        assert_eq!(truncate_utf8("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_utf8_steps_back_off_multibyte_boundary() {
+        // "é" is two bytes (0xC3 0xA9). Cutting at 1 byte must step back to 0.
+        let s = "é-suffix";
+        let out = truncate_utf8(s, 1);
+        assert!(s.is_char_boundary(out.len()), "out.len()={}", out.len());
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn truncate_utf8_keeps_multibyte_when_room_allows() {
+        let s = "café";
+        let out = truncate_utf8(s, 5); // "café" is 5 bytes total
+        assert_eq!(out, "café");
+    }
+
+    // --- protect_pre_blocks / find_pre_open ------------------------------
+
+    #[test]
+    fn protect_pre_blocks_with_attrs() {
+        let input = r#"<p>before</p><pre class="hljs">code</pre><p>after</p>"#;
+        let (out, blocks) = protect_pre_blocks(input);
+        assert_eq!(blocks.len(), 1);
+        assert!(out.contains("<!--PRE_BLOCK_0-->"));
+        assert!(!out.contains("<pre"));
+        assert_eq!(blocks[0], r#"<pre class="hljs">code</pre>"#);
+    }
+
+    #[test]
+    fn protect_pre_blocks_bare_open_tag() {
+        // Was previously missed because we only matched "<pre " (with space).
+        let input = "<pre>code</pre>";
+        let (out, blocks) = protect_pre_blocks(input);
+        assert_eq!(blocks.len(), 1, "got out={out:?} blocks={blocks:?}");
+        assert_eq!(blocks[0], "<pre>code</pre>");
+    }
+
+    #[test]
+    fn protect_pre_blocks_does_not_match_presentation_tag() {
+        // <presentation> must NOT be treated as a pre block.
+        let input = "<presentation>x</presentation>";
+        let (_out, blocks) = protect_pre_blocks(input);
+        assert_eq!(blocks.len(), 0);
+    }
+
+    #[test]
+    fn protect_then_restore_round_trip() {
+        let input = "before <pre>a</pre> mid <pre class=\"x\">b</pre> end";
+        let (protected, blocks) = protect_pre_blocks(input);
+        let restored = restore_pre_blocks(&protected, &blocks);
+        assert_eq!(restored, input);
+    }
+
+    #[test]
+    fn restore_pre_blocks_no_blocks_returns_input() {
+        assert_eq!(restore_pre_blocks("plain html", &[]), "plain html");
+    }
+
+    // --- fxhash ----------------------------------------------------------
+
+    #[test]
+    fn fxhash_deterministic() {
+        assert_eq!(fxhash("abc"), fxhash("abc"));
+        assert_ne!(fxhash("abc"), fxhash("abd"));
+    }
 }

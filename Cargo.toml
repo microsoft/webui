@@ -50,6 +50,9 @@ tree-sitter-html = "0.23.2"
 tree-sitter-css = "0.25.0"
 walkdir = "2.5.0"
 toml = "0.8"
+comrak = { version = "0.52.0", default-features = false, features = ["syntect"] }
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "html", "plist-load", "regex-onig"] }
+serde_yaml = "0.9"
 libc = "0.2.183"
 which = "8.0.2"
 windows = { version = "0.62.2", features = [

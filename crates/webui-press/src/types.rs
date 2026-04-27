@@ -21,7 +21,7 @@ pub struct DocsConfig {
     pub nav: Vec<NavLink>,
     pub sidebar: Vec<SidebarSection>,
     #[serde(default)]
-    pub sidebar_groups: std::collections::HashMap<String, Vec<SidebarSection>>,
+    pub sidebar_groups: std::collections::BTreeMap<String, Vec<SidebarSection>>,
     #[serde(default)]
     pub custom_pages: std::collections::HashMap<String, CustomPage>,
     pub hero: Option<HeroConfig>,
@@ -146,7 +146,7 @@ pub struct HeroFeature {
 pub struct HeadTag {
     pub tag: String,
     #[serde(default)]
-    pub attrs: std::collections::HashMap<String, String>,
+    pub attrs: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub content: Option<String>,
 }
@@ -212,4 +212,88 @@ pub struct PageDescriptor {
 pub struct BuildStats {
     pub pages: usize,
     pub protocol_bytes: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    // --- HeadTag::to_html ------------------------------------------------
+
+    fn tag(name: &str, attrs: &[(&str, &str)], content: Option<&str>) -> HeadTag {
+        let mut map = BTreeMap::new();
+        for (k, v) in attrs {
+            map.insert((*k).to_string(), (*v).to_string());
+        }
+        HeadTag {
+            tag: name.to_string(),
+            attrs: map,
+            content: content.map(String::from),
+        }
+    }
+
+    #[test]
+    fn head_tag_void_element_has_no_closing_tag() {
+        let t = tag("link", &[("rel", "icon"), ("href", "/favicon.ico")], None);
+        let html = t.to_html();
+        assert!(html.starts_with("<link "), "got {html}");
+        assert!(
+            !html.contains("</link>"),
+            "void element must not close: {html}"
+        );
+    }
+
+    #[test]
+    fn head_tag_non_void_self_closes() {
+        let t = tag("script", &[("src", "/app.js")], None);
+        let html = t.to_html();
+        assert!(html.ends_with("</script>"), "got {html}");
+    }
+
+    #[test]
+    fn head_tag_with_content_emits_inner() {
+        let t = tag("script", &[], Some("console.log('x');"));
+        assert_eq!(t.to_html(), "<script>console.log('x');</script>");
+    }
+
+    #[test]
+    fn head_tag_attribute_order_is_deterministic() {
+        // BTreeMap iterates in sorted key order; same input → same output every time.
+        let t = tag(
+            "meta",
+            &[("zz", "last"), ("aa", "first"), ("mm", "mid")],
+            None,
+        );
+        let html = t.to_html();
+        let aa = html.find("aa=").expect("aa present");
+        let mm = html.find("mm=").expect("mm present");
+        let zz = html.find("zz=").expect("zz present");
+        assert!(aa < mm && mm < zz, "expected sorted order, got {html}");
+    }
+
+    #[test]
+    fn head_tag_escapes_attribute_values() {
+        let t = tag("meta", &[("content", r#"a"b<c&d"#)], None);
+        let html = t.to_html();
+        assert!(html.contains("&quot;"), "{html}");
+        assert!(html.contains("&lt;"), "{html}");
+        assert!(html.contains("&amp;"), "{html}");
+    }
+
+    #[test]
+    fn head_tag_multiple_runs_produce_identical_output() {
+        // Regression: HashMap order non-determinism would have flunked this.
+        let t1 = tag(
+            "meta",
+            &[("a", "1"), ("b", "2"), ("c", "3"), ("d", "4")],
+            None,
+        );
+        let t2 = tag(
+            "meta",
+            &[("d", "4"), ("c", "3"), ("b", "2"), ("a", "1")],
+            None,
+        );
+        assert_eq!(t1.to_html(), t2.to_html());
+    }
 }

@@ -22,7 +22,10 @@ fn normalize_link(base: &str, link: &str) -> String {
     if link.is_empty() {
         return String::new();
     }
-    let stripped = &link[1..]; // Remove leading /
+    // Tolerate config links written without a leading slash; also avoids a
+    // panic when `link` starts with a multi-byte UTF-8 char (a bare `&link[1..]`
+    // would slice mid-char and abort the build).
+    let stripped = link.strip_prefix('/').unwrap_or(link);
     if link.contains('#') {
         // Fragment link — preserve original shape, don't touch the slash.
         return format!("{base}{stripped}");
@@ -62,39 +65,54 @@ const RESERVED_STATE_KEYS: &[&str] = &[
 ];
 
 /// Parsed frontmatter from a markdown file.
+#[derive(Debug)]
 struct Frontmatter {
     title: Option<String>,
     description: Option<String>,
     layout: Option<String>,
 }
 
-fn parse_frontmatter(content: &str) -> (Frontmatter, &str) {
-    if !content.starts_with("---\n") {
-        return (
+fn parse_frontmatter(content: &str) -> Result<(Frontmatter, &str)> {
+    if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
+        return Ok((
             Frontmatter {
                 title: None,
                 description: None,
                 layout: None,
             },
             content,
-        );
+        ));
     }
 
-    let end = content[4..]
-        .find("\n---")
-        .map(|i| i + 4)
-        .unwrap_or(content.len());
-    let yaml_str = &content[4..end];
-    let body = if end + 4 < content.len() {
-        &content[end + 4..]
+    // Skip leading "---" + line ending.
+    let body_start_marker = if content.starts_with("---\r\n") { 5 } else { 4 };
+    let after_open = &content[body_start_marker..];
+
+    // Find the closing "---" on its own line (preceded by `\n` or `\r\n`).
+    let (yaml_end_offset, close_skip) = if let Some(i) = after_open.find("\r\n---") {
+        (i, "\r\n---".len())
+    } else if let Some(i) = after_open.find("\n---") {
+        (i, "\n---".len())
+    } else {
+        (after_open.len(), 0)
+    };
+
+    let yaml_str = &after_open[..yaml_end_offset];
+    let body_offset = body_start_marker + yaml_end_offset + close_skip;
+    let body = if body_offset < content.len() {
+        // Strip the line-ending immediately following the closing "---".
+        let rest = &content[body_offset..];
+        rest.strip_prefix("\r\n")
+            .or_else(|| rest.strip_prefix('\n'))
+            .unwrap_or(rest)
     } else {
         ""
     };
 
-    let yaml: HashMap<String, serde_yaml::Value> =
-        serde_yaml::from_str(yaml_str).unwrap_or_default();
+    let yaml: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(yaml_str)
+        .map_err(|e| crate::error::Error::Markdown(format!("Invalid frontmatter YAML: {e}")))?;
 
-    (
+    Ok((
         Frontmatter {
             title: yaml.get("title").and_then(|v| v.as_str()).map(String::from),
             description: yaml
@@ -107,7 +125,7 @@ fn parse_frontmatter(content: &str) -> (Frontmatter, &str) {
                 .map(String::from),
         },
         body,
-    )
+    ))
 }
 
 fn extract_h1(content: &str) -> Option<String> {
@@ -413,7 +431,9 @@ pub fn process_content(
             } else if full_path.exists() {
                 let raw = fs::read_to_string(full_path)
                     .map_err(|e| crate::error::Error::Io(e.to_string()))?;
-                let (fm, body) = parse_frontmatter(&raw);
+                let (fm, body) = parse_frontmatter(&raw).map_err(|e| {
+                    crate::error::Error::Markdown(format!("{}: {e}", full_path.display()))
+                })?;
 
                 is_home = fm.layout.as_deref() == Some("home");
                 layout = if is_home {
@@ -621,4 +641,94 @@ pub fn process_content(
     }
 
     Ok(pages)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- normalize_link --------------------------------------------------
+
+    #[test]
+    fn normalize_link_empty_returns_empty() {
+        assert_eq!(normalize_link("/webui/", ""), "");
+    }
+
+    #[test]
+    fn normalize_link_root_slash_returns_base() {
+        assert_eq!(normalize_link("/webui/", "/"), "/webui/");
+    }
+
+    #[test]
+    fn normalize_link_trims_trailing_slash() {
+        assert_eq!(
+            normalize_link("/webui/", "/guide/intro/"),
+            "/webui/guide/intro"
+        );
+        assert_eq!(
+            normalize_link("/webui/", "/guide/intro"),
+            "/webui/guide/intro"
+        );
+    }
+
+    #[test]
+    fn normalize_link_preserves_fragment() {
+        assert_eq!(
+            normalize_link("/webui/", "/guide/intro#section"),
+            "/webui/guide/intro#section"
+        );
+    }
+
+    #[test]
+    fn normalize_link_tolerates_missing_leading_slash() {
+        // Was previously a slice-from-1 panic risk on multi-byte chars.
+        assert_eq!(
+            normalize_link("/webui/", "guide/intro"),
+            "/webui/guide/intro"
+        );
+    }
+
+    #[test]
+    fn normalize_link_tolerates_non_ascii_first_char() {
+        // `&link[1..]` would have panicked here on UTF-8 boundary.
+        let out = normalize_link("/webui/", "é-page");
+        assert!(out.ends_with("é-page"), "got {out}");
+    }
+
+    // --- parse_frontmatter -----------------------------------------------
+
+    #[test]
+    fn parse_frontmatter_no_frontmatter_returns_full_body() {
+        let (fm, body) = parse_frontmatter("# Hello\nworld\n").expect("ok");
+        assert!(fm.title.is_none());
+        assert!(fm.layout.is_none());
+        assert_eq!(body, "# Hello\nworld\n");
+    }
+
+    #[test]
+    fn parse_frontmatter_valid_yaml_extracts_fields() {
+        let raw = "---\ntitle: Hello\ndescription: World\nlayout: home\n---\n# Body\n";
+        let (fm, body) = parse_frontmatter(raw).expect("ok");
+        assert_eq!(fm.title.as_deref(), Some("Hello"));
+        assert_eq!(fm.description.as_deref(), Some("World"));
+        assert_eq!(fm.layout.as_deref(), Some("home"));
+        assert_eq!(body, "# Body\n");
+    }
+
+    #[test]
+    fn parse_frontmatter_handles_crlf_line_endings() {
+        let raw = "---\r\ntitle: CRLF\r\nlayout: doc\r\n---\r\n# Body\r\n";
+        let (fm, body) = parse_frontmatter(raw).expect("ok");
+        assert_eq!(fm.title.as_deref(), Some("CRLF"));
+        assert_eq!(fm.layout.as_deref(), Some("doc"));
+        assert_eq!(body, "# Body\r\n");
+    }
+
+    #[test]
+    fn parse_frontmatter_malformed_yaml_returns_error() {
+        // `: : :` is not valid YAML.
+        let raw = "---\ntitle: : : :\n---\nBody\n";
+        let result = parse_frontmatter(raw);
+        assert!(result.is_err(), "expected error, got {result:?}");
+    }
 }
