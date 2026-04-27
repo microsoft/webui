@@ -90,6 +90,8 @@ impl Highlighter {
 
 fn emit_escaped(buf: &mut String, s: &str) {
     // Byte-scan: find the next char needing escape, bulk-copy the rest.
+    // `{` and `}` are escaped so `{{...}}` inside code spans/blocks is not
+    // interpreted as a WebUI signal binding by the template parser.
     let bytes = s.as_bytes();
     let mut start = 0;
     for (i, &b) in bytes.iter().enumerate() {
@@ -97,9 +99,11 @@ fn emit_escaped(buf: &mut String, s: &str) {
             b'&' => "&amp;",
             b'<' => "&lt;",
             b'>' => "&gt;",
+            b'{' => "&#123;",
+            b'}' => "&#125;",
             _ => continue,
         };
-        // SAFETY: `&`, `<`, `>` are ASCII so byte indices are valid char boundaries.
+        // SAFETY: all matched bytes are ASCII so byte indices are valid char boundaries.
         buf.push_str(&s[start..i]);
         buf.push_str(esc);
         start = i + 1;
@@ -173,15 +177,9 @@ fn collect_node_text<'a>(
             NodeValue::Code(code) => {
                 plain.push_str(&code.literal);
                 html.push_str("<code>");
-                // Escape HTML entities inside code spans
-                for ch in code.literal.chars() {
-                    match ch {
-                        '&' => html.push_str("&amp;"),
-                        '<' => html.push_str("&lt;"),
-                        '>' => html.push_str("&gt;"),
-                        _ => html.push(ch),
-                    }
-                }
+                // Escape HTML entities and template braces inside code spans
+                // so `{{...}}` is not interpreted as a WebUI signal binding.
+                emit_escaped(&mut html, &code.literal);
                 html.push_str("</code>");
             }
             _ => {
@@ -228,6 +226,15 @@ pub fn render_markdown(
                 };
                 let highlighted = highlighter.highlight_code(&block.literal, lang);
                 data.value = NodeValue::HtmlInline(highlighted);
+            }
+            NodeValue::Code(ref code) => {
+                // Replace inline code with pre-escaped HTML so `{{...}}` inside
+                // code spans is not interpreted as a WebUI signal binding.
+                let mut html = String::with_capacity(code.literal.len() + 13);
+                html.push_str("<code>");
+                emit_escaped(&mut html, &code.literal);
+                html.push_str("</code>");
+                data.value = NodeValue::HtmlInline(html);
             }
             NodeValue::Link(ref mut link) => {
                 // Prepend base_path to absolute internal links
@@ -297,5 +304,34 @@ mod tests {
                 "'{tok}' should NOT be in syntect defaults (we alias it)"
             );
         }
+    }
+
+    #[test]
+    fn inline_code_escapes_template_braces() {
+        // `{{value}}` inside inline code (e.g. in markdown tables or prose)
+        // must not be interpreted as a WebUI signal binding by the template
+        // parser — escape `{` and `}` to HTML entities.
+        let h = Highlighter::new();
+        let html = render_markdown("Use `{{value}}` for escaped output.", &h, "/").unwrap();
+        assert!(
+            html.contains("&#123;&#123;value&#125;&#125;"),
+            "inline code braces should be escaped: {html}"
+        );
+        assert!(
+            !html.contains("{{value}}"),
+            "raw `{{{{value}}}}` must not survive: {html}"
+        );
+    }
+
+    #[test]
+    fn code_block_escapes_template_braces() {
+        // Fenced code blocks must also escape braces so example template
+        // snippets render literally instead of being parsed as bindings.
+        let h = Highlighter::new();
+        let html = render_markdown("```html\n<p>{{name}}</p>\n```\n", &h, "/").unwrap();
+        assert!(
+            html.contains("&#123;&#123;name&#125;&#125;"),
+            "code block braces should be escaped: {html}"
+        );
     }
 }
