@@ -140,4 +140,4 @@ jobs:
           shared-cache-key: ubuntu-build
 
       - name: Build docs
-        run: pnpm --filter @webui/docs build
+        run: pnpm --filter @webui/docs... build

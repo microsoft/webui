@@ -40,6 +40,6 @@ runs:
     - name: Verify WASM output
       shell: bash
       run: |
-        test -f docs/public/wasm/webui_wasm_bg.wasm
-        test -f docs/public/wasm/webui_wasm.js
-        ! grep -q "from 'env'" docs/public/wasm/webui_wasm.js
+        test -f docs/.webui-press/public/wasm/webui_wasm_bg.wasm
+        test -f docs/.webui-press/public/wasm/webui_wasm.js
+        ! grep -q "from 'env'" docs/.webui-press/public/wasm/webui_wasm.js
