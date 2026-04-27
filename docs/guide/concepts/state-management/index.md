@@ -213,4 +213,4 @@ By default, signal values are HTML-escaped to prevent XSS:
 - [Signals](/guide/concepts/directives/signals) - Template binding syntax
 - [For loops](/guide/concepts/directives/for) - Iterating over collections
 - [If conditions](/guide/concepts/directives/if) - Conditional rendering
-- [Handlers](/guide/concepts/handlers/) - Passing state to the renderer
+- [Handlers](/guide/integrations/) - Passing state to the renderer

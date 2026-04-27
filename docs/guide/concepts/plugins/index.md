@@ -200,5 +200,5 @@ pub trait HandlerPlugin {
 ## Next Steps
 
 - [CLI Reference](/guide/cli/) - `--plugin` flag details
-- [Rust Handler](/guide/concepts/handlers/rust) - Using plugins with the Rust handler
+- [Rust Handler](/guide/integrations/rust) - Using plugins with the Rust handler
 - [Hello World Tutorial](/tutorials/hello-world) - Basic WebUI app

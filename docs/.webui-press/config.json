@@ -41,6 +41,10 @@
       "link": "/playground/"
     },
     {
+      "text": "AI",
+      "link": "/ai"
+    },
+    {
       "text": "GitHub",
       "link": "https://github.com/microsoft/webui"
     }
@@ -119,12 +123,37 @@
             "link": "/guide/concepts/routing"
           },
           {
-            "text": "Hydration",
-            "link": "/guide/concepts/hydration"
-          },
-          {
             "text": "Performance",
             "link": "/guide/concepts/performance"
+          }
+        ]
+      },
+      {
+        "title": "Language Integrations",
+        "items": [
+          {
+            "text": "Overview",
+            "link": "/guide/integrations/"
+          },
+          {
+            "text": "Rust",
+            "link": "/guide/integrations/rust"
+          },
+          {
+            "text": "Node / Bun / Deno",
+            "link": "/guide/integrations/node"
+          },
+          {
+            "text": "Electron",
+            "link": "/guide/integrations/electron"
+          },
+          {
+            "text": "C / C# / FFI",
+            "link": "/guide/integrations/ffi"
+          },
+          {
+            "text": "WebAssembly",
+            "link": "/guide/integrations/wasm"
           }
         ]
       },
@@ -150,10 +179,6 @@
             ]
           },
           {
-            "text": "Language Integrations",
-            "link": "/guide/integrations"
-          },
-          {
             "text": "React vs Web Components",
             "link": "/guide/concepts/react-comparison"
           },
@@ -168,41 +193,6 @@
           {
             "text": "Plugins",
             "link": "/guide/concepts/plugins/"
-          },
-          {
-            "text": "Platform Handlers",
-            "link": "/guide/concepts/handlers/",
-            "items": [
-              {
-                "text": "Rust",
-                "link": "/guide/concepts/handlers/rust"
-              },
-              {
-                "text": "Node / Bun / Deno",
-                "link": "/guide/concepts/handlers/node"
-              },
-              {
-                "text": "Electron",
-                "link": "/guide/concepts/handlers/electron"
-              },
-              {
-                "text": "WebAssembly",
-                "link": "/guide/concepts/handlers/wasm"
-              },
-              {
-                "text": "FFI (C API)",
-                "link": "/guide/concepts/handlers/ffi"
-              }
-            ]
-          }
-        ]
-      },
-      {
-        "title": "AI",
-        "items": [
-          {
-            "text": "AI Reference",
-            "link": "/guide/ai"
           }
         ]
       }

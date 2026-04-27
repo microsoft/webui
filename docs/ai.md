@@ -1,3 +1,7 @@
+---
+layout: page
+---
+
 # WebUI Framework - AI Reference
 
 > **Single-page reference for LLMs.** This page contains everything an AI coding

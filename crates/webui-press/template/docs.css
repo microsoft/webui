@@ -744,8 +744,13 @@ body {
 /* ── Full layout ─────────────────────────────────────
    Default layout is "doc" (sidebar + main content + footer).
    "full" hides the chrome and lets the page content occupy the
-   entire viewport below the nav bar. Shadow components can react
-   to the same attribute via `:host-context([data-layout="full"])`. */
+   entire viewport below the nav bar. Tailored for single-component
+   apps (e.g. the playground) — every doc-content child is stretched
+   to fill the viewport, page scrolling is disabled.
+   "page" is the same minus the viewport-fill: wide markdown without
+   sidebar/footer/page-nav, normal scroll behavior.
+   Shadow components can react to the same attribute via
+   `:host-context([data-layout="full"])`. */
 
 body[data-layout="full"] {
   overflow: hidden;
@@ -759,7 +764,9 @@ body[data-layout="full"] .layout {
 
 body[data-layout="full"] .sidebar,
 body[data-layout="full"] .page-nav,
-body[data-layout="full"] .site-footer {
+body[data-layout="full"] .site-footer,
+body[data-layout="page"] .sidebar,
+body[data-layout="page"] .page-nav {
   display: none;
 }
 
@@ -780,6 +787,14 @@ body[data-layout="full"] .doc-content {
 body[data-layout="full"] .doc-content > * {
   flex: 1;
   min-height: 0;
+}
+
+body[data-layout="page"] .layout {
+  max-width: none;
+}
+
+body[data-layout="page"] .main-content {
+  max-width: none;
 }
 
 /* ── Heading anchors ───────────────────────────────── */

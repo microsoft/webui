@@ -38,7 +38,7 @@ On the client, only **Web Components marked as interactive** hydrate. Each compo
 
 - **Declarative templates** - HTML for structure, CSS for styling, TypeScript for behavior - in separate files. No JSX, no template literals, no CSS-in-JS. Template directives (`<if>`, `<for>`, `{{}}`) handle dynamic content declaratively.
 
-- **Language agnostic** - Native handlers for Rust, Node/Bun/Deno, C#, Python, and Go. Any other language can use the C FFI bindings. See [Language Integrations](/guide/integrations).
+- **Language agnostic** - Native handlers for Rust, Node/Bun/Deno, C#, Python, and Go. Any other language can use the C FFI bindings. See [Language Integrations](/guide/integrations/ffi).
 
 - **Web Components & Shadow DOM** - Templates are standard HTML with native Web Components and Declarative Shadow DOM for style encapsulation. No virtual DOM, no proprietary component model.
 

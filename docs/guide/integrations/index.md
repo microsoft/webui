@@ -1,16 +1,14 @@
-# WebUI Handlers
+# Language Integrations
 
-WebUI handlers are the bridge between the WebUI protocol and the final rendered HTML output. They process the protocol and render the content in a specific programming language.
+WebUI runs anywhere you can render text. The protocol is compiled once with `webui build` and rendered by a language-specific **handler**, the bridge between the WebUI protocol and the final HTML output.
 
-## Available Handlers
+Pick the handler that matches your stack:
 
-WebUI provides official handlers for several popular programming languages (other languages coming soon):
-
-- [**Rust**](./rust) - High-performance native rendering with the Rust programming language
-- [**Node**](./node) - Streaming SSR via a native addon built with napi-rs for Node, Bun, and Deno.
-- [**Electron**](./electron) - Desktop apps via Electron with custom `webui://` protocol
-- [**WebAssembly**](./wasm) - In-browser rendering for playgrounds and client-side use
-- [**FFI (C API)**](./ffi) - Shared library for Go, C#, Python, and any language with C interop
+- [**Rust**](./rust), High-performance native rendering with the Rust programming language
+- [**Node**](./node), Streaming SSR via a native addon built with napi-rs for Node, Bun, and Deno.
+- [**Electron**](./electron), Desktop apps via Electron with custom `webui://` protocol
+- [**WebAssembly**](./wasm), In-browser rendering for playgrounds and client-side use
+- [**C / FFI**](./ffi), Shared library for Go, C#, Python, and any language with C interop
 
 ## How Handlers Work
 
@@ -38,7 +36,7 @@ Where:
 
 ## Plugin System
 
-Handlers support an optional **plugin system** for injecting framework-specific behavior during rendering. Plugins receive lifecycle callbacks at key points - binding start/end, loop iteration, scope changes - and can write additional content to the output.
+Handlers support an optional **plugin system** for injecting framework-specific behavior during rendering. Plugins receive lifecycle callbacks at key points, binding start/end, loop iteration, scope changes, and can write additional content to the output.
 
 ```
 handler = Handler::with_plugin(plugin)

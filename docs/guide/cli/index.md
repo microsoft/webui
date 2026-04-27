@@ -248,7 +248,7 @@ With `--css style`, only `protocol.bin` is written - CSS is embedded directly in
 
 ### protocol.bin
 
-The protocol file contains a serialized `WebUIProtocol` structure (protobuf binary) with all parsed fragments. This file is consumed by a [platform handler](/guide/concepts/handlers/) at runtime to render HTML with your application state.
+The protocol file contains a serialized `WebUIProtocol` structure (protobuf binary) with all parsed fragments. This file is consumed by a [platform handler](/guide/integrations/) at runtime to render HTML with your application state.
 
 The binary format is not human-readable. The equivalent proto schema structure looks like:
 
@@ -369,4 +369,4 @@ Discovered npm package components are cached at `~/.webui/cache/components/` to 
 - [Hello World Tutorial](/tutorials/hello-world) - Build your first WebUI app
 - [Components](/guide/concepts/components/) - Learn about web components
 - [Template Directives](/guide/concepts/directives/) - `<for>`, `<if>`, and `{{}}`
-- [Platform Handlers](/guide/concepts/handlers/) - Render protocols with state at runtime
+- [Platform Handlers](/guide/integrations/) - Render protocols with state at runtime

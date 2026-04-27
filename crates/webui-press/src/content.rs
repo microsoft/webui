@@ -152,52 +152,62 @@ fn collect_sidebar_links(items: &[SidebarItem]) -> Vec<&str> {
     links
 }
 
-/// Build the page registry from sidebar config.
+/// Build the page registry by walking content_dir for every `.md` file.
+///
+/// Discovery is filesystem-driven: any markdown file under content_dir becomes
+/// a page. The sidebar/nav config controls navigation, not discovery.
 fn build_page_registry(
     content_dir: &Path,
     base_path: &str,
-    all_sidebars: &[&[SidebarSection]],
 ) -> Vec<(String, std::path::PathBuf)> {
     let mut pages = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut stack: Vec<std::path::PathBuf> = vec![content_dir.to_path_buf()];
 
-    let mut add_page = |link: &str| {
-        // Skip fragment-only links (#section) — they point within another page
-        if link.contains('#') {
-            return;
-        }
-        let src_file = if link.ends_with('/') {
-            format!("{}index.md", &link[1..])
-        } else {
-            format!("{}.md", &link[1..])
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
         };
-
-        let url_path = normalize_link(base_path, link);
-
-        let mut full_path = content_dir.join(&src_file);
-        if !full_path.exists() {
-            // Fallback: check for directory/index.md
-            let alt = format!("{}/index.md", &link[1..]);
-            let alt_path = content_dir.join(&alt);
-            if alt_path.exists() {
-                full_path = alt_path;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // Skip dotfiles/dotdirs and the build output.
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') || name_str == "dist" || name_str == "node_modules" {
+                continue;
             }
-        }
-
-        if full_path.exists() && seen.insert(url_path.clone()) {
-            pages.push((url_path, full_path));
-        }
-    };
-
-    for sidebar in all_sidebars {
-        for section in *sidebar {
-            for link in collect_sidebar_links(&section.items) {
-                add_page(link);
+            if path.is_dir() {
+                stack.push(path);
+                continue;
             }
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+
+            // Compute URL: relative path from content_dir, drop trailing /index.md,
+            // drop .md, prefix with base_path.
+            let rel = match path.strip_prefix(content_dir) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let trimmed = rel_str.trim_end_matches(".md");
+            let trimmed = trimmed.strip_suffix("/index").unwrap_or(trimmed);
+            // Root index.md => "/"
+            let url_path = if trimmed.is_empty() || trimmed == "index" {
+                if base_path.is_empty() {
+                    "/".to_string()
+                } else {
+                    base_path.trim_end_matches('/').to_string() + "/"
+                }
+            } else {
+                let prefix = base_path.trim_end_matches('/');
+                format!("{prefix}/{trimmed}")
+            };
+            pages.push((url_path, path));
         }
     }
-    add_page("/");
 
+    pages.sort_by(|a, b| a.0.cmp(&b.0));
     pages
 }
 
@@ -385,12 +395,7 @@ pub fn process_content(
         })
         .collect();
 
-    // Collect all sidebars for page discovery
-    let sidebar_refs: Vec<&[SidebarSection]> = std::iter::once(config.sidebar.as_slice())
-        .chain(config.sidebar_groups.values().map(|v| v.as_slice()))
-        .collect();
-
-    let mut registry = build_page_registry(content_dir, base_path, &sidebar_refs);
+    let mut registry = build_page_registry(content_dir, base_path);
 
     // Register custom pages
     for page_link in config.custom_pages.keys() {
@@ -605,23 +610,35 @@ pub fn process_content(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    // Build prev/next links from primary sidebar (flatten nested items)
-    let all_sidebar_items: Vec<SidebarItem> = config
-        .sidebar
-        .iter()
-        .flat_map(|s| s.items.clone())
-        .collect();
-    let flat_links = collect_sidebar_links(&all_sidebar_items);
-    let all_links: Vec<(String, String)> = flat_links
-        .iter()
-        .map(|link| {
-            let path = normalize_link(base_path, link);
-            let text = find_sidebar_text(&path, config).unwrap_or_default();
-            (path, text)
-        })
-        .collect();
+    // Build prev/next links from the sidebar that matches each page's URL.
+    // We resolve the active sidebar per-page by checking sidebar_groups prefixes,
+    // then falling back to the default config.sidebar.
+    let resolve_sidebar = |page_path: &str| -> Vec<SidebarItem> {
+        let active = config
+            .sidebar_groups
+            .iter()
+            .find(|(prefix, _)| {
+                let full_prefix =
+                    format!("{}{}", base_path, prefix.strip_prefix('/').unwrap_or(prefix));
+                let trimmed = full_prefix.trim_end_matches('/');
+                page_path == trimmed || page_path.starts_with(&format!("{trimmed}/"))
+            })
+            .map(|(_, s)| s.as_slice())
+            .unwrap_or(&config.sidebar);
+        active.iter().flat_map(|s| s.items.clone()).collect()
+    };
 
     for page in &mut pages {
+        let sidebar_items = resolve_sidebar(&page.path);
+        let flat_links = collect_sidebar_links(&sidebar_items);
+        let all_links: Vec<(String, String)> = flat_links
+            .iter()
+            .map(|link| {
+                let path = normalize_link(base_path, link);
+                let text = find_sidebar_text(&path, config).unwrap_or_default();
+                (path, text)
+            })
+            .collect();
         if let Some(idx) = all_links.iter().position(|(p, _)| p == &page.path) {
             if idx > 0 {
                 let (link, text) = &all_links[idx - 1];
