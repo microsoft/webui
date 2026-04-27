@@ -2,6 +2,8 @@
    Overrides design tokens only. No layout or selector changes. */
 
 :root, [data-theme="light"] {
+  --docs-max-width: none;
+  
   /* Brand */
   --docs-color-brand: #a25a02;
   --docs-color-brand-hover: #c87b0a;

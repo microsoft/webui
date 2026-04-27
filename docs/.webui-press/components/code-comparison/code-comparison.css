@@ -1,23 +1,18 @@
 :host {
   display: block;
   margin: 24px 0;
-  border: 1px solid var(--docs-color-border);
-  border-radius: 8px;
   overflow: hidden;
 }
 
 .grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  gap: var(--docs-space-m);
 }
 
 .panel {
   min-width: 0;
   overflow-x: auto;
-}
-
-.panel:first-child {
-  border-right: 1px solid var(--docs-color-border);
 }
 
 .label {
@@ -26,13 +21,19 @@
   text-transform: uppercase;
   letter-spacing: 0.05em;
   padding: 8px 16px;
-  border-bottom: 1px solid var(--docs-color-border);
+  border: 1px solid var(--docs-color-border);
+  border-top-right-radius: var(--docs-radius-l);
+  border-top-left-radius: var(--docs-radius-l);
   color: var(--docs-color-text-3);
   background: var(--docs-color-bg-alt);
 }
 
 ::slotted(*) {
   padding: 0 8px;
+  background: var(--docs-color-code-bg);
+  border-bottom-right-radius: var(--docs-radius-l);
+  border-bottom-left-radius: var(--docs-radius-l);
+  border: 1px solid var(--docs-color-border);
 }
 
 @media (max-width: 768px) {

@@ -48,7 +48,7 @@ impl Highlighter {
 
         // Map language aliases — syntect's defaults lack TypeScript, TOML, etc.
         let mapped_lang = match lang {
-            "ts" | "typescript" | "tsx" => "js",
+            "ts" | "typescript" | "tsx" | "jsx" => "js",
             "sh" | "shell" | "zsh" => "bash",
             "yml" => "yaml",
             "golang" => "go",
@@ -291,7 +291,7 @@ mod tests {
             );
         }
         // These are NOT in syntect defaults — we alias them
-        for tok in &["ts", "typescript", "toml", "csharp", "golang"] {
+        for tok in &["ts", "typescript", "tsx", "jsx", "toml", "csharp", "golang"] {
             assert!(
                 ss.find_syntax_by_token(tok).is_none(),
                 "'{tok}' should NOT be in syntect defaults (we alias it)"

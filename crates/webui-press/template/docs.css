@@ -22,6 +22,9 @@
 
 :root,
 [data-theme="light"] {
+  /* */
+  --docs-max-width: 1280px;
+
   /* ── Spacing ───────────────────────── */
   --docs-space-xs: 4px;
   --docs-space-s: 8px;
@@ -163,8 +166,6 @@
 }
 
 * {
-  margin: 0;
-  padding: 0;
   box-sizing: border-box;
 }
 
@@ -254,7 +255,7 @@ body {
 
 .layout {
   display: flex;
-  max-width: 1280px;
+  max-width: var(--docs-max-width);
   margin: 0 auto;
   min-height: calc(100vh - var(--docs-nav-height));
 }
@@ -287,6 +288,8 @@ body {
 
 .sidebar-items {
   list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
 .sidebar-items li {
@@ -337,7 +340,6 @@ body {
   flex: 1;
   min-width: 0;
   padding: var(--docs-space-xl) var(--docs-space-2xl) var(--docs-space-3xl);
-  max-width: var(--docs-content-max-width);
 }
 
 /* ── Article typography ─────────────────────────────── */

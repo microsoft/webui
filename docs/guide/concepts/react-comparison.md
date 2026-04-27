@@ -6,11 +6,11 @@ This guide compares common UI patterns written in React (imperative, JavaScript-
 
 | | React | WebUI |
 |---|---|---|
-| **Component model** | JSX functions / classes with virtual DOM | Web Components with Shadow DOM |
+| **Component model** | JSX functions / classes with virtual DOM | Web Components with Shadow DOM or Light DOM |
 | **Rendering** | Client-side or Node.js SSR | Build-time compiled protocol, server-rendered HTML |
 | **Template language** | JSX (JavaScript + HTML mixed) | Separate HTML, CSS, and TypeScript files |
 | **State management** | `useState`, `useReducer`, context | `@observable` properties with targeted DOM updates |
-| **Styling** | CSS-in-JS, CSS Modules, or external | Scoped CSS via Shadow DOM |
+| **Styling** | CSS-in-JS, CSS Modules, or external | Scoped CSS via Shadow DOM or Global Light DOM via `--dom` and `--css` args |
 | **Runtime** | React runtime + ReactDOM in browser | No framework runtime for static content; thin hydration for interactive islands |
 | **Interactivity** | Every component ships JavaScript | Only interactive islands ship JavaScript |
 
@@ -18,6 +18,8 @@ This guide compares common UI patterns written in React (imperative, JavaScript-
 
 <code-comparison left-label="React" right-label="WebUI Framework">
 <div slot="left">
+
+**my-counter.jsx**
 
 ```jsx
 import { useState } from 'react';
@@ -70,6 +72,8 @@ MyCounter.define('my-counter');
 <code-comparison left-label="React" right-label="WebUI Framework">
 <div slot="left">
 
+**user-greeting.jsx**
+
 ```jsx
 function Greeting({ isLoggedIn, username }) {
   return (
@@ -109,6 +113,8 @@ function Greeting({ isLoggedIn, username }) {
 
 <code-comparison left-label="React" right-label="WebUI Framework">
 <div slot="left">
+
+**todo-list.jsx**
 
 ```jsx
 function TodoList({ items }) {
@@ -150,6 +156,8 @@ function TodoList({ items }) {
 
 <code-comparison left-label="React" right-label="WebUI Framework">
 <div slot="left">
+
+**search-box.jsx**
 
 ```jsx
 function SearchBox() {
@@ -230,6 +238,8 @@ SearchBox.define('search-box');
 
 <code-comparison left-label="React" right-label="WebUI Framework">
 <div slot="left">
+
+**color-picker.jsx**
 
 ```jsx
 function ColorPicker({ onColorChange }) {
@@ -316,6 +326,8 @@ ThemeApp.define('theme-app');
 <code-comparison left-label="React" right-label="WebUI Framework">
 <div slot="left">
 
+**product-card.jsx**
+
 ```jsx
 import styled from 'styled-components';
 
@@ -377,6 +389,8 @@ h3 {
 <code-comparison left-label="React" right-label="WebUI Framework">
 <div slot="left">
 
+**user-profile.jsx**
+
 ```jsx
 function UserProfile({ user }) {
   return (
@@ -420,102 +434,3 @@ function UserProfile({ user }) {
 </code-comparison>
 
 **What changed:** JSX expressions (`&&`, `.map()`, template literals) become HTML directives (`<if>`, `<for>`, `{{}}`). The template reads like HTML with declarative annotations, not JavaScript with embedded markup.
-
-## FAST Alternative
-
-WebUI supports two hydration plugins. The examples above use `@microsoft/webui-framework`. If your team uses the [FAST](https://fast.design/) ecosystem, the `--plugin=fast` option provides an alternative:
-
-```bash
-webui build ./src --out ./dist --plugin=fast
-```
-
-The **template syntax is identical** - `<if>`, `<for>`, `{{}}`, and `@click` work the same way in both plugins. The difference is in the TypeScript component class:
-
-<code-comparison left-label="WebUI Framework" right-label="FAST">
-<div slot="left">
-
-```typescript
-import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
-
-export class MyCounter extends WebUIElement {
-  @attr label = 'Count';
-  @observable count = 0;
-
-  increment(): void {
-    this.count += 1;
-  }
-}
-
-MyCounter.define('my-counter');
-```
-
-</div>
-<div slot="right">
-
-```typescript
-import { FASTElement, attr, observable } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
-
-export class MyCounter extends RenderableFASTElement(FASTElement) {
-  @attr label = 'Count';
-  @observable count = 0;
-
-  increment(): void {
-    this.count += 1;
-  }
-
-  prepare(): void {
-    // Manually read state from pre-rendered DOM
-    this.count = Number(this.shadowRoot?.querySelector('span')?.textContent ?? 0);
-  }
-}
-
-MyCounter.define({ name: 'my-counter', template: /* ... */ });
-```
-
-</div>
-</code-comparison>
-
-| | WebUI Framework | FAST |
-|---|---|---|
-| **State seeding** | Automatic from SSR markers | Manual in `prepare()` |
-| **Update model** | Targeted path-indexed | Full observable chain |
-| **Package** | `@microsoft/webui-framework` | `@microsoft/fast-html` + `@microsoft/fast-element` |
-| **Best for** | SSR-first apps, minimal JS | Complex client interactivity, existing FAST projects |
-
-## Architecture Comparison
-
-### React: client-side rendering pipeline
-
-```
-Build → JS Bundle → Browser downloads → Parse JS → Execute → Fetch data → Render
-```
-
-Every component ships JavaScript. The page is blank until the bundle loads, parses, and executes.
-
-### WebUI: server-rendered with interactive islands
-
-```
-Build → Protocol Binary → Server renders HTML → Browser displays immediately
-                                               → JS loads only for interactive islands
-```
-
-Static content is visible instantly. Only components that need interactivity ship JavaScript.
-
-| Metric | React SPA | WebUI Islands |
-|--------|-----------|---------------|
-| First paint | After JS bundle loads | Immediate (server HTML) |
-| JavaScript shipped | All components | Only interactive islands |
-| Server runtime | Node.js with V8 | Rust binary, no JS runtime |
-| Component encapsulation | Convention (CSS Modules, etc.) | Native (Shadow DOM) |
-
-## Summary
-
-Moving from React to WebUI means:
-
-1. **Separate files** instead of JSX - HTML, CSS, and TypeScript each have their own file
-2. **Declarative directives** instead of JavaScript expressions - `<if>`, `<for>`, `{{}}`
-3. **Native Web Components** instead of framework components - Shadow DOM, Custom Elements
-4. **Server-first rendering** instead of client-first - content is visible before any JavaScript loads
-5. **Targeted updates** instead of virtual DOM diffing - only the specific DOM nodes bound to a changed property update
-6. **Custom Events** instead of callback props - components communicate through the standard DOM event system
