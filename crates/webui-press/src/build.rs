@@ -32,33 +32,12 @@ fn print_header(title: &str) {
     );
 }
 
-fn print_field(label: &str, value: &str) {
-    eprintln!(
-        "  {} {}",
-        style(format!("▸ {label:<10}")).dim(),
-        style(value).bold()
-    );
-}
-
 fn print_success(message: &str) {
     eprintln!("  {} {message}", style("✔").green());
 }
 
 fn print_finish(message: &str) {
     eprintln!("\n  {} {message}\n", style("✨").green());
-}
-
-/// Format a byte count as a human-readable string (KB / MB).
-fn format_bytes(bytes: usize) -> String {
-    const KB: usize = 1024;
-    const MB: usize = KB * 1024;
-    if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.0} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{bytes} B")
-    }
 }
 
 /// Build a JSON object from key-value pairs without using `json!` (which calls `unwrap`).
@@ -125,11 +104,6 @@ pub fn build_docs(
         .unwrap_or_default();
 
     print_header(&config.site.title);
-    if let Some(css_path) = config.css.as_deref() {
-        if !custom_css.is_empty() {
-            print_field("Theme CSS", css_path);
-        }
-    }
     eprintln!();
 
     // Step 1: Process content
@@ -493,11 +467,7 @@ pub fn build_docs(
 
     let elapsed = start.elapsed();
     let total_bytes = total_bytes.load(std::sync::atomic::Ordering::Relaxed);
-    print_finish(&format!(
-        "Built in {:.1}s · {} protocol",
-        elapsed.as_secs_f64(),
-        format_bytes(total_bytes),
-    ));
+    print_finish(&format!("Built in {:.1}s", elapsed.as_secs_f64()));
 
     Ok(BuildStats {
         pages: pages.len(),
