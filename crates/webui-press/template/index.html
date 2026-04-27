@@ -4,6 +4,18 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <script>
+    /* Apply theme synchronously before first paint to prevent
+       flash-of-wrong-theme on cross-document navigation. */
+    (function () {
+      try {
+        var t = localStorage.getItem('theme');
+        if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script>
   <meta name="base" content="{{site.base}}" />
   <title>{{page.title}} | {{site.title}}</title>
   <meta name="description" content="{{page.description}}" />
@@ -13,6 +25,32 @@
   <meta name="twitter:card" content="summary" />
   <link rel="icon" href="{{site.base}}logo.svg" />
   {{{headTags}}}
+  <script>
+    /* Preserve sidebar scroll across cross-document navigations.
+       Runs BEFORE pagereveal fires (and before first paint) so the
+       restored position is what view transitions animate to,
+       eliminating the end-of-transition jump. */
+    (function () {
+      var KEY = 'webui-press:sidebar-scroll';
+      function sidebar() { return document.querySelector('.sidebar'); }
+      function save() { var s = sidebar(); if (s) sessionStorage.setItem(KEY, s.scrollTop); }
+      function restore() {
+        var s = sidebar();
+        if (!s) return;
+        var v = sessionStorage.getItem(KEY);
+        if (v !== null) s.scrollTop = +v;
+      }
+      window.addEventListener('pageswap', save);
+      window.addEventListener('pagehide', save);
+      if ('onpagereveal' in window) {
+        window.addEventListener('pagereveal', restore);
+      } else if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', restore);
+      } else {
+        restore();
+      }
+    })();
+  </script>
 </head>
 
 <body data-layout="{{page.layout}}">
