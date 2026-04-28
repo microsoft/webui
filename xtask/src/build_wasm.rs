@@ -58,8 +58,10 @@ pub fn run() -> Result<(), String> {
     // 6. Run wasm-pack build with env vars
     // -Wno-implicit-function-declaration: tree-sitter-language's WASM headers are minimal
     // and lack strncpy/towupper declarations; the linker resolves them from wasm stubs.
+    // -Wno-incompatible-pointer-types: tree-sitter-language 0.1.7's wasm/src/stdlib.c mixes
+    // `Region *` and `struct Region *`; newer clang promotes this to an error by default.
     let cflags = format!(
-        "-I{} -D_WASI_EMULATED_SIGNAL -Wno-implicit-function-declaration",
+        "-I{} -D_WASI_EMULATED_SIGNAL -Wno-implicit-function-declaration -Wno-incompatible-pointer-types",
         wasi_include
     );
     let mut cmd = Command::new("wasm-pack");
