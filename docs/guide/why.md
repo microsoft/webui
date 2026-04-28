@@ -77,44 +77,6 @@ Consider a product page with 10 components: a header, navigation, breadcrumbs, p
 
 The result: dramatically less JavaScript, faster time-to-interactive, and better performance on constrained devices.
 
-## Declarative Templates
-
-WebUI enforces a strict separation of concerns:
-
-- **HTML** for structure - clean, semantic markup with template directives (`<if>`, `<for>`, `{{}}`)
-- **CSS** for styling - standard stylesheets with Shadow DOM encapsulation
-- **TypeScript** for behavior - only in interactive island components
-
-Each concern lives in its own file. There is no JSX that mixes markup and logic. No template literals that embed HTML in JavaScript. No CSS-in-JS that couples styling to runtime execution.
-
-This separation is intentional and performance-motivated:
-
-1. **HTML and CSS are the fastest things a browser can parse.** Keeping them pure means the browser's optimized parsing paths handle them directly, with no framework interpretation layer.
-2. **Static templates compile better.** Because structure and logic are separated, the build step can analyze, optimize, and pre-serialize the static parts more aggressively.
-3. **TypeScript only ships where needed.** Because behavior is in separate files attached only to interactive islands, JavaScript is never bundled for static components.
-
-```
-my-component/
-├── my-component.html   ← structure
-├── my-component.css    ← styling
-└── my-component.ts     ← behavior (only for interactive islands)
-```
-
-## Language Agnostic
-
-The compiled protocol is a binary format - just bytes. Any language that can read bytes and write strings can render WebUI templates. Native handler implementations exist for:
-
-| Language | Integration |
-|----------|-------------|
-| **Rust** | Native crate (`webui-handler`) |
-| **Node.js** | Native addon (also works with Bun and Deno) |
-| **C# / .NET** | Native bindings |
-| **Go** | C FFI bindings |
-| **Python** | C FFI bindings |
-| **Any other language** | C FFI interface |
-
-A Go service, a Rust microservice, and a C# API can all render the same compiled templates using the same protocol. Your frontend team writes templates once; every backend team consumes them.
-
 ## Performance
 
 Build-time compilation eliminates per-request template overhead. Islands Architecture eliminates unnecessary client-side JavaScript. Together, they produce measurable gains:
@@ -155,15 +117,12 @@ The practical result: fewer servers, lower memory consumption, more predictable 
 
 ## Summary
 
-WebUI exists because modern web rendering does too much redundant work - on the server and in the browser.
+WebUI exists because modern web rendering does too much redundant work — on the server and in the browser.
 
 | Problem | WebUI's Answer |
 |---------|----------------|
-| Templates re-parsed every request | Compiled once to binary protocol at build time |
-| Full JS bundles shipped to browser | Islands Architecture - only interactive components ship JS |
+| Full JS bundles shipped to browser | Islands Architecture — only interactive components ship JS |
 | Framework abstractions over the platform | Direct use of Web Components, Shadow DOM, Navigation API |
-| JSX / CSS-in-JS mixing concerns | Declarative separation - HTML, CSS, TypeScript in separate files |
 | Node.js runtime required on server | Rust-native rendering, no JavaScript runtime, no GC pauses |
-| Single-language lock-in | Language-agnostic protocol - render from Rust, Node, Go, C#, Python |
 
-The result is a framework that is extremely fast, renders pages in **sub-millisecond time**, ships **minimal JavaScript to the browser**, and works from **any backend language** - without a JavaScript runtime on the server.
+The result is a framework that is extremely fast, renders pages in **sub-millisecond time**, ships **minimal JavaScript to the browser**, and works from **any backend language** — without a JavaScript runtime on the server.

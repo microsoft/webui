@@ -9,7 +9,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::markdown::{render_markdown, Highlighter};
 use crate::types::{DocsConfig, PageDescriptor, SidebarItem, SidebarSection};
 
@@ -352,15 +352,20 @@ fn load_custom_page_states(
 /// `config_dir` is the directory containing `config.json`; relative paths
 /// declared in the config (such as a custom page's `stateFile`) are resolved
 /// against it.
+///
+/// `head_injection` is the fully-resolved `<head>` snippet (CSS link
+/// tags + `config.head` entries). It MUST be computed before this call
+/// so the descriptor is render-ready.
 pub fn process_content(
     config: &DocsConfig,
     config_dir: &Path,
     highlighter: &Highlighter,
+    head_injection: &str,
 ) -> Result<Vec<PageDescriptor>> {
     let content_dir = Path::new(&config.content_dir);
     let base_path = &config.base_path;
 
-    // Load custom-page state once (with caching) before the parallel pipeline.
+    // Load custom-page state once before the parallel pipeline.
     let custom_states = load_custom_page_states(config, config_dir)?;
 
     let nav_links: Vec<Value> = config
@@ -411,205 +416,218 @@ pub fn process_content(
 
     use rayon::prelude::*;
 
-    let mut pages: Vec<PageDescriptor> = registry
+    // Per-page processing: parse markdown / load custom HTML, expand
+    // syntax highlighting, build the state JSON. Always runs for every
+    // page on every call — there is no descriptor cache. The dev
+    // server keeps a `BuildCache` only to amortize the syntect
+    // highlighter load.
+    let results: Vec<(usize, PageDescriptor)> = registry
         .par_iter()
-        .map(|(url_path, full_path)| -> Result<PageDescriptor> {
-            let mut is_home = false;
-            let mut html = String::new();
-            let mut title = config.site.title.clone();
-            let mut description = config.site.description.clone();
-            let mut layout = "doc".to_string();
+        .enumerate()
+        .map(
+            |(idx, (url_path, full_path))| -> Result<(usize, PageDescriptor)> {
+                let mut is_home = false;
+                let mut html = String::new();
+                let mut title = config.site.title.clone();
+                let mut description = config.site.description.clone();
+                let mut layout = "doc".to_string();
 
-            // Check custom page override
-            let logical_path = format!("/{}", &url_path[base_path.len()..]);
-            let custom_entry = config
-                .custom_pages
-                .get(&logical_path)
-                .or_else(|| config.custom_pages.get(logical_path.trim_end_matches('/')));
+                // Check custom page override
+                let logical_path = format!("/{}", &url_path[base_path.len()..]);
+                let custom_entry = config
+                    .custom_pages
+                    .get(&logical_path)
+                    .or_else(|| config.custom_pages.get(logical_path.trim_end_matches('/')));
 
-            if let Some(entry) = custom_entry {
-                html = entry.html().to_string();
-                layout = entry.layout().to_string();
-            } else if full_path.exists() {
-                let raw = fs::read_to_string(full_path)
-                    .map_err(|e| crate::error::Error::Io(e.to_string()))?;
-                let (fm, body) = parse_frontmatter(&raw).map_err(|e| {
-                    crate::error::Error::Markdown(format!("{}: {e}", full_path.display()))
-                })?;
+                if let Some(entry) = custom_entry {
+                    html = entry.html().to_string();
+                    layout = entry.layout().to_string();
+                } else if full_path.exists() {
+                    let raw = fs::read_to_string(full_path)
+                        .map_err(|e| crate::error::Error::Io(e.to_string()))?;
+                    let (fm, body) = parse_frontmatter(&raw).map_err(|e| {
+                        crate::error::Error::Markdown(format!("{}: {e}", full_path.display()))
+                    })?;
 
-                is_home = fm.layout.as_deref() == Some("home");
-                layout = if is_home {
-                    "home".to_string()
+                    is_home = fm.layout.as_deref() == Some("home");
+                    layout = if is_home {
+                        "home".to_string()
+                    } else {
+                        fm.layout.unwrap_or_else(|| "doc".to_string())
+                    };
+
+                    if !is_home {
+                        html = render_markdown(body, highlighter, base_path)?;
+                    }
+
+                    if let Some(d) = fm.description {
+                        description = d;
+                    }
+
+                    let h1 = extract_h1(body);
+                    let sidebar_text = find_sidebar_text(url_path, config);
+                    title = fm
+                        .title
+                        .or(h1)
+                        .or(sidebar_text)
+                        .unwrap_or_else(|| config.site.title.clone());
+                }
+
+                let hero_val = if is_home {
+                    config
+                        .hero
+                        .as_ref()
+                        .map(|h| {
+                            json_obj([
+                                (
+                                    "text",
+                                    h.text
+                                        .as_ref()
+                                        .map_or(Value::Null, |t| Value::String(t.clone())),
+                                ),
+                                ("tagline", Value::String(h.tagline.clone())),
+                                (
+                                    "manifesto",
+                                    h.manifesto
+                                        .as_ref()
+                                        .map_or(Value::Null, |m| Value::String(m.clone())),
+                                ),
+                                (
+                                    "actions",
+                                    Value::Array(
+                                        h.actions
+                                            .iter()
+                                            .map(|a| {
+                                                json_obj([
+                                                    ("text", Value::String(a.text.clone())),
+                                                    ("link", Value::String(a.link.clone())),
+                                                    ("brand", Value::Bool(a.brand)),
+                                                ])
+                                            })
+                                            .collect(),
+                                    ),
+                                ),
+                                (
+                                    "features",
+                                    Value::Array(
+                                        h.features
+                                            .iter()
+                                            .map(|f| {
+                                                json_obj([
+                                                    ("icon", Value::String(f.icon.clone())),
+                                                    ("title", Value::String(f.title.clone())),
+                                                    (
+                                                        "description",
+                                                        Value::String(f.description.clone()),
+                                                    ),
+                                                ])
+                                            })
+                                            .collect(),
+                                    ),
+                                ),
+                            ])
+                        })
+                        .unwrap_or(Value::Null)
                 } else {
-                    fm.layout.unwrap_or_else(|| "doc".to_string())
+                    Value::Null
                 };
 
-                if !is_home {
-                    html = render_markdown(body, highlighter, base_path)?;
-                }
-
-                if let Some(d) = fm.description {
-                    description = d;
-                }
-
-                let h1 = extract_h1(body);
-                let sidebar_text = find_sidebar_text(url_path, config);
-                title = fm
-                    .title
-                    .or(h1)
-                    .or(sidebar_text)
-                    .unwrap_or_else(|| config.site.title.clone());
-            }
-
-            let hero_val = if is_home {
-                config
-                    .hero
+                let footer_val = config
+                    .footer
                     .as_ref()
-                    .map(|h| {
+                    .map(|f| json_obj([("html", Value::String(f.html.clone()))]))
+                    .unwrap_or(Value::Null);
+
+                // Top-level section slug for the current page, derived from the
+                // first path segment after the base. Used by the nav template to
+                // mark the active link via `?active="{{link.section == page.section}}"`.
+                let page_section = logical_path
+                    .trim_start_matches('/')
+                    .split('/')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+
+                let state = json_obj([
+                    (
+                        "site",
                         json_obj([
-                            (
-                                "text",
-                                h.text
-                                    .as_ref()
-                                    .map_or(Value::Null, |t| Value::String(t.clone())),
-                            ),
-                            ("tagline", Value::String(h.tagline.clone())),
-                            (
-                                "manifesto",
-                                h.manifesto
-                                    .as_ref()
-                                    .map_or(Value::Null, |m| Value::String(m.clone())),
-                            ),
-                            (
-                                "actions",
-                                Value::Array(
-                                    h.actions
-                                        .iter()
-                                        .map(|a| {
-                                            json_obj([
-                                                ("text", Value::String(a.text.clone())),
-                                                ("link", Value::String(a.link.clone())),
-                                                ("brand", Value::Bool(a.brand)),
-                                            ])
-                                        })
-                                        .collect(),
-                                ),
-                            ),
-                            (
-                                "features",
-                                Value::Array(
-                                    h.features
-                                        .iter()
-                                        .map(|f| {
-                                            json_obj([
-                                                ("icon", Value::String(f.icon.clone())),
-                                                ("title", Value::String(f.title.clone())),
-                                                (
-                                                    "description",
-                                                    Value::String(f.description.clone()),
-                                                ),
-                                            ])
-                                        })
-                                        .collect(),
-                                ),
-                            ),
-                        ])
-                    })
-                    .unwrap_or(Value::Null)
-            } else {
-                Value::Null
-            };
+                            ("title", Value::String(config.site.title.clone())),
+                            ("base", Value::String(base_path.to_string())),
+                        ]),
+                    ),
+                    ("navigation", Value::Array(nav_links.clone())),
+                    ("sidebar", build_sidebar_state(url_path, config)),
+                    (
+                        "page",
+                        json_obj([
+                            ("title", Value::String(title.clone())),
+                            ("description", Value::String(description.clone())),
+                            ("content", Value::String(html.clone())),
+                            ("isHome", Value::Bool(is_home)),
+                            ("layout", Value::String(layout)),
+                            ("section", Value::String(page_section)),
+                        ]),
+                    ),
+                    ("hero", hero_val),
+                    ("footer", footer_val),
+                    ("prev", Value::Null),
+                    ("next", Value::Null),
+                    (
+                        "pageData",
+                        custom_states
+                            .get(&logical_path)
+                            .or_else(|| custom_states.get(logical_path.trim_end_matches('/')))
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                    ),
+                    ("headTags", Value::String(head_injection.to_string())),
+                    ("label", Value::String("Copy".to_string())),
+                    ("icon", Value::String("🌙".to_string())),
+                ]);
 
-            let footer_val = config
-                .footer
-                .as_ref()
-                .map(|f| json_obj([("html", Value::String(f.html.clone()))]))
-                .unwrap_or(Value::Null);
-
-            // Top-level section slug for the current page, derived from the
-            // first path segment after the base. Used by the nav template to
-            // mark the active link via `?active="{{link.section == page.section}}"`.
-            let page_section = logical_path
-                .trim_start_matches('/')
-                .split('/')
-                .next()
-                .unwrap_or("")
-                .to_string();
-
-            let state = json_obj([
-                (
-                    "site",
-                    json_obj([
-                        ("title", Value::String(config.site.title.clone())),
-                        ("base", Value::String(base_path.to_string())),
-                    ]),
-                ),
-                ("navigation", Value::Array(nav_links.clone())),
-                ("sidebar", build_sidebar_state(url_path, config)),
-                (
-                    "page",
-                    json_obj([
-                        ("title", Value::String(title.clone())),
-                        ("description", Value::String(description.clone())),
-                        ("content", Value::String(html.clone())),
-                        ("isHome", Value::Bool(is_home)),
-                        ("layout", Value::String(layout)),
-                        ("section", Value::String(page_section)),
-                    ]),
-                ),
-                ("hero", hero_val),
-                ("footer", footer_val),
-                ("prev", Value::Null),
-                ("next", Value::Null),
-                (
-                    "pageData",
-                    custom_states
-                        .get(&logical_path)
-                        .or_else(|| custom_states.get(logical_path.trim_end_matches('/')))
-                        .cloned()
-                        .unwrap_or(Value::Null),
-                ),
-            ]);
-
-            // Flatten the loaded custom-page state object onto the top-level
-            // page state so component templates can bind directly to its
-            // fields (e.g. `<for each="item in files">`). This is what enables
-            // SSR for components driven by a `stateFile`. Reserved keys are
-            // never overwritten.
-            let state = if let Some(Value::Object(extra)) = custom_states
-                .get(&logical_path)
-                .or_else(|| custom_states.get(logical_path.trim_end_matches('/')))
-            {
-                let mut map = match state {
-                    Value::Object(m) => m,
-                    other => {
-                        let mut m = Map::new();
-                        m.insert("_root".to_string(), other);
-                        m
+                // Flatten the loaded custom-page state object onto the top-level
+                // page state so component templates can bind directly to its
+                // fields (e.g. `<for each="item in files">`). This is what enables
+                // SSR for components driven by a `stateFile`. Reserved keys are
+                // never overwritten.
+                let state = if let Some(Value::Object(extra)) = custom_states
+                    .get(&logical_path)
+                    .or_else(|| custom_states.get(logical_path.trim_end_matches('/')))
+                {
+                    let mut map = match state {
+                        Value::Object(m) => m,
+                        other => {
+                            let mut m = Map::new();
+                            m.insert("_root".to_string(), other);
+                            m
+                        }
+                    };
+                    for (k, v) in extra {
+                        if !RESERVED_STATE_KEYS.contains(&k.as_str()) && !map.contains_key(k) {
+                            map.insert(k.clone(), v.clone());
+                        }
                     }
+                    Value::Object(map)
+                } else {
+                    state
                 };
-                for (k, v) in extra {
-                    if !RESERVED_STATE_KEYS.contains(&k.as_str()) && !map.contains_key(k) {
-                        map.insert(k.clone(), v.clone());
-                    }
-                }
-                Value::Object(map)
-            } else {
-                state
-            };
 
-            Ok(PageDescriptor {
-                path: url_path.clone(),
-                title,
-                is_home,
-                state,
-            })
-        })
+                Ok((
+                    idx,
+                    PageDescriptor {
+                        path: url_path.clone(),
+                        is_home,
+                        state,
+                    },
+                ))
+            },
+        )
         .collect::<Result<Vec<_>>>()?;
 
     // Build prev/next links from the sidebar that matches each page's URL.
-    // We resolve the active sidebar per-page by checking sidebar_groups prefixes,
-    // then falling back to the default config.sidebar.
+    // We resolve the active sidebar per-page by checking sidebar_groups
+    // prefixes, then falling back to the default config.sidebar.
     let resolve_sidebar = |page_path: &str| -> Vec<SidebarItem> {
         let active = config
             .sidebar_groups
@@ -628,8 +646,13 @@ pub fn process_content(
         active.iter().flat_map(|s| s.items.clone()).collect()
     };
 
-    for page in &mut pages {
-        let sidebar_items = resolve_sidebar(&page.path);
+    // Restore canonical (registry) order and apply prev/next to each
+    // descriptor. Carrying the registry index explicitly through the
+    // parallel pass avoids depending on `par_iter().collect()`'s
+    // implicit order-preservation contract.
+    let mut pages: Vec<Option<PageDescriptor>> = (0..results.len()).map(|_| None).collect();
+    for (idx, mut desc) in results {
+        let sidebar_items = resolve_sidebar(&desc.path);
         let flat_links = collect_sidebar_links(&sidebar_items);
         let all_links: Vec<(String, String)> = flat_links
             .iter()
@@ -639,23 +662,31 @@ pub fn process_content(
                 (path, text)
             })
             .collect();
-        if let Some(idx) = all_links.iter().position(|(p, _)| p == &page.path) {
-            if idx > 0 {
-                let (link, text) = &all_links[idx - 1];
-                page.state["prev"] = json_obj([
+        if let Some(pos) = all_links.iter().position(|(p, _)| p == &desc.path) {
+            if pos > 0 {
+                let (link, text) = &all_links[pos - 1];
+                desc.state["prev"] = json_obj([
                     ("link", Value::String(link.clone())),
                     ("text", Value::String(text.clone())),
                 ]);
             }
-            if idx + 1 < all_links.len() {
-                let (link, text) = &all_links[idx + 1];
-                page.state["next"] = json_obj([
+            if pos + 1 < all_links.len() {
+                let (link, text) = &all_links[pos + 1];
+                desc.state["next"] = json_obj([
                     ("link", Value::String(link.clone())),
                     ("text", Value::String(text.clone())),
                 ]);
             }
         }
+        pages[idx] = Some(desc);
     }
+    let pages: Vec<PageDescriptor> = pages
+        .into_iter()
+        .enumerate()
+        .map(|(i, slot)| {
+            slot.ok_or_else(|| Error::Build(format!("missing page at registry index {i}")))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(pages)
 }

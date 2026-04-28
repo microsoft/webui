@@ -194,7 +194,10 @@ mod tests {
         bytes.extend_from_slice(b"avif");
         bytes.extend_from_slice(&[0, 0, 0, 0]);
         for i in 0..payload_len {
-            bytes.push(seed.wrapping_add(i as u8));
+            // Test fixture: byte values intentionally wrap mod 256.
+            #[allow(clippy::cast_possible_truncation)]
+            let byte = i as u8;
+            bytes.push(seed.wrapping_add(byte));
         }
         fs::write(dir.join(format!("{stem}.avif")), bytes)
             .unwrap_or_else(|error| panic!("{error}"));
