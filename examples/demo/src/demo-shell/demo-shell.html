@@ -1,0 +1,51 @@
+<template shadowrootmode="open">
+  <header class="shell-header">
+    <div class="nav-group">
+      <button
+        class="nav-button"
+        type="button"
+        aria-label="Previous app"
+        ?disabled="{{currentDisplay == 1}}"
+        @click="{onPrev()}"
+      >‹</button>
+      <button
+        class="nav-button"
+        type="button"
+        aria-label="Next app"
+        ?disabled="{{currentDisplay == totalApps}}"
+        @click="{onNext()}"
+      >›</button>
+    </div>
+
+    <select class="app-select" @change="{onSelectChange(e)}" w-ref="{selectEl}">
+      <button class="select-trigger" type="button">
+        <selectedcontent></selectedcontent>
+        <span class="counter">{{currentDisplay}} / {{totalApps}}</span>
+        <span class="chevron" aria-hidden="true">▾</span>
+      </button>
+
+      <for each="app in apps">
+        <option value="{{app.slug}}" ?selected="{{app.slug == currentApp.slug}}">
+          <span class="opt-row">
+            <span class="opt-name">{{app.name}}</span>
+            <span class="opt-badge">{{app.backend}}</span>
+          </span>
+          <span class="opt-desc">{{app.description}}</span>
+        </option>
+      </for>
+    </select>
+
+    <a class="source-link" href="{{currentApp.sourceUrl}}" target="_blank" rel="noopener">
+      source <span aria-hidden="true">↗</span>
+    </a>
+  </header>
+
+  <main class="frame-host">
+    <iframe
+      class="app-frame"
+      title="{{currentApp.name}}"
+      src="{{currentApp.iframeUrl}}"
+      w-ref="{frameEl}"
+    ></iframe>
+  </main>
+</template>

@@ -1,0 +1,72 @@
+/* Copyright (c) Microsoft Corporation. */
+/* Licensed under the MIT license. */
+
+:root {
+  --surface-0: #ffffff;
+  --surface-1: #f8fafc;
+  --surface-2: #ffffff;
+  --surface-3: #f1f5f9;
+  --fg: #0f172a;
+  --muted: #64748b;
+  --border: #e2e8f0;
+  --accent: #2563eb;
+  --accent-soft: #eff6ff;
+
+  --gap-m: 10px;
+  --gap-l: 16px;
+
+  --pad-x: 16px;
+  --pad-y: 10px;
+  --pad-trigger-x: 14px;
+  --pad-trigger-y: 8px;
+  --pad-opt-x: 12px;
+  --pad-opt-y: 10px;
+
+  --radius-m: 6px;
+  --radius-l: 10px;
+
+  --shadow-l: 0 12px 32px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.06);
+
+  --font-base: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface-0: #ffffff;
+    --surface-1: #0f172a;
+    --surface-2: #1e293b;
+    --surface-3: #334155;
+    --fg: #f1f5f9;
+    --muted: #94a3b8;
+    --border: #334155;
+    --accent: #60a5fa;
+    --accent-soft: rgba(96, 165, 250, 0.12);
+    --shadow-l: 0 12px 32px rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.2);
+  }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-base);
+  background: var(--surface-1);
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+}
+
+demo-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}

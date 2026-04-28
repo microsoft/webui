@@ -1,0 +1,13 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+
+services:
+  demo:
+    build:
+      context: ../..
+      dockerfile: examples/demo/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - RUST_LOG=info

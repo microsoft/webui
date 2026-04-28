@@ -1,0 +1,17 @@
+# Demo shell metadata — auto-discovered by the demo shell server.
+# See examples/demo/README.md for the full schema.
+
+name = "Routes"
+description = "A multi-page routed app with backend route states"
+backend = "node"
+
+[server]
+type = "webui-cli"
+plugin = "webui"
+source = "src"
+servedir = "dist"
+
+[api]
+type = "node"
+entry = "server/dist/index.js"
+port-offset = 10

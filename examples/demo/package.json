@@ -1,0 +1,17 @@
+{
+  "name": "webui-demo-shell",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --minify --sourcemap && cp src/index.css dist/index.css && cp src/demo-shell/demo-shell.css dist/demo-shell.css",
+    "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
+    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --servedir ./dist --port 3099 --watch"
+  },
+  "devDependencies": {
+    "@microsoft/webui-framework": "workspace:*",
+    "esbuild": "catalog:",
+    "tslib": "catalog:",
+    "typescript": "catalog:"
+  }
+}

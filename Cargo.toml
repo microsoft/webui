@@ -5,6 +5,7 @@ members = [
     "examples/integration/rust",
     "examples/integration/ssr-performance-showdown",
     "examples/app/commerce/server",
+    "examples/demo/server",
 ]
 resolver = "2"
 

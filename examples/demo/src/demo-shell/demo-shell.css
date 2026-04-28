@@ -1,0 +1,252 @@
+/* Copyright (c) Microsoft Corporation. */
+/* Licensed under the MIT license. */
+
+:host {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.shell-header {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-l);
+  padding: var(--pad-y) var(--pad-x);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+}
+
+/* ---------- prev/next nav buttons ---------- */
+
+.nav-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.nav-button {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--fg);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.nav-button:hover:not([disabled]) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.nav-button[disabled] {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ---------- customizable select (appearance: base-select) ---------- */
+
+.app-select,
+.app-select::picker(select) {
+  appearance: base-select;
+}
+
+.app-select {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+/* Hide the native picker icon — we render our own chevron inside the trigger. */
+.app-select::picker-icon {
+  display: none;
+}
+
+.select-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-m);
+  width: 100%;
+  padding: var(--pad-trigger-y) var(--pad-trigger-x);
+  font: inherit;
+  color: inherit;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.select-trigger:hover {
+  border-color: var(--accent);
+}
+
+.app-select:open .select-trigger {
+  border-color: var(--accent);
+  background: var(--surface-3);
+}
+
+.select-trigger selectedcontent {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--gap-m);
+}
+
+.select-trigger .counter {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.select-trigger .chevron {
+  color: var(--muted);
+  font-size: 12px;
+  transition: transform 0.15s;
+}
+
+.app-select:open .select-trigger .chevron {
+  transform: rotate(180deg);
+}
+
+/* dropdown panel */
+.app-select::picker(select) {
+  margin-top: 6px;
+  padding: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  box-shadow: var(--shadow-l);
+  min-width: anchor-size(width);
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.app-select::picker(select),
+.app-select::picker(select):focus-visible {
+  outline: none;
+}
+
+/* options */
+.app-select option {
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: 4px;
+  padding: var(--pad-opt-y) var(--pad-opt-x);
+  border-radius: var(--radius-m);
+  cursor: pointer;
+}
+
+.app-select option::checkmark {
+  display: none;
+}
+
+.app-select option:hover,
+.app-select option:focus,
+.app-select option:focus-visible {
+  background: var(--surface-3);
+  outline: none;
+}
+
+.app-select option:checked {
+  background: var(--accent-soft);
+}
+
+/* When rendered inside the selected-content slot, the description is hidden
+   so the trigger stays compact; in the dropdown, both rows show. */
+.select-trigger selectedcontent .opt-desc {
+  display: none;
+}
+
+/* The counter lives in the trigger button and shouldn't appear inside option rows. */
+.app-select option .counter {
+  display: none;
+}
+
+.opt-row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-m);
+  min-width: 0;
+}
+
+.opt-name {
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.opt-badge {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+
+.opt-desc {
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- source link ---------- */
+
+.source-link {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 6px 10px;
+  border-radius: var(--radius-m);
+  transition: color 0.15s, background-color 0.15s;
+}
+
+.source-link:hover {
+  color: var(--accent);
+  background: var(--surface-2);
+}
+
+/* ---------- iframe ---------- */
+
+.frame-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.app-frame {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--surface-0);
+}

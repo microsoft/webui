@@ -1,0 +1,14 @@
+# Demo shell metadata — auto-discovered by the demo shell server.
+# See examples/demo/README.md for the full schema.
+
+name = "Todo (Fast Plugin)"
+description = "A todo app using the fast rendering plugin"
+backend = "rust"
+
+[server]
+type = "webui-cli"
+plugin = "fast"
+source = "src"
+servedir = "dist"
+state = "data/state.json"
+theme = "@microsoft/webui-examples-theme"

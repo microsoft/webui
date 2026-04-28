@@ -1,0 +1,11 @@
+# Demo shell metadata — auto-discovered by the demo shell server.
+# See examples/demo/README.md for the full schema.
+
+name = "Commerce"
+description = "A full e-commerce marketplace with a high performance server"
+backend = "rust"
+
+[server]
+type = "custom-binary"
+binary = "marketplace-api"
+args = ["--css", "style", "--no-tls"]

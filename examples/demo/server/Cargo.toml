@@ -1,0 +1,28 @@
+[package]
+name = "demo-shell"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "demo-shell"
+path = "src/main.rs"
+
+[dependencies]
+actix-web = { workspace = true }
+awc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+toml = "0.8"
+tokio = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+mime_guess = { workspace = true }
+microsoft-webui = { path = "../../../crates/webui" }
+microsoft-webui-handler = { path = "../../../crates/webui-handler" }
+microsoft-webui-protocol = { path = "../../../crates/webui-protocol" }
+
+[lints]
+workspace = true

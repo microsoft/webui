@@ -35,7 +35,25 @@ Prefix an attribute name with `?` to make it conditional. The attribute is only 
 <input type="checkbox" ?checked={{isSelected}} />
 ```
 
-The value **must** be a pure handlebars expression (e.g., `{{signalName}}`). If the value contains plain text or mixed content, the attribute is silently dropped.
+The value **must** be a pure handlebars expression — either a single signal (e.g., `{{signalName}}`) or any expression that `<if condition="...">` accepts (comparisons, logical operators, dotted paths). If the value contains plain text or mixed static/dynamic content, the attribute is silently dropped.
+
+### Prefer Expressions Over Mirror Observables
+
+Boolean attributes accept the same expression syntax as `<if>`, so **derive boolean state from your existing observables** rather than creating parallel `isFirst` / `isLast` / `isSelected` observables that you have to keep in sync:
+
+```html
+<!-- ✅ Good: derive from existing state -->
+<button ?disabled="{{currentIndex == 0}}">Prev</button>
+<button ?disabled="{{currentIndex == items.length - 1}}">Next</button>
+<option ?selected="{{item.id == selectedId}}">{{item.name}}</option>
+
+<!-- ❌ Avoid: mirror observables that duplicate derivable state -->
+<!-- @observable isPrevDisabled, isNextDisabled, isItemSelected — every
+     update path now has to remember to recompute them. -->
+<button ?disabled="{{isPrevDisabled}}">Prev</button>
+```
+
+Mirror observables are a common source of UI desync bugs: any code path that mutates `currentIndex` but forgets to update `isPrevDisabled` produces incorrect rendering. Expressions are evaluated automatically whenever any signal they reference changes.
 
 ### Dotted Paths
 
@@ -53,6 +71,10 @@ Boolean attributes support dotted path notation to access nested state:
 
 <!-- ✅ Valid: dotted path -->
 <input ?checked={{form.agreed}} />
+
+<!-- ✅ Valid: comparison expression (preferred over mirror observables) -->
+<button ?disabled={{currentIndex == 0}}>Prev</button>
+<option ?selected={{item.id == selectedId}}>{{item.name}}</option>
 
 <!-- ❌ Invalid: plain value (attribute silently dropped) -->
 <button ?disabled="true">Click</button>

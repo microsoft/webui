@@ -169,6 +169,12 @@ Supported operators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`, `!`
 <button ?disabled="{{isLoading}}">Submit</button>
 <input type="checkbox" ?checked="{{isSelected}}" />
 
+<!-- Boolean attributes accept the same expressions as <if condition="...">.
+     Use comparisons against existing state instead of creating mirror observables. -->
+<button ?disabled="{{currentIndex == 0}}">Prev</button>
+<button ?disabled="{{currentIndex == items.length - 1}}">Next</button>
+<option ?selected="{{item.id == selectedId}}">{{item.name}}</option>
+
 <!-- Mixed static + dynamic -->
 <img src="/img/{{user.avatar}}" alt="{{user.name}}" />
 
@@ -798,15 +804,42 @@ async onOpenSettings(): Promise<void> {
 
 ### Derived state (prefer template expressions over shadow observables)
 
+Anywhere an expression works (`<if condition="...">`, `?boolAttr="{{...}}"`, text
+bindings via path lookups), compare existing state directly. Do not introduce
+extra observables that just mirror a comparison or sentinel of other state, and
+do not bake per-item flags like `isCurrent` / `isDisabled` into the SSR JSON
+when a single comparison can derive them.
+
 ```html
-<!-- DO: use expression directly -->
+<!-- DO: derive in the template -->
 <if condition="items.length">
   <span>{{items.length}} items</span>
 </if>
 
-<!-- DON'T: create a shadow observable -->
-<!-- @observable hasItems = false; // mirrors items.length > 0 -->
+<button ?disabled="{{currentIndex == 0}}">Prev</button>
+<button ?disabled="{{currentIndex == totalItems}}">Next</button>
+
+<for each="app in apps">
+  <option ?selected="{{app.slug == currentApp.slug}}">{{app.name}}</option>
+</for>
+
+<!-- DON'T: shadow observables that mirror a comparison -->
+<!-- @observable hasItems = false;     // mirrors items.length > 0 -->
+<!-- @observable prevDisabled = true;  // mirrors currentIndex == 0 -->
+<!-- @observable nextDisabled = false; // mirrors currentIndex == totalItems -->
+
+<!-- DON'T: per-item flags in JSON state that mirror a comparison -->
+<!-- { "apps": [{ "slug": "...", "isCurrent": true }, ...] }
+     Just compare against the selected slug/id in the template. -->
 ```
+
+Loop variables (e.g. `app`) compose with outer component state (e.g.
+`currentApp`) inside the same expression, so per-iteration flags are almost
+never needed.
+
+Text bindings only do path lookups — they can't do arithmetic. If you need
+`{{currentIndex + 1}}` for a 1-based display, that's a legitimate `@observable`
+(or precomputed in the SSR state).
 
 ### Route-scoped state
 

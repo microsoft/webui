@@ -275,6 +275,21 @@ importers:
         specifier: 'catalog:'
         version: 5.9.3
 
+  examples/demo:
+    devDependencies:
+      '@microsoft/webui-framework':
+        specifier: workspace:*
+        version: link:../../packages/webui-framework
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.27.3
+      tslib:
+        specifier: 'catalog:'
+        version: 2.8.1
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   examples/integration/electron:
     dependencies:
       '@microsoft/webui':
