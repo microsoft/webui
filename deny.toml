@@ -27,22 +27,21 @@ ignore = true
 [bans]
 multiple-versions = "deny"
 skip = [
-    { name = "anstream" },
-    { name = "anstyle-parse" },
     { name = "bitflags" },
-    { name = "block-buffer" },
     { name = "convert_case" },
-    { name = "cpufeatures" },
-    { name = "crypto-common" },
-    { name = "digest" },
     { name = "getrandom" },
     { name = "hashbrown" },
     { name = "http" },
     { name = "r-efi" },
+    # awc 3.8.2 uses rand 0.9 directly while actix-http 3.12 uses rand 0.10.
+    { name = "rand" },
+    { name = "rand_core" },
     { name = "socket2" },
     { name = "serde_spanned" },
     { name = "toml" },
     { name = "toml_datetime" },
+    # toml 0.9 currently depends on both winnow 0.7 and toml_parser's winnow 1.x.
+    { name = "winnow" },
     { name = "windows-sys" },
     { name = "windows-targets" },
     { name = "windows_aarch64_gnullvm" },
@@ -53,4 +52,6 @@ skip = [
     { name = "windows_x86_64_gnu" },
     { name = "windows_x86_64_gnullvm" },
     { name = "windows_x86_64_msvc" },
+    # getrandom's wasi-preview targets currently pull both wasip2 and wasip3 stacks.
+    { name = "wit-bindgen" },
 ]
