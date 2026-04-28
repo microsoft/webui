@@ -1,0 +1,30 @@
+[package]
+name = "microsoft-webui-dev-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Shared dev-server primitives for WebUI tooling: file watcher, SSE live reload, and URL-safe static file routing."
+readme = "README.md"
+
+[lib]
+name = "webui_dev_server"
+path = "src/lib.rs"
+
+[dependencies]
+actix-web = { workspace = true }
+tokio = { workspace = true }
+notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+percent-encoding = { workspace = true }
+futures-util = { workspace = true }
+async-stream = { workspace = true }
+mime_guess = { workspace = true }
+anyhow = { workspace = true }
+console = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

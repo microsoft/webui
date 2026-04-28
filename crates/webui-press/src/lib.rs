@@ -10,7 +10,9 @@ pub mod build;
 pub mod content;
 pub mod error;
 pub mod markdown;
+pub mod serve;
 pub mod types;
 
 pub use build::build_docs;
+pub use serve::run_serve;
 pub use types::DocsConfig;

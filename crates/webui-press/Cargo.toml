@@ -42,3 +42,13 @@ rayon = { workspace = true }
 
 # Utilities
 thiserror = { workspace = true }
+
+# Dev server (`webui-press serve`)
+microsoft-webui-dev-server = { path = "../webui-dev-server", version = "0.0.10" }
+actix-web = { workspace = true }
+tokio = { workspace = true }
+mime_guess = { workspace = true }
+walkdir = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

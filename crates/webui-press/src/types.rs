@@ -203,7 +203,6 @@ pub struct FooterConfig {
 /// A processed page ready for rendering.
 pub struct PageDescriptor {
     pub path: String,
-    pub title: String,
     pub is_home: bool,
     pub state: serde_json::Value,
 }

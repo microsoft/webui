@@ -448,6 +448,7 @@ This is the WebUI Framework's [FAST plugin](https://microsoft.github.io/webui/gu
 - **No regex in core paths.** Markdown processing, link normalization, and DSD pre-expansion are deterministic scanners.
 - **Buffer-first IO.** HTML output uses pre-sized `String` buffers and `push_str`, never `format!` in hot loops.
 - **Allocation-aware.** Hot data structures use `BTreeMap` (sorted, deterministic) over `HashMap` (non-deterministic, larger). Sidebar resolution is `O(prefixes)`, not `O(pages × prefixes)`.
+- **Dev server is full-rebuild on every change.** `webui-press serve` re-runs the entire build pipeline on every filesystem event rather than tracking per-file dependencies. This keeps the dev path simple, makes every refresh byte-identical to a `build`, and benchmarks at sub-second rebuilds for sites under a few hundred pages. The only state amortized across rebuilds is the `syntect` highlighter (~30–50 ms to load).
 
 If your build slows down, profile with `cargo flamegraph -p microsoft-webui-press --bin webui-press -- build`, every hot path is fair game for further optimization.
 

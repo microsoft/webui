@@ -3,8 +3,10 @@
 
 //! Build orchestrator: content pipeline → protocol build → parallel render → output.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
 use console::style;
@@ -18,13 +20,64 @@ use crate::error::{Error, Result};
 use crate::markdown::Highlighter;
 use crate::types::{BuildStats, DocsConfig};
 
+/// Persistent state held by the dev server across rebuilds. The dev
+/// server always performs a full rebuild on every watcher tick — the
+/// previous incremental machinery proved too complex for the marginal
+/// time savings — so this struct exists solely to amortize startup
+/// costs that don't depend on user-edited content.
+///
+/// Today that's just the syntect `Highlighter` (the syntax + theme
+/// load is ~30-50ms). One-shot CLI builds construct a fresh
+/// `BuildCache::default()` and discard it.
+#[derive(Default)]
+pub struct BuildCache {
+    /// Syntect highlighter — kept alive across rebuilds so we don't pay
+    /// the syntax/theme load cost on every keystroke.
+    pub(crate) highlighter: Option<Highlighter>,
+    /// Suppress per-step terminal output (`✔ Rendered 31 pages`, etc.).
+    /// The dev server flips this on after the first build so subsequent
+    /// rebuilds collapse into the rolling rebuild line.
+    pub quiet: bool,
+    /// Skip the `remove_dir_all(out_dir)` step. Files are overwritten
+    /// in place. Dev-mode optimization — saves the macOS-ENOTEMPTY
+    /// retry path and shaves disk I/O off every rebuild. Stale files
+    /// from deleted source pages survive until the next process restart.
+    pub skip_clean: bool,
+}
+
+impl BuildCache {
+    /// Create an empty cache with verbose output and clean-then-build
+    /// semantics. Subsequent calls to [`build_docs_with_cache`] will
+    /// populate it on first use.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Switch the cache into dev-server rebuild mode: suppresses
+    /// per-step output banners and skips wiping the output directory.
+    pub fn set_dev_rebuild(&mut self) {
+        self.quiet = true;
+        self.skip_clean = true;
+    }
+}
+
 // ── Output helpers ──────────────────────────────────────────────
 //
 // Mirrors the styling vocabulary in `crates/webui-cli/src/utils/output.rs`
 // so webui-press feels at home in a workspace where users may also see
 // `webui build` / `webui serve` output.
 
-fn print_header(title: &str) {
+/// Monotonic counter used to produce unique per-rebuild temp-dir names.
+/// Combined with the process id and a fxhash of the page path so two
+/// rebuilds running in the same process can never collide on the
+/// per-page scratch dir.
+static REBUILD_NONCE: AtomicU64 = AtomicU64::new(0);
+
+fn print_header(cache: &BuildCache, title: &str) {
+    if cache.quiet {
+        return;
+    }
     eprintln!(
         "\n  {} {}",
         style("⚡").cyan().bold(),
@@ -32,11 +85,17 @@ fn print_header(title: &str) {
     );
 }
 
-fn print_success(message: &str) {
+fn print_success(cache: &BuildCache, message: &str) {
+    if cache.quiet {
+        return;
+    }
     eprintln!("  {} {message}", style("✔").green());
 }
 
-fn print_finish(message: &str) {
+fn print_finish(cache: &BuildCache, message: &str) {
+    if cache.quiet {
+        return;
+    }
     eprintln!("\n  {} {message}\n", style("✨").green());
 }
 
@@ -78,23 +137,47 @@ impl ResponseWriter for StringWriter {
 /// `config_dir` is the directory containing `config.json`. It is used to
 /// resolve relative paths declared in the config (such as a custom page's
 /// `state_file`).
+///
+/// One-shot variant for the CLI build command. The dev server uses
+/// [`build_docs_with_cache`] so the syntect highlighter survives across
+/// rebuilds.
 pub fn build_docs(
     config: &DocsConfig,
     config_dir: &Path,
     template_dir: &Path,
 ) -> Result<BuildStats> {
+    let mut cache = BuildCache::new();
+    build_docs_with_cache(config, config_dir, template_dir, &mut cache)
+}
+
+/// Build a documentation site, reusing the supplied [`BuildCache`] across
+/// invocations.
+///
+/// **Always performs a full rebuild.** The previous incremental machinery
+/// (per-page state hashes, component-bundle signatures, descriptor cache,
+/// search-index sig, etc.) was removed because the resulting invariants
+/// were complex for a dev-server-only optimization. The rebuild is
+/// already fast in practice and a from-scratch run keeps the output
+/// guaranteed-consistent with the source.
+///
+/// The cache exists today purely to amortize startup costs that are
+/// independent of user-edited content (the syntect highlighter load).
+pub fn build_docs_with_cache(
+    config: &DocsConfig,
+    config_dir: &Path,
+    template_dir: &Path,
+    cache: &mut BuildCache,
+) -> Result<BuildStats> {
     let start = Instant::now();
     let base_path = &config.base_path;
     let out_dir = Path::new(&config.out_dir);
 
-    // When basePath is not "/", nest output under out_dir/<basePath> so a
-    // local static server works without path rewriting.
-    let site_dir = if base_path != "/" {
-        let trimmed = base_path.trim_matches('/');
-        out_dir.join(trimmed)
-    } else {
-        out_dir.to_path_buf()
-    };
+    // Flat output: site files live at the root of `out_dir`. URLs in HTML
+    // include `basePath` via `<base href>` and link rewriting; the dev server
+    // (`webui-press serve`) maps URL `<basePath>/foo` → file `out_dir/foo`.
+    // For deploys (e.g. GitHub Pages project sites), the host mounts `out_dir`
+    // at `<basePath>`, so the same flat layout works.
+    let site_dir = out_dir.to_path_buf();
 
     // Read custom CSS
     let custom_css = config
@@ -103,13 +186,53 @@ pub fn build_docs(
         .and_then(|p| fs::read_to_string(p).ok())
         .unwrap_or_default();
 
-    print_header(&config.site.title);
+    print_header(cache, &config.site.title);
     eprintln!();
 
-    // Step 1: Process content
-    let highlighter = Highlighter::new();
+    // Compute the `<head>` injection string up-front, BEFORE any
+    // filesystem mutations. Including it here makes it cheap to bake
+    // into each page's state inside `process_content` (avoiding a
+    // post-process_content mutation pass that would force-clone every
+    // cached descriptor) and lets the content cache invalidate when
+    // the link tags change. We don't write the CSS files yet — that
+    // happens after content processing succeeds, so a content failure
+    // can't corrupt the previous valid output.
+    let base_css_src = template_dir.join("docs.css");
+    let has_base_css = base_css_src.exists();
+    let base_css_link = if has_base_css {
+        format!("<link rel=\"stylesheet\" href=\"{base_path}docs.css\">")
+    } else {
+        String::new()
+    };
+    let has_theme_css = !custom_css.is_empty();
+    let theme_css_link = if has_theme_css {
+        format!("<link rel=\"stylesheet\" href=\"{base_path}theme.css\">")
+    } else {
+        String::new()
+    };
+    let head_injection = {
+        let mut parts: Vec<String> = Vec::with_capacity(2 + config.head.len());
+        if !base_css_link.is_empty() {
+            parts.push(base_css_link.clone());
+        }
+        if !theme_css_link.is_empty() {
+            parts.push(theme_css_link.clone());
+        }
+        for tag in &config.head {
+            parts.push(tag.to_html());
+        }
+        parts.join("\n  ")
+    };
 
-    let mut pages = process_content(config, config_dir, &highlighter)?;
+    // Step 1: Process content. Highlighter is cached across rebuilds —
+    // syntect's default syntax/theme load is ~30-50ms which we don't want
+    // to pay every keystroke.
+    let highlighter = cache.highlighter.take().unwrap_or_default();
+
+    let pages = process_content(config, config_dir, &highlighter, &head_injection)?;
+
+    // Restore the highlighter for the next rebuild.
+    cache.highlighter = Some(highlighter);
 
     // Step 2: Resolve component sources for the per-page builds
     let mut component_sources: Vec<String> = Vec::new();
@@ -134,55 +257,28 @@ pub fn build_docs(
     let template_html = fs::read_to_string(template_dir.join("index.html"))
         .map_err(|e| Error::Build(format!("Failed to read template: {e}")))?;
 
-    // Step 3: Pre-render pages in parallel
-    if out_dir.exists() {
-        fs::remove_dir_all(out_dir)
+    // Step 3: Wipe the previous output and recreate the site root.
+    // Always done — a from-scratch run guarantees the output matches
+    // the current source with no possibility of stale per-page dirs,
+    // stale CSS files, or orphaned assets surviving a config change.
+    if out_dir.exists() && !cache.skip_clean {
+        remove_dir_all_retry(out_dir)
             .map_err(|e| Error::Io(format!("Cannot clean output dir: {e}")))?;
     }
-    // The site root must exist before we copy CSS into it; per-page subdirs
-    // are created later, just before parallel rendering.
     fs::create_dir_all(&site_dir).map_err(|e| Error::Io(format!("Cannot create site dir: {e}")))?;
 
-    // Copy base stylesheet to output and build head injection
-    let base_css_src = template_dir.join("docs.css");
-    let base_css_link = if base_css_src.exists() {
-        let css_filename = "docs.css";
-        fs::copy(&base_css_src, site_dir.join(css_filename))
-            .map_err(|e| Error::Io(format!("Cannot copy {css_filename}: {e}")))?;
-        format!("<link rel=\"stylesheet\" href=\"{base_path}{css_filename}\">")
-    } else {
-        String::new()
-    };
-
-    // Write custom theme CSS to an external file
-    let theme_css_link = if custom_css.is_empty() {
-        String::new()
-    } else {
-        let css_filename = "theme.css";
-        fs::write(site_dir.join(css_filename), &custom_css)
-            .map_err(|e| Error::Io(format!("Cannot write {css_filename}: {e}")))?;
-        format!("<link rel=\"stylesheet\" href=\"{base_path}{css_filename}\">")
-    };
-
-    let head_injection = {
-        let mut parts = Vec::new();
-        if !base_css_link.is_empty() {
-            parts.push(base_css_link);
-        }
-        if !theme_css_link.is_empty() {
-            parts.push(theme_css_link);
-        }
-        for tag in &config.head {
-            parts.push(tag.to_html());
-        }
-        parts.join("\n  ")
-    };
-
-    // Inject headTags and component defaults into each page's state
-    for page in &mut pages {
-        page.state["headTags"] = Value::String(head_injection.clone());
-        page.state["label"] = Value::String("Copy".to_string());
-        page.state["icon"] = Value::String("🌙".to_string());
+    // Materialize the CSS files referenced by the head injection. Done
+    // after content processing succeeds so a content failure can't
+    // corrupt the previous valid output (the wipe above still happens
+    // because we clean before processing — but that order means a
+    // failure leaves no output at all, never half-output).
+    if has_base_css {
+        fs::copy(&base_css_src, site_dir.join("docs.css"))
+            .map_err(|e| Error::Io(format!("Cannot copy docs.css: {e}")))?;
+    }
+    if has_theme_css {
+        fs::write(site_dir.join("theme.css"), &custom_css)
+            .map_err(|e| Error::Io(format!("Cannot write theme.css: {e}")))?;
     }
 
     let handler = WebUIHandler::with_plugin(|| {
@@ -197,9 +293,10 @@ pub fn build_docs(
             .map_err(|e| Error::Io(format!("Cannot create dir {}: {e}", page_dir.display())))?;
     }
 
-    // Kick off TypeScript component bundling on a background thread — esbuild
-    // (npx process startup) takes 100s of ms and is independent of the render
-    // pipeline, so we overlap it with the per-page protocol build + render.
+    // Kick off TypeScript component bundling on a background thread.
+    // esbuild (npx process startup) takes 100s of ms and is independent
+    // of the render pipeline, so we overlap it with the per-page
+    // protocol build + render.
     let template_dir_owned = template_dir.to_path_buf();
     let component_sources_clone = component_sources.clone();
     let site_dir_clone = site_dir.clone();
@@ -225,9 +322,13 @@ pub fn build_docs(
     // template metadata to `window.__webui.templates` for client-side
     // hydration — no manual registration tricks required.
     let total_bytes = std::sync::atomic::AtomicUsize::new(0);
-    let component_css: std::sync::Mutex<std::collections::HashMap<String, String>> =
-        std::sync::Mutex::new(std::collections::HashMap::new());
+    let component_css: std::sync::Mutex<HashMap<String, String>> =
+        std::sync::Mutex::new(HashMap::new());
+
     pages.par_iter().try_for_each(|page| -> Result<()> {
+        let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
+        let target = page_dir.join("index.html");
+
         let content = page.state["page"]["content"].as_str().unwrap_or("");
 
         // Protect <pre> blocks from HTML parser whitespace normalization.
@@ -240,8 +341,13 @@ pub fn build_docs(
         // come exclusively from `component_sources`, which already includes
         // the template dir (for docs-search/docs-theme-toggle) plus any
         // configured component libraries.
+        //
+        // Name includes pid + per-rebuild nonce so two parallel page
+        // builds (and successive rebuilds) can never collide and wipe
+        // each other's in-progress files.
+        let nonce = REBUILD_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let page_tmp = std::env::temp_dir().join(format!(
-            "webui-press-page-{}-{:x}",
+            "webui-press-page-{}-{:x}-{nonce:x}",
             std::process::id(),
             fxhash(&page.path),
         ));
@@ -275,7 +381,7 @@ pub fn build_docs(
         if !build_result.css_files.is_empty() {
             let mut css_map = component_css
                 .lock()
-                .map_err(|e| Error::Build(format!("css mutex poisoned: {e}")))?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for (name, content) in build_result.css_files {
                 css_map.entry(name).or_insert(content);
             }
@@ -295,56 +401,39 @@ pub fn build_docs(
         let html = restore_pre_blocks(&writer.buf, &pre_blocks);
 
         // Write directly inside the parallel closure.
-        let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
-        fs::write(page_dir.join("index.html"), &html)
+        fs::write(&target, &html)
             .map_err(|e| Error::Io(format!("Cannot write {}: {e}", page.path)))?;
 
         fs::remove_dir_all(&page_tmp).ok();
         Ok(())
     })?;
 
-    print_success(&format!("Rendered {} pages", pages.len()));
+    print_success(cache, &format!("Rendered {} pages", pages.len()));
 
-    // Step 4: Search index (parallel)
-    let search_index: Vec<serde_json::Value> = pages
-        .par_iter()
+    // Step 4: Search index. Strip rendered HTML to plain text and emit
+    // an entry per non-home page. Done from-scratch every build.
+    let search_path = site_dir.join("search-index.json");
+    let search_entries: Vec<Value> = pages
+        .iter()
         .filter(|p| !p.is_home)
         .map(|p| {
             let html = p.state["page"]["content"].as_str().unwrap_or("");
-            let mut clean = String::with_capacity(html.len() / 2);
-            let mut in_tag = false;
-            for ch in html.chars() {
-                match ch {
-                    '<' => in_tag = true,
-                    '>' => {
-                        in_tag = false;
-                        clean.push(' ');
-                    }
-                    _ if !in_tag => clean.push(ch),
-                    _ => {}
-                }
-            }
-            let content: String = clean.split_whitespace().collect::<Vec<_>>().join(" ");
-            json_obj([
-                ("title", Value::String(p.title.clone())),
-                ("path", Value::String(p.path.clone())),
-                (
-                    "content",
-                    Value::String(truncate_utf8(&content, 500).to_string()),
-                ),
-            ])
+            let title = p.state["page"]["title"].as_str().unwrap_or("");
+            build_search_entry(title, &p.path, html)
         })
         .collect();
-
     fs::write(
-        site_dir.join("search-index.json"),
-        serde_json::to_string(&search_index)
+        &search_path,
+        serde_json::to_string(&search_entries)
             .map_err(|e| Error::Build(format!("JSON error: {e}")))?,
     )
     .map_err(|e| Error::Io(e.to_string()))?;
-    print_success(&format!("Indexed {} pages for search", search_index.len()));
+    print_success(
+        cache,
+        &format!("Indexed {} pages for search", search_entries.len()),
+    );
 
-    // Step 5: Copy static assets
+    // Step 5: Copy static public assets.
     let public_dir = Path::new(&config.public_dir);
     if public_dir.exists() {
         copy_dir(public_dir, &site_dir)?;
@@ -400,7 +489,11 @@ pub fn build_docs(
     not_found_state["icon"] = Value::String("🌙".to_string());
 
     let not_found_html = template_html.replace("{{{page.content}}}", &not_found_content);
-    let nf_tmp = std::env::temp_dir().join(format!("webui-press-404-{}", std::process::id()));
+    let nf_tmp = std::env::temp_dir().join(format!(
+        "webui-press-404-{}-{:x}",
+        std::process::id(),
+        REBUILD_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    ));
     if nf_tmp.exists() {
         fs::remove_dir_all(&nf_tmp).ok();
     }
@@ -424,7 +517,7 @@ pub fn build_docs(
     {
         let mut css_map = component_css
             .lock()
-            .map_err(|e| Error::Build(format!("css mutex poisoned: {e}")))?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (name, content) in &nf_build.css_files {
             css_map
                 .entry(name.clone())
@@ -442,39 +535,89 @@ pub fn build_docs(
         )
         .map_err(|e| Error::Render(format!("404: {e}")))?;
 
-    // Write 404.html into site_dir so GitHub Pages (and any host that maps
-    // its publish root to `<basePath>`) serves it for unmatched URLs.
     fs::write(site_dir.join("404.html"), writer_404.buf).map_err(|e| Error::Io(e.to_string()))?;
     fs::remove_dir_all(&nf_tmp).ok();
-    print_success("Generated 404 page");
+    print_success(cache, "Generated 404 page");
 
-    // Write deduped per-component stylesheets gathered during page + 404 builds.
-    let css_map = component_css
+    // Step 7: Write per-component stylesheets collected during the
+    // parallel page builds (and the 404 build above). Sort by name for
+    // deterministic output.
+    let css_map_local = component_css
         .into_inner()
-        .map_err(|e| Error::Build(format!("css mutex poisoned: {e}")))?;
-    let css_count = css_map.len();
-    for (name, content) in css_map {
-        fs::write(site_dir.join(&name), content)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut css_names: Vec<&String> = css_map_local.keys().collect();
+    css_names.sort();
+    let css_count = css_names.len();
+    for name in css_names {
+        fs::write(site_dir.join(name), &css_map_local[name])
             .map_err(|e| Error::Io(format!("Cannot write {name}: {e}")))?;
     }
     if css_count > 0 {
-        print_success(&format!("Wrote {css_count} component stylesheets"));
+        print_success(cache, &format!("Wrote {css_count} component stylesheets"));
     }
 
-    // Step 7: Wait for the background bundling thread.
+    // Step 8: Wait for the background bundling thread.
     let component_count = bundle_handle
         .join()
         .map_err(|_| Error::Build("Bundle thread panicked".to_string()))??;
-    print_success(&format!("Bundled {component_count} components"));
+    print_success(cache, &format!("Bundled {component_count} components"));
 
     let elapsed = start.elapsed();
     let total_bytes = total_bytes.load(std::sync::atomic::Ordering::Relaxed);
-    print_finish(&format!("Built in {:.1}s", elapsed.as_secs_f64()));
+    print_finish(cache, &format!("Built in {:.1}s", elapsed.as_secs_f64()));
 
     Ok(BuildStats {
         pages: pages.len(),
         protocol_bytes: total_bytes,
     })
+}
+
+/// Recursively remove a directory, retrying briefly on `ENOTEMPTY`.
+///
+/// On macOS (and occasionally Linux), `fs::remove_dir_all` can fail
+/// with `Directory not empty` when something writes a file into a
+/// subdirectory between the moment we walked it and the moment we try
+/// to `rmdir` it. Likely culprits during a dev-server rebuild:
+///
+///  - Spotlight / `mds` writing index hints,
+///  - Finder dropping a `.DS_Store`,
+///  - the user's editor reindexing the project,
+///  - a back-to-back save firing another rebuild before the first one
+///    finished cleanup (the worker coalesces, but a stray write into
+///    `out_dir` from a parallel `cargo` or another tool is still
+///    possible).
+///
+/// We retry up to a handful of times with short backoff. After that the
+/// error propagates so the user sees a real failure rather than an
+/// infinite loop.
+fn remove_dir_all_retry(path: &Path) -> std::io::Result<()> {
+    const MAX_ATTEMPTS: u32 = 5;
+    let mut delay = std::time::Duration::from_millis(20);
+    for attempt in 1..=MAX_ATTEMPTS {
+        match fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt < MAX_ATTEMPTS && is_dir_not_empty(&e) => {
+                std::thread::sleep(delay);
+                delay = delay.saturating_mul(2);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    // Loop guarantees a return on each iteration; this is unreachable
+    // but `for` returning `()` makes the type-checker happy without it.
+    Ok(())
+}
+
+/// Returns true if the error is `ENOTEMPTY` / `EEXIST` style "directory
+/// not empty". On macOS this is errno 66; on Linux it's 39. We also
+/// match by `ErrorKind` once Rust exposes one (currently `Other`).
+fn is_dir_not_empty(e: &std::io::Error) -> bool {
+    match e.raw_os_error() {
+        Some(66) => true,  // macOS / BSD: ENOTEMPTY
+        Some(39) => true,  // Linux: ENOTEMPTY
+        Some(145) => true, // Windows: ERROR_DIR_NOT_EMPTY
+        _ => false,
+    }
 }
 
 /// Iteratively copy a directory tree (BFS via stack — no recursion).
@@ -502,7 +645,7 @@ fn copy_dir(src: &Path, dest: &Path) -> Result<()> {
 }
 
 /// Truncate a string to at most `max` bytes at a valid UTF-8 boundary.
-fn truncate_utf8(s: &str, max: usize) -> &str {
+pub(crate) fn truncate_utf8(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
     }
@@ -511,6 +654,44 @@ fn truncate_utf8(s: &str, max: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+/// Build a single search-index entry for a page. Strips HTML tags,
+/// collapses whitespace, and truncates to 500 bytes. Called once per
+/// page during descriptor construction in `process_content` so cache
+/// hits carry their entry forward verbatim.
+pub(crate) fn build_search_entry(title: &str, path: &str, html: &str) -> Value {
+    let mut clean = String::with_capacity(html.len() / 2);
+    let mut in_tag = false;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                clean.push(' ');
+            }
+            _ if !in_tag => clean.push(ch),
+            _ => {}
+        }
+    }
+    // split_whitespace collapses arbitrary runs; we re-emit a single
+    // space between tokens. Avoiding `collect::<Vec<_>>().join(" ")` so
+    // we don't allocate an intermediate vector for sequential access.
+    let mut content = String::with_capacity(clean.len());
+    let mut first = true;
+    for tok in clean.split_whitespace() {
+        if !first {
+            content.push(' ');
+        }
+        content.push_str(tok);
+        first = false;
+    }
+    let truncated = truncate_utf8(&content, 500);
+    json_obj([
+        ("title", Value::String(title.to_string())),
+        ("path", Value::String(path.to_string())),
+        ("content", Value::String(truncated.to_string())),
+    ])
 }
 
 /// Collect all `.ts` files from a directory tree (iterative).

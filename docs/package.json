@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "cargo run -p microsoft-webui-press -- build",
-    "start": "npx serve dist -l 3333"
+    "start": "cargo run -p microsoft-webui-press -- serve"
   },
   "dependencies": {
     "@codemirror/commands": "catalog:",

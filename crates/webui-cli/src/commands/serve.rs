@@ -11,11 +11,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use webui::WebUIHandler;
+use webui_dev_server::{spawn_watcher, sse_handler, LiveReload, WatchConfig};
 use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter};
@@ -144,36 +144,32 @@ impl ServePaths {
         })
     }
 
-    fn watch_targets(&self) -> Vec<WatchTarget> {
-        let mut targets = vec![WatchTarget::Directory(self.app_dir.clone())];
+    fn watch_paths(&self) -> Vec<PathBuf> {
+        let mut paths = vec![self.app_dir.clone()];
 
         if let Some(state_file) = &self.state_file {
-            targets.push(WatchTarget::File(state_file.clone()));
+            paths.push(state_file.clone());
         }
 
-        if let Some(serve_dir) = &self.serve_dir {
-            targets.push(WatchTarget::Directory(serve_dir.clone()));
-        }
+        // Note: `serve_dir` (e.g. `./dist`) is intentionally NOT watched.
+        // It is the destination for client bundles that other tools
+        // (esbuild, pnpm, E2E harness) write to, and re-reading those
+        // writes back through HMR causes spurious page reloads while
+        // tests are running. The dev server only needs to react to
+        // source changes under `app_dir` and to `state_file`.
 
-        targets
+        paths
     }
 }
 
 /// Thread-safe shared state: the rendered HTML for serving.
 struct SharedState {
     rendered_html: String,
-    hmr_version: u64,
     css_files: HashMap<String, String>,
     protocol: Option<WebUIProtocol>,
     state_data: Option<Value>,
     /// Entry fragment ID used for rendering (e.g., "index.html").
     entry: String,
-}
-
-impl SharedState {
-    fn bump_version(&mut self) {
-        self.hmr_version = self.hmr_version.wrapping_add(1);
-    }
 }
 
 /// In-memory writer implementing `ResponseWriter` for the handler.
@@ -200,65 +196,21 @@ impl ResponseWriter for MemoryWriter {
     }
 }
 
-trait HmrBackend: Send + Sync {
-    fn endpoint_path(&self) -> &str;
-    fn inject(&self, html: &str) -> String;
-    fn version_payload(&self, state: &SharedState) -> String;
-}
+/// SSE endpoint path. Root-relative so the script works under any
+/// `<base href>` and across sub-path deployments.
+const HMR_ENDPOINT: &str = "/__webui/livereload";
 
-struct PollingHmrBackend {
-    endpoint: &'static str,
-    interval_ms: u64,
-}
+/// Environment variable that, when set to a non-empty / non-"0" value,
+/// suppresses `--watch` mode at runtime. Used by `xtask e2e` so that
+/// shared `start:server` package.json scripts (which include `--watch`
+/// for dev) don't enable filesystem watching during E2E test runs,
+/// where spurious rebuilds reload the page mid-test.
+const WATCH_DISABLE_ENV: &str = "WEBUI_NO_WATCH";
 
-impl PollingHmrBackend {
-    fn new(endpoint: &'static str, interval_ms: u64) -> Self {
-        Self {
-            endpoint,
-            interval_ms,
-        }
-    }
-
-    fn script(&self) -> String {
-        format!(
-            r#"<script>
-(function(){{
-  var v=null;
-  function c(){{
-    var x=new XMLHttpRequest();
-    x.open("GET","{}",true);
-    x.onload=function(){{
-      if(x.status===200){{
-        var t=x.responseText.trim();
-        if(v===null){{v=t}}
-        else if(v!==t){{location.reload();return}}
-      }}
-      setTimeout(c,{});
-    }};
-    x.onerror=function(){{setTimeout(c,{})}};
-    x.send();
-  }}
-  if(document.readyState==="loading"){{
-    document.addEventListener("DOMContentLoaded",c);
-  }}else{{c()}}
-}})();
-</script>"#,
-            self.endpoint, self.interval_ms, self.interval_ms
-        )
-    }
-}
-
-impl HmrBackend for PollingHmrBackend {
-    fn endpoint_path(&self) -> &str {
-        self.endpoint
-    }
-
-    fn inject(&self, html: &str) -> String {
-        inject_script_before_body_close(html, &self.script())
-    }
-
-    fn version_payload(&self, state: &SharedState) -> String {
-        state.hmr_version.to_string()
+fn watch_disabled_by_env() -> bool {
+    match std::env::var(WATCH_DISABLE_ENV) {
+        Ok(v) => !v.is_empty() && v != "0",
+        Err(_) => false,
     }
 }
 
@@ -285,8 +237,11 @@ pub fn execute(args: &ServeArgs) -> Result<()> {
 
 fn run(args: &ServeArgs) -> Result<()> {
     let paths = ServePaths::from_args(args)?;
-    let hmr_backend: Option<Arc<dyn HmrBackend>> = if args.watch {
-        Some(Arc::new(PollingHmrBackend::new("/hmr", 1000)))
+    // Allow E2E / CI runs to suppress watch mode without editing the
+    // package.json `start:server` script that devs share.
+    let watch_enabled = args.watch && !watch_disabled_by_env();
+    let livereload: Option<LiveReload> = if watch_enabled {
+        Some(LiveReload::new(HMR_ENDPOINT))
     } else {
         None
     };
@@ -342,8 +297,10 @@ fn run(args: &ServeArgs) -> Result<()> {
     if let Some(api_port) = args.api_port {
         output::field("API Port", &api_port);
     }
-    if args.watch {
-        output::field("HMR", &"enabled (polling /hmr)");
+    if watch_enabled {
+        output::field("HMR", &format!("enabled (SSE {HMR_ENDPOINT})"));
+    } else if args.watch {
+        output::field("HMR", &"disabled (WEBUI_NO_WATCH)");
     } else {
         output::field("HMR", &"disabled (pass --watch to enable)");
     }
@@ -352,36 +309,41 @@ fn run(args: &ServeArgs) -> Result<()> {
     ensure_local_port_available(args.port)?;
 
     // Initial build + render (uses pre-resolved token_css)
-    let initial_result = build_and_render(&render_config, hmr_backend.as_deref())?;
+    let initial_result = build_and_render(&render_config, livereload.as_ref())?;
     output::success("Initial build and render complete");
 
     let state = Arc::new(Mutex::new(SharedState {
         rendered_html: initial_result.html,
-        hmr_version: 1,
         css_files: initial_result.css_files,
         protocol: Some(initial_result.protocol),
         state_data: Some(initial_result.state_data),
         entry: args.app_args.entry.clone(),
     }));
 
-    if let Some(active_hmr_backend) = &hmr_backend {
-        let mut watch_targets = paths.watch_targets();
+    // The watcher handle must outlive the server; dropping it stops the
+    // background watcher thread. We store it in an `Option` so that the
+    // `--watch=false` branch is a no-op.
+    let _watcher_handle = if let Some(active_lr) = &livereload {
+        let mut watch_paths_list = paths.watch_paths();
 
         // Also watch local path component sources
         for extra_dir in
             webui_discovery::collect_watch_paths(&args.app_args.components, &paths.app_dir)
         {
-            watch_targets.push(WatchTarget::Directory(extra_dir));
+            watch_paths_list.push(extra_dir);
         }
 
-        start_file_watcher(WatcherConfig {
-            watch_targets,
+        let handle = start_file_watcher(WatcherConfig {
+            watch_paths: watch_paths_list,
             state: Arc::clone(&state),
             render_config: render_config.clone(),
-            hmr_backend: Arc::clone(active_hmr_backend),
-        });
+            livereload: active_lr.clone(),
+        })?;
         output::success("File watcher started");
-    }
+        Some(handle)
+    } else {
+        None
+    };
 
     let addr = format!("127.0.0.1:{}", args.port);
     let bind_addr = addr.clone();
@@ -392,29 +354,30 @@ fn run(args: &ServeArgs) -> Result<()> {
 
     let server_context = web::Data::new(ServerContext {
         state,
-        hmr_backend,
+        livereload: livereload.clone(),
         assets_dir: paths.serve_dir,
         api_port: args.api_port,
         plugin: args.app_args.plugin,
         token_css: render_config.token_css,
         base_path: args.base_path.clone(),
     });
+    let lr_data = livereload.map(web::Data::new);
 
     let has_api_proxy = server_context.api_port.is_some();
 
     actix_web::rt::System::new()
         .block_on(async move {
-            let hmr_endpoint = server_context
-                .hmr_backend
-                .as_ref()
-                .map(|backend| backend.endpoint_path().to_string());
-
             HttpServer::new(move || {
                 let mut app = App::new()
                     .app_data(server_context.clone())
                     .route("/", web::get().to(handle_index))
-                    .route("/index.html", web::get().to(handle_index))
-                    .route("/hmr", web::get().to(handle_hmr));
+                    .route("/index.html", web::get().to(handle_index));
+
+                if let Some(lr) = &lr_data {
+                    app = app
+                        .app_data(lr.clone())
+                        .route(HMR_ENDPOINT, web::get().to(sse_handler));
+                }
 
                 if has_api_proxy {
                     app = app.route("/api/{tail:.*}", web::route().to(handle_api_proxy));
@@ -427,12 +390,6 @@ fn run(args: &ServeArgs) -> Result<()> {
                     )
                     .route("/{tail:.*}", web::get().to(handle_asset))
                     .default_service(web::route().to(handle_not_found));
-
-                if let Some(endpoint) = hmr_endpoint.as_ref() {
-                    if endpoint != "/hmr" {
-                        app = app.route(endpoint, web::get().to(handle_hmr));
-                    }
-                }
 
                 app
             })
@@ -495,7 +452,7 @@ struct BuildRenderResult {
 /// Build the protocol from app templates and render with explicit state data.
 fn build_and_render(
     config: &RenderConfig,
-    hmr_backend: Option<&dyn HmrBackend>,
+    livereload: Option<&LiveReload>,
 ) -> Result<BuildRenderResult> {
     let build_options = config.app_args.to_build_options(&config.app_dir);
     let build_result = webui::build(build_options).with_context(|| "Build failed")?;
@@ -538,8 +495,8 @@ fn build_and_render(
         &mut writer,
     )?;
 
-    let html = match hmr_backend {
-        Some(backend) => backend.inject(&writer.buf),
+    let html = match livereload {
+        Some(lr) => lr.inject(&writer.buf),
         None => writer.buf,
     };
 
@@ -553,29 +510,11 @@ fn build_and_render(
     })
 }
 
-fn inject_script_before_body_close(html: &str, script: &str) -> String {
-    // Insert before </body> if found, otherwise append
-    if let Some(pos) = html.rfind("</body>") {
-        let mut result = String::with_capacity(html.len() + script.len() + 1);
-        result.push_str(&html[..pos]);
-        result.push('\n');
-        result.push_str(script);
-        result.push('\n');
-        result.push_str(&html[pos..]);
-        result
-    } else {
-        let mut result = String::with_capacity(html.len() + script.len());
-        result.push_str(html);
-        result.push_str(script);
-        result
-    }
-}
-
 // ── Route handlers ──────────────────────────────────────────────────────
 
 struct ServerContext {
     state: Arc<Mutex<SharedState>>,
-    hmr_backend: Option<Arc<dyn HmrBackend>>,
+    livereload: Option<LiveReload>,
     assets_dir: Option<PathBuf>,
     api_port: Option<u16>,
     plugin: Option<Plugin>,
@@ -725,8 +664,8 @@ async fn render_page_response(
         return HttpResponse::InternalServerError().body(format!("Render error: {e}"));
     }
 
-    let html = match &context.hmr_backend {
-        Some(backend) => backend.inject(&writer.buf),
+    let html = match &context.livereload {
+        Some(lr) => lr.inject(&writer.buf),
         None => writer.buf,
     };
 
@@ -756,29 +695,6 @@ async fn handle_index(req: HttpRequest, context: web::Data<ServerContext>) -> Ht
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
         .body(html)
-}
-
-async fn handle_hmr(context: web::Data<ServerContext>) -> HttpResponse {
-    let Some(hmr_backend) = context.hmr_backend.as_ref() else {
-        return HttpResponse::Ok()
-            .insert_header(("Cache-Control", "no-cache, no-store, must-revalidate"))
-            .insert_header(("Pragma", "no-cache"))
-            .insert_header(("Expires", "0"))
-            .content_type("text/plain; charset=utf-8")
-            .body("0");
-    };
-
-    let version = match context.state.lock() {
-        Ok(s) => hmr_backend.version_payload(&s),
-        Err(_) => "0".to_string(),
-    };
-
-    HttpResponse::Ok()
-        .insert_header(("Cache-Control", "no-cache, no-store, must-revalidate"))
-        .insert_header(("Pragma", "no-cache"))
-        .insert_header(("Expires", "0"))
-        .content_type("text/plain; charset=utf-8")
-        .body(version)
 }
 
 async fn handle_component_templates(
@@ -1064,129 +980,71 @@ async fn handle_not_found() -> HttpResponse {
 
 // ── File watcher ────────────────────────────────────────────────────────
 
-/// Collect modification times for all files under a directory, iteratively.
-fn collect_directory_file_times(root: &Path, file_times: &mut HashMap<PathBuf, SystemTime>) {
-    if let Ok(meta) = fs::metadata(root) {
-        if let Ok(modified) = meta.modified() {
-            file_times.insert(root.to_path_buf(), modified);
-        }
-    }
+/// Filesystem-event debounce window. Editors often save in multiple
+/// bursts; coalescing into one rebuild per burst feels right.
+const WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
 
-    let mut stack = Vec::with_capacity(8);
-    stack.push(root.to_path_buf());
-
-    while let Some(dir) = stack.pop() {
-        let entries = match fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if let Ok(meta) = fs::metadata(&path) {
-                if let Ok(modified) = meta.modified() {
-                    file_times.insert(path, modified);
-                }
-            }
-        }
-    }
-}
-
-#[derive(Clone)]
-enum WatchTarget {
-    Directory(PathBuf),
-    File(PathBuf),
-}
-
-fn collect_watch_times(targets: &[WatchTarget]) -> HashMap<PathBuf, SystemTime> {
-    let mut file_times = HashMap::new();
-
-    for target in targets {
-        match target {
-            WatchTarget::Directory(path) => {
-                collect_directory_file_times(path, &mut file_times);
-            }
-            WatchTarget::File(path) => {
-                if let Ok(meta) = fs::metadata(path) {
-                    if let Ok(modified) = meta.modified() {
-                        file_times.insert(path.clone(), modified);
-                    }
-                }
-            }
-        }
-    }
-
-    file_times
-}
-
-/// Detect whether any files were added, modified, or deleted.
-fn has_changes(
-    current: &HashMap<PathBuf, SystemTime>,
-    previous: &HashMap<PathBuf, SystemTime>,
-) -> bool {
-    if current.len() != previous.len() {
-        return true;
-    }
-    for (path, time) in current {
-        match previous.get(path) {
-            Some(prev_time) if prev_time == time => {}
-            _ => return true,
-        }
-    }
-    false
-}
-
-/// Configuration for the file watcher background thread.
+/// Configuration for the file watcher.
 struct WatcherConfig {
-    watch_targets: Vec<WatchTarget>,
+    watch_paths: Vec<PathBuf>,
     state: Arc<Mutex<SharedState>>,
     render_config: RenderConfig,
-    hmr_backend: Arc<dyn HmrBackend>,
+    livereload: LiveReload,
 }
 
-/// Start a background file-watcher thread that rebuilds and re-renders
-/// when template, data, or asset files change.
-fn start_file_watcher(config: WatcherConfig) {
-    thread::spawn(move || {
-        let mut last_times = collect_watch_times(&config.watch_targets);
+/// Start a debounced filesystem watcher that rebuilds and re-renders
+/// when template, data, or asset files change. The returned handle owns
+/// the background watcher thread; it must be kept alive for the lifetime
+/// of the server.
+fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::WatcherHandle> {
+    let WatcherConfig {
+        watch_paths,
+        state,
+        render_config,
+        livereload,
+    } = config;
 
-        loop {
-            thread::sleep(Duration::from_millis(500));
-
-            let current_times = collect_watch_times(&config.watch_targets);
-
-            if has_changes(&current_times, &last_times) {
-                match build_and_render(&config.render_config, Some(config.hmr_backend.as_ref())) {
-                    Ok(result) => {
-                        if let Ok(mut s) = config.state.lock() {
-                            s.rendered_html = result.html;
-                            s.css_files = result.css_files;
-                            s.protocol = Some(result.protocol);
-                            s.state_data = Some(result.state_data);
-                            s.bump_version();
-                        }
-                        eprintln!(
-                            "  {} Rebuilt and re-rendered (HMR version updated)",
-                            console::style("\u{21bb}").green()
-                        );
-                    }
-                    Err(err) => {
-                        eprintln!(
-                            "  {} Rebuild failed: {err:#}",
-                            console::style("\u{2718}").red().bold()
-                        );
-                    }
-                }
-
-                last_times = current_times;
+    // The shared rebuild worker handles tick coalescing, success/error
+    // reporting (rolling line + timestamps), and livereload broadcast.
+    // The closure here is just the cli-specific render-and-update step.
+    let lr_for_inject = livereload.clone();
+    let tick_tx = webui_dev_server::spawn_rebuild_worker(livereload, move || {
+        let result = build_and_render(&render_config, Some(&lr_for_inject))
+            .map_err(|err| format!("{err:#}"))?;
+        match state.lock() {
+            Ok(mut s) => {
+                s.rendered_html = result.html;
+                s.css_files = result.css_files;
+                s.protocol = Some(result.protocol);
+                s.state_data = Some(result.state_data);
+                Ok(())
             }
+            Err(_) => Err("shared state mutex poisoned".to_string()),
         }
     });
+
+    let mut ignore = webui_dev_server::default_ignore_paths();
+    // Also ignore the build output dir if it lives under a watched root.
+    if let Ok(out_dir) = std::env::current_dir() {
+        ignore.push(out_dir.join("dist"));
+    }
+
+    spawn_watcher(
+        WatchConfig {
+            paths: watch_paths,
+            ignore,
+            debounce: WATCH_DEBOUNCE,
+        },
+        move |_paths: Vec<std::path::PathBuf>| {
+            // webui-cli rebuild is a single full-app rebuild — it doesn't
+            // need per-path classification, so the paths are discarded.
+            // If the worker thread has already terminated, ignore send errors.
+            let _ = tick_tx.try_send(());
+        },
+    )
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use actix_web::http::StatusCode;
@@ -1223,7 +1081,7 @@ mod tests {
             token_css: None,
             base_path: None,
         };
-        let hmr = PollingHmrBackend::new("/hmr", 1000);
+        let hmr = LiveReload::new(HMR_ENDPOINT);
         let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
         assert!(html.contains("<h1>Hello</h1>"));
     }
@@ -1248,7 +1106,7 @@ mod tests {
             token_css: None,
             base_path: None,
         };
-        let hmr = PollingHmrBackend::new("/hmr", 1000);
+        let hmr = LiveReload::new(HMR_ENDPOINT);
         let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
         assert!(html.contains("<p>WebUI</p>"));
     }
@@ -1271,7 +1129,8 @@ mod tests {
             base_path: None,
         };
         let BuildRenderResult { html, .. } = build_and_render(&config, None).unwrap();
-        assert!(!html.contains("/hmr"));
+        assert!(!html.contains(HMR_ENDPOINT));
+        assert!(!html.contains("EventSource"));
     }
 
     #[test]
@@ -1304,7 +1163,7 @@ mod tests {
             token_css: None,
             base_path: None,
         };
-        let hmr = PollingHmrBackend::new("/hmr", 1000);
+        let hmr = LiveReload::new(HMR_ENDPOINT);
         let result = build_and_render(&config, Some(&hmr));
         assert!(result.is_err());
     }
@@ -1347,7 +1206,7 @@ mod tests {
             token_css: None,
             base_path: None,
         };
-        let hmr = PollingHmrBackend::new("/hmr", 1000);
+        let hmr = LiveReload::new(HMR_ENDPOINT);
         let result = build_and_render(&config, Some(&hmr));
         assert!(result.is_err());
     }
@@ -1495,96 +1354,46 @@ mod tests {
     }
 
     #[test]
-    fn test_hmr_script_injection() {
-        let html = "<html><body><p>Hello</p></body></html>";
-        let script = "<script>console.log('hmr')</script>";
-        let injected = inject_script_before_body_close(html, script);
-        assert!(injected.contains("<script>"));
-        // Script should be before </body>
-        let script_pos = injected.find("<script>").unwrap();
-        let body_pos = injected.rfind("</body>").unwrap();
-        assert!(script_pos < body_pos);
+    fn test_hmr_script_is_injected_when_livereload_present() {
+        let app = create_app_dir(&[("index.html", "<h1>Hi</h1>"), ("state.json", "{}")]);
+        let config = RenderConfig {
+            app_args: AppArgs {
+                app: app.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: None,
+                components: Vec::new(),
+            },
+            app_dir: app.path().to_path_buf(),
+            state_file: Some(app.path().join("state.json")),
+            token_css: None,
+            base_path: None,
+        };
+        let lr = LiveReload::new(HMR_ENDPOINT);
+        let BuildRenderResult { html, .. } = build_and_render(&config, Some(&lr)).unwrap();
+        // The injected SSE bootstrap should reference the endpoint.
+        assert!(html.contains(HMR_ENDPOINT));
+        assert!(html.contains("EventSource"));
     }
 
     #[test]
-    fn test_hmr_script_injection_no_body() {
-        let html = "<h1>Hello</h1>";
-        let script = "<script>console.log('hmr')</script>";
-        let injected = inject_script_before_body_close(html, script);
-        assert!(injected.contains("<script>"));
-        assert!(injected.starts_with("<h1>Hello</h1>"));
-    }
-
-    #[test]
-    fn test_collect_watch_times_iterative() {
-        let dir = create_app_dir(&[
-            ("a.txt", "hello"),
-            ("sub/b.txt", "world"),
-            ("sub/deep/c.txt", "nested"),
-        ]);
-        let targets = vec![WatchTarget::Directory(dir.path().to_path_buf())];
-        let times = collect_watch_times(&targets);
-        assert!(times.contains_key(&dir.path().join("a.txt")));
-        assert!(times.contains_key(&dir.path().join("sub/b.txt")));
-        assert!(times.contains_key(&dir.path().join("sub/deep/c.txt")));
-    }
-
-    #[test]
-    fn test_collect_watch_times_empty_directory() {
-        let dir = TempDir::new().unwrap();
-        let targets = vec![WatchTarget::Directory(dir.path().to_path_buf())];
-        let times = collect_watch_times(&targets);
-        assert!(!times.is_empty());
-    }
-
-    #[test]
-    fn test_collect_watch_times_file_target() {
-        let dir = create_app_dir(&[("state.json", "{}")]);
-        let file_path = dir.path().join("state.json");
-        let targets = vec![WatchTarget::File(file_path.clone())];
-        let times = collect_watch_times(&targets);
-        assert!(times.contains_key(&file_path));
-    }
-
-    #[test]
-    fn test_has_changes_identical() {
-        let mut a = HashMap::new();
-        let t = SystemTime::UNIX_EPOCH;
-        a.insert(PathBuf::from("a.txt"), t);
-        assert!(!has_changes(&a, &a));
-    }
-
-    #[test]
-    fn test_has_changes_new_file() {
-        let t = SystemTime::UNIX_EPOCH;
-        let mut a = HashMap::new();
-        a.insert(PathBuf::from("a.txt"), t);
-        let mut b = HashMap::new();
-        b.insert(PathBuf::from("a.txt"), t);
-        b.insert(PathBuf::from("b.txt"), t);
-        assert!(has_changes(&b, &a));
-    }
-
-    #[test]
-    fn test_has_changes_modified() {
-        let t1 = SystemTime::UNIX_EPOCH;
-        let t2 = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
-        let mut a = HashMap::new();
-        a.insert(PathBuf::from("a.txt"), t1);
-        let mut b = HashMap::new();
-        b.insert(PathBuf::from("a.txt"), t2);
-        assert!(has_changes(&b, &a));
-    }
-
-    #[test]
-    fn test_has_changes_deleted() {
-        let t = SystemTime::UNIX_EPOCH;
-        let mut a = HashMap::new();
-        a.insert(PathBuf::from("a.txt"), t);
-        a.insert(PathBuf::from("b.txt"), t);
-        let mut b = HashMap::new();
-        b.insert(PathBuf::from("a.txt"), t);
-        assert!(has_changes(&b, &a));
+    fn test_watch_paths_excludes_servedir() {
+        // serve_dir is intentionally NOT watched: it is the destination
+        // for client bundles written by other tools (esbuild, pnpm,
+        // E2E harness). Watching it would cause spurious livereload
+        // broadcasts during E2E runs.
+        let dir = create_app_dir(&[("state.json", "{}"), ("public/x.css", "")]);
+        let paths = ServePaths {
+            app_dir: dir.path().to_path_buf(),
+            state_file: Some(dir.path().join("state.json")),
+            serve_dir: Some(dir.path().join("public")),
+        };
+        let watched = paths.watch_paths();
+        assert_eq!(watched.len(), 2);
+        assert!(watched.contains(&dir.path().to_path_buf()));
+        assert!(watched.contains(&dir.path().join("state.json")));
+        assert!(!watched.contains(&dir.path().join("public")));
     }
 
     #[test]
@@ -1605,43 +1414,28 @@ mod tests {
             token_css: None,
             base_path: None,
         };
-        let hmr = PollingHmrBackend::new("/hmr", 1000);
-        let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
+        let lr = LiveReload::new(HMR_ENDPOINT);
+        let BuildRenderResult { html, .. } = build_and_render(&config, Some(&lr)).unwrap();
         assert!(html.contains("Hello, WebUI!"));
         assert!(html.contains("Ali"));
         assert!(html.contains("Mohamed Mansour"));
         // HMR script should be injected
-        assert!(html.contains("/hmr"));
-    }
-
-    #[test]
-    fn test_polling_hmr_backend_uses_version_counter() {
-        let backend = PollingHmrBackend::new("/hmr", 1000);
-        let state = SharedState {
-            rendered_html: "<p>Hello</p>".to_string(),
-            hmr_version: 42,
-            css_files: HashMap::new(),
-            protocol: None,
-            state_data: None,
-            entry: "index.html".to_string(),
-        };
-        assert_eq!(backend.version_payload(&state), "42");
+        assert!(html.contains(HMR_ENDPOINT));
     }
 
     #[actix_web::test]
     async fn test_route_precedence_over_asset_catch_all() {
-        let hmr_backend: Arc<dyn HmrBackend> = Arc::new(PollingHmrBackend::new("/hmr", 1000));
-        let hmr_endpoint = hmr_backend.endpoint_path().to_string();
+        let livereload = LiveReload::new(HMR_ENDPOINT);
+        let lr_endpoint = livereload.endpoint().to_string();
         let context = web::Data::new(ServerContext {
             state: Arc::new(Mutex::new(SharedState {
                 rendered_html: "<html><body>ok</body></html>".to_string(),
-                hmr_version: 7,
                 css_files: HashMap::new(),
                 protocol: None,
                 state_data: None,
                 entry: "index.html".to_string(),
             })),
-            hmr_backend: Some(hmr_backend),
+            livereload: Some(livereload.clone()),
             assets_dir: None,
             api_port: None,
             plugin: None,
@@ -1652,23 +1446,33 @@ mod tests {
         let app = actix_test::init_service(
             App::new()
                 .app_data(context.clone())
+                .app_data(web::Data::new(livereload))
                 .route("/", web::get().to(handle_index))
                 .route("/index.html", web::get().to(handle_index))
-                .route(&hmr_endpoint, web::get().to(handle_hmr))
+                .route(&lr_endpoint, web::get().to(sse_handler))
                 .route("/{tail:.*}", web::get().to(handle_asset))
                 .default_service(web::route().to(handle_not_found)),
         )
         .await;
 
-        let hmr_response = actix_test::call_service(
+        // SSE endpoint takes precedence over the catch-all asset route.
+        let lr_response = actix_test::call_service(
             &app,
-            actix_test::TestRequest::get().uri("/hmr").to_request(),
+            actix_test::TestRequest::get()
+                .uri(HMR_ENDPOINT)
+                .to_request(),
         )
         .await;
-        assert_eq!(hmr_response.status(), StatusCode::OK);
-
-        let hmr_body = actix_test::read_body(hmr_response).await;
-        assert_eq!(hmr_body, web::Bytes::from_static(b"7"));
+        assert_eq!(lr_response.status(), StatusCode::OK);
+        let content_type = lr_response
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap_or("").to_string())
+            .unwrap_or_default();
+        assert!(
+            content_type.starts_with("text/event-stream"),
+            "expected SSE content-type, got {content_type:?}"
+        );
 
         let index_response = actix_test::call_service(
             &app,

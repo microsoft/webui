@@ -1263,12 +1263,14 @@ webui/
 ├── crates/
 │   ├── webui/                # Programmatic library API (build, inspect, re-exports)
 │   ├── webui-cli/            # CLI build tool (binary: "webui")
+│   ├── webui-dev-server/     # Shared dev-server toolkit (watcher, livereload, static serving) used by webui-cli and webui-press
 │   ├── webui-discovery/      # External component discovery (npm, paths)
 │   ├── webui-expressions/    # Expression evaluation engine
 │   ├── webui-ffi/            # C-compatible FFI bindings
 │   ├── webui-handler/        # Protocol handler implementation
 │   ├── webui-node/           # Node.js native addon (napi-rs)
 │   ├── webui-parser/         # HTML/CSS/template parser
+│   ├── webui-press/          # Markdown-driven docs site generator + dev server
 │   ├── webui-protocol/       # Protocol definition
 │   ├── webui-state/          # State management
 │   ├── webui-test-utils/     # Testing utilities
