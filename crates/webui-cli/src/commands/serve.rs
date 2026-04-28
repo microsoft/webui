@@ -151,9 +151,12 @@ impl ServePaths {
             paths.push(state_file.clone());
         }
 
-        if let Some(serve_dir) = &self.serve_dir {
-            paths.push(serve_dir.clone());
-        }
+        // Note: `serve_dir` (e.g. `./dist`) is intentionally NOT watched.
+        // It is the destination for client bundles that other tools
+        // (esbuild, pnpm, E2E harness) write to, and re-reading those
+        // writes back through HMR causes spurious page reloads while
+        // tests are running. The dev server only needs to react to
+        // source changes under `app_dir` and to `state_file`.
 
         paths
     }
@@ -197,6 +200,20 @@ impl ResponseWriter for MemoryWriter {
 /// `<base href>` and across sub-path deployments.
 const HMR_ENDPOINT: &str = "/__webui/livereload";
 
+/// Environment variable that, when set to a non-empty / non-"0" value,
+/// suppresses `--watch` mode at runtime. Used by `xtask e2e` so that
+/// shared `start:server` package.json scripts (which include `--watch`
+/// for dev) don't enable filesystem watching during E2E test runs,
+/// where spurious rebuilds reload the page mid-test.
+const WATCH_DISABLE_ENV: &str = "WEBUI_NO_WATCH";
+
+fn watch_disabled_by_env() -> bool {
+    match std::env::var(WATCH_DISABLE_ENV) {
+        Ok(v) => !v.is_empty() && v != "0",
+        Err(_) => false,
+    }
+}
+
 pub fn execute(args: &ServeArgs) -> Result<()> {
     run(args).map_err(|err| {
         output::error(&err);
@@ -220,7 +237,10 @@ pub fn execute(args: &ServeArgs) -> Result<()> {
 
 fn run(args: &ServeArgs) -> Result<()> {
     let paths = ServePaths::from_args(args)?;
-    let livereload: Option<LiveReload> = if args.watch {
+    // Allow E2E / CI runs to suppress watch mode without editing the
+    // package.json `start:server` script that devs share.
+    let watch_enabled = args.watch && !watch_disabled_by_env();
+    let livereload: Option<LiveReload> = if watch_enabled {
         Some(LiveReload::new(HMR_ENDPOINT))
     } else {
         None
@@ -277,8 +297,10 @@ fn run(args: &ServeArgs) -> Result<()> {
     if let Some(api_port) = args.api_port {
         output::field("API Port", &api_port);
     }
-    if args.watch {
+    if watch_enabled {
         output::field("HMR", &format!("enabled (SSE {HMR_ENDPOINT})"));
+    } else if args.watch {
+        output::field("HMR", &"disabled (WEBUI_NO_WATCH)");
     } else {
         output::field("HMR", &"disabled (pass --watch to enable)");
     }
@@ -1356,7 +1378,11 @@ mod tests {
     }
 
     #[test]
-    fn test_watch_paths_lists_app_dir_state_and_servedir() {
+    fn test_watch_paths_excludes_servedir() {
+        // serve_dir is intentionally NOT watched: it is the destination
+        // for client bundles written by other tools (esbuild, pnpm,
+        // E2E harness). Watching it would cause spurious livereload
+        // broadcasts during E2E runs.
         let dir = create_app_dir(&[("state.json", "{}"), ("public/x.css", "")]);
         let paths = ServePaths {
             app_dir: dir.path().to_path_buf(),
@@ -1364,10 +1390,10 @@ mod tests {
             serve_dir: Some(dir.path().join("public")),
         };
         let watched = paths.watch_paths();
-        assert_eq!(watched.len(), 3);
+        assert_eq!(watched.len(), 2);
         assert!(watched.contains(&dir.path().to_path_buf()));
         assert!(watched.contains(&dir.path().join("state.json")));
-        assert!(watched.contains(&dir.path().join("public")));
+        assert!(!watched.contains(&dir.path().join("public")));
     }
 
     #[test]

@@ -141,6 +141,14 @@ pub fn run(args: &[String]) -> ExitCode {
 
     eprintln!("\n{} E2E tests", console::style("▸").cyan().bold());
 
+    // E2E suites serve a static build for the duration of the run and
+    // never modify source files. Disable the dev server's filesystem
+    // watcher (which `start:server` enables via --watch for dev mode)
+    // so spurious filesystem events on CI cannot trigger a livereload
+    // and reload the browser mid-test. The CLI honors WEBUI_NO_WATCH
+    // and ignores --watch when set; children inherit our env.
+    set_env_var("WEBUI_NO_WATCH", "1");
+
     // Filter to apps that exist on disk
     let suites: Vec<&PlaywrightSuite> = SUITES
         .iter()
@@ -508,4 +516,15 @@ fn kill_servers(servers: &mut [ManagedChild]) {
     for server in servers.iter_mut() {
         process::terminate_gracefully(server);
     }
+}
+
+/// Set an environment variable on the current process. Wrapped here
+/// because `std::env::set_var` is `unsafe` on newer Rust editions and
+/// the workspace denies `unsafe_code`. This call is sound because
+/// `xtask e2e` runs single-threaded up to the point we set it.
+#[allow(unsafe_code)]
+fn set_env_var(key: &str, value: &str) {
+    // SAFETY: single-threaded; no other thread is reading or writing
+    // process env. Children inherit the new value when spawned later.
+    unsafe { std::env::set_var(key, value) }
 }

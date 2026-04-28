@@ -109,17 +109,47 @@ where
 
 /// Returns true when `event_path` lives under any ignored root.
 ///
-/// Compares against the canonicalized form of `event_path` when
-/// available (handles `./dist` vs `dist` and symlinks); falls back to
-/// the raw path when canonicalization fails (e.g. the file was just
-/// deleted).
+/// Matching uses two strategies:
+/// 1. **Absolute roots** (e.g. canonicalized `dist/`): the event path
+///    must literally start with the root. Handles "ignore this exact
+///    output directory" cases.
+/// 2. **Single-component relative roots** (e.g. `node_modules`,
+///    `.git`, `target`): match if any component of the event path
+///    equals that name. This is what makes `default_ignore_paths()`
+///    work universally — `target` matches `/repo/target/...`,
+///    `/repo/sub/target/...`, etc., regardless of where the watcher
+///    cwd was when the path was registered.
 fn is_ignored(event_path: &Path, ignore: &[PathBuf]) -> bool {
     if ignore.is_empty() {
         return false;
     }
     let canon = std::fs::canonicalize(event_path).ok();
     let candidate: &Path = canon.as_deref().unwrap_or(event_path);
-    ignore.iter().any(|root| candidate.starts_with(root))
+
+    for root in ignore {
+        if root.is_absolute() {
+            if candidate.starts_with(root) {
+                return true;
+            }
+            continue;
+        }
+        // Relative root: treat as a name to match against any path
+        // component. Skips the absolute-prefix mismatch trap that
+        // would otherwise let `target` / `node_modules` through.
+        let mut components = root.components();
+        let first = components.next();
+        let only_one_component = components.next().is_none();
+        if let (Some(first), true) = (first, only_one_component) {
+            let name = first.as_os_str();
+            if candidate.components().any(|c| c.as_os_str() == name) {
+                return true;
+            }
+        } else if candidate.starts_with(root) {
+            // Multi-component relative root — fall back to prefix.
+            return true;
+        }
+    }
+    false
 }
 
 /// Default ignore subtrees common to dev servers. Includes the universal
@@ -170,5 +200,30 @@ mod tests {
     fn is_ignored_is_false_when_no_ignores() {
         let p = Path::new("/anything/at/all");
         assert!(!is_ignored(p, &[]));
+    }
+
+    #[test]
+    fn is_ignored_matches_relative_component_anywhere() {
+        // `target` (single relative component) must match no matter
+        // how deep — this is how default_ignore_paths() actually
+        // works in the wild against absolute paths from notify.
+        let ignore = vec![PathBuf::from("target")];
+        assert!(is_ignored(Path::new("/repo/target/debug/build"), &ignore));
+        assert!(is_ignored(
+            Path::new("/repo/sub/crate/target/foo.rs"),
+            &ignore
+        ));
+        assert!(!is_ignored(Path::new("/repo/src/target_name.rs"), &ignore));
+    }
+
+    #[test]
+    fn is_ignored_handles_node_modules_and_git() {
+        let ignore = default_ignore_paths();
+        assert!(is_ignored(
+            Path::new("/repo/node_modules/foo/index.js"),
+            &ignore
+        ));
+        assert!(is_ignored(Path::new("/repo/.git/HEAD"), &ignore));
+        assert!(!is_ignored(Path::new("/repo/src/index.ts"), &ignore));
     }
 }
