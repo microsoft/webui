@@ -51,25 +51,35 @@ where
     F: FnMut() -> Result<(), String> + Send + 'static,
 {
     let (tx, rx) = sync_channel::<()>(TICK_CHANNEL_CAPACITY);
-    let self_tick = tx.clone();
     thread::spawn(move || {
         let mut reporter = RebuildReporter::new();
+        let mut dirty = false;
         loop {
-            // Block for the first tick. Channel closed → exit.
-            if rx.recv().is_err() {
-                break;
+            if dirty {
+                // A rebuild we just finished was racing with new events.
+                // Skip the blocking recv so we rebuild immediately —
+                // but still drain any ticks that piled up so they
+                // collapse into this iteration.
+                while rx.try_recv().is_ok() {}
+            } else {
+                // Block for the first tick. Channel closed (every
+                // external sender dropped) → exit cleanly so the
+                // process can shut down without a zombie thread.
+                if rx.recv().is_err() {
+                    break;
+                }
+                // Drain extra ticks that piled up while we were
+                // waiting — they all collapse into this rebuild.
+                while rx.try_recv().is_ok() {}
             }
-            // Drain extra ticks that piled up while we were waiting —
-            // they all collapse into this single rebuild.
-            while rx.try_recv().is_ok() {}
 
             let start = std::time::Instant::now();
             let result = rebuild();
 
             // Drain ticks that arrived during the build (= dirty events).
-            // If any showed up, re-tick ourselves so the next iteration
-            // rebuilds without waiting for new filesystem activity.
-            let mut dirty = false;
+            // If any showed up, the next iteration runs without
+            // blocking on `recv` so the user sees their change ASAP.
+            dirty = false;
             while rx.try_recv().is_ok() {
                 dirty = true;
             }
@@ -83,10 +93,6 @@ where
                     reporter.error(&msg);
                     livereload.broadcast_error(msg);
                 }
-            }
-
-            if dirty {
-                let _ = self_tick.try_send(());
             }
         }
     });

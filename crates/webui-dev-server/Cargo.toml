@@ -24,9 +24,7 @@ async-stream = { workspace = true }
 mime_guess = { workspace = true }
 anyhow = { workspace = true }
 console = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-libc = { workspace = true }
+time = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

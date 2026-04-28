@@ -59,6 +59,7 @@ comrak = { version = "0.52.0", default-features = false, features = ["syntect"] 
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "html", "plist-load", "regex-onig"] }
 serde_yaml = "0.9"
 libc = "0.2.186"
+time = { version = "0.3", features = ["local-offset", "formatting", "macros"] }
 which = "8.0.2"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",

@@ -138,31 +138,16 @@ fn format_elapsed(elapsed: Duration) -> String {
     }
 }
 
-/// Format wall-clock local time as `HH:MM:SS`. Falls back to UTC on
-/// platforms where `localtime_r` isn't available (e.g. Windows).
+/// Format wall-clock local time as `HH:MM:SS`. Falls back to UTC if the
+/// platform refuses to expose the local offset (e.g. some sandboxed
+/// environments where `time` cannot read the system timezone).
 #[must_use]
 pub fn local_hms() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    #[cfg(unix)]
-    {
-        // SAFETY: `tm` is fully initialized by `localtime_r`, which
-        // fills the struct with the broken-down local time. Both
-        // pointers are valid for the duration of the call.
-        unsafe {
-            let mut tm: libc::tm = std::mem::zeroed();
-            let t: libc::time_t = secs as libc::time_t;
-            if !libc::localtime_r(&t, &mut tm).is_null() {
-                return format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec);
-            }
-        }
+    if let Ok(now) = time::OffsetDateTime::now_local() {
+        return format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
     }
-
-    let day = secs.rem_euclid(86_400);
-    format!("{:02}:{:02}:{:02}", day / 3600, (day / 60) % 60, day % 60)
+    let now = time::OffsetDateTime::now_utc();
+    format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second())
 }
 
 #[cfg(test)]

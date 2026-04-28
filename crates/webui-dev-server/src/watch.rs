@@ -8,6 +8,7 @@
 //! background thread; **the handle must be kept alive** for the watcher
 //! to run.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -75,11 +76,12 @@ where
             // Filter out ignored paths and dedupe (notify can emit
             // duplicate events for the same path within a window).
             let mut paths: Vec<PathBuf> = Vec::with_capacity(events.len());
+            let mut seen: HashSet<PathBuf> = HashSet::with_capacity(events.len());
             for e in events {
                 if is_ignored(&e.path, &ignore) {
                     continue;
                 }
-                if !paths.contains(&e.path) {
+                if seen.insert(e.path.clone()) {
                     paths.push(e.path);
                 }
             }

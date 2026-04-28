@@ -120,9 +120,12 @@ pub fn serve_file_response(livereload: &LiveReload, path: &Path, bytes: Vec<u8>)
 
     let is_html = mime.starts_with("text/html");
     let body = if is_html {
-        livereload
-            .inject(&String::from_utf8_lossy(&bytes))
-            .into_bytes()
+        // HTML must be valid UTF-8 (or ASCII). Reject invalid bytes
+        // rather than silently corrupting them with replacement chars.
+        match std::str::from_utf8(&bytes) {
+            Ok(html) => livereload.inject(html).into_bytes(),
+            Err(_) => bytes,
+        }
     } else {
         bytes
     };

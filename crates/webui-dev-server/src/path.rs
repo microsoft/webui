@@ -74,6 +74,11 @@ pub fn resolve_safe_path(out_dir: &Path, remainder: &str) -> Option<PathBuf> {
             if s.starts_with('/') {
                 return None;
             }
+            // Reject Windows drive-letter prefixes (e.g. "C:") to avoid
+            // `PathBuf::push` jumping to an absolute path on Windows.
+            if has_drive_letter_prefix(s) {
+                return None;
+            }
             buf.push(s);
         }
     }
@@ -82,6 +87,14 @@ pub fn resolve_safe_path(out_dir: &Path, remainder: &str) -> Option<PathBuf> {
         buf.push("index.html");
     }
     Some(buf)
+}
+
+/// Returns true if `s` begins with a Windows drive-letter prefix
+/// (e.g. `C:` or `c:foo`). `PathBuf::push` treats such segments as
+/// absolute, so we reject them defensively even on non-Windows hosts.
+fn has_drive_letter_prefix(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic()) && matches!(chars.next(), Some(':'))
 }
 
 #[cfg(test)]
@@ -164,5 +177,15 @@ mod tests {
             resolve_safe_path(out, "my%20file.html").as_deref(),
             Some(Path::new("/tmp/dist/my file.html"))
         );
+    }
+
+    #[test]
+    fn resolve_safe_path_rejects_drive_letters() {
+        let out = Path::new("/tmp/dist");
+        assert_eq!(resolve_safe_path(out, "C:/Windows/System32"), None);
+        assert_eq!(resolve_safe_path(out, "c:foo"), None);
+        assert_eq!(resolve_safe_path(out, "foo/C:/bar"), None);
+        // Decoded form should also be rejected.
+        assert_eq!(resolve_safe_path(out, "C%3A/win"), None);
     }
 }

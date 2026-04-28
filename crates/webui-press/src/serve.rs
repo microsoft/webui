@@ -127,7 +127,7 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
                 .map_err(|e| format!("config reload failed: {e}"))?;
             let mut guard = cache
                 .lock()
-                .map_err(|_| "cache mutex poisoned".to_string())?;
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             build_docs_with_cache(&cfg, &config_dir, &template_dir, &mut guard)
                 .map_err(|e| format!("{e}"))?;
             Ok(())
