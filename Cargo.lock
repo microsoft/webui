@@ -1788,7 +1788,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "microsoft-webui"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "criterion",
  "microsoft-webui-discovery",
@@ -1802,7 +1802,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-cli"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -1825,7 +1825,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-dev-server"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -1843,7 +1843,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-discovery"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "anyhow",
  "expand-tilde",
@@ -1855,7 +1855,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-expressions"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "criterion",
  "microsoft-webui-protocol",
@@ -1868,7 +1868,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-ffi"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "cbindgen",
  "libc",
@@ -1882,7 +1882,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-handler"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "criterion",
  "microsoft-webui-expressions",
@@ -1897,7 +1897,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-node"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "microsoft-webui",
  "microsoft-webui-handler",
@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-parser"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "clap",
  "criterion",
@@ -1935,7 +1935,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-press"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-protocol"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "anyhow",
  "criterion",
@@ -1973,7 +1973,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-state"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "criterion",
  "microsoft-webui-test-utils",
@@ -1983,7 +1983,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-test-utils"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "microsoft-webui-protocol",
  "mockall",
@@ -1994,7 +1994,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-tokens"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "serde",
  "serde_json",
@@ -2004,7 +2004,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-wasm"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "microsoft-webui-handler",
  "microsoft-webui-parser",

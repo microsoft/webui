@@ -1,6 +1,6 @@
 {
   "name": "@microsoft/webui-test-support",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "type": "module",
   "private": true,
   "description": "Private shared test utilities for WebUI workspace packages.",
