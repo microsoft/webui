@@ -1,0 +1,32 @@
+{
+  "name": "microsoft-webui-wasm",
+  "type": "module",
+  "collaborators": [
+    "Microsoft Edge"
+  ],
+  "description": "WebAssembly bindings for WebUI framework — powers the online playground",
+  "version": "0.0.11",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/microsoft/webui"
+  },
+  "files": [
+    "webui_wasm_bg.wasm",
+    "webui_wasm.js",
+    "webui_wasm.d.ts"
+  ],
+  "main": "webui_wasm.js",
+  "homepage": "https://microsoft.github.io/webui",
+  "types": "webui_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ],
+  "keywords": [
+    "webui",
+    "wasm",
+    "webassembly",
+    "ssr",
+    "rendering"
+  ]
+}
