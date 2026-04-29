@@ -44,7 +44,7 @@ build_to_disk(
         entry: "index.html".into(),
         css: CssStrategy::Link,        // or CssStrategy::Style for inline
         dom: DomStrategy::Shadow,      // or DomStrategy::Light for light DOM
-        plugin: Some(Plugin::FastV3),    // FAST 3 hydration plugin
+        plugin: Some(Plugin::FastV3),    // @microsoft/fast-element 3.x hydration plugin
         components: vec![],             // additional component sources
     },
     Path::new("dist"),
@@ -63,7 +63,7 @@ let handler = WebUIHandler::new();
 handler.handle(&protocol, &state, &RenderOptions::new("index.html", "/"), &mut writer)?;
 ```
 
-With the FAST 3 hydration plugin:
+With the @microsoft/fast-element 3.x hydration plugin:
 
 ```rust
 use webui::{WebUIHandler, HandlerPlugin};
@@ -72,7 +72,7 @@ use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 let handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
 ```
 
-`Plugin::FastV2` and `Plugin::Fast` are deprecated FAST 2 compatibility paths. Use `Plugin::FastV3` for FAST 3.
+`Plugin::FastV2` and `Plugin::Fast` are deprecated FAST 2 compatibility paths. Use `Plugin::FastV3` for @microsoft/fast-element 3.x.
 
 ### Inspect
 
