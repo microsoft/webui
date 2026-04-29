@@ -1,6 +1,6 @@
 # @microsoft/webui
 
-High-performance server-side rendering framework. Compiles HTML templates into a binary protocol at build time and renders them with native speed at runtime — no JavaScript runtime overhead.
+High-performance server-side rendering framework. Compiles HTML templates into a binary protocol at build time and renders them with native speed at runtime - no JavaScript runtime overhead.
 
 > 📖 **Full documentation, tutorials, and playground at [microsoft.github.io/webui](https://microsoft.github.io/webui)**
 
@@ -10,7 +10,7 @@ High-performance server-side rendering framework. Compiles HTML templates into a
 npm install @microsoft/webui
 ```
 
-The package automatically installs the correct platform-specific native binary for your OS and architecture (Windows, macOS, Linux — x64 and arm64).
+The package automatically installs the correct platform-specific native binary for your OS and architecture (Windows, macOS, Linux - x64 and arm64).
 
 ## Quick start
 
@@ -36,15 +36,17 @@ const result = build({
   appDir: "./src",        // Path to the template directory
   entry: "index.html",   // Entry file (default: "index.html")
   css: "link",           // CSS strategy: "link" or "style"
-  plugin: "fast",        // Parser plugin (e.g., "fast" for FAST hydration)
+  plugin: "fast-v3",     // Parser plugin; use "fast-v3" for FAST 3 hydration
   components: [],        // Additional component sources
   outDir: "./dist",      // Output directory for CLI fallback
 });
 
-// result.protocol  — Buffer containing the compiled protocol
-// result.cssFiles  — Array of [filename, content, ...] pairs
-// result.stats     — { durationMs, fragmentCount, componentCount, cssFileCount, protocolSizeBytes, tokenCount }
+// result.protocol  - Buffer containing the compiled protocol
+// result.cssFiles  - Array of [filename, content, ...] pairs
+// result.stats     - { durationMs, fragmentCount, componentCount, cssFileCount, protocolSizeBytes, tokenCount }
 ```
+
+`"fast"` and `"fast-v2"` are deprecated FAST 2 compatibility plugin names. Use `"fast-v3"` for FAST 3.
 
 ### `render(protocol: Buffer, state: object | string): string`
 
@@ -56,7 +58,7 @@ const html = render(protocol, { title: "Hello", show: true });
 
 ### `renderStream(protocol: Buffer, state: object | string, onChunk: (html: string) => void): void`
 
-Renders with streaming output — each HTML fragment is passed to the callback as it is produced.
+Renders with streaming output - each HTML fragment is passed to the callback as it is produced.
 
 ```js
 renderStream(protocol, state, (chunk) => {

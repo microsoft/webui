@@ -42,7 +42,7 @@ const html = render(protocolJson, stateJson);
 |-----------|------|-------------|
 | `protocolJson` | `string` | JSON-serialized `WebUIProtocol` |
 | `stateJson` | `string` | JSON string with the render state |
-| `plugin` | `string \| undefined` | Optional plugin identifier (e.g., `"fast"`) |
+| `plugin` | `string \| undefined` | Optional plugin identifier (e.g., `"fast-v3"`) |
 
 **Returns:** Rendered HTML string. Throws on error.
 
@@ -106,13 +106,15 @@ const protocolJson = build_protocol(files, 'index.html');
 
 ## Using Plugins
 
-Pass `"fast"` as the `plugin` parameter to enable FAST 3 hydration markers:
+Pass `"fast-v3"` as the `plugin` parameter to enable FAST 3 hydration markers:
 
 ```js
-const html = render(protocolJson, stateJson, 'fast');
+const html = render(protocolJson, stateJson, 'fast-v3');
 ```
 
-See [Plugins](/guide/concepts/plugins/) for details on what markers are injected.
+Deprecated `"fast"` and `"fast-v2"` identifiers remain available for FAST 2
+compatibility markers. See [Plugins](/guide/concepts/plugins/) for details on
+what markers are injected.
 
 ## Playground Integration
 

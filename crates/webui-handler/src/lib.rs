@@ -875,7 +875,7 @@ impl WebUIHandler {
                 .and_then(|p| p.collect_template_js(context.protocol, &reachable));
 
             if template_js.is_none() {
-                // Non-JS templates (FAST plugin) — emit separately
+                // Non-JS templates (FAST plugins) - emit separately
                 if let Some(ref p) = context.plugin {
                     p.emit_templates(
                         context.protocol,
@@ -4313,7 +4313,7 @@ mod tests {
 
     // ── GROUP 9: Hydration (SKIP) ─────────────────────────────────────
 
-    // TODO: test_hydration – requires FastHydrationPlugin integration; see plugin/fast.rs
+    // TODO: test_hydration - requires FAST handler plugin integration; see plugin/fast.rs
 
     // ── Component tests ──────────────────────────────────────────────
 

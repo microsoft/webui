@@ -436,7 +436,7 @@ The output is fully renderable without JavaScript:
 
 When the browser loads `components.js` (deferred, after first paint), the framework finds existing DSD shadow roots and **upgrades** them in place, no re-render, no flash, no virtual DOM. Event handlers and observable state are bound to the already-painted DOM.
 
-This is the WebUI Framework's [FAST plugin](https://microsoft.github.io/webui/guide/concepts/plugins/) at work, and it is what makes the site feel instant on slow connections.
+This is the WebUI Framework's [`webui` plugin](https://microsoft.github.io/webui/guide/concepts/plugins/) at work, and it is what makes the site feel instant on slow connections.
 
 ---
 

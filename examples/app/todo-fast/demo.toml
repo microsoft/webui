@@ -1,13 +1,13 @@
 # Demo shell metadata — auto-discovered by the demo shell server.
 # See examples/demo/README.md for the full schema.
 
-name = "Todo (Fast Plugin)"
-description = "A todo app using the fast rendering plugin"
+name = "Todo (FAST 3 Plugin)"
+description = "A todo app using the fast-v3 rendering plugin"
 backend = "rust"
 
 [server]
 type = "webui-cli"
-plugin = "fast"
+plugin = "fast-v3"
 source = "src"
 servedir = "dist"
 state = "data/state.json"

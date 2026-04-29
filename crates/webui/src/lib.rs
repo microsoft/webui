@@ -198,7 +198,7 @@ struct RawBuildOutput {
 /// Internal build logic shared by `build()` and `build_to_disk()`.
 fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIError> {
     let mut parser = match options.plugin {
-        Some(Plugin::Fast) => {
+        Some(Plugin::Fast | Plugin::FastV2 | Plugin::FastV3) => {
             let mut plugin = FastParserPlugin::new();
             plugin.set_css_strategy(options.css);
             HtmlParser::with_plugin(Box::new(plugin))
@@ -785,7 +785,7 @@ mod tests {
     fn test_build_with_fast_plugin() {
         let app = create_app_dir(&[("index.html", "<h1>Hello</h1>")]);
         let mut options = default_options(app.path());
-        options.plugin = Some(Plugin::Fast);
+        options.plugin = Some(Plugin::FastV3);
 
         let result = build(options).unwrap();
         assert!(result.protocol.fragments.contains_key("index.html"));

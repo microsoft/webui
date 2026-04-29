@@ -440,4 +440,4 @@ In this tutorial you:
 - [Commerce Example](https://github.com/microsoft/webui/tree/main/examples/app/commerce) –
   a more complex app with product listings, search, cart, and nested routing.
 - [FAST 3 Variant](/guide/concepts/plugins/) - swap in FAST 3 components
-  using the `--plugin=fast` flag for an alternative hydration strategy.
+  using the `--plugin=fast-v3` flag for an alternative hydration strategy.

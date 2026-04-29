@@ -1,6 +1,6 @@
 # Contact Book Manager
 
-A full-featured contact book manager built with **WebUI SSR** and **FAST-Element** client hydration. Demonstrates Atomic Design component architecture, IndexedDB offline storage, client-side routing, and responsive layout — all rendered server-side with the `--plugin=fast` pipeline.
+A full-featured contact book manager built with **WebUI SSR** and WebUI Framework client hydration. Demonstrates Atomic Design component architecture, IndexedDB offline storage, client-side routing, and responsive layout - all rendered server-side with the `--plugin=webui` pipeline.
 
 ## Quick Start
 

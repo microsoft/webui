@@ -5,7 +5,7 @@ use serde_json::json;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::hint::black_box;
-use webui_handler::plugin::fast::FastHydrationPlugin;
+use webui_handler::plugin::fast::FastV2HydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::{
     ComparisonOperator, ConditionExpr, FragmentList, LogicalOperator, WebUIFragment, WebUIProtocol,
@@ -96,7 +96,7 @@ fn build_mixed_protocol() -> WebUIProtocol {
                 WebUIFragment::for_loop("item", "items", "item-frag"),
                 WebUIFragment::raw("</ul>"),
                 WebUIFragment::if_cond(ConditionExpr::identifier("show_footer"), "footer-frag"),
-                // Simulate parser-plugin payload consumed by FastHydrationPlugin.
+                // Simulate parser-plugin payload consumed by FastV2HydrationPlugin.
                 WebUIFragment::plugin((3u32).to_le_bytes().to_vec()),
                 WebUIFragment::raw("</x-card>"),
             ],
@@ -177,7 +177,7 @@ fn handler_plugin_fast_bench(c: &mut Criterion) {
     });
 
     group.bench_function(BenchmarkId::new("render", "with_fast_plugin"), |b| {
-        let handler = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));
+        let handler = WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()));
         let mut writer = BenchWriter::new(24 * 1024);
 
         b.iter(|| {

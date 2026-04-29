@@ -4,7 +4,7 @@ WebUI apps can run as native desktop applications using Electron. The Electron i
 
 ## How it Works
 
-1. **Build phase** - `webui build --plugin=fast` compiles templates into `protocol.bin`. esbuild bundles the client JS.
+1. **Build phase** - `webui build --plugin=<name>` compiles templates into `protocol.bin`. Use `webui` for WebUI Framework apps or `fast-v3` for FAST 3 apps. esbuild bundles the client JS.
 2. **Startup** - Electron's main process loads the native addon (`webui-node`), reads `protocol.bin` + `state.json`, and calls `addon.render()` to produce the full SSR HTML.
 3. **Custom protocol** - A `webui://` protocol scheme is registered. When Electron loads `webui://app/`, it serves the rendered HTML. CSS and JS assets are served from the app's `dist/` directory.
 4. **Hydration** - The client JS bundle hydrates the SSR output, attaching event listeners and enabling interactivity - same as in a browser.
@@ -22,7 +22,7 @@ npm run build
 # 3. Run it in Electron
 cd examples/integration/electron
 npm run build
-npx electron dist/main.js ../../app/contact-book-manager/dist ../../app/contact-book-manager/data/state.json --plugin=fast
+npx electron dist/main.js ../../app/contact-book-manager/dist ../../app/contact-book-manager/data/state.json --plugin=webui
 ```
 
 ## CLI Arguments
@@ -31,7 +31,9 @@ npx electron dist/main.js ../../app/contact-book-manager/dist ../../app/contact-
 |----------|-------------|---------|
 | `dist-dir` | Path to app's `dist/` directory with `protocol.bin` and assets | `../../app/hello-world/dist` |
 | `state.json` | Path to state JSON file | `../../app/hello-world/data/state.json` |
-| `--plugin=fast` | Enable FAST hydration plugin | None |
+| `--plugin=<name>` | Enable a hydration plugin: `webui`, `fast-v3`, deprecated `fast-v2`, or deprecated `fast` | None |
+
+Deprecated FAST 2 compatibility is still available with `--plugin=fast-v2` or the `--plugin=fast` alias. Use `fast-v3` for migrated FAST 3 apps.
 
 ## Custom Titlebar
 

@@ -72,8 +72,8 @@ webui build ./my-app --out ./dist --entry home.html
 # Build with style CSS (no external CSS files)
 webui build ./my-app --out ./dist --css style
 
-# Build with the FAST plugin (hydration support)
-webui build ./my-app --out ./dist --plugin=fast
+# Build with the FAST 3 plugin (hydration support)
+webui build ./my-app --out ./dist --plugin=fast-v3
 
 # Build with external component packages
 webui build ./my-app --out ./dist --components @reactive-ui
@@ -160,8 +160,8 @@ webui serve ./my-app --state ./state.json --servedir ./assets --port 9090 --watc
 # Use style CSS mode
 webui serve ./my-app --state ./state.json --servedir ./assets --css style --watch
 
-# Use the FAST plugin for hydration
-webui serve ./my-app --state ./state.json --plugin=fast --port 3001
+# Use the FAST 3 plugin for hydration
+webui serve ./my-app --state ./state.json --plugin=fast-v3 --port 3001
 
 # Dev server with external components (--watch watches local paths)
 webui serve ./my-app --state ./state.json --components @reactive-ui --watch
@@ -300,7 +300,12 @@ The `--plugin` flag loads framework-specific extensions that customize both pars
 
 | Plugin | Description |
 |--------|-------------|
-| `fast` | FAST 3 hydration support. Parser skips runtime attrs, emits binding data, injects `<f-template>` wrappers. Handler injects `<!--fe:b-->`, `<!--fe:/b-->`, `<!--fe:r-->`, `<!--fe:/r-->`, and `data-fe="COUNT"` markers. |
+| `webui` | WebUI Framework compiled templates and hydration markers. |
+| `fast-v3` | FAST 3 hydration support for new FAST apps. Parser skips runtime attrs, emits binding data, and injects `<f-template>` wrappers. Handler injects `<!--fe:b-->`, `<!--fe:/b-->`, `<!--fe:r-->`, `<!--fe:/r-->`, and `data-fe="COUNT"` markers. |
+| `fast-v2` | Deprecated FAST 2 compatibility. Emits legacy `<!--fe-b$$...-->`, `<!--fe-repeat$$...-->`, `data-fe-b-INDEX`, and `data-fe-c-INDEX-COUNT` markers. |
+| `fast` | Deprecated compatibility alias for `fast-v2`. Use `fast-v3` for FAST 3 migrations. |
+
+No plugin is enabled by default. Select `fast-v3` explicitly for FAST 3 apps; `fast` remains accepted only to avoid silently changing existing FAST 2 output.
 
 See [Plugins](/guide/concepts/plugins/) for detailed documentation.
 

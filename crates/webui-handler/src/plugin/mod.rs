@@ -115,7 +115,7 @@ pub trait HandlerPlugin {
 }
 
 /// Default template emission: write each non-empty template verbatim.
-/// Used by the FAST plugin for `<f-template>` tags.
+/// Used by FAST parser plugins for `<f-template>` tags.
 pub(crate) fn emit_component_templates(
     protocol: &WebUIProtocol,
     components: &HashSet<String>,

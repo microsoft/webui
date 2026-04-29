@@ -1,12 +1,24 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! FAST Hydration plugin for the WebUI handler.
+//! FAST hydration plugins for the WebUI handler.
 //!
 //! Injects HTML comment markers and data attributes that enable client-side
 //! FAST declarative templates to locate and re-hydrate server-rendered dynamic content.
 //!
-//! ## Comment Format
+//! The deprecated `fast` and `fast-v2` plugin names use FAST 2 markers.
+//! New FAST 3 applications should use `fast-v3`.
+//!
+//! ## FAST 2 Comment Format (deprecated `fast` and `fast-v2`)
+//!
+//! - **Binding start**: `<!--fe-b$$start$$INDEX$$NAME$$fe-b-->`
+//! - **Binding end**: `<!--fe-b$$end$$INDEX$$NAME$$fe-b-->`
+//! - **Repeat item start**: `<!--fe-repeat$$start$$INDEX$$fe-repeat-->`
+//! - **Repeat item end**: `<!--fe-repeat$$end$$INDEX$$fe-repeat-->`
+//! - **Single attribute binding**: ` data-fe-b-INDEX`
+//! - **Multiple attribute bindings**: ` data-fe-c-INDEX-COUNT`
+//!
+//! ## FAST 3 Comment Format (`fast-v3`)
 //!
 //! - **Binding start**: `<!--fe:b-->`
 //! - **Binding end**: `<!--fe:/b-->`
@@ -25,7 +37,196 @@ use serde_json::Value;
 use std::fmt::Write;
 use webui_protocol::FastElementData;
 
-// Comment format constants
+// FAST 2 comment format constants
+const V2_BINDING_START_PREFIX: &str = "<!--fe-b$$start$$";
+const V2_BINDING_END_PREFIX: &str = "<!--fe-b$$end$$";
+const V2_BINDING_SUFFIX: &str = "$$fe-b-->";
+const V2_SEPARATOR: &str = "$$";
+const V2_REPEAT_START_PREFIX: &str = "<!--fe-repeat$$start$$";
+const V2_REPEAT_END_PREFIX: &str = "<!--fe-repeat$$end$$";
+const V2_REPEAT_SUFFIX: &str = "$$fe-repeat-->";
+const V2_ATTR_SINGLE_PREFIX: &str = " data-fe-b-";
+const V2_ATTR_MULTI_PREFIX: &str = " data-fe-c-";
+
+/// Deprecated FAST 2 hydration handler plugin.
+///
+/// Emits the legacy FAST 2 marker format used by the `fast` and `fast-v2`
+/// plugin names. New FAST 3 applications should use
+/// [`FastV3HydrationPlugin`] through `fast-v3` instead.
+pub struct FastV2HydrationPlugin {
+    /// Stack of local binding counters (one per scope).
+    /// The bottom of the stack is the root scope (disabled).
+    scopes: Vec<usize>,
+    /// Stack of binding indices for matching start/end pairs.
+    binding_stack: Vec<usize>,
+    /// Reusable buffer for formatting markers without allocation.
+    buffer: String,
+}
+
+impl FastV2HydrationPlugin {
+    /// Create a new deprecated FAST 2 hydration plugin.
+    /// The initial root scope is disabled — markers only emit in child scopes.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            // Root scope (index 0) is disabled — only scopes.len() > 1 are active.
+            scopes: vec![0],
+            binding_stack: Vec::with_capacity(8),
+            buffer: String::with_capacity(64),
+        }
+    }
+
+    /// Whether the current scope is active (not the root scope).
+    fn is_active(&self) -> bool {
+        self.scopes.len() > 1
+    }
+
+    /// Get the next binding index in the current scope, advancing the counter.
+    fn next_index(&mut self) -> usize {
+        if let Some(counter) = self.scopes.last_mut() {
+            let index = *counter;
+            *counter += 1;
+            index
+        } else {
+            0
+        }
+    }
+
+    /// Get the next binding index, advancing the counter by `count`.
+    fn next_index_n(&mut self, count: u32) -> usize {
+        if let Some(counter) = self.scopes.last_mut() {
+            let index = *counter;
+            *counter += count as usize;
+            index
+        } else {
+            0
+        }
+    }
+
+    /// Build a binding comment into the reusable buffer.
+    fn build_binding_comment(&mut self, prefix: &str, index: usize, name: &str) {
+        self.buffer.clear();
+        self.buffer.push_str(prefix);
+        let _ = write!(self.buffer, "{}", index);
+        self.buffer.push_str(V2_SEPARATOR);
+        self.buffer.push_str(name);
+        self.buffer.push_str(V2_BINDING_SUFFIX);
+    }
+
+    /// Build a repeat comment into the reusable buffer.
+    fn build_repeat_comment(&mut self, prefix: &str, index: usize) {
+        self.buffer.clear();
+        self.buffer.push_str(prefix);
+        let _ = write!(self.buffer, "{}", index);
+        self.buffer.push_str(V2_REPEAT_SUFFIX);
+    }
+
+    /// Build an attribute binding marker into the reusable buffer.
+    fn build_attribute_marker(&mut self, binding_index: usize, count: u32) {
+        self.buffer.clear();
+        if count == 1 {
+            self.buffer.push_str(V2_ATTR_SINGLE_PREFIX);
+            let _ = write!(self.buffer, "{}", binding_index);
+        } else {
+            self.buffer.push_str(V2_ATTR_MULTI_PREFIX);
+            let _ = write!(self.buffer, "{}-{}", binding_index, count);
+        }
+    }
+}
+
+impl Default for FastV2HydrationPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HandlerPlugin for FastV2HydrationPlugin {
+    fn push_scope(&mut self) {
+        self.scopes.push(0);
+    }
+
+    fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        let index = self.next_index();
+        self.binding_stack.push(index);
+        self.build_binding_comment(V2_BINDING_START_PREFIX, index, name);
+        writer.write(&self.buffer)
+    }
+
+    fn on_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        let index = self.binding_stack.pop().unwrap_or(0);
+        self.build_binding_comment(V2_BINDING_END_PREFIX, index, name);
+        writer.write(&self.buffer)
+    }
+
+    fn on_repeat_item_start(
+        &mut self,
+        index: usize,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        self.build_repeat_comment(V2_REPEAT_START_PREFIX, index);
+        writer.write(&self.buffer)
+    }
+
+    fn on_repeat_item_end(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        self.build_repeat_comment(V2_REPEAT_END_PREFIX, index);
+        writer.write(&self.buffer)
+    }
+
+    fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        let decoded = FastElementData::decode(data).map_err(|error| {
+            HandlerError::PluginData(format!(
+                "FAST v2 hydration plugin expected 4 bytes of element data: {error}"
+            ))
+        })?;
+        if decoded.binding_count > 0 {
+            let binding_index = self.next_index_n(decoded.binding_count);
+            self.build_attribute_marker(binding_index, decoded.binding_count);
+            writer.write(&self.buffer)?;
+        }
+        Ok(())
+    }
+
+    /// FAST emits scalar attributes + `data-state` JSON on route component elements.
+    /// Components read these via `@attr` and their connection lifecycle.
+    fn write_route_component_state(
+        &self,
+        state: &Value,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        write_fast_route_component_state(state, writer)
+    }
+}
+
+/// Deprecated compatibility alias for the legacy `fast` handler plugin.
+///
+/// Use [`FastV2HydrationPlugin`] for explicit FAST 2 compatibility or
+/// [`FastV3HydrationPlugin`] for FAST 3 marker output.
+#[deprecated(
+    since = "0.0.11",
+    note = "use FastV2HydrationPlugin for FAST 2 compatibility or FastV3HydrationPlugin for FAST 3"
+)]
+pub type FastHydrationPlugin = FastV2HydrationPlugin;
+
+// FAST 3 comment format constants
 const BINDING_START_MARKER: &str = "<!--fe:b-->";
 const BINDING_END_MARKER: &str = "<!--fe:/b-->";
 const REPEAT_START_MARKER: &str = "<!--fe:r-->";
@@ -33,7 +234,7 @@ const REPEAT_END_MARKER: &str = "<!--fe:/r-->";
 const ATTR_PREFIX: &str = " data-fe=\"";
 const ATTR_SUFFIX: &str = "\"";
 
-/// FAST Hydration handler plugin.
+/// FAST 3 hydration handler plugin.
 ///
 /// Emits HTML comment markers around dynamic bindings so that FAST
 /// can re-hydrate server-rendered content on the client side.
@@ -41,7 +242,7 @@ const ATTR_SUFFIX: &str = "\"";
 /// The root scope is disabled (no markers) — hydration only activates in
 /// child scopes (components, for-loop items, if-condition bodies).
 /// This matches the C++ and JS prototype behavior.
-pub struct FastHydrationPlugin {
+pub struct FastV3HydrationPlugin {
     /// Stack of local binding counters (one per scope).
     /// The bottom of the stack is the root scope (disabled).
     scopes: Vec<usize>,
@@ -49,8 +250,8 @@ pub struct FastHydrationPlugin {
     buffer: String,
 }
 
-impl FastHydrationPlugin {
-    /// Create a new FAST hydration plugin.
+impl FastV3HydrationPlugin {
+    /// Create a new FAST 3 hydration plugin.
     /// The initial root scope is disabled — markers only emitted in child scopes.
     #[must_use]
     pub fn new() -> Self {
@@ -97,13 +298,13 @@ impl FastHydrationPlugin {
     }
 }
 
-impl Default for FastHydrationPlugin {
+impl Default for FastV3HydrationPlugin {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl HandlerPlugin for FastHydrationPlugin {
+impl HandlerPlugin for FastV3HydrationPlugin {
     fn push_scope(&mut self) {
         self.scopes.push(0);
     }
@@ -169,39 +370,43 @@ impl HandlerPlugin for FastHydrationPlugin {
         state: &Value,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        let map = match state.as_object() {
-            Some(m) => m,
-            None => return Ok(()),
-        };
-
-        // Emit scalar values as individual kebab-case attributes
-        for (key, value) in map {
-            let val_str = match value {
-                Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
-                Value::Number(n) => std::borrow::Cow::Owned(n.to_string()),
-                Value::Bool(true) => std::borrow::Cow::Borrowed("true"),
-                Value::Bool(false) => std::borrow::Cow::Borrowed("false"),
-                _ => continue,
-            };
-            let attr_name = webui_protocol::attrs::camel_to_kebab(key);
-            writer.write(" ")?;
-            writer.write(&attr_name)?;
-            writer.write("=\"")?;
-            crate::route_renderer::write_escaped_state_attr(writer, val_str.as_ref())?;
-            writer.write("\"")?;
-        }
-
-        // Emit data-state JSON for complex values (arrays, objects)
-        let has_complex = map.values().any(|v| v.is_array() || v.is_object());
-        if has_complex {
-            let json_str = state.to_string();
-            writer.write(" data-state=\"")?;
-            crate::route_renderer::write_escaped_state_attr(writer, &json_str)?;
-            writer.write("\"")?;
-        }
-
-        Ok(())
+        write_fast_route_component_state(state, writer)
     }
+}
+
+fn write_fast_route_component_state(state: &Value, writer: &mut dyn ResponseWriter) -> Result<()> {
+    let map = match state.as_object() {
+        Some(m) => m,
+        None => return Ok(()),
+    };
+
+    // Emit scalar values as individual kebab-case attributes.
+    for (key, value) in map {
+        let val_str = match value {
+            Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
+            Value::Number(n) => std::borrow::Cow::Owned(n.to_string()),
+            Value::Bool(true) => std::borrow::Cow::Borrowed("true"),
+            Value::Bool(false) => std::borrow::Cow::Borrowed("false"),
+            _ => continue,
+        };
+        let attr_name = webui_protocol::attrs::camel_to_kebab(key);
+        writer.write(" ")?;
+        writer.write(&attr_name)?;
+        writer.write("=\"")?;
+        crate::route_renderer::write_escaped_state_attr(writer, val_str.as_ref())?;
+        writer.write("\"")?;
+    }
+
+    // Emit data-state JSON for complex values (arrays, objects).
+    let has_complex = map.values().any(|v| v.is_array() || v.is_object());
+    if has_complex {
+        let json_str = state.to_string();
+        writer.write(" data-state=\"")?;
+        crate::route_renderer::write_escaped_state_attr(writer, &json_str)?;
+        writer.write("\"")?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -231,8 +436,86 @@ mod tests {
     }
 
     #[test]
-    fn test_root_scope_disabled() {
+    #[allow(deprecated)]
+    fn test_fast_alias_uses_v2_markers() {
         let mut plugin = FastHydrationPlugin::new();
+        plugin.push_scope();
+        let mut writer = TestWriter::new();
+        plugin.on_binding_start("userName", &mut writer).unwrap();
+        assert_eq!(writer.output, "<!--fe-b$$start$$0$$userName$$fe-b-->");
+    }
+
+    #[test]
+    fn test_fast_v2_binding_marker_format() {
+        let mut plugin = FastV2HydrationPlugin::new();
+        plugin.push_scope();
+        let mut writer = TestWriter::new();
+        plugin.on_binding_start("userName", &mut writer).unwrap();
+        plugin.on_binding_end("userName", &mut writer).unwrap();
+        assert_eq!(
+            writer.output,
+            "<!--fe-b$$start$$0$$userName$$fe-b--><!--fe-b$$end$$0$$userName$$fe-b-->"
+        );
+    }
+
+    #[test]
+    fn test_fast_v2_binding_sequence_uses_indexes() {
+        let mut plugin = FastV2HydrationPlugin::new();
+        plugin.push_scope();
+        let mut writer = TestWriter::new();
+        plugin.on_binding_start("a", &mut writer).unwrap();
+        plugin.on_binding_end("a", &mut writer).unwrap();
+        writer.output.clear();
+        plugin.on_binding_start("b", &mut writer).unwrap();
+        assert_eq!(writer.output, "<!--fe-b$$start$$1$$b$$fe-b-->");
+    }
+
+    #[test]
+    fn test_fast_v2_repeat_marker_format() {
+        let mut plugin = FastV2HydrationPlugin::new();
+        plugin.push_scope();
+        let mut writer = TestWriter::new();
+        plugin.on_repeat_item_start(2, &mut writer).unwrap();
+        plugin.on_repeat_item_end(2, &mut writer).unwrap();
+        assert_eq!(
+            writer.output,
+            "<!--fe-repeat$$start$$2$$fe-repeat--><!--fe-repeat$$end$$2$$fe-repeat-->"
+        );
+    }
+
+    #[test]
+    fn test_fast_v2_attribute_marker_formats() {
+        let mut single = FastV2HydrationPlugin::new();
+        single.push_scope();
+        let mut writer = TestWriter::new();
+        let one = 1u32.to_le_bytes();
+        single.on_element_data(&one, &mut writer).unwrap();
+        assert_eq!(writer.output, " data-fe-b-0");
+
+        let mut multi = FastV2HydrationPlugin::new();
+        multi.push_scope();
+        writer.output.clear();
+        let three = 3u32.to_le_bytes();
+        multi.on_element_data(&three, &mut writer).unwrap();
+        assert_eq!(writer.output, " data-fe-c-0-3");
+    }
+
+    #[test]
+    fn test_fast_v2_attribute_count_advances_binding_index() {
+        let mut plugin = FastV2HydrationPlugin::new();
+        plugin.push_scope();
+        let mut writer = TestWriter::new();
+        let three = 3u32.to_le_bytes();
+        plugin.on_element_data(&three, &mut writer).unwrap();
+
+        writer.output.clear();
+        plugin.on_binding_start("next", &mut writer).unwrap();
+        assert_eq!(writer.output, "<!--fe-b$$start$$3$$next$$fe-b-->");
+    }
+
+    #[test]
+    fn test_root_scope_disabled() {
+        let mut plugin = FastV3HydrationPlugin::new();
         let mut writer = TestWriter::new();
         // Root scope should not emit markers
         plugin.on_binding_start("x", &mut writer).unwrap();
@@ -246,7 +529,7 @@ mod tests {
 
     #[test]
     fn test_binding_start_format() {
-        let mut plugin = FastHydrationPlugin::new();
+        let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
         plugin.on_binding_start("userName", &mut writer).unwrap();
@@ -255,7 +538,7 @@ mod tests {
 
     #[test]
     fn test_binding_end_format() {
-        let mut plugin = FastHydrationPlugin::new();
+        let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
         plugin.on_binding_start("userName", &mut writer).unwrap();
@@ -266,7 +549,7 @@ mod tests {
 
     #[test]
     fn test_binding_sequence_uses_compact_markers() {
-        let mut plugin = FastHydrationPlugin::new();
+        let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
         plugin.on_binding_start("a", &mut writer).unwrap();
@@ -278,7 +561,7 @@ mod tests {
 
     #[test]
     fn test_scopes_emit_compact_markers() {
-        let mut plugin = FastHydrationPlugin::new();
+        let mut plugin = FastV3HydrationPlugin::new();
         let mut writer = TestWriter::new();
         // Push first active scope (root is disabled)
         plugin.push_scope();
@@ -300,7 +583,7 @@ mod tests {
 
     #[test]
     fn test_repeat_item_markers() {
-        let mut plugin = FastHydrationPlugin::new();
+        let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
         plugin.on_repeat_item_start(0, &mut writer).unwrap();
@@ -312,7 +595,7 @@ mod tests {
 
     #[test]
     fn test_attribute_binding_single() {
-        let mut plugin = FastHydrationPlugin::new();
+        let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
         let data = 1u32.to_le_bytes();
@@ -322,7 +605,7 @@ mod tests {
 
     #[test]
     fn test_attribute_binding_multi() {
-        let mut plugin = FastHydrationPlugin::new();
+        let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
         let data = 3u32.to_le_bytes();
@@ -332,7 +615,7 @@ mod tests {
 
     #[test]
     fn test_attribute_binding_zero_count_no_output() {
-        let mut plugin = FastHydrationPlugin::new();
+        let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
         let data = 0u32.to_le_bytes();
@@ -342,7 +625,7 @@ mod tests {
 
     #[test]
     fn test_attribute_binding_count_allows_following_binding() {
-        let mut plugin = FastHydrationPlugin::new();
+        let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
         let data = 3u32.to_le_bytes();
@@ -357,7 +640,7 @@ mod tests {
 
     #[test]
     fn test_nested_scopes_emit_compact_markers() {
-        let mut plugin = FastHydrationPlugin::new();
+        let mut plugin = FastV3HydrationPlugin::new();
         let mut writer = TestWriter::new();
         // Push first active scope (root is disabled)
         plugin.push_scope();
@@ -387,7 +670,7 @@ mod tests {
 
     #[test]
     fn test_empty_element_data_returns_error() {
-        let mut plugin = FastHydrationPlugin::new();
+        let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
         let result = plugin.on_element_data(&[], &mut writer);
@@ -400,7 +683,7 @@ mod tests {
 
     #[test]
     fn test_short_element_data_returns_error() {
-        let mut plugin = FastHydrationPlugin::new();
+        let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
         let result = plugin.on_element_data(&[1, 2], &mut writer);
@@ -413,7 +696,7 @@ mod tests {
 
     #[test]
     fn test_write_route_component_state_emits_data_state() {
-        let plugin = FastHydrationPlugin::new();
+        let plugin = FastV3HydrationPlugin::new();
         let mut writer = TestWriter::new();
         let state = serde_json::json!({
             "title": "Hello",
@@ -426,12 +709,12 @@ mod tests {
 
         assert!(
             writer.output.contains("data-state="),
-            "FAST plugin should emit data-state: {}",
+            "FAST handler plugin should emit data-state: {}",
             writer.output
         );
         assert!(
             writer.output.contains(r#"title="Hello""#),
-            "FAST plugin should still emit scalar attrs: {}",
+            "FAST handler plugin should still emit scalar attrs: {}",
             writer.output
         );
     }
@@ -514,7 +797,8 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"name": "Alice"});
-        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
+        let output =
+            render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
         // Root scope is disabled — no markers at root level
         assert_eq!(output, "<p>Alice</p>");
     }
@@ -536,7 +820,8 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"items": ["a", "b"]});
-        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
+        let output =
+            render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
         // Root scope disabled — no for-loop binding or repeat item markers
         assert!(!output.contains("<!--fe:r-->"));
         assert!(!output.contains("<!--fe:/r-->"));
@@ -566,13 +851,15 @@ mod tests {
 
         // True case — root scope disabled, no markers; content still rendered
         let state = test_json!({"show": true});
-        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
+        let output =
+            render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
         assert!(output.contains("<p>Visible</p>"));
         assert!(!output.contains("<!--fe:"));
 
         // False case — no content, no markers
         let state = test_json!({"show": false});
-        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
+        let output =
+            render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
         assert!(!output.contains("<p>Visible</p>"));
         assert!(!output.contains("<!--fe:"));
     }
@@ -598,7 +885,8 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"before": "B", "inner": "I", "after": "A"});
-        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
+        let output =
+            render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
         assert_eq!(output, "B<!--fe:b-->I<!--fe:/b-->A");
     }
 
@@ -619,7 +907,8 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"itemId": "42", "itemTitle": "Hello"});
-        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
+        let output =
+            render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
         // Root scope disabled — no plugin data markers
         assert!(!output.contains("data-fe="));
         assert!(output.contains("id=\"42\""));
@@ -673,7 +962,8 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"name": "World", "content": "CONTENT"});
 
-        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
+        let output =
+            render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
 
         // Hydration markers should exist in the output (around component content)
         assert!(
@@ -808,7 +1098,8 @@ mod tests {
             ]
         });
 
-        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
+        let output =
+            render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
 
         let expected = "\
             <div>\
@@ -885,7 +1176,8 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
-        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
+        let output =
+            render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
         // Hydration comments must be emitted even when signal is not found in state
         assert!(
             output.contains("<!--fe:b-->"),
@@ -926,7 +1218,8 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({});
-        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
+        let output =
+            render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
         // Hydration comments must be emitted even when collection is missing from state
         assert!(
             output.contains("<!--fe:b-->"),
@@ -959,7 +1252,8 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"name": ""});
-        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
+        let output =
+            render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
         assert!(
             output.contains("<!--fe:b-->"),
             "Expected binding start marker for empty string signal, got: {output}"
@@ -998,7 +1292,8 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"items": []});
-        let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
+        let output =
+            render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
         assert!(
             output.contains("<!--fe:b-->"),
             "Expected binding start marker for empty collection, got: {output}"
@@ -1014,13 +1309,13 @@ mod tests {
         // on_for_start/on_for_end should produce the same output as
         // on_binding_start/on_binding_end because the trait defaults delegate.
         {
-            let mut plugin_for = FastHydrationPlugin::new();
+            let mut plugin_for = FastV3HydrationPlugin::new();
             plugin_for.push_scope();
             let mut writer_for = TestWriter::new();
             plugin_for.on_for_start("items", &mut writer_for).unwrap();
             plugin_for.on_for_end("items", &mut writer_for).unwrap();
 
-            let mut plugin_bind = FastHydrationPlugin::new();
+            let mut plugin_bind = FastV3HydrationPlugin::new();
             plugin_bind.push_scope();
             let mut writer_bind = TestWriter::new();
             plugin_bind
@@ -1039,13 +1334,13 @@ mod tests {
         // on_if_start/on_if_end should produce the same output as
         // on_binding_start/on_binding_end.
         {
-            let mut plugin_if = FastHydrationPlugin::new();
+            let mut plugin_if = FastV3HydrationPlugin::new();
             plugin_if.push_scope();
             let mut writer_if = TestWriter::new();
             plugin_if.on_if_start("visible", &mut writer_if).unwrap();
             plugin_if.on_if_end("visible", &mut writer_if).unwrap();
 
-            let mut plugin_bind = FastHydrationPlugin::new();
+            let mut plugin_bind = FastV3HydrationPlugin::new();
             plugin_bind.push_scope();
             let mut writer_bind = TestWriter::new();
             plugin_bind

@@ -36,7 +36,7 @@ let result = build(BuildOptions {
 | `build_to_disk(options, out_dir)` | Build and write `protocol.bin` + CSS to disk |
 
 ```rust
-use webui::{build_to_disk, BuildOptions, CssStrategy, DomStrategy};
+use webui::{build_to_disk, BuildOptions, CssStrategy, DomStrategy, Plugin};
 
 build_to_disk(
     BuildOptions {
@@ -44,7 +44,7 @@ build_to_disk(
         entry: "index.html".into(),
         css: CssStrategy::Link,        // or CssStrategy::Style for inline
         dom: DomStrategy::Shadow,      // or DomStrategy::Light for light DOM
-        plugin: Some("fast".into()),    // FAST hydration plugin
+        plugin: Some(Plugin::FastV3),    // FAST 3 hydration plugin
         components: vec![],             // additional component sources
     },
     Path::new("dist"),
@@ -63,14 +63,16 @@ let handler = WebUIHandler::new();
 handler.handle(&protocol, &state, &RenderOptions::new("index.html", "/"), &mut writer)?;
 ```
 
-With the FAST hydration plugin:
+With the FAST 3 hydration plugin:
 
 ```rust
 use webui::{WebUIHandler, HandlerPlugin};
-use webui_handler::plugin::fast::FastHydrationPlugin;
+use webui_handler::plugin::fast::FastV3HydrationPlugin;
 
-let handler = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));
+let handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
 ```
+
+`Plugin::FastV2` and `Plugin::Fast` are deprecated FAST 2 compatibility paths. Use `Plugin::FastV3` for FAST 3.
 
 ### Inspect
 

@@ -104,8 +104,15 @@ impl std::str::FromStr for DomStrategy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum Plugin {
-    /// Fast hydration plugin — lightweight client-side interactivity.
+    /// Deprecated compatibility alias for the FAST 2 hydration plugin.
+    #[cfg_attr(feature = "cli", value(name = "fast"))]
     Fast,
+    /// Deprecated FAST 2 hydration plugin with legacy marker output.
+    #[cfg_attr(feature = "cli", value(name = "fast-v2"))]
+    FastV2,
+    /// FAST 3 hydration plugin with compact marker output.
+    #[cfg_attr(feature = "cli", value(name = "fast-v3"))]
+    FastV3,
     /// WebUI plugin — full component model with shadow DOM support.
     #[cfg_attr(feature = "cli", value(name = "webui"))]
     WebUI,
@@ -115,6 +122,8 @@ impl std::fmt::Display for Plugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Plugin::Fast => write!(f, "fast"),
+            Plugin::FastV2 => write!(f, "fast-v2"),
+            Plugin::FastV3 => write!(f, "fast-v3"),
             Plugin::WebUI => write!(f, "webui"),
         }
     }
@@ -126,8 +135,12 @@ impl std::str::FromStr for Plugin {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "fast" => Ok(Plugin::Fast),
+            "fast-v2" => Ok(Plugin::FastV2),
+            "fast-v3" => Ok(Plugin::FastV3),
             "webui" => Ok(Plugin::WebUI),
-            other => Err(format!("Unknown plugin: {other}")),
+            other => Err(format!(
+                "Unknown plugin: {other}. Use \"webui\", \"fast-v3\", \"fast-v2\", or \"fast\"."
+            )),
         }
     }
 }
@@ -1944,6 +1957,36 @@ mod tests {
     use webui_test_utils::*;
 
     use super::*;
+
+    #[test]
+    fn test_plugin_display_names() {
+        assert_eq!(Plugin::Fast.to_string(), "fast");
+        assert_eq!(Plugin::FastV2.to_string(), "fast-v2");
+        assert_eq!(Plugin::FastV3.to_string(), "fast-v3");
+        assert_eq!(Plugin::WebUI.to_string(), "webui");
+    }
+
+    #[test]
+    fn test_plugin_from_str_names() {
+        assert_eq!("fast".parse::<Plugin>(), Ok(Plugin::Fast));
+        assert_eq!("fast-v2".parse::<Plugin>(), Ok(Plugin::FastV2));
+        assert_eq!("fast-v3".parse::<Plugin>(), Ok(Plugin::FastV3));
+        assert_eq!("webui".parse::<Plugin>(), Ok(Plugin::WebUI));
+    }
+
+    #[test]
+    fn test_plugin_from_str_unknown_mentions_supported_names() {
+        let err = "legacy".parse::<Plugin>().unwrap_err();
+        assert!(
+            err.contains("fast-v3"),
+            "error should mention fast-v3: {err}"
+        );
+        assert!(
+            err.contains("fast-v2"),
+            "error should mention fast-v2: {err}"
+        );
+        assert!(err.contains("fast"), "error should mention fast: {err}");
+    }
 
     #[test]
     fn test_parse_signal() {

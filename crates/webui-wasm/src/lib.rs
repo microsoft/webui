@@ -14,7 +14,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
-use webui_handler::plugin::fast::FastHydrationPlugin;
+use webui_handler::plugin::fast::{FastV2HydrationPlugin, FastV3HydrationPlugin};
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_parser::{CssStrategy, HtmlParser, Plugin};
@@ -50,7 +50,7 @@ impl ResponseWriter for StringWriter {
 ///
 /// * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
 /// * `state_json` — JSON string of the state data.
-/// * `plugin` — Optional plugin identifier.
+/// * `plugin` — Optional plugin identifier, such as `"fast-v3"` for FAST 3.
 ///
 /// # Returns
 ///
@@ -204,8 +204,11 @@ fn build_protocol_inner(
 /// Create a handler with an optional plugin.
 fn create_handler(plugin: Option<Plugin>) -> Result<WebUIHandler, BuildError> {
     match plugin {
-        Some(Plugin::Fast) => Ok(WebUIHandler::with_plugin(|| {
-            Box::new(FastHydrationPlugin::new())
+        Some(Plugin::Fast | Plugin::FastV2) => Ok(WebUIHandler::with_plugin(|| {
+            Box::new(FastV2HydrationPlugin::new())
+        })),
+        Some(Plugin::FastV3) => Ok(WebUIHandler::with_plugin(|| {
+            Box::new(FastV3HydrationPlugin::new())
         })),
         Some(Plugin::WebUI) => Ok(WebUIHandler::with_plugin(|| {
             Box::new(WebUIHydrationPlugin::new())

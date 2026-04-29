@@ -145,7 +145,7 @@ pub fn run_app_builds() -> Result<(), String> {
 
                 if app_name.ends_with("-fast") {
                     args.push("--plugin");
-                    args.push("fast");
+                    args.push("fast-v3");
                 }
 
                 run_command_quiet("cargo", &args, None)

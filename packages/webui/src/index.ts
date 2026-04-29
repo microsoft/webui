@@ -19,7 +19,7 @@ export interface BuildOptions {
   entry?: string;
   /** CSS delivery strategy: "link" (default), "style", or "module". */
   css?: "link" | "style" | "module";
-  /** Parser plugin (e.g., "fast" for FAST hydration). */
+  /** Parser plugin (e.g., "fast-v3" for FAST 3 hydration; "fast"/"fast-v2" are deprecated FAST 2 compatibility aliases). */
   plugin?: string;
   /** Additional component sources (npm packages or local paths). */
   components?: string[];
@@ -59,7 +59,7 @@ export interface RenderOptions {
   entry?: string;
   /** URL path to match routes against (default: "/"). */
   requestPath?: string;
-  /** Parser plugin name (e.g., "fast" for FAST hydration). */
+  /** Handler plugin name (e.g., "fast-v3" for FAST 3 hydration; "fast"/"fast-v2" are deprecated FAST 2 compatibility aliases). */
   plugin?: string;
 }
 

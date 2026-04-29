@@ -19,7 +19,7 @@ struct TrackedComponent {
     css_content: Option<String>,
 }
 
-/// FAST parser plugin.
+/// FAST parser plugin shared by `fast`, `fast-v2`, and `fast-v3`.
 ///
 /// Implements the `ParserPlugin` trait for the FAST framework:
 /// - Filters FAST-specific runtime binding attributes (`@click`, `f-ref`, etc.)

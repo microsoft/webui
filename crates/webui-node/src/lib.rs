@@ -32,7 +32,7 @@ use napi::bindgen_prelude::{Buffer, Function};
 use napi::Error as NapiError;
 use napi_derive::napi;
 use serde_json::Value;
-use webui_handler::plugin::fast::FastHydrationPlugin;
+use webui_handler::plugin::fast::{FastV2HydrationPlugin, FastV3HydrationPlugin};
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::WebUIProtocol;
@@ -74,7 +74,7 @@ pub struct JsBuildOptions {
     pub entry: Option<String>,
     /// CSS mode: "link" (default) or "style".
     pub css: Option<String>,
-    /// Framework plugin.
+    /// Framework plugin (for example, `"fast-v3"` for FAST 3 hydration).
     pub plugin: Option<String>,
     /// Additional component sources (npm packages or local paths).
     pub components: Option<Vec<String>>,
@@ -266,7 +266,7 @@ impl ResponseWriter for CallbackWriter<'_, '_> {
 /// * `protocol_data` — Protobuf binary from `webui build` (zero-copy Buffer).
 /// * `state_json` — JSON string with the render state.
 /// * `on_chunk` — Called with each rendered HTML fragment as it is produced.
-/// * `plugin` — Optional plugin identifier (e.g., `"fast"`).
+/// * `plugin` — Optional plugin identifier (e.g., `"fast-v3"` for FAST 3).
 #[napi]
 #[allow(clippy::too_many_arguments)]
 pub fn render(
@@ -289,8 +289,11 @@ pub fn render(
         .transpose()
         .map_err(NapiError::from_reason)?;
     let handler = match plugin {
-        Some(webui::Plugin::Fast) => {
-            WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()))
+        Some(webui::Plugin::Fast | webui::Plugin::FastV2) => {
+            WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()))
+        }
+        Some(webui::Plugin::FastV3) => {
+            WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()))
         }
         Some(webui::Plugin::WebUI) => {
             WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()))

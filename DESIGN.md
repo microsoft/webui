@@ -318,7 +318,7 @@ without a server round-trip.
 **Partial response:** `render_partial()` returns `{ templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }`. The caller adds application state to the response (e.g. as a top-level `state` field for non-streaming, or as an NDJSON Chunk 2 for streaming):
 - `state`: (added by caller) route-scoped application data — the router applies it to components via `setState()`
 - `templateStyles`: module CSS definition tags (`<style type="module" specifier="...">`) for newly shipped components. Empty array for Link/Style modes. The client appends these to `<head>` before evaluating template scripts so adopted stylesheets are available
-- `templates`: client template script/markup payloads the client doesn't already have (filtered by inventory bitmask). Clean JS IIFEs for the WebUI plugin, `<f-template>` markup for the FAST plugin
+- `templates`: client template script/markup payloads the client doesn't already have (filtered by inventory bitmask). Clean JS IIFEs for the WebUI plugin, `<f-template>` markup for FAST plugins
 - `inventory`: updated hex bitmask of loaded templates
 - `chain`: matched route chain array — each entry has `component`, `path`, optional `params`, `exact`, `allowedQuery`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`
 - `cacheTags`: resolved cache tags from the full route chain (union of all levels, deduplicated). The client tags its cache entry with these values for tag-based invalidation
@@ -662,13 +662,29 @@ pub trait HandlerPlugin {
 - **Plugin fragment**: `on_element_data` with parser-produced hydration bytes from protocol
 - **Matched route component**: `write_route_component_state` before the opening tag closes
 
-**Built-in plugin: `FastHydrationPlugin`**
-Injects FAST 3 hydration comment markers and attributes for client-side re-hydration:
+**Built-in FAST handler plugins**
+
+The CLI and host APIs select FAST handler plugins by name:
+- `fast-v3`: FAST 3 marker output for new FAST applications.
+- `fast-v2`: deprecated FAST 2 compatibility marker output.
+- `fast`: deprecated compatibility alias for `fast-v2`. It intentionally keeps FAST 2 output so existing applications do not silently change marker formats.
+
+No plugin is loaded by default; output is plain SSR HTML unless a plugin is selected.
+`FastHydrationPlugin` is a deprecated Rust type alias for
+`FastV2HydrationPlugin`.
+
+`FastV2HydrationPlugin` injects FAST 2 hydration markers:
+- Binding: `<!--fe-b$$start$$INDEX$$NAME$$fe-b-->` / `<!--fe-b$$end$$INDEX$$NAME$$fe-b-->`
+- Repeat item: `<!--fe-repeat$$start$$INDEX$$fe-repeat-->` / `<!--fe-repeat$$end$$INDEX$$fe-repeat-->`
+- Single attribute binding: ` data-fe-b-INDEX`
+- Multiple attribute bindings: ` data-fe-c-INDEX-COUNT`
+
+`FastV3HydrationPlugin` injects FAST 3 hydration markers:
 - Binding: `<!--fe:b-->` / `<!--fe:/b-->`
 - Repeat item: `<!--fe:r-->` / `<!--fe:/r-->`
 - Attribute bindings: ` data-fe="COUNT"` where `COUNT` is the number of dynamic element bindings
 
-FAST template authoring and runtime usage depend on FAST 3 APIs from
+FAST 3 template authoring and runtime usage depend on FAST 3 APIs from
 `@microsoft/fast-element`: `enableHydration()` from
 `@microsoft/fast-element/hydration.js`, `declarativeTemplate()`,
 `observerMap()`, `define()`, and `$e` in declarative event expressions.
@@ -692,11 +708,13 @@ public framework API and authoring model.
 
 **Usage:**
 ```rust
-// FAST plugin
-let handler = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));
+// FAST 3 plugin
+let fast_v3_handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
+// Deprecated FAST 2 compatibility plugin
+let _fast_v2_handler = WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()));
 // WebUI Framework plugin
-let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
-handler.handle(&protocol, &state, &options, &mut writer)?;
+let _webui_handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+fast_v3_handler.handle(&protocol, &state, &options, &mut writer)?;
 ```
 ### Fragment Processing
 - **Raw fragments:** Write value directly to output
@@ -896,13 +914,16 @@ pub trait ParserPlugin {
 - **Component registration**: `register_component_template` receives the final processed component template HTML
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts
 
-**Built-in plugin: `FastParserPlugin`**
+**Built-in parser plugin: `FastParserPlugin`**
+The FAST parser side is shared by `fast`, `fast-v2`, and `fast-v3`; the
+selected handler plugin controls which marker version is emitted at render time.
+
 - Marks FAST-specific runtime attributes (`@click`, `f-ref`, `f-slotted`, `f-children`) as skipped but still counted bindings
 - Emits `Plugin` fragments with u32 LE attribute binding counts
 - Tracks components and returns `<f-template>` artifacts after parsing
 - Converts syntax to FAST syntax: `<if condition="X">`→`<f-when value="{{X}}">`, `<for each="X">`→`<f-repeat value="{{X}}">`, `{{expr}}`→`{expr}` in `:attr` values
 - All byte-level scanning in template conversion preserves multi-byte UTF-8 characters (non-ASCII bytes are forwarded as complete code points, never cast individually to `char`)
-- FAST component authoring in WebUI examples uses `@microsoft/fast-element` 3 APIs (`enableHydration`, `declarativeTemplate`, `observerMap`, `define()`, and `$e`) as the FAST runtime dependency
+- FAST 3 component authoring in WebUI examples uses `@microsoft/fast-element` 3 APIs (`enableHydration`, `declarativeTemplate`, `observerMap`, `define()`, and `$e`) as the FAST runtime dependency
 
 **Built-in plugin: `WebUIParserPlugin`**
 - Skips WebUI Framework runtime attributes (`@click`, `@keydown`, etc.) without counting them as attribute bindings
@@ -912,18 +933,22 @@ pub trait ParserPlugin {
 
 **Usage:**
 ```rust
-// FAST plugin
-let mut parser = HtmlParser::with_plugin(Box::new(FastParserPlugin::new()));
+// FAST parser plugin
+let mut fast_parser = HtmlParser::with_plugin(Box::new(FastParserPlugin::new()));
 // WebUI Framework plugin
-let mut parser = HtmlParser::with_plugin(Box::new(WebUIParserPlugin::new()));
-parser.parse("index.html", &html)?;
+let mut _webui_parser = HtmlParser::with_plugin(Box::new(WebUIParserPlugin::new()));
+fast_parser.parse("index.html", &html)?;
 ```
 
 **CLI integration:**
 ```bash
-# FAST plugin
-webui build ./templates --out ./dist --plugin=fast
-webui serve ./templates --state ./data/state.json --plugin=fast
+# FAST 3 plugin
+webui build ./templates --out ./dist --plugin=fast-v3
+webui serve ./templates --state ./data/state.json --plugin=fast-v3
+
+# Deprecated FAST 2 compatibility plugin
+webui build ./templates --out ./dist --plugin=fast-v2
+webui serve ./templates --state ./data/state.json --plugin=fast-v2
 
 # WebUI Framework plugin
 webui build ./templates --out ./dist --plugin=webui
@@ -1339,7 +1364,7 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 |----------|-------------|
 | `webui_render(html, data_json)` | Parse + render in one call (requires `parser` feature; returns `NULL` when absent). Returns heap-allocated string (caller frees with `webui_free`). |
 | `webui_handler_create()` | Create a reusable handler (no plugin). |
-| `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin (e.g. `"fast"`). Returns `NULL` on error. |
+| `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin (e.g. `"fast-v3"` for FAST 3 or deprecated `"fast-v2"`/`"fast"` for FAST 2 compatibility). Returns `NULL` on error. |
 | `webui_handler_render(handler, data, len, json, entry_id, request_path)` | Render a pre-compiled protocol with route matching. `request_path` controls which route is active. Returns heap-allocated string. |
 | `webui_render_partial(protocol_data, len, entry_id, request_path, inventory_hex)` | Produce a JSON partial response (templateStyles, templates, inventory, path, matched route chain, cacheTags, cacheControl) in a single call. Uses an internal `ProtocolIndex` for cached route matching. Caller adds state. Returns heap-allocated JSON string. |
 | `webui_handler_destroy(handler)` | Destroy a handler. `NULL` is a safe no-op. |

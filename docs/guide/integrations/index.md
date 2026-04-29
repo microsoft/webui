@@ -43,7 +43,7 @@ handler = Handler::with_plugin(plugin)
 handler.handle(protocol, state, options, writer)
 ```
 
-When no plugin is configured, the handler renders plain HTML. When a plugin is loaded (e.g., `FastHydrationPlugin`), it injects markers that enable client-side hydration.
+When no plugin is configured, the handler renders plain HTML. When a plugin is loaded (e.g., `FastV3HydrationPlugin`), it injects markers that enable client-side hydration.
 
 See [Plugins](/guide/concepts/plugins/) for the full plugin API and built-in plugins.
 

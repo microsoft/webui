@@ -4,7 +4,7 @@
 /**
  * Todo-fast entry point — bootstraps FAST hydration.
  *
- * The server pre-renders HTML with hydration markers via `webui build --plugin=fast`.
+ * The server pre-renders HTML with hydration markers via `webui build --plugin=fast-v3`.
  * This script:
  *   1. Enables FAST hydration for pre-rendered shadow DOM
  *   2. Registers custom elements (todo-app, todo-item) with declarative templates

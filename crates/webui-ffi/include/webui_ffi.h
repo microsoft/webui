@@ -27,6 +27,8 @@ void *webui_handler_create();
 /// # Arguments
 ///
 /// * `plugin_id` - Null-terminated UTF-8 string identifying the plugin.
+///   `"fast"` and `"fast-v2"` select deprecated FAST 2 compatibility markers;
+///   `"fast-v3"` selects FAST 3 markers.
 ///
 /// # Returns
 ///

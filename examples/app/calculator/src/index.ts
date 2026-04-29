@@ -4,7 +4,7 @@
 /**
  * Calculator hydration entry point.
  *
- * The server pre-renders HTML with hydration markers via `webui build --plugin=fast`.
+ * The server pre-renders HTML with hydration markers via `webui build --plugin=fast-v3`.
  * This script enables FAST hydration and registers custom elements with
  * declarative templates.
  */
