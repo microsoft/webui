@@ -57,4 +57,4 @@ The [Contact Book Manager](https://github.com/microsoft/webui/tree/main/examples
 
 - The native addon renders the entire page synchronously at startup - no per-request overhead.
 - Protocol data is loaded once and rendered once. The custom protocol handler serves pre-rendered HTML from memory.
-- Client-side hydration runs identically to the browser - same JS bundle, same FAST-HTML components.
+- Client-side hydration runs identically to the browser - same JS bundle, same WebUI Framework components.

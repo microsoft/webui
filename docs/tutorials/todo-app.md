@@ -439,5 +439,5 @@ In this tutorial you:
 - [Routing](/guide/concepts/routing) – add multi-page navigation to your app.
 - [Commerce Example](https://github.com/microsoft/webui/tree/main/examples/app/commerce) –
   a more complex app with product listings, search, cart, and nested routing.
-- [FAST-HTML Variant](/guide/concepts/plugins/) – swap in FAST-HTML components
+- [FAST 3 Variant](/guide/concepts/plugins/) - swap in FAST 3 components
   using the `--plugin=fast` flag for an alternative hydration strategy.

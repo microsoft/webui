@@ -1,6 +1,6 @@
 <template shadowrootmode="open"
-  @toggle-item="{onToggleItem(e)}"
-  @delete-item="{onDeleteItem(e)}"
+  @toggle-item="{onToggleItem($e)}"
+  @delete-item="{onDeleteItem($e)}"
 >
   <h1>{{title}}</h1>
 
@@ -9,7 +9,7 @@
       class="add-input"
       placeholder="What needs to be done?"
       f-ref="{addInput}"
-      @keydown="{onAddKeydown(e)}"
+      @keydown="{onAddKeydown($e)}"
     />
     <button class="add-button" @click="{onAddClick()}">Add</button>
   </div>

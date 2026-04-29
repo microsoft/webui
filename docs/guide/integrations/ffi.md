@@ -187,7 +187,7 @@ Two rules to remember:
 Pass a plugin identifier string to `webui_handler_create_with_plugin`:
 
 ```c
-// Create handler with FAST-HTML hydration plugin
+// Create handler with FAST hydration plugin
 void *handler = webui_handler_create_with_plugin("fast");
 if (handler == NULL) {
     printf("Error: %s\n", webui_last_error());
@@ -356,5 +356,5 @@ Any language with C FFI support can use WebUI. The pattern is always the same:
 
 ## Next Steps
 
-- [Plugins](/guide/concepts/plugins/), Plugin system and FAST-HTML hydration
+- [Plugins](/guide/concepts/plugins/), Plugin system and FAST hydration
 - [CLI Reference](/guide/cli/), Building protocols with `webui build`

@@ -300,7 +300,7 @@ The `--plugin` flag loads framework-specific extensions that customize both pars
 
 | Plugin | Description |
 |--------|-------------|
-| `fast` | FAST-HTML hydration support. Parser skips runtime attrs, emits binding data, injects `<f-template>` wrappers. Handler injects hydration comment markers. |
+| `fast` | FAST 3 hydration support. Parser skips runtime attrs, emits binding data, injects `<f-template>` wrappers. Handler injects `<!--fe:b-->`, `<!--fe:/b-->`, `<!--fe:r-->`, `<!--fe:/r-->`, and `data-fe="COUNT"` markers. |
 
 See [Plugins](/guide/concepts/plugins/) for detailed documentation.
 

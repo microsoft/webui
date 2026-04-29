@@ -36,7 +36,7 @@ const result = build({
   appDir: "./src",        // Path to the template directory
   entry: "index.html",   // Entry file (default: "index.html")
   css: "link",           // CSS strategy: "link" or "style"
-  plugin: "fast",        // Parser plugin (e.g., "fast" for FAST-HTML)
+  plugin: "fast",        // Parser plugin (e.g., "fast" for FAST hydration)
   components: [],        // Additional component sources
   outDir: "./dist",      // Output directory for CLI fallback
 });

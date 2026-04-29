@@ -12,7 +12,6 @@
   "devDependencies": {
     "@microsoft/webui-examples-theme": "workspace:*",
     "@microsoft/fast-element": "catalog:",
-    "@microsoft/fast-html": "catalog:",
     "esbuild": "catalog:",
     "tslib": "catalog:",
     "typescript": "catalog:"

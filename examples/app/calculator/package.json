@@ -12,7 +12,6 @@
   },
   "devDependencies": {
     "@microsoft/fast-element": "catalog:",
-    "@microsoft/fast-html": "catalog:",
     "@playwright/test": "catalog:",
     "esbuild": "catalog:",
     "tslib": "catalog:",

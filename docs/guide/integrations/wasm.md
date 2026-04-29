@@ -106,7 +106,7 @@ const protocolJson = build_protocol(files, 'index.html');
 
 ## Using Plugins
 
-Pass `"fast"` as the `plugin` parameter to enable FAST-HTML hydration markers:
+Pass `"fast"` as the `plugin` parameter to enable FAST 3 hydration markers:
 
 ```js
 const html = render(protocolJson, stateJson, 'fast');

@@ -5,29 +5,24 @@
  * Calculator hydration entry point.
  *
  * The server pre-renders HTML with hydration markers via `webui build --plugin=fast`.
- * This script registers custom elements, configures FAST-HTML observation maps,
- * and defines <f-template> to trigger hydration.
+ * This script enables FAST hydration and registers custom elements with
+ * declarative templates.
  */
 
 performance.mark('calc-hydration-started');
 
-import { TemplateElement } from '@microsoft/fast-html';
+import { enableHydration } from '@microsoft/fast-element/hydration.js';
 
-// Side-effect imports register custom elements
-import './calc-app/calc-app.js';
-import './calc-display/calc-display.js';
-import './calc-button/calc-button.js';
-
-// Configure hydration
-TemplateElement.options({
-  'calc-app': { observerMap: 'all' },
-  'calc-display': { observerMap: 'all' },
-  'calc-button': { observerMap: 'all' },
-}).config({
+enableHydration({
   hydrationComplete() {
     performance.measure('calc-hydration-completed', 'calc-hydration-started');
     console.log('Calculator hydration complete!');
   },
-}).define({
-  name: 'f-template',
 });
+
+// Register custom elements after hydration is enabled.
+void Promise.all([
+  import('./calc-app/calc-app.js'),
+  import('./calc-display/calc-display.js'),
+  import('./calc-button/calc-button.js'),
+]);

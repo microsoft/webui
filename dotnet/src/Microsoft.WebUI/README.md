@@ -23,7 +23,7 @@ For repeated renders with pre-compiled protocol data, use the `WebUIHandler`:
 ```csharp
 using Microsoft.WebUI;
 
-// Create a handler (optionally with a plugin like "fast" for FAST-HTML)
+// Create a handler (optionally with a plugin like "fast" for FAST hydration)
 using var handler = new WebUIHandler("fast");
 
 // Load pre-compiled protocol binary (from `webui build`)

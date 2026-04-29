@@ -5,7 +5,7 @@
  * End-to-end tests for the Contact Book Manager app.
  *
  * Tests SSR rendering, client-side navigation, and visual regression.
- * The app uses shadow DOM components (cb-*) with FAST-HTML templating.
+ * The app uses shadow DOM components (cb-*) with WebUI Framework templating.
  */
 
 import { test, expect, type Page } from '@playwright/test';

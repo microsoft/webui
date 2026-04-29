@@ -663,14 +663,16 @@ pub trait HandlerPlugin {
 - **Matched route component**: `write_route_component_state` before the opening tag closes
 
 **Built-in plugin: `FastHydrationPlugin`**
-Injects FAST-HTML hydration comment markers for client-side re-hydration:
-- Binding: `<!--fe-b$$start$$INDEX$$NAME$$fe-b-->` / `<!--fe-b$$end$$INDEX$$NAME$$fe-b-->`
-- Repeat: `<!--fe-repeat$$start$$INDEX$$fe-repeat-->` / `<!--fe-repeat$$end$$INDEX$$fe-repeat-->`
-- Attribute (single): ` data-fe-b-INDEX`
-- Attribute (multi): ` data-fe-c-INDEX-COUNT`
+Injects FAST 3 hydration comment markers and attributes for client-side re-hydration:
+- Binding: `<!--fe:b-->` / `<!--fe:/b-->`
+- Repeat item: `<!--fe:r-->` / `<!--fe:/r-->`
+- Attribute bindings: ` data-fe="COUNT"` where `COUNT` is the number of dynamic element bindings
 
-FAST template authoring and runtime usage are documented in the canonical
-[FAST HTML README](https://github.com/microsoft/fast/blob/main/packages/fast-html/README.md).
+FAST template authoring and runtime usage depend on FAST 3 APIs from
+`@microsoft/fast-element`: `enableHydration()` from
+`@microsoft/fast-element/hydration.js`, `declarativeTemplate()`,
+`attributeMap()`, `observerMap()`, `define()`, and `$e` in declarative event
+expressions.
 `DESIGN.md` only specifies the parser/handler integration contracts.
 
 **Built-in plugin: `WebUIHydrationPlugin`**
@@ -901,7 +903,7 @@ pub trait ParserPlugin {
 - Tracks components and returns `<f-template>` artifacts after parsing
 - Converts syntax to FAST syntax: `<if condition="X">`→`<f-when value="{{X}}">`, `<for each="X">`→`<f-repeat value="{{X}}">`, `{{expr}}`→`{expr}` in `:attr` values
 - All byte-level scanning in template conversion preserves multi-byte UTF-8 characters (non-ASCII bytes are forwarded as complete code points, never cast individually to `char`)
-- FAST authoring details live in the canonical [FAST HTML README](https://github.com/microsoft/fast/blob/main/packages/fast-html/README.md)
+- FAST component authoring in WebUI examples uses `@microsoft/fast-element` 3 APIs (`enableHydration`, `declarativeTemplate`, `attributeMap`, `observerMap`, `define()`, and `$e`) as the FAST runtime dependency
 
 **Built-in plugin: `WebUIParserPlugin`**
 - Skips WebUI Framework runtime attributes (`@click`, `@keydown`, etc.) without counting them as attribute bindings
@@ -1132,7 +1134,7 @@ This section specifies only the cross-crate wire contract for `--plugin=webui`: 
 It intentionally does **not** duplicate package tutorials or framework API docs. Use the canonical sources instead:
 
 - WebUI Framework public API, decorators, and component authoring: [packages/webui-framework/README.md](packages/webui-framework/README.md)
-- FAST template authoring and runtime reference: [FAST HTML README](https://github.com/microsoft/fast/blob/main/packages/fast-html/README.md)
+- FAST 3 runtime integration examples: [examples/app/todo-fast](examples/app/todo-fast) and [examples/app/calculator](examples/app/calculator), which use `@microsoft/fast-element`
 
 ### Metadata object format
 

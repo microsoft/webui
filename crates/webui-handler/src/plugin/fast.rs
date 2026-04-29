@@ -4,16 +4,15 @@
 //! FAST Hydration plugin for the WebUI handler.
 //!
 //! Injects HTML comment markers and data attributes that enable client-side
-//! FAST-HTML to locate and re-hydrate server-rendered dynamic content.
+//! FAST declarative templates to locate and re-hydrate server-rendered dynamic content.
 //!
 //! ## Comment Format
 //!
-//! - **Binding start**: `<!--fe-b$$start$$INDEX$$NAME$$fe-b-->`
-//! - **Binding end**: `<!--fe-b$$end$$INDEX$$NAME$$fe-b-->`
-//! - **Repeat item start**: `<!--fe-repeat$$start$$INDEX$$fe-repeat-->`
-//! - **Repeat item end**: `<!--fe-repeat$$end$$INDEX$$fe-repeat-->`
-//! - **Attribute single**: ` data-fe-b-INDEX`
-//! - **Attribute multi**: ` data-fe-c-INDEX-COUNT`
+//! - **Binding start**: `<!--fe:b-->`
+//! - **Binding end**: `<!--fe:/b-->`
+//! - **Repeat item start**: `<!--fe:r-->`
+//! - **Repeat item end**: `<!--fe:/r-->`
+//! - **Attribute bindings**: ` data-fe="COUNT"`
 //!
 //! ## Scoping
 //!
@@ -27,19 +26,16 @@ use std::fmt::Write;
 use webui_protocol::FastElementData;
 
 // Comment format constants
-const BINDING_START_PREFIX: &str = "<!--fe-b$$start$$";
-const BINDING_END_PREFIX: &str = "<!--fe-b$$end$$";
-const BINDING_SUFFIX: &str = "$$fe-b-->";
-const SEPARATOR: &str = "$$";
-const REPEAT_START_PREFIX: &str = "<!--fe-repeat$$start$$";
-const REPEAT_END_PREFIX: &str = "<!--fe-repeat$$end$$";
-const REPEAT_SUFFIX: &str = "$$fe-repeat-->";
-const ATTR_SINGLE_PREFIX: &str = " data-fe-b-";
-const ATTR_MULTI_PREFIX: &str = " data-fe-c-";
+const BINDING_START_MARKER: &str = "<!--fe:b-->";
+const BINDING_END_MARKER: &str = "<!--fe:/b-->";
+const REPEAT_START_MARKER: &str = "<!--fe:r-->";
+const REPEAT_END_MARKER: &str = "<!--fe:/r-->";
+const ATTR_PREFIX: &str = " data-fe=\"";
+const ATTR_SUFFIX: &str = "\"";
 
 /// FAST Hydration handler plugin.
 ///
-/// Emits HTML comment markers around dynamic bindings so that FAST-HTML
+/// Emits HTML comment markers around dynamic bindings so that FAST
 /// can re-hydrate server-rendered content on the client side.
 ///
 /// The root scope is disabled (no markers) — hydration only activates in
@@ -49,8 +45,6 @@ pub struct FastHydrationPlugin {
     /// Stack of local binding counters (one per scope).
     /// The bottom of the stack is the root scope (disabled).
     scopes: Vec<usize>,
-    /// Stack of binding indices for matching start/end pairs.
-    binding_stack: Vec<usize>,
     /// Reusable buffer for formatting markers without allocation.
     buffer: String,
 }
@@ -63,7 +57,6 @@ impl FastHydrationPlugin {
         Self {
             // Root scope (index 0) is disabled — only scopes.len() > 1 are active
             scopes: vec![0],
-            binding_stack: Vec::with_capacity(8),
             buffer: String::with_capacity(64),
         }
     }
@@ -95,34 +88,12 @@ impl FastHydrationPlugin {
         }
     }
 
-    /// Build a binding comment into the reusable buffer.
-    fn build_binding_comment(&mut self, prefix: &str, index: usize, name: &str) {
-        self.buffer.clear();
-        self.buffer.push_str(prefix);
-        let _ = write!(self.buffer, "{}", index);
-        self.buffer.push_str(SEPARATOR);
-        self.buffer.push_str(name);
-        self.buffer.push_str(BINDING_SUFFIX);
-    }
-
-    /// Build a repeat comment into the reusable buffer.
-    fn build_repeat_comment(&mut self, prefix: &str, index: usize) {
-        self.buffer.clear();
-        self.buffer.push_str(prefix);
-        let _ = write!(self.buffer, "{}", index);
-        self.buffer.push_str(REPEAT_SUFFIX);
-    }
-
     /// Build an attribute binding marker into the reusable buffer.
-    fn build_attribute_marker(&mut self, binding_index: usize, count: u32) {
+    fn build_attribute_marker(&mut self, count: u32) {
         self.buffer.clear();
-        if count == 1 {
-            self.buffer.push_str(ATTR_SINGLE_PREFIX);
-            let _ = write!(self.buffer, "{}", binding_index);
-        } else {
-            self.buffer.push_str(ATTR_MULTI_PREFIX);
-            let _ = write!(self.buffer, "{}-{}", binding_index, count);
-        }
+        self.buffer.push_str(ATTR_PREFIX);
+        let _ = write!(self.buffer, "{}", count);
+        self.buffer.push_str(ATTR_SUFFIX);
     }
 }
 
@@ -141,43 +112,37 @@ impl HandlerPlugin for FastHydrationPlugin {
         self.scopes.pop();
     }
 
-    fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+    fn on_binding_start(&mut self, _name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
         if !self.is_active() {
             return Ok(());
         }
-        let index = self.next_index();
-        self.binding_stack.push(index);
-        self.build_binding_comment(BINDING_START_PREFIX, index, name);
-        writer.write(&self.buffer)
+        let _ = self.next_index();
+        writer.write(BINDING_START_MARKER)
     }
 
-    fn on_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+    fn on_binding_end(&mut self, _name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
         if !self.is_active() {
             return Ok(());
         }
-        let index = self.binding_stack.pop().unwrap_or(0);
-        self.build_binding_comment(BINDING_END_PREFIX, index, name);
-        writer.write(&self.buffer)
+        writer.write(BINDING_END_MARKER)
     }
 
     fn on_repeat_item_start(
         &mut self,
-        index: usize,
+        _index: usize,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
         if !self.is_active() {
             return Ok(());
         }
-        self.build_repeat_comment(REPEAT_START_PREFIX, index);
-        writer.write(&self.buffer)
+        writer.write(REPEAT_START_MARKER)
     }
 
-    fn on_repeat_item_end(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()> {
+    fn on_repeat_item_end(&mut self, _index: usize, writer: &mut dyn ResponseWriter) -> Result<()> {
         if !self.is_active() {
             return Ok(());
         }
-        self.build_repeat_comment(REPEAT_END_PREFIX, index);
-        writer.write(&self.buffer)
+        writer.write(REPEAT_END_MARKER)
     }
 
     fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()> {
@@ -190,15 +155,15 @@ impl HandlerPlugin for FastHydrationPlugin {
             ))
         })?;
         if decoded.binding_count > 0 {
-            let binding_index = self.next_index_n(decoded.binding_count);
-            self.build_attribute_marker(binding_index, decoded.binding_count);
+            let _ = self.next_index_n(decoded.binding_count);
+            self.build_attribute_marker(decoded.binding_count);
             writer.write(&self.buffer)?;
         }
         Ok(())
     }
 
     /// FAST emits scalar attributes + `data-state` JSON on route component elements.
-    /// Components read these via `@attr` and `prepare()`.
+    /// Components read these via `@attr` and their connection lifecycle.
     fn write_route_component_state(
         &self,
         state: &Value,
@@ -285,7 +250,7 @@ mod tests {
         plugin.push_scope();
         let mut writer = TestWriter::new();
         plugin.on_binding_start("userName", &mut writer).unwrap();
-        assert_eq!(writer.output, "<!--fe-b$$start$$0$$userName$$fe-b-->");
+        assert_eq!(writer.output, "<!--fe:b-->");
     }
 
     #[test]
@@ -296,11 +261,11 @@ mod tests {
         plugin.on_binding_start("userName", &mut writer).unwrap();
         writer.output.clear();
         plugin.on_binding_end("userName", &mut writer).unwrap();
-        assert_eq!(writer.output, "<!--fe-b$$end$$0$$userName$$fe-b-->");
+        assert_eq!(writer.output, "<!--fe:/b-->");
     }
 
     #[test]
-    fn test_binding_index_increments() {
+    fn test_binding_sequence_uses_compact_markers() {
         let mut plugin = FastHydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
@@ -308,29 +273,29 @@ mod tests {
         plugin.on_binding_end("a", &mut writer).unwrap();
         writer.output.clear();
         plugin.on_binding_start("b", &mut writer).unwrap();
-        assert_eq!(writer.output, "<!--fe-b$$start$$1$$b$$fe-b-->");
+        assert_eq!(writer.output, "<!--fe:b-->");
     }
 
     #[test]
-    fn test_scope_resets_counter() {
+    fn test_scopes_emit_compact_markers() {
         let mut plugin = FastHydrationPlugin::new();
         let mut writer = TestWriter::new();
         // Push first active scope (root is disabled)
         plugin.push_scope();
-        // Active scope: index 0
+        // Active scope emits compact markers.
         plugin.on_binding_start("a", &mut writer).unwrap();
         plugin.on_binding_end("a", &mut writer).unwrap();
-        // Push child scope: counter resets to 0
+        // Push child scope: markers are still emitted.
         plugin.push_scope();
         writer.output.clear();
         plugin.on_binding_start("b", &mut writer).unwrap();
-        assert_eq!(writer.output, "<!--fe-b$$start$$0$$b$$fe-b-->");
+        assert_eq!(writer.output, "<!--fe:b-->");
         plugin.on_binding_end("b", &mut writer).unwrap();
-        // Pop child scope: back to parent (counter was at 1)
+        // Pop child scope: parent remains active.
         plugin.pop_scope();
         writer.output.clear();
         plugin.on_binding_start("c", &mut writer).unwrap();
-        assert_eq!(writer.output, "<!--fe-b$$start$$1$$c$$fe-b-->");
+        assert_eq!(writer.output, "<!--fe:b-->");
     }
 
     #[test]
@@ -339,10 +304,10 @@ mod tests {
         plugin.push_scope();
         let mut writer = TestWriter::new();
         plugin.on_repeat_item_start(0, &mut writer).unwrap();
-        assert_eq!(writer.output, "<!--fe-repeat$$start$$0$$fe-repeat-->");
+        assert_eq!(writer.output, "<!--fe:r-->");
         writer.output.clear();
         plugin.on_repeat_item_end(0, &mut writer).unwrap();
-        assert_eq!(writer.output, "<!--fe-repeat$$end$$0$$fe-repeat-->");
+        assert_eq!(writer.output, "<!--fe:/r-->");
     }
 
     #[test]
@@ -352,7 +317,7 @@ mod tests {
         let mut writer = TestWriter::new();
         let data = 1u32.to_le_bytes();
         plugin.on_element_data(&data, &mut writer).unwrap();
-        assert_eq!(writer.output, " data-fe-b-0");
+        assert_eq!(writer.output, r#" data-fe="1""#);
     }
 
     #[test]
@@ -362,7 +327,7 @@ mod tests {
         let mut writer = TestWriter::new();
         let data = 3u32.to_le_bytes();
         plugin.on_element_data(&data, &mut writer).unwrap();
-        assert_eq!(writer.output, " data-fe-c-0-3");
+        assert_eq!(writer.output, r#" data-fe="3""#);
     }
 
     #[test]
@@ -376,47 +341,48 @@ mod tests {
     }
 
     #[test]
-    fn test_attribute_binding_advances_counter() {
+    fn test_attribute_binding_count_allows_following_binding() {
         let mut plugin = FastHydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        // 3 attributes → counter goes from 0 to 3
         let data = 3u32.to_le_bytes();
         plugin.on_element_data(&data, &mut writer).unwrap();
-        // Next binding should be at index 3
+        assert_eq!(writer.output, r#" data-fe="3""#);
+
+        // Next binding still emits the compact sequential marker.
         writer.output.clear();
         plugin.on_binding_start("x", &mut writer).unwrap();
-        assert_eq!(writer.output, "<!--fe-b$$start$$3$$x$$fe-b-->");
+        assert_eq!(writer.output, "<!--fe:b-->");
     }
 
     #[test]
-    fn test_nested_scopes_independent_counters() {
+    fn test_nested_scopes_emit_compact_markers() {
         let mut plugin = FastHydrationPlugin::new();
         let mut writer = TestWriter::new();
         // Push first active scope (root is disabled)
         plugin.push_scope();
-        // Active scope: binding 0
+        // Active scope emits binding markers.
         plugin.on_binding_start("root", &mut writer).unwrap();
         plugin.on_binding_end("root", &mut writer).unwrap();
         // Component scope
         plugin.push_scope();
-        // For-loop binding in component: index 0 (new scope)
+        // For-loop binding in component emits compact markers.
         writer.output.clear();
         plugin.on_binding_start("for-1", &mut writer).unwrap();
-        assert!(writer.output.contains("start$$0$$for-1"));
+        assert_eq!(writer.output, "<!--fe:b-->");
         // For-loop item scope
         plugin.push_scope();
         writer.output.clear();
         plugin.on_binding_start("signal", &mut writer).unwrap();
-        assert!(writer.output.contains("start$$0$$signal"));
+        assert_eq!(writer.output, "<!--fe:b-->");
         plugin.on_binding_end("signal", &mut writer).unwrap();
         plugin.pop_scope();
         plugin.on_binding_end("for-1", &mut writer).unwrap();
         plugin.pop_scope();
-        // Back to first active scope: counter should be at 1
+        // Back to first active scope: compact markers are still emitted.
         writer.output.clear();
         plugin.on_binding_start("root2", &mut writer).unwrap();
-        assert!(writer.output.contains("start$$1$$root2"));
+        assert_eq!(writer.output, "<!--fe:b-->");
     }
 
     #[test]
@@ -530,7 +496,7 @@ mod tests {
         let state = test_json!({"name": "Alice"});
         let output = render_no_plugin(&protocol, &state);
         assert_eq!(output, "<p>Alice</p>");
-        assert!(!output.contains("fe-b"));
+        assert!(!output.contains("<!--fe:"));
     }
 
     #[test]
@@ -572,11 +538,10 @@ mod tests {
         let state = test_json!({"items": ["a", "b"]});
         let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         // Root scope disabled — no for-loop binding or repeat item markers
-        assert!(!output.contains("$$for-1$$"));
-        assert!(!output.contains("fe-repeat"));
+        assert!(!output.contains("<!--fe:r-->"));
+        assert!(!output.contains("<!--fe:/r-->"));
         // Signal bindings inside each item ARE emitted (for-loop items push scope)
-        let item_pattern = "<!--fe-b$$start$$0$$item$$fe-b-->";
-        assert_eq!(output.matches(item_pattern).count(), 2);
+        assert_eq!(output, "<!--fe:b-->a<!--fe:/b--><!--fe:b-->b<!--fe:/b-->");
     }
 
     #[test]
@@ -603,13 +568,13 @@ mod tests {
         let state = test_json!({"show": true});
         let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         assert!(output.contains("<p>Visible</p>"));
-        assert!(!output.contains("fe-b"));
+        assert!(!output.contains("<!--fe:"));
 
         // False case — no content, no markers
         let state = test_json!({"show": false});
         let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         assert!(!output.contains("<p>Visible</p>"));
-        assert!(!output.contains("fe-b"));
+        assert!(!output.contains("<!--fe:"));
     }
 
     #[test]
@@ -634,12 +599,7 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"before": "B", "inner": "I", "after": "A"});
         let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
-        // Root scope disabled — no markers for root-level signals
-        assert!(!output.contains("$$before$$"));
-        assert!(!output.contains("$$after$$"));
-        // Inner signal in component scope gets markers (index 0)
-        assert!(output.contains("<!--fe-b$$start$$0$$inner$$fe-b-->"));
-        assert!(output.contains("<!--fe-b$$end$$0$$inner$$fe-b-->"));
+        assert_eq!(output, "B<!--fe:b-->I<!--fe:/b-->A");
     }
 
     #[test]
@@ -661,7 +621,7 @@ mod tests {
         let state = test_json!({"itemId": "42", "itemTitle": "Hello"});
         let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         // Root scope disabled — no plugin data markers
-        assert!(!output.contains("data-fe-c"));
+        assert!(!output.contains("data-fe="));
         assert!(output.contains("id=\"42\""));
         assert!(output.contains("title=\"Hello\""));
     }
@@ -717,7 +677,7 @@ mod tests {
 
         // Hydration markers should exist in the output (around component content)
         assert!(
-            output.contains("<!--fe-b"),
+            output.contains("<!--fe:b-->"),
             "Expected hydration markers in output"
         );
 
@@ -734,7 +694,7 @@ mod tests {
             + 7;
         let title_value = &output[title_start..title_start + title_end + 1];
         assert!(
-            !title_value.contains("fe-b"),
+            !title_value.contains("fe:"),
             "Hydration markers leaked into attribute value: {title_value}"
         );
     }
@@ -852,53 +812,53 @@ mod tests {
 
         let expected = "\
             <div>\
-            <!--fe-b$$start$$0$$title$$fe-b-->My Store<!--fe-b$$end$$0$$title$$fe-b-->\
-            <!--fe-b$$start$$1$$categoryTemplate$$fe-b-->\
-            <!--fe-repeat$$start$$0$$fe-repeat-->\
-            <section data-category=\"electronics\" data-fe-b-0>\
-            <!--fe-b$$start$$1$$category.title$$fe-b-->Electronics<!--fe-b$$end$$1$$category.title$$fe-b-->\
-            <!--fe-b$$start$$2$$itemsTemplate$$fe-b-->\
+            <!--fe:b-->My Store<!--fe:/b-->\
+            <!--fe:b-->\
+            <!--fe:r-->\
+            <section data-category=\"electronics\" data-fe=\"1\">\
+            <!--fe:b-->Electronics<!--fe:/b-->\
+            <!--fe:b-->\
             <ul>\
-            <!--fe-b$$start$$0$$itemTemplate$$fe-b-->\
-            <!--fe-repeat$$start$$0$$fe-repeat-->\
-            <li id=\"item-1\" data-name=\"Laptop\" data-fe-c-0-2>\
-            <!--fe-b$$start$$2$$item.name$$fe-b-->Laptop<!--fe-b$$end$$2$$item.name$$fe-b-->\
-            <!--fe-b$$start$$3$$specialTemplate$$fe-b--> \
-            (<!--fe-b$$start$$0$$item.specialText$$fe-b-->On Sale<!--fe-b$$end$$0$$item.specialText$$fe-b-->)\
-            <!--fe-b$$end$$3$$specialTemplate$$fe-b-->\
+            <!--fe:b-->\
+            <!--fe:r-->\
+            <li id=\"item-1\" data-name=\"Laptop\" data-fe=\"2\">\
+            <!--fe:b-->Laptop<!--fe:/b-->\
+            <!--fe:b--> \
+            (<!--fe:b-->On Sale<!--fe:/b-->)\
+            <!--fe:/b-->\
             </li>\
-            <!--fe-repeat$$end$$0$$fe-repeat-->\
-            <!--fe-repeat$$start$$1$$fe-repeat-->\
-            <li id=\"item-2\" data-name=\"Phone\" data-fe-c-0-2>\
-            <!--fe-b$$start$$2$$item.name$$fe-b-->Phone<!--fe-b$$end$$2$$item.name$$fe-b-->\
-            <!--fe-b$$start$$3$$specialTemplate$$fe-b-->\
-            <!--fe-b$$end$$3$$specialTemplate$$fe-b-->\
+            <!--fe:/r-->\
+            <!--fe:r-->\
+            <li id=\"item-2\" data-name=\"Phone\" data-fe=\"2\">\
+            <!--fe:b-->Phone<!--fe:/b-->\
+            <!--fe:b-->\
+            <!--fe:/b-->\
             </li>\
-            <!--fe-repeat$$end$$1$$fe-repeat-->\
-            <!--fe-b$$end$$0$$itemTemplate$$fe-b-->\
+            <!--fe:/r-->\
+            <!--fe:/b-->\
             </ul>\
-            <!--fe-b$$end$$2$$itemsTemplate$$fe-b-->\
+            <!--fe:/b-->\
             </section>\
-            <!--fe-repeat$$end$$0$$fe-repeat-->\
-            <!--fe-repeat$$start$$1$$fe-repeat-->\
-            <section data-category=\"books\" data-fe-b-0>\
-            <!--fe-b$$start$$1$$category.title$$fe-b-->Books<!--fe-b$$end$$1$$category.title$$fe-b-->\
-            <!--fe-b$$start$$2$$itemsTemplate$$fe-b-->\
-            <!--fe-b$$end$$2$$itemsTemplate$$fe-b-->\
+            <!--fe:/r-->\
+            <!--fe:r-->\
+            <section data-category=\"books\" data-fe=\"1\">\
+            <!--fe:b-->Books<!--fe:/b-->\
+            <!--fe:b-->\
+            <!--fe:/b-->\
             </section>\
-            <!--fe-repeat$$end$$1$$fe-repeat-->\
-            <!--fe-repeat$$start$$2$$fe-repeat-->\
-            <section data-category=\"toys\" data-fe-b-0>\
-            <!--fe-b$$start$$1$$category.title$$fe-b-->Toys<!--fe-b$$end$$1$$category.title$$fe-b-->\
-            <!--fe-b$$start$$2$$itemsTemplate$$fe-b-->\
+            <!--fe:/r-->\
+            <!--fe:r-->\
+            <section data-category=\"toys\" data-fe=\"1\">\
+            <!--fe:b-->Toys<!--fe:/b-->\
+            <!--fe:b-->\
             <ul>\
-            <!--fe-b$$start$$0$$itemTemplate$$fe-b-->\
-            <!--fe-b$$end$$0$$itemTemplate$$fe-b-->\
+            <!--fe:b-->\
+            <!--fe:/b-->\
             </ul>\
-            <!--fe-b$$end$$2$$itemsTemplate$$fe-b-->\
+            <!--fe:/b-->\
             </section>\
-            <!--fe-repeat$$end$$2$$fe-repeat-->\
-            <!--fe-b$$end$$1$$categoryTemplate$$fe-b-->\
+            <!--fe:/r-->\
+            <!--fe:/b-->\
             </div>";
 
         assert_eq!(output, expected);
@@ -928,17 +888,15 @@ mod tests {
         let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         // Hydration comments must be emitted even when signal is not found in state
         assert!(
-            output.contains("<!--fe-b$$start$$0$$missing_field$$fe-b-->"),
+            output.contains("<!--fe:b-->"),
             "Expected binding start marker for missing signal, got: {output}"
         );
         assert!(
-            output.contains("<!--fe-b$$end$$0$$missing_field$$fe-b-->"),
+            output.contains("<!--fe:/b-->"),
             "Expected binding end marker for missing signal, got: {output}"
         );
         // Start and end markers should be adjacent (no content between them)
-        assert!(output.contains(
-            "<!--fe-b$$start$$0$$missing_field$$fe-b--><!--fe-b$$end$$0$$missing_field$$fe-b-->"
-        ));
+        assert!(output.contains("<!--fe:b--><!--fe:/b-->"));
     }
 
     #[test]
@@ -971,11 +929,11 @@ mod tests {
         let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         // Hydration comments must be emitted even when collection is missing from state
         assert!(
-            output.contains("<!--fe-b$$start$$0$$loop-body$$fe-b-->"),
+            output.contains("<!--fe:b-->"),
             "Expected binding start marker for missing collection, got: {output}"
         );
         assert!(
-            output.contains("<!--fe-b$$end$$0$$loop-body$$fe-b-->"),
+            output.contains("<!--fe:/b-->"),
             "Expected binding end marker for missing collection, got: {output}"
         );
     }
@@ -1003,14 +961,14 @@ mod tests {
         let state = test_json!({"name": ""});
         let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         assert!(
-            output.contains("<!--fe-b$$start$$0$$name$$fe-b-->"),
+            output.contains("<!--fe:b-->"),
             "Expected binding start marker for empty string signal, got: {output}"
         );
         assert!(
-            output.contains("<!--fe-b$$end$$0$$name$$fe-b-->"),
+            output.contains("<!--fe:/b-->"),
             "Expected binding end marker for empty string signal, got: {output}"
         );
-        assert!(output.contains("<!--fe-b$$start$$0$$name$$fe-b--><!--fe-b$$end$$0$$name$$fe-b-->"));
+        assert!(output.contains("<!--fe:b--><!--fe:/b-->"));
     }
 
     #[test]
@@ -1042,11 +1000,11 @@ mod tests {
         let state = test_json!({"items": []});
         let output = render_with_plugin(&protocol, &state, || Box::new(FastHydrationPlugin::new()));
         assert!(
-            output.contains("<!--fe-b$$start$$0$$loop-body$$fe-b-->"),
+            output.contains("<!--fe:b-->"),
             "Expected binding start marker for empty collection, got: {output}"
         );
         assert!(
-            output.contains("<!--fe-b$$end$$0$$loop-body$$fe-b-->"),
+            output.contains("<!--fe:/b-->"),
             "Expected binding end marker for empty collection, got: {output}"
         );
     }

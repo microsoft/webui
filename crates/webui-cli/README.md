@@ -26,7 +26,7 @@ webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>]
 | `--out` | *(required)* | Output directory for protocol.bin + CSS |
 | `--entry` | `index.html` | Entry HTML file |
 | `--css` | `link` | CSS mode: `link` (external files) or `style` (inline) |
-| `--plugin` | *(none)* | Framework plugin: `webui` for WebUI Framework compiled templates and hydration markers or `fast` for FAST-HTML hydration |
+| `--plugin` | *(none)* | Framework plugin: `webui` for WebUI Framework compiled templates and hydration markers or `fast` for FAST hydration |
 
 ```bash
 webui build ./src --out ./dist
@@ -48,7 +48,7 @@ webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-por
 | `--servedir` | *(none)* | Static assets directory served at `/*` |
 | `--port` | `3000` | Server port |
 | `--api-port` | *(none)* | Proxy API requests to this port |
-| `--plugin` | *(none)* | Framework plugin: `webui` for WebUI Framework compiled templates and hydration markers or `fast` for FAST-HTML hydration |
+| `--plugin` | *(none)* | Framework plugin: `webui` for WebUI Framework compiled templates and hydration markers or `fast` for FAST hydration |
 | `--watch` | off | Enable file watching + HMR |
 
 ```bash

@@ -16,7 +16,7 @@ Build time (Parser Plugin)         Runtime (Handler Plugin)
 └──────────────────────────┘       └──────────────────────────┘
 ```
 
-Parser plugins emit opaque binary data into `Plugin` protocol fragments. Handler plugins receive that data at render time via `on_plugin_data`. WebUI never interprets this data - each plugin pair defines its own contract.
+Parser plugins emit opaque binary data into `Plugin` protocol fragments. Handler plugins receive that data at render time via `on_element_data`. WebUI never interprets this data - each plugin pair defines its own contract.
 
 ## Using Plugins via the CLI
 
@@ -70,9 +70,9 @@ char *html = webui_handler_render(handler, protocol_data, protocol_len, state_js
 </webui-tab-panel>
 </webui-tabs>
 
-## Built-in Plugin: FAST-HTML
+## Built-in Plugin: FAST 3
 
-The `fast` plugin provides server-side rendering support for [FAST-HTML](https://github.com/nicholasgasior/fast-html) components with client-side hydration.
+The `fast` plugin provides server-side rendering support for FAST 3 components using `@microsoft/fast-element` with client-side hydration.
 
 ### Parser Side (`FastParserPlugin`)
 
@@ -82,6 +82,7 @@ During `webui build --plugin=fast`, the parser plugin:
 - **Counts dynamic bindings**: Emits binding counts per element as `Plugin` fragments for the handler
 - **Tracks components**: Records all custom elements discovered during parsing
 - **Injects `<f-template>` wrappers**: At `</body>`, injects template wrappers for each component with FAST syntax conversion
+- **Uses FAST 3 runtime APIs**: Client code enables hydration with `enableHydration()` from `@microsoft/fast-element/hydration.js` and registers declarative templates with `declarativeTemplate()`, `attributeMap()`, `observerMap()`, and `define()`
 
 #### Syntax Conversion
 
@@ -95,21 +96,20 @@ The plugin converts WebUI template syntax to FAST equivalents inside `<f-templat
 
 ### Handler Side (`FastHydrationPlugin`)
 
-During rendering with `--plugin=fast`, the handler plugin injects HTML comment markers that FAST-HTML's client-side runtime uses to locate and re-hydrate dynamic content:
+During rendering with `--plugin=fast`, the handler plugin injects HTML comment markers that FAST 3 client-side hydration uses to locate and re-hydrate dynamic content:
 
 | Context | Start Marker | End Marker |
 |---------|-------------|------------|
-| Signal / If / For | `<!--fe-b$$start$$INDEX$$NAME$$fe-b-->` | `<!--fe-b$$end$$INDEX$$NAME$$fe-b-->` |
-| For-loop item | `<!--fe-repeat$$start$$INDEX$$fe-repeat-->` | `<!--fe-repeat$$end$$INDEX$$fe-repeat-->` |
+| Signal / If / For | `<!--fe:b-->` | `<!--fe:/b-->` |
+| For-loop item | `<!--fe:r-->` | `<!--fe:/r-->` |
 
 For attribute bindings, data attributes are emitted instead:
 
 | Type | Attribute |
 |------|-----------|
-| Single binding | `data-fe-b-INDEX` |
-| Multiple bindings | `data-fe-c-INDEX-COUNT` |
+| Dynamic bindings | `data-fe="COUNT"` |
 
-The plugin maintains per-scope binding counters that reset when entering components or loop items.
+`COUNT` is the number of dynamic element bindings. The plugin maintains per-scope binding counters that reset when entering components or loop items.
 
 ## Built-in Plugin: WebUI Framework
 
@@ -160,18 +160,28 @@ To create a custom plugin, implement the `ParserPlugin` and/or `HandlerPlugin` t
 
 ```rust
 pub trait ParserPlugin {
-    /// Called when a custom element is encountered.
-    fn on_parse_component(&mut self, tag_name: &str, component: &Component) -> Result<()>;
+    /// Called before parsing begins for a fragment.
+    fn start_fragment(&mut self, fragment_id: &str) {}
 
-    /// Return `true` to skip an attribute (it won't appear in the protocol).
-    fn should_skip_attribute(&self, attr_name: &str) -> bool;
+    /// Called when a component template has been fully processed.
+    fn register_component_template(
+        &mut self,
+        tag_name: &str,
+        component: &Component,
+        processed_template: &str,
+    ) -> Result<()>;
 
-    /// Called before the body_end signal. Return HTML to inject as a raw fragment.
-    fn on_body_end(&mut self) -> Option<String>;
+    /// Decide how a framework-owned attribute should be handled.
+    fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
 
     /// Called after all attributes on an element are processed.
     /// Return opaque bytes to emit as a Plugin protocol fragment.
-    fn on_element_parsed(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
+    fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
+
+    /// Consume the plugin and return captured build artifacts.
+    fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts {
+        ParserPluginArtifacts::None
+    }
 }
 ```
 
@@ -184,16 +194,29 @@ pub trait HandlerPlugin {
     /// Leave the current scope.
     fn pop_scope(&mut self);
 
-    /// Called before/after a dynamic binding (signal, for, if).
+    /// Called before/after a signal binding.
     fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+
+    /// Called before/after for-loop and if-condition blocks.
+    fn on_for_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_for_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_if_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_if_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
 
     /// Called before/after each item in a for-loop.
     fn on_repeat_item_start(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_end(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
 
     /// Process opaque data from a Plugin protocol fragment.
-    fn on_plugin_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
+
+    /// Write framework-specific route component state attributes.
+    fn write_route_component_state(
+        &self,
+        state: &serde_json::Value,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()>;
 }
 ```
 

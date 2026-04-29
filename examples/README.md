@@ -13,8 +13,8 @@ Current entries:
 |---------|-------------|
 | `app/hello-world` | Basic WebUI app with signals, for-loops, if-conditions |
 | `app/calculator` | Basic WebUI app with calculator that has custom views and events |
-| `app/todo-fast` | FAST-HTML hydration app with components, `@event` bindings, `f-ref`, and `<f-template>` injection |
-| `app/commerce` | FAST-HTML hydration app with a rust backend for commerce demo app, dozens of controls. | 
+| `app/todo-fast` | FAST 3 hydration app with components, `@event` bindings, `f-ref`, and `<f-template>` injection |
+| `app/commerce` | WebUI Framework hydration app with a Rust backend for commerce demo app, dozens of controls. |
 | `app/routes` | Nested declaritive routing demo showing 4 level deep routes full server side and client handoff. |
 | `integration/node` | Node.js integration via native addon (supports `--plugin=webui` and `--plugin=fast`) |
 | `integration/rust` | Rust integration via `webui-handler` (supports `--plugin=webui` and `--plugin=fast`) |
@@ -32,18 +32,18 @@ cd examples/integration/rust
 cargo run -- ../../app/hello-world/dist/protocol.bin ../../app/hello-world/data/state.json
 ```
 
-### todo-fast (FAST-HTML hydration)
+### todo-fast (FAST 3 hydration)
 
 ```bash
-# Install JS dependencies (esbuild, @microsoft/fast-element, @microsoft/fast-html)
+# Install JS dependencies (esbuild, @microsoft/fast-element)
 pnpm install
 
 # Build the protocol with FAST parser plugin (emits hydration data + <f-template> wrappers)
-cargo run -p microsoft-webui-cli -- build examples/app/todo-fast/templates --out examples/app/todo-fast/dist --plugin=fast
+cargo run -p microsoft-webui-cli -- build examples/app/todo-fast/src --out examples/app/todo-fast/dist --plugin=fast
 
 # Bundle the client-side entry point with esbuild
 cd examples/app/todo-fast
-pnpm build:client
+pnpm build
 
 # Render with FAST hydration markers (Rust integration)
 cd ../../integration/rust
@@ -51,7 +51,7 @@ cargo run -- ../../app/todo-fast/dist/protocol.bin ../../app/todo-fast/data/stat
 
 # Or use the dev server with live rendering
 cd ../../app/todo-fast
-cargo run -p microsoft-webui-cli -- start ./templates --state ./data/state.json --plugin=fast --servedir ./dist --port 3001
+cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=fast --servedir ./dist --port 3001
 ```
 
 ### Using `--plugin=fast`
@@ -64,12 +64,12 @@ The `--plugin=fast` flag enables two things:
    - Tracks components and injects `<f-template name="...">` wrappers at `</body>` with FAST syntax conversion (`<if>`→`<f-when>`, `<for>`→`<f-repeat>`)
 
 2. **Handler plugin (`FastHydrationPlugin`)** — During rendering:
-   - Wraps signals, for-loops, and if-conditions in `<!--fe-b$$...-->` comment markers
-   - Wraps for-loop items in `<!--fe-repeat$$...-->` comment markers
-   - Emits `data-fe-b-*` / `data-fe-c-*` attributes for element bindings
+   - Wraps signals, for-loops, and if-conditions in `<!--fe:b-->` / `<!--fe:/b-->` comment markers
+   - Wraps for-loop items in `<!--fe:r-->` / `<!--fe:/r-->` comment markers
+   - Emits `data-fe="COUNT"` attributes for element bindings
    - Manages per-component/per-item scope counters for binding indices
 
-These markers enable FAST-HTML's client-side hydration to efficiently locate and re-attach to server-rendered dynamic content.
+These markers enable FAST 3 client-side hydration to efficiently locate and re-attach to server-rendered dynamic content. The FAST examples use `enableHydration()` and declarative templates from `@microsoft/fast-element` as their FAST runtime dependency.
 
 ## More Details
 

@@ -2,32 +2,27 @@
 // Licensed under the MIT license.
 
 /**
- * Todo-fast entry point — bootstraps FAST-HTML hydration.
+ * Todo-fast entry point — bootstraps FAST hydration.
  *
  * The server pre-renders HTML with hydration markers via `webui build --plugin=fast`.
  * This script:
- *   1. Registers custom elements (todo-app, todo-item) via defineAsync
- *   2. Configures FAST-HTML observation maps for reactive attribute tracking
- *   3. Defines <f-template>, triggering hydration of pre-rendered shadow DOM
+ *   1. Enables FAST hydration for pre-rendered shadow DOM
+ *   2. Registers custom elements (todo-app, todo-item) with declarative templates
  */
 
 performance.mark('todo-hydration-started');
 
-import { TemplateElement } from '@microsoft/fast-html';
+import { enableHydration } from '@microsoft/fast-element/hydration.js';
 
-// Side-effect imports — register custom elements via defineAsync
-import './todo-app/todo-app.js';
-import './todo-item/todo-item.js';
-
-// Configure and start hydration
-TemplateElement.options({
-  'todo-app': { observerMap: 'all' },
-  'todo-item': { observerMap: 'all' },
-}).config({
+enableHydration({
   hydrationComplete() {
     performance.measure('todo-hydration-completed', 'todo-hydration-started');
     console.log('Hydration complete!');
   },
-}).define({
-  name: 'f-template',
 });
+
+// Register custom elements after hydration is enabled.
+void Promise.all([
+  import('./todo-app/todo-app.js'),
+  import('./todo-item/todo-item.js'),
+]);

@@ -9,7 +9,7 @@ End-to-end performance benchmark for the WebUI framework, using the
 |---|---|
 | **`contact_book_protocol_parse`** | Deserializes the compiled protocol binary (`WebUIProtocol::from_protobuf`) — measures the cost of loading a protocol at startup. |
 | **`contact_book_render`** | Renders the full contact-book dashboard (protocol + state → HTML) without any hydration plugin, at 10 / 100 / 1,000 contacts. |
-| **`contact_book_render_fast_plugin`** | Same rendering with the `FastHydrationPlugin` enabled, which injects FAST-HTML hydration markers. |
+| **`contact_book_render_fast_plugin`** | Same rendering with the `FastHydrationPlugin` enabled, which injects FAST hydration markers. |
 
 ### Why it stays up to date
 

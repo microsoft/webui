@@ -9,7 +9,7 @@ A full-featured commerce demo built with WebUI — server-side rendered with cli
 
 - **Nested routing** with `<route>` and `<outlet />`
 - **Client-side navigation** via `@microsoft/webui-router`
-- **SSR + hydration** with FAST-HTML
+- **SSR + hydration** with WebUI Framework
 - **View transitions** for smooth page changes
 - **Category filtering** and **sort options**
 - **Product gallery** with thumbnail navigation

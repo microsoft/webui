@@ -44,7 +44,7 @@ build_to_disk(
         entry: "index.html".into(),
         css: CssStrategy::Link,        // or CssStrategy::Style for inline
         dom: DomStrategy::Shadow,      // or DomStrategy::Light for light DOM
-        plugin: Some("fast".into()),    // FAST-HTML hydration plugin
+        plugin: Some("fast".into()),    // FAST hydration plugin
         components: vec![],             // additional component sources
     },
     Path::new("dist"),
@@ -63,7 +63,7 @@ let handler = WebUIHandler::new();
 handler.handle(&protocol, &state, &RenderOptions::new("index.html", "/"), &mut writer)?;
 ```
 
-With the FAST-HTML hydration plugin:
+With the FAST hydration plugin:
 
 ```rust
 use webui::{WebUIHandler, HandlerPlugin};

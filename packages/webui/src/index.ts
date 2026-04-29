@@ -19,7 +19,7 @@ export interface BuildOptions {
   entry?: string;
   /** CSS delivery strategy: "link" (default), "style", or "module". */
   css?: "link" | "style" | "module";
-  /** Parser plugin (e.g., "fast" for FAST-HTML hydration). */
+  /** Parser plugin (e.g., "fast" for FAST hydration). */
   plugin?: string;
   /** Additional component sources (npm packages or local paths). */
   components?: string[];
@@ -59,7 +59,7 @@ export interface RenderOptions {
   entry?: string;
   /** URL path to match routes against (default: "/"). */
   requestPath?: string;
-  /** Parser plugin name (e.g., "fast" for FAST-HTML hydration). */
+  /** Parser plugin name (e.g., "fast" for FAST hydration). */
   plugin?: string;
 }
 

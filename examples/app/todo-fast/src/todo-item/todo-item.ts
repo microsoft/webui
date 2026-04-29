@@ -2,9 +2,11 @@
 // Licensed under the MIT license.
 
 import { FASTElement, attr } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+import { attributeMap } from '@microsoft/fast-element/attribute-map.js';
+import { declarativeTemplate } from '@microsoft/fast-element/declarative.js';
+import { observerMap } from '@microsoft/fast-element/observer-map.js';
 
-export class TodoItem extends RenderableFASTElement(FASTElement) {
+export class TodoItem extends FASTElement {
   @attr id = '';
   @attr title = '';
   @attr state = '';
@@ -22,7 +24,7 @@ export class TodoItem extends RenderableFASTElement(FASTElement) {
   }
 }
 
-TodoItem.defineAsync({
+void TodoItem.define({
   name: 'todo-item',
-  templateOptions: 'defer-and-hydrate',
-});
+  template: declarativeTemplate(),
+}, [attributeMap(), observerMap()]);

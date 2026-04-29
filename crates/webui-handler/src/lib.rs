@@ -1141,8 +1141,8 @@ impl WebUIHandler {
             } else {
                 // Dynamic attribute — resolve and render
                 let value = self.resolve_value(&attr.value, context);
-                // Always emit the attribute so FAST hydration binding
-                // markers (data-fe-b-N) match the DOM node structure.
+                // Always emit the attribute so FAST hydration markers
+                // (`data-fe`) match the DOM node structure.
                 match &value {
                     Some(Value::String(s)) => {
                         write_attr(
