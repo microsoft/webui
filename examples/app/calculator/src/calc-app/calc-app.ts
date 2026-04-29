@@ -2,7 +2,6 @@
 // Licensed under the MIT license.
 
 import { FASTElement, attr, observable } from '@microsoft/fast-element';
-import { attributeMap } from '@microsoft/fast-element/attribute-map.js';
 import { declarativeTemplate } from '@microsoft/fast-element/declarative.js';
 import { observerMap } from '@microsoft/fast-element/observer-map.js';
 import type { CalcState, ButtonDef } from '../modes/engine.js';
@@ -148,4 +147,4 @@ export class CalcApp extends FASTElement {
 void CalcApp.define({
   name: 'calc-app',
   template: declarativeTemplate(),
-}, [attributeMap(), observerMap()]);
+}, [observerMap()]);

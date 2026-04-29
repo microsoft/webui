@@ -82,7 +82,7 @@ During `webui build --plugin=fast`, the parser plugin:
 - **Counts dynamic bindings**: Emits binding counts per element as `Plugin` fragments for the handler
 - **Tracks components**: Records all custom elements discovered during parsing
 - **Injects `<f-template>` wrappers**: At `</body>`, injects template wrappers for each component with FAST syntax conversion
-- **Uses FAST 3 runtime APIs**: Client code enables hydration with `enableHydration()` from `@microsoft/fast-element/hydration.js` and registers declarative templates with `declarativeTemplate()`, `attributeMap()`, `observerMap()`, and `define()`
+- **Uses FAST 3 runtime APIs**: Client code enables hydration with `enableHydration()` from `@microsoft/fast-element/hydration.js` and registers declarative templates with `declarativeTemplate()`, `observerMap()`, and `define()`
 
 #### Syntax Conversion
 

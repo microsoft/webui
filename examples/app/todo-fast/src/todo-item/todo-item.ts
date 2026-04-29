@@ -2,7 +2,6 @@
 // Licensed under the MIT license.
 
 import { FASTElement, attr } from '@microsoft/fast-element';
-import { attributeMap } from '@microsoft/fast-element/attribute-map.js';
 import { declarativeTemplate } from '@microsoft/fast-element/declarative.js';
 import { observerMap } from '@microsoft/fast-element/observer-map.js';
 
@@ -27,4 +26,4 @@ export class TodoItem extends FASTElement {
 void TodoItem.define({
   name: 'todo-item',
   template: declarativeTemplate(),
-}, [attributeMap(), observerMap()]);
+}, [observerMap()]);
