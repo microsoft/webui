@@ -62,7 +62,7 @@ backend = "rust"                    # rust | node | rust-and-node | wasm | dotne
 
 [server]
 type = "webui-cli"                  # webui-cli | custom-binary
-plugin = "fast-v3"                  # fast-v3 | webui | fast-v2 | fast (fast/fast-v2 are deprecated FAST 2)
+plugin = "fast-v3"                  # fast-v3 | webui | fast-v2 | fast (fast/fast-v2 are deprecated @microsoft/fast-element 2.x)
 source = "src"                      # Source directory
 servedir = "dist"                   # Static assets directory
 state = "data/state.json"           # Optional state file

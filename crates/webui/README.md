@@ -72,7 +72,7 @@ use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 let handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
 ```
 
-`Plugin::FastV2` and `Plugin::Fast` are deprecated FAST 2 compatibility paths. Use `Plugin::FastV3` for @microsoft/fast-element 3.x.
+`Plugin::FastV2` and `Plugin::Fast` are deprecated @microsoft/fast-element 2.x compatibility paths. Use `Plugin::FastV3` for @microsoft/fast-element 3.x.
 
 ### Inspect
 

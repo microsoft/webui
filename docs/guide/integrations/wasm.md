@@ -106,13 +106,13 @@ const protocolJson = build_protocol(files, 'index.html');
 
 ## Using Plugins
 
-Pass `"fast-v3"` as the `plugin` parameter to enable FAST 3 hydration markers:
+Pass `"fast-v3"` as the `plugin` parameter to enable @microsoft/fast-element 3.x hydration markers:
 
 ```js
 const html = render(protocolJson, stateJson, 'fast-v3');
 ```
 
-Deprecated `"fast"` and `"fast-v2"` identifiers remain available for FAST 2
+Deprecated `"fast"` and `"fast-v2"` identifiers remain available for @microsoft/fast-element 2.x
 compatibility markers. See [Plugins](/guide/concepts/plugins/) for details on
 what markers are injected.
 

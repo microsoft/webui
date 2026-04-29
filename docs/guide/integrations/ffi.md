@@ -187,7 +187,7 @@ Two rules to remember:
 Pass a plugin identifier string to `webui_handler_create_with_plugin`:
 
 ```c
-// Create handler with FAST 3 hydration plugin
+// Create handler with @microsoft/fast-element 3.x hydration plugin
 void *handler = webui_handler_create_with_plugin("fast-v3");
 if (handler == NULL) {
     printf("Error: %s\n", webui_last_error());

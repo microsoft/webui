@@ -23,7 +23,7 @@ For repeated renders with pre-compiled protocol data, use the `WebUIHandler`:
 ```csharp
 using Microsoft.WebUI;
 
-// Create a handler (optionally with "fast-v3" for FAST 3 hydration)
+// Create a handler (optionally with "fast-v3" for @microsoft/fast-element 3.x hydration)
 using var handler = new WebUIHandler("fast-v3");
 
 // Load pre-compiled protocol binary (from `webui build`)
@@ -33,7 +33,7 @@ byte[] protocol = File.ReadAllBytes("app.webui");
 var html = handler.Render(protocol, """{"user": "Alice"}""", "index.html", "/");
 ```
 
-`"fast"` and `"fast-v2"` remain available only for deprecated FAST 2 compatibility. Use `"fast-v3"` for FAST 3.
+`"fast"` and `"fast-v2"` remain available only for deprecated @microsoft/fast-element 2.x compatibility. Use `"fast-v3"` for @microsoft/fast-element 3.x.
 
 ## Client-Side Navigation (Partial Responses)
 

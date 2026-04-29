@@ -94,7 +94,7 @@ Deno.serve({ port: 3000 }, (req) => {
 | `appDir` | `string` | - | Path to app folder |
 | `entry` | `string` | `"index.html"` | Entry file |
 | `css` | `"link" \| "style" \| "module"` | `"link"` | CSS delivery strategy |
-| `plugin` | `string` | - | Parser plugin (e.g. `"fast-v3"`; deprecated `"fast"`/`"fast-v2"` keep FAST 2 compatibility) |
+| `plugin` | `string` | - | Parser plugin (e.g. `"fast-v3"`; deprecated `"fast"`/`"fast-v2"` keep @microsoft/fast-element 2.x compatibility) |
 | `components` | `string[]` | - | External component sources |
 
 ### BuildStats

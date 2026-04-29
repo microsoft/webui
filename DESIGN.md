@@ -665,27 +665,27 @@ pub trait HandlerPlugin {
 **Built-in FAST handler plugins**
 
 The CLI and host APIs select FAST handler plugins by name:
-- `fast-v3`: FAST 3 marker output for new FAST applications.
-- `fast-v2`: deprecated FAST 2 compatibility marker output.
-- `fast`: deprecated compatibility alias for `fast-v2`. It intentionally keeps FAST 2 output so existing applications do not silently change marker formats.
+- `fast-v3`: @microsoft/fast-element 3.x marker output for new FAST applications.
+- `fast-v2`: deprecated @microsoft/fast-element 2.x compatibility marker output.
+- `fast`: deprecated compatibility alias for `fast-v2`. It intentionally keeps @microsoft/fast-element 2.x output so existing applications do not silently change marker formats.
 
 No plugin is loaded by default; output is plain SSR HTML unless a plugin is selected.
 `FastHydrationPlugin` is a deprecated Rust type alias for
 `FastV2HydrationPlugin`.
 
-`FastV2HydrationPlugin` injects FAST 2 hydration markers:
+`FastV2HydrationPlugin` injects @microsoft/fast-element 2.x hydration markers:
 - Binding: `<!--fe-b$$start$$INDEX$$NAME$$fe-b-->` / `<!--fe-b$$end$$INDEX$$NAME$$fe-b-->`
 - Repeat item: `<!--fe-repeat$$start$$INDEX$$fe-repeat-->` / `<!--fe-repeat$$end$$INDEX$$fe-repeat-->`
 - Single attribute binding: ` data-fe-b-INDEX`
 - Multiple attribute bindings: ` data-fe-c-INDEX-COUNT`
 
-`FastV3HydrationPlugin` injects FAST 3 hydration markers:
+`FastV3HydrationPlugin` injects @microsoft/fast-element 3.x hydration markers:
 - Binding: `<!--fe:b-->` / `<!--fe:/b-->`
 - Repeat item: `<!--fe:r-->` / `<!--fe:/r-->`
 - Attribute bindings: ` data-fe="COUNT"` where `COUNT` is the number of dynamic element bindings
 
-FAST 3 template authoring and runtime usage depend on FAST 3 APIs from
-`@microsoft/fast-element` 3.0.0-rc.1: `enableHydration()` from
+@microsoft/fast-element 3.x template authoring and runtime usage depend on
+`@microsoft/fast-element` 3.x APIs: `enableHydration()` from
 `@microsoft/fast-element/hydration.js`, `declarativeTemplate()`,
 `observerMap()`, `define()`, and `$e` in declarative event expressions.
 `DESIGN.md` only specifies the parser/handler integration contracts.
@@ -708,9 +708,9 @@ public framework API and authoring model.
 
 **Usage:**
 ```rust
-// FAST 3 plugin
+// @microsoft/fast-element 3.x plugin
 let fast_v3_handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
-// Deprecated FAST 2 compatibility plugin
+// Deprecated @microsoft/fast-element 2.x compatibility plugin
 let _fast_v2_handler = WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()));
 // WebUI Framework plugin
 let _webui_handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
@@ -916,8 +916,8 @@ pub trait ParserPlugin {
 
 **Built-in FAST parser plugins**
 The CLI and host APIs select separate FAST parser plugins by name:
-- `fast-v3`: `FastV3ParserPlugin` for FAST 3 applications.
-- `fast-v2`: deprecated `FastV2ParserPlugin` for FAST 2 compatibility.
+- `fast-v3`: `FastV3ParserPlugin` for @microsoft/fast-element 3.x applications.
+- `fast-v2`: deprecated `FastV2ParserPlugin` for @microsoft/fast-element 2.x compatibility.
 - `fast`: deprecated compatibility alias for `fast-v2`.
 
 - Marks FAST-specific runtime attributes (`@click`, `f-ref`, `f-slotted`, `f-children`) as skipped but still counted bindings
@@ -925,7 +925,7 @@ The CLI and host APIs select separate FAST parser plugins by name:
 - Tracks components and returns `<f-template>` artifacts after parsing
 - Converts syntax to FAST syntax: `<if condition="X">`→`<f-when value="{{X}}">`, `<for each="X">`→`<f-repeat value="{{X}}">`, `{{expr}}`→`{expr}` in `:attr` values
 - All byte-level scanning in template conversion preserves multi-byte UTF-8 characters (non-ASCII bytes are forwarded as complete code points, never cast individually to `char`)
-- FAST 3 component authoring in WebUI examples uses `@microsoft/fast-element` 3.0.0-rc.1 APIs (`enableHydration`, `declarativeTemplate`, `observerMap`, `define()`, and `$e`) as the FAST runtime dependency
+- @microsoft/fast-element 3.x component authoring in WebUI examples uses `@microsoft/fast-element` 3.x APIs (`enableHydration`, `declarativeTemplate`, `observerMap`, `define()`, and `$e`) as the FAST runtime dependency
 
 **Built-in plugin: `WebUIParserPlugin`**
 - Skips WebUI Framework runtime attributes (`@click`, `@keydown`, etc.) without counting them as attribute bindings
@@ -935,9 +935,9 @@ The CLI and host APIs select separate FAST parser plugins by name:
 
 **Usage:**
 ```rust
-// FAST 3 parser plugin
+// @microsoft/fast-element 3.x parser plugin
 let mut fast_parser = HtmlParser::with_plugin(Box::new(FastV3ParserPlugin::new()));
-// Deprecated FAST 2 compatibility parser plugin
+// Deprecated @microsoft/fast-element 2.x compatibility parser plugin
 let mut _fast_v2_parser = HtmlParser::with_plugin(Box::new(FastV2ParserPlugin::new()));
 // WebUI Framework plugin
 let mut _webui_parser = HtmlParser::with_plugin(Box::new(WebUIParserPlugin::new()));
@@ -946,11 +946,11 @@ fast_parser.parse("index.html", &html)?;
 
 **CLI integration:**
 ```bash
-# FAST 3 plugin
+# @microsoft/fast-element 3.x plugin
 webui build ./templates --out ./dist --plugin=fast-v3
 webui serve ./templates --state ./data/state.json --plugin=fast-v3
 
-# Deprecated FAST 2 compatibility plugin
+# Deprecated @microsoft/fast-element 2.x compatibility plugin
 webui build ./templates --out ./dist --plugin=fast-v2
 webui serve ./templates --state ./data/state.json --plugin=fast-v2
 
@@ -1162,7 +1162,7 @@ This section specifies only the cross-crate wire contract for `--plugin=webui`: 
 It intentionally does **not** duplicate package tutorials or framework API docs. Use the canonical sources instead:
 
 - WebUI Framework public API, decorators, and component authoring: [packages/webui-framework/README.md](packages/webui-framework/README.md)
-- FAST 3 runtime integration examples: [examples/app/todo-fast](examples/app/todo-fast) and [examples/app/calculator](examples/app/calculator), which use `@microsoft/fast-element` 3.0.0-rc.1
+- @microsoft/fast-element 3.x runtime integration examples: [examples/app/todo-fast](examples/app/todo-fast) and [examples/app/calculator](examples/app/calculator)
 
 ### Metadata object format
 
@@ -1368,7 +1368,7 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 |----------|-------------|
 | `webui_render(html, data_json)` | Parse + render in one call (requires `parser` feature; returns `NULL` when absent). Returns heap-allocated string (caller frees with `webui_free`). |
 | `webui_handler_create()` | Create a reusable handler (no plugin). |
-| `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin (e.g. `"fast-v3"` for FAST 3 or deprecated `"fast-v2"`/`"fast"` for FAST 2 compatibility). Returns `NULL` on error. |
+| `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin (e.g. `"fast-v3"` for @microsoft/fast-element 3.x or deprecated `"fast-v2"`/`"fast"` for @microsoft/fast-element 2.x compatibility). Returns `NULL` on error. |
 | `webui_handler_render(handler, data, len, json, entry_id, request_path)` | Render a pre-compiled protocol with route matching. `request_path` controls which route is active. Returns heap-allocated string. |
 | `webui_render_partial(protocol_data, len, entry_id, request_path, inventory_hex)` | Produce a JSON partial response (templateStyles, templates, inventory, path, matched route chain, cacheTags, cacheControl) in a single call. Uses an internal `ProtocolIndex` for cached route matching. Caller adds state. Returns heap-allocated JSON string. |
 | `webui_handler_destroy(handler)` | Destroy a handler. `NULL` is a safe no-op. |

@@ -13,11 +13,11 @@ Current entries:
 |---------|-------------|
 | `app/hello-world` | Basic WebUI app with signals, for-loops, if-conditions |
 | `app/calculator` | Basic WebUI app with calculator that has custom views and events |
-| `app/todo-fast` | FAST 3 hydration app with components, `@event` bindings, `f-ref`, and `<f-template>` injection |
+| `app/todo-fast` | @microsoft/fast-element 3.x hydration app with components, `@event` bindings, `f-ref`, and `<f-template>` injection |
 | `app/commerce` | WebUI Framework hydration app with a Rust backend for commerce demo app, dozens of controls. |
 | `app/routes` | Nested declaritive routing demo showing 4 level deep routes full server side and client handoff. |
-| `integration/node` | Node.js integration via native addon (supports `--plugin=webui` and `--plugin=fast-v3`; deprecated FAST 2 compatibility uses `fast-v2` or `fast`) |
-| `integration/rust` | Rust integration via `webui-handler` (supports `--plugin=webui` and `--plugin=fast-v3`; deprecated FAST 2 compatibility uses `fast-v2` or `fast`) |
+| `integration/node` | Node.js integration via native addon (supports `--plugin=webui` and `--plugin=fast-v3`; deprecated @microsoft/fast-element 2.x compatibility uses `fast-v2` or `fast`) |
+| `integration/rust` | Rust integration via `webui-handler` (supports `--plugin=webui` and `--plugin=fast-v3`; deprecated @microsoft/fast-element 2.x compatibility uses `fast-v2` or `fast`) |
 
 ## Quick Start
 
@@ -32,13 +32,13 @@ cd examples/integration/rust
 cargo run -- ../../app/hello-world/dist/protocol.bin ../../app/hello-world/data/state.json
 ```
 
-### todo-fast (FAST 3 hydration)
+### todo-fast (@microsoft/fast-element 3.x hydration)
 
 ```bash
 # Install JS dependencies (esbuild, @microsoft/fast-element)
 pnpm install
 
-# Build the protocol with FAST 3 parser plugin (emits hydration data + <f-template> wrappers)
+# Build the protocol with the @microsoft/fast-element 3.x parser plugin (emits hydration data + <f-template> wrappers)
 cargo run -p microsoft-webui-cli -- build examples/app/todo-fast/src --out examples/app/todo-fast/dist --plugin=fast-v3
 
 # Bundle the client-side entry point with esbuild
@@ -69,9 +69,9 @@ The `--plugin=fast-v3` flag enables two things:
    - Emits `data-fe="COUNT"` attributes for element bindings
    - Manages per-component/per-item scope counters for binding indices
 
-These markers enable FAST 3 client-side hydration to efficiently locate and re-attach to server-rendered dynamic content. The FAST examples use `enableHydration()` and declarative templates from `@microsoft/fast-element` 3.0.0-rc.1 as their FAST runtime dependency.
+These markers enable @microsoft/fast-element 3.x client-side hydration to efficiently locate and re-attach to server-rendered dynamic content. The FAST examples use `enableHydration()` and declarative templates from `@microsoft/fast-element` 3.x as their FAST runtime dependency.
 
-Deprecated `--plugin=fast-v2` and `--plugin=fast` continue to emit legacy FAST 2 markers for compatibility; do not use them for FAST 3 examples.
+Deprecated `--plugin=fast-v2` and `--plugin=fast` continue to emit legacy @microsoft/fast-element 2.x markers for compatibility; do not use them for @microsoft/fast-element 3.x examples.
 
 ## More Details
 

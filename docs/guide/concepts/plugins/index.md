@@ -23,10 +23,10 @@ Parser plugins emit opaque binary data into `Plugin` protocol fragments. Handler
 Pass `--plugin <NAME>` to `webui build` or `webui serve`:
 
 ```bash
-# Build with the FAST 3 plugin
+# Build with the @microsoft/fast-element 3.x plugin
 webui build ./my-app --out ./dist --plugin=fast-v3
 
-# Dev server with the FAST 3 plugin
+# Dev server with the @microsoft/fast-element 3.x plugin
 webui serve ./my-app --state ./data/state.json --plugin=fast-v3
 ```
 
@@ -34,7 +34,7 @@ When `--plugin=fast-v3` is specified:
 - **Build**: The `FastV3ParserPlugin` is loaded during parsing
 - **Start**: Both `FastV3ParserPlugin` and `FastV3HydrationPlugin` are loaded
 
-`--plugin=fast-v2` remains available for deprecated FAST 2 compatibility. `--plugin=fast` is a deprecated alias for `fast-v2`, kept so existing apps do not silently switch marker formats.
+`--plugin=fast-v2` remains available for deprecated @microsoft/fast-element 2.x compatibility. `--plugin=fast` is a deprecated alias for `fast-v2`, kept so existing apps do not silently switch marker formats.
 
 ## Using Plugins with Handlers
 
@@ -74,17 +74,17 @@ char *html = webui_handler_render(handler, protocol_data, protocol_len, state_js
 
 ## Built-in FAST Plugins
 
-`fast-v3` provides server-side rendering support for FAST 3 components using `@microsoft/fast-element` 3.0.0-rc.1 with client-side hydration.
+`fast-v3` provides server-side rendering support for @microsoft/fast-element 3.x components with client-side hydration.
 
 Deprecated compatibility identifiers remain available:
 
 | Plugin | Status | Marker format |
 |--------|--------|---------------|
-| `fast-v3` | Recommended for FAST 3 | Compact FAST 3 markers |
-| `fast-v2` | Deprecated compatibility | Legacy FAST 2 markers |
-| `fast` | Deprecated alias for `fast-v2` | Legacy FAST 2 markers |
+| `fast-v3` | Recommended for @microsoft/fast-element 3.x | Compact @microsoft/fast-element 3.x markers |
+| `fast-v2` | Deprecated compatibility | Legacy @microsoft/fast-element 2.x markers |
+| `fast` | Deprecated alias for `fast-v2` | Legacy @microsoft/fast-element 2.x markers |
 
-No plugin is enabled by default. Select `fast-v3` explicitly when migrating examples or apps to FAST 3.
+No plugin is enabled by default. Select `fast-v3` explicitly when migrating examples or apps to @microsoft/fast-element 3.x.
 
 ### Parser Side (`FastV3ParserPlugin`)
 
@@ -94,9 +94,9 @@ During `webui build --plugin=fast-v3`, the parser plugin:
 - **Counts dynamic bindings**: Emits binding counts per element as `Plugin` fragments for the handler
 - **Tracks components**: Records all custom elements discovered during parsing
 - **Injects `<f-template>` wrappers**: At `</body>`, injects template wrappers for each component with FAST syntax conversion
-- **Uses FAST 3 runtime APIs**: Client code enables hydration with `enableHydration()` from `@microsoft/fast-element/hydration.js` and registers declarative templates with `declarativeTemplate()`, `observerMap()`, and `define()`
+- **Uses @microsoft/fast-element 3.x runtime APIs**: Client code enables hydration with `enableHydration()` from `@microsoft/fast-element/hydration.js` and registers declarative templates with `declarativeTemplate()`, `observerMap()`, and `define()`
 
-`fast-v3` uses a distinct parser plugin implementation. Deprecated `fast-v2` and `fast` use the separate `FastV2ParserPlugin` implementation for FAST 2 compatibility.
+`fast-v3` uses a distinct parser plugin implementation. Deprecated `fast-v2` and `fast` use the separate `FastV2ParserPlugin` implementation for @microsoft/fast-element 2.x compatibility.
 
 #### Syntax Conversion
 
@@ -110,7 +110,7 @@ The plugin converts WebUI template syntax to FAST equivalents inside `<f-templat
 
 ### Handler Side (`FastV3HydrationPlugin`)
 
-During rendering with `--plugin=fast-v3`, the handler plugin injects HTML comment markers that FAST 3 client-side hydration uses to locate and re-hydrate dynamic content:
+During rendering with `--plugin=fast-v3`, the handler plugin injects HTML comment markers that @microsoft/fast-element 3.x client-side hydration uses to locate and re-hydrate dynamic content:
 
 | Context | Start Marker | End Marker |
 |---------|-------------|------------|
@@ -125,9 +125,9 @@ For attribute bindings, data attributes are emitted instead:
 
 `COUNT` is the number of dynamic element bindings. The plugin maintains per-scope binding counters that reset when entering components or loop items.
 
-### Deprecated FAST 2 Handler (`FastV2HydrationPlugin`)
+### Deprecated @microsoft/fast-element 2.x Handler (`FastV2HydrationPlugin`)
 
-During rendering with `--plugin=fast-v2` or deprecated `--plugin=fast`, the handler emits the legacy FAST 2 marker format:
+During rendering with `--plugin=fast-v2` or deprecated `--plugin=fast`, the handler emits the legacy @microsoft/fast-element 2.x marker format:
 
 | Context | Start Marker | End Marker |
 |---------|-------------|------------|
@@ -141,7 +141,7 @@ For attribute bindings:
 | Single dynamic binding | `data-fe-b-INDEX` |
 | Multiple dynamic bindings | `data-fe-c-INDEX-COUNT` |
 
-Use this only for existing FAST 2 output compatibility. New and migrated FAST apps should use `fast-v3`.
+Use this only for existing @microsoft/fast-element 2.x output compatibility. New and migrated FAST apps should use `fast-v3`.
 
 ## Built-in Plugin: WebUI Framework
 

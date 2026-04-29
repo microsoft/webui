@@ -32,7 +32,7 @@ esbuild ../../app/todo-fast/src/index.ts --bundle --outfile=../../app/todo-fast/
 ## Usage
 
 ```bash
-# todo-fast (FAST 3)
+# todo-fast (@microsoft/fast-element 3.x)
 pnpm start ../../app/todo-fast/dist ../../app/todo-fast/data/state.json --plugin=fast-v3
 
 # contact-book-manager (WebUI Framework)
@@ -47,4 +47,4 @@ pnpm start ../../app/contact-book-manager/dist ../../app/contact-book-manager/da
 | `state.json` | **(required)** Path to the state JSON file |
 | `--plugin=<name>` | Enable a hydration plugin: `webui`, `fast-v3`, deprecated `fast-v2`, or deprecated `fast` _(optional)_ |
 
-Deprecated FAST 2 compatibility remains available with `--plugin=fast-v2` or the `--plugin=fast` alias.
+Deprecated @microsoft/fast-element 2.x compatibility remains available with `--plugin=fast-v2` or the `--plugin=fast` alias.
