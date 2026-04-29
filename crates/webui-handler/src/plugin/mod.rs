@@ -7,6 +7,8 @@
 //! completion work, such as component template emission, stays in handler core.
 
 pub mod fast;
+pub mod fast_v2;
+pub mod fast_v3;
 pub mod webui;
 
 use crate::{ResponseWriter, Result};

@@ -17,7 +17,8 @@
 use anyhow::{Context, Result};
 use std::env;
 use std::fs;
-use webui_handler::plugin::fast::{FastV2HydrationPlugin, FastV3HydrationPlugin};
+use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
+use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::WebUIProtocol;

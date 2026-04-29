@@ -67,7 +67,7 @@ With the FAST 3 hydration plugin:
 
 ```rust
 use webui::{WebUIHandler, HandlerPlugin};
-use webui_handler::plugin::fast::FastV3HydrationPlugin;
+use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 
 let handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
 ```

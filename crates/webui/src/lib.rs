@@ -44,7 +44,8 @@ pub use webui_protocol::WebUIProtocol;
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
-use webui_parser::plugin::fast::FastParserPlugin;
+use webui_parser::plugin::fast_v2::FastV2ParserPlugin;
+use webui_parser::plugin::fast_v3::FastV3ParserPlugin;
 use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::plugin::ParserPluginArtifacts;
 use webui_parser::HtmlParser;
@@ -198,8 +199,13 @@ struct RawBuildOutput {
 /// Internal build logic shared by `build()` and `build_to_disk()`.
 fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIError> {
     let mut parser = match options.plugin {
-        Some(Plugin::Fast | Plugin::FastV2 | Plugin::FastV3) => {
-            let mut plugin = FastParserPlugin::new();
+        Some(Plugin::Fast | Plugin::FastV2) => {
+            let mut plugin = FastV2ParserPlugin::new();
+            plugin.set_css_strategy(options.css);
+            HtmlParser::with_plugin(Box::new(plugin))
+        }
+        Some(Plugin::FastV3) => {
+            let mut plugin = FastV3ParserPlugin::new();
             plugin.set_css_strategy(options.css);
             HtmlParser::with_plugin(Box::new(plugin))
         }

@@ -31,8 +31,8 @@ webui serve ./my-app --state ./data/state.json --plugin=fast-v3
 ```
 
 When `--plugin=fast-v3` is specified:
-- **Build**: The `FastParserPlugin` is loaded during parsing
-- **Start**: Both `FastParserPlugin` and `FastV3HydrationPlugin` are loaded
+- **Build**: The `FastV3ParserPlugin` is loaded during parsing
+- **Start**: Both `FastV3ParserPlugin` and `FastV3HydrationPlugin` are loaded
 
 `--plugin=fast-v2` remains available for deprecated FAST 2 compatibility. `--plugin=fast` is a deprecated alias for `fast-v2`, kept so existing apps do not silently switch marker formats.
 
@@ -45,7 +45,7 @@ When `--plugin=fast-v3` is specified:
 <webui-tab-panel active>
 
 ```rust
-use webui_handler::plugin::fast::FastV3HydrationPlugin;
+use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui::WebUIHandler;
 
 let handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
@@ -74,7 +74,7 @@ char *html = webui_handler_render(handler, protocol_data, protocol_len, state_js
 
 ## Built-in FAST Plugins
 
-`fast-v3` provides server-side rendering support for FAST 3 components using `@microsoft/fast-element` with client-side hydration.
+`fast-v3` provides server-side rendering support for FAST 3 components using `@microsoft/fast-element` 3.0.0-rc.1 with client-side hydration.
 
 Deprecated compatibility identifiers remain available:
 
@@ -86,7 +86,7 @@ Deprecated compatibility identifiers remain available:
 
 No plugin is enabled by default. Select `fast-v3` explicitly when migrating examples or apps to FAST 3.
 
-### Parser Side (`FastParserPlugin`)
+### Parser Side (`FastV3ParserPlugin`)
 
 During `webui build --plugin=fast-v3`, the parser plugin:
 
@@ -96,7 +96,7 @@ During `webui build --plugin=fast-v3`, the parser plugin:
 - **Injects `<f-template>` wrappers**: At `</body>`, injects template wrappers for each component with FAST syntax conversion
 - **Uses FAST 3 runtime APIs**: Client code enables hydration with `enableHydration()` from `@microsoft/fast-element/hydration.js` and registers declarative templates with `declarativeTemplate()`, `observerMap()`, and `define()`
 
-The parser side is shared by `fast-v3`, `fast-v2`, and `fast`. The selected handler plugin controls the marker version.
+`fast-v3` uses a distinct parser plugin implementation. Deprecated `fast-v2` and `fast` use the separate `FastV2ParserPlugin` implementation for FAST 2 compatibility.
 
 #### Syntax Conversion
 

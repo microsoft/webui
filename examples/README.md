@@ -58,7 +58,7 @@ cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plug
 
 The `--plugin=fast-v3` flag enables two things:
 
-1. **Parser plugin (`FastParserPlugin`)** — During `webui build`:
+1. **Parser plugin (`FastV3ParserPlugin`)** — During `webui build`:
    - Skips FAST-specific runtime attributes (`@click`, `f-ref`, `f-slotted`, `f-children`)
    - Counts dynamic attribute bindings per element and emits `Plugin` protocol fragments
    - Tracks components and injects `<f-template name="...">` wrappers at `</body>` with FAST syntax conversion (`<if>`→`<f-when>`, `<for>`→`<f-repeat>`)
@@ -69,7 +69,7 @@ The `--plugin=fast-v3` flag enables two things:
    - Emits `data-fe="COUNT"` attributes for element bindings
    - Manages per-component/per-item scope counters for binding indices
 
-These markers enable FAST 3 client-side hydration to efficiently locate and re-attach to server-rendered dynamic content. The FAST examples use `enableHydration()` and declarative templates from `@microsoft/fast-element` as their FAST runtime dependency.
+These markers enable FAST 3 client-side hydration to efficiently locate and re-attach to server-rendered dynamic content. The FAST examples use `enableHydration()` and declarative templates from `@microsoft/fast-element` 3.0.0-rc.1 as their FAST runtime dependency.
 
 Deprecated `--plugin=fast-v2` and `--plugin=fast` continue to emit legacy FAST 2 markers for compatibility; do not use them for FAST 3 examples.
 

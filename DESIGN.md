@@ -685,7 +685,7 @@ No plugin is loaded by default; output is plain SSR HTML unless a plugin is sele
 - Attribute bindings: ` data-fe="COUNT"` where `COUNT` is the number of dynamic element bindings
 
 FAST 3 template authoring and runtime usage depend on FAST 3 APIs from
-`@microsoft/fast-element`: `enableHydration()` from
+`@microsoft/fast-element` 3.0.0-rc.1: `enableHydration()` from
 `@microsoft/fast-element/hydration.js`, `declarativeTemplate()`,
 `observerMap()`, `define()`, and `$e` in declarative event expressions.
 `DESIGN.md` only specifies the parser/handler integration contracts.
@@ -914,16 +914,18 @@ pub trait ParserPlugin {
 - **Component registration**: `register_component_template` receives the final processed component template HTML
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts
 
-**Built-in parser plugin: `FastParserPlugin`**
-The FAST parser side is shared by `fast`, `fast-v2`, and `fast-v3`; the
-selected handler plugin controls which marker version is emitted at render time.
+**Built-in FAST parser plugins**
+The CLI and host APIs select separate FAST parser plugins by name:
+- `fast-v3`: `FastV3ParserPlugin` for FAST 3 applications.
+- `fast-v2`: deprecated `FastV2ParserPlugin` for FAST 2 compatibility.
+- `fast`: deprecated compatibility alias for `fast-v2`.
 
 - Marks FAST-specific runtime attributes (`@click`, `f-ref`, `f-slotted`, `f-children`) as skipped but still counted bindings
 - Emits `Plugin` fragments with u32 LE attribute binding counts
 - Tracks components and returns `<f-template>` artifacts after parsing
 - Converts syntax to FAST syntax: `<if condition="X">`→`<f-when value="{{X}}">`, `<for each="X">`→`<f-repeat value="{{X}}">`, `{{expr}}`→`{expr}` in `:attr` values
 - All byte-level scanning in template conversion preserves multi-byte UTF-8 characters (non-ASCII bytes are forwarded as complete code points, never cast individually to `char`)
-- FAST 3 component authoring in WebUI examples uses `@microsoft/fast-element` 3 APIs (`enableHydration`, `declarativeTemplate`, `observerMap`, `define()`, and `$e`) as the FAST runtime dependency
+- FAST 3 component authoring in WebUI examples uses `@microsoft/fast-element` 3.0.0-rc.1 APIs (`enableHydration`, `declarativeTemplate`, `observerMap`, `define()`, and `$e`) as the FAST runtime dependency
 
 **Built-in plugin: `WebUIParserPlugin`**
 - Skips WebUI Framework runtime attributes (`@click`, `@keydown`, etc.) without counting them as attribute bindings
@@ -933,8 +935,10 @@ selected handler plugin controls which marker version is emitted at render time.
 
 **Usage:**
 ```rust
-// FAST parser plugin
-let mut fast_parser = HtmlParser::with_plugin(Box::new(FastParserPlugin::new()));
+// FAST 3 parser plugin
+let mut fast_parser = HtmlParser::with_plugin(Box::new(FastV3ParserPlugin::new()));
+// Deprecated FAST 2 compatibility parser plugin
+let mut _fast_v2_parser = HtmlParser::with_plugin(Box::new(FastV2ParserPlugin::new()));
 // WebUI Framework plugin
 let mut _webui_parser = HtmlParser::with_plugin(Box::new(WebUIParserPlugin::new()));
 fast_parser.parse("index.html", &html)?;
@@ -1158,7 +1162,7 @@ This section specifies only the cross-crate wire contract for `--plugin=webui`: 
 It intentionally does **not** duplicate package tutorials or framework API docs. Use the canonical sources instead:
 
 - WebUI Framework public API, decorators, and component authoring: [packages/webui-framework/README.md](packages/webui-framework/README.md)
-- FAST 3 runtime integration examples: [examples/app/todo-fast](examples/app/todo-fast) and [examples/app/calculator](examples/app/calculator), which use `@microsoft/fast-element`
+- FAST 3 runtime integration examples: [examples/app/todo-fast](examples/app/todo-fast) and [examples/app/calculator](examples/app/calculator), which use `@microsoft/fast-element` 3.0.0-rc.1
 
 ### Metadata object format
 
