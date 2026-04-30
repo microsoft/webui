@@ -124,3 +124,58 @@ test.describe('complex-prop: parent array changes propagate to child for-loop', 
     expect(result.items).toEqual(['Sync1', 'Sync2', 'Sync3']);
   });
 });
+
+test.describe('complex-prop: SSR conditional blocks trust server-rendered content', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/complex-prop/fixture.html');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('#host') as any;
+      return el && el.$ready === true;
+    });
+  });
+
+  test('SSR conditional driven by :data is hydrated without duplicates', async ({ page }) => {
+    // The child's <if condition="data.showHeader"> was rendered by SSR
+    // (condData.showHeader=true in state.json). During hydration the child
+    // may not yet have its :data set (parent sets it after child hydrates).
+    // The framework must trust the SSR content and not create a duplicate.
+    const count = await page.evaluate(() => {
+      const host = document.querySelector('#host') as any;
+      const child = host?.shadowRoot?.querySelector('test-cond-child');
+      return child?.shadowRoot?.querySelectorAll('.cond-header')?.length;
+    });
+
+    expect(count).toBe(1);
+  });
+
+  test('SSR conditional content has correct text from :data', async ({ page }) => {
+    const text = await page.evaluate(() => {
+      const host = document.querySelector('#host') as any;
+      const child = host?.shadowRoot?.querySelector('test-cond-child');
+      return child?.shadowRoot?.querySelector('.cond-header')?.textContent;
+    });
+
+    expect(text).toBe('Hello');
+  });
+
+  test('toggling :data.showHeader to false removes the conditional block', async ({ page }) => {
+    await page.evaluate(() => {
+      const host = document.querySelector('#host') as any;
+      host.hideCondHeader();
+    });
+
+    await page.waitForFunction(() => {
+      const host = document.querySelector('#host') as any;
+      const child = host?.shadowRoot?.querySelector('test-cond-child');
+      return child?.shadowRoot?.querySelectorAll('.cond-header')?.length === 0;
+    }, null, { timeout: 2000 });
+
+    const count = await page.evaluate(() => {
+      const host = document.querySelector('#host') as any;
+      const child = host?.shadowRoot?.querySelector('test-cond-child');
+      return child?.shadowRoot?.querySelectorAll('.cond-header')?.length;
+    });
+
+    expect(count).toBe(0);
+  });
+});

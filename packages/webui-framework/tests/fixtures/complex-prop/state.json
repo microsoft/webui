@@ -1,1 +1,1 @@
-{ "items": [{ "name": "Alpha" }, { "name": "Beta" }, { "name": "Gamma" }] }
+{ "items": [{ "name": "Alpha" }, { "name": "Beta" }, { "name": "Gamma" }], "condData": { "showHeader": true, "label": "Hello" } }

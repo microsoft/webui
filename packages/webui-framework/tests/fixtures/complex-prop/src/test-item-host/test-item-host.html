@@ -1,5 +1,7 @@
 <div class="controls">
   <button class="replace" @click="{replaceItems()}">Replace</button>
   <button class="clear" @click="{clearItems()}">Clear</button>
+  <button class="hide-cond" @click="{hideCondHeader()}">Hide Header</button>
 </div>
 <test-item-list :items="{{items}}"></test-item-list>
+<test-cond-child :data="{{condData}}"></test-cond-child>
