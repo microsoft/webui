@@ -159,17 +159,13 @@ export function observable(target: object, name: string): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Per-class attribute metadata: maps each observed HTML attribute name to
- * its backing property name and boolean-mode flag. A single WeakMap entry
- * per class replaces the older split between attribute-routing and
- * boolean-typing registries — `attributeChangedCallback` resolves both
- * with one Map lookup.
+ * Registry of attribute-name → property-name mappings per constructor.
+ * Used by `attributeChangedCallback` to route attribute changes to properties.
  */
-interface AttrEntry {
-  prop: string;
-  bool: boolean;
-}
-const attrMeta = new WeakMap<Function, Map<string, AttrEntry>>();
+const attrMap = new WeakMap<Function, Map<string, string>>();
+
+/** Registry of boolean-mode attribute names per constructor. */
+const boolAttrs = new WeakMap<Function, Set<string>>();
 
 /**
  * Like {@link observable} but also reflects to/from an HTML attribute
@@ -202,73 +198,29 @@ function applyAttr(
     _observedAttrs?: string[];
   };
 
+  // 1. Install the reactive getter/setter (same as @observable).
+  createReactiveProperty(proto, name);
+
+  // 2. Register the attribute mapping.
   const attrName = options?.attribute ?? toKebabCase(name);
-  const isBool = options?.mode === 'boolean';
-  const backingKey = `_${name}`;
-  const changedKey = `${name}Changed`;
-
-  // Install a dedicated getter/setter that inlines property → host attribute
-  // reflection. We don't share `createReactiveProperty` here because the
-  // reflection logic must run on every set and inlining it avoids both an
-  // extra closure allocation per @attr and an indirect call per setter
-  // invocation. The subsequent attributeChangedCallback re-entry is a
-  // no-op thanks to the `oldValue === newValue` guard.
-  Object.defineProperty(proto, name, {
-    get(this: Record<string, unknown>) {
-      return this[backingKey];
-    },
-    set(this: Record<string, unknown>, newValue: unknown) {
-      const oldValue = this[backingKey];
-      if (oldValue === newValue) return;
-      this[backingKey] = newValue;
-
-      const cb = this[changedKey];
-      if (typeof cb === 'function') {
-        (cb as (old: unknown, next: unknown) => void).call(this, oldValue, newValue);
-      }
-
-      // Skip DOM work when the element is not in a document. The HTML
-      // spec forbids custom-element constructors from "gain[ing] any
-      // attributes or children", and class-field initializers
-      // (`@attr foo = 'x'`) run inside the constructor — guarding on
-      // `isConnected` keeps that legal. Property writes performed on
-      // a detached element therefore don't reflect to the attribute
-      // until something else triggers a setter while connected.
-      const host = this as unknown as Element;
-      if (!host.isConnected) return;
-
-      if (isBool) {
-        const want = !!newValue;
-        if (want !== host.hasAttribute(attrName)) {
-          if (want) host.setAttribute(attrName, '');
-          else host.removeAttribute(attrName);
-        }
-      } else if (newValue == null) {
-        if (host.hasAttribute(attrName)) host.removeAttribute(attrName);
-      } else {
-        const s = typeof newValue === 'string' ? newValue : String(newValue);
-        if (host.getAttribute(attrName) !== s) host.setAttribute(attrName, s);
-      }
-
-      const upd = this['$update'] as ((path?: string) => void) | undefined;
-      if (upd) upd.call(this, name);
-    },
-    enumerable: true,
-    configurable: true,
-  });
-
-  // Register attribute metadata in the per-class map.
-  let meta = attrMeta.get(ctor);
-  if (!meta) {
-    meta = new Map();
-    attrMeta.set(ctor, meta);
+  if (!attrMap.has(ctor)) {
+    attrMap.set(ctor, new Map());
   }
-  meta.set(attrName, { prop: name, bool: isBool });
+  attrMap.get(ctor)!.set(attrName, name);
 
-  // Wire observedAttributes + attributeChangedCallback once per class.
+  // Track boolean-mode attrs.
+  if (options?.mode === 'boolean') {
+    if (!boolAttrs.has(ctor)) {
+      boolAttrs.set(ctor, new Set());
+    }
+    boolAttrs.get(ctor)!.add(attrName);
+  }
+
+  // 3. Accumulate observed attributes on the constructor.
   if (!ctor._observedAttrs) {
     ctor._observedAttrs = [];
 
+    // Define the static getter that `customElements.define` inspects.
     Object.defineProperty(ctor, 'observedAttributes', {
       get() {
         return ctor._observedAttrs ?? [];
@@ -276,6 +228,7 @@ function applyAttr(
       configurable: true,
     });
 
+    // Patch `attributeChangedCallback` once per class.
     const origACB = proto['attributeChangedCallback'] as
       | ((name: string, oldVal: string | null, newVal: string | null) => void)
       | undefined;
@@ -286,15 +239,22 @@ function applyAttr(
       oldVal: string | null,
       newVal: string | null,
     ) {
-      const entry = attrMeta.get(this.constructor as Function)?.get(attribute);
-      if (entry) {
-        (this as Record<string, unknown>)[entry.prop] = entry.bool ? newVal !== null : newVal;
+      // Route the attribute change to the corresponding property.
+      const map = attrMap.get(this.constructor as Function);
+      const propName = map?.get(attribute);
+      if (propName !== undefined) {
+        const isBool = boolAttrs.get(this.constructor as Function)?.has(attribute);
+        (this as Record<string, unknown>)[propName] = isBool ? newVal !== null : newVal;
       }
-      if (origACB) origACB.call(this, attribute, oldVal, newVal);
+
+      // Preserve any pre-existing attributeChangedCallback.
+      if (origACB) {
+        origACB.call(this, attribute, oldVal, newVal);
+      }
     };
   }
 
-  ctor._observedAttrs.push(attrName);
+  ctor._observedAttrs!.push(attrName);
 }
 
 export function attr(target: object, name: string): void;
