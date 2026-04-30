@@ -36,7 +36,7 @@ export function render_partial(protocol_json: string, state_json: string, entry_
  *
  * * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
  * * `state_json` — JSON string of the state data.
- * * `plugin` — Optional plugin identifier.
+ * * `plugin` — Optional plugin identifier, such as `"fast-v3"` for FAST 3.
  *
  * # Returns
  *
