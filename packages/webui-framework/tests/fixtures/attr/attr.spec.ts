@@ -140,4 +140,40 @@ test.describe('attr fixture', () => {
 
     await expect(page.locator('test-attr .mixed-class')).toHaveAttribute('data-tag', 'prefix-live-suffix');
   });
+
+  test('reflects property writes back to the host attribute', async ({ page }) => {
+    await page.evaluate(() => {
+      const host = document.querySelector('test-attr') as { label: string; displayValue: string } | null;
+      if (host) {
+        host.label = 'Phase';
+        host.displayValue = 'Running';
+      }
+    });
+
+    await expect(page.locator('test-attr')).toHaveAttribute('label', 'Phase');
+    await expect(page.locator('test-attr')).toHaveAttribute('display-value', 'Running');
+  });
+
+  test('removes the host attribute when property is set to null', async ({ page }) => {
+    await page.evaluate(() => {
+      const host = document.querySelector('test-attr') as { label: string | null } | null;
+      if (host) host.label = null;
+    });
+
+    const hasAttr = await page.evaluate(() => document.querySelector('test-attr')?.hasAttribute('label'));
+    expect(hasAttr).toBe(false);
+  });
+
+  test('reflects boolean property writes to host attribute presence', async ({ page }) => {
+    await page.evaluate(() => {
+      (document.querySelector('test-attr') as any).isActive = true;
+    });
+    await expect(page.locator('test-attr')).toHaveAttribute('is-active', '');
+
+    await page.evaluate(() => {
+      (document.querySelector('test-attr') as any).isActive = false;
+    });
+    const hasAttr = await page.evaluate(() => document.querySelector('test-attr')?.hasAttribute('is-active'));
+    expect(hasAttr).toBe(false);
+  });
 });
