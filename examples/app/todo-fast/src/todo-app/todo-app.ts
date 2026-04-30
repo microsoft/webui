@@ -2,8 +2,7 @@
 // Licensed under the MIT license.
 
 import { FASTElement, attr, observable } from '@microsoft/fast-element';
-import { declarativeTemplate } from '@microsoft/fast-element/declarative.js';
-import { observerMap } from '@microsoft/fast-element/observer-map.js';
+import { RenderableFASTElement } from '@microsoft/fast-html';
 
 interface TodoItemData {
   id: string;
@@ -11,7 +10,7 @@ interface TodoItemData {
   state: string;
 }
 
-export class TodoApp extends FASTElement {
+export class TodoApp extends RenderableFASTElement(FASTElement) {
   @attr title = '';
   @observable items!: TodoItemData[];
   @observable remainingCount!: number;
@@ -21,25 +20,16 @@ export class TodoApp extends FASTElement {
   private nextId = 100;
 
   connectedCallback(): void {
-    this.prepareFromDom();
     super.connectedCallback();
-    void this.$fastController.isPrerendered.then(() => {
-      this.prepareFromDom();
-    });
     console.log('TodoApp connected');
   }
-
   disconnectedCallback(): void {
     super.disconnectedCallback();
     console.log('TodoApp disconnected');
   }
-
-  private prepareFromDom(): void {
-    const root = this.shadowRoot;
-    if (!root) return;
-
+  async prepare(): Promise<void> {
     const items: TodoItemData[] = [];
-    for (const el of root.querySelectorAll('todo-item')) {
+    for (const el of this.shadowRoot!.querySelectorAll('todo-item')) {
       items.push({
         id: el.getAttribute('id') || '',
         title: el.getAttribute('title') || '',
@@ -98,7 +88,7 @@ export class TodoApp extends FASTElement {
   }
 }
 
-void TodoApp.define({
+TodoApp.defineAsync({
   name: 'todo-app',
-  template: declarativeTemplate(),
-}, [observerMap()]);
+  templateOptions: 'defer-and-hydrate',
+});

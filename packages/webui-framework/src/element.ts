@@ -733,8 +733,18 @@ export class WebUIElement extends HTMLElement {
         }
         if (marker) lastCondMarker = marker;
 
-        if (shown && blockMeta && marker) {
-          condInstance = this.$hydrateCondContent(condAnchor, blockMeta, scope);
+        // SSR hydration: if the marker exists, the server rendered this
+        // conditional — hydrate its content regardless of the current
+        // condition value.  Complex properties from parent bindings may
+        // not have arrived yet (the parent hydrates after children), so
+        // the condition could evaluate to false even though the server
+        // rendered it as true.  Trust the SSR DOM and wire it up; the
+        // condition will re-evaluate correctly once all data is set.
+        const ssrContentPresent = marker && blockMeta && this.$hasContentAfterMarker(condAnchor, MARKER_COND_END);
+        if (blockMeta && (shown || ssrContentPresent)) {
+          if (marker) {
+            condInstance = this.$hydrateCondContent(condAnchor, blockMeta, scope);
+          }
         }
 
         // Collect <!--/wc--> end marker for deferred removal.
@@ -987,6 +997,24 @@ export class WebUIElement extends HTMLElement {
       child = child.nextSibling;
     }
     return null;
+  }
+
+  /**
+   * Check whether there is non-marker content between a conditional
+   * start anchor and its closing marker.  Used during SSR hydration to
+   * detect server-rendered conditional content even when the runtime
+   * condition value has not been set yet (e.g. complex property from a
+   * parent repeat binding that hydrates after its children).
+   */
+  private $hasContentAfterMarker(anchor: Comment, endData: string): boolean {
+    let sibling = anchor.nextSibling;
+    while (sibling) {
+      if (sibling.nodeType === 8 && (sibling as Comment).data === endData) {
+        return false; // reached end marker with no content in between
+      }
+      return true; // any non-end-marker node = content present
+    }
+    return false;
   }
 
   /**

@@ -156,6 +156,6 @@ pnpm add @microsoft/webui-router
 </webui-tab-panel>
 </webui-tabs>
 
-The router works with both WebUI Framework (`@microsoft/webui-framework`) and `@microsoft/fast-element` 3.x components. It's a separate package because it's only needed for apps with client-side navigation.
+The router works with both WebUI Framework (`@microsoft/webui-framework`) and FAST-HTML (`@microsoft/fast-html`) components. It's a separate package because it's only needed for apps with client-side navigation.
 
 See the [Routing guide](/guide/concepts/routing) for setup and usage.

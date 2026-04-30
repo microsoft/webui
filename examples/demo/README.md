@@ -57,12 +57,12 @@ Each example app has a `demo.toml` file that describes how to run it:
 
 ```toml
 name = "Calculator"
-description = "A scientific calculator using the fast-v3 rendering plugin"
+description = "A scientific calculator using the fast rendering plugin"
 backend = "rust"                    # rust | node | rust-and-node | wasm | dotnet
 
 [server]
 type = "webui-cli"                  # webui-cli | custom-binary
-plugin = "fast-v3"                  # fast-v3 | webui | fast-v2 | fast (fast/fast-v2 are deprecated @microsoft/fast-element 2.x)
+plugin = "fast"                     # fast | webui (for webui-cli)
 source = "src"                      # Source directory
 servedir = "dist"                   # Static assets directory
 state = "data/state.json"           # Optional state file

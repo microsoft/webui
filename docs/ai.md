@@ -505,7 +505,7 @@ webui build ./src --out ./dist --plugin=webui
 | `--entry <FILE>` | `index.html` | Entry HTML file |
 | `--css <MODE>` | `link` | `link`, `style`, or `module` |
 | `--dom <MODE>` | `shadow` | `shadow` or `light` |
-| `--plugin <NAME>` | none | `webui` or `fast-v3` |
+| `--plugin <NAME>` | none | `webui` or `fast` |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
 
 ### Serve (dev server)
@@ -524,7 +524,7 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 | `--entry <FILE>` | `index.html` | Entry HTML file |
 | `--css <MODE>` | `link` | `link`, `style`, or `module` |
 | `--dom <MODE>` | `shadow` | `shadow` or `light` |
-| `--plugin <NAME>` | none | `webui` or `fast-v3` |
+| `--plugin <NAME>` | none | `webui` or `fast` |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
 | `--api-port <PORT>` | none | Proxy route requests to API server |
 | `--theme <PACKAGE>` | none | Design token theme (see below) |

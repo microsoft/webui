@@ -14,7 +14,7 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use webui::{build, BuildOptions, CssStrategy, DomStrategy, ResponseWriter, WebUIHandler};
-use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
+use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui_handler::RenderOptions;
 use webui_protocol::WebUIProtocol;
 
@@ -351,7 +351,7 @@ fn handler_rendering_bench(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// Benchmark: Handler rendering with deprecated FAST 2 compatibility plugin
+// Benchmark: Handler rendering with FastHydration plugin
 // ---------------------------------------------------------------------------
 
 fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
@@ -360,7 +360,7 @@ fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
     group.measurement_time(MEASUREMENT_TIME);
 
     for (count, state) in &fixture.states {
-        let handler = WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()));
+        let handler = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));
         let mut warmup_writer =
             BenchWriter::new(count * BYTES_PER_CONTACT_WITH_PLUGIN + BASE_HTML_BYTES_WITH_PLUGIN);
         handler
@@ -376,7 +376,7 @@ fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(warmup_writer.len() as u64));
 
         group.bench_with_input(BenchmarkId::new("contacts", count), state, |b, state| {
-            let h = WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()));
+            let h = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));
             let mut w = BenchWriter::new(warmup_writer.len() + WRITER_HEADROOM);
 
             b.iter(|| {
@@ -507,7 +507,7 @@ fn collect_render_samples(
 ) -> SummaryRow {
     // Warm up — also measures output size
     let handler = if use_plugin {
-        WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()))
+        WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()))
     } else {
         WebUIHandler::new()
     };

@@ -2,8 +2,7 @@
 // Licensed under the MIT license.
 
 import { FASTElement, attr, observable } from '@microsoft/fast-element';
-import { declarativeTemplate } from '@microsoft/fast-element/declarative.js';
-import { observerMap } from '@microsoft/fast-element/observer-map.js';
+import { RenderableFASTElement } from '@microsoft/fast-html';
 import type { CalcState, ButtonDef } from '../modes/engine.js';
 import { createInitialState, getMode } from '../modes/engine.js';
 import '../modes/standard.js';
@@ -16,7 +15,7 @@ interface ButtonData {
   span: string;
 }
 
-export class CalcApp extends FASTElement {
+export class CalcApp extends RenderableFASTElement(FASTElement) {
   @attr mode!: string;
   @attr({ attribute: 'display-value' }) displayValue!: string;
   @attr expression!: string;
@@ -26,7 +25,7 @@ export class CalcApp extends FASTElement {
 
   private state!: CalcState;
 
-  private prepareFromDom(): void {
+  async prepare(): Promise<void> {
     this.mode = this.getAttribute('mode') || 'standard';
     this.displayValue = this.getAttribute('display-value') || '0';
     this.expression = this.getAttribute('expression') || '';
@@ -56,13 +55,9 @@ export class CalcApp extends FASTElement {
   private boundKeydown = this.onKeydown.bind(this);
 
   connectedCallback(): void {
-    this.prepareFromDom();
     super.connectedCallback();
-    void this.$fastController.isPrerendered.then(() => {
-      this.prepareFromDom();
-      this.updateActiveModeTab();
-    });
     document.addEventListener('keydown', this.boundKeydown);
+    this.updateActiveModeTab();
   }
 
   disconnectedCallback(): void {
@@ -144,7 +139,7 @@ export class CalcApp extends FASTElement {
   }
 }
 
-void CalcApp.define({
+CalcApp.defineAsync({
   name: 'calc-app',
-  template: declarativeTemplate(),
-}, [observerMap()]);
+  templateOptions: 'defer-and-hydrate',
+});

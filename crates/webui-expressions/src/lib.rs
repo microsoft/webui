@@ -5,13 +5,15 @@
 //!
 //! This module handles the evaluation of condition expressions in WebUI templates.
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 use thiserror::Error;
 use webui_protocol::{
     condition_expr, ComparisonOperator, CompoundCondition, ConditionExpr, LogicalOperator,
     Predicate,
 };
-use webui_state::find_value_by_dotted_path;
+use webui_state::find_value_by_dotted_path_ref;
 
 /// Error types for expression evaluation.
 #[derive(Debug, Error)]
@@ -39,7 +41,7 @@ pub type Result<T> = std::result::Result<T, ExpressionError>;
 
 /// Evaluate a condition expression with the given state
 pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool> {
-    evaluate_with_resolver(condition, |path| find_value_by_dotted_path(path, state))
+    evaluate_with_resolver(condition, |path| find_value_by_dotted_path_ref(path, state))
 }
 
 /// Evaluate a condition expression using a custom resolver for value lookups.
@@ -48,9 +50,9 @@ pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool> {
 /// returns the resolved value. This allows callers to provide merged views
 /// (e.g., local variables overlaid on global state) without cloning the
 /// entire state tree.
-pub fn evaluate_with_resolver<F>(condition: &ConditionExpr, resolver: F) -> Result<bool>
+pub fn evaluate_with_resolver<'a, F>(condition: &ConditionExpr, resolver: F) -> Result<bool>
 where
-    F: Fn(&str) -> Option<Value>,
+    F: Fn(&str) -> Option<Cow<'a, Value>>,
 {
     let (logical_op_count, has_mixed_ops) = count_logical_operators(condition);
 
@@ -109,9 +111,9 @@ fn count_logical_operators(condition: &ConditionExpr) -> (usize, bool) {
 }
 
 // Iterative evaluation of expressions using a resolver closure
-fn evaluate_expr<F>(condition: &ConditionExpr, resolver: &F) -> Result<bool>
+fn evaluate_expr<'a, F>(condition: &ConditionExpr, resolver: &F) -> Result<bool>
 where
-    F: Fn(&str) -> Option<Value>,
+    F: Fn(&str) -> Option<Cow<'a, Value>>,
 {
     match &condition.expr {
         Some(condition_expr::Expr::Predicate(pred)) => evaluate_predicate(pred, resolver),
@@ -125,8 +127,8 @@ where
         Some(condition_expr::Expr::Compound(compound)) => evaluate_compound(compound, resolver),
         Some(condition_expr::Expr::Identifier(id)) => {
             if let Some(val) = resolver(&id.value) {
-                match val {
-                    Value::Bool(b) => Ok(b),
+                match val.as_ref() {
+                    Value::Bool(b) => Ok(*b),
                     Value::Null => Ok(false),
                     Value::Number(n) => Ok(!(n.as_f64() == Some(0.0))),
                     Value::String(s) => Ok(!s.is_empty()),
@@ -143,9 +145,9 @@ where
     }
 }
 
-fn evaluate_compound<F>(compound: &CompoundCondition, resolver: &F) -> Result<bool>
+fn evaluate_compound<'a, F>(compound: &CompoundCondition, resolver: &F) -> Result<bool>
 where
-    F: Fn(&str) -> Option<Value>,
+    F: Fn(&str) -> Option<Cow<'a, Value>>,
 {
     let left = compound.left.as_ref().ok_or_else(|| {
         ExpressionError::Evaluation("Compound missing left expression".to_string())
@@ -178,9 +180,9 @@ where
     }
 }
 
-fn evaluate_predicate<F>(predicate: &Predicate, resolver: &F) -> Result<bool>
+fn evaluate_predicate<'a, F>(predicate: &Predicate, resolver: &F) -> Result<bool>
 where
-    F: Fn(&str) -> Option<Value>,
+    F: Fn(&str) -> Option<Cow<'a, Value>>,
 {
     let left_val = match resolver(&predicate.left) {
         Some(val) => val,
@@ -188,7 +190,7 @@ where
     };
 
     let right_val = if is_literal(&predicate.right) {
-        parse_literal(&predicate.right)?
+        Cow::Owned(parse_literal(&predicate.right)?)
     } else {
         match resolver(&predicate.right) {
             Some(val) => val,
@@ -203,7 +205,7 @@ where
         ))
     })?;
 
-    compare_values(&left_val, &op, &right_val)
+    compare_values(left_val.as_ref(), &op, right_val.as_ref())
 }
 
 // Check if a string is a literal value
@@ -323,6 +325,7 @@ fn extract_number(val: &Value) -> Result<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::borrow::Cow;
     use webui_protocol::{ComparisonOperator, ConditionExpr, LogicalOperator};
     use webui_test_utils::test_json;
 
@@ -599,6 +602,22 @@ mod tests {
             "Expected Ok(true), got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn test_borrowed_resolver_value() {
+        let condition = ConditionExpr::identifier("flag");
+        let value = Value::Bool(true);
+
+        let result = evaluate_with_resolver(&condition, |path| {
+            if path == "flag" {
+                Some(Cow::Borrowed(&value))
+            } else {
+                None
+            }
+        });
+
+        assert!(matches!(result, Ok(true)));
     }
 
     #[test]

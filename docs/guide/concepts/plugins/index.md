@@ -16,25 +16,23 @@ Build time (Parser Plugin)         Runtime (Handler Plugin)
 └──────────────────────────┘       └──────────────────────────┘
 ```
 
-Parser plugins emit opaque binary data into `Plugin` protocol fragments. Handler plugins receive that data at render time via `on_element_data`. WebUI never interprets this data - each plugin pair defines its own contract.
+Parser plugins emit opaque binary data into `Plugin` protocol fragments. Handler plugins receive that data at render time via `on_plugin_data`. WebUI never interprets this data - each plugin pair defines its own contract.
 
 ## Using Plugins via the CLI
 
 Pass `--plugin <NAME>` to `webui build` or `webui serve`:
 
 ```bash
-# Build with the @microsoft/fast-element 3.x plugin
-webui build ./my-app --out ./dist --plugin=fast-v3
+# Build with the FAST plugin
+webui build ./my-app --out ./dist --plugin=fast
 
-# Dev server with the @microsoft/fast-element 3.x plugin
-webui serve ./my-app --state ./data/state.json --plugin=fast-v3
+# Dev server with the FAST plugin
+webui serve ./my-app --state ./data/state.json --plugin=fast
 ```
 
-When `--plugin=fast-v3` is specified:
-- **Build**: The `FastV3ParserPlugin` is loaded during parsing
-- **Start**: Both `FastV3ParserPlugin` and `FastV3HydrationPlugin` are loaded
-
-`--plugin=fast-v2` remains available for deprecated @microsoft/fast-element 2.x compatibility. `--plugin=fast` is a deprecated alias for `fast-v2`, kept so existing apps do not silently switch marker formats.
+When `--plugin=fast` is specified:
+- **Build**: The `FastParserPlugin` is loaded during parsing
+- **Start**: Both `FastParserPlugin` and `FastHydrationPlugin` are loaded
 
 ## Using Plugins with Handlers
 
@@ -45,10 +43,10 @@ When `--plugin=fast-v3` is specified:
 <webui-tab-panel active>
 
 ```rust
-use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
+use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui::WebUIHandler;
 
-let handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
+let handler = WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new()));
 handler.handle(&protocol, &state, &options, &mut writer)?;
 ```
 
@@ -58,45 +56,32 @@ handler.handle(&protocol, &state, &options, &mut writer)?;
 ```js
 import { renderStream } from '@microsoft/webui';
 
-renderStream(protocolData, state, (chunk) => res.write(chunk), { plugin: 'fast-v3' });
+renderStream(protocolData, state, (chunk) => res.write(chunk), 'fast');
 ```
 
 </webui-tab-panel>
 <webui-tab-panel>
 
 ```c
-void *handler = webui_handler_create_with_plugin("fast-v3");
-char *html = webui_handler_render(handler, protocol_data, protocol_len, state_json, "index.html", "/");
+void *handler = webui_handler_create_with_plugin("fast");
+char *html = webui_handler_render(handler, protocol_data, protocol_len, state_json);
 ```
 
 </webui-tab-panel>
 </webui-tabs>
 
-## Built-in FAST Plugins
+## Built-in Plugin: FAST-HTML
 
-`fast-v3` provides server-side rendering support for @microsoft/fast-element 3.x components with client-side hydration.
+The `fast` plugin provides server-side rendering support for [FAST-HTML](https://github.com/nicholasgasior/fast-html) components with client-side hydration.
 
-Deprecated compatibility identifiers remain available:
+### Parser Side (`FastParserPlugin`)
 
-| Plugin | Status | Marker format |
-|--------|--------|---------------|
-| `fast-v3` | Recommended for @microsoft/fast-element 3.x | Compact @microsoft/fast-element 3.x markers |
-| `fast-v2` | Deprecated compatibility | Legacy @microsoft/fast-element 2.x markers |
-| `fast` | Deprecated alias for `fast-v2` | Legacy @microsoft/fast-element 2.x markers |
-
-No plugin is enabled by default. Select `fast-v3` explicitly when migrating examples or apps to @microsoft/fast-element 3.x.
-
-### Parser Side (`FastV3ParserPlugin`)
-
-During `webui build --plugin=fast-v3`, the parser plugin:
+During `webui build --plugin=fast`, the parser plugin:
 
 - **Skips framework attributes**: `@click`, `f-ref`, `f-slotted`, `f-children` are removed from the protocol (they're handled client-side)
 - **Counts dynamic bindings**: Emits binding counts per element as `Plugin` fragments for the handler
 - **Tracks components**: Records all custom elements discovered during parsing
 - **Injects `<f-template>` wrappers**: At `</body>`, injects template wrappers for each component with FAST syntax conversion
-- **Uses @microsoft/fast-element 3.x runtime APIs**: Client code enables hydration with `enableHydration()` from `@microsoft/fast-element/hydration.js` and registers declarative templates with `declarativeTemplate()`, `observerMap()`, and `define()`
-
-`fast-v3` uses a distinct parser plugin implementation. Deprecated `fast-v2` and `fast` use the separate `FastV2ParserPlugin` implementation for @microsoft/fast-element 2.x compatibility.
 
 #### Syntax Conversion
 
@@ -108,40 +93,23 @@ The plugin converts WebUI template syntax to FAST equivalents inside `<f-templat
 | `<for each="item in items">` | `<f-repeat value="{items}">` |
 | `{{expr}}` in `:attr` values | `{expr}` |
 
-### Handler Side (`FastV3HydrationPlugin`)
+### Handler Side (`FastHydrationPlugin`)
 
-During rendering with `--plugin=fast-v3`, the handler plugin injects HTML comment markers that @microsoft/fast-element 3.x client-side hydration uses to locate and re-hydrate dynamic content:
-
-| Context | Start Marker | End Marker |
-|---------|-------------|------------|
-| Signal / If / For | `<!--fe:b-->` | `<!--fe:/b-->` |
-| For-loop item | `<!--fe:r-->` | `<!--fe:/r-->` |
-
-For attribute bindings, data attributes are emitted instead:
-
-| Type | Attribute |
-|------|-----------|
-| Dynamic bindings | `data-fe="COUNT"` |
-
-`COUNT` is the number of dynamic element bindings. The plugin maintains per-scope binding counters that reset when entering components or loop items.
-
-### Deprecated @microsoft/fast-element 2.x Handler (`FastV2HydrationPlugin`)
-
-During rendering with `--plugin=fast-v2` or deprecated `--plugin=fast`, the handler emits the legacy @microsoft/fast-element 2.x marker format:
+During rendering with `--plugin=fast`, the handler plugin injects HTML comment markers that FAST-HTML's client-side runtime uses to locate and re-hydrate dynamic content:
 
 | Context | Start Marker | End Marker |
 |---------|-------------|------------|
 | Signal / If / For | `<!--fe-b$$start$$INDEX$$NAME$$fe-b-->` | `<!--fe-b$$end$$INDEX$$NAME$$fe-b-->` |
 | For-loop item | `<!--fe-repeat$$start$$INDEX$$fe-repeat-->` | `<!--fe-repeat$$end$$INDEX$$fe-repeat-->` |
 
-For attribute bindings:
+For attribute bindings, data attributes are emitted instead:
 
 | Type | Attribute |
 |------|-----------|
-| Single dynamic binding | `data-fe-b-INDEX` |
-| Multiple dynamic bindings | `data-fe-c-INDEX-COUNT` |
+| Single binding | `data-fe-b-INDEX` |
+| Multiple bindings | `data-fe-c-INDEX-COUNT` |
 
-Use this only for existing @microsoft/fast-element 2.x output compatibility. New and migrated FAST apps should use `fast-v3`.
+The plugin maintains per-scope binding counters that reset when entering components or loop items.
 
 ## Built-in Plugin: WebUI Framework
 
@@ -192,28 +160,18 @@ To create a custom plugin, implement the `ParserPlugin` and/or `HandlerPlugin` t
 
 ```rust
 pub trait ParserPlugin {
-    /// Called before parsing begins for a fragment.
-    fn start_fragment(&mut self, fragment_id: &str) {}
+    /// Called when a custom element is encountered.
+    fn on_parse_component(&mut self, tag_name: &str, component: &Component) -> Result<()>;
 
-    /// Called when a component template has been fully processed.
-    fn register_component_template(
-        &mut self,
-        tag_name: &str,
-        component: &Component,
-        processed_template: &str,
-    ) -> Result<()>;
+    /// Return `true` to skip an attribute (it won't appear in the protocol).
+    fn should_skip_attribute(&self, attr_name: &str) -> bool;
 
-    /// Decide how a framework-owned attribute should be handled.
-    fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
+    /// Called before the body_end signal. Return HTML to inject as a raw fragment.
+    fn on_body_end(&mut self) -> Option<String>;
 
     /// Called after all attributes on an element are processed.
     /// Return opaque bytes to emit as a Plugin protocol fragment.
-    fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
-
-    /// Consume the plugin and return captured build artifacts.
-    fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts {
-        ParserPluginArtifacts::None
-    }
+    fn on_element_parsed(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
 }
 ```
 
@@ -226,29 +184,16 @@ pub trait HandlerPlugin {
     /// Leave the current scope.
     fn pop_scope(&mut self);
 
-    /// Called before/after a signal binding.
+    /// Called before/after a dynamic binding (signal, for, if).
     fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
-
-    /// Called before/after for-loop and if-condition blocks.
-    fn on_for_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
-    fn on_for_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
-    fn on_if_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
-    fn on_if_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
 
     /// Called before/after each item in a for-loop.
     fn on_repeat_item_start(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_end(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
 
     /// Process opaque data from a Plugin protocol fragment.
-    fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
-
-    /// Write framework-specific route component state attributes.
-    fn write_route_component_state(
-        &self,
-        state: &serde_json::Value,
-        writer: &mut dyn ResponseWriter,
-    ) -> Result<()>;
+    fn on_plugin_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
 }
 ```
 

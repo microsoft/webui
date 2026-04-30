@@ -7,8 +7,6 @@
 //! completion work, such as component template emission, stays in handler core.
 
 pub mod fast;
-pub mod fast_v2;
-pub mod fast_v3;
 pub mod webui;
 
 use crate::{ResponseWriter, Result};
@@ -117,7 +115,7 @@ pub trait HandlerPlugin {
 }
 
 /// Default template emission: write each non-empty template verbatim.
-/// Used by FAST parser plugins for `<f-template>` tags.
+/// Used by the FAST plugin for `<f-template>` tags.
 pub(crate) fn emit_component_templates(
     protocol: &WebUIProtocol,
     components: &HashSet<String>,

@@ -2,16 +2,15 @@
 // Licensed under the MIT license.
 
 import { FASTElement, attr } from '@microsoft/fast-element';
-import { declarativeTemplate } from '@microsoft/fast-element/declarative.js';
-import { observerMap } from '@microsoft/fast-element/observer-map.js';
+import { RenderableFASTElement } from '@microsoft/fast-html';
 
-export class CalcDisplay extends FASTElement {
+export class CalcDisplay extends RenderableFASTElement(FASTElement) {
   @attr expression = '';
   @attr value = '';
   @attr error = '';
 }
 
-void CalcDisplay.define({
+CalcDisplay.defineAsync({
   name: 'calc-display',
-  template: declarativeTemplate(),
-}, [observerMap()]);
+  templateOptions: 'defer-and-hydrate',
+});

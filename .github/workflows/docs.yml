@@ -14,10 +14,7 @@ on:
       - 'crates/webui-protocol/**'
       - 'crates/webui-node/**'
       - 'crates/webui-press/**'
-      - 'crates/webui-wasm/**'
       - 'packages/webui/**'
-      - '.github/workflows/docs.yml'
-      - '.github/actions/build/**'
   workflow_dispatch:
 
 jobs:
@@ -27,9 +24,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/build
-
-      - name: Build WASM playground
-        uses: ./.github/actions/setup-wasm
 
       - name: Build docs
         run: pnpm --filter @webui/docs... build

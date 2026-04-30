@@ -31,8 +31,11 @@ catalogs:
       specifier: ^6.39.15
       version: 6.41.1
     '@microsoft/fast-element':
-      specifier: 3.0.0-rc.1
-      version: 3.0.0-rc.1
+      specifier: ^2.10.2
+      version: 2.10.2
+    '@microsoft/fast-html':
+      specifier: ^1.0.0-alpha.39
+      version: 1.0.0-alpha.39
     '@playwright/test':
       specifier: ^1.58.2
       version: 1.58.2
@@ -106,7 +109,10 @@ importers:
     devDependencies:
       '@microsoft/fast-element':
         specifier: 'catalog:'
-        version: 3.0.0-rc.1
+        version: 2.10.2
+      '@microsoft/fast-html':
+        specifier: 'catalog:'
+        version: 1.0.0-alpha.39(@microsoft/fast-element@2.10.2)
       '@playwright/test':
         specifier: 'catalog:'
         version: 1.58.2
@@ -234,7 +240,10 @@ importers:
     devDependencies:
       '@microsoft/fast-element':
         specifier: 'catalog:'
-        version: 3.0.0-rc.1
+        version: 2.10.2
+      '@microsoft/fast-html':
+        specifier: 'catalog:'
+        version: 1.0.0-alpha.39(@microsoft/fast-element@2.10.2)
       '@microsoft/webui-examples-theme':
         specifier: workspace:*
         version: link:../../../packages/webui-examples-theme
@@ -304,6 +313,13 @@ importers:
         version: link:../../../packages/webui
 
   packages/webui:
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.3.5
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
     optionalDependencies:
       '@microsoft/webui-darwin-arm64':
         specifier: workspace:*
@@ -323,13 +339,6 @@ importers:
       '@microsoft/webui-win32-x64':
         specifier: workspace:*
         version: link:../webui-win32-x64
-    devDependencies:
-      '@types/node':
-        specifier: 'catalog:'
-        version: 25.3.5
-      typescript:
-        specifier: 'catalog:'
-        version: 5.9.3
 
   packages/webui-darwin-arm64: {}
 
@@ -618,8 +627,13 @@ packages:
   '@marijn/find-cluster-break@1.0.2':
     resolution: {integrity: sha512-l0h88YhZFyKdXIFNfSWpyjStDjGHwZ/U7iobcK1cQQD8sejsONdQtTVU+1wVN1PBw40PiiHB1vA5S7VTfQiP9g==}
 
-  '@microsoft/fast-element@3.0.0-rc.1':
-    resolution: {integrity: sha512-c4gtNzySRViqRQAhJKHLzIWZiWFwYXJGfFW0G5nKE1lovIPGnNhnVwOASDHKkAlL/cAHz/C65rsqYSo+Jbfq4Q==}
+  '@microsoft/fast-element@2.10.2':
+    resolution: {integrity: sha512-KUhPvoWTPCtlB8Lk8CK97E8nDeIx9i9NXr2Yoz4Er3AxjMFcN5UM4bBcA/3HeVMJfJTE3kSOigSDoxK6QjVr9g==}
+
+  '@microsoft/fast-html@1.0.0-alpha.39':
+    resolution: {integrity: sha512-+P8ol+0p/u1F+deJaFRZywfIO7+CZBGk5F9YuErVjxYgOykMMLVL0yAUfHoxUKhfboxIKW43dYJDvio7l4YW1A==}
+    peerDependencies:
+      '@microsoft/fast-element': ^2.10.2
 
   '@playwright/test@1.58.2':
     resolution: {integrity: sha512-akea+6bHYBBfA9uQqSYmlJXn61cTa+jbO87xVLCWbTqbWadRVmhxlXATaOjOgcBaWU4ePo0wB41KMFv3o35IXA==}
@@ -1422,7 +1436,11 @@ snapshots:
 
   '@marijn/find-cluster-break@1.0.2': {}
 
-  '@microsoft/fast-element@3.0.0-rc.1': {}
+  '@microsoft/fast-element@2.10.2': {}
+
+  '@microsoft/fast-html@1.0.0-alpha.39(@microsoft/fast-element@2.10.2)':
+    dependencies:
+      '@microsoft/fast-element': 2.10.2
 
   '@playwright/test@1.58.2':
     dependencies:

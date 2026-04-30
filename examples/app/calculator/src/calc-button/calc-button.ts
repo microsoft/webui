@@ -2,10 +2,9 @@
 // Licensed under the MIT license.
 
 import { FASTElement, attr } from '@microsoft/fast-element';
-import { declarativeTemplate } from '@microsoft/fast-element/declarative.js';
-import { observerMap } from '@microsoft/fast-element/observer-map.js';
+import { RenderableFASTElement } from '@microsoft/fast-html';
 
-export class CalcButton extends FASTElement {
+export class CalcButton extends RenderableFASTElement(FASTElement) {
   @attr label = '';
   @attr value = '';
   @attr({ attribute: 'btn-type' }) btnType = '';
@@ -22,7 +21,7 @@ export class CalcButton extends FASTElement {
   }
 }
 
-void CalcButton.define({
+CalcButton.defineAsync({
   name: 'calc-button',
-  template: declarativeTemplate(),
-}, [observerMap()]);
+  templateOptions: 'defer-and-hydrate',
+});

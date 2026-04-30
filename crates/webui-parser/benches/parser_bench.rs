@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
-use webui_parser::{plugin::fast_v2::FastV2ParserPlugin, CssStrategy, HtmlParser};
+use webui_parser::{plugin::fast::FastParserPlugin, CssStrategy, HtmlParser};
 
 fn build_simple_template() -> String {
     let mut html = String::with_capacity(256);
@@ -324,7 +324,7 @@ fn parser_plugin_bench(c: &mut Criterion) {
     });
 
     group.bench_function("with_fast_plugin", |b| {
-        let mut parser = HtmlParser::with_plugin(Box::new(FastV2ParserPlugin::new()));
+        let mut parser = HtmlParser::with_plugin(Box::new(FastParserPlugin::new()));
         b.iter(|| {
             parser
                 .parse("index.html", black_box(&input))

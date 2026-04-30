@@ -16,8 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use webui::WebUIHandler;
 use webui_dev_server::{spawn_watcher, sse_handler, LiveReload, WatchConfig};
-use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
-use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
+use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter};
 use webui_protocol::WebUIProtocol;
@@ -484,7 +483,11 @@ fn build_and_render(
 
     // Render to memory
     let mut writer = MemoryWriter::with_capacity(4096);
-    let handler = create_handler(config.app_args.plugin);
+    let handler = match config.app_args.plugin {
+        Some(Plugin::Fast) => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
+        Some(Plugin::WebUI) => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
+        None => WebUIHandler::new(),
+    };
     handler.handle(
         &build_result.protocol,
         &state,
@@ -505,19 +508,6 @@ fn build_and_render(
         protocol: build_result.protocol,
         state_data: state,
     })
-}
-
-fn create_handler(plugin: Option<Plugin>) -> WebUIHandler {
-    match plugin {
-        Some(Plugin::Fast | Plugin::FastV2) => {
-            WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()))
-        }
-        Some(Plugin::FastV3) => {
-            WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()))
-        }
-        Some(Plugin::WebUI) => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
-        None => WebUIHandler::new(),
-    }
 }
 
 // ── Route handlers ──────────────────────────────────────────────────────
@@ -659,7 +649,11 @@ async fn render_page_response(
     }
 
     let mut writer = MemoryWriter::with_capacity(4096);
-    let handler = create_handler(plugin);
+    let handler = match plugin {
+        Some(Plugin::Fast) => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
+        Some(Plugin::WebUI) => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
+        None => WebUIHandler::new(),
+    };
 
     if let Err(e) = handler.handle(
         &proto,
@@ -1115,45 +1109,6 @@ mod tests {
         let hmr = LiveReload::new(HMR_ENDPOINT);
         let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
         assert!(html.contains("<p>WebUI</p>"));
-    }
-
-    #[test]
-    fn test_build_and_render_selects_fast_plugin_versions() {
-        let app = create_app_dir(&[
-            ("index.html", "<my-card></my-card>"),
-            ("my-card.html", "<span>{{name}}</span>"),
-            ("state.json", r#"{"name":"Alice"}"#),
-        ]);
-
-        let render = |plugin| {
-            let config = RenderConfig {
-                app_args: AppArgs {
-                    app: app.path().to_path_buf(),
-                    entry: "index.html".to_string(),
-                    css: CssStrategy::Link,
-                    dom: DomStrategy::Shadow,
-                    plugin,
-                    components: Vec::new(),
-                },
-                app_dir: app.path().to_path_buf(),
-                state_file: Some(app.path().join("state.json")),
-                token_css: None,
-                base_path: None,
-            };
-            build_and_render(&config, None).unwrap().html
-        };
-
-        let fast = render(Some(Plugin::Fast));
-        assert!(fast.contains("<!--fe-b$$start$$0$$name$$fe-b-->"));
-        assert!(!fast.contains("<!--fe:b-->"));
-
-        let fast_v2 = render(Some(Plugin::FastV2));
-        assert!(fast_v2.contains("<!--fe-b$$start$$0$$name$$fe-b-->"));
-        assert!(!fast_v2.contains("<!--fe:b-->"));
-
-        let fast_v3 = render(Some(Plugin::FastV3));
-        assert!(fast_v3.contains("<!--fe:b-->"));
-        assert!(!fast_v3.contains("<!--fe-b$$start$$"));
     }
 
     #[test]

@@ -34,8 +34,7 @@ use serde_json::Value;
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
-use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
-use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
+use webui_handler::plugin::fast::FastHydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 #[cfg(feature = "parser")]
@@ -148,8 +147,6 @@ pub extern "C" fn webui_handler_create() -> *mut c_void {
 /// # Arguments
 ///
 /// * `plugin_id` - Null-terminated UTF-8 string identifying the plugin.
-///   `"fast"` and `"fast-v2"` select deprecated FAST 2 compatibility markers;
-///   `"fast-v3"` selects FAST 3 markers.
 ///
 /// # Returns
 ///
@@ -167,15 +164,10 @@ pub unsafe extern "C" fn webui_handler_create_with_plugin(plugin_id: *const c_ch
         WebUIHandler::new()
     } else {
         match CStr::from_ptr(plugin_id).to_str() {
-            Ok("fast" | "fast-v2") => {
-                WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()))
-            }
-            Ok("fast-v3") => WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new())),
+            Ok("fast") => WebUIHandler::with_plugin(|| Box::new(FastHydrationPlugin::new())),
             Ok("webui") => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
             Ok(unknown) => {
-                set_last_error(format!(
-                    "unknown plugin: {unknown}. Use \"webui\", \"fast-v3\", \"fast-v2\", or \"fast\"."
-                ));
+                set_last_error(format!("unknown plugin: {unknown}"));
                 return std::ptr::null_mut();
             }
             Err(e) => {

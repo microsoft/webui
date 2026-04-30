@@ -6,6 +6,7 @@
 //! Matches request paths against route path templates without regex.
 //! Supports `:param`, `:param?` (optional), and `*splat` segments.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// Result of matching a request path against a route path template.
@@ -284,19 +285,24 @@ pub fn is_relative_path(path: &str) -> bool {
 /// `"./topics/:id"` + `"/sections/1"` → `"/sections/1/topics/:id"`
 /// `"/topics/:id"` + `"/sections/1"` → `"/topics/:id"`
 pub fn resolve_route_path(path: &str, route_base: &str) -> String {
+    resolve_route_path_cow(path, route_base).into_owned()
+}
+
+/// Resolve a route path while borrowing absolute paths that need no changes.
+pub(crate) fn resolve_route_path_cow<'a>(path: &'a str, route_base: &str) -> Cow<'a, str> {
     // An empty path means "match at the parent level" — resolve to base.
     if path.is_empty() {
-        return route_base.to_string();
+        return Cow::Owned(route_base.to_string());
     }
 
     if !is_relative_path(path) {
-        return path.to_string();
+        return Cow::Borrowed(path);
     }
 
     // Strip leading "./" if present
     let relative = path.strip_prefix("./").unwrap_or(path);
     if relative.is_empty() {
-        return route_base.to_string();
+        return Cow::Owned(route_base.to_string());
     }
 
     let mut resolved = String::with_capacity(route_base.len() + relative.len() + 1);
@@ -305,7 +311,7 @@ pub fn resolve_route_path(path: &str, route_base: &str) -> String {
         resolved.push('/');
     }
     resolved.push_str(relative);
-    resolved
+    Cow::Owned(resolved)
 }
 
 /// Compute the new route base from a matched route's consumed request segments.
@@ -313,16 +319,25 @@ pub fn resolve_route_path(path: &str, route_base: &str) -> String {
 /// Given request path `/sections/1/topics/react` and consumed=2,
 /// returns `/sections/1`.
 pub fn compute_route_base(request_path: &str, consumed_segments: usize) -> String {
-    let parts = split_path(request_path);
-    if consumed_segments == 0 || parts.is_empty() {
+    if consumed_segments == 0 {
         return "/".to_string();
     }
 
-    let n = consumed_segments.min(parts.len());
     let mut base = String::with_capacity(request_path.len());
-    for part in &parts[..n] {
+    let mut remaining = consumed_segments;
+    for part in request_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+    {
+        if remaining == 0 {
+            break;
+        }
         base.push('/');
         base.push_str(part);
+        remaining -= 1;
+    }
+    if base.is_empty() {
+        base.push('/');
     }
     base
 }

@@ -34,7 +34,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--out <OUT>` | Output folder for protocol and assets | *(required)* |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <STRATEGY>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
-| `--plugin <NAME>` | Load a parser plugin (e.g., `fast-v3`) | *(none)* |
+| `--plugin <NAME>` | Load a parser plugin (e.g., `fast`) | *(none)* |
 | `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 
@@ -72,8 +72,8 @@ webui build ./my-app --out ./dist --entry home.html
 # Build with style CSS (no external CSS files)
 webui build ./my-app --out ./dist --css style
 
-# Build with the @microsoft/fast-element 3.x plugin (hydration support)
-webui build ./my-app --out ./dist --plugin=fast-v3
+# Build with the FAST plugin (hydration support)
+webui build ./my-app --out ./dist --plugin=fast
 
 # Build with external component packages
 webui build ./my-app --out ./dist --components @reactive-ui
@@ -128,7 +128,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--port <PORT>` | Port to bind the development server | `3000` |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
-| `--plugin <NAME>` | Load parser + handler plugins (e.g., `fast-v3`) | *(none)* |
+| `--plugin <NAME>` | Load parser + handler plugins (e.g., `fast`) | *(none)* |
 | `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--api-port <PORT>` | Proxy route requests to your API server on this port. The dev server forwards navigation requests so your backend can provide real state data. | *(none)* |
@@ -160,8 +160,8 @@ webui serve ./my-app --state ./state.json --servedir ./assets --port 9090 --watc
 # Use style CSS mode
 webui serve ./my-app --state ./state.json --servedir ./assets --css style --watch
 
-# Use the @microsoft/fast-element 3.x plugin for hydration
-webui serve ./my-app --state ./state.json --plugin=fast-v3 --port 3001
+# Use the FAST plugin for hydration
+webui serve ./my-app --state ./state.json --plugin=fast --port 3001
 
 # Dev server with external components (--watch watches local paths)
 webui serve ./my-app --state ./state.json --components @reactive-ui --watch
@@ -300,12 +300,7 @@ The `--plugin` flag loads framework-specific extensions that customize both pars
 
 | Plugin | Description |
 |--------|-------------|
-| `webui` | WebUI Framework compiled templates and hydration markers. |
-| `fast-v3` | @microsoft/fast-element 3.x hydration support for new FAST apps. Parser skips runtime attrs, emits binding data, and injects `<f-template>` wrappers. Handler injects `<!--fe:b-->`, `<!--fe:/b-->`, `<!--fe:r-->`, `<!--fe:/r-->`, and `data-fe="COUNT"` markers. |
-| `fast-v2` | Deprecated @microsoft/fast-element 2.x compatibility. Emits legacy `<!--fe-b$$...-->`, `<!--fe-repeat$$...-->`, `data-fe-b-INDEX`, and `data-fe-c-INDEX-COUNT` markers. |
-| `fast` | Deprecated compatibility alias for `fast-v2`. Use `fast-v3` for @microsoft/fast-element 3.x migrations. |
-
-No plugin is enabled by default. Select `fast-v3` explicitly for @microsoft/fast-element 3.x apps; `fast` remains accepted only to avoid silently changing existing @microsoft/fast-element 2.x output.
+| `fast` | FAST-HTML hydration support. Parser skips runtime attrs, emits binding data, injects `<f-template>` wrappers. Handler injects hydration comment markers. |
 
 See [Plugins](/guide/concepts/plugins/) for detailed documentation.
 
