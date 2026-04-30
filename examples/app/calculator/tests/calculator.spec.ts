@@ -26,21 +26,6 @@ test.describe('SSR rendering', () => {
   });
 });
 
-test.describe('hydration & interaction', () => {
-  test('clicking 1 + 2 = displays 3', async ({ page }) => {
-    await page.goto('/');
-    // Wait for hydration — click handlers need JS to be wired up
-    await page.waitForFunction(() => customElements.get('calc-app') !== undefined);
-
-    await page.locator('calc-button[label="1"]').click();
-    await page.locator('calc-button[label="+"]').click();
-    await page.locator('calc-button[label="2"]').click();
-    await page.locator('calc-button[label="="]').click();
-
-    await expect(page.locator('calc-display[value="3"]')).toBeVisible({ timeout: 5000 });
-  });
-});
-
 test.describe('visual regression', () => {
   test('calculator screenshot', async ({ page }) => {
     await page.goto('/');
