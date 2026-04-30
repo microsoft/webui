@@ -1092,6 +1092,65 @@ describe('WebUIRouter', () => {
       assert.equal(loaderPromises.size, 0, 'entry should be deleted after rejection');
     });
   });
+
+  describe('passive stub auto-registration', () => {
+    test('auto-defines a passive HTMLElement stub for unknown tags with no loader', async () => {
+      const tag = 'auto-stub-' + Date.now();
+      const loaders: Record<string, () => Promise<unknown>> = {};
+      const loaderPromises = new Map<string, Promise<void>>();
+
+      // Tag is not registered before the call
+      assert.equal(customElements.get(tag), undefined, 'tag should not be registered initially');
+
+      await ensureComponentLoaded(tag, loaders, loaderPromises);
+
+      // Tag is now registered
+      const ctor = customElements.get(tag);
+      assert.ok(ctor, 'tag should be auto-registered after ensureComponentLoaded');
+    });
+
+    test('auto-defined stub has a no-op setState method', async () => {
+      const tag = 'stub-setstate-' + Date.now();
+      const loaders: Record<string, () => Promise<unknown>> = {};
+      const loaderPromises = new Map<string, Promise<void>>();
+
+      await ensureComponentLoaded(tag, loaders, loaderPromises);
+
+      const ctor = customElements.get(tag) as new () => HTMLElement;
+      const instance = new ctor();
+      assert.equal(typeof (instance as any).setState, 'function', 'stub should have setState');
+
+      // setState should not throw
+      (instance as any).setState({ foo: 'bar' });
+    });
+
+    test('does not auto-define when a loader exists', async () => {
+      const tag = 'has-loader-' + Date.now();
+      let loaderCalled = false;
+      const loaders: Record<string, () => Promise<unknown>> = {
+        [tag]: () => { loaderCalled = true; return Promise.resolve(); },
+      };
+      const loaderPromises = new Map<string, Promise<void>>();
+
+      await ensureComponentLoaded(tag, loaders, loaderPromises);
+
+      assert.ok(loaderCalled, 'loader should have been called');
+    });
+
+    test('does not re-define when tag is already registered', async () => {
+      const tag = 'already-reg-' + Date.now();
+      const original = class extends HTMLElement {};
+      customElements.define(tag, original);
+
+      const loaders: Record<string, () => Promise<unknown>> = {};
+      const loaderPromises = new Map<string, Promise<void>>();
+
+      await ensureComponentLoaded(tag, loaders, loaderPromises);
+
+      // Should still be the original class, not a stub
+      assert.equal(customElements.get(tag), original, 'should not overwrite existing registration');
+    });
+  });
 });
 
 // ── parseQuery unit tests ────────────────────────────────────────
