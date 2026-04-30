@@ -93,6 +93,19 @@ fn main() -> ExitCode {
                 run_steps(&[Step::LICENSE_HEADERS])
             }
         }
+        Some("proto") => match proto_regenerate() {
+            Ok(()) => {
+                eprintln!(
+                    "  {} proto regenerated (crates/webui-protocol/src/gen_webui.rs)",
+                    console::style("✔").green(),
+                );
+                ExitCode::SUCCESS
+            }
+            Err(msg) => {
+                eprintln!("proto regeneration failed: {msg}");
+                ExitCode::FAILURE
+            }
+        },
         _ => usage(),
     }
 }
@@ -116,7 +129,8 @@ fn usage() -> ExitCode {
            e2e-approve [run-id]  Download CI screenshot baselines and apply locally\n  \
            version <semver>  Update version across all Cargo.toml and package.json files\n  \
            publish-stage [--target <triple|all>] [--profile release] [--native-only|--pack-only]  Stage release artifacts into publish/\n  \
-           license-headers [--fix]  Check (or fix) license headers in source files"
+           license-headers [--fix]  Check (or fix) license headers in source files\n  \
+           proto  Regenerate src/gen_webui.rs from proto/webui.proto"
     );
     ExitCode::SUCCESS
 }
@@ -168,7 +182,13 @@ fn check() -> ExitCode {
 
     // Phase 1: Sequential lint checks (fail-fast)
     eprintln!("\n{} Phase 1 — lint", console::style("▸").cyan().bold());
-    if run_steps(&[Step::LICENSE_HEADERS, Step::FMT, Step::CLIPPY]) != ExitCode::SUCCESS {
+    if run_steps(&[
+        Step::LICENSE_HEADERS,
+        Step::FMT,
+        Step::CLIPPY,
+        Step::PROTO_CHECK,
+    ]) != ExitCode::SUCCESS
+    {
         return ExitCode::FAILURE;
     }
 
@@ -195,6 +215,49 @@ fn check() -> ExitCode {
         console::style(format!("({total:.1}s)")).dim(),
     );
     ExitCode::SUCCESS
+}
+
+// ── Proto generation ────────────────────────────────────────────────────
+
+/// Regenerate `crates/webui-protocol/src/gen_webui.rs` from `proto/webui.proto`.
+fn proto_regenerate() -> Result<(), String> {
+    run_command(
+        "cargo",
+        &[
+            "build",
+            "-p",
+            "microsoft-webui-protocol",
+            "--features",
+            "regenerate-proto",
+        ],
+        None,
+    )
+}
+
+/// Check that the committed `gen_webui.rs` matches what prost-build would generate.
+fn proto_check() -> Result<(), String> {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let gen_path = PathBuf::from("crates/webui-protocol/src/gen_webui.rs");
+    let before =
+        fs::read_to_string(&gen_path).map_err(|e| format!("failed to read gen_webui.rs: {e}"))?;
+
+    proto_regenerate()?;
+
+    let after = fs::read_to_string(&gen_path)
+        .map_err(|e| format!("failed to read gen_webui.rs after regeneration: {e}"))?;
+
+    if before != after {
+        // Restore the original so the working tree isn't modified by the check.
+        let _ = fs::write(&gen_path, &before);
+        return Err(
+            "gen_webui.rs is out of date with proto/webui.proto. Run: cargo xtask proto"
+                .to_string(),
+        );
+    }
+
+    Ok(())
 }
 
 // ── Step runner ─────────────────────────────────────────────────────────
@@ -233,6 +296,10 @@ impl Step {
             ensure_cargo_install("cargo-deny", "cargo-deny")?;
             run_command_quiet("cargo", &["deny", "check"], None)
         },
+    };
+    const PROTO_CHECK: Self = Self {
+        name: "proto (drift check)",
+        run: proto_check,
     };
     const TEST: Self = Self {
         name: "test",

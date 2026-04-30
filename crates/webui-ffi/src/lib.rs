@@ -79,6 +79,8 @@ fn clear_last_error() {
 /// Opaque context wrapping a `WebUIHandler`.
 struct HandlerContext {
     handler: WebUIHandler,
+    /// CSP nonce for inline `<script>` tags (set via `webui_handler_set_nonce`).
+    nonce: Option<String>,
 }
 
 /// A simple string buffer for collecting rendered output.
@@ -139,7 +141,10 @@ pub extern "C" fn webui_last_error() -> *const c_char {
 #[no_mangle]
 pub extern "C" fn webui_handler_create() -> *mut c_void {
     let handler = WebUIHandler::new();
-    let context = Box::new(HandlerContext { handler });
+    let context = Box::new(HandlerContext {
+        handler,
+        nonce: None,
+    });
     Box::into_raw(context) as *mut c_void
 }
 
@@ -185,7 +190,10 @@ pub unsafe extern "C" fn webui_handler_create_with_plugin(plugin_id: *const c_ch
         }
     };
 
-    let context = Box::new(HandlerContext { handler });
+    let context = Box::new(HandlerContext {
+        handler,
+        nonce: None,
+    });
     Box::into_raw(context) as *mut c_void
 }
 
@@ -199,6 +207,57 @@ pub unsafe extern "C" fn webui_handler_create_with_plugin(plugin_id: *const c_ch
 pub unsafe extern "C" fn webui_handler_destroy(handler_ptr: *mut c_void) {
     if !handler_ptr.is_null() {
         let _ = Box::from_raw(handler_ptr as *mut HandlerContext);
+    }
+}
+
+/// Set the CSP nonce for inline `<script>` tags on a handler instance.
+///
+/// When set, all subsequent renders via [`webui_handler_render`] will include
+/// `nonce="VALUE"` on inline script tags and emit a
+/// `<meta name="webui-nonce" content="VALUE">` tag in the `<head>`.
+///
+/// Pass `NULL` to clear a previously set nonce.
+///
+/// # Thread Safety
+///
+/// Handler instances are **not** thread-safe. Callers must serialize access
+/// to a single `handler_ptr` — do not call `set_nonce` concurrently with
+/// `render` or other operations on the same handler.
+///
+/// # Safety
+///
+/// * `handler_ptr` must be a valid pointer returned by [`webui_handler_create`].
+/// * `nonce` must be a valid null-terminated UTF-8 string, or `NULL`.
+/// * Caller must ensure exclusive access to `handler_ptr` (no concurrent calls).
+#[no_mangle]
+pub unsafe extern "C" fn webui_handler_set_nonce(handler_ptr: *mut c_void, nonce: *const c_char) {
+    clear_last_error();
+
+    if handler_ptr.is_null() {
+        set_last_error("handler_ptr is null");
+        return;
+    }
+
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: caller guarantees handler_ptr is valid and exclusively owned.
+        let context = &mut *(handler_ptr as *mut HandlerContext);
+
+        if nonce.is_null() {
+            context.nonce = None;
+        } else {
+            // SAFETY: caller guarantees nonce is a valid null-terminated string.
+            match CStr::from_ptr(nonce).to_str() {
+                Ok(s) => context.nonce = Some(s.to_string()),
+                Err(e) => {
+                    set_last_error(format!("invalid UTF-8 in nonce: {e}"));
+                }
+            }
+        }
+    })) {
+        Ok(()) => {}
+        Err(_) => {
+            set_last_error("panic in webui_handler_set_nonce");
+        }
     }
 }
 
@@ -302,13 +361,16 @@ pub unsafe extern "C" fn webui_handler_render(
     };
 
     // Render
+    let mut options = RenderOptions::new(entry_str, path_str);
+    if let Some(ref nonce) = context.nonce {
+        options = options.with_nonce(nonce);
+    }
+
     let mut writer = StringResponseWriter::new();
-    match context.handler.render(
-        &protocol,
-        &data,
-        &RenderOptions::new(entry_str, path_str),
-        &mut writer,
-    ) {
+    match context
+        .handler
+        .render(&protocol, &data, &options, &mut writer)
+    {
         Ok(_) => match CString::new(writer.content) {
             Ok(s) => s.into_raw(),
             Err(e) => {

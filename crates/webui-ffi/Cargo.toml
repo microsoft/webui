@@ -10,6 +10,7 @@ homepage.workspace = true
 readme = "README.md"
 keywords = ["webui", "ffi", "c-api", "bindings", "ssr"]
 categories = ["api-bindings", "web-programming"]
+exclude = ["build.rs"]
 
 [lib]
 name = "webui_ffi"
@@ -18,6 +19,9 @@ crate-type = ["cdylib", "staticlib", "lib"]
 [features]
 default = ["parser"]
 parser = ["dep:microsoft-webui-parser"]
+# Enable to regenerate include/webui_ffi.h via cbindgen during build.
+# Off by default so crates.io consumers don't pull in cbindgen.
+regenerate-header = ["dep:cbindgen"]
 
 [dependencies]
 microsoft-webui-handler = { path = "../webui-handler", version = "0.0.11" }
@@ -27,12 +31,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 libc = { workspace = true }
 
-# Platform-specific dependencies
-[target.'cfg(target_os = "windows")'.dependencies]
-windows = { workspace = true }
-
 [build-dependencies]
-cbindgen = { workspace = true }
+cbindgen = { workspace = true, optional = true }
 
 [lints]
 workspace = true

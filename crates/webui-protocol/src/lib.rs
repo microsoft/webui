@@ -22,7 +22,7 @@ pub mod attrs;
 
 /// Generated protobuf types from `proto/webui.proto`.
 pub mod proto {
-    include!(concat!(env!("OUT_DIR"), "/webui.rs"));
+    include!("gen_webui.rs");
 }
 
 // Re-export all generated types at the crate root.

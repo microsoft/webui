@@ -17,8 +17,9 @@ use std::ffi::{CStr, CString};
 // Because we added "lib" to crate-type, Rust integration tests can link
 // against the rlib and call the `pub extern "C"` functions.
 use webui_ffi::{
-    webui_free, webui_handler_create, webui_handler_destroy, webui_handler_render,
-    webui_last_error, webui_protocol_tokens, webui_render, webui_render_partial,
+    webui_free, webui_handler_create, webui_handler_create_with_plugin, webui_handler_destroy,
+    webui_handler_render, webui_handler_set_nonce, webui_last_error, webui_protocol_tokens,
+    webui_render, webui_render_partial,
 };
 use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol, WebUiFragmentRoute};
 
@@ -582,6 +583,182 @@ fn protocol_tokens_multiple_tokens_newline_delimited() {
             "colorBrandBackground\nfontSizeBase300\nspacingHorizontalM"
         );
         webui_free(ptr);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests: webui_handler_set_nonce
+// ---------------------------------------------------------------------------
+
+/// Build a minimal protocol that will produce a `<script>` tag when rendered.
+/// Includes head_end (for nonce meta) and body_end (for consolidated script)
+/// signals. Requires a plugin-enabled handler to trigger the body_end path.
+fn build_protocol_with_body_end() -> Vec<u8> {
+    let mut fragments = HashMap::new();
+    fragments.insert(
+        "index.html".to_string(),
+        FragmentList {
+            fragments: vec![
+                WebUIFragment::raw("<html><head>"),
+                WebUIFragment::signal("head_end".to_string(), true),
+                WebUIFragment::raw("</head><body>"),
+                WebUIFragment::signal("body_end".to_string(), true),
+                WebUIFragment::raw("</body></html>"),
+            ],
+        },
+    );
+    let protocol = WebUIProtocol {
+        fragments,
+        ..Default::default()
+    };
+    protocol.to_protobuf().expect("serialize test protocol")
+}
+
+#[test]
+fn handler_set_nonce_applies_to_render() {
+    let proto_bytes = build_protocol_with_body_end();
+
+    unsafe {
+        let plugin_id = CString::new("webui").expect("static string");
+        let handler = webui_handler_create_with_plugin(plugin_id.as_ptr());
+
+        // Set a nonce
+        let nonce_val = CString::new("Ep7tTOr+HyRkByAPXxZ9ag==").expect("static string");
+        webui_handler_set_nonce(handler, nonce_val.as_ptr());
+
+        let c_json = CString::new("{}").expect("static string");
+        let c_entry = CString::new("index.html").expect("static string");
+        let c_path = CString::new("/").expect("static string");
+
+        let ptr = webui_handler_render(
+            handler,
+            proto_bytes.as_ptr(),
+            proto_bytes.len(),
+            c_json.as_ptr(),
+            c_entry.as_ptr(),
+            c_path.as_ptr(),
+        );
+        assert!(
+            !ptr.is_null(),
+            "render returned NULL: {}",
+            last_error_string().unwrap_or_else(|| "<none>".to_string())
+        );
+
+        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        webui_free(ptr);
+
+        // Verify the script tag has the nonce attribute
+        assert!(
+            result.contains(r#"nonce="Ep7tTOr+HyRkByAPXxZ9ag==""#),
+            "rendered HTML should contain nonce attribute on <script>, got:\n{result}"
+        );
+
+        // Verify the meta tag is emitted for the client router
+        assert!(
+            result.contains(r#"<meta name="webui-nonce" content="Ep7tTOr+HyRkByAPXxZ9ag==""#),
+            "rendered HTML should contain nonce meta tag, got:\n{result}"
+        );
+
+        webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn handler_render_without_nonce_has_no_nonce_attribute() {
+    let proto_bytes = build_protocol_with_body_end();
+
+    unsafe {
+        let plugin_id = CString::new("webui").expect("static string");
+        let handler = webui_handler_create_with_plugin(plugin_id.as_ptr());
+
+        let c_json = CString::new("{}").expect("static string");
+        let c_entry = CString::new("index.html").expect("static string");
+        let c_path = CString::new("/").expect("static string");
+
+        let ptr = webui_handler_render(
+            handler,
+            proto_bytes.as_ptr(),
+            proto_bytes.len(),
+            c_json.as_ptr(),
+            c_entry.as_ptr(),
+            c_path.as_ptr(),
+        );
+        assert!(
+            !ptr.is_null(),
+            "render returned NULL: {}",
+            last_error_string().unwrap_or_else(|| "<none>".to_string())
+        );
+
+        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        webui_free(ptr);
+
+        // Script tag should NOT have a nonce attribute
+        assert!(
+            !result.contains("nonce="),
+            "rendered HTML without set_nonce should not have nonce attribute, got:\n{result}"
+        );
+
+        // No meta nonce tag either
+        assert!(
+            !result.contains("webui-nonce"),
+            "rendered HTML without set_nonce should not have nonce meta, got:\n{result}"
+        );
+
+        webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn handler_set_nonce_null_clears_nonce() {
+    let proto_bytes = build_protocol_with_body_end();
+
+    unsafe {
+        let plugin_id = CString::new("webui").expect("static string");
+        let handler = webui_handler_create_with_plugin(plugin_id.as_ptr());
+
+        // Set a nonce
+        let nonce_val = CString::new("test-nonce-123").expect("static string");
+        webui_handler_set_nonce(handler, nonce_val.as_ptr());
+
+        // Clear it by passing NULL
+        webui_handler_set_nonce(handler, std::ptr::null());
+
+        let c_json = CString::new("{}").expect("static string");
+        let c_entry = CString::new("index.html").expect("static string");
+        let c_path = CString::new("/").expect("static string");
+
+        let ptr = webui_handler_render(
+            handler,
+            proto_bytes.as_ptr(),
+            proto_bytes.len(),
+            c_json.as_ptr(),
+            c_entry.as_ptr(),
+            c_path.as_ptr(),
+        );
+        assert!(!ptr.is_null());
+
+        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        webui_free(ptr);
+
+        // Nonce should be cleared — no nonce in output
+        assert!(
+            !result.contains("nonce="),
+            "after clearing nonce with NULL, output should not contain nonce, got:\n{result}"
+        );
+
+        webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn handler_set_nonce_null_handler_sets_error() {
+    unsafe {
+        let nonce_val = CString::new("some-nonce").expect("static string");
+        webui_handler_set_nonce(std::ptr::null_mut(), nonce_val.as_ptr());
+
+        let err = last_error_string();
+        assert!(err.is_some(), "should set error for null handler_ptr");
+        assert!(err.unwrap().contains("null"), "error should mention null");
     }
 }
 

@@ -48,6 +48,27 @@ void *webui_handler_create_with_plugin(const char *plugin_id);
 /// or `NULL` (in which case this function is a no-op).
 void webui_handler_destroy(void *handler_ptr);
 
+/// Set the CSP nonce for inline `<script>` tags on a handler instance.
+///
+/// When set, all subsequent renders via [`webui_handler_render`] will include
+/// `nonce="VALUE"` on inline script tags and emit a
+/// `<meta name="webui-nonce" content="VALUE">` tag in the `<head>`.
+///
+/// Pass `NULL` to clear a previously set nonce.
+///
+/// # Thread Safety
+///
+/// Handler instances are NOT thread-safe. Callers must serialize all calls
+/// to the same handler_ptr (e.g., via a mutex). Do not call set_nonce
+/// concurrently with render or destroy on the same handler.
+///
+/// # Safety
+///
+/// * `handler_ptr` must be a valid pointer returned by [`webui_handler_create`].
+/// * `nonce` must be a valid null-terminated UTF-8 string, or `NULL`.
+/// * Caller must ensure exclusive access to `handler_ptr` (no concurrent calls).
+void webui_handler_set_nonce(void *handler_ptr, const char *nonce);
+
 /// Render a WebUI protocol (protobuf binary) with JSON data.
 ///
 /// # Arguments
