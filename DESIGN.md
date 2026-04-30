@@ -443,16 +443,18 @@ pub struct Predicate {
 
 ## State Management (webui-state)
 ### Path Resolution
-The `find_value_by_dotted_path` function provides a high-performance way to query JSON state:
+The `find_value_by_dotted_path_ref` function provides the render-time state lookup contract:
 ```rust
-pub fn find_value_by_dotted_path(path: &str, state: &Value) -> Result<Value, StateError>
+pub fn find_value_by_dotted_path_ref<'a>(path: &str, state: &'a Value) -> Option<Cow<'a, Value>>
 ```
+Existing JSON values are returned as `Cow::Borrowed` so handler and expression hot paths do not clone the state tree. Synthetic values, currently string and array `.length`, are returned as `Cow::Owned`. The owned `find_value_by_dotted_path(path, state) -> Option<Value>` wrapper is retained for API boundaries that must materialize an owned `serde_json::Value`.
+
 ### Requirements
 - Dot notation support (e.g., user.profile.name)
-- Array indexing support (e.g., users.0.name)
-- Special length property support for arrays (e.g., users.length)
-- Nullable path handling
-- Missing path error reporting
+- Special length property support for arrays and strings (e.g., users.length)
+- Numeric array indexes are not resolved by dotted path lookup; loops bind array items by moniker instead
+- Nullable path handling via `Option`
+- Missing paths return `None`; handler text and attribute bindings render empty, and missing condition values evaluate as false
 
 ## Expression Evaluation (webui-expressions)
 ### Core Function

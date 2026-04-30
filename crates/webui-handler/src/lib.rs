@@ -14,12 +14,14 @@ pub(crate) mod route_renderer;
 
 use plugin::HandlerPlugin;
 use route_matcher::CompiledRouteCache;
+use serde::Serialize;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 use webui_expressions::{evaluate_with_resolver, ExpressionError};
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUIProtocol};
-use webui_state::find_value_by_dotted_path;
+use webui_state::find_value_by_dotted_path_ref;
 
 /// Error types for the WebUI handler.
 #[derive(Debug, Error)]
@@ -142,6 +144,15 @@ struct WebUIProcessContext<'a> {
     route_chain_index: usize,
 }
 
+struct WebUiBootstrap<'a> {
+    state: &'a Value,
+    chain: &'a [Value],
+    inventory: &'a str,
+    nonce: Option<&'a str>,
+    css_hrefs: &'a [&'a str],
+    style_specs: &'a [&'a str],
+}
+
 /// Get the component attribute name, stripping `:` prefix and converting to camelCase.
 ///
 /// Uses `webui_protocol::attrs::attribute_to_camel` which handles irregular
@@ -173,6 +184,112 @@ fn write_usize(writer: &mut dyn ResponseWriter, mut n: usize) -> Result<()> {
         Ok(s) => writer.write(s),
         Err(_) => writer.write("0"),
     }
+}
+
+fn write_script_safe_json<T>(writer: &mut dyn ResponseWriter, value: &T) -> Result<()>
+where
+    T: Serialize + ?Sized,
+{
+    let mut json = Vec::with_capacity(256);
+    serde_json::to_writer(&mut json, value)
+        .map_err(|error| HandlerError::Rendering(format!("failed to serialize JSON: {error}")))?;
+    let json = std::str::from_utf8(&json)
+        .map_err(|error| HandlerError::Rendering(format!("invalid JSON UTF-8: {error}")))?;
+    write_script_safe_json_str(writer, json)
+}
+
+fn write_script_safe_json_str(writer: &mut dyn ResponseWriter, json: &str) -> Result<()> {
+    let mut start = 0;
+    while start < json.len() {
+        let rest = &json[start..];
+        let Some(offset) = rest.find("</") else {
+            writer.write(rest)?;
+            return Ok(());
+        };
+
+        if offset > 0 {
+            writer.write(&rest[..offset])?;
+        }
+        writer.write("<\\/")?;
+        start += offset + 2;
+    }
+    Ok(())
+}
+
+fn write_json_field_name(
+    writer: &mut dyn ResponseWriter,
+    wrote_field: &mut bool,
+    name: &str,
+) -> Result<()> {
+    if *wrote_field {
+        writer.write(",")?;
+    }
+    *wrote_field = true;
+    writer.write("\"")?;
+    writer.write(name)?;
+    writer.write("\":")
+}
+
+fn write_json_field<T>(
+    writer: &mut dyn ResponseWriter,
+    wrote_field: &mut bool,
+    name: &str,
+    value: &T,
+) -> Result<()>
+where
+    T: Serialize + ?Sized,
+{
+    write_json_field_name(writer, wrote_field, name)?;
+    write_script_safe_json(writer, value)
+}
+
+fn write_webui_bootstrap(
+    writer: &mut dyn ResponseWriter,
+    bootstrap: WebUiBootstrap<'_>,
+) -> Result<()> {
+    let mut wrote_field = false;
+
+    writer.write("{")?;
+    if !bootstrap.chain.is_empty() {
+        write_json_field(writer, &mut wrote_field, "chain", bootstrap.chain)?;
+    }
+    if !bootstrap.css_hrefs.is_empty() {
+        write_json_field(writer, &mut wrote_field, "css", bootstrap.css_hrefs)?;
+    }
+    write_json_field(writer, &mut wrote_field, "inventory", bootstrap.inventory)?;
+    if let Some(nonce) = bootstrap.nonce {
+        write_json_field(writer, &mut wrote_field, "nonce", nonce)?;
+    }
+    write_json_field(writer, &mut wrote_field, "state", bootstrap.state)?;
+    if !bootstrap.style_specs.is_empty() {
+        write_json_field(writer, &mut wrote_field, "styles", bootstrap.style_specs)?;
+    }
+    write_json_field_name(writer, &mut wrote_field, "templates")?;
+    writer.write("{}")?;
+    writer.write("}")
+}
+
+fn resolve_value_from_sources<'ctx, 'state>(
+    path: &str,
+    local_vars: &'ctx HashMap<String, Value>,
+    state: &'state Value,
+) -> Option<Cow<'ctx, Value>>
+where
+    'state: 'ctx,
+{
+    if let Some(first_part) = path.split('.').next() {
+        if let Some(local_value) = local_vars.get(first_part) {
+            if first_part.len() == path.len() {
+                return Some(Cow::Borrowed(local_value));
+            }
+            let remaining = &path[first_part.len() + 1..];
+            if let Some(value) = find_value_by_dotted_path_ref(remaining, local_value) {
+                return Some(value);
+            }
+        }
+    }
+
+    find_value_by_dotted_path_ref(path, state)
 }
 
 impl WebUIHandler {
@@ -365,10 +482,10 @@ impl WebUIHandler {
         let request_segments = route_matcher::split_request_path(&context.request_path);
         let mut best: Option<(usize, route_matcher::RouteMatch)> = None;
         for (idx, child) in children.iter().enumerate() {
-            let resolved = route_matcher::resolve_route_path(&child.path, &context.route_base);
+            let resolved = route_matcher::resolve_route_path_cow(&child.path, &context.route_base);
             if let Some(m) = route_matcher::match_route_cached_with_segments(
                 &mut context.route_cache,
-                &resolved,
+                resolved.as_ref(),
                 &request_segments,
                 child.exact,
             ) {
@@ -611,7 +728,7 @@ impl WebUIHandler {
         let saved_local_vars = std::mem::take(&mut context.local_vars);
         let saved_component_attrs = std::mem::take(&mut context.component_attrs);
 
-        // Component gets accumulated attrs as its local vars
+        // Component gets accumulated attrs as its local vars.
         context.local_vars = saved_component_attrs;
 
         if let Some(p) = &mut context.plugin {
@@ -632,21 +749,8 @@ impl WebUIHandler {
     }
 
     /// Resolve a dotted path value, checking local variables first, then global state.
-    fn resolve_value(&self, path: &str, context: &WebUIProcessContext) -> Option<Value> {
-        // Check local vars first
-        if let Some(first_part) = path.split('.').next() {
-            if let Some(local_value) = context.local_vars.get(first_part) {
-                if first_part.len() == path.len() {
-                    return Some(local_value.clone());
-                }
-                let remaining = &path[first_part.len() + 1..];
-                if let Some(v) = find_value_by_dotted_path(remaining, local_value) {
-                    return Some(v);
-                }
-            }
-        }
-        // Fall back to global state
-        find_value_by_dotted_path(path, context.state)
+    fn resolve_value(&self, path: &str, context: &WebUIProcessContext<'_>) -> Option<Value> {
+        resolve_value_from_sources(path, &context.local_vars, context.state).map(Cow::into_owned)
     }
 
     /// Evaluate a condition expression against the current context.
@@ -662,18 +766,7 @@ impl WebUIHandler {
         let local_vars = &context.local_vars;
         let state = context.state;
         match evaluate_with_resolver(condition, |path| {
-            if let Some(first_part) = path.split('.').next() {
-                if let Some(local_value) = local_vars.get(first_part) {
-                    if first_part.len() == path.len() {
-                        return Some(local_value.clone());
-                    }
-                    let remaining = &path[first_part.len() + 1..];
-                    if let Some(v) = find_value_by_dotted_path(remaining, local_value) {
-                        return Some(v);
-                    }
-                }
-            }
-            find_value_by_dotted_path(path, state)
+            resolve_value_from_sources(path, local_vars, state)
         }) {
             Ok(result) => Ok(result),
             Err(ExpressionError::MissingValue(_)) => Ok(false),
@@ -721,8 +814,8 @@ impl WebUIHandler {
             let saved_value = context.local_vars.insert(item_name.clone(), item);
             self.process_fragment_id(&for_loop.fragment_id, context)?;
             match saved_value {
-                Some(v) => {
-                    context.local_vars.insert(item_name.clone(), v);
+                Some(value) => {
+                    context.local_vars.insert(item_name.clone(), value);
                 }
                 None => {
                     context.local_vars.remove(item_name.as_str());
@@ -818,11 +911,10 @@ impl WebUIHandler {
             let comp_index = crate::route_handler::build_component_index(context.protocol);
 
             // Compute the inventory hex from actually rendered components.
-            let (_, inventory_hex) = crate::route_handler::filter_needed_components(
+            let inventory_hex = crate::route_handler::encode_component_inventory(
                 &context.rendered_components,
-                "",
                 &comp_index,
-            )?;
+            );
 
             // Emit templates for all REACHABLE components on the current route,
             // not just those rendered in this SSR pass. Components inside false
@@ -831,15 +923,12 @@ impl WebUIHandler {
             // round-trip. The graph walker follows conditional and loop branches
             // unconditionally, but only descends into the matched route chain —
             // components on other routes are delivered via SPA partial navigation.
-            let (reachable_names, _) = crate::route_handler::get_needed_components_for_request(
+            let reachable = crate::route_handler::collect_reachable_components_for_request(
                 context.protocol,
                 &context.entry_id,
                 &context.request_path,
-                "",
-                &comp_index,
-            )?;
-            let reachable: std::collections::HashSet<String> =
-                reachable_names.into_iter().collect();
+                &mut context.route_cache,
+            );
 
             // Emit CSS module definitions for reachable-but-unrendered components.
             // Rendered components already got their <style type="module"> inline
@@ -895,18 +984,6 @@ impl WebUIHandler {
             // Single-script reduces HTML parse overhead and ensures all
             // SSR metadata is available atomically before DOMContentLoaded.
 
-            // Build the window.__webui bootstrap object
-            let mut webui_obj = serde_json::Map::new();
-
-            // Templates — empty object so IIFE scripts can write into it
-            webui_obj.insert(
-                "templates".into(),
-                serde_json::Value::Object(serde_json::Map::new()),
-            );
-
-            // State — emitted as window.__webui.state
-            webui_obj.insert("state".into(), context.state.clone());
-
             // Chain
             let chain = crate::route_handler::collect_route_chain(
                 context.protocol,
@@ -914,28 +991,15 @@ impl WebUIHandler {
                 &context.request_path,
                 &mut context.route_cache,
             );
-            if !chain.is_empty() {
-                let chain_json = serde_json::Value::Array(
-                    chain
-                        .iter()
-                        .map(crate::route_handler::RouteChainEntry::to_json)
-                        .collect(),
-                );
-                webui_obj.insert("chain".into(), chain_json);
-            }
-
-            // Inventory
-            webui_obj.insert("inventory".into(), serde_json::Value::String(inventory_hex));
-
-            // Nonce
-            if let Some(ref nonce) = context.nonce {
-                webui_obj.insert("nonce".into(), serde_json::Value::String(nonce.clone()));
-            }
+            let chain_json: Vec<Value> = chain
+                .iter()
+                .map(crate::route_handler::RouteChainEntry::to_json)
+                .collect();
 
             // CSS hrefs emitted during SSR (Link-strategy components)
             let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
+            let mut css_hrefs: Vec<&str> = Vec::new();
             if is_link {
-                let mut css_hrefs: Vec<serde_json::Value> = Vec::new();
                 for name in &reachable {
                     if let Some(href) = context
                         .protocol
@@ -944,30 +1008,22 @@ impl WebUIHandler {
                         .map(|c| c.css_href.as_str())
                         .filter(|h| !h.is_empty())
                     {
-                        css_hrefs.push(serde_json::Value::String(href.to_string()));
+                        css_hrefs.push(href);
                     }
-                }
-                if !css_hrefs.is_empty() {
-                    webui_obj.insert("css".into(), serde_json::Value::Array(css_hrefs));
                 }
             }
 
             // Module style specifiers emitted during SSR
-            {
-                let mut style_specs: Vec<serde_json::Value> = Vec::new();
-                for name in &reachable {
-                    if context
-                        .protocol
-                        .components
-                        .get(name)
-                        .map(|c| !c.css.is_empty())
-                        .unwrap_or(false)
-                    {
-                        style_specs.push(serde_json::Value::String(name.clone()));
-                    }
-                }
-                if !style_specs.is_empty() {
-                    webui_obj.insert("styles".into(), serde_json::Value::Array(style_specs));
+            let mut style_specs: Vec<&str> = Vec::new();
+            for name in &reachable {
+                if context
+                    .protocol
+                    .components
+                    .get(name)
+                    .map(|c| !c.css.is_empty())
+                    .unwrap_or(false)
+                {
+                    style_specs.push(name);
                 }
             }
 
@@ -983,10 +1039,17 @@ impl WebUIHandler {
             // 1. Emit window.__webui bootstrap object (chain, inventory,
             //    nonce, css, styles, state — all in one JSON assignment)
             context.writer.write("window.__webui=")?;
-            let webui_str =
-                serde_json::to_string(&serde_json::Value::Object(webui_obj)).unwrap_or_default();
-            let safe_webui = webui_str.replace("</", "<\\/");
-            context.writer.write(&safe_webui)?;
+            write_webui_bootstrap(
+                context.writer,
+                WebUiBootstrap {
+                    state: context.state,
+                    chain: &chain_json,
+                    inventory: &inventory_hex,
+                    nonce: context.nonce.as_deref(),
+                    css_hrefs: &css_hrefs,
+                    style_specs: &style_specs,
+                },
+            )?;
             context.writer.write(";")?;
 
             // 2. Template IIFEs — write into window.__webui.templates
@@ -6311,7 +6374,6 @@ mod tests {
             ),
             "Missing preload for my-card.css in <head>: {html}"
         );
-
         // No stylesheet links — shadow root handles that
         assert!(
             !head_section.contains(r#"<link rel="stylesheet""#),
@@ -6334,7 +6396,6 @@ mod tests {
                     WebUIFragment::raw("</head><body><my-card>".to_string()),
                     WebUIFragment::component("my-card"),
                     WebUIFragment::raw("</my-card>".to_string()),
-                    WebUIFragment::signal("body_end", true),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -6456,6 +6517,7 @@ mod tests {
                     WebUIFragment::raw("</head><body>".to_string()),
                     WebUIFragment::component("has-css"),
                     WebUIFragment::component("no-css"),
+                    WebUIFragment::signal("body_end", true),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },

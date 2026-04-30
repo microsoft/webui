@@ -3,10 +3,17 @@
 
 extern crate serde_json;
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 
-// Finds a value in a JSON object by a dotted path.
-pub fn find_value_by_dotted_path(path: &str, state: &Value) -> Option<Value> {
+/// Finds a value in a JSON object by dotted path and returns a borrowed value when possible.
+///
+/// Most lookups borrow directly from `state`. Synthetic values such as array
+/// and string `.length` are returned as owned values because they do not exist
+/// in the source JSON tree.
+#[must_use]
+pub fn find_value_by_dotted_path_ref<'a>(path: &str, state: &'a Value) -> Option<Cow<'a, Value>> {
     let mut current_value: &Value = state;
 
     for part in path.split('.') {
@@ -15,16 +22,27 @@ pub fn find_value_by_dotted_path(path: &str, state: &Value) -> Option<Value> {
                 current_value = map.get(part)?;
             }
             Value::Array(arr) if part == "length" => {
-                return Some(Value::Number(serde_json::Number::from(arr.len())));
+                return Some(Cow::Owned(Value::Number(serde_json::Number::from(
+                    arr.len(),
+                ))));
             }
             Value::String(s) if part == "length" => {
-                return Some(Value::Number(serde_json::Number::from(s.len())));
+                return Some(Cow::Owned(Value::Number(serde_json::Number::from(s.len()))));
             }
             _ => return None,
         }
     }
 
-    Some(current_value.clone())
+    Some(Cow::Borrowed(current_value))
+}
+
+/// Finds a value in a JSON object by dotted path and returns an owned value.
+///
+/// Prefer [`find_value_by_dotted_path_ref`] in render-time hot paths so state
+/// values can be borrowed without cloning.
+#[must_use]
+pub fn find_value_by_dotted_path(path: &str, state: &Value) -> Option<Value> {
+    find_value_by_dotted_path_ref(path, state).map(Cow::into_owned)
 }
 
 #[cfg(test)]
@@ -339,5 +357,31 @@ mod tests {
             value,
             Some(Value::Number(serde_json::Number::from_f64(1.23).unwrap()))
         );
+    }
+
+    #[test]
+    fn test_ref_lookup_borrows_existing_value() {
+        let data = test_json!({
+            "user": {
+                "name": "Alice"
+            }
+        });
+        let value = find_value_by_dotted_path_ref("user.name", &data).expect("value");
+        let expected = data
+            .get("user")
+            .and_then(|user| user.get("name"))
+            .expect("expected value");
+
+        assert!(matches!(value, std::borrow::Cow::Borrowed(_)));
+        assert!(std::ptr::eq(value.as_ref(), expected));
+    }
+
+    #[test]
+    fn test_ref_lookup_owns_synthetic_length() {
+        let data = test_json!({ "items": [1, 2, 3] });
+        let value = find_value_by_dotted_path_ref("items.length", &data).expect("value");
+
+        assert!(matches!(value, std::borrow::Cow::Owned(_)));
+        assert_eq!(value.as_ref(), &Value::Number(serde_json::Number::from(3)));
     }
 }

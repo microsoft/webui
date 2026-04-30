@@ -48,24 +48,20 @@ impl ProtocolIndex {
 /// `protocol.components`. Components are sorted alphabetically; index =
 /// position in that order.
 pub fn build_component_index(protocol: &WebUIProtocol) -> HashMap<String, u32> {
-    let mut names: HashSet<&String> = HashSet::new();
-    for key in protocol.fragments.keys() {
-        if key.contains('-') {
-            names.insert(key);
-        }
-    }
-    let mut sorted: Vec<&String> = names.into_iter().collect();
+    let mut sorted: Vec<&String> = protocol
+        .fragments
+        .keys()
+        .filter(|key| key.contains('-'))
+        .collect();
     sorted.sort_unstable();
-    sorted
-        .iter()
-        .enumerate()
-        .map(|(i, n)| {
-            // Index count bounded by component registry size, well within u32 range
-            #[allow(clippy::cast_possible_truncation)]
-            let idx = i as u32;
-            ((*n).clone(), idx)
-        })
-        .collect()
+    let mut index = HashMap::with_capacity(sorted.len());
+    for (i, name) in sorted.into_iter().enumerate() {
+        // Index count bounded by component registry size, well within u32 range
+        #[allow(clippy::cast_possible_truncation)]
+        let idx = i as u32;
+        index.insert(name.clone(), idx);
+    }
+    index
 }
 
 /// Check if a component's bit is set in the inventory bitfield.
@@ -122,12 +118,27 @@ pub fn parse_inventory(hex: &str) -> Result<Vec<u8>, HandlerError> {
 
 /// Encode an inventory bitfield as a hex string.
 pub fn encode_inventory(inv: &[u8]) -> String {
-    inv.iter()
-        .fold(String::with_capacity(inv.len() * 2), |mut acc, b| {
-            use std::fmt::Write;
-            let _ = write!(acc, "{b:02x}");
-            acc
-        })
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(inv.len() * 2);
+    for byte in inv {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+/// Encode the inventory bitfield for a known set of rendered components.
+pub(crate) fn encode_component_inventory(
+    component_names: &HashSet<String>,
+    index: &HashMap<String, u32>,
+) -> String {
+    let mut inventory = Vec::new();
+    for name in component_names {
+        if let Some(&idx) = index.get(name.as_str()) {
+            set_component(&mut inventory, idx);
+        }
+    }
+    encode_inventory(&inventory)
 }
 
 /// Walk the protocol fragment graph from `entry_id` and return the names of
@@ -169,6 +180,16 @@ pub fn get_needed_components_for_request(
         &mut CompiledRouteCache::new(),
     );
     filter_needed_components(&component_names, inventory_hex, component_index)
+}
+
+/// Collect all route-reachable inventoryable components for the request path.
+pub(crate) fn collect_reachable_components_for_request(
+    protocol: &WebUIProtocol,
+    entry_id: &str,
+    request_path: &str,
+    cache: &mut CompiledRouteCache,
+) -> HashSet<String> {
+    collect_inventoryable_components(protocol, entry_id, Some(request_path), false, cache)
 }
 
 /// Filter components against the client's inventory bitfield using sequential indices.
@@ -388,10 +409,10 @@ fn select_best_child_route(
     let request_segments = route_matcher::split_request_path(request_path);
     let mut best: Option<(usize, route_matcher::RouteMatch)> = None;
     for (idx, child) in children.iter().enumerate() {
-        let resolved = route_matcher::resolve_route_path(&child.path, route_base);
+        let resolved = route_matcher::resolve_route_path_cow(&child.path, route_base);
         if let Some(m) = route_matcher::match_route_cached_with_segments(
             cache,
-            &resolved,
+            resolved.as_ref(),
             &request_segments,
             child.exact,
         ) {

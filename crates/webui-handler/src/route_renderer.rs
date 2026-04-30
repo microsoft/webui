@@ -84,10 +84,10 @@ pub(crate) fn find_best_route_match(
 
     for item in fragments {
         if let Some(Fragment::Route(route_frag)) = item.fragment.as_ref() {
-            let resolved_path = route_matcher::resolve_route_path(&route_frag.path, route_base);
+            let resolved_path = route_matcher::resolve_route_path_cow(&route_frag.path, route_base);
             if let Some(m) = route_matcher::match_route_cached_with_segments(
                 cache,
-                &resolved_path,
+                resolved_path.as_ref(),
                 &request_segments,
                 route_frag.exact,
             ) {
