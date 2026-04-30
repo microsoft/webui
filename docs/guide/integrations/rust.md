@@ -169,7 +169,7 @@ async fn main() {
 | `app_dir` | `PathBuf` | - | Path to app folder |
 | `entry` | `String` | `"index.html"` | Entry file |
 | `css` | `CssStrategy` | `Link` | CSS delivery: `Link`, `Style`, or `Module` |
-| `plugin` | `Option<String>` | `None` | Parser plugin (e.g. `"fast-v3"`; deprecated `"fast"`/`"fast-v2"` keep @microsoft/fast-element 2.x compatibility) |
+| `plugin` | `Option<String>` | `None` | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `Vec<String>` | `[]` | External component sources |
 
 ### BuildStats

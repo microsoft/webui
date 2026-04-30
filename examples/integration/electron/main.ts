@@ -9,11 +9,11 @@
 //   2. Build the @microsoft/webui package: pnpm --filter @microsoft/webui build
 //   3. Install workspace dependencies: pnpm install
 //   4. Build a WebUI app:
-//      cargo run -p microsoft-webui-cli -- build <app>/src --out <app>/dist --css link --plugin=fast-v3
+//      cargo run -p microsoft-webui-cli -- build <app>/src --out <app>/dist --css link --plugin=webui
 //      esbuild <app>/src/index.ts --bundle --outfile=<app>/dist/index.js --format=esm
 //
 // Usage:
-//   electron dist/main.js [dist-dir] [state.json] [--plugin=fast-v3]
+//   electron dist/main.js [dist-dir] [state.json] [--plugin=<name>]
 
 import { app, BrowserWindow, Menu, net, protocol } from 'electron';
 import { existsSync, readFileSync } from 'fs';
@@ -31,7 +31,7 @@ const positional = args.filter(a => !a.startsWith('--'));
 const flags = args.filter(a => a.startsWith('--'));
 
 if (positional.length < 2) {
-  console.error('Usage: electron dist/main.js <dist-dir> <state.json> [--plugin=fast-v3|fast-v2|fast|webui]');
+  console.error('Usage: electron dist/main.js <dist-dir> <state.json> [--plugin=<name>]');
   console.error('  dist-dir    Path to the app dist/ directory containing protocol.bin');
   console.error('  state.json  Path to the JSON state file');
   process.exit(1);

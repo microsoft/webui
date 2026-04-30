@@ -19,7 +19,7 @@ export interface BuildOptions {
   entry?: string;
   /** CSS delivery strategy: "link" (default), "style", or "module". */
   css?: "link" | "style" | "module";
-  /** Parser plugin (e.g., "fast-v3" for FAST 3 hydration; "fast"/"fast-v2" are deprecated FAST 2 compatibility aliases). */
+  /** Parser plugin name. */
   plugin?: string;
   /** Additional component sources (npm packages or local paths). */
   components?: string[];
@@ -59,7 +59,7 @@ export interface RenderOptions {
   entry?: string;
   /** URL path to match routes against (default: "/"). */
   requestPath?: string;
-  /** Handler plugin name (e.g., "fast-v3" for FAST 3 hydration; "fast"/"fast-v2" are deprecated FAST 2 compatibility aliases). */
+  /** Handler plugin name. */
   plugin?: string;
 }
 
@@ -67,7 +67,7 @@ export interface RenderOptions {
 export interface ComponentTemplatesResponse {
   /** Module CSS `<style>` strings for the requested components. */
   templateStyles: string[];
-  /** `<f-template>` HTML strings for the requested components. */
+  /** Component template payload strings for the requested components. */
   templates: string[];
   /** Updated hex bitmask of loaded component templates. */
   inventory: string;
@@ -77,7 +77,7 @@ export interface ComponentTemplatesResponse {
 export interface PartialResponse {
   /** Application state for the matched route. */
   state: Record<string, unknown>;
-  /** f-template HTML strings the client doesn't already have. */
+  /** Component template payload strings the client doesn't already have. */
   templates: string[];
   /** Updated hex bitmask of loaded component templates. */
   inventory: string;

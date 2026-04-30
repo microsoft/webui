@@ -75,7 +75,7 @@ pub struct JsBuildOptions {
     pub entry: Option<String>,
     /// CSS mode: "link" (default) or "style".
     pub css: Option<String>,
-    /// Framework plugin (for example, `"fast-v3"` for FAST 3 hydration).
+    /// Plugin identifier (see crate documentation for available identifiers).
     pub plugin: Option<String>,
     /// Additional component sources (npm packages or local paths).
     pub components: Option<Vec<String>>,
@@ -267,7 +267,7 @@ impl ResponseWriter for CallbackWriter<'_, '_> {
 /// * `protocol_data` — Protobuf binary from `webui build` (zero-copy Buffer).
 /// * `state_json` — JSON string with the render state.
 /// * `on_chunk` — Called with each rendered HTML fragment as it is produced.
-/// * `plugin` — Optional plugin identifier (e.g., `"fast-v3"` for FAST 3).
+/// * `plugin` — Optional plugin identifier (see crate documentation for available identifiers).
 #[napi]
 #[allow(clippy::too_many_arguments)]
 pub fn render(

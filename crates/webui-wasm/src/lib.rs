@@ -51,7 +51,7 @@ impl ResponseWriter for StringWriter {
 ///
 /// * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
 /// * `state_json` — JSON string of the state data.
-/// * `plugin` — Optional plugin identifier, such as `"fast-v3"` for FAST 3.
+/// * `plugin` — Optional plugin identifier (see crate documentation for available identifiers).
 ///
 /// # Returns
 ///

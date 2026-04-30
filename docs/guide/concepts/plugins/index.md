@@ -23,18 +23,15 @@ Parser plugins emit opaque binary data into `Plugin` protocol fragments. Handler
 Pass `--plugin <NAME>` to `webui build` or `webui serve`:
 
 ```bash
-# Build with the @microsoft/fast-element 3.x plugin
-webui build ./my-app --out ./dist --plugin=fast-v3
+# Build with a named plugin
+webui build ./my-app --out ./dist --plugin=<name>
 
-# Dev server with the @microsoft/fast-element 3.x plugin
-webui serve ./my-app --state ./data/state.json --plugin=fast-v3
+# Dev server with a named plugin
+webui serve ./my-app --state ./data/state.json --plugin=<name>
 ```
 
-When `--plugin=fast-v3` is specified:
-- **Build**: The `FastV3ParserPlugin` is loaded during parsing
-- **Start**: Both `FastV3ParserPlugin` and `FastV3HydrationPlugin` are loaded
-
-`--plugin=fast-v2` remains available for deprecated @microsoft/fast-element 2.x compatibility. `--plugin=fast` is a deprecated alias for `fast-v2`, kept so existing apps do not silently switch marker formats.
+When a plugin is selected, both its parser-side and (for `serve`) handler-side
+implementations are loaded.
 
 ## Using Plugins with Handlers
 
@@ -45,10 +42,9 @@ When `--plugin=fast-v3` is specified:
 <webui-tab-panel active>
 
 ```rust
-use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui::WebUIHandler;
 
-let handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
+let handler = WebUIHandler::with_plugin(|| Box::new(MyHydrationPlugin::new()));
 handler.handle(&protocol, &state, &options, &mut writer)?;
 ```
 
@@ -58,115 +54,19 @@ handler.handle(&protocol, &state, &options, &mut writer)?;
 ```js
 import { renderStream } from '@microsoft/webui';
 
-renderStream(protocolData, state, (chunk) => res.write(chunk), { plugin: 'fast-v3' });
+renderStream(protocolData, state, (chunk) => res.write(chunk), { plugin: '<name>' });
 ```
 
 </webui-tab-panel>
 <webui-tab-panel>
 
 ```c
-void *handler = webui_handler_create_with_plugin("fast-v3");
+void *handler = webui_handler_create_with_plugin("<name>");
 char *html = webui_handler_render(handler, protocol_data, protocol_len, state_json, "index.html", "/");
 ```
 
 </webui-tab-panel>
 </webui-tabs>
-
-## Built-in FAST Plugins
-
-`fast-v3` provides server-side rendering support for @microsoft/fast-element 3.x components with client-side hydration.
-
-Deprecated compatibility identifiers remain available:
-
-| Plugin | Status | Marker format |
-|--------|--------|---------------|
-| `fast-v3` | Recommended for @microsoft/fast-element 3.x | Compact @microsoft/fast-element 3.x markers |
-| `fast-v2` | Deprecated compatibility | Legacy @microsoft/fast-element 2.x markers |
-| `fast` | Deprecated alias for `fast-v2` | Legacy @microsoft/fast-element 2.x markers |
-
-No plugin is enabled by default. Select `fast-v3` explicitly when migrating examples or apps to @microsoft/fast-element 3.x.
-
-### Parser Side (`FastV3ParserPlugin`)
-
-During `webui build --plugin=fast-v3`, the parser plugin:
-
-- **Skips framework attributes**: `@click`, `f-ref`, `f-slotted`, `f-children` are removed from the protocol (they're handled client-side)
-- **Counts dynamic bindings**: Emits binding counts per element as `Plugin` fragments for the handler
-- **Tracks components**: Records all custom elements discovered during parsing
-- **Injects `<f-template>` wrappers**: At `</body>`, injects template wrappers for each component with FAST syntax conversion
-- **Uses @microsoft/fast-element 3.x runtime APIs**: Client code enables hydration with `enableHydration()` from `@microsoft/fast-element/hydration.js` and registers declarative templates with `declarativeTemplate()`, `observerMap()`, and `define()`
-
-`fast-v3` uses a distinct parser plugin implementation. Deprecated `fast-v2` and `fast` use the separate `FastV2ParserPlugin` implementation for @microsoft/fast-element 2.x compatibility.
-
-#### Syntax Conversion
-
-The plugin converts WebUI template syntax to FAST equivalents inside `<f-template>` blocks:
-
-| WebUI Syntax | FAST Syntax |
-|-------------|-------------|
-| `<if condition="EXPR">` | `<f-when value="{EXPR}">` |
-| `<for each="item in items">` | `<f-repeat value="{items}">` |
-| `{{expr}}` in `:attr` values | `{expr}` |
-
-### Handler Side (`FastV3HydrationPlugin`)
-
-During rendering with `--plugin=fast-v3`, the handler plugin injects HTML comment markers that @microsoft/fast-element 3.x client-side hydration uses to locate and re-hydrate dynamic content:
-
-| Context | Start Marker | End Marker |
-|---------|-------------|------------|
-| Signal / If / For | `<!--fe:b-->` | `<!--fe:/b-->` |
-| For-loop item | `<!--fe:r-->` | `<!--fe:/r-->` |
-
-For attribute bindings, data attributes are emitted instead:
-
-| Type | Attribute |
-|------|-----------|
-| Dynamic bindings | `data-fe="COUNT"` |
-
-`COUNT` is the number of dynamic element bindings. The plugin maintains per-scope binding counters that reset when entering components or loop items.
-
-### Deprecated @microsoft/fast-element 2.x Handler (`FastV2HydrationPlugin`)
-
-During rendering with `--plugin=fast-v2` or deprecated `--plugin=fast`, the handler emits the legacy @microsoft/fast-element 2.x marker format:
-
-| Context | Start Marker | End Marker |
-|---------|-------------|------------|
-| Signal / If / For | `<!--fe-b$$start$$INDEX$$NAME$$fe-b-->` | `<!--fe-b$$end$$INDEX$$NAME$$fe-b-->` |
-| For-loop item | `<!--fe-repeat$$start$$INDEX$$fe-repeat-->` | `<!--fe-repeat$$end$$INDEX$$fe-repeat-->` |
-
-For attribute bindings:
-
-| Type | Attribute |
-|------|-----------|
-| Single dynamic binding | `data-fe-b-INDEX` |
-| Multiple dynamic bindings | `data-fe-c-INDEX-COUNT` |
-
-Use this only for existing @microsoft/fast-element 2.x output compatibility. New and migrated FAST apps should use `fast-v3`.
-
-## Built-in Plugin: WebUI Framework
-
-The `webui` plugin provides server-side rendering support for [WebUI Framework](https://github.com/microsoft/webui) components with automatic hydration.
-
-### Parser Side (`WebUIParserPlugin`)
-
-During `webui build --plugin=webui`, the parser plugin:
-
-- **Skips framework attributes**: `@click`, `@keydown`, `w-ref`, and other event/ref bindings are removed from the protocol (handled client-side)
-- **Emits binding metadata**: 12-byte `Plugin` fragments encoding `[binding_count, event_start, event_count]` per element
-- **Tracks components**: Records custom elements for template metadata generation
-- **Compiles templates**: Generates optimized metadata as raw JS IIFE strings registered in `window.__webui.templates` (wrapped in `<script>` for SSR, evaluated directly for SPA navigation)
-
-### Handler Side (`WebUIHydrationPlugin`)
-
-During rendering with `--plugin=webui`, the handler injects lightweight comment markers for structural boundaries:
-
-| Context | Marker | Example |
-|---------|--------|---------|
-| Repeat block | `<!--wr-->` / `<!--/wr-->` | Wraps the entire `<for>` loop |
-| Repeat item | `<!--wi-->` | Before each loop iteration |
-| Conditional block | `<!--wc-->` / `<!--/wc-->` | Wraps the `<if>` block content |
-
-Text bindings, attribute bindings, and event handlers need no SSR markers - the client resolves them from compiled metadata path indices.
 
 ### Using the WebUI Plugin
 

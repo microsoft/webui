@@ -63,16 +63,14 @@ let handler = WebUIHandler::new();
 handler.handle(&protocol, &state, &RenderOptions::new("index.html", "/"), &mut writer)?;
 ```
 
-With the @microsoft/fast-element 3.x hydration plugin:
+With a hydration plugin enabled (the `webui` plugin shown here; see the WebUI documentation for the available plugin identifiers):
 
 ```rust
 use webui::{WebUIHandler, HandlerPlugin};
-use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
+use webui_handler::plugin::webui::WebUIHydrationPlugin;
 
-let handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
+let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
 ```
-
-`Plugin::FastV2` and `Plugin::Fast` are deprecated @microsoft/fast-element 2.x compatibility paths. Use `Plugin::FastV3` for @microsoft/fast-element 3.x.
 
 ### Inspect
 

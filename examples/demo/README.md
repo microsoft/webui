@@ -57,12 +57,12 @@ Each example app has a `demo.toml` file that describes how to run it:
 
 ```toml
 name = "Calculator"
-description = "A scientific calculator using the fast-v3 rendering plugin"
+description = "A calculator with basic and scientific mode"
 backend = "rust"                    # rust | node | rust-and-node | wasm | dotnet
 
 [server]
 type = "webui-cli"                  # webui-cli | custom-binary
-plugin = "fast-v3"                  # fast-v3 | webui | fast-v2 | fast (fast/fast-v2 are deprecated @microsoft/fast-element 2.x)
+plugin = "webui"                    # plugin identifier (see WebUI docs)
 source = "src"                      # Source directory
 servedir = "dist"                   # Static assets directory
 state = "data/state.json"           # Optional state file
@@ -122,7 +122,7 @@ cd examples/demo && pnpm start:server    # serves examples/demo/src on :3099
 
 | App | Backend | Description |
 |-----|---------|-------------|
-| Calculator | Rust | Scientific calculator (fast plugin) |
+| Calculator | Rust | Scientific calculator (WebUI Framework) |
 | Commerce | Rust | Full e-commerce marketplace (custom Actix server) |
 | Contact Book | Rust + Node | CRUD contact manager with REST API |
 | Hello World | Rust | Minimal WebUI starter app |

@@ -45,7 +45,7 @@ Create a reusable handler and render pre-compiled protobuf protocols. Best for p
 ```c
 // Create handler (optionally with a plugin)
 void *handler = webui_handler_create();
-// or: void *handler = webui_handler_create_with_plugin("fast-v3");
+// or: void *handler = webui_handler_create_with_plugin("webui");
 
 // Load protocol.bin from disk (your code)
 uint8_t *data = load_file("dist/protocol.bin", &len);
@@ -113,7 +113,7 @@ Create a reusable handler instance. Returns an opaque pointer that must eventual
 void *webui_handler_create_with_plugin(const char *plugin_id);
 ```
 
-Create a reusable handler instance with a named plugin. Currently supported plugins: `"webui"`, `"fast-v3"`, deprecated `"fast-v2"`, and deprecated `"fast"` as a compatibility alias for `"fast-v2"`. Pass `NULL` for no plugin (equivalent to `webui_handler_create`).
+Create a reusable handler instance with a named plugin. Pass `NULL` for no plugin (equivalent to `webui_handler_create`). See [Plugins](/guide/concepts/plugins/) for the available identifiers.
 
 - `plugin_id`, null-terminated UTF-8 string identifying the plugin, or `NULL`.
 - **Returns** an opaque pointer on success, or `NULL` on error (call `webui_last_error()` for details).
@@ -187,8 +187,8 @@ Two rules to remember:
 Pass a plugin identifier string to `webui_handler_create_with_plugin`:
 
 ```c
-// Create handler with @microsoft/fast-element 3.x hydration plugin
-void *handler = webui_handler_create_with_plugin("fast-v3");
+// Create handler with a hydration plugin
+void *handler = webui_handler_create_with_plugin("webui");
 if (handler == NULL) {
     printf("Error: %s\n", webui_last_error());
     return 1;
@@ -202,9 +202,7 @@ webui_free(html);
 webui_handler_destroy(handler);
 ```
 
-Currently supported plugins: `"webui"`, `"fast-v3"`, deprecated `"fast-v2"`, and deprecated `"fast"` as a compatibility alias for `"fast-v2"`. Pass `NULL` for no plugin (equivalent to `webui_handler_create`).
-
-See [Plugins](/guide/concepts/plugins/) for details on what the FAST plugin versions inject.
+Pass `NULL` for no plugin (equivalent to `webui_handler_create`). See [Plugins](/guide/concepts/plugins/) for the available identifiers.
 
 ## Python
 
@@ -356,5 +354,5 @@ Any language with C FFI support can use WebUI. The pattern is always the same:
 
 ## Next Steps
 
-- [Plugins](/guide/concepts/plugins/), Plugin system and FAST hydration
+- [Plugins](/guide/concepts/plugins/), Plugin system and built-in plugin reference
 - [CLI Reference](/guide/cli/), Building protocols with `webui build`

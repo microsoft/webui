@@ -46,9 +46,8 @@ pub struct WebUIProtocol {
 /// Framework-neutral: each plugin populates the fields it needs.
 /// Generated from protobuf `message ComponentData`.
 pub struct ComponentData {
-    /// Client-side template string for hydration.
-    /// Populated by the active parser plugin (e.g., f-template HTML for FAST,
-    /// compiled template JS for WebUI Framework).
+    /// Client-side template string for hydration. Populated by the active
+    /// parser plugin in whatever format that plugin's runtime expects.
     pub template: String,
     /// Component CSS content for the Module strategy.
     pub css: String,
@@ -318,7 +317,7 @@ without a server round-trip.
 **Partial response:** `render_partial()` returns `{ templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }`. The caller adds application state to the response (e.g. as a top-level `state` field for non-streaming, or as an NDJSON Chunk 2 for streaming):
 - `state`: (added by caller) route-scoped application data — the router applies it to components via `setState()`
 - `templateStyles`: module CSS definition tags (`<style type="module" specifier="...">`) for newly shipped components. Empty array for Link/Style modes. The client appends these to `<head>` before evaluating template scripts so adopted stylesheets are available
-- `templates`: client template script/markup payloads the client doesn't already have (filtered by inventory bitmask). Clean JS IIFEs for the WebUI plugin, `<f-template>` markup for FAST plugins
+- `templates`: client template script/markup payloads the client doesn't already have (filtered by inventory bitmask). Format depends on the active parser plugin
 - `inventory`: updated hex bitmask of loaded templates
 - `chain`: matched route chain array — each entry has `component`, `path`, optional `params`, `exact`, `allowedQuery`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`
 - `cacheTags`: resolved cache tags from the full route chain (union of all levels, deduplicated). The client tags its cache entry with these values for tag-based invalidation
@@ -662,59 +661,19 @@ pub trait HandlerPlugin {
 - **Plugin fragment**: `on_element_data` with parser-produced hydration bytes from protocol
 - **Matched route component**: `write_route_component_state` before the opening tag closes
 
-**Built-in FAST handler plugins**
+**Selecting handler plugins**
 
-The CLI and host APIs select FAST handler plugins by name:
-- `fast-v3`: @microsoft/fast-element 3.x marker output for new FAST applications.
-- `fast-v2`: deprecated @microsoft/fast-element 2.x compatibility marker output.
-- `fast`: deprecated compatibility alias for `fast-v2`. It intentionally keeps @microsoft/fast-element 2.x output so existing applications do not silently change marker formats.
+The CLI and host APIs select handler plugins by name (passed as a string). No plugin
+is loaded by default; output is plain SSR HTML unless a plugin is selected.
 
-No plugin is loaded by default; output is plain SSR HTML unless a plugin is selected.
-`FastHydrationPlugin` is a deprecated Rust type alias for
-`FastV2HydrationPlugin`.
-
-`FastV2HydrationPlugin` injects @microsoft/fast-element 2.x hydration markers:
-- Binding: `<!--fe-b$$start$$INDEX$$NAME$$fe-b-->` / `<!--fe-b$$end$$INDEX$$NAME$$fe-b-->`
-- Repeat item: `<!--fe-repeat$$start$$INDEX$$fe-repeat-->` / `<!--fe-repeat$$end$$INDEX$$fe-repeat-->`
-- Single attribute binding: ` data-fe-b-INDEX`
-- Multiple attribute bindings: ` data-fe-c-INDEX-COUNT`
-
-`FastV3HydrationPlugin` injects @microsoft/fast-element 3.x hydration markers:
-- Binding: `<!--fe:b-->` / `<!--fe:/b-->`
-- Repeat item: `<!--fe:r-->` / `<!--fe:/r-->`
-- Attribute bindings: ` data-fe="COUNT"` where `COUNT` is the number of dynamic element bindings
-
-@microsoft/fast-element 3.x template authoring and runtime usage depend on
-`@microsoft/fast-element` 3.x APIs: `enableHydration()` from
-`@microsoft/fast-element/hydration.js`, `declarativeTemplate()`,
-`observerMap()`, `define()`, and `$e` in declarative event expressions.
-`DESIGN.md` only specifies the parser/handler integration contracts.
-
-**Built-in plugin: `WebUIHydrationPlugin`**
-Injects WebUI Framework SSR hydration markers and attributes:
-- Binding: `<!--w-b:start:INDEX:NAME-->` / `<!--w-b:end:INDEX:NAME-->`
-- Repeat: `<!--w-r:start:INDEX-->` / `<!--w-r:end:INDEX-->`
-- Attribute (single): ` data-w-b-INDEX`
-- Attribute (multi): ` data-w-c-INDEX-COUNT`
-- Event: ` data-ev="COUNT"` once per element with event handlers
-
-Markers are emitted only in active child scopes; the root page scope stays
-marker-free. During hydration the runtime walks `data-ev` elements in DOM order,
-consumes `COUNT` consecutive entries from metadata `e[]`, then installs delegated
-shadow-root listeners using runtime `data-eh-*` attributes on the target elements.
-See [WebUI Framework Plugin](#webui-framework-plugin) for the protocol details, and
-[packages/webui-framework/README.md](packages/webui-framework/README.md) for the
-public framework API and authoring model.
+The set of available plugin names is implementation-defined; refer to the CLI and
+crate documentation for the current list. Each plugin emits its own framework-specific
+hydration markers and attributes; WebUI itself does not interpret them.
 
 **Usage:**
 ```rust
-// @microsoft/fast-element 3.x plugin
-let fast_v3_handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
-// Deprecated @microsoft/fast-element 2.x compatibility plugin
-let _fast_v2_handler = WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()));
-// WebUI Framework plugin
-let _webui_handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
-fast_v3_handler.handle(&protocol, &state, &options, &mut writer)?;
+let handler = WebUIHandler::with_plugin(|| Box::new(MyHydrationPlugin::new()));
+handler.handle(&protocol, &state, &options, &mut writer)?;
 ```
 ### Fragment Processing
 - **Raw fragments:** Write value directly to output
@@ -914,49 +873,31 @@ pub trait ParserPlugin {
 - **Component registration**: `register_component_template` receives the final processed component template HTML
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts
 
-**Built-in FAST parser plugins**
-The CLI and host APIs select separate FAST parser plugins by name:
-- `fast-v3`: `FastV3ParserPlugin` for @microsoft/fast-element 3.x applications.
-- `fast-v2`: deprecated `FastV2ParserPlugin` for @microsoft/fast-element 2.x compatibility.
-- `fast`: deprecated compatibility alias for `fast-v2`.
+**Selecting parser plugins**
 
-- Marks FAST-specific runtime attributes (`@click`, `f-ref`, `f-slotted`, `f-children`) as skipped but still counted bindings
-- Emits `Plugin` fragments with u32 LE attribute binding counts
-- Tracks components and returns `<f-template>` artifacts after parsing
-- Converts syntax to FAST syntax: `<if condition="X">`→`<f-when value="{{X}}">`, `<for each="X">`→`<f-repeat value="{{X}}">`, `{{expr}}`→`{expr}` in `:attr` values
-- All byte-level scanning in template conversion preserves multi-byte UTF-8 characters (non-ASCII bytes are forwarded as complete code points, never cast individually to `char`)
-- @microsoft/fast-element 3.x component authoring in WebUI examples uses `@microsoft/fast-element` 3.x APIs (`enableHydration`, `declarativeTemplate`, `observerMap`, `define()`, and `$e`) as the FAST runtime dependency
+The CLI and host APIs select parser plugins by name (passed as a string). The set
+of available plugin names is implementation-defined; refer to the CLI and crate
+documentation for the current list. Each plugin defines:
 
-**Built-in plugin: `WebUIParserPlugin`**
-- Skips WebUI Framework runtime attributes (`@click`, `@keydown`, etc.) without counting them as attribute bindings
-- Tracks per-element event count; emits 12-byte `WebUIElementData` `Plugin` fragments encoding `[binding_count, event_start, event_count]`
-- Tracks components and compiles templates into raw JS IIFE strings registered in `window.__webui.templates`. During SSR the handler emits templates for all reachable components on the active route (including those inside false `<if>` and empty `<for>` blocks) in a single `<script>` tag. During SPA navigation the router appends any `templateStyles` first, then evaluates the batched template scripts in one nonce-friendly `<script>` tag.
-- Public framework authoring, decorators, and package entrypoints live in [packages/webui-framework/README.md](packages/webui-framework/README.md)
+- Which framework-owned attributes it skips, keeps, or counts as bindings
+- The opaque `Plugin` fragment payload it emits per element
+- Any post-parse artifacts (e.g., client component templates) it injects at `</body>`
+- Any template-syntax conversions it performs inside component templates
+
+WebUI itself does not interpret plugin-emitted bytes; each parser plugin pairs with
+a matching handler plugin that consumes them at render time. See [packages/webui-framework/README.md](packages/webui-framework/README.md)
+for the WebUI Framework's public authoring model.
 
 **Usage:**
 ```rust
-// @microsoft/fast-element 3.x parser plugin
-let mut fast_parser = HtmlParser::with_plugin(Box::new(FastV3ParserPlugin::new()));
-// Deprecated @microsoft/fast-element 2.x compatibility parser plugin
-let mut _fast_v2_parser = HtmlParser::with_plugin(Box::new(FastV2ParserPlugin::new()));
-// WebUI Framework plugin
-let mut _webui_parser = HtmlParser::with_plugin(Box::new(WebUIParserPlugin::new()));
-fast_parser.parse("index.html", &html)?;
+let mut parser = HtmlParser::with_plugin(Box::new(MyParserPlugin::new()));
+parser.parse("index.html", &html)?;
 ```
 
 **CLI integration:**
 ```bash
-# @microsoft/fast-element 3.x plugin
-webui build ./templates --out ./dist --plugin=fast-v3
-webui serve ./templates --state ./data/state.json --plugin=fast-v3
-
-# Deprecated @microsoft/fast-element 2.x compatibility plugin
-webui build ./templates --out ./dist --plugin=fast-v2
-webui serve ./templates --state ./data/state.json --plugin=fast-v2
-
-# WebUI Framework plugin
-webui build ./templates --out ./dist --plugin=webui
-webui serve ./templates --state ./data/state.json --plugin=webui
+webui build ./templates --out ./dist --plugin=<name>
+webui serve ./templates --state ./data/state.json --plugin=<name>
 ```
 
 `webui serve` performs a preflight bind check on its configured HTTP port and
@@ -1159,10 +1100,7 @@ pub enum ParserError {
 
 This section specifies only the cross-crate wire contract for `--plugin=webui`: the metadata emitted by `webui-parser`, the SSR markers emitted by `webui-handler`, and the hydration/runtime expectations consumed by `@microsoft/webui-framework`.
 
-It intentionally does **not** duplicate package tutorials or framework API docs. Use the canonical sources instead:
-
-- WebUI Framework public API, decorators, and component authoring: [packages/webui-framework/README.md](packages/webui-framework/README.md)
-- @microsoft/fast-element 3.x runtime integration examples: [examples/app/todo-fast](examples/app/todo-fast) and [examples/app/calculator](examples/app/calculator)
+It intentionally does **not** duplicate package tutorials or framework API docs. Use the canonical sources instead, WebUI Framework public API, decorators, and component authoring: [packages/webui-framework/README.md](packages/webui-framework/README.md)
 
 ### Metadata object format
 
@@ -1368,7 +1306,7 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 |----------|-------------|
 | `webui_render(html, data_json)` | Parse + render in one call (requires `parser` feature; returns `NULL` when absent). Returns heap-allocated string (caller frees with `webui_free`). |
 | `webui_handler_create()` | Create a reusable handler (no plugin). |
-| `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin (e.g. `"fast-v3"` for @microsoft/fast-element 3.x or deprecated `"fast-v2"`/`"fast"` for @microsoft/fast-element 2.x compatibility). Returns `NULL` on error. |
+| `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin. Returns `NULL` on error. Refer to the CLI/crate docs for the current list of plugin identifiers. |
 | `webui_handler_render(handler, data, len, json, entry_id, request_path)` | Render a pre-compiled protocol with route matching. `request_path` controls which route is active. Returns heap-allocated string. |
 | `webui_render_partial(protocol_data, len, entry_id, request_path, inventory_hex)` | Produce a JSON partial response (templateStyles, templates, inventory, path, matched route chain, cacheTags, cacheControl) in a single call. Uses an internal `ProtocolIndex` for cached route matching. Caller adds state. Returns heap-allocated JSON string. |
 | `webui_handler_destroy(handler)` | Destroy a handler. `NULL` is a safe no-op. |

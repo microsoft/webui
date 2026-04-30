@@ -5,13 +5,13 @@
   "private": true,
   "scripts": {
     "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
-    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=fast-v3 --servedir ./dist --port 3002 --watch",
+    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --servedir ./dist --port 3002 --watch",
     "start": "cargo xtask dev calculator",
     "test": "playwright test",
     "test:update-snapshots": "playwright test --update-snapshots"
   },
   "devDependencies": {
-    "@microsoft/fast-element": "catalog:",
+    "@microsoft/webui-framework": "workspace:*",
     "@playwright/test": "catalog:",
     "esbuild": "catalog:",
     "tslib": "catalog:",

@@ -11,14 +11,12 @@
 //!   # Then render it
 //!   cargo run -- ../../app/hello-world/dist/protocol.bin ../../app/hello-world/data/state.json
 //!
-//!   # Render with FAST 3 hydration markers
-//!   cargo run -- ../../app/todo-fast/dist/protocol.bin ../../app/todo-fast/data/state.json --plugin=fast-v3
+//!   # Render with WebUI Framework hydration markers
+//!   cargo run -- ../../app/contact-book-manager/dist/protocol.bin ../../app/contact-book-manager/data/state.json --plugin=webui
 
 use anyhow::{Context, Result};
 use std::env;
 use std::fs;
-use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
-use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::WebUIProtocol;
@@ -41,7 +39,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!(
-            "Usage: {} <protocol.bin> <state.json> [--plugin=fast-v3|fast-v2|fast|webui]",
+            "Usage: {} <protocol.bin> <state.json> [--plugin=webui]",
             args[0]
         );
         std::process::exit(1);
@@ -62,15 +60,9 @@ fn main() -> Result<()> {
         serde_json::from_str(&state_json).context("Failed to parse state JSON")?;
 
     let handler = match plugin_name {
-        Some("fast" | "fast-v2") => {
-            WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()))
-        }
-        Some("fast-v3") => WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new())),
         Some("webui") => WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())),
         Some(unknown) => {
-            anyhow::bail!(
-                "Unknown plugin: {unknown}. Use \"webui\", \"fast-v3\", \"fast-v2\", or \"fast\"."
-            )
+            anyhow::bail!("Unknown plugin: {unknown}. This example supports \"webui\".")
         }
         None => WebUIHandler::new(),
     };
