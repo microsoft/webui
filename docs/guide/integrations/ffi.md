@@ -47,6 +47,9 @@ Create a reusable handler and render pre-compiled protobuf protocols. Best for p
 void *handler = webui_handler_create();
 // or: void *handler = webui_handler_create_with_plugin("fast-v3");
 
+// Set CSP nonce (optional — required if your page uses Content-Security-Policy)
+webui_handler_set_nonce(handler, "Ep7tTOr+HyRkByAPXxZ9ag==");
+
 // Load protocol.bin from disk (your code)
 uint8_t *data = load_file("dist/protocol.bin", &len);
 
@@ -126,6 +129,23 @@ void webui_handler_destroy(void *handler_ptr);
 ```
 
 Destroy a handler instance created by `webui_handler_create`. Passing `NULL` is a safe no-op.
+
+### webui_handler_set_nonce
+
+```c
+void webui_handler_set_nonce(void *handler_ptr, const char *nonce);
+```
+
+Set the CSP nonce for inline `<script>` tags on a handler instance. When set, all subsequent renders will include `nonce="VALUE"` on inline script tags and emit a `<meta name="webui-nonce" content="VALUE">` tag in the `<head>`.
+
+- `handler_ptr`, pointer returned by `webui_handler_create`.
+- `nonce`, null-terminated UTF-8 string (typically a base64-encoded random value), or `NULL` to clear a previously set nonce.
+
+The nonce is written verbatim — pass the raw base64 string without any encoding. The same value should appear in your `Content-Security-Policy` header.
+
+::: warning Thread Safety
+Handler instances are **not** thread-safe. Do not call `webui_handler_set_nonce` concurrently with `webui_handler_render` or other operations on the same handler. Serialize all access via a mutex or single-threaded use.
+:::
 
 ### webui_handler_render
 
