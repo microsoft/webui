@@ -19,9 +19,9 @@ name = "webui-press"
 path = "src/main.rs"
 
 [dependencies]
-microsoft-webui = { path = "../webui", version = "0.0.11", features = ["cli"] }
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.11" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.11" }
+microsoft-webui = { path = "../webui", version = "0.0.12", features = ["cli"] }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.12" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.12" }
 
 # Markdown + syntax highlighting
 comrak = { workspace = true }
@@ -44,7 +44,7 @@ rayon = { workspace = true }
 thiserror = { workspace = true }
 
 # Dev server (`webui-press serve`)
-microsoft-webui-dev-server = { path = "../webui-dev-server", version = "0.0.11" }
+microsoft-webui-dev-server = { path = "../webui-dev-server", version = "0.0.12" }
 actix-web = { workspace = true }
 tokio = { workspace = true }
 mime_guess = { workspace = true }
