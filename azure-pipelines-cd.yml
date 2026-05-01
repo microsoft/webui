@@ -88,9 +88,6 @@ extends:
 
               git fetch --tags --quiet
               if git tag -l "${DEPLOY_TAG}" | grep -q .; then
-                echo "${DEPLOY_TAG} tag exists — version ${VERSION} already deployed"
-                echo "##vso[task.setvariable variable=needsDeployment;isOutput=true]false"
-              else
                 echo "${DEPLOY_TAG} tag not found — version ${VERSION} needs deployment"
                 echo "##vso[task.setvariable variable=needsDeployment;isOutput=true]true"
               fi
@@ -122,11 +119,8 @@ extends:
           - script: |
               mkdir -p publish_artifacts_npm publish_artifacts_crates
               find "$(System.ArtifactsDirectory)" -name "*.tgz"   -exec cp {} publish_artifacts_npm/   \;
-              find "$(System.ArtifactsDirectory)" -name "*.crate" -exec cp {} publish_artifacts_crates/ \;
               echo "npm artifacts:"
               ls publish_artifacts_npm/
-              echo "crate artifacts:"
-              ls publish_artifacts_crates/
             displayName: Separate release artifacts
 
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
