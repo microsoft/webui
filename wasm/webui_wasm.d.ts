@@ -1,20 +1,22 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
- * Render a pre-built WebUI protocol with state data.
+ * Extract the CSS token name list from a protocol JSON string.
  *
- * # Arguments
- *
- * * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
- * * `state_json` — JSON string of the state data.
- * * `plugin` — Optional plugin identifier, such as `"fast-v3"` for FAST 3.
- *
- * # Returns
- *
- * The rendered HTML string, or throws a JS error on failure.
+ * Returns a JavaScript array of token name strings, preserving the original
+ * order from the build step.
  */
-export function render(protocol_json: string, state_json: string, entry: string, request_path: string, plugin?: string | null): string;
-export function render_component_templates(protocol_json: string, component_tags_json: string, inventory_hex: string): string;
+export function protocol_tokens(protocol_json: string): any;
+/**
+ * Produce a complete JSON partial response for client-side navigation.
+ *
+ * Combines application state, route templates, inventory, request path, and
+ * matched route chain into a single JSON string:
+ * `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
+ *
+ * Host servers return this directly — no assembly required.
+ */
+export function render_partial(protocol_json: string, state_json: string, entry_id: string, request_path: string, inventory_hex: string): string;
 /**
  * Build the protocol JSON from virtual files without rendering.
  *
@@ -39,23 +41,21 @@ export function build_protocol(files: any, entry: string): string;
  * The rendered HTML string, or throws a JS error on failure.
  */
 export function build_and_render(files: any, state_json: string, entry: string, request_path: string): string;
+export function render_component_templates(protocol_json: string, component_tags_json: string, inventory_hex: string): string;
 /**
- * Produce a complete JSON partial response for client-side navigation.
+ * Render a pre-built WebUI protocol with state data.
  *
- * Combines application state, route templates, inventory, request path, and
- * matched route chain into a single JSON string:
- * `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
+ * # Arguments
  *
- * Host servers return this directly — no assembly required.
+ * * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
+ * * `state_json` — JSON string of the state data.
+ * * `plugin` — Optional plugin identifier, such as `"fast-v3"` for FAST 3.
+ *
+ * # Returns
+ *
+ * The rendered HTML string, or throws a JS error on failure.
  */
-export function render_partial(protocol_json: string, state_json: string, entry_id: string, request_path: string, inventory_hex: string): string;
-/**
- * Extract the CSS token name list from a protocol JSON string.
- *
- * Returns a JavaScript array of token name strings, preserving the original
- * order from the build step.
- */
-export function protocol_tokens(protocol_json: string): any;
+export function render(protocol_json: string, state_json: string, entry: string, request_path: string, plugin?: string | null): string;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
