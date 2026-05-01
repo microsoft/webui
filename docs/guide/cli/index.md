@@ -52,7 +52,7 @@ Path inputs for `APP`, `--state`, and `--servedir` support absolute paths, relat
 
 | Strategy | Behavior |
 |----------|----------|
-| `shadow` | Components render inside `<template shadowrootmode="open">`. Style encapsulation via Shadow DOM. Default. |
+| `shadow` | Components render inside `<template shadowrootmode="open" shadowroot="open">`. Style encapsulation via Shadow DOM. Default. The mode and any other `shadowroot*` attribute on a user-supplied wrapping `<template>` are preserved (e.g. `shadowrootmode="closed"`, `shadowrootclonable`, `shadowrootdelegatesfocus`). The legacy `shadowroot` attribute is always emitted alongside `shadowrootmode` for older user agents. Under the FAST plugins (`fast-v2`/`fast-v3`) the `shadowroot*` attributes are placed on the outer `<f-template>` element instead of the inner `<template>`. |
 | `light` | Components render as direct children. No shadow boundary. 26% faster FCP on high-component-count pages. |
 
 See [Performance - Light DOM vs Shadow DOM](/guide/concepts/performance#light-dom-vs-shadow-dom) for benchmarks and guidance.

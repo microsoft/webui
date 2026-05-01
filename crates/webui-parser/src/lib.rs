@@ -1808,14 +1808,24 @@ impl HtmlParser {
 
     /// Process component template HTML.
     ///
-    /// - **Shadow DOM** (`DomStrategy::Shadow`): wraps content in
-    ///   `<template shadowrootmode="open">`, preserves `:host` CSS,
-    ///   optionally adds `shadowrootadoptedstylesheets`.
+    /// - **Shadow DOM** (`DomStrategy::Shadow`): wraps content in a
+    ///   `<template>` with declarative-shadow-DOM attributes. Any
+    ///   `shadowroot`-prefixed attributes on the user-supplied wrapping
+    ///   `<template>` (`shadowrootmode`, `shadowrootclonable`,
+    ///   `shadowrootdelegatesfocus`, `shadowrootserializable`,
+    ///   `shadowrootadoptedstylesheets`, or a bare legacy `shadowroot`)
+    ///   are preserved on the emitted wrapper. Both `shadowrootmode` and
+    ///   the legacy `shadowroot` attribute are always emitted as a matching
+    ///   pair (defaulting to `"open"` when the user did not supply a mode).
+    ///   When the parser also generates an adopted-stylesheet specifier
+    ///   (CSS Module strategy), it is merged with the user's
+    ///   `shadowrootadoptedstylesheets` value as a space-separated,
+    ///   de-duplicated list. `:host` CSS is preserved.
     /// - **Light DOM** (`DomStrategy::Light`): strips any existing shadow DOM
     ///   wrapper, outputs plain HTML.
     ///
-    /// In both modes, runtime-only attributes (`@`, `:`, `?`) are stripped
-    /// from the opening `<template>` tag.
+    /// In both modes, runtime-only attributes (`@`, `:`, `?`) and any other
+    /// non-`shadowroot*` attributes on the user's `<template>` are stripped.
     fn process_component_template(
         &mut self,
         html: &str,
@@ -1825,41 +1835,63 @@ impl HtmlParser {
         let trimmed = html.trim();
         let snippet = css_snippet.unwrap_or_default();
 
-        // Extract inner content — strip <template shadowrootmode> wrapper if present
+        // Extract user template attrs (shadowroot*) and inner content.
         let has_template = trimmed.starts_with("<template");
-        let inner = if has_template {
-            let stripped = self.strip_runtime_attrs_from_template(trimmed);
-            if let Some(open_end) = stripped.find('>') {
+        let (user_attrs, inner) = if has_template {
+            let extracted = self.extract_template_attrs(trimmed);
+            let inner_str = if let Some(open_end) = extracted.opening_tag_end {
                 let inner_start = open_end + 1;
-                let inner_end = stripped.rfind("</template>").unwrap_or(stripped.len());
+                let inner_end = trimmed.rfind("</template>").unwrap_or(trimmed.len());
                 if inner_start < inner_end {
-                    stripped[inner_start..inner_end].to_string()
+                    trimmed[inner_start..inner_end].to_string()
                 } else {
                     String::new()
                 }
             } else {
                 trimmed.to_string()
-            }
+            };
+            (extracted, inner_str)
         } else {
-            trimmed.to_string()
+            (ExtractedTemplateAttrs::default(), trimmed.to_string())
         };
 
         match self.dom_strategy {
             DomStrategy::Shadow => {
-                // Re-wrap in shadow DOM template
-                let adopted_attr = adopted_specifier.map(|spec| {
-                    let mut s = String::with_capacity(35 + spec.len());
-                    s.push_str(" shadowrootadoptedstylesheets=\"");
-                    s.push_str(spec);
-                    s.push('"');
-                    s
-                });
-                let adopted_ref = adopted_attr.as_deref().unwrap_or_default();
+                let mode = user_attrs.mode.as_deref().unwrap_or("open");
+                let merged_adopted =
+                    merge_adopted_stylesheets(user_attrs.adopted.as_deref(), adopted_specifier);
 
-                let mut result =
-                    String::with_capacity(45 + adopted_ref.len() + snippet.len() + inner.len());
-                result.push_str("<template shadowrootmode=\"open\"");
-                result.push_str(adopted_ref);
+                let mut adopted_attr = String::new();
+                if let Some(value) = merged_adopted.as_deref() {
+                    adopted_attr.push_str(" shadowrootadoptedstylesheets=\"");
+                    adopted_attr.push_str(value);
+                    adopted_attr.push('"');
+                }
+
+                let other_len: usize = user_attrs
+                    .other_shadowroot_attrs
+                    .iter()
+                    .map(|s| s.len() + 1)
+                    .sum();
+                let mut result = String::with_capacity(
+                    "<template shadowrootmode=\"\" shadowroot=\"\"".len()
+                        + mode.len() * 2
+                        + other_len
+                        + adopted_attr.len()
+                        + snippet.len()
+                        + inner.len()
+                        + "></template>".len(),
+                );
+                result.push_str("<template shadowrootmode=\"");
+                result.push_str(mode);
+                result.push_str("\" shadowroot=\"");
+                result.push_str(mode);
+                result.push('"');
+                for attr in &user_attrs.other_shadowroot_attrs {
+                    result.push(' ');
+                    result.push_str(attr);
+                }
+                result.push_str(&adopted_attr);
                 result.push('>');
                 result.push_str(snippet);
                 result.push_str(&inner);
@@ -1868,10 +1900,10 @@ impl HtmlParser {
             }
             DomStrategy::Light => {
                 // Plain light-DOM output
-                if snippet.is_empty() && adopted_specifier.is_none() {
+                if snippet.is_empty() {
                     return inner;
                 }
-                let mut result = String::with_capacity(snippet.len() + inner.len() + 16);
+                let mut result = String::with_capacity(snippet.len() + inner.len());
                 result.push_str(snippet);
                 result.push_str(&inner);
                 result
@@ -1879,57 +1911,78 @@ impl HtmlParser {
         }
     }
 
-    /// Strip attributes starting with @, :, or ? from the opening template tag.
-    /// Uses tree-sitter to parse the tag and reconstruct it without runtime attrs.
-    fn strip_runtime_attrs_from_template(&mut self, html: &str) -> String {
+    /// Walk the opening `<template ...>` tag once with tree-sitter,
+    /// classifying each attribute and returning the extracted state.
+    ///
+    /// Behavior:
+    /// - Runtime attributes (`@*`, `:*`, `?*`) are dropped.
+    /// - `shadowrootmode="…"` captures the mode value.
+    /// - Bare `shadowroot="…"` (legacy alias) captures the mode if
+    ///   `shadowrootmode` was not present.
+    /// - `shadowrootadoptedstylesheets="…"` captures the value.
+    /// - All other attributes whose name starts with `shadowroot` are
+    ///   preserved verbatim (raw token, including any quoted value).
+    /// - All other attributes are dropped (consistent with the legacy
+    ///   behavior of fully reconstructing the opening tag).
+    fn extract_template_attrs(&mut self, html: &str) -> ExtractedTemplateAttrs {
+        let mut extracted = ExtractedTemplateAttrs::default();
         let tree = match self.parser.parse(html, None) {
             Some(t) => t,
-            None => return html.to_string(),
+            None => return extracted,
         };
 
-        // Find the first start_tag in the tree
         let root = tree.root_node();
-        let start_tag = Self::find_first_node(root, "start_tag");
-        let Some(tag) = start_tag else {
-            return html.to_string();
+        let Some(tag) = Self::find_first_node(root, "start_tag") else {
+            return extracted;
         };
+        extracted.opening_tag_end = Some(tag.end_byte() - 1);
 
-        // Collect byte ranges of runtime attributes to remove
-        let mut removals: Vec<(usize, usize)> = Vec::new();
         let mut cursor = tag.walk();
+        let mut legacy_mode: Option<String> = None;
         for child in tag.named_children(&mut cursor) {
-            if child.kind() == "attribute" {
-                let name_node = child.child(0);
-                if let Some(name) = name_node {
-                    let attr_name = &html[name.start_byte()..name.end_byte()];
-                    if attr_name.starts_with('@')
-                        || attr_name.starts_with(':')
-                        || attr_name.starts_with('?')
-                    {
-                        // Remove the attribute and any leading whitespace
-                        let mut start = child.start_byte();
-                        while start > 0 && html.as_bytes()[start - 1] == b' ' {
-                            start -= 1;
-                        }
-                        removals.push((start, child.end_byte()));
-                    }
-                }
+            if child.kind() != "attribute" {
+                continue;
             }
+            let Some(name_node) = child.child(0) else {
+                continue;
+            };
+            let attr_name = &html[name_node.start_byte()..name_node.end_byte()];
+            if attr_name.starts_with('@')
+                || attr_name.starts_with(':')
+                || attr_name.starts_with('?')
+            {
+                continue;
+            }
+            if !attr_name.starts_with("shadowroot") {
+                continue;
+            }
+
+            let raw = &html[child.start_byte()..child.end_byte()];
+
+            if attr_name == "shadowrootmode" {
+                extracted.mode = Some(extract_attr_value(raw).unwrap_or("open").to_string());
+                continue;
+            }
+            if attr_name == "shadowroot" {
+                // Legacy alias — only used as the mode source if shadowrootmode
+                // was not explicitly set. We do not echo it back as a separate
+                // attribute because it is always re-emitted from the chosen mode.
+                legacy_mode = Some(extract_attr_value(raw).unwrap_or("open").to_string());
+                continue;
+            }
+            if attr_name == "shadowrootadoptedstylesheets" {
+                extracted.adopted = Some(extract_attr_value(raw).unwrap_or("").to_string());
+                continue;
+            }
+            // Any other shadowroot* attr — preserve raw token.
+            extracted.other_shadowroot_attrs.push(raw.to_string());
         }
 
-        if removals.is_empty() {
-            return html.to_string();
+        if extracted.mode.is_none() {
+            extracted.mode = legacy_mode;
         }
 
-        // Rebuild the string, skipping removed ranges
-        let mut result = String::with_capacity(html.len());
-        let mut pos = 0;
-        for (start, end) in &removals {
-            result.push_str(&html[pos..*start]);
-            pos = *end;
-        }
-        result.push_str(&html[pos..]);
-        result
+        extracted
     }
 
     /// Find the first node of a given kind in the tree (iterative BFS).
@@ -1950,6 +2003,75 @@ impl HtmlParser {
         }
         None
     }
+}
+
+/// Captured attribute state from a user-supplied `<template>` opening tag.
+///
+/// Used by [`HtmlParser::extract_template_attrs`] to surface
+/// `shadowroot`-prefixed attributes so they can be re-emitted on the
+/// declarative-shadow-DOM wrapper.
+#[derive(Default, Debug)]
+struct ExtractedTemplateAttrs {
+    /// Value of `shadowrootmode` (or bare legacy `shadowroot`) if the user supplied one.
+    mode: Option<String>,
+    /// Value of `shadowrootadoptedstylesheets` if the user supplied one.
+    adopted: Option<String>,
+    /// Other `shadowroot*` attributes, captured as raw tokens (e.g.
+    /// `shadowrootclonable` or `shadowrootdelegatesfocus="true"`).
+    other_shadowroot_attrs: Vec<String>,
+    /// Byte index of the `>` that closes the opening tag, when present.
+    opening_tag_end: Option<usize>,
+}
+
+/// Merge two `shadowrootadoptedstylesheets` value strings into a single
+/// space-separated, de-duplicated list. Returns `None` when both inputs
+/// are absent (or only contain whitespace). Order is preserved: tokens
+/// from `user` come first (in their original order), then unique tokens
+/// from `parser`.
+fn merge_adopted_stylesheets(user: Option<&str>, parser: Option<&str>) -> Option<String> {
+    let mut tokens: Vec<&str> = Vec::new();
+    if let Some(u) = user {
+        for tok in u.split_whitespace() {
+            if !tokens.contains(&tok) {
+                tokens.push(tok);
+            }
+        }
+    }
+    if let Some(p) = parser {
+        for tok in p.split_whitespace() {
+            if !tokens.contains(&tok) {
+                tokens.push(tok);
+            }
+        }
+    }
+    if tokens.is_empty() {
+        return None;
+    }
+    let total: usize = tokens.iter().map(|t| t.len() + 1).sum();
+    let mut out = String::with_capacity(total);
+    for (i, t) in tokens.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(t);
+    }
+    Some(out)
+}
+
+/// Extract the value of an attribute from its raw token (e.g. `name="value"`).
+/// Returns `None` if the token is bare (no `=`) or malformed. The returned
+/// slice excludes surrounding quotes.
+fn extract_attr_value(raw: &str) -> Option<&str> {
+    let eq_pos = raw.find('=')?;
+    let after = &raw[eq_pos + 1..];
+    let trimmed = after.trim_start();
+    if let Some(stripped) = trimmed.strip_prefix('"') {
+        return stripped.strip_suffix('"');
+    }
+    if let Some(stripped) = trimmed.strip_prefix('\'') {
+        return stripped.strip_suffix('\'');
+    }
+    Some(trimmed)
 }
 
 #[cfg(test)]
@@ -2238,6 +2360,219 @@ mod tests {
         assert!(
             component_ids.contains(&"my-footer"),
             "app-shell fragments should contain my-footer: {component_ids:?}"
+        );
+    }
+
+    // ── Shadow DOM template attribute preservation ───────────────────
+
+    fn shadow_template_text(records: &WebUIFragmentRecords, name: &str) -> String {
+        records
+            .get(name)
+            .unwrap_or_else(|| panic!("missing stream {name}"))
+            .fragments
+            .iter()
+            .filter_map(|f| match f.fragment.as_ref() {
+                Some(Fragment::Raw(r)) => Some(r.value.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_shadow_dom_default_emits_paired_shadowrootmode_open() {
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        parser
+            .component_registry
+            .register_component("my-comp", "<div>X</div>", Some("div{color:red}"))
+            .expect("register");
+        parser.parse("index.html", "<my-comp></my-comp>").ok();
+        let records = parser.into_fragment_records();
+        let template_text = shadow_template_text(&records, "my-comp");
+        assert!(
+            template_text.contains(r#"<template shadowrootmode="open" shadowroot="open""#),
+            "default shadow template should emit paired shadowrootmode/shadowroot=\"open\", got: {template_text}"
+        );
+    }
+
+    #[test]
+    fn test_shadow_dom_user_shadowrootmode_closed_is_preserved_paired() {
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        parser
+            .component_registry
+            .register_component(
+                "closed-comp",
+                r#"<template shadowrootmode="closed"><div>X</div></template>"#,
+                None,
+            )
+            .expect("register");
+        parser
+            .parse("index.html", "<closed-comp></closed-comp>")
+            .ok();
+        let records = parser.into_fragment_records();
+        let template_text = shadow_template_text(&records, "closed-comp");
+        assert!(
+            template_text.contains(r#"<template shadowrootmode="closed" shadowroot="closed""#),
+            "user shadowrootmode=closed must be preserved AND paired with legacy shadowroot, got: {template_text}"
+        );
+    }
+
+    #[test]
+    fn test_shadow_dom_bare_legacy_shadowroot_used_as_mode_source() {
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        parser
+            .component_registry
+            .register_component(
+                "legacy-comp",
+                r#"<template shadowroot="closed"><div>X</div></template>"#,
+                None,
+            )
+            .expect("register");
+        parser
+            .parse("index.html", "<legacy-comp></legacy-comp>")
+            .ok();
+        let records = parser.into_fragment_records();
+        let template_text = shadow_template_text(&records, "legacy-comp");
+        assert!(
+            template_text.contains(r#"<template shadowrootmode="closed" shadowroot="closed""#),
+            "bare legacy shadowroot=closed should be promoted to shadowrootmode, got: {template_text}"
+        );
+    }
+
+    #[test]
+    fn test_shadow_dom_shadowrootclonable_is_preserved() {
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        parser
+            .component_registry
+            .register_component(
+                "clone-comp",
+                r#"<template shadowrootmode="open" shadowrootclonable shadowrootdelegatesfocus="true"><div>X</div></template>"#,
+                None,
+            )
+            .expect("register");
+        parser.parse("index.html", "<clone-comp></clone-comp>").ok();
+        let records = parser.into_fragment_records();
+        let template_text = shadow_template_text(&records, "clone-comp");
+        assert!(
+            template_text.contains("shadowrootclonable"),
+            "shadowrootclonable must be preserved, got: {template_text}"
+        );
+        assert!(
+            template_text.contains(r#"shadowrootdelegatesfocus="true""#),
+            "shadowrootdelegatesfocus must be preserved, got: {template_text}"
+        );
+    }
+
+    #[test]
+    fn test_shadow_dom_user_adopted_stylesheets_merged_with_module_strategy() {
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        parser.set_css_strategy(CssStrategy::Module);
+        parser
+            .component_registry
+            .register_component(
+                "merge-comp",
+                r#"<template shadowrootmode="open" shadowrootadoptedstylesheets="theme other"><div>X</div></template>"#,
+                Some("div{color:red}"),
+            )
+            .expect("register");
+        parser.parse("index.html", "<merge-comp></merge-comp>").ok();
+        let records = parser.into_fragment_records();
+        let template_text = shadow_template_text(&records, "merge-comp");
+        assert!(
+            template_text.contains(r#"shadowrootadoptedstylesheets="theme other merge-comp""#),
+            "user and parser-generated specifiers should be merged in order without duplicates, got: {template_text}"
+        );
+    }
+
+    #[test]
+    fn test_shadow_dom_user_adopted_stylesheets_dedup_against_module_specifier() {
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        parser.set_css_strategy(CssStrategy::Module);
+        parser
+            .component_registry
+            .register_component(
+                "dup-comp",
+                r#"<template shadowrootmode="open" shadowrootadoptedstylesheets="theme dup-comp"><div>X</div></template>"#,
+                Some("div{color:red}"),
+            )
+            .expect("register");
+        parser.parse("index.html", "<dup-comp></dup-comp>").ok();
+        let records = parser.into_fragment_records();
+        let template_text = shadow_template_text(&records, "dup-comp");
+        assert!(
+            template_text.contains(r#"shadowrootadoptedstylesheets="theme dup-comp""#),
+            "user-supplied 'dup-comp' should not be duplicated by the parser, got: {template_text}"
+        );
+    }
+
+    #[test]
+    fn test_shadow_dom_drops_user_runtime_attrs_on_template() {
+        // @click, :foo, ?bar are runtime/template attrs and must not survive
+        // on the emitted shadow-DOM <template> wrapper.
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        parser
+            .component_registry
+            .register_component(
+                "runtime-comp",
+                r#"<template shadowrootmode="open" @click="{onClick(e)}" :foo="bar" ?bool="cond" data-keep="x"><div>X</div></template>"#,
+                None,
+            )
+            .expect("register");
+        parser
+            .parse("index.html", "<runtime-comp></runtime-comp>")
+            .ok();
+        let records = parser.into_fragment_records();
+        let template_text = shadow_template_text(&records, "runtime-comp");
+        let opening = &template_text[..template_text.find('>').expect("> in template open")];
+        assert!(
+            !opening.contains("@click"),
+            "@click must be stripped from the shadow-DOM <template>, got: {opening}"
+        );
+        assert!(
+            !opening.contains(":foo"),
+            ":foo must be stripped from the shadow-DOM <template>, got: {opening}"
+        );
+        assert!(
+            !opening.contains("?bool"),
+            "?bool must be stripped from the shadow-DOM <template>, got: {opening}"
+        );
+        // Non-runtime, non-shadowroot attrs are also stripped (current behaviour).
+        assert!(
+            !opening.contains("data-keep"),
+            "non-shadowroot attrs are stripped from the shadow-DOM <template>, got: {opening}"
+        );
+    }
+
+    #[test]
+    fn test_light_dom_strips_template_wrapper_with_shadowrootmode() {
+        // Light-DOM mode must continue to strip the user's <template> wrapper
+        // entirely regardless of any shadowroot* attributes on it.
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Light);
+        parser
+            .component_registry
+            .register_component(
+                "light-comp",
+                r#"<template shadowrootmode="open"><div>X</div></template>"#,
+                None,
+            )
+            .expect("register");
+        parser.parse("index.html", "<light-comp></light-comp>").ok();
+        let records = parser.into_fragment_records();
+        let template_text = shadow_template_text(&records, "light-comp");
+        assert!(
+            !template_text.contains("<template"),
+            "light-DOM mode must strip <template> wrapper, got: {template_text}"
+        );
+        assert!(
+            template_text.contains("<div>X</div>"),
+            "inner content must be preserved in light-DOM mode, got: {template_text}"
         );
     }
 

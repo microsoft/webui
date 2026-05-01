@@ -131,6 +131,17 @@ impl ParserPlugin for FastV3ParserPlugin {
 ///
 /// Used by the server to generate templates on demand for route components
 /// that weren't encountered during initial parsing.
+///
+/// Any `shadowroot`-prefixed attributes on the user-supplied wrapping
+/// `<template>` (e.g. `shadowrootmode`, `shadowrootclonable`,
+/// `shadowrootadoptedstylesheets`) are moved onto the outer
+/// `<f-template>` element rather than the inner `<template>`. The inner
+/// `<template>` always has every `shadowroot*` attribute stripped, to
+/// prevent the browser from auto-activating it as a declarative shadow
+/// root inside the f-template body. When CSS Module strategy generates
+/// a `shadowrootadoptedstylesheets` specifier, it is merged with any
+/// user-supplied value (space-separated, de-duplicated) and emitted on
+/// the `<f-template>`.
 pub fn generate_f_template(
     tag_name: &str,
     html_content: &str,
@@ -138,9 +149,34 @@ pub fn generate_f_template(
     css_strategy: CssStrategy,
 ) -> String {
     let mut output = String::with_capacity(256);
+
+    // Pre-scan the user's outer <template> wrapper (if any) to capture
+    // every shadowroot* attribute — these go on <f-template>, not on the
+    // inner <template>. We also capture any user-supplied
+    // shadowrootadoptedstylesheets value so we can merge it with the
+    // parser-generated specifier under CSS Module strategy.
+    let outer = extract_outer_template_shadowroot_attrs(html_content.trim());
+
+    // Emit the <f-template> opening tag with collected shadowroot* attrs
+    // and (under Module strategy) the merged adopted-stylesheets value.
     output.push_str("<f-template name=\"");
     output.push_str(tag_name);
-    output.push_str("\">\n");
+    output.push('"');
+    for attr in &outer.shadowroot_attrs_other {
+        output.push(' ');
+        output.push_str(attr);
+    }
+    let parser_adopted = if css_strategy == CssStrategy::Module && css_content.is_some() {
+        Some(tag_name)
+    } else {
+        None
+    };
+    if let Some(merged) = merge_adopted_stylesheets(outer.adopted.as_deref(), parser_adopted) {
+        output.push_str(" shadowrootadoptedstylesheets=\"");
+        output.push_str(&merged);
+        output.push('"');
+    }
+    output.push_str(">\n");
 
     let converted = convert_btr_to_fast(html_content);
     let trimmed = minify_inter_tag_whitespace(converted.trim());
@@ -165,13 +201,8 @@ pub fn generate_f_template(
     };
 
     if trimmed.starts_with("<template") {
-        if let Some(close_pos) = trimmed.find('>') {
+        if let Some(close_pos) = find_tag_close(&trimmed) {
             output.push_str(&trimmed[..close_pos]);
-            if css_strategy == CssStrategy::Module && css_content.is_some() {
-                output.push_str(" shadowrootadoptedstylesheets=\"");
-                output.push_str(tag_name);
-                output.push('"');
-            }
             output.push('>');
             if let Some(ref injection) = css_injection {
                 output.push_str(injection);
@@ -181,13 +212,7 @@ pub fn generate_f_template(
             output.push_str(&trimmed);
         }
     } else {
-        output.push_str("<template");
-        if css_strategy == CssStrategy::Module && css_content.is_some() {
-            output.push_str(" shadowrootadoptedstylesheets=\"");
-            output.push_str(tag_name);
-            output.push('"');
-        }
-        output.push('>');
+        output.push_str("<template>");
         if let Some(ref injection) = css_injection {
             output.push_str(injection);
         }
@@ -199,6 +224,153 @@ pub fn generate_f_template(
     output
 }
 
+/// Captured `shadowroot*` attribute state from a user-supplied outer
+/// `<template>` wrapper.
+#[derive(Default, Debug)]
+struct OuterTemplateShadowRootAttrs {
+    /// Raw `shadowroot*` attribute tokens to echo back onto the
+    /// `<f-template>` (e.g. `shadowrootmode="open"`,
+    /// `shadowrootclonable`).
+    ///
+    /// Excludes `shadowrootadoptedstylesheets` because that one is
+    /// always handled separately to merge with parser-generated values.
+    shadowroot_attrs_other: Vec<String>,
+    /// Value of `shadowrootadoptedstylesheets`, when present.
+    adopted: Option<String>,
+}
+
+/// Pre-scan the input's outer `<template>` opening tag and collect every
+/// `shadowroot`-prefixed attribute. Returns an empty result when the
+/// input does not start with a `<template>` wrapper or the tag is
+/// malformed. Uses [`find_tag_close`] so values containing an unquoted
+/// `>` (e.g. `data-note="a > b"`) are handled correctly.
+fn extract_outer_template_shadowroot_attrs(html: &str) -> OuterTemplateShadowRootAttrs {
+    let mut out = OuterTemplateShadowRootAttrs::default();
+    if !html.starts_with("<template") {
+        return out;
+    }
+    let Some(close) = find_tag_close(html) else {
+        return out;
+    };
+    // Inner attribute span is between `<template` and the closing `>` (or `/>`).
+    let attr_start = "<template".len();
+    let mut attr_end = close;
+    if attr_end > 0 && html.as_bytes()[attr_end - 1] == b'/' {
+        attr_end -= 1;
+    }
+    if attr_end <= attr_start {
+        return out;
+    }
+    let inner = &html[attr_start..attr_end];
+    let inner_bytes = inner.as_bytes();
+    let inner_len = inner_bytes.len();
+    let mut j = 0;
+    while j < inner_len {
+        if is_whitespace(inner_bytes[j]) {
+            j += 1;
+            continue;
+        }
+        let name_start = j;
+        while j < inner_len && inner_bytes[j] != b'=' && !is_whitespace(inner_bytes[j]) {
+            j += 1;
+        }
+        let name_end = j;
+        let name = &inner[name_start..name_end];
+
+        let value_end = if j < inner_len && inner_bytes[j] == b'=' {
+            j += 1;
+            if j < inner_len && (inner_bytes[j] == b'"' || inner_bytes[j] == b'\'') {
+                let quote = inner_bytes[j];
+                j += 1;
+                while j < inner_len && inner_bytes[j] != quote {
+                    j += 1;
+                }
+                if j < inner_len {
+                    j += 1;
+                }
+            } else {
+                while j < inner_len && !is_whitespace(inner_bytes[j]) {
+                    j += 1;
+                }
+            }
+            j
+        } else {
+            name_end
+        };
+
+        if !name.starts_with("shadowroot") {
+            continue;
+        }
+
+        if name == "shadowrootadoptedstylesheets" {
+            out.adopted = Some(
+                extract_attr_value_raw(&inner[name_start..value_end])
+                    .unwrap_or("")
+                    .to_string(),
+            );
+            continue;
+        }
+
+        // Preserve the raw `name` or `name="value"` token verbatim so
+        // boolean attrs (e.g. `shadowrootclonable`) round-trip correctly.
+        out.shadowroot_attrs_other
+            .push(inner[name_start..value_end].to_string());
+    }
+
+    out
+}
+
+/// Extract the value portion of a raw `name="value"` (or `name='value'`)
+/// attribute token. Returns `None` when no `=` is present (boolean attr)
+/// or the token is malformed. The returned slice excludes surrounding
+/// quotes.
+fn extract_attr_value_raw(raw: &str) -> Option<&str> {
+    let eq_pos = raw.find('=')?;
+    let after = &raw[eq_pos + 1..];
+    let trimmed = after.trim_start();
+    if let Some(stripped) = trimmed.strip_prefix('"') {
+        return stripped.strip_suffix('"');
+    }
+    if let Some(stripped) = trimmed.strip_prefix('\'') {
+        return stripped.strip_suffix('\'');
+    }
+    Some(trimmed)
+}
+
+/// Merge two `shadowrootadoptedstylesheets` value strings into a single
+/// space-separated, de-duplicated list. Returns `None` when both inputs
+/// are absent (or only contain whitespace). Tokens from `user` come
+/// first in their original order, then unique tokens from `parser`.
+fn merge_adopted_stylesheets(user: Option<&str>, parser: Option<&str>) -> Option<String> {
+    let mut tokens: Vec<&str> = Vec::new();
+    if let Some(u) = user {
+        for tok in u.split_whitespace() {
+            if !tokens.contains(&tok) {
+                tokens.push(tok);
+            }
+        }
+    }
+    if let Some(p) = parser {
+        for tok in p.split_whitespace() {
+            if !tokens.contains(&tok) {
+                tokens.push(tok);
+            }
+        }
+    }
+    if tokens.is_empty() {
+        return None;
+    }
+    let total: usize = tokens.iter().map(|t| t.len() + 1).sum();
+    let mut out = String::with_capacity(total);
+    for (i, t) in tokens.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(t);
+    }
+    Some(out)
+}
+
 /// Convert WebUI Framework template syntax to FAST syntax in HTML content.
 ///
 /// Performs the following transformations without regex:
@@ -207,9 +379,12 @@ pub fn generate_f_template(
 /// - `<for each="EXPR">` → `<f-repeat value="{{EXPR}}">`
 /// - `</for>` → `</f-repeat>`
 /// - `{{expr}}` inside `:attr` complex attribute values → `{expr}`
-/// - Strips `shadowrootmode` attributes from `<template>` tags
-///   (in f-template context, shadowrootmode must be removed to prevent
-///   the browser from auto-activating it as a declarative shadow root)
+/// - Strips every `shadowroot`-prefixed attribute from any `<template>`
+///   tag (e.g. `shadowrootmode`, `shadowrootclonable`,
+///   `shadowrootadoptedstylesheets`). In f-template context the inner
+///   `<template>` must not carry these attributes — they belong on the
+///   outer `<f-template>` element so the browser does not auto-activate
+///   the inner template as a declarative shadow root.
 fn convert_btr_to_fast(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let bytes = input.as_bytes();
@@ -285,9 +460,11 @@ fn try_convert_tag(input: &str, pos: usize, result: &mut String) -> Option<usize
 
     // Check for tags with :attr="{{expr}}" complex attribute values
     if remaining.starts_with("<") {
-        // Strip shadowrootmode from <template> tags
+        // Strip every shadowroot* attr from <template> tags so the inner
+        // template inside an f-template is never auto-activated as a
+        // declarative shadow root by the browser.
         if starts_with_tag_name(remaining, "template") {
-            if let Some(consumed) = strip_shadowrootmode(remaining, result) {
+            if let Some(consumed) = strip_shadowroot_attrs(remaining, result) {
                 return Some(consumed);
             }
         }
@@ -584,24 +761,25 @@ fn minify_inter_tag_whitespace(input: &str) -> String {
     result
 }
 
-/// Strip `shadowrootmode` attribute from a `<template ...>` opening tag.
-/// Returns `Some(bytes_consumed)` if a `<template` tag was found and processed.
-fn strip_shadowrootmode(tag_str: &str, result: &mut String) -> Option<usize> {
+/// Strip every `shadowroot`-prefixed attribute from a `<template ...>`
+/// opening tag. Returns `Some(bytes_consumed)` if a `<template` tag was
+/// found and processed.
+fn strip_shadowroot_attrs(tag_str: &str, result: &mut String) -> Option<usize> {
     // Find the closing '>' outside of quoted attribute values
     let close = find_tag_close(tag_str)?;
     let tag_content = &tag_str[..=close];
 
-    // Only process if this tag contains shadowrootmode
-    if !tag_content.contains("shadowrootmode") {
+    // Only process if this tag contains any shadowroot* attribute.
+    if !tag_content.contains("shadowroot") {
         return None;
     }
 
-    // Rebuild the tag without the shadowrootmode attribute
+    // Rebuild the tag without any shadowroot* attribute
     result.push_str("<template");
     let attr_start = "<template".len();
     let inner = &tag_content[attr_start..close];
 
-    // Scan through the attributes, skipping shadowrootmode
+    // Scan through the attributes, skipping shadowroot* attrs.
     let inner_bytes = inner.as_bytes();
     let inner_len = inner_bytes.len();
     let mut j = 0;
@@ -624,9 +802,10 @@ fn strip_shadowrootmode(tag_str: &str, result: &mut String) -> Option<usize> {
         let mut attr_end = j;
         if j < inner_len && inner_bytes[j] == b'=' {
             j += 1; // skip '='
-            if j < inner_len && inner_bytes[j] == b'"' {
+            if j < inner_len && (inner_bytes[j] == b'"' || inner_bytes[j] == b'\'') {
+                let quote = inner_bytes[j];
                 j += 1; // skip opening quote
-                while j < inner_len && inner_bytes[j] != b'"' {
+                while j < inner_len && inner_bytes[j] != quote {
                     j += 1;
                 }
                 if j < inner_len {
@@ -641,8 +820,8 @@ fn strip_shadowrootmode(tag_str: &str, result: &mut String) -> Option<usize> {
             attr_end = j;
         }
 
-        // Skip the shadowrootmode attribute entirely
-        if attr_name == "shadowrootmode" {
+        // Skip every shadowroot* attribute entirely
+        if attr_name.starts_with("shadowroot") {
             continue;
         }
 
@@ -1116,6 +1295,25 @@ mod tests {
     }
 
     #[test]
+    fn strip_shadowroot_attrs_strips_all_shadowroot_prefixed() {
+        // The renamed strip helper should strip *every* shadowroot* attribute,
+        // not just shadowrootmode. Non-shadowroot attrs are preserved.
+        let input = r#"<template shadowrootmode="open" shadowrootclonable shadowrootdelegatesfocus="true" shadowrootadoptedstylesheets="x" data-keep="y"><div>Hi</div></template>"#;
+        let output = convert_btr_to_fast(input);
+        assert!(!output.contains("shadowrootmode"), "got: {output}");
+        assert!(!output.contains("shadowrootclonable"), "got: {output}");
+        assert!(
+            !output.contains("shadowrootdelegatesfocus"),
+            "got: {output}"
+        );
+        assert!(
+            !output.contains("shadowrootadoptedstylesheets"),
+            "got: {output}"
+        );
+        assert!(output.contains(r#"data-keep="y""#), "got: {output}");
+    }
+
+    #[test]
     fn no_strip_when_no_shadowrootmode() {
         let input = r#"<template foo="bar"><div>Hi</div></template>"#;
         let output = convert_btr_to_fast(input);
@@ -1123,7 +1321,7 @@ mod tests {
     }
 
     #[test]
-    fn component_template_strips_shadowrootmode_from_f_template() {
+    fn component_template_moves_shadowrootmode_to_f_template() {
         let mut plugin = FastV3ParserPlugin::new();
         let comp = make_component(
             "my-comp",
@@ -1137,12 +1335,179 @@ mod tests {
         assert_eq!(templates.len(), 1);
         let (name, html) = &templates[0];
         assert_eq!(name, "my-comp");
-        // f-template content should NOT have shadowrootmode
-        assert!(!html.contains("shadowrootmode"));
-        // But should keep @click (framework attr kept in f-template mode)
+        // shadowrootmode is moved to the OUTER <f-template>...
+        assert!(
+            html.contains("<f-template name=\"my-comp\" shadowrootmode=\"open\">"),
+            "<f-template> should carry shadowrootmode, got: {html}"
+        );
+        // ...and is NOT on the inner <template>.
+        assert!(
+            !html.contains("<template shadowrootmode"),
+            "inner <template> should not carry shadowrootmode, got: {html}"
+        );
+        // And @click is still preserved on the inner template (framework attr).
         assert!(html.contains("@click"));
         // Should have the converted content
         assert!(html.contains("{{title}}"));
+    }
+
+    #[test]
+    fn component_template_carries_user_shadowrootmode_closed() {
+        let mut plugin = FastV3ParserPlugin::new();
+        let comp = make_component(
+            "closed-comp",
+            r#"<template shadowrootmode="closed"><div>x</div></template>"#,
+            None,
+        );
+        plugin
+            .register_component_template("closed-comp", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates();
+        let (_, html) = &templates[0];
+        assert!(
+            html.contains(r#"<f-template name="closed-comp" shadowrootmode="closed">"#),
+            "<f-template> should carry user-supplied shadowrootmode value, got: {html}"
+        );
+        assert!(
+            !html.contains("<template shadowrootmode"),
+            "inner <template> should not carry shadowrootmode, got: {html}"
+        );
+    }
+
+    #[test]
+    fn component_template_preserves_other_shadowroot_attrs_on_f_template() {
+        let mut plugin = FastV3ParserPlugin::new();
+        let comp = make_component(
+            "clone-comp",
+            r#"<template shadowrootmode="open" shadowrootclonable shadowrootdelegatesfocus="true"><div>x</div></template>"#,
+            None,
+        );
+        plugin
+            .register_component_template("clone-comp", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates();
+        let (_, html) = &templates[0];
+        assert!(
+            html.contains(r#"shadowrootmode="open""#),
+            "<f-template> should carry shadowrootmode, got: {html}"
+        );
+        assert!(
+            html.contains("shadowrootclonable"),
+            "<f-template> should carry shadowrootclonable, got: {html}"
+        );
+        assert!(
+            html.contains(r#"shadowrootdelegatesfocus="true""#),
+            "<f-template> should carry shadowrootdelegatesfocus, got: {html}"
+        );
+        // Inner <template> must not carry any of them.
+        let inner_template_start = html.find("\n<template").expect("inner template");
+        let inner_template_end = html[inner_template_start..]
+            .find('>')
+            .expect("inner template close");
+        let inner_open = &html[inner_template_start..inner_template_start + inner_template_end + 1];
+        assert!(
+            !inner_open.contains("shadowroot"),
+            "inner <template> should not carry any shadowroot* attr, got: {inner_open}"
+        );
+    }
+
+    #[test]
+    fn component_template_default_no_shadowroot_attr_on_f_template_when_not_supplied() {
+        // When the user did NOT supply any shadowroot* attribute, the
+        // <f-template> should not gain one — <f-template> is not itself
+        // declarative shadow DOM and the framework hard-codes
+        // attachShadow({ mode: 'open' }) client-side.
+        let mut plugin = FastV3ParserPlugin::new();
+        let comp = make_component("plain-comp", r#"<div>x</div>"#, None);
+        plugin
+            .register_component_template("plain-comp", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates();
+        let (_, html) = &templates[0];
+        assert!(
+            html.contains(r#"<f-template name="plain-comp">"#),
+            "<f-template> should not have shadowroot* attrs when user did not supply any, got: {html}"
+        );
+        assert!(
+            !html.contains("shadowroot"),
+            "no shadowroot* attr should be emitted, got: {html}"
+        );
+    }
+
+    #[test]
+    fn component_template_module_css_puts_adopted_stylesheets_on_f_template() {
+        let mut plugin = FastV3ParserPlugin::new();
+        plugin.set_css_strategy(CssStrategy::Module);
+        let comp = make_component(
+            "mod-comp",
+            r#"<template shadowrootmode="open"><div>x</div></template>"#,
+            Some("div { color: blue; }"),
+        );
+        plugin
+            .register_component_template("mod-comp", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates();
+        let (_, html) = &templates[0];
+        // shadowrootadoptedstylesheets is on <f-template>, not on inner <template>.
+        assert!(
+            html.contains(r#"<f-template name="mod-comp" shadowrootmode="open" shadowrootadoptedstylesheets="mod-comp">"#),
+            "<f-template> should carry shadowrootadoptedstylesheets for module CSS strategy, got: {html}"
+        );
+        let inner_template_start = html.find("\n<template").expect("inner template");
+        let inner_close = html[inner_template_start..]
+            .find('>')
+            .expect("inner template close");
+        let inner_open = &html[inner_template_start..inner_template_start + inner_close + 1];
+        assert!(
+            !inner_open.contains("shadowrootadoptedstylesheets"),
+            "inner <template> should not carry shadowrootadoptedstylesheets, got: {inner_open}"
+        );
+    }
+
+    #[test]
+    fn component_template_merges_user_and_module_adopted_stylesheets() {
+        let mut plugin = FastV3ParserPlugin::new();
+        plugin.set_css_strategy(CssStrategy::Module);
+        let comp = make_component(
+            "merge-comp",
+            r#"<template shadowrootmode="open" shadowrootadoptedstylesheets="theme other"><div>x</div></template>"#,
+            Some("div { color: blue; }"),
+        );
+        plugin
+            .register_component_template("merge-comp", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates();
+        let (_, html) = &templates[0];
+        // User specifiers come first (in order), parser-generated `merge-comp` is
+        // appended last, no duplicates.
+        assert!(
+            html.contains(r#"shadowrootadoptedstylesheets="theme other merge-comp""#),
+            "<f-template> should merge user and parser specifiers, got: {html}"
+        );
+    }
+
+    #[test]
+    fn component_template_handles_gt_in_quoted_attr_value() {
+        let mut plugin = FastV3ParserPlugin::new();
+        let comp = make_component(
+            "gt-comp",
+            r#"<template shadowrootmode="open" data-note="a > b"><div>x</div></template>"#,
+            None,
+        );
+        plugin
+            .register_component_template("gt-comp", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates();
+        let (_, html) = &templates[0];
+        // Outer <f-template> gets shadowrootmode; inner <template> retains data-note.
+        assert!(
+            html.contains(r#"<f-template name="gt-comp" shadowrootmode="open">"#),
+            "<f-template> should carry shadowrootmode even when an attr value contains '>', got: {html}"
+        );
+        assert!(
+            html.contains(r#"data-note="a > b""#),
+            "data-note should be preserved on the inner <template>, got: {html}"
+        );
     }
 
     #[test]
@@ -1248,7 +1613,7 @@ mod tests {
     }
 
     #[test]
-    fn ftemplate_shadow_dom_strips_shadowroot_and_converts_directives() {
+    fn ftemplate_shadow_dom_moves_shadowroot_and_converts_directives() {
         let mut plugin = FastV3ParserPlugin::new();
         let html = r#"<template shadowrootmode="open"><div><if condition="visible">Shown</if><for each="x in list"><span>{{x}}</span></for></div></template>"#;
         let comp = make_component("my-shadow", html, None);
@@ -1267,9 +1632,15 @@ mod tests {
             result.contains("<f-repeat value=\"{{x in list}}\">"),
             "Shadow f-template should contain <f-repeat>, got: {result}"
         );
+        // shadowrootmode is moved to the outer <f-template>...
         assert!(
-            !result.contains("shadowrootmode"),
-            "Shadow f-template should strip shadowrootmode, got: {result}"
+            result.contains(r#"<f-template name="my-shadow" shadowrootmode="open">"#),
+            "<f-template> should carry shadowrootmode, got: {result}"
+        );
+        // ...not on the inner <template>.
+        assert!(
+            !result.contains("<template shadowrootmode"),
+            "inner <template> should NOT carry shadowrootmode, got: {result}"
         );
         assert!(
             !result.contains("<if "),

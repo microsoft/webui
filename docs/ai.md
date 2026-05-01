@@ -106,6 +106,17 @@ HTML files. The build tool auto-injects it when absent.
 Root host events catch custom events bubbling up from child components.
 This is the delegated event pattern for parent-child communication.
 
+Any `shadowroot`-prefixed attributes you write on the outer `<template>` —
+`shadowrootmode`, `shadowrootclonable`, `shadowrootdelegatesfocus`,
+`shadowrootserializable`, or `shadowrootadoptedstylesheets` — are preserved
+on the rendered wrapper. The legacy `shadowroot` attribute is also emitted
+alongside `shadowrootmode` with the same value for older user agents.
+When the user-supplied `shadowrootadoptedstylesheets` overlaps with one
+the parser's CSS Module strategy generates, the values are merged (user
+specifiers first, parser specifiers appended only if not already listed).
+Under the FAST plugins (`fast-v2`/`fast-v3`) those attributes are placed
+on the outer `<f-template>` element rather than the inner `<template>`.
+
 ## Template Syntax
 
 ### Text binding

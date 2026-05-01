@@ -101,7 +101,7 @@ The `--dom` flag controls how the server renders component content:
 
 | Flag | Behavior |
 |------|----------|
-| `--dom=shadow` (default) | Wraps component HTML in `<template shadowrootmode="open">` |
+| `--dom=shadow` (default) | Wraps component HTML in `<template shadowrootmode="open" shadowroot="open">`. Any `shadowroot*` attribute on a user-supplied wrapping `<template>` is preserved. The legacy `shadowroot` attribute is always emitted alongside `shadowrootmode` for older user agents. |
 | `--dom=light` | Renders component content as direct children of the host element |
 
 The runtime auto-detects which mode was used at hydration time:
