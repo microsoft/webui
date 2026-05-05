@@ -19,6 +19,7 @@
 //!     dom: DomStrategy::Shadow,
 //!     plugin: None,
 //!     components: Vec::new(),
+//!     entry_point: None,
 //! }).unwrap();
 //!
 //! println!("Built {} fragments in {:?}", result.stats.fragment_count, result.stats.duration);
@@ -65,6 +66,8 @@ pub struct BuildOptions {
     pub plugin: Option<Plugin>,
     /// Additional component sources (npm packages or local paths).
     pub components: Vec<String>,
+    /// JS entry-point name (without `.js`); injects script tag before `</body>`.
+    pub entry_point: Option<String>,
 }
 
 /// Statistics about a completed build.
@@ -220,6 +223,10 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     parser.set_css_strategy(options.css);
     parser.set_dom_strategy(options.dom);
 
+    if let Some(ref ep) = options.entry_point {
+        parser.set_entry_point(ep);
+    }
+
     // Register app directory components
     parser
         .component_registry_mut()
@@ -371,6 +378,7 @@ mod tests {
             dom: DomStrategy::Shadow,
             plugin: None,
             components: Vec::new(),
+            entry_point: None,
         }
     }
 
@@ -709,6 +717,7 @@ mod tests {
             dom: DomStrategy::Shadow,
             plugin: None,
             components: Vec::new(),
+            entry_point: None,
         })
         .unwrap();
 
@@ -879,6 +888,7 @@ mod tests {
             dom: DomStrategy::Shadow,
             plugin: None,
             components: Vec::new(),
+            entry_point: None,
         };
         let result = build(options);
         assert!(result.is_err());
@@ -900,5 +910,42 @@ mod tests {
         assert!(stats.component_count > 0);
         assert!(stats.protocol_size_bytes > 0);
         assert!(!stats.duration.is_zero());
+    }
+
+    #[test]
+    fn test_build_with_entry_point_injects_script_tag() {
+        let app = create_app_dir(&[("index.html", "<body><p>Hello</p></body>")]);
+        let options = BuildOptions {
+            app_dir: app.path().to_path_buf(),
+            entry: "index.html".to_string(),
+            css: CssStrategy::Link,
+            dom: DomStrategy::Shadow,
+            plugin: None,
+            components: Vec::new(),
+            entry_point: Some("my-app".to_string()),
+        };
+        let result = build(options).unwrap();
+        let fragments = &result.protocol.fragments["index.html"].fragments;
+        let has_script = fragments.iter().any(|f| {
+            matches!(
+                f.fragment.as_ref(),
+                Some(Fragment::Raw(r)) if r.value.contains(r#"<script type="module" src="./my-app.js"></script>"#)
+            )
+        });
+        assert!(has_script, "Expected script tag fragment not found");
+    }
+
+    #[test]
+    fn test_build_without_entry_point_no_script_tag() {
+        let app = create_app_dir(&[("index.html", "<body><p>Hello</p></body>")]);
+        let result = build(default_options(app.path())).unwrap();
+        let fragments = &result.protocol.fragments["index.html"].fragments;
+        let has_script = fragments.iter().any(|f| {
+            matches!(
+                f.fragment.as_ref(),
+                Some(Fragment::Raw(r)) if r.value.contains("<script")
+            )
+        });
+        assert!(!has_script, "Unexpected script tag found in fragments");
     }
 }

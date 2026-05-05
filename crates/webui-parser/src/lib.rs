@@ -216,6 +216,9 @@ pub struct HtmlParser {
     /// (e.g., `:root { --color-primary: #0078d4; }`). These are excluded
     /// from the final token set since the app already provides their values.
     token_definitions: HashSet<String>,
+
+    /// JS entry-point name (without `.js`); injects script tag before `</body>`.
+    entry_point: Option<String>,
 }
 
 impl HtmlParser {
@@ -241,6 +244,7 @@ impl HtmlParser {
             plugin: None,
             token_store: HashSet::new(),
             token_definitions: HashSet::new(),
+            entry_point: None,
             parser,
         }
     }
@@ -261,6 +265,12 @@ impl HtmlParser {
     /// Set the DOM strategy for component rendering (shadow or light).
     pub fn set_dom_strategy(&mut self, strategy: DomStrategy) -> &mut Self {
         self.dom_strategy = strategy;
+        self
+    }
+
+    /// Set the JS entry-point name (without `.js` extension).
+    pub fn set_entry_point(&mut self, name: impl Into<String>) -> &mut Self {
+        self.entry_point = Some(name.into());
         self
     }
 
@@ -1225,6 +1235,18 @@ impl HtmlParser {
         fragments.push(WebUIFragment::signal("body_start", true));
         self.process_content_children(node, source, fragments)?;
         self.flush_raw_buffer(fragments);
+
+        // Inject entry-point script tag
+        if let Some(ref ep) = self.entry_point {
+            use std::fmt::Write;
+            write!(
+                self.raw_buffer,
+                r#"<script type="module" src="./{ep}.js"></script>"#
+            )
+            .ok();
+            self.flush_raw_buffer(fragments);
+        }
+
         fragments.push(WebUIFragment::signal("body_end", true));
         self.add_raw_fragment("</body>");
         Ok(())
@@ -4658,6 +4680,70 @@ mod tests {
                 raw("<button>Click</button><br>Part B: "),
                 signal("value2"),
                 raw("<button>Click2</button>"),
+            ]
+        );
+    }
+
+    // ── Entry-point injection tests ───────────────────────────────────
+
+    #[test]
+    fn test_entry_point_injects_script_before_body_end() {
+        let mut parser = HtmlParser::new();
+        parser.set_entry_point("main");
+        let result = parser.parse("index.html", "<body><p>Hello</p></body>");
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let records = parser.into_fragment_records();
+        let fragments = &records
+            .get("index.html")
+            .expect("missing index.html")
+            .fragments;
+        assert_fragments!(
+            fragments,
+            [
+                raw("<body>"),
+                signal_raw("body_start"),
+                raw("<p>Hello</p>"),
+                raw(r#"<script type="module" src="./main.js"></script>"#),
+                signal_raw("body_end"),
+                raw("</body>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_entry_point_none_no_injection() {
+        let (fragments, _) = parse_and_get_fragments("<body><p>Hi</p></body>");
+        assert_fragments!(
+            fragments,
+            [
+                raw("<body>"),
+                signal_raw("body_start"),
+                raw("<p>Hi</p>"),
+                signal_raw("body_end"),
+                raw("</body>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_entry_point_with_hyphenated_name() {
+        let mut parser = HtmlParser::new();
+        parser.set_entry_point("my-app-entry");
+        let result = parser.parse("index.html", "<body></body>");
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let records = parser.into_fragment_records();
+        let fragments = &records
+            .get("index.html")
+            .expect("missing index.html")
+            .fragments;
+        assert_fragments!(
+            fragments,
+            [
+                raw("<body>"),
+                signal_raw("body_start"),
+                raw(r#"<script type="module" src="./my-app-entry.js"></script>"#),
+                signal_raw("body_end"),
+                raw("</body>"),
             ]
         );
     }

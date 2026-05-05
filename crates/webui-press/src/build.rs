@@ -366,6 +366,7 @@ pub fn build_docs_with_cache(
             dom: webui::DomStrategy::Shadow,
             plugin: Some(webui::Plugin::WebUI),
             components: component_sources.clone(),
+            entry_point: None,
         })
         .map_err(|e| Error::Build(format!("{}: {e}", page.path)))?;
 
@@ -507,6 +508,7 @@ pub fn build_docs_with_cache(
         dom: webui::DomStrategy::Shadow,
         plugin: Some(webui::Plugin::WebUI),
         components: component_sources.clone(),
+        entry_point: None,
     })
     .map_err(|e| Error::Build(format!("404 build failed: {e}")))?;
 

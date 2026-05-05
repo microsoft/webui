@@ -857,6 +857,7 @@ pub struct HtmlParser {
     condition_parser: ConditionParser,
     handlebars_parser: HandlebarsParser,
     css_strategy: CssStrategy,
+    entry_point: Option<String>,
     // Other fields...
 }
 ```

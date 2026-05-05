@@ -41,6 +41,7 @@ impl FrontendRuntime {
             dom: DomStrategy::Shadow,
             plugin: Some(Plugin::WebUI),
             components: Vec::new(),
+            entry_point: None,
         })
         .with_context(|| "Failed to build the commerce WebUI protocol")?;
 

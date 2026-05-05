@@ -96,6 +96,7 @@ Deno.serve({ port: 3000 }, (req) => {
 | `css` | `"link" \| "style" \| "module"` | `"link"` | CSS delivery strategy |
 | `plugin` | `string` | - | Parser plugin (e.g. `"fast-v3"`; deprecated `"fast"`/`"fast-v2"` keep @microsoft/fast-element 2.x compatibility) |
 | `components` | `string[]` | - | External component sources |
+| `entryPoint` | `string` | - | JS entry-point name (without `.js`); injects `<script type="module">` tag |
 
 ### BuildStats
 

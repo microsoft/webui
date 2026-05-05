@@ -49,6 +49,7 @@ impl ShellState {
             dom: DomStrategy::Shadow,
             plugin: Some(Plugin::WebUI),
             components: Vec::new(),
+            entry_point: None,
         })
         .map_err(|e| anyhow::anyhow!("Failed to build shell protocol: {e}"))?;
 

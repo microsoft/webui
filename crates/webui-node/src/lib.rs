@@ -79,6 +79,8 @@ pub struct JsBuildOptions {
     pub plugin: Option<String>,
     /// Additional component sources (npm packages or local paths).
     pub components: Option<Vec<String>>,
+    /// JS entry-point name (without `.js`); injects script tag into protocol.
+    pub entry_point: Option<String>,
 }
 
 /// Build a WebUI application from an app directory.
@@ -107,6 +109,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         dom: webui::DomStrategy::Shadow,
         plugin,
         components: options.components.unwrap_or_default(),
+        entry_point: options.entry_point,
     };
 
     let result = webui::build(build_options)
@@ -460,6 +463,7 @@ mod tests {
             css: None,
             plugin: None,
             components: None,
+            entry_point: None,
         };
 
         let result = build(options).unwrap();
@@ -480,6 +484,7 @@ mod tests {
             css: None,
             plugin: None,
             components: None,
+            entry_point: None,
         };
 
         let result = build(options).unwrap();
@@ -494,6 +499,7 @@ mod tests {
             css: None,
             plugin: None,
             components: None,
+            entry_point: None,
         };
 
         let result = build(options);
@@ -511,6 +517,7 @@ mod tests {
             css: Some("bogus".to_string()),
             plugin: None,
             components: None,
+            entry_point: None,
         };
 
         let result = build(options);
@@ -530,6 +537,7 @@ mod tests {
             css: Some("link".to_string()),
             plugin: None,
             components: None,
+            entry_point: None,
         };
 
         let result = build(options).unwrap();

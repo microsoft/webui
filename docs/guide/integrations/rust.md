@@ -171,6 +171,7 @@ async fn main() {
 | `css` | `CssStrategy` | `Link` | CSS delivery: `Link`, `Style`, or `Module` |
 | `plugin` | `Option<String>` | `None` | Parser plugin (e.g. `"fast-v3"`; deprecated `"fast"`/`"fast-v2"` keep @microsoft/fast-element 2.x compatibility) |
 | `components` | `Vec<String>` | `[]` | External component sources |
+| `entry_point` | `Option<String>` | `None` | JS entry-point name (without `.js`); injects `<script type="module">` tag |
 
 ### BuildStats
 

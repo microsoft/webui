@@ -255,6 +255,7 @@ fn build_contact_book_protocol() -> (WebUIProtocol, Vec<u8>) {
         dom: DomStrategy::Shadow,
         plugin: None,
         components: Vec::new(),
+        entry_point: None,
     })
     .expect("failed to build contact-book-manager protocol");
 

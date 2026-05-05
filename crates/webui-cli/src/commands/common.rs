@@ -45,6 +45,7 @@ impl AppArgs {
             dom: self.dom,
             plugin: self.plugin,
             components: self.components.clone(),
+            entry_point: None,
         }
     }
 }
