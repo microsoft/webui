@@ -1,12 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { WebUIElement, attr } from '@microsoft/webui-framework';
+import { FASTElement, attr } from '@microsoft/fast-element';
+import { declarativeTemplate } from '@microsoft/fast-element/declarative.js';
+import { observerMap } from '@microsoft/fast-element/observer-map.js';
 
-export class CalcDisplay extends WebUIElement {
+export class CalcDisplay extends FASTElement {
   @attr expression = '';
   @attr value = '';
   @attr error = '';
 }
 
-CalcDisplay.define('calc-display');
+void CalcDisplay.define({
+  name: 'calc-display',
+  template: declarativeTemplate(),
+}, [observerMap()]);

@@ -199,7 +199,7 @@ class ScientificEngine implements ModeEngine {
   private parenDepth = 0;
 
   processInput(input: string, state: CalcState): CalcState {
-    const next: CalcState = { ...state, error: null };
+    const next = { ...state, error: null };
 
     // Number input
     if (/^[0-9]$/.test(input)) {

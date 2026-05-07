@@ -4,26 +4,25 @@
 /**
  * Calculator hydration entry point.
  *
- * The server pre-renders HTML with hydration markers via `webui build --plugin=webui`.
- * The framework auto-hydrates registered custom elements and fires
- * `webui:hydration-complete` on `window` once they finish.
+ * The server pre-renders HTML with hydration markers via `webui build --plugin=fast-v3`.
+ * This script enables FAST hydration and registers custom elements with
+ * declarative templates.
  */
 
-window.addEventListener('webui:hydration-complete', logHydrationTiming);
+performance.mark('calc-hydration-started');
 
-function logHydrationTiming(): void {
-  const total = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];
-  if (total) {
-    console.log(`Calculator hydration complete in ${total.duration.toFixed(1)}ms`);
-  }
-}
+import { enableHydration } from '@microsoft/fast-element/hydration.js';
 
-// Side-effect imports — register custom elements and trigger hydration
-import './calc-app/calc-app.js';
-import './calc-display/calc-display.js';
-import './calc-button/calc-button.js';
+enableHydration({
+  hydrationComplete() {
+    performance.measure('calc-hydration-completed', 'calc-hydration-started');
+    console.log('Calculator hydration complete!');
+  },
+});
 
-// Fallback: if hydration already completed before the listener, log now
-if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {
-  logHydrationTiming();
-}
+// Register custom elements after hydration is enabled.
+void Promise.all([
+  import('./calc-app/calc-app.js'),
+  import('./calc-display/calc-display.js'),
+  import('./calc-button/calc-button.js'),
+]);
