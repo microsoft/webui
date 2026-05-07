@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 import type { ModeEngine, ButtonDef, CalcState } from './engine.js';
 import { registerMode } from './engine.js';
 
@@ -196,7 +199,7 @@ class ScientificEngine implements ModeEngine {
   private parenDepth = 0;
 
   processInput(input: string, state: CalcState): CalcState {
-    const next = { ...state, error: null };
+    const next: CalcState = { ...state, error: null };
 
     // Number input
     if (/^[0-9]$/.test(input)) {

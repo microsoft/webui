@@ -1,24 +1,17 @@
-import { FASTElement, attr } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
 
-export class CalcButton extends RenderableFASTElement(FASTElement) {
+import { WebUIElement, attr } from '@microsoft/webui-framework';
+
+export class CalcButton extends WebUIElement {
   @attr label = '';
   @attr value = '';
-  @attr({ attribute: 'btn-type' }) btnType = '';
-  @attr({ attribute: 'btn-span' }) btnSpan = '';
+  @attr btnType = '';
+  @attr btnSpan = '';
 
   onClick(): void {
-    this.dispatchEvent(
-      new CustomEvent('button-press', {
-        bubbles: true,
-        composed: true,
-        detail: { value: this.value },
-      })
-    );
+    this.$emit('button-press', { value: this.value });
   }
 }
 
-CalcButton.defineAsync({
-  name: 'calc-button',
-  templateOptions: 'defer-and-hydrate',
-});
+CalcButton.define('calc-button');

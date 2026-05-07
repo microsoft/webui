@@ -1,13 +1,12 @@
-import { FASTElement, attr } from '@microsoft/fast-element';
-import { RenderableFASTElement } from '@microsoft/fast-html';
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
 
-export class CalcDisplay extends RenderableFASTElement(FASTElement) {
+import { WebUIElement, attr } from '@microsoft/webui-framework';
+
+export class CalcDisplay extends WebUIElement {
   @attr expression = '';
   @attr value = '';
   @attr error = '';
 }
 
-CalcDisplay.defineAsync({
-  name: 'calc-display',
-  templateOptions: 'defer-and-hydrate',
-});
+CalcDisplay.define('calc-display');

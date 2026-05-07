@@ -28,6 +28,7 @@ export default {
         items: [
           { text: 'Hello World', link: '/tutorials/hello-world.md' },
           { text: 'Todo App', link: '/tutorials/todo-app.md' },
+          { text: 'Calculator App', link: '/tutorials/calculator-app.md' },
         ]
        },
       { text: 'Playground', link: '/playground/' },
@@ -94,6 +95,7 @@ export default {
           items: [
             { text: 'Hello World', link: '/tutorials/hello-world' },
             { text: 'Todo App', link: '/tutorials/todo-app' },
+            { text: 'Calculator App', link: '/tutorials/calculator-app' },
           ]
         }
       ],

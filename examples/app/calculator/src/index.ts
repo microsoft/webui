@@ -1,30 +1,29 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
 /**
  * Calculator hydration entry point.
  *
- * The server pre-renders HTML with hydration markers via `webui build --plugin=fast`.
- * This script registers custom elements, configures FAST-HTML observation maps,
- * and defines <f-template> to trigger hydration.
+ * The server pre-renders HTML with hydration markers via `webui build --plugin=webui`.
+ * The framework auto-hydrates registered custom elements and fires
+ * `webui:hydration-complete` on `window` once they finish.
  */
 
-performance.mark('calc-hydration-started');
+window.addEventListener('webui:hydration-complete', logHydrationTiming);
 
-import { TemplateElement } from '@microsoft/fast-html';
+function logHydrationTiming(): void {
+  const total = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];
+  if (total) {
+    console.log(`Calculator hydration complete in ${total.duration.toFixed(1)}ms`);
+  }
+}
 
-// Side-effect imports register custom elements
+// Side-effect imports — register custom elements and trigger hydration
 import './calc-app/calc-app.js';
 import './calc-display/calc-display.js';
 import './calc-button/calc-button.js';
 
-// Configure hydration
-TemplateElement.options({
-  'calc-app': { observerMap: 'all' },
-  'calc-display': { observerMap: 'all' },
-  'calc-button': { observerMap: 'all' },
-}).config({
-  hydrationComplete() {
-    performance.measure('calc-hydration-completed', 'calc-hydration-started');
-    console.log('Calculator hydration complete!');
-  },
-}).define({
-  name: 'f-template',
-});
+// Fallback: if hydration already completed before the listener, log now
+if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {
+  logHydrationTiming();
+}
