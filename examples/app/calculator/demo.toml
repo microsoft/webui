@@ -2,12 +2,12 @@
 # See examples/demo/README.md for the full schema.
 
 name = "Calculator"
-description = "A calculator with basic and scientific mode using the fast-v3 rendering plugin"
-backend = "rust"
+description = "A calculator with basic and scientific mode built on WebUI Framework"
+backend = "none"
 
 [server]
 type = "webui-cli"
-plugin = "fast-v3"
+plugin = "webui"
 source = "src"
 servedir = "dist"
 state = "data/state.json"

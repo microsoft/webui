@@ -1,9 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr, observable } from '@microsoft/fast-element';
-import { declarativeTemplate } from '@microsoft/fast-element/declarative.js';
-import { observerMap } from '@microsoft/fast-element/observer-map.js';
+import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
 import type { CalcState, ButtonDef } from '../modes/engine.js';
 import { createInitialState, getMode } from '../modes/engine.js';
 import '../modes/standard.js';
@@ -16,52 +14,19 @@ interface ButtonData {
   span: string;
 }
 
-export class CalcApp extends FASTElement {
-  @attr mode!: string;
-  @attr({ attribute: 'display-value' }) displayValue!: string;
-  @attr expression!: string;
-  @attr({ attribute: 'columns' }) gridColumns!: string;
+export class CalcApp extends WebUIElement {
+  @attr mode = 'standard';
+  @attr displayValue = '0';
+  @attr expression = '';
+  @attr columns = '4';
 
-  @observable buttons!: ButtonData[];
+  @observable buttons: ButtonData[] = [];
 
-  private state!: CalcState;
-
-  private prepareFromDom(): void {
-    this.mode = this.getAttribute('mode') || 'standard';
-    this.displayValue = this.getAttribute('display-value') || '0';
-    this.expression = this.getAttribute('expression') || '';
-    this.gridColumns = this.getAttribute('columns') || '4';
-    this.state = createInitialState();
-
-    // Read button data from pre-rendered DOM (mirrors todo-fast pattern)
-    const buttons: ButtonData[] = [];
-    if (this.shadowRoot) {
-      for (const el of this.shadowRoot.querySelectorAll('calc-button')) {
-        buttons.push({
-          label: el.getAttribute('label') || '',
-          value: el.getAttribute('value') || '',
-          type: el.getAttribute('btn-type') || '',
-          span: el.getAttribute('btn-span') || '1',
-        });
-      }
-    }
-
-    if (buttons.length > 0) {
-      this.buttons = buttons;
-    } else {
-      this.loadButtonsFromEngine();
-    }
-  }
-
+  private state: CalcState = createInitialState();
   private boundKeydown = this.onKeydown.bind(this);
 
   connectedCallback(): void {
-    this.prepareFromDom();
     super.connectedCallback();
-    void this.$fastController.isPrerendered.then(() => {
-      this.prepareFromDom();
-      this.updateActiveModeTab();
-    });
     document.addEventListener('keydown', this.boundKeydown);
   }
 
@@ -123,7 +88,7 @@ export class CalcApp extends FASTElement {
     const engine = getMode(this.mode);
     if (!engine) return;
 
-    this.gridColumns = String(engine.columns);
+    this.columns = String(engine.columns);
     this.buttons = engine.buttons.map((b: ButtonDef) => ({
       label: b.label,
       value: b.value,
@@ -144,7 +109,4 @@ export class CalcApp extends FASTElement {
   }
 }
 
-void CalcApp.define({
-  name: 'calc-app',
-  template: declarativeTemplate(),
-}, [observerMap()]);
+CalcApp.define('calc-app');

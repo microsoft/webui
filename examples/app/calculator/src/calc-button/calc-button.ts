@@ -1,28 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { FASTElement, attr } from '@microsoft/fast-element';
-import { declarativeTemplate } from '@microsoft/fast-element/declarative.js';
-import { observerMap } from '@microsoft/fast-element/observer-map.js';
+import { WebUIElement, attr } from '@microsoft/webui-framework';
 
-export class CalcButton extends FASTElement {
+export class CalcButton extends WebUIElement {
   @attr label = '';
   @attr value = '';
-  @attr({ attribute: 'btn-type' }) btnType = '';
-  @attr({ attribute: 'btn-span' }) btnSpan = '';
+  @attr btnType = '';
+  @attr btnSpan = '';
 
   onClick(): void {
-    this.dispatchEvent(
-      new CustomEvent('button-press', {
-        bubbles: true,
-        composed: true,
-        detail: { value: this.value },
-      })
-    );
+    this.$emit('button-press', { value: this.value });
   }
 }
 
-void CalcButton.define({
-  name: 'calc-button',
-  template: declarativeTemplate(),
-}, [observerMap()]);
+CalcButton.define('calc-button');

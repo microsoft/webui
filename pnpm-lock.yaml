@@ -104,9 +104,9 @@ importers:
 
   examples/app/calculator:
     devDependencies:
-      '@microsoft/fast-element':
-        specifier: 'catalog:'
-        version: 3.0.0-rc.1
+      '@microsoft/webui-framework':
+        specifier: workspace:*
+        version: link:../../../packages/webui-framework
       '@playwright/test':
         specifier: 'catalog:'
         version: 1.58.2
