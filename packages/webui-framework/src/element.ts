@@ -962,9 +962,12 @@ export class WebUIElement extends HTMLElement {
       // Single-root optimisation: hydrate the element in-place (pathStart=1).
       const el = nextElement(condAnchor);
       if (el) {
-        const inst = this.$hydrate(el, blockMeta, tplDom, scope, 1);
-        this.$updateInstance(inst);
-        return inst;
+        // Wire bindings only — do NOT call $updateInstance.  SSR text
+        // nodes already contain correct values; evaluating bindings now
+        // would overwrite them with stale data (e.g. a complex property
+        // from a parent that hasn't hydrated yet).  This is consistent
+        // with $mount which also skips $updateInstance for SSR roots.
+        return this.$hydrate(el, blockMeta, tplDom, scope, 1);
       }
       return null;
     }
@@ -980,7 +983,7 @@ export class WebUIElement extends HTMLElement {
       condAnchor.parentNode?.insertBefore(inst.nodes[cn], afterNode.nextSibling);
       afterNode = inst.nodes[cn];
     }
-    this.$updateInstance(inst);
+    // Same as above — trust SSR DOM, skip binding evaluation.
     return inst;
   }
 
