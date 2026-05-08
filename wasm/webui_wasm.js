@@ -408,7 +408,7 @@ export function render_component_templates(protocol_json, component_tags_json, i
  *
  * * `protocol_json` — JSON string of the serialized `WebUIProtocol`.
  * * `state_json` — JSON string of the state data.
- * * `plugin` — Optional plugin identifier, such as `"fast-v3"` for FAST 3.
+ * * `plugin` — Optional plugin identifier (see crate documentation for available identifiers).
  *
  * # Returns
  *
