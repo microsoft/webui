@@ -22,19 +22,16 @@ pnpm --filter @microsoft/webui build
 pnpm install
 ```
 
-4. Build a WebUI app (e.g. todo-fast):
+4. Build a WebUI app (e.g. contact-book-manager):
 
 ```bash
-cargo run -p microsoft-webui-cli -- build ../../app/todo-fast/src --out ../../app/todo-fast/dist --css link --plugin=fast-v3
-esbuild ../../app/todo-fast/src/index.ts --bundle --outfile=../../app/todo-fast/dist/index.js --format=esm
+cargo run -p microsoft-webui-cli -- build ../../app/contact-book-manager/src --out ../../app/contact-book-manager/dist --css link --plugin=webui
+esbuild ../../app/contact-book-manager/src/index.ts --bundle --outfile=../../app/contact-book-manager/dist/index.js --format=esm
 ```
 
 ## Usage
 
 ```bash
-# todo-fast (@microsoft/fast-element 3.x)
-pnpm start ../../app/todo-fast/dist ../../app/todo-fast/data/state.json --plugin=fast-v3
-
 # contact-book-manager (WebUI Framework)
 pnpm start ../../app/contact-book-manager/dist ../../app/contact-book-manager/data/state.json --plugin=webui
 ```
@@ -45,6 +42,4 @@ pnpm start ../../app/contact-book-manager/dist ../../app/contact-book-manager/da
 |---|---|
 | `dist-dir` | **(required)** Path to the app's `dist/` directory containing `protocol.bin` and CSS/JS assets |
 | `state.json` | **(required)** Path to the state JSON file |
-| `--plugin=<name>` | Enable a hydration plugin: `webui`, `fast-v3`, deprecated `fast-v2`, or deprecated `fast` _(optional)_ |
-
-Deprecated @microsoft/fast-element 2.x compatibility remains available with `--plugin=fast-v2` or the `--plugin=fast` alias.
+| `--plugin=<name>` | Hydration plugin identifier (see the WebUI documentation for available plugins) _(optional)_ |

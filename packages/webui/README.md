@@ -36,7 +36,7 @@ const result = build({
   appDir: "./src",        // Path to the template directory
   entry: "index.html",   // Entry file (default: "index.html")
   css: "link",           // CSS strategy: "link" or "style"
-  plugin: "fast-v3",     // Parser plugin; use "fast-v3" for @microsoft/fast-element 3.x hydration
+  plugin: "webui",       // Parser plugin name
   components: [],        // Additional component sources
   outDir: "./dist",      // Output directory for CLI fallback
 });
@@ -45,8 +45,6 @@ const result = build({
 // result.cssFiles  - Array of [filename, content, ...] pairs
 // result.stats     - { durationMs, fragmentCount, componentCount, cssFileCount, protocolSizeBytes, tokenCount }
 ```
-
-`"fast"` and `"fast-v2"` are deprecated @microsoft/fast-element 2.x compatibility plugin names. Use `"fast-v3"` for @microsoft/fast-element 3.x.
 
 ### `render(protocol: Buffer, state: object | string): string`
 

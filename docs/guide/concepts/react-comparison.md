@@ -1,6 +1,6 @@
 # React vs Web Components
 
-This guide compares common UI patterns written in React (imperative, JavaScript-centric) with their WebUI and FAST equivalents (declarative, HTML-centric). Each section shows React and WebUI side by side so you can see how familiar patterns translate to a Web Components model.
+This guide compares common UI patterns written in React (imperative, JavaScript-centric) with their WebUI equivalents (declarative, HTML-centric). Each section shows React and WebUI side by side so you can see how familiar patterns translate to a Web Components model.
 
 ## Key Differences at a Glance
 

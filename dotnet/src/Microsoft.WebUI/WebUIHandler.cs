@@ -21,7 +21,7 @@ public sealed class WebUIHandler : IDisposable
     /// <summary>
     /// Creates a new WebUI handler instance.
     /// </summary>
-    /// <param name="plugin">Optional plugin identifier (e.g., "fast-v3" for FAST 3 hydration; "fast" and "fast-v2" are deprecated FAST 2 compatibility names).</param>
+    /// <param name="plugin">Optional plugin identifier. See the WebUI documentation for available plugin identifiers.</param>
     /// <exception cref="WebUIException">Thrown when the native handler cannot be created.</exception>
     public WebUIHandler(string? plugin = null)
     {

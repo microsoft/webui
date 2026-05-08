@@ -42,7 +42,7 @@ const html = render(protocolJson, stateJson);
 |-----------|------|-------------|
 | `protocolJson` | `string` | JSON-serialized `WebUIProtocol` |
 | `stateJson` | `string` | JSON string with the render state |
-| `plugin` | `string \| undefined` | Optional plugin identifier (e.g., `"fast-v3"`) |
+| `plugin` | `string \| undefined` | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 
 **Returns:** Rendered HTML string. Throws on error.
 
@@ -106,15 +106,13 @@ const protocolJson = build_protocol(files, 'index.html');
 
 ## Using Plugins
 
-Pass `"fast-v3"` as the `plugin` parameter to enable @microsoft/fast-element 3.x hydration markers:
+Pass a plugin identifier (see [Plugins](/guide/concepts/plugins/)) as the `plugin` parameter to enable hydration markers:
 
 ```js
-const html = render(protocolJson, stateJson, 'fast-v3');
+const html = render(protocolJson, stateJson, 'webui');
 ```
 
-Deprecated `"fast"` and `"fast-v2"` identifiers remain available for @microsoft/fast-element 2.x
-compatibility markers. See [Plugins](/guide/concepts/plugins/) for details on
-what markers are injected.
+The plugin runs the same parser/handler code used by the CLI; output is byte-identical to a server-side render with the same plugin selected.
 
 ## Playground Integration
 

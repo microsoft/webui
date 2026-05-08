@@ -3,6 +3,8 @@ packages:
   - examples/**
   - packages/*
   - '!**/test/**'
+  - '!**/bin/**'
+  - '!**/obj/**'
 
 catalog:
   '@codemirror/commands': ^6.10.2

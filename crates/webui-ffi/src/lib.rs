@@ -153,8 +153,8 @@ pub extern "C" fn webui_handler_create() -> *mut c_void {
 /// # Arguments
 ///
 /// * `plugin_id` - Null-terminated UTF-8 string identifying the plugin.
-///   `"fast"` and `"fast-v2"` select deprecated FAST 2 compatibility markers;
-///   `"fast-v3"` selects FAST 3 markers.
+///   Refer to the CLI/crate documentation for the current list of supported
+///   identifiers.
 ///
 /// # Returns
 ///
