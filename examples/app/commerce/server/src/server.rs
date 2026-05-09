@@ -459,6 +459,25 @@ mod tests {
         let response = test::call_service(&app, request).await;
         assert_eq!(response.status(), StatusCode::OK);
 
+        // Pull the per-request CSP nonce out of the response header so the
+        // body assertions below can verify the in-tag nonce matches the one
+        // the server advertised to the browser.
+        let csp = response
+            .headers()
+            .get("Content-Security-Policy")
+            .expect("CSP header should be set on /about response")
+            .to_str()
+            .expect("CSP header should be valid UTF-8")
+            .to_string();
+        let nonce_marker = "'nonce-";
+        let nonce_start =
+            csp.find(nonce_marker).expect("CSP should contain a nonce") + nonce_marker.len();
+        let nonce_end = nonce_start
+            + csp[nonce_start..]
+                .find('\'')
+                .expect("nonce token should be quoted");
+        let nonce = &csp[nonce_start..nonce_end];
+
         let body = match to_bytes(response.into_body()).await {
             Ok(body) => body,
             Err(error) => panic!("{error}"),
@@ -471,13 +490,38 @@ mod tests {
         // mp-cart-panel is a non-route sibling inside mp-app whose FNV-1a hash
         // collides with mp-app (both map to bit 218). The inventory filter must
         // not drop it due to this collision. The style is emitted inline in the
-        // component's light DOM during SSR rendering. Asserting on the
-        // `specifier="..."` substring (rather than the full opening tag) keeps
-        // this check robust to additional attributes such as the CSP `nonce`
-        // that the commerce frontend injects via `RenderOptions::with_nonce`.
+        // component's light DOM during SSR rendering.
+        assert!(
+            html.contains(r#"<style type="module""#),
+            "SSR output should contain at least one inline <style type=\"module\"> tag: {html}"
+        );
         assert!(
             html.contains(r#"specifier="mp-cart-panel""#),
             "mp-cart-panel module style should be present in SSR output for /about"
+        );
+
+        // Locate the mp-cart-panel <style type="module"> opening tag and verify
+        // it carries a CSP nonce that matches the value in the response's
+        // Content-Security-Policy header. This guards the end-to-end wiring
+        // from `RenderOptions::with_nonce` through to the inline style tag,
+        // which strict `style-src 'nonce-...'` policies require.
+        let cart_panel_specifier = r#"specifier="mp-cart-panel""#;
+        let specifier_pos = html
+            .find(cart_panel_specifier)
+            .expect("mp-cart-panel specifier substring located above");
+        let tag_start = html[..specifier_pos]
+            .rfind("<style")
+            .expect("specifier must be preceded by a <style opening tag");
+        let tag_end = specifier_pos
+            + html[specifier_pos..]
+                .find('>')
+                .expect("opening <style> tag must terminate");
+        let cart_panel_tag = &html[tag_start..=tag_end];
+        let expected_nonce_attr = format!(r#"nonce="{nonce}""#);
+        assert!(
+            cart_panel_tag.contains(&expected_nonce_attr),
+            "mp-cart-panel <style type=\"module\"> tag should carry the response CSP nonce \
+             (expected `{expected_nonce_attr}` in `{cart_panel_tag}`)"
         );
     }
 
