@@ -132,8 +132,8 @@ export class TestBenchRepeat extends WebUIElement {
 
 TestBenchRepeat.define('test-bench-repeat');
 
-// ── Event closure benchmark ────────────────────────────────────────
-// Each repeat item has 5 event bindings → 200 items × 5 = 1000 closures
+// ── Event target benchmark ─────────────────────────────────────────
+// Each repeat item has 5 event bindings → 200 items × 5 = 1000 targets
 
 export class TestBenchEvents extends WebUIElement {
   @observable items: Array<{ id: number }> = [];
@@ -155,7 +155,7 @@ export class TestBenchEvents extends WebUIElement {
     const memBefore = (perf.memory as Record<string, number>)?.usedJSHeapSize ?? 0;
 
     const start = performance.now();
-    this.items = data; // creates 200 items × 5 events = 1000 event listeners
+    this.items = data; // registers 200 items × 5 events = 1000 event targets
     const elapsed = performance.now() - start;
 
     const memAfter = (perf.memory as Record<string, number>)?.usedJSHeapSize ?? 0;

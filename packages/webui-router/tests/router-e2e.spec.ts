@@ -74,10 +74,7 @@ test.describe('client-side navigation', () => {
     expect(survived).toBe(true);
   });
 
-  // TODO: sibling navigation unmounts old page but fails to mount new one.
-  // The router fetches the correct partial (with template) but doesn't
-  // render the new component after the first client navigation.
-  test.fixme('navigates between sibling routes', async ({ page }) => {
+  test('navigates between sibling routes', async ({ page }) => {
     await page.locator('nav a[href="/alpha"]').click();
     await expect(page.locator('main h2')).toContainText('Alpha Page');
 
@@ -106,8 +103,7 @@ test.describe('browser history', () => {
     await page.waitForTimeout(300);
   });
 
-  // TODO: depends on sibling navigation fix (see fixme above)
-  test.fixme('back button returns to previous route', async ({ page }) => {
+  test('back button returns to previous route', async ({ page }) => {
     await page.locator('nav a[href="/alpha"]').click();
     await expect(page.locator('main h2')).toContainText('Alpha Page');
 
@@ -115,8 +111,7 @@ test.describe('browser history', () => {
     await expect(page.locator('page-alpha')).toHaveCount(0);
   });
 
-  // TODO: depends on sibling navigation fix (see fixme above)
-  test.fixme('forward button restores navigated route', async ({ page }) => {
+  test('forward button restores navigated route', async ({ page }) => {
     await page.locator('nav a[href="/beta"]').click();
     await expect(page.locator('main h2')).toContainText('Beta Page');
 
@@ -127,8 +122,7 @@ test.describe('browser history', () => {
     await expect(page.locator('main h2')).toContainText('Beta Page');
   });
 
-  // TODO: depends on sibling navigation fix (see fixme above)
-  test.fixme('multi-step history traversal works correctly', async ({ page }) => {
+  test('multi-step history traversal works correctly', async ({ page }) => {
     await page.locator('nav a[href="/alpha"]').click();
     await expect(page.locator('main h2')).toContainText('Alpha Page');
 
@@ -441,7 +435,7 @@ test.describe('route loaders', () => {
     expect(accept).toContain('application/json');
   });
 
-  test('partial response does not include state (caller responsibility)', async ({ page }) => {
+  test('partial response delivers state on the leaf chain entry', async ({ page }) => {
     // Intercept the partial request and inspect the response body
     const partialBody = page.waitForResponse(resp =>
       resp.url().includes('/alpha') &&
@@ -458,8 +452,11 @@ test.describe('route loaders', () => {
     expect(body.inventory).toBeDefined();
     expect(body.path).toBeDefined();
 
-    // State is added by the caller (the dev server adds it at the top level)
-    expect(body.state).toBeDefined();
+    // State lives on the leaf (last) chain entry — not at the top level.
+    // This minimizes setState calls: only the target page component receives state.
+    expect(body.state).toBeUndefined();
+    const leaf = body.chain[body.chain.length - 1];
+    expect(leaf.state).toBeDefined();
   });
 });
 

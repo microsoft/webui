@@ -14,7 +14,6 @@ pub(crate) mod route_renderer;
 
 use plugin::HandlerPlugin;
 use route_matcher::CompiledRouteCache;
-use serde::Serialize;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -142,15 +141,22 @@ struct WebUIProcessContext<'a> {
     /// Incremented each time a matched route is rendered, allowing O(1) element
     /// binding on the client side instead of DOM-walking.
     route_chain_index: usize,
+    /// Per-render cache of the component → bit-index map. Built lazily on
+    /// first access and reused by both the head_end (CSS preload) and
+    /// body_end (inventory bitfield + template emission) hooks. Avoids
+    /// re-sorting + re-cloning every component name twice per request.
+    component_index: Option<HashMap<String, u32>>,
 }
 
 struct WebUiBootstrap<'a> {
-    state: &'a Value,
+    /// Route chain entries (without state — state is spliced in at write time).
     chain: &'a [Value],
     inventory: &'a str,
-    nonce: Option<&'a str>,
-    css_hrefs: &'a [&'a str],
-    style_specs: &'a [&'a str],
+    /// Per-page state. Spliced into `chain[0]` during serialization without
+    /// allocating an intermediate clone. When the chain is empty a synthetic
+    /// state-only envelope is emitted at `chain[0]` so the client always
+    /// reads state from the same place.
+    state: &'a Value,
 }
 
 /// Get the component attribute name, stripping `:` prefix and converting to camelCase.
@@ -186,18 +192,6 @@ fn write_usize(writer: &mut dyn ResponseWriter, mut n: usize) -> Result<()> {
     }
 }
 
-fn write_script_safe_json<T>(writer: &mut dyn ResponseWriter, value: &T) -> Result<()>
-where
-    T: Serialize + ?Sized,
-{
-    let mut json = Vec::with_capacity(256);
-    serde_json::to_writer(&mut json, value)
-        .map_err(|error| HandlerError::Rendering(format!("failed to serialize JSON: {error}")))?;
-    let json = std::str::from_utf8(&json)
-        .map_err(|error| HandlerError::Rendering(format!("invalid JSON UTF-8: {error}")))?;
-    write_script_safe_json_str(writer, json)
-}
-
 fn write_script_safe_json_str(writer: &mut dyn ResponseWriter, json: &str) -> Result<()> {
     let mut start = 0;
     while start < json.len() {
@@ -216,57 +210,121 @@ fn write_script_safe_json_str(writer: &mut dyn ResponseWriter, json: &str) -> Re
     Ok(())
 }
 
-fn write_json_field_name(
-    writer: &mut dyn ResponseWriter,
-    wrote_field: &mut bool,
-    name: &str,
-) -> Result<()> {
-    if *wrote_field {
-        writer.write(",")?;
-    }
-    *wrote_field = true;
-    writer.write("\"")?;
-    writer.write(name)?;
-    writer.write("\":")
-}
-
-fn write_json_field<T>(
-    writer: &mut dyn ResponseWriter,
-    wrote_field: &mut bool,
-    name: &str,
-    value: &T,
-) -> Result<()>
-where
-    T: Serialize + ?Sized,
-{
-    write_json_field_name(writer, wrote_field, name)?;
-    write_script_safe_json(writer, value)
-}
-
+/// Serialize the WebUI bootstrap object directly to the writer.
+///
+/// State is spliced into `chain[0]` at write time without cloning the state
+/// JSON tree: a custom `Serialize` impl emits the bootstrap structure in a
+/// single `serde_json::to_writer` call, allocating one shared output buffer
+/// (instead of one per-field). When the chain is non-empty, state is added
+/// as an extra entry on chain[0]. When the chain is empty (non-router app),
+/// we emit a synthetic state-only envelope at chain[0].
+///
+/// This zero-clone, single-allocation path avoids deep-cloning the state
+/// JSON tree on every render — a measurable TTFB win for state-heavy pages.
 fn write_webui_bootstrap(
     writer: &mut dyn ResponseWriter,
     bootstrap: WebUiBootstrap<'_>,
 ) -> Result<()> {
-    let mut wrote_field = false;
+    // Serialize the entire bootstrap into ONE buffer in a single serde call.
+    // Writing field-by-field would allocate a fresh Vec per field via
+    // write_script_safe_json — measurably slower than this batched approach.
+    let mut json = Vec::with_capacity(2048);
+    serde_json::to_writer(&mut json, &BootstrapWire(&bootstrap))
+        .map_err(|e| HandlerError::Rendering(format!("failed to serialize bootstrap: {e}")))?;
+    let json_str = std::str::from_utf8(&json)
+        .map_err(|e| HandlerError::Rendering(format!("invalid bootstrap UTF-8: {e}")))?;
+    write_script_safe_json_str(writer, json_str)
+}
 
-    writer.write("{")?;
-    if !bootstrap.chain.is_empty() {
-        write_json_field(writer, &mut wrote_field, "chain", bootstrap.chain)?;
+/// Wire-format wrapper that emits the bootstrap without cloning state.
+/// `chain[0]` is augmented with the `state` field at serialization time.
+struct BootstrapWire<'a>(&'a WebUiBootstrap<'a>);
+
+impl serde::Serialize for BootstrapWire<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(3))?;
+        map.serialize_entry("chain", &ChainWire(self.0))?;
+        map.serialize_entry("inventory", self.0.inventory)?;
+        // Empty templates registry — populated by the per-template snippets
+        // emitted after the bootstrap script.
+        map.serialize_entry("templates", &serde_json::Map::<String, Value>::new())?;
+        map.end()
     }
-    if !bootstrap.css_hrefs.is_empty() {
-        write_json_field(writer, &mut wrote_field, "css", bootstrap.css_hrefs)?;
+}
+
+struct ChainWire<'a>(&'a WebUiBootstrap<'a>);
+
+impl serde::Serialize for ChainWire<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let chain = self.0.chain;
+        let state = self.0.state;
+        if chain.is_empty() {
+            // Non-router apps: synthetic state-only envelope at chain[0].
+            let mut seq = serializer.serialize_seq(Some(1))?;
+            seq.serialize_element(&StateEnvelope(state))?;
+            seq.end()
+        } else {
+            let mut seq = serializer.serialize_seq(Some(chain.len()))?;
+            // chain[0] gets state spliced in without cloning.
+            seq.serialize_element(&ChainEntryWithState(&chain[0], state))?;
+            for entry in &chain[1..] {
+                seq.serialize_element(entry)?;
+            }
+            seq.end()
+        }
     }
-    write_json_field(writer, &mut wrote_field, "inventory", bootstrap.inventory)?;
-    if let Some(nonce) = bootstrap.nonce {
-        write_json_field(writer, &mut wrote_field, "nonce", nonce)?;
+}
+
+/// Wire format for a synthetic chain[0] envelope: `{"state": <state>}`.
+struct StateEnvelope<'a>(&'a Value);
+
+impl serde::Serialize for StateEnvelope<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry("state", self.0)?;
+        map.end()
     }
-    write_json_field(writer, &mut wrote_field, "state", bootstrap.state)?;
-    if !bootstrap.style_specs.is_empty() {
-        write_json_field(writer, &mut wrote_field, "styles", bootstrap.style_specs)?;
+}
+
+/// Wire format for chain[0]: emits the entry's existing fields followed by
+/// `state` — without allocating a clone of either the entry or the state.
+struct ChainEntryWithState<'a>(&'a Value, &'a Value);
+
+impl serde::Serialize for ChainEntryWithState<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let entry = self.0;
+        let state = self.1;
+        if let Value::Object(obj) = entry {
+            let mut map = serializer.serialize_map(Some(obj.len() + 1))?;
+            for (k, v) in obj {
+                map.serialize_entry(k, v)?;
+            }
+            map.serialize_entry("state", state)?;
+            map.end()
+        } else {
+            // Degenerate fallback for non-object entries.
+            let mut map = serializer.serialize_map(Some(2))?;
+            map.serialize_entry("_entry", entry)?;
+            map.serialize_entry("state", state)?;
+            map.end()
+        }
     }
-    write_json_field_name(writer, &mut wrote_field, "templates")?;
-    writer.write("{}")?;
-    writer.write("}")
 }
 
 fn resolve_value_from_sources<'ctx, 'state>(
@@ -340,6 +398,7 @@ impl WebUIHandler {
             nonce: options.nonce.map(String::from),
             route_cache: CompiledRouteCache::new(),
             route_chain_index: 0,
+            component_index: None,
         };
         self.process_fragment_id(options.entry_id, &mut context)?;
 
@@ -378,6 +437,7 @@ impl WebUIHandler {
             nonce: None,
             route_cache: CompiledRouteCache::new(),
             route_chain_index: 0,
+            component_index: None,
         };
 
         if let Some(p) = &mut context.plugin {
@@ -871,14 +931,16 @@ impl WebUIHandler {
             let is_shadow = context.protocol.dom_strategy() == webui_protocol::DomStrategy::Shadow;
 
             if is_link {
-                let comp_index = crate::route_handler::build_component_index(context.protocol);
+                let comp_index = context.component_index.get_or_insert_with(|| {
+                    crate::route_handler::build_component_index(context.protocol)
+                });
                 let (needed_components, _) =
                     crate::route_handler::get_needed_components_for_request(
                         context.protocol,
                         &context.entry_id,
                         &context.request_path,
                         "",
-                        &comp_index,
+                        comp_index,
                     )?;
 
                 for name in &needed_components {
@@ -907,13 +969,16 @@ impl WebUIHandler {
 
         // Hook: emit component templates before body_end when hydration is enabled.
         if signal.raw && signal.value == "body_end" && context.plugin.is_some() {
-            // Build the component → index map for the inventory bitfield.
-            let comp_index = crate::route_handler::build_component_index(context.protocol);
+            // Reuse the cached component → index map (already built during head_end
+            // for CSS preloads, or built fresh here for non-link strategies).
+            let comp_index = context.component_index.get_or_insert_with(|| {
+                crate::route_handler::build_component_index(context.protocol)
+            });
 
             // Compute the inventory hex from actually rendered components.
             let inventory_hex = crate::route_handler::encode_component_inventory(
                 &context.rendered_components,
-                &comp_index,
+                comp_index,
             );
 
             // Emit templates for all REACHABLE components on the current route,
@@ -978,54 +1043,28 @@ impl WebUIHandler {
             // ── Consolidated SSR script block ──────────────────────────
             //
             // Merges all SSR metadata into a single <script> tag:
-            //   1. Bootstrap meta  (window.__webui: chain, inventory, nonce, css, styles, state, templates)
-            //   2. Template IIFEs  (write into window.__webui.templates)
+            //   1. Bootstrap meta  (window.__webui: chain, inventory, state, templates)
+            //   2. Template assignments  (write into window.__webui.templates)
             //
             // Single-script reduces HTML parse overhead and ensures all
             // SSR metadata is available atomically before DOMContentLoaded.
 
-            // Chain
+            // Chain — embed full state on chain[0] so state is delivered
+            // alongside the chain and freed together when the router deletes
+            // `window.__webui.chain` after initial hydration.
             let chain = crate::route_handler::collect_route_chain(
                 context.protocol,
                 &context.entry_id,
                 &context.request_path,
                 &mut context.route_cache,
             );
+            // Build the route chain JSON without state — state is spliced into
+            // chain[0] by `write_webui_bootstrap` at write time, avoiding a deep
+            // clone of the state tree per request.
             let chain_json: Vec<Value> = chain
                 .iter()
                 .map(crate::route_handler::RouteChainEntry::to_json)
                 .collect();
-
-            // CSS hrefs emitted during SSR (Link-strategy components)
-            let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
-            let mut css_hrefs: Vec<&str> = Vec::new();
-            if is_link {
-                for name in &reachable {
-                    if let Some(href) = context
-                        .protocol
-                        .components
-                        .get(name)
-                        .map(|c| c.css_href.as_str())
-                        .filter(|h| !h.is_empty())
-                    {
-                        css_hrefs.push(href);
-                    }
-                }
-            }
-
-            // Module style specifiers emitted during SSR
-            let mut style_specs: Vec<&str> = Vec::new();
-            for name in &reachable {
-                if context
-                    .protocol
-                    .components
-                    .get(name)
-                    .map(|c| !c.css.is_empty())
-                    .unwrap_or(false)
-                {
-                    style_specs.push(name);
-                }
-            }
 
             // Open the consolidated <script> tag
             if let Some(ref nonce) = context.nonce {
@@ -1036,24 +1075,23 @@ impl WebUIHandler {
                 context.writer.write("<script>")?;
             }
 
-            // 1. Emit window.__webui bootstrap object (chain, inventory,
-            //    nonce, css, styles, state — all in one JSON assignment)
+            // 1. Emit window.__webui bootstrap object.
+            //    State is always on chain[0] (router or non-router synthetic
+            //    envelope), freed when the chain is dropped after hydration.
+            //    Components read via $hydrateState() during CE upgrade.
             context.writer.write("window.__webui=")?;
             write_webui_bootstrap(
                 context.writer,
                 WebUiBootstrap {
-                    state: context.state,
                     chain: &chain_json,
                     inventory: &inventory_hex,
-                    nonce: context.nonce.as_deref(),
-                    css_hrefs: &css_hrefs,
-                    style_specs: &style_specs,
+                    state: context.state,
                 },
             )?;
             context.writer.write(";")?;
 
-            // 2. Template IIFEs — write into window.__webui.templates
-            //    (parser-generated IIFEs reference this object directly)
+            // 2. Template assignments — write into window.__webui.templates
+            //    (parser-generated snippets reference this object directly)
             if let Some(ref tmpls) = template_js {
                 context.writer.write("\n")?;
                 for tmpl in tmpls {
@@ -1293,6 +1331,7 @@ impl WebUIHandler {
             nonce: options.nonce.map(String::from),
             route_cache: CompiledRouteCache::new(),
             route_chain_index: 0,
+            component_index: None,
         };
 
         self.process_fragment_id(options.entry_id, &mut context)?;
@@ -1371,6 +1410,72 @@ mod tests {
             *self.ended.borrow_mut() = true;
             Ok(())
         }
+    }
+
+    #[test]
+    fn test_webui_bootstrap_emits_envelope_for_empty_chain() {
+        // Non-router app: empty chain → synthetic state envelope at chain[0].
+        let chain = Vec::new();
+        let state = test_json!({"title": "hi"});
+        let mut writer = TestWriter::new();
+
+        write_webui_bootstrap(
+            &mut writer,
+            WebUiBootstrap {
+                chain: &chain,
+                inventory: "",
+                state: &state,
+            },
+        )
+        .unwrap();
+
+        let bootstrap = writer.get_content();
+        assert_eq!(
+            bootstrap,
+            r#"{"chain":[{"state":{"title":"hi"}}],"inventory":"","templates":{}}"#
+        );
+        // No top-level state — only on chain[0].
+        let parsed: Value = serde_json::from_str(&bootstrap).unwrap();
+        assert!(parsed.get("state").is_none());
+        assert_eq!(parsed["chain"][0]["state"]["title"], "hi");
+    }
+
+    #[test]
+    fn test_webui_bootstrap_splices_state_into_chain_zero() {
+        // Router app: state is spliced into the existing chain[0] entry
+        // without cloning into the chain Vec.
+        let chain = vec![
+            test_json!({"component": "app-shell", "path": "/"}),
+            test_json!({"component": "page-foo", "path": "/foo"}),
+        ];
+        let state = test_json!({"x": 1, "items": [1, 2, 3]});
+        let mut writer = TestWriter::new();
+        write_webui_bootstrap(
+            &mut writer,
+            WebUiBootstrap {
+                chain: &chain,
+                inventory: "ff",
+                state: &state,
+            },
+        )
+        .unwrap();
+        let bootstrap = writer.get_content();
+        let parsed: Value = serde_json::from_str(&bootstrap).unwrap();
+        // Top-level state absent
+        assert!(parsed.get("state").is_none());
+        // State spliced into chain[0]
+        assert_eq!(parsed["chain"][0]["component"], "app-shell");
+        assert_eq!(parsed["chain"][0]["state"]["x"], 1);
+        assert_eq!(
+            parsed["chain"][0]["state"]["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        // chain[1] unchanged (no state)
+        assert!(parsed["chain"][1].get("state").is_none());
+        assert_eq!(parsed["chain"][1]["component"], "page-foo");
     }
 
     #[test]
@@ -6262,7 +6367,7 @@ mod tests {
             .entry("my-card".to_string())
             .or_default();
         comp.css_href = "my-card.css".to_string();
-        comp.template = "(function(){})();".to_string();
+        comp.template = "window.__webui.templates['my-card']={h:''};".to_string();
 
         let state = test_json!({});
         let mut writer = TestWriter::new();
@@ -6337,14 +6442,14 @@ mod tests {
             .entry("o-loading-state".to_string())
             .or_default();
         comp1.css_href = "o-loading-state.css".to_string();
-        comp1.template = "(function(){})();".to_string();
+        comp1.template = "window.__webui.templates['o-loading-state']={h:''};".to_string();
 
         let comp2 = protocol
             .components
             .entry("my-card".to_string())
             .or_default();
         comp2.css_href = "my-card.css".to_string();
-        comp2.template = "(function(){})();".to_string();
+        comp2.template = "window.__webui.templates['my-card']={h:''};".to_string();
 
         let state = test_json!({});
         let mut writer = TestWriter::new();
@@ -6477,7 +6582,7 @@ mod tests {
             .entry("dash-page".to_string())
             .or_default();
         comp.css = "h1{font-size:2rem}".to_string();
-        comp.template = "(function(){})();".to_string();
+        comp.template = "window.__webui.templates['dash-page']={h:''};".to_string();
         let state = test_json!({});
         let mut writer = TestWriter::new();
 
@@ -6577,7 +6682,7 @@ mod tests {
         // Simulates a page where app-shell renders cart-panel, but cart-panel
         // contains an <if> block with product-card inside. When the condition
         // is false (empty cart), product-card is NOT rendered — but it IS
-        // reachable from the fragment graph. Its template IIFE and CSS module
+        // reachable from the fragment graph. Its template assignment and CSS module
         // definition must be in the output so the client can mount it when
         // the <if> flips true. However, its bit must NOT be set in the
         // inventory — the inventory tracks what was actually rendered.
@@ -6634,9 +6739,7 @@ mod tests {
         let mut protocol = WebUIProtocol::new(fragments);
         for name in ["app-shell", "cart-panel", "product-card"] {
             let comp = protocol.components.entry(name.to_string()).or_default();
-            comp.template = format!(
-                "(function(){{var w=(window.__webui||(window.__webui={{}})).templates||(window.__webui.templates={{}});w['{name}']={{h:'<div/>'}};}})();\n"
-            );
+            comp.template = format!("window.__webui.templates['{name}']={{h:'<div/>'}};\n");
             comp.css = format!(".{name}{{display:block}}");
         }
 
@@ -6661,7 +6764,7 @@ mod tests {
         // product-card template IS in the output — it's a known component
         // whose template must be available for client-side <if> activation.
         assert!(
-            html.contains("w['product-card']"),
+            html.contains("window.__webui.templates['product-card']"),
             "product-card template should be emitted even when unrendered: {html}"
         );
 
@@ -6674,11 +6777,11 @@ mod tests {
 
         // app-shell and cart-panel SHOULD be in the output (they were rendered)
         assert!(
-            html.contains("w['app-shell']"),
+            html.contains("window.__webui.templates['app-shell']"),
             "rendered app-shell template should be emitted: {html}"
         );
         assert!(
-            html.contains("w['cart-panel']"),
+            html.contains("window.__webui.templates['cart-panel']"),
             "rendered cart-panel template should be emitted: {html}"
         );
     }

@@ -8,9 +8,15 @@ export class TestConditional extends WebUIElement {
   @observable busy = false;
   @observable details = 'Details';
   @observable count = 1;
+  @observable directBlurCount = 0;
+  directInput?: HTMLInputElement;
 
   toggleOpen(): void {
     this.open = !this.open;
+  }
+
+  onDirectBlur(): void {
+    this.directBlurCount += 1;
   }
 }
 
@@ -27,4 +33,3 @@ export class TestConditionalClient extends WebUIElement {
 }
 
 TestConditionalClient.define('test-conditional-client');
-

@@ -380,16 +380,20 @@ fn render_partial_returns_templates_inventory_and_chain() {
         let value: serde_json::Value =
             serde_json::from_str(&json).expect("ffi response should be valid json");
 
-        // State is at top level (caller adds it), not per-entry in chain
+        // State is broadcast as `states[]` — one shared object per chain entry.
+        let states = value
+            .get("states")
+            .and_then(serde_json::Value::as_array)
+            .expect("partial response should contain 'states' array");
         assert!(
-            value.get("state").is_some(),
-            "partial response should contain top-level 'state' field"
+            !states.is_empty(),
+            "states should be index-aligned to chain"
         );
-        assert!(value["state"].is_object(), "state should be an object");
+        assert!(states[0].is_object(), "shared state should be an object");
         assert_eq!(
-            value["state"]["query"].as_str(),
+            states[0]["query"].as_str(),
             Some("shirts"),
-            "state should contain the passed-in data"
+            "states[0] should contain the passed-in data"
         );
 
         assert!(

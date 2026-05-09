@@ -377,18 +377,28 @@ mod tests {
             Err(error) => panic!("{error}"),
         };
 
-        // State is at top level (caller adds it), not per-entry in chain
-        assert!(json.get("state").is_some(), "should have top-level state");
-        assert!(json["state"].get("products").is_some());
-        assert!(json["state"].get("categories").is_some());
-        assert!(json["state"].get("sortOptions").is_some());
+        // State is broadcast as `states[]` — one shared object per chain entry
+        // so each component picks its own @observable keys. The shared object
+        // is referenced N times but JSON-serialized once.
+        let states = json
+            .get("states")
+            .and_then(serde_json::Value::as_array)
+            .expect("should have states array");
+        assert!(
+            !states.is_empty(),
+            "states should be index-aligned to chain"
+        );
+        let shared = &states[0];
+        assert!(shared.get("products").is_some());
+        assert!(shared.get("categories").is_some());
+        assert!(shared.get("sortOptions").is_some());
 
         // Shell state excluded from page-specific state
-        assert!(json["state"].get("storeName").is_none());
-        assert!(json["state"].get("cartItems").is_none());
-        assert!(json["state"].get("cartItemCount").is_none());
-        assert!(json["state"].get("page").is_none());
-        assert!(json["state"].get("head_end").is_none());
+        assert!(shared.get("storeName").is_none());
+        assert!(shared.get("cartItems").is_none());
+        assert!(shared.get("cartItemCount").is_none());
+        assert!(shared.get("page").is_none());
+        assert!(shared.get("head_end").is_none());
     }
 
     #[actix_web::test]

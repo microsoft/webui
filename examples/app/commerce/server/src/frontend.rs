@@ -94,7 +94,21 @@ impl FrontendRuntime {
         )
         .unwrap_or_else(|e| serde_json::json!({"error": format!("render_partial failed: {e}")}));
         if let Some(obj) = partial.as_object_mut() {
-            obj.insert("state".into(), state);
+            // Broadcast the same shared state object to every chain entry —
+            // each component picks only its own @observable keys. JSON
+            // serializes the duplicates once and the runtime carries N
+            // references to the same object, so memory cost is one pointer
+            // slot per entry.
+            let chain_len = obj
+                .get("chain")
+                .and_then(|c| c.as_array())
+                .map_or(1, std::vec::Vec::len);
+            let mut states = Vec::with_capacity(chain_len);
+            for _ in 0..chain_len.saturating_sub(1) {
+                states.push(state.clone());
+            }
+            states.push(state);
+            obj.insert("states".into(), Value::Array(states));
         }
         partial
     }

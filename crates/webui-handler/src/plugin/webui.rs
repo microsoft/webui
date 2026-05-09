@@ -92,7 +92,7 @@ impl HandlerPlugin for WebUIHydrationPlugin {
     }
 
     /// Emit all WebUI component templates inside a single `<script>` tag
-    /// for SSR.  Templates are raw JS IIFE strings (no `<script>` wrapper)
+    /// for SSR. Templates are raw JS assignment snippets (no `<script>` wrapper)
     /// stored in the protocol — the `<script>` tag is only added here for
     /// the SSR HTML output.  Partial SPA responses send the raw JS directly
     /// and the router evaluates it client-side.
@@ -132,6 +132,7 @@ impl HandlerPlugin for WebUIHydrationPlugin {
         } else {
             writer.write("<script>\n")?;
         }
+        writer.write("window.__webui=window.__webui||{};window.__webui.templates=window.__webui.templates||{};\n")?;
         for tmpl in &templates {
             writer.write(tmpl)?;
         }
@@ -140,7 +141,7 @@ impl HandlerPlugin for WebUIHydrationPlugin {
         Ok(())
     }
 
-    /// Collect raw JS template IIFE strings for embedding in the consolidated
+    /// Collect raw JS template assignment strings for embedding in the consolidated
     /// `window.__webui` script block.  Returns `Some(vec)` with non-empty
     /// template sources, or `None` if there are no templates to emit.
     fn collect_template_js(
@@ -354,8 +355,8 @@ mod tests {
         );
     }
 
-    fn iife_template(tag: &str, body: &str) -> String {
-        format!("(function(){{var w=(window.__webui||(window.__webui={{}})).templates||(window.__webui.templates={{}});w['{tag}']={{{body}}}}})();\n")
+    fn template_assignment(tag: &str, body: &str) -> String {
+        format!("window.__webui.templates['{tag}']={{{body}}};\n")
     }
 
     #[test]
@@ -367,17 +368,17 @@ mod tests {
             .components
             .entry("comp-a".to_string())
             .or_default()
-            .template = iife_template("comp-a", "h:\"a\"");
+            .template = template_assignment("comp-a", "h:\"a\"");
         protocol
             .components
             .entry("comp-b".to_string())
             .or_default()
-            .template = iife_template("comp-b", "h:\"b\"");
+            .template = template_assignment("comp-b", "h:\"b\"");
         protocol
             .components
             .entry("comp-c".to_string())
             .or_default()
-            .template = iife_template("comp-c", "h:\"c\"");
+            .template = template_assignment("comp-c", "h:\"c\"");
 
         let mut components = std::collections::HashSet::new();
         components.insert("comp-a".to_string());
@@ -412,7 +413,7 @@ mod tests {
             .components
             .entry("comp-a".to_string())
             .or_default()
-            .template = iife_template("comp-a", "h:\"a\"");
+            .template = template_assignment("comp-a", "h:\"a\"");
         let components = std::collections::HashSet::new();
         let plugin = WebUIHydrationPlugin::new();
         plugin
@@ -430,12 +431,12 @@ mod tests {
             .components
             .entry("comp-a".to_string())
             .or_default()
-            .template = iife_template("comp-a", "h:\"a\"");
+            .template = template_assignment("comp-a", "h:\"a\"");
         protocol
             .components
             .entry("comp-b".to_string())
             .or_default()
-            .template = iife_template("comp-b", "h:\"b\"");
+            .template = template_assignment("comp-b", "h:\"b\"");
 
         let mut rendered = std::collections::HashSet::new();
         rendered.insert("comp-a".to_string());

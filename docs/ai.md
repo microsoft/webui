@@ -25,6 +25,9 @@ On the client, interactive Web Components hydrate as islands.
 - Templates are declarative: HTML for structure, CSS for styling, TypeScript
   for behavior. They are always in **separate files**.
 - There is no JSX, no CSS-in-JS, no template literals, no virtual DOM.
+- Routed apps use server-owned visible route data plus client-owned ephemeral UI
+  state. Prefer partial `states` over broad top-level `state`; do not design a
+  global SPA store.
 
 ## The SSR Mental Model
 
@@ -190,6 +193,10 @@ Supported operators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`, `!`
 <div @mouseenter="{onHover()}" @mouseleave="{onLeave()}">Hover</div>
 ```
 
+The runtime may delegate safe bubbling element events through the component root
+for performance, but the authoring model stays `@click="{handler()}"`. Root and
+non-bubbling events attach directly.
+
 ### DOM references
 
 ```html
@@ -231,7 +238,8 @@ In the TypeScript class: `searchInput!: HTMLInputElement;`
 All attributes are validated at build time. Referencing a non-existent `pending` or `error` component is a compile error.
 
 **State flow:**
-- `keep-alive` — preserves DOM and local state. On reactivation, only param/query attrs are updated - `setState()` is NOT called
+- Client navigation must use route-scoped `states`, aligned to the server-provided route `chain`. Send only visible route state; use `null` to preserve an already-mounted parent route component. `states` is the only supported state delivery channel — there is no legacy broad-state fallback.
+- `keep-alive` - preserves DOM and local state. On reactivation, only param/query attrs are updated - `setState()` is NOT called unless a loader returns fresh state
 - Route loaders: `static loader({ params, query, signal })` on component class - fetches custom data instead of server state. Runs pre-commit. Falls back to server state on failure
 - Keep-alive + loader: DOM preserved, loader provides fresh data via `setState()` on reactivation
 - Route actions: `static action({ formData, params, signal })` on component class - handles `<form method="post">`. Returns `{ invalidateTags?, state? }`. Auto-invalidates cache with merged tags
@@ -244,6 +252,8 @@ All attributes are validated at build time. Referencing a non-existent `pending`
 
 **Server headers:**
 - `X-WebUI-Inventory` header: hex bitmask of loaded templates - server skips re-sending
+- Partial responses: add `states` aligned to `chain`; use `null` to preserve
+  client-owned parent state. `states` is the only supported state channel.
 
 ### Outlet
 
@@ -324,6 +334,10 @@ MyComponent.define('my-component');
 | `this.$flushUpdates()` | Synchronously flush pending updates |
 | `setState(state)` | Populate from router navigation state |
 | `static define(tagName)` | Register as a custom element |
+
+Teardown is automatic. When conditional/repeat content or a non-keep-alive route
+is removed, the framework clears owned listeners, `w-ref` properties, binding
+arrays, and compiled metadata references so removed DOM can be collected.
 
 ### Emitting custom events
 
@@ -843,14 +857,19 @@ Text bindings only do path lookups — they can't do arithmetic. If you need
 
 ### Route-scoped state
 
-Each route handler should return only the state that route's component needs:
+Each route handler should return only the state that the matched route chain needs:
 
 ```json
-// GET /inbox -> only inbox data
-{ "threads": [...], "selectedFolder": "inbox" }
-
-// GET /settings -> only settings data
-{ "theme": "dark", "language": "en" }
+{
+  "chain": [
+    { "component": "mail-app", "path": "/" },
+    { "component": "thread-page", "path": "inbox/:id" }
+  ],
+  "states": [
+    null,
+    { "subject": "Q4 Review", "messages": [...] }
+  ]
+}
 ```
 
 ## package.json

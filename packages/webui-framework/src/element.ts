@@ -55,7 +55,6 @@ import { syncRepeat, dotWalk } from './element/diff.js';
 import {
   collectItemMarkers,
   nextElement,
-  findByOrdinal,
   MARKER_COND_START,
   MARKER_COND_END,
   MARKER_REPEAT_START,
@@ -78,62 +77,28 @@ import type {
   TemplateInstance,
   TextBinding,
 } from './element/types.js';
+import {
+  childNodesArray,
+  getTemplateDom,
+  resolve,
+  resolveSSR,
+  findSSRText,
+  findMarker,
+  collectBetween,
+  hasContentAfterMarker,
+  rootTag,
+} from './element/resolve.js';
+import type { EventStateHost } from './element/events.js';
+import {
+  finalize as finalizeEvents,
+  removeAllEvents,
+  removeDirectEventsForInstances,
+} from './element/events.js';
 
 // ── Caches ──────────────────────────────────────────────────────
 
 /** Parsed template cache — cloneNode(true) is faster than re-parsing. */
 const templateCache = new WeakMap<TemplateBlockMeta, DocumentFragment>();
-
-/** Parsed template DOM for SSR path mapping, keyed by TemplateBlockMeta. */
-const templateDOMCache = new WeakMap<TemplateBlockMeta, Element>();
-
-/** Cached root tag name extracted from meta.h before it's released. */
-const rootTagCache = new WeakMap<TemplateBlockMeta, string | null>();
-
-/** Pre-computed ordinals for template nodes: childIndex → [nodeType, ordinal].
- *  Avoids re-counting element/text siblings on every $resolveSSR call. */
-const tplOrdinalCache = new WeakMap<Node, Map<number, [nodeType: number, ordinal: number]>>();
-
-function getTplOrdinals(tplNode: Node): Map<number, [number, number]> {
-  let map = tplOrdinalCache.get(tplNode);
-  if (map) return map;
-  map = new Map();
-  let elemOrd = 0;
-  let textOrd = 0;
-  const children = tplNode.childNodes;
-  for (let k = 0; k < children.length; k++) {
-    const type = children[k].nodeType;
-    if (type === 1) { map.set(k, [1, elemOrd]); elemOrd++; }
-    else if (type === 3) { map.set(k, [3, textOrd]); textOrd++; }
-  }
-  tplOrdinalCache.set(tplNode, map);
-  return map;
-}
-
-// ── Sentinels ───────────────────────────────────────────────────
-
-const EMPTY_ARR: readonly never[] = [];
-
-// ── Helper: snapshot child nodes into a pre-allocated array ──────
-
-function childNodesArray(parent: Node): Node[] {
-  const children = parent.childNodes;
-  const len = children.length;
-  const result = new Array<Node>(len);
-  for (let i = 0; i < len; i++) result[i] = children[i];
-  return result;
-}
-
-// ── Helper: parse template HTML into a temp container ────────────
-
-function getTemplateDom(meta: TemplateBlockMeta): Element {
-  let cached = templateDOMCache.get(meta);
-  if (cached) return cached;
-  const div = document.createElement('div');
-  div.innerHTML = meta.h;
-  templateDOMCache.set(meta, div);
-  return div;
-}
 
 // ═══════════════════════════════════════════════════════════════════
 //  WebUIElement
@@ -146,8 +111,12 @@ export class WebUIElement extends HTMLElement {
   private $hydrated = false;
   private $dirtyPaths: Set<string> | null = null;
   private $pendingFlush = false;
-  /** Cached condition resolver — avoids allocating a closure per evaluation. */
-  private $resolver = (p: string, s?: unknown): unknown => this.$resolveValue(p, s as ScopeFrame | undefined);
+  /** Cached condition resolver — allocated lazily on first boolean condition. */
+  private $resolverFn: ((p: string, s?: unknown) => unknown) | null = null;
+  private get $resolver(): (p: string, s?: unknown) => unknown {
+    return this.$resolverFn ?? (this.$resolverFn = (p, s) =>
+      this.$resolveValue(p, s as ScopeFrame | undefined));
+  }
   private $pathIndex?: Map<string, {
     texts: TextBinding[];
     attrs: AttrBinding[];
@@ -248,7 +217,7 @@ export class WebUIElement extends HTMLElement {
     if (isSSR) {
       // Apply the same state that was used for SSR rendering
       // so client observables match the server-rendered DOM.
-      this.$applySSRState();
+      this.$hydrateState();
       this.$root = this.$hydrate(root, meta, getTemplateDom(meta));
 
     } else {
@@ -287,33 +256,66 @@ export class WebUIElement extends HTMLElement {
    */
   $destroy(): void {
     if (!this.$root) return;
-    this.$teardown(this.$root);
+    this.$disposeInstance(this.$root, false, false);
+    removeAllEvents(this as unknown as EventStateHost);
     this.$root = null;
-    this.$pathIndex = undefined;
+    this.$meta = undefined;
+    if (this.$pathIndex) {
+      this.$pathIndex.clear();
+      this.$pathIndex = undefined;
+    }
     this.$wildcardBindings = undefined;
-    this.$dirtyPaths = null;
+    if (this.$dirtyPaths) {
+      this.$dirtyPaths.clear();
+      this.$dirtyPaths = null;
+    }
     this.$pendingFlush = false;
     this.$ready = false;
+    this.$hydrated = false;
   }
 
   /** Break all DOM references held by a binding instance and its nested blocks. */
-  private $teardown(instance: TemplateInstance): void {
-    for (const c of instance.conds) {
-      if (c.instance) this.$teardown(c.instance);
-      c.instance = null;
+  private $disposeInstance(root: TemplateInstance, removeDom: boolean, removeDirectEvents: boolean = true): void {
+    const stack: TemplateInstance[] = [root];
+    for (let i = 0; i < stack.length; i++) {
+      const instance = stack[i];
+      if (removeDom) {
+        for (let n = 0; n < instance.nodes.length; n++) {
+          instance.nodes[n].parentNode?.removeChild(instance.nodes[n]);
+        }
+      }
+      for (let c = 0; c < instance.conds.length; c++) {
+        const child = instance.conds[c].instance;
+        if (child) {
+          stack.push(child);
+          instance.conds[c].instance = null;
+        }
+      }
+      for (let r = 0; r < instance.repeats.length; r++) {
+        const rep = instance.repeats[r];
+        for (let item = 0; item < rep.instances.length; item++) {
+          stack.push(rep.instances[item].instance);
+        }
+        rep.instances.length = 0;
+        rep.container = null;
+        rep.start = null;
+        rep.end = null;
+      }
+      instance.scope = undefined;
+      for (let ref = 0; ref < instance.refs.length; ref++) {
+        const binding = instance.refs[ref];
+        if ((this as Record<string, unknown>)[binding.name] === binding.node) {
+          (this as Record<string, unknown>)[binding.name] = undefined;
+        }
+      }
+      instance.nodes.length = 0;
+      instance.texts.length = 0;
+      instance.attrs.length = 0;
+      instance.conds.length = 0;
+      instance.repeats.length = 0;
+      instance.refs.length = 0;
     }
-    for (const r of instance.repeats) {
-      for (const item of r.instances) this.$teardown(item.instance);
-      r.instances.length = 0;
-      r.container = null;
-      r.start = null;
-      r.end = null;
-    }
-    instance.nodes.length = 0;
-    instance.texts.length = 0;
-    instance.attrs.length = 0;
-    instance.conds.length = 0;
-    instance.repeats.length = 0;
+    if (removeDirectEvents) removeDirectEventsForInstances(this as unknown as EventStateHost, stack);
   }
 
   /** Dispatch a bubbling custom event. Uses composed:true when in shadow DOM. */
@@ -348,18 +350,20 @@ export class WebUIElement extends HTMLElement {
   }
 
   /**
-   * Apply SSR state from `window.__webui.state`.
+   * Hydrate SSR state into @observable backing fields.
    *
-   * The handler emits all SSR metadata in a single consolidated
-   * `window.__webui` script block. State lives at `.state` — the same
-   * props passed to the server render so observables match the DOM.
-   * Only observable properties are set — unknown keys are ignored.
+   * State is always delivered on `window.__webui.chain[0].state` — for
+   * router apps this is the matched root route, for non-router apps the
+   * server emits a state-only envelope at chain[0]. Either way the chain
+   * (and the state with it) is freed after initial hydration.
    *
+   * Each component picks only keys matching its own `@observable` names.
    * Writes directly to the backing field (`_prop`) to avoid triggering
    * reactive updates before bindings are wired.
    */
-  private $applySSRState(): void {
-    const state = window.__webui?.state;
+  private $hydrateState(): void {
+    const chain = window.__webui?.chain;
+    const state = Array.isArray(chain) ? chain[0]?.state : undefined;
     if (!state || typeof state !== 'object') return;
     const names = getObservableNames(this.constructor as Function);
     for (const key of Object.keys(state)) {
@@ -431,91 +435,6 @@ export class WebUIElement extends HTMLElement {
     this.$pendingFlush = false;
   }
 
-  // ── DOM resolution: client-created path ───────────────────────
-  // Compiled paths are childNode indices in meta.h parsed by the browser.
-  // For client-created components the DOM matches meta.h exactly.
-
-  private $resolve(root: Node, path: TemplateNodePath, pathStart = 0): Node | null {
-    let cur: Node = root;
-    // When pathStart > 0, advance through the skipped segments so `cur`
-    // aligns with the already-positioned SSR root.
-    for (let i = 0; i < pathStart; i++) {
-      const child = cur.childNodes[path[i]];
-      if (!child) return null;
-      cur = child;
-    }
-    for (let i = pathStart; i < path.length; i++) {
-      const child = cur.childNodes[path[i]];
-      if (!child) return null;
-      cur = child;
-    }
-    return cur;
-  }
-
-  // ── DOM resolution: SSR hydration path ────────────────────────
-  //
-  // Compiled template metadata stores binding targets as paths of
-  // childNode indices into the *static* template HTML (`meta.h`).
-  // The SSR DOM, however, contains extra nodes injected by the server
-  // for rendered structural blocks:
-  //
-  //   - Conditional (`<if>`) blocks: `<!--wc-->` content `<!--/wc-->`
-  //   - Repeat (`<for>`) blocks: `<!--wr-->` items `<!--/wr-->`
-  //
-  // These extra nodes shift element/text ordinals in the SSR DOM
-  // relative to the template.  For example, a template with:
-  //
-  //     <div class="grid"></div>          ← element ordinal 0
-  //
-  // becomes in SSR (when a prior <if> block renders a <p>):
-  //
-  //     <!--wc--><p>no results</p><!--/wc-->  ← extra content
-  //     <div class="grid">...</div>           ← now element ordinal 1
-  //
-  // To resolve the correct element, `$resolveSSR` walks SSR children
-  // in parallel with the template DOM, skipping everything between
-  // structural marker pairs.  This requires closing markers to still
-  // be present — marker removal is deferred to the end of $hydrate().
-  //
-  // pathStart: skip leading path segments for in-place block hydration.
-
-  private $resolveSSR(ssrRoot: Node, tplRoot: Node, path: TemplateNodePath, pathStart = 0): Node | null {
-    let ssr: Node = ssrRoot;
-    let tpl: Node = tplRoot;
-
-    // When pathStart > 0, ssr has already descended to the block root
-    // but tpl still points at the wrapper from getTemplateDom().
-    // Advance tpl through the skipped path segments to align them.
-    for (let i = 0; i < pathStart; i++) {
-      const tplChild = tpl.childNodes[path[i]];
-      if (!tplChild) return null;
-      tpl = tplChild;
-    }
-
-    for (let i = pathStart; i < path.length; i++) {
-      const idx = path[i];
-      const tplChild = tpl.childNodes[idx];
-      if (!tplChild) return null;
-
-      // Look up the target's nodeType and ordinal from the template.
-      // getTplOrdinals maps childNode index → [nodeType, ordinal],
-      // counting elements and text nodes separately (comments ignored).
-      const ordinals = getTplOrdinals(tpl);
-      const entry = ordinals.get(idx);
-      if (!entry) return null;
-
-      // Walk SSR children to find the Nth element/text node, skipping
-      // structural block content that exists in SSR but not in meta.h.
-      // See findByOrdinal() for the full algorithm and invariants.
-      const [nodeType, ordinal] = entry;
-      const child = findByOrdinal(ssr, nodeType, ordinal);
-      if (!child) return null;
-      ssr = child;
-      tpl = tplChild;
-    }
-    return ssr;
-  }
-
   // ── Template parsing ──────────────────────────────────────────
 
   private $parseTemplate(meta: TemplateBlockMeta): DocumentFragment {
@@ -534,7 +453,7 @@ export class WebUIElement extends HTMLElement {
   private $wire(root: Node, meta: TemplateBlockMeta, scope?: ScopeFrame): TemplateInstance {
     const instance: TemplateInstance = {
       scope, nodes: childNodesArray(root),
-      texts: [], attrs: [], conds: [], repeats: [],
+      texts: [], attrs: [], conds: [], repeats: [], refs: [],
     };
 
     // Resolve ALL slot reference nodes BEFORE inserting any anchors.
@@ -549,7 +468,7 @@ export class WebUIElement extends HTMLElement {
         const [slot, parts] = entry;
         const raw = entry[2] === 1;
         const [parentPath, beforeIndex] = slot;
-        const parent = parentPath.length > 0 ? this.$resolve(root, parentPath) : root;
+        const parent = parentPath.length > 0 ? resolve(root, parentPath) : root;
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
         textRefs.push({ parent, ref: parent.childNodes[beforeIndex] || null, parts, raw });
       }
@@ -562,7 +481,7 @@ export class WebUIElement extends HTMLElement {
       for (let i = 0; i < meta.c.length; i++) {
         const [condition, blockIndex, slotMeta] = meta.c[i];
         const [parentPath, beforeIndex] = slotMeta;
-        const parent = parentPath.length > 0 ? this.$resolve(root, parentPath) : root;
+        const parent = parentPath.length > 0 ? resolve(root, parentPath) : root;
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
         condRefs.push({ parent, ref: parent.childNodes[beforeIndex] || null, condition, blockIndex });
       }
@@ -575,19 +494,19 @@ export class WebUIElement extends HTMLElement {
       for (let i = 0; i < meta.r.length; i++) {
         const [collection, itemVar, blockIndex, slotMeta] = meta.r[i];
         const [parentPath, beforeIndex] = slotMeta;
-        const parent = parentPath.length > 0 ? this.$resolve(root, parentPath) : root;
+        const parent = parentPath.length > 0 ? resolve(root, parentPath) : root;
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
         repRefs.push({ parent, ref: parent.childNodes[beforeIndex] || null, collection, itemVar, blockIndex });
       }
     }
 
     // Attribute bindings (no DOM mutation — safe to resolve inline)
-    this.$wireAttrs(instance, meta, scope, (p) => this.$resolve(root, p));
+    this.$wireAttrs(instance, meta, scope, (p) => resolve(root, p));
 
     // Events + refs — resolve BEFORE anchors shift childNode indices.
     // Events target element nodes (not text/comment positions), but anchor
     // insertions still shift childNode indices for sibling elements.
-    this.$finalize(root, meta, (r, p) => this.$resolve(r, p));
+    this.$finalize(root, meta, (r, p) => resolve(r, p), instance);
 
     // Now insert anchors using pre-resolved references
 
@@ -620,12 +539,12 @@ export class WebUIElement extends HTMLElement {
       const r = repRefs[i];
       const anchor = document.createComment('');
       r.parent.insertBefore(anchor, r.ref);
-      const { attrMap, rootBindings } = this.$repeatMaps(r.blockIndex, r.itemVar);
+      const { attrMap, rootBindings, keyPath } = this.$repeatMaps(r.blockIndex, r.itemVar);
       instance.repeats.push({
         markerId: i, collection: r.collection, itemVar: r.itemVar, blockIndex: r.blockIndex,
         container: r.parent as ParentNode & Node, start: anchor, end: null,
         scope, owner: instance, instances: [], rootTag: null,
-        attrMap, rootBindings,
+        attrMap, keyPath, rootBindings,
       });
     }
 
@@ -660,7 +579,7 @@ export class WebUIElement extends HTMLElement {
     const instance: TemplateInstance = {
       scope,
       nodes: pathStart > 0 ? [ssrRoot] : childNodesArray(ssrRoot),
-      texts: [], attrs: [], conds: [], repeats: [],
+      texts: [], attrs: [], conds: [], repeats: [], refs: [],
     };
 
     // Collect SSR markers for deferred removal.  Closing markers
@@ -681,16 +600,16 @@ export class WebUIElement extends HTMLElement {
         const [slot, parts] = entry;
         const raw = entry[2] === 1;
         const [parentPath, beforeIndex] = slot;
-        const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart);
+        const ssrParent = resolveSSR(ssrRoot, tplDom, parentPath, pathStart);
         if (!ssrParent) continue;
-        const tplParent = this.$resolve(tplDom, parentPath, pathStart);
+        const tplParent = resolve(tplDom, parentPath, pathStart);
         if (!tplParent) continue;
         if (raw) {
           const rawParent = ssrParent as Element;
           const textNode = document.createTextNode('');
           instance.texts.push({ node: textNode, parts, scope, raw: true, rawParent });
         } else {
-          const textNode = this.$findSSRText(ssrParent, tplParent, beforeIndex);
+          const textNode = findSSRText(ssrParent, tplParent, beforeIndex);
           if (textNode) instance.texts.push({ node: textNode, parts, scope });
         }
       }
@@ -698,7 +617,7 @@ export class WebUIElement extends HTMLElement {
 
     // Attribute bindings
     this.$wireAttrs(instance, meta, scope, (p) =>
-      this.$resolveSSR(ssrRoot, tplDom, p, pathStart) as Element,
+      resolveSSR(ssrRoot, tplDom, p, pathStart) as Element,
     );
 
     // Conditional bindings — use <!--wc--> markers as anchors
@@ -708,7 +627,7 @@ export class WebUIElement extends HTMLElement {
       for (let i = 0; i < meta.c.length; i++) {
         const [condition, blockIndex, slotMeta] = meta.c[i];
         const [parentPath] = slotMeta;
-        const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart) ?? ssrRoot;
+        const ssrParent = resolveSSR(ssrRoot, tplDom, parentPath, pathStart) ?? ssrRoot;
         const blockMeta = this.$block(blockIndex);
         const shown = condition[0](this.$resolver, scope);
         let condInstance: TemplateInstance | null = null;
@@ -720,7 +639,7 @@ export class WebUIElement extends HTMLElement {
         }
 
         // Find the next <!--wc--> marker in ssrParent (after any previously found one)
-        const marker = this.$findMarker(ssrParent, MARKER_COND_START, lastCondMarker);
+        const marker = findMarker(ssrParent, MARKER_COND_START, lastCondMarker);
         let condAnchor: Comment;
         if (marker) {
           condAnchor = marker;
@@ -740,7 +659,7 @@ export class WebUIElement extends HTMLElement {
         // the condition could evaluate to false even though the server
         // rendered it as true.  Trust the SSR DOM and wire it up; the
         // condition will re-evaluate correctly once all data is set.
-        const ssrContentPresent = marker && blockMeta && this.$hasContentAfterMarker(condAnchor, MARKER_COND_END);
+        const ssrContentPresent = marker && blockMeta && hasContentAfterMarker(condAnchor, MARKER_COND_END);
         if (blockMeta && (shown || ssrContentPresent)) {
           if (marker) {
             condInstance = this.$hydrateCondContent(condAnchor, blockMeta, scope);
@@ -773,7 +692,7 @@ export class WebUIElement extends HTMLElement {
       for (let i = 0; i < meta.r.length; i++) {
         const [collection, itemVar, blockIndex, slotMeta] = meta.r[i];
         const [parentPath] = slotMeta;
-        const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart) ?? ssrRoot;
+        const ssrParent = resolveSSR(ssrRoot, tplDom, parentPath, pathStart) ?? ssrRoot;
 
         // Reset cursor when parent changes between iterations
         if (ssrParent !== lastRepParent) {
@@ -782,11 +701,11 @@ export class WebUIElement extends HTMLElement {
         }
 
         const blockMeta = this.$block(blockIndex);
-        const { attrMap, rootBindings } = this.$repeatMaps(blockIndex, itemVar);
-        const rootTag = blockMeta ? this.$rootTag(blockMeta) : null;
+        const { attrMap, rootBindings, keyPath } = this.$repeatMaps(blockIndex, itemVar);
+        const blockRootTag = blockMeta ? rootTag(blockMeta) : null;
 
         // Find the next <!--wr--> marker in ssrParent (after any previously found one)
-        const marker = this.$findMarker(ssrParent, MARKER_REPEAT_START, lastRepMarker);
+        const marker = findMarker(ssrParent, MARKER_REPEAT_START, lastRepMarker);
         let anchor: Comment;
         if (marker) {
           anchor = marker;
@@ -794,7 +713,7 @@ export class WebUIElement extends HTMLElement {
           // No marker — insert anchor at the slot position for client-created content
           anchor = document.createComment('');
           const [, beforeIndex] = slotMeta;
-          const tplParent = this.$resolve(tplDom, parentPath, pathStart);
+          const tplParent = resolve(tplDom, parentPath, pathStart);
           const staticCount = tplParent ? tplParent.childNodes.length : 0;
           const insertRef = ssrParent.childNodes[Math.min(beforeIndex ?? staticCount, ssrParent.childNodes.length)] ?? null;
           ssrParent.insertBefore(anchor, insertRef);
@@ -824,7 +743,7 @@ export class WebUIElement extends HTMLElement {
             const itemValue = items[j];
             const itemScope: ScopeFrame = { name: itemVar, value: itemValue, parent: scope };
 
-            if (rootTag) {
+            if (blockRootTag) {
               const itemEl = nextElement(itemMarkers[j]);
               if (itemEl) {
                 const key = firstKey !== undefined
@@ -837,10 +756,11 @@ export class WebUIElement extends HTMLElement {
               // Text-only repeat item — wire nested conditionals from markers
               const inst: TemplateInstance = {
                 scope: itemScope, nodes: [],
-                texts: EMPTY_ARR as unknown as TextBinding[],
-                attrs: EMPTY_ARR as unknown as AttrBinding[],
+                texts: [],
+                attrs: [],
                 conds: [],
-                repeats: EMPTY_ARR as unknown as RepeatBinding[],
+                repeats: [],
+                refs: [],
               };
 
               if (blockMeta.c) {
@@ -913,14 +833,14 @@ export class WebUIElement extends HTMLElement {
           markerId: i, collection, itemVar, blockIndex,
           container: (anchor.parentNode ?? ssrRoot) as ParentNode & Node,
           start: anchor, end: null,
-          scope, owner: instance, instances: repeatInsts, rootTag,
-          attrMap, rootBindings, synced: true,
+          scope, owner: instance, instances: repeatInsts, rootTag: blockRootTag,
+          attrMap, keyPath, rootBindings, synced: true,
         });
       }
     }
 
     // Events + refs — this is the last phase that uses $resolveSSR.
-    this.$finalize(ssrRoot, meta, (r, p) => this.$resolveSSR(r, tplDom, p, pathStart));
+    this.$finalize(ssrRoot, meta, (r, p) => resolveSSR(r, tplDom, p, pathStart), instance);
 
     // All path-based resolution is complete. Remove the SSR markers that
     // were kept alive for structural-block skipping.  Start markers
@@ -935,18 +855,6 @@ export class WebUIElement extends HTMLElement {
 
   // ── SSR helpers ───────────────────────────────────────────────
 
-  /** Collect sibling nodes between a start marker and an end marker comment. */
-  private $collectBetween(start: Comment, endData: string): Node[] {
-    const nodes: Node[] = [];
-    let node: Node | null = start.nextSibling;
-    while (node) {
-      if (node.nodeType === 8 && (node as Comment).data === endData) break;
-      nodes.push(node);
-      node = node.nextSibling;
-    }
-    return nodes;
-  }
-
   /**
    * Hydrate a conditional block's content — shared by top-level and
    * repeat-item conditional hydration paths.
@@ -956,9 +864,9 @@ export class WebUIElement extends HTMLElement {
     blockMeta: TemplateBlockMeta,
     scope: ScopeFrame | undefined,
   ): TemplateInstance | null {
-    const rootTag = this.$rootTag(blockMeta);
+    const tag = rootTag(blockMeta);
     const tplDom = getTemplateDom(blockMeta);
-    if (rootTag && tplDom.children.length === 1) {
+    if (tag && tplDom.children.length === 1) {
       // Single-root optimisation: hydrate the element in-place (pathStart=1).
       const el = nextElement(condAnchor);
       if (el) {
@@ -972,7 +880,7 @@ export class WebUIElement extends HTMLElement {
       return null;
     }
     // Multi-root or text-only conditional: collect nodes between <!--wc--> and <!--/wc-->
-    const condNodes = this.$collectBetween(condAnchor, MARKER_COND_END);
+    const condNodes = collectBetween(condAnchor, MARKER_COND_END);
     if (condNodes.length === 0) return null;
     const wrapper = document.createElement('div');
     for (let cn = 0; cn < condNodes.length; cn++) wrapper.appendChild(condNodes[cn]);
@@ -983,98 +891,13 @@ export class WebUIElement extends HTMLElement {
       condAnchor.parentNode?.insertBefore(inst.nodes[cn], afterNode.nextSibling);
       afterNode = inst.nodes[cn];
     }
-    // Same as above — trust SSR DOM, skip binding evaluation.
+    // Trust SSR DOM, skip binding evaluation (same reasoning as the
+    // single-root branch above — see comment there).
     return inst;
   }
 
-  /**
-   * Find the next marker comment with the given data among a parent's children.
-   * Starts searching from `after` (exclusive) if provided, or from firstChild.
-   */
-  private $findMarker(parent: Node, data: string, after?: Node | null): Comment | null {
-    let child = after ? after.nextSibling : parent.firstChild;
-    while (child) {
-      if (child.nodeType === 8 && (child as Comment).data === data) {
-        return child as Comment;
-      }
-      child = child.nextSibling;
-    }
-    return null;
-  }
-
-  /**
-   * Check whether there is non-marker content between a conditional
-   * start anchor and its closing marker.  Used during SSR hydration to
-   * detect server-rendered conditional content even when the runtime
-   * condition value has not been set yet (e.g. complex property from a
-   * parent repeat binding that hydrates after its children).
-   */
-  private $hasContentAfterMarker(anchor: Comment, endData: string): boolean {
-    let sibling = anchor.nextSibling;
-    while (sibling) {
-      if (sibling.nodeType === 8 && (sibling as Comment).data === endData) {
-        return false; // reached end marker with no content in between
-      }
-      return true; // any non-end-marker node = content present
-    }
-    return false;
-  }
-
-  /**
-   * Find existing SSR text node by mapping template text-node ordinal.
-   *
-   * Similar to `$resolveSSR`, the SSR DOM may contain extra text nodes
-   * inside structural blocks (`<if>`/`<for>`) that are not in the
-   * compiled template.  We skip `<!--wc-->...<!--/wc-->` and
-   * `<!--wr-->...<!--/wr-->` ranges to keep text ordinals aligned.
-   */
-  private $findSSRText(ssrParent: Node, tplParent: Node, beforeIndex: number): Text | null {
-    // Count how many text nodes precede `beforeIndex` in the template
-    const ordinals = getTplOrdinals(tplParent);
-    let textOrd = 0;
-    for (let k = 0; k < beforeIndex; k++) {
-      const entry = ordinals.get(k);
-      if (entry && entry[0] === 3) textOrd++;
-    }
-
-    // Find the matching text node in SSR DOM, skipping structural block
-    // content — same algorithm as $resolveSSR (see findByOrdinal).
-    const found = findByOrdinal(ssrParent, 3 /* TEXT_NODE */, textOrd);
-    if (found) return found as Text;
-
-    // Fallback: any text node with content
-    let child = ssrParent.firstChild;
-    while (child) {
-      if (child.nodeType === 3 && (child as Text).data && (child as Text).data.trim()) {
-        return child as Text;
-      }
-      child = child.nextSibling;
-    }
-    return null;
-  }
-
-  /** Extract root tag name from block metadata. */
-  private $rootTag(meta: TemplateBlockMeta): string | null {
-    let cached = rootTagCache.get(meta);
-    if (cached !== undefined) return cached;
-    const h = meta.h;
-    if (!h || h.charCodeAt(0) !== 60) {
-      rootTagCache.set(meta, null);
-      return null;
-    }
-    let end = 1;
-    while (end < h.length) {
-      const c = h.charCodeAt(end);
-      if (c === 32 || c === 62 || c === 47) break;
-      end++;
-    }
-    const tag = h.slice(1, end).toLowerCase();
-    rootTagCache.set(meta, tag);
-    return tag;
-  }
-
   // ═══════════════════════════════════════════════════════════════
-  //  Shared: binding wiring, event wiring, refs
+  //  Shared: attribute binding wiring
   // ═══════════════════════════════════════════════════════════════
 
   /** Wire attribute bindings using a resolver (shared by $wire and $hydrate). */
@@ -1096,57 +919,17 @@ export class WebUIElement extends HTMLElement {
     }
   }
 
-  /** Wire events + root events + refs (shared by $wire and $hydrate). */
+  /** Wire events + root events + refs (delegates to event engine). */
   private $finalize(
     root: Node,
     meta: TemplateBlockMeta,
     resolver: (root: Node, path: TemplateNodePath) => Node | null,
+    owner: TemplateInstance,
   ): void {
-    this.$wireEvents(root, meta, resolver);
-    if ((meta as TemplateMeta).re) this.$wireRoot((meta as TemplateMeta).re!);
-    this.$wireRefs(root);
-  }
-
-  /** Wire events using a resolver function (works for both client and SSR). */
-  private $wireEvents(
-    root: Node,
-    meta: TemplateBlockMeta,
-    resolver: (root: Node, path: TemplateNodePath) => Node | null,
-  ): void {
-    if (!meta.e) return;
-    for (let i = 0; i < meta.e.length; i++) {
-      const [eventName, handlerName, needsEvent, target] = meta.e[i];
-      const el = resolver(root, target);
-      if (!el || el.nodeType !== 1) continue;
-      this.$addEvent(el as Element, eventName, handlerName, needsEvent);
-    }
-  }
-
-  /** Wire root-level events on the host element (or shadow root when present). */
-  private $wireRoot(re: [string, string, number][]): void {
-    const target = this.shadowRoot ?? this;
-    for (let i = 0; i < re.length; i++) {
-      this.$addEvent(target, re[i][0], re[i][1], re[i][2]);
-    }
-  }
-
-  /** Attach a single event listener. */
-  private $addEvent(target: EventTarget, eventName: string, handlerName: string, _needsEvent: number): void {
-    const method = (this as Record<string, unknown>)[handlerName];
-    if (typeof method !== 'function') return;
-    target.addEventListener(eventName, (method as Function).bind(this));
-  }
-
-  /** Find w-ref attributes and assign to component properties. */
-  private $wireRefs(root: Node): void {
-    if (root.nodeType !== 1 && root.nodeType !== 11) return;
-    const refs = (root as Element).querySelectorAll('[w-ref]');
-    for (let i = 0; i < refs.length; i++) {
-      const raw = refs[i].getAttribute('w-ref');
-      if (!raw || raw.charCodeAt(0) !== 123) continue;
-      const name = raw.slice(1, -1);
-      if (name) (this as Record<string, unknown>)[name] = refs[i];
-    }
+    finalizeEvents(
+      this as unknown as EventStateHost,
+      root, meta, resolver, owner,
+    );
   }
 
   /** Create an AttrBinding from compiled metadata. */
@@ -1158,13 +941,15 @@ export class WebUIElement extends HTMLElement {
     return { element: el, name, kind: kind as number, path: (entry[2] as string) || '', scope };
   }
 
-  /** Build attrMap and rootBindings for a repeat block. */
+  /** Build attrMap, rootBindings, and pre-computed keyPath for a repeat block. */
   private $repeatMaps(blockIndex: number, itemVar: string): {
     attrMap: Record<string, string>;
     rootBindings: CompiledAttrMeta[];
+    keyPath: string | null;
   } {
     const attrMap: Record<string, string> = {};
     const rootBindings: CompiledAttrMeta[] = [];
+    let keyPath: string | null = null;
     const bm = this.$block(blockIndex);
     if (bm?.a && bm.ag) {
       for (let g = 0; g < bm.ag.length; g++) {
@@ -1186,7 +971,11 @@ export class WebUIElement extends HTMLElement {
                 // (e.g. group.name inside <for each="opt in ...">) would
                 // resolve to the same value for every item and break keying.
                 if (dp && dp.path.startsWith(itemVar + '.')) {
-                  attrMap[entry[0]] = dp.path.slice(itemVar.length + 1);
+                  const path = dp.path.slice(itemVar.length + 1);
+                  attrMap[entry[0]] = path;
+                  // First binding wins as the diff key — matches insertion
+                  // order semantics of the original `Object.values()[0]`.
+                  if (keyPath === null) keyPath = path;
                 }
               }
             }
@@ -1194,7 +983,7 @@ export class WebUIElement extends HTMLElement {
         }
       }
     }
-    return { attrMap, rootBindings };
+    return { attrMap, rootBindings, keyPath };
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1402,13 +1191,7 @@ export class WebUIElement extends HTMLElement {
   }
 
   $removeInstance(instance: TemplateInstance): void {
-    for (const n of instance.nodes) n.parentNode?.removeChild(n);
-    for (const c of instance.conds) {
-      if (c.instance) this.$removeInstance(c.instance);
-    }
-    for (const r of instance.repeats) {
-      for (const item of r.instances) this.$removeInstance(item.instance);
-    }
+    this.$disposeInstance(instance, true);
   }
 
   $insertInstanceAfter(cursor: Node | null, container: ParentNode & Node, instance: TemplateInstance): Node | null {
@@ -1433,4 +1216,3 @@ export class WebUIElement extends HTMLElement {
     return seen ? { path, prefix, suffix } : null;
   }
 }
-

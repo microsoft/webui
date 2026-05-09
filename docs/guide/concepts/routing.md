@@ -6,6 +6,7 @@ This means:
 - **Zero runtime JavaScript for routing policy.** Cache semantics, invalidation rules, and loading states are HTML attributes - not framework configuration objects.
 - **Build-time validation.** A typo in `pending="loadnig-skeleton"` is a compile error, not a blank screen in production.
 - **Server and client both know the full graph.** The server resolves cache tags with real param values. The client invalidates by tag after mutations. Neither needs runtime discovery.
+- **Route state is scoped.** Client navigation should fetch only the state needed by the matched route chain, not a full application snapshot.
 
 At its simplest, routing is three lines of HTML and one line of TypeScript. At its most advanced, it's declarative tagged caching with compiler-enforced invalidation graphs - and everything in between uses the same `<route>` element.
 
@@ -147,11 +148,11 @@ Preserve a component's DOM and state across navigations instead of destroying an
 
 When navigating from Mail to Calendar and back:
 - **`mail-view` (keep-alive):** Hidden on deactivation, shown instantly on return. The folder pane, email list, and all local state survive the round trip. Route param and query param attributes are updated, but `setState()` is **not called** — your component's `@observable` properties are preserved.
-- **`settings-page` (no keep-alive):** Destroyed on deactivation, recreated fresh on each visit.
+- **`settings-page` (no keep-alive):** Destroyed on deactivation, removed from the DOM, and recreated fresh on each visit. This releases bindings and DOM references instead of retaining hidden pages.
 
 | Behavior | With `keep-alive` | Without |
 |----------|-------------------|---------|
-| Deactivate | `display: none` (stays in DOM) | `display: none` (stays in DOM) |
+| Deactivate | `display: none` (component stays in DOM) | Component is destroyed and route stub is emptied |
 | Reactivate | Reuses existing component — params updated, state preserved | Destroys old, creates new component |
 | Local state | ✅ Preserved (scroll, input, timers, observables) | Lost |
 | Server state | **Skipped** — use a [loader](#route-loaders) to refresh | Applied on mount via `setState()` |
@@ -208,13 +209,47 @@ How it works:
 - Loaders run on both SSR bootstrap and SPA navigations for consistency
 - Components without a `loader()` use server state as before — fully backwards compatible
 
+### Route-Scoped State
+
+For client-side navigation, the server should return state for the matched route chain only. The preferred partial response shape is `states`, aligned to the server-provided `chain`:
+
+```json
+{
+  "path": "/email/thread-42",
+  "chain": [
+    { "component": "mail-app", "path": "/" },
+    { "component": "mail-thread-page", "path": "email/:threadId", "params": { "threadId": "42" } }
+  ],
+  "states": [
+    null,
+    { "threadId": "42", "subject": "Q4 Budget", "messages": [] }
+  ],
+  "templates": [],
+  "inventory": "ff"
+}
+```
+
+`null` means preserve the existing component state. In the example above, the already-mounted shell/list state stays client-side, and only the visible thread page receives fresh server state.
+
+`states` is the only state delivery channel — there is no legacy broad-state fallback. New apps must use `states` so list pages, settings, ribbon data, and hidden routes are not sent when they are not visible.
+
+Object form is also accepted for hosts that prefer stable keys:
+
+```json
+{
+  "states": {
+    "1:mail-thread-page": { "threadId": "42", "messages": [] }
+  }
+}
+```
+
 ### Controlling State
 
 The router provides four mechanisms for controlling how state flows to your components:
 
 | Need | Mechanism | What happens |
 |------|-----------|-------------|
-| **Server provides all state** | Default (no changes) | `setState(state)` on every navigation |
+| **Server provides visible route state** | `states` in the partial response | `setState(states[i])` only for targeted chain entries |
 | **I fetch my own data** | `static loader()` on component | Loader runs pre-commit, result passed to `setState()` |
 | **Preserve local state** | `keep-alive` on route | Params/query attrs updated, `setState()` skipped |
 | **Preserve DOM + refresh data** | `keep-alive` + `static loader()` | DOM preserved, loader result applied via `setState()` |
@@ -223,9 +258,9 @@ The router provides four mechanisms for controlling how state flows to your comp
 // Express example — render_partial returns chain + templates (no state).
 // Caller adds state to the response.
 app.get('*', async (req, res) => {
-  const state = await db.getPageState(req.path);
+  const threadState = await db.getThreadState(req.path);
   const partial = handler.renderPartial(protocol, index, req.path, invHex);
-  partial.state = state;
+  partial.states = [null, threadState];
   res.json(partial);
 });
 ```
@@ -402,7 +437,7 @@ The server renders `<webui-route>` elements with these DOM attributes:
 
 Build-time attributes like `query`, `keep-alive`, `cache-tags`, and `invalidates` are **not** emitted as DOM attributes on `<webui-route>` elements. They are compiled into the binary protocol and delivered to the client via `window.__webui.chain` JSON data. The `<route>` source attributes remain valid and unchanged - the compiler just delivers them through JSON instead of the DOM.
 
-The server also emits a `window.__webui` script containing the SSR chain, template inventory, and CSS metadata. This replaces the previous `<meta name="webui-inventory">` tag (which is still supported as a fallback for older servers).
+The server also emits a `window.__webui` script containing the SSR chain (with per-component state embedded on each chain entry), template inventory, and an empty template registry. This replaces the previous `<meta name="webui-inventory">` tag (which is still supported as a fallback for older servers). CSP nonce, CSS link hrefs, and module style specifiers are already present in DOM nodes, so the router scans those nodes once instead of duplicating the strings in the bootstrap JSON. Per-component SSR state is delivered via the framework's `$hydrateState()` path on first paint, reading from `chain[0].state`; the chain is freed after hydration so state is released with it.
 
 ```html
 <script>window.__webui = {
@@ -411,9 +446,7 @@ The server also emits a `window.__webui` script containing the SSR chain, templa
     { "component": "topic-page", "path": "topics/:topicId", "params": { "topicId": "react" }, "exact": true }
   ],
   inventory: "04000400...",
-  nonce: "abc123",
-  css: ["/styles/main.css"],
-  styles: ["app-shell", "topic-page"]
+  templates: {}
 };</script>
 ```
 
@@ -424,7 +457,7 @@ At startup, the router reads `window.__webui` instead of walking the DOM:
 1. **Chain**: The SSR chain is provided as JSON in `window.__webui.chain`, eliminating DOM walking and URLPattern usage
 2. **Element binding**: `data-ri` attributes on `<webui-route>` elements enable O(1) lookup by chain index - no component-name matching needed
 3. **Inventory**: `window.__webui.inventory` provides the template bitmask (falls back to `<meta name="webui-inventory">` for older servers)
-4. **CSS/Styles**: `window.__webui.css` and `window.__webui.styles` track injected assets
+4. **Nonce/CSS/Styles**: existing `<meta name="webui-nonce">`, stylesheet links, SSR preload links, and `<style type="module" specifier>` tags seed the router's duplicate-prevention Sets
 
 #### SSR Fresh / Loaders
 
@@ -621,9 +654,12 @@ When `Accept: application/json` or `application/x-ndjson`:
 
 ```json
 {
-  "state": { "name": "Alice", "email": "alice@example.com" },
+  "states": [
+    null,
+    { "name": "Alice", "email": "alice@example.com" }
+  ],
   "templateStyles": ["<style type=\"module\" specifier=\"user-detail\">...</style>"],
-  "templates": ["(function(){var w=window.__webui.templates||...})();"],
+  "templates": ["window.__webui.templates['user-detail']={...};"],
   "inventory": "04000400...",
   "path": "/users/42",
   "chain": [
@@ -643,7 +679,7 @@ When `Accept: application/json` or `application/x-ndjson`:
 
 | Field | Description |
 |-------|-------------|
-| `state` | Application state (added by the caller, not by `render_partial`) |
+| `states` | Route-scoped state aligned to `chain` (added by the caller, not by `render_partial`) — the only supported state delivery channel |
 | `templateStyles` | Module CSS definition tags (empty for Link/Style modes) |
 | `templates` | Client template payloads filtered by inventory bitmask |
 | `inventory` | Updated hex bitmask of loaded templates |
@@ -663,11 +699,11 @@ Each `chain` entry can include: `component`, `path`, `params`, `exact`, `keepAli
 
 ### Full HTML (initial load)
 
-Without `Accept: application/json`, return the full SSR'd page. The handler emits a `window.__webui` script in `<head>` containing the SSR chain, template inventory, and CSS metadata so the client router can bootstrap without DOM walking.
+Without `Accept: application/json`, return the full SSR'd page. The handler emits a `window.__webui` script containing the SSR chain (with per-component state embedded on chain entries), template inventory, and an empty template registry so the client router can bootstrap without route DOM walking. Per-component SSR state is delivered via the framework's `$hydrateState()` hydration path on first paint, reading from `chain[0].state` — there is no top-level `state` field. Nonce/CSS/style dedupe metadata is seeded from the DOM instead of duplicated in JSON.
 
 ### Partial Navigation
 
-The partial response format is unchanged. Use `render_partial()` (Rust) or `webui_render_partial()` (FFI) to get the partial response - chain, templateStyles, templates, inventory, path, and cacheTags. The caller adds application state to the result.
+Use `render_partial()` (Rust) or `webui_render_partial()` (FFI) to get the partial response - chain, templateStyles, templates, inventory, path, and cacheTags. The caller adds route-scoped `states` to the result. `states` is the only state delivery channel — there is no legacy broad-state fallback.
 
 `render_partial()` now requires a `ProtocolIndex` parameter - a pre-computed index that caches expensive lookups (component bit-index maps, compiled route templates, and component closures). Build it once per protocol at startup and reuse it across requests:
 
@@ -676,22 +712,22 @@ The partial response format is unchanged. Use `render_partial()` (Rust) or `webu
 let mut index = ProtocolIndex::new(&protocol);
 
 let mut partial = route_handler::render_partial(&protocol, &entry, &path, &inventory_hex, &mut index);
-// Caller adds state to the response
+// Caller adds route-scoped state aligned to partial.chain
 if let Some(obj) = partial.as_object_mut() {
-    obj.insert("state".into(), state);
+    obj.insert("states".into(), serde_json::json!([null, state]));
 }
 ```
 
 ```csharp
 // C#
 string partialJson = handler.RenderPartial(protocol, index, entryId, requestPath, inventoryHex);
-// Caller merges state into the JSON before sending
+// Caller merges "states" into the JSON before sending
 ```
 
 ```javascript
 // Node.js
 const partialJson = webui.renderPartial(protocol, index, entryId, requestPath, inventoryHex);
-// Caller adds state before sending
+// Caller adds states before sending
 ```
 
 ### Express Example
@@ -704,10 +740,10 @@ app.get('/users/:id', (req, res) => {
   const state = { name: getUser(req.params.id).name };
 
   if (req.accepts('json')) {
-    // renderPartial() returns chain + templates; caller adds state
+    // renderPartial() returns chain + templates; caller adds states
     const inv = req.get('X-WebUI-Inventory') ?? '';
     const partial = JSON.parse(webui.renderPartial(protocol, index, 'index.html', req.path, inv));
-    partial.state = state;
+    partial.states = [null, state];
     res.type('json').send(JSON.stringify(partial));
   } else {
     res.type('html').send(handler.render(protocol, state, 'index.html', req.path));
@@ -726,7 +762,7 @@ Always validate route parameters on the server before including them in state.
 ## Route-Scoped State
 
 For optimal performance, each route handler should return only the state that
-its component template binds to - not the full application state.
+the matched route chain binds to - not a global application snapshot.
 
 ### Anti-pattern: Full State for Every Route
 
@@ -744,18 +780,21 @@ its component template binds to - not the full application state.
 ### Correct: Route-Scoped State
 
 ```json
-// ✅ /inbox - only what the inbox component needs - 15 KB
-{ "threads": [...], "selectedFolder": "inbox" }
-
-// ✅ /inbox/:id - only what the detail component needs - 5 KB  
-{ "subject": "Q4 Review", "messages": [...] }
-
-// ✅ /settings - only settings data - 2 KB
-{ "theme": "dark", "language": "en", "notifications": true }
+// ✅ /inbox/:id - shell preserved, detail receives fresh data
+{
+  "chain": [
+    { "component": "mail-app", "path": "/" },
+    { "component": "thread-page", "path": "inbox/:id" }
+  ],
+  "states": [
+    null,
+    { "subject": "Q4 Review", "messages": [...] }
+  ]
+}
 ```
 
 Route-scoped state keeps JSON payloads small during client-side navigation,
-where only the `state` field of the JSON partial is transferred.
+where only visible route data and missing templates are transferred.
 
 ## Styling Route Outlets
 

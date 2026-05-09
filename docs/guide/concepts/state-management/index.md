@@ -1,6 +1,17 @@
 # State Management
 
-WebUI uses JSON as its state format. At render time, you pass a JSON object to the handler, and template bindings resolve values from that object using dotted paths.
+WebUI uses JSON as its state format. At render time, you pass a JSON object to the handler, and template bindings resolve values from that object using dotted paths. For routed apps, initial SSR can use complete page state, but client navigation should use route-scoped state for the visible route chain only.
+
+## Server and Client Ownership
+
+WebUI does not require a global client store. Split state by ownership:
+
+- **Server-owned visible route data**: values needed to render the matched route
+  chain. Send these in the partial response `states` array or object — this is
+  the only supported state delivery channel for client-side navigation.
+- **Client-owned ephemeral UI state**: focus, scroll, popovers, draft inputs,
+  timers, and other interaction details. Keep these in `@observable` properties
+  or DOM refs, and preserve them by sending `null` for unchanged route entries.
 
 ## State Structure
 
@@ -144,7 +155,7 @@ Unlike client-side frameworks that fetch data on mount, WebUI renders in a singl
 
 When using routing, each route page template has its own bindings. Every
 `<for>`, `<if>`, and `{{binding}}` in the page template must have its key
-populated in the server state JSON.
+populated in the server state JSON for the render that displays that page.
 
 ```html
 <!-- email-detail.html -->
@@ -169,10 +180,37 @@ If `messages` is an empty array `[]`, the `<for>` loop correctly renders
 zero items - even if the client would populate it later. The server is
 the source of truth for the initial render.
 
+For client-side navigation, do not send a full app snapshot just because the
+initial SSR state was complete. Return state for the matched route entries that
+need fresh server data:
+
+```json
+{
+  "chain": [
+    { "component": "mail-app", "path": "/" },
+    { "component": "email-detail", "path": "email/:id" }
+  ],
+  "states": [
+    null,
+    {
+      "subject": "Q4 Budget Review",
+      "messages": [
+        { "body": "Please review the attached spreadsheet..." }
+      ]
+    }
+  ]
+}
+```
+
+`null` preserves the already-mounted parent component. The client keeps local UI
+state such as scroll, focused input, open popovers, and keep-alive observables.
+The server remains the source of truth for visible route data.
+
 <webui-blockquote appearance="tip" title="Rule of thumb" icon="💡">
 
 Check every `<for>`, `<if>`, and `{{binding}}` in your route page template.
-Every key must be present in the server state JSON.
+Every key must be present in the server state JSON for that route entry, but
+unrelated routes should not be included in navigation payloads.
 
 </webui-blockquote>
 

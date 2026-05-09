@@ -46,4 +46,18 @@ test.describe('ref fixture', () => {
 
     expect(focused).toBe(true);
   });
+
+  test('clears w-ref properties on destroy', async ({ page }) => {
+    const result = await page.evaluate(() => {
+      const host = document.querySelector('test-ref') as (HTMLElement & {
+        $destroy(): void;
+        inputEl?: HTMLInputElement;
+      }) | null;
+      const hadRef = host?.inputEl instanceof HTMLInputElement;
+      host?.$destroy();
+      return { hadRef, cleared: host?.inputEl === undefined };
+    });
+
+    expect(result).toEqual({ hadRef: true, cleared: true });
+  });
 });

@@ -116,7 +116,7 @@ pub fn build_protocol(files: JsValue, entry: &str) -> Result<String, JsValue> {
 ///
 /// Combines application state, route templates, inventory, request path, and
 /// matched route chain into a single JSON string:
-/// `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
+/// `{"states":[{...}],"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
 ///
 /// Host servers return this directly — no assembly required.
 #[wasm_bindgen]
@@ -146,7 +146,20 @@ pub fn render_partial(
     )
     .map_err(|e| JsValue::from_str(&format!("render_partial failed: {e}")))?;
     if let Some(obj) = result.as_object_mut() {
-        obj.insert("state".into(), state);
+        // Broadcast the same shared state object to every chain entry — each
+        // component picks only its own @observable keys. JSON serializes the
+        // duplicates once and the runtime carries N references to the same
+        // object, so memory cost is one pointer slot per entry.
+        let chain_len = obj
+            .get("chain")
+            .and_then(|c| c.as_array())
+            .map_or(1, std::vec::Vec::len);
+        let mut states = Vec::with_capacity(chain_len);
+        for _ in 0..chain_len.saturating_sub(1) {
+            states.push(state.clone());
+        }
+        states.push(state);
+        obj.insert("states".into(), serde_json::Value::Array(states));
     }
 
     serde_json::to_string(&result)

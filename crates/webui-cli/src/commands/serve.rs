@@ -14,7 +14,7 @@ use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use webui::WebUIHandler;
+use webui::{server as webui_server, WebUIHandler};
 use webui_dev_server::{spawn_watcher, sse_handler, LiveReload, WatchConfig};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
@@ -627,72 +627,98 @@ async fn resolve_state(context: &ServerContext, request_path: &str) -> Value {
     state
 }
 
-/// Render a full HTML page using route matching from `route_path` and state lookup from
-/// `request_path`, which may include a query string.
-async fn render_page_response(
+/// Unified route handler: resolves state, delegates to the library's `serve_request`,
+/// and wraps the result as an HTTP response.
+///
+/// This is the single entry point for all route rendering — both full-page SSR and
+/// JSON partial responses for SPA navigation. The branching (HTML vs JSON) happens
+/// inside `webui::server::serve_request` based on the `Accept` header.
+///
+/// # Flow
+///
+/// 1. Resolve application state (from file or API proxy)
+/// 2. Lock shared context to read protocol + entry point
+/// 3. Call `webui::server::serve_request()` which:
+///    - Extracts route params and injects them into state
+///    - For JSON: builds partial response with state on the leaf chain entry
+///    - For HTML: renders full SSR page with `window.__webui` bootstrap
+/// 4. Wrap result as `HttpResponse` (+ livereload injection for HTML)
+async fn serve_route(
+    req: &HttpRequest,
     context: &web::Data<ServerContext>,
-    route_path: &str,
-    request_path: &str,
+    relative: &str,
 ) -> HttpResponse {
-    let mut state = resolve_state(context, request_path).await;
+    let paths = build_request_paths(relative, req.query_string());
+    let state = resolve_state(context, &paths.request_path).await;
 
     let (protocol, entry, plugin) = match context.state.lock() {
         Ok(s) => (s.protocol.clone(), s.entry.clone(), context.plugin),
-        Err(_) => return HttpResponse::InternalServerError().body("Internal Server Error"),
+        Err(_) => {
+            return if wants_json(req) {
+                HttpResponse::InternalServerError()
+                    .content_type("application/json")
+                    .body(r#"{"error":"Internal server error"}"#)
+            } else {
+                HttpResponse::InternalServerError().body("Internal Server Error")
+            };
+        }
     };
 
     let Some(proto) = protocol else {
-        return HttpResponse::InternalServerError().body("Protocol not available");
+        return if wants_json(req) {
+            HttpResponse::InternalServerError()
+                .content_type("application/json")
+                .body(r#"{"error":"Protocol not available"}"#)
+        } else {
+            HttpResponse::InternalServerError().body("Protocol not available")
+        };
     };
 
-    // Inject route params (nested) into state for SSR
-    if let Value::Object(ref mut map) = state {
-        let nested_params = webui_handler::route_handler::collect_nested_route_params(
-            &proto,
-            &entry,
-            route_path,
-            &mut webui_handler::route_matcher::CompiledRouteCache::new(),
-        );
-        for (k, v) in &nested_params {
-            map.insert(k.clone(), Value::String(v.clone()));
+    let handler = create_handler(plugin);
+    let inv_hex = req
+        .headers()
+        .get("x-webui-inventory")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+
+    let request = webui_server::ServeRequest {
+        path: &paths.route_path,
+        accept_json: wants_json(req),
+        inventory_hex: inv_hex,
+    };
+
+    match webui_server::serve_request(&proto, &handler, state, &entry, &request) {
+        Ok(webui_server::ServeResponse::Html(html)) => {
+            let body = match &context.livereload {
+                Some(lr) => lr.inject(&html),
+                None => html,
+            };
+            HttpResponse::Ok()
+                .content_type("text/html; charset=utf-8")
+                .body(body)
+        }
+        Ok(webui_server::ServeResponse::Json(value)) => HttpResponse::Ok()
+            .content_type("application/json")
+            .json(value),
+        Err(e) => {
+            if wants_json(req) {
+                HttpResponse::InternalServerError()
+                    .content_type("application/json")
+                    .body(format!(r#"{{"error":"{}"}}"#, e))
+            } else {
+                HttpResponse::InternalServerError().body(format!("Render error: {e}"))
+            }
         }
     }
-
-    let mut writer = MemoryWriter::with_capacity(4096);
-    let handler = create_handler(plugin);
-
-    if let Err(e) = handler.handle(
-        &proto,
-        &state,
-        &RenderOptions::new(&entry, route_path),
-        &mut writer,
-    ) {
-        return HttpResponse::InternalServerError().body(format!("Render error: {e}"));
-    }
-
-    let html = match &context.livereload {
-        Some(lr) => lr.inject(&writer.buf),
-        None => writer.buf,
-    };
-
-    HttpResponse::Ok()
-        .content_type("text/html; charset=utf-8")
-        .body(html)
 }
 
 async fn handle_index(req: HttpRequest, context: web::Data<ServerContext>) -> HttpResponse {
-    // JSON partial render for client-side navigation
-    if wants_json(&req) {
-        return handle_json_partial(&req, &context, "").await;
+    // JSON partial render or API-backed dynamic SSR
+    if wants_json(&req) || context.api_port.is_some() {
+        return serve_route(&req, &context, "").await;
     }
 
-    // With API proxy, render on-the-fly with fresh state
-    if context.api_port.is_some() {
-        let paths = build_request_paths("", req.query_string());
-        return render_page_response(&context, &paths.route_path, &paths.request_path).await;
-    }
-
-    // Without API proxy, serve pre-rendered HTML
+    // Without API proxy, serve pre-rendered HTML (fast path — no per-request render)
     let html = match context.state.lock() {
         Ok(s) => s.rendered_html.clone(),
         Err(_) => return HttpResponse::InternalServerError().body("Internal Server Error"),
@@ -798,7 +824,11 @@ async fn handle_asset(
         .body(body)
 }
 
-/// Check if the request accepts JSON (for partial render).
+/// Check if the client accepts JSON (signaling an SPA partial navigation request).
+///
+/// The `webui-router` client sends `Accept: application/x-ndjson, application/json`
+/// for SPA navigations. This function checks for `application/json` which covers both
+/// plain JSON and NDJSON accept headers.
 fn wants_json(req: &HttpRequest) -> bool {
     req.headers()
         .get("accept")
@@ -806,8 +836,11 @@ fn wants_json(req: &HttpRequest) -> bool {
         .is_some_and(|v| v.contains("application/json"))
 }
 
-/// SPA fallback: serve HTML or JSON partial depending on Accept header.
-/// Activates for paths that look like route paths (no file extension).
+/// SPA fallback: delegates to [`serve_route`] for paths without file extensions.
+///
+/// Paths containing a dot (e.g., `/assets/style.css`) are treated as static files
+/// and return 404 — they should be handled by the static file middleware before
+/// reaching this fallback.
 async fn spa_fallback(
     req: &HttpRequest,
     context: &web::Data<ServerContext>,
@@ -818,90 +851,7 @@ async fn spa_fallback(
         return HttpResponse::NotFound().body("Not Found");
     }
 
-    let paths = build_request_paths(relative, req.query_string());
-
-    // JSON partial render: return { state, templates } for client-side navigation
-    if wants_json(req) {
-        return handle_json_partial(req, context, relative).await;
-    }
-
-    render_page_response(context, &paths.route_path, &paths.request_path).await
-}
-
-/// Handle a JSON partial render request for client-side navigation.
-///
-/// Returns `{ state, templates, inventory, path, chain }` where:
-/// - `templates` only includes f-templates the client doesn't already have
-/// - `inventory` is the updated hex bitmask including the new templates
-async fn handle_json_partial(
-    req: &HttpRequest,
-    context: &web::Data<ServerContext>,
-    relative: &str,
-) -> HttpResponse {
-    let paths = build_request_paths(relative, req.query_string());
-
-    let mut state_data = resolve_state(context, &paths.request_path).await;
-
-    // Clone protocol from shared state (release lock quickly)
-    let (protocol, entry) = match context.state.lock() {
-        Ok(s) => (s.protocol.clone(), s.entry.clone()),
-        Err(_) => {
-            return HttpResponse::InternalServerError().body(r#"{"error":"Internal server error"}"#)
-        }
-    };
-
-    // Inject route params into state from walking the fragment graph.
-    if let Value::Object(ref mut map) = state_data {
-        if let Some(proto) = &protocol {
-            let nested_params = webui_handler::route_handler::collect_nested_route_params(
-                proto,
-                &entry,
-                &paths.route_path,
-                &mut webui_handler::route_matcher::CompiledRouteCache::new(),
-            );
-            for (k, v) in &nested_params {
-                map.insert(k.clone(), Value::String(v.clone()));
-            }
-        }
-    }
-
-    // Get needed component templates via the handler's graph walk + inventory filter
-    let client_inv_hex = req
-        .headers()
-        .get("x-webui-inventory")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
-
-    // Build the complete partial response (templateStyles, templates, inventory, path, chain)
-    let partial = if let Some(proto) = &protocol {
-        // Per-request index — ideally cached alongside protocol for server lifetime.
-        let mut index = webui_handler::route_handler::ProtocolIndex::new(proto);
-        let mut p = match webui_handler::route_handler::render_partial(
-            proto,
-            &entry,
-            &paths.route_path,
-            &client_inv_hex,
-            &mut index,
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                return HttpResponse::InternalServerError()
-                    .content_type("application/json")
-                    .body(format!(r#"{{"error":"{}"}}"#, e));
-            }
-        };
-        if let Some(obj) = p.as_object_mut() {
-            obj.insert("state".into(), state_data);
-        }
-        p
-    } else {
-        Value::Object(serde_json::Map::new())
-    };
-
-    HttpResponse::Ok()
-        .content_type("application/json")
-        .json(partial)
+    serve_route(req, context, relative).await
 }
 
 #[cfg(test)]

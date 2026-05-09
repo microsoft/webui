@@ -10,7 +10,8 @@
 import { hasState } from './route-element.js';
 import { isStateful } from './types.js';
 import { registerTemplatesAndStyles, injectCssLinks } from './templates.js';
-import type { PartialResponse, RouteChainEntry } from './cache.js';
+import { outOfChainStateKeys, stateForRouteEntry } from './route-state.js';
+import type { PartialResponse, RouteChainEntry, RouteStates } from './cache.js';
 
 /** Maximum buffered NDJSON line size before aborting the stream (256 KiB). */
 export const MAX_NDJSON_BUFFER = 256 * 1024;
@@ -23,6 +24,7 @@ export interface StreamingContext {
   readonly nonce: string;
   readonly injectedStyles: Set<string>;
   readonly injectedCss: Set<string>;
+  readonly dev: boolean;
   setDeferredReader(reader: Promise<void> | null): void;
   setDeferredGeneration(gen: number): void;
   updateInventory(inv: string): void;
@@ -158,7 +160,7 @@ async function continueDeferredRead(
         try {
           const parsed = JSON.parse(line);
           if (parsed.states) {
-            applyDeferredStates(parsed.states, requestPath, ctx);
+            applyDeferredStates(parsed.states as RouteStates, requestPath, ctx);
           } else if (parsed.error) {
             console.warn('[Router] Streaming state error:', parsed.error);
           }
@@ -173,7 +175,7 @@ async function continueDeferredRead(
       try {
         const parsed = JSON.parse(buffer);
         if (parsed.states) {
-          applyDeferredStates(parsed.states, requestPath, ctx);
+          applyDeferredStates(parsed.states as RouteStates, requestPath, ctx);
         } else if (parsed.error) {
           console.warn('[Router] Streaming state error:', parsed.error);
         }
@@ -190,17 +192,26 @@ async function continueDeferredRead(
 
 /**
  * Apply deferred per-component states from streaming Chunk 2.
- * States array is matched 1:1 to activeChain entries by position.
- * null entries are skipped (component keeps current state).
+ * Array states are matched 1:1 to activeChain entries by position. Object
+ * states may target index, `index:component`, component tag, or route path.
+ * null/undefined entries are skipped so components keep current state.
  */
 export function applyDeferredStates(
-  states: (Record<string, unknown> | null)[],
+  states: RouteStates,
   requestPath: string,
   ctx: StreamingContext,
 ): void {
   if (requestPath !== ctx.currentRequestPath) return; // Stale
-  for (let i = 0; i < states.length && i < ctx.activeChain.length; i++) {
-    const state = states[i];
+
+  if (ctx.dev) {
+    const unknown = outOfChainStateKeys(states, ctx.activeChain);
+    if (unknown.length > 0) {
+      console.warn(`[Router Dev] Ignoring route-state entries outside the active chain: ${unknown.join(', ')}`);
+    }
+  }
+
+  for (let i = 0; i < ctx.activeChain.length; i++) {
+    const state = stateForRouteEntry(states, ctx.activeChain, i);
     if (!hasState(state)) continue;
     const entry = ctx.activeChain[i];
     if (!entry.el || !entry.component) continue;

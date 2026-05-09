@@ -10,6 +10,13 @@
  * Register templates + inject CSS from a server response.
  * Shared by fetchPartial and fetchComponentTemplates.
  */
+function ensureTemplateRegistry(): void {
+  const meta = window.__webui ?? (window.__webui = {});
+  if (!meta.templates) {
+    meta.templates = {};
+  }
+}
+
 export function registerTemplatesAndStyles(
   data: {
     templates?: string[];
@@ -58,12 +65,13 @@ export function registerTemplatesAndStyles(
     }
   }
 
-  // 2. Template registration: execute JS IIFEs / insert DOM templates.
+  // 2. Template registration: execute JS assignments / insert DOM templates.
   //    TRUST BOUNDARY: template scripts come from the same-origin server
   //    that compiled the protocol. The CSP nonce gates script execution.
   //    If the server endpoint is compromised, this is an XSS vector —
   //    same risk as the existing fetchPartial pipeline.
   if (data.templates) {
+    ensureTemplateRegistry();
     let scriptBody = '';
     for (const tmpl of data.templates) {
       if (tmpl.startsWith('<')) {

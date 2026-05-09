@@ -52,9 +52,11 @@ interface PlaygroundData {
  */
 function loadInitialFiles(): { files: FileEntry[]; entry: string } {
   const w = window as unknown as {
-    __webui?: { state?: { files?: FileEntry[]; entry?: string } };
+    __webui?: {
+      chain?: Array<{ state?: { files?: FileEntry[]; entry?: string } }>;
+    };
   };
-  const top = w.__webui?.state;
+  const top = w.__webui?.chain?.[0]?.state;
   if (top && Array.isArray(top.files) && top.files.length > 0) {
     const entry =
       top.entry && top.files.some((f) => f.name === top.entry)

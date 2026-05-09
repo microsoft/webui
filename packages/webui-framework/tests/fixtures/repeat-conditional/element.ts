@@ -77,7 +77,13 @@ export class TestRepeatConditional extends WebUIElement {
       },
     ];
   }
+
+  clearItems(): void {
+    this.items = [];
+  }
+
+  onLinkBlur(): void {
+  }
 }
 
 TestRepeatConditional.define('test-repeat-conditional');
-

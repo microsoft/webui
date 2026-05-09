@@ -11,9 +11,48 @@ Uses the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navig
 1. **Server renders the full page** - the matched route chain is SSR'd with declarative shadow roots. The page is interactive before JavaScript loads.
 2. **Hydration completes** - WebUI Framework hydrates shell components.
 3. **Router starts** - reads the SSR chain and metadata from `window.__webui` (JSON bootstrap), then intercepts link clicks via the Navigation API. Falls back to DOM-based discovery for older servers.
-4. **Client-side navigation** - fetches a JSON partial from the server, which includes the matched route chain. The client diffs old vs new chain and mounts only the changed component. Parent components stay mounted.
+4. **Client-side navigation** - fetches a JSON partial from the server, which includes the matched route chain and route-scoped `states`. The client diffs old vs new chain and mounts only the changed component. Parent components stay mounted.
 
 No full page reloads. The shell stays in place. Only route content changes.
+
+## Route-Scoped State
+
+For vNext apps, partial responses should use `states` instead of broad top-level
+`state`:
+
+```json
+{
+  "chain": [
+    { "component": "app-shell", "path": "/" },
+    { "component": "user-detail", "path": "users/:id", "params": { "id": "42" } }
+  ],
+  "states": [
+    null,
+    { "id": "42", "name": "Ada Lovelace" }
+  ],
+  "templates": [],
+  "inventory": "ff",
+  "path": "/users/42"
+}
+```
+
+`null` preserves the existing parent component. `states` is the only supported
+state delivery channel — there is no legacy broad-state fallback.
+
+Object form is also accepted when a host prefers stable keys:
+
+```json
+{
+  "states": {
+    "1:user-detail": { "id": "42", "name": "Ada Lovelace" }
+  }
+}
+```
+
+Server data should describe only visible route entries. Client-owned ephemeral
+UI state such as scroll, focus, popovers, draft inputs, and keep-alive
+observables stays in the component. Do not build a global SPA store or return
+broad navigation snapshots.
 
 ## Installation
 
@@ -119,7 +158,7 @@ Preserve a component across navigations instead of destroying and recreating it:
 <route path="calendar" component="calendar-page" exact keep-alive />
 ```
 
-When the user navigates away from a `keep-alive` route and returns, the existing component is reused — its DOM and local state (scroll position, input values, timers) survive the round trip.
+When the user navigates away from a `keep-alive` route and returns, the existing component is reused - its DOM and local state (scroll position, input values, timers) survive the round trip. Non-keep-alive routes are destroyed and emptied on deactivation so hidden pages do not retain bindings and DOM references.
 
 **State is preserved by default.** The router only updates route param and query param attributes on reactivation — it does NOT call `setState()` with server data. This means your component's `@observable` properties, scroll position, form inputs, and any client-computed state all survive.
 
@@ -277,7 +316,7 @@ The error component receives `{ error, status, path }` as state. It can call `Ro
 
 | Need | Mechanism |
 |------|-----------|
-| **Server provides all state** (default) | No changes needed |
+| **Server provides visible route state** | `states` in the partial response |
 | **I fetch my own data** | `static loader()` on component class |
 | **Preserve local state** | `keep-alive` on route |
 | **Preserve DOM, refresh data** | `keep-alive` + `static loader()` |
@@ -393,6 +432,19 @@ Bound parameters from all nesting levels:
 console.log(Router.activeParams); // { id: "42" }
 ```
 
+### `Router.nonce`
+
+Read-only CSP nonce extracted from `<meta name="webui-nonce">` (or
+`window.__webui.nonce`) at startup. Useful when you need to attach the nonce
+to dynamically appended `<script>`/`<style>` tags so they pass the page CSP:
+
+```typescript
+const script = document.createElement('script');
+script.nonce = Router.nonce;
+script.textContent = '/* … */';
+document.head.appendChild(script);
+```
+
 ### `Router.destroy()`
 
 Tear down the router and remove event listeners.
@@ -494,11 +546,11 @@ X-WebUI-Inventory: <hex bitmask>
 
 The server should return:
 
-- **`Accept: application/x-ndjson`** → NDJSON streaming: Chunk 1 `{ templateStyles, templates, inventory, path, chain, cacheTags }`, Chunk 2 `{ states: [...] }` — or fall back to single JSON
-- **`Accept: application/json`** → JSON partial: `{ state, templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }` — `state` is added by the caller; `render_partial()` returns everything else
+- **`Accept: application/x-ndjson`** → NDJSON streaming: Chunk 1 `{ templateStyles, templates, inventory, path, chain, cacheTags }`, Chunk 2 `{ states: [...] }` - or fall back to single JSON
+- **`Accept: application/json`** → JSON partial: `{ states, templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }` - `states` is added by the caller; `render_partial()` returns everything else
 - **Otherwise** → Full SSR'd HTML page
 
-The `chain` field contains the matched route chain with `component`, `path`, `params`, `exact`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`. The `cacheTags` array contains resolved cache tags from the full chain. The optional `cacheControl` object can override `staleTime` per-response.
+The `chain` field contains the matched route chain with `component`, `path`, `params`, `exact`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`. `states` is index-aligned to that chain; `null` or a missing entry preserves the component's current state. `states` is the only supported state delivery channel — there is no legacy broad-state fallback. To broadcast a single shared app-state object to every entry (parity with the SSR bootstrap shape), emit `states: [shared, shared, ...]` — JSON serializes the duplicates once and the runtime carries N references to the same object. The `cacheTags` array contains resolved cache tags from the full chain. The optional `cacheControl` object can override `staleTime` per-response.
 
 See the [Routing guide](https://github.com/microsoft/webui/blob/main/docs/guide/concepts/routing.md) for complete server implementation examples.
 
@@ -530,13 +582,12 @@ On first load, the server emits a `window.__webui` script containing SSR metadat
 window.__webui = {
   chain: [/* matched route chain entries */],
   inventory: "04000400...",  // hex bitmask of loaded templates
-  nonce: "abc123",           // CSP nonce for injected scripts
-  css: ["/styles/main.css"], // already-injected stylesheets
-  styles: ["app-shell"],     // already-injected module styles
+  state: {/* optional non-empty SSR state */},
+  templates: {},
 };
 ```
 
-The router reads this at startup, eliminating DOM walking and URLPattern usage. Older servers that emit `<meta name="webui-inventory">` are still supported as a fallback.
+The router reads this at startup, eliminating route DOM walking and URLPattern usage. It seeds CSP nonce, stylesheet, and module-style dedupe Sets from existing DOM nodes instead of duplicating those strings in the JSON bootstrap. Older servers that emit `<meta name="webui-inventory">` are still supported as a fallback.
 
 ## Exports
 

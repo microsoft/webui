@@ -55,24 +55,46 @@ pub enum ServeResponse {
 
 /// Handle a server request with automatic route handling.
 ///
-/// For HTML requests: renders the full page with route-matched SSR.
-/// The handler emits a consolidated `window.__webui` script block
-/// containing state, chain, inventory, and template metadata.
+/// This is the single rendering entry point for both SSR and SPA navigation.
+/// The CLI dev server (`webui serve`) and custom Rust servers both call this.
 ///
-/// For JSON requests: returns a partial response with route-scoped state,
-/// needed templates, and inventory for the `webui-router` client.
+/// # Behavior
+///
+/// **HTML requests** (`accept_json: false`):
+/// Renders the full page with route-matched SSR. The handler emits a consolidated
+/// `window.__webui` script block containing state, chain, inventory, and templates.
+/// All components hydrate from `chain[0].state` on the client.
+///
+/// **JSON requests** (`accept_json: true`):
+/// Returns a partial response for `webui-router` client-side navigation:
+/// ```json
+/// {
+///   "chain": [
+///     { "component": "layout-shell", "path": "/" },
+///     { "component": "page-detail", "path": "items/:itemId", "params": {...}, "state": {...} }
+///   ],
+///   "templates": [...],
+///   "templateStyles": [...],
+///   "inventory": "<hex>",
+///   "path": "/items/1"
+/// }
+/// ```
+/// State is injected into the **leaf** (last) chain entry only. Parent layout
+/// components retain their state from initial SSR hydration. This minimizes
+/// `setState()` calls and avoids sending irrelevant state to layout components.
 ///
 /// # Arguments
 /// - `protocol` — The compiled WebUI protocol from [`build`](crate::build)
 /// - `handler` — The WebUI handler (with plugin configured)
-/// - `state` — The state JSON to render. For HTML requests, this should be
-///   the full app state. For JSON requests, the caller should provide
-///   route-scoped state (only what the target page component needs).
-/// - `request` — The incoming request details
+/// - `state` — The application state JSON. Route parameters are automatically
+///   extracted from the URL and merged into this object.
+/// - `entry` — The entry point HTML file name (e.g., `"index.html"`)
+/// - `request` — The incoming request details (path, accept header, inventory)
 ///
 /// # Route Parameters
-/// Route parameters (`:param` in route paths) are automatically extracted
-/// and injected into the state object.
+/// Route parameters (`:param` in route paths) are automatically extracted from
+/// the URL path by walking the route tree and injected into the state object.
+/// For example, `/items/1` with route `items/:itemId` adds `{"itemId": "1"}`.
 pub fn serve_request(
     protocol: &WebUIProtocol,
     handler: &WebUIHandler,
@@ -103,8 +125,18 @@ pub fn serve_request(
             &mut index,
         )
         .map_err(|e| format!("render_partial failed: {e}"))?;
+        // Inject state into every chain entry — each component's setState filters
+        // to its own @observable names, so extra keys are safely ignored.
+        // Parent layouts (e.g., nav shells with ?active bindings) need state from
+        // the API response to update their bindings after SPA navigation.
         if let Some(obj) = partial.as_object_mut() {
-            obj.insert("state".into(), data);
+            if let Some(serde_json::Value::Array(chain)) = obj.get_mut("chain") {
+                for entry in chain.iter_mut() {
+                    if let serde_json::Value::Object(m) = entry {
+                        m.insert("state".into(), data.clone());
+                    }
+                }
+            }
         }
         Ok(ServeResponse::Json(partial))
     } else {
@@ -171,8 +203,7 @@ mod tests {
             .components
             .entry("my-page".to_string())
             .or_default();
-        component.template =
-            "(function(){window.__webui.templates['my-page']={h:'<p>page</p>'};})();".to_string();
+        component.template = "window.__webui.templates['my-page']={h:'<p>page</p>'};".to_string();
         component.css = ".page{color:red}".to_string();
 
         let handler = WebUIHandler::new();
@@ -227,7 +258,7 @@ mod tests {
             .components
             .entry("my-page".to_string())
             .or_default();
-        comp.template = "(function(){})();".to_string();
+        comp.template = "window.__webui.templates['my-page']={h:''};".to_string();
         comp.css_href = "my-page.css".to_string();
         // No css content — Link strategy
 
@@ -279,8 +310,10 @@ mod tests {
             .components
             .entry("my-page".to_string())
             .or_default();
-        // Style strategy: CSS is inlined in the template IIFE
-        comp.template = "(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w['my-page']={h:'<style>.p{color:red}</style><p/>'};})();".to_string();
+        // Style strategy: CSS is inlined in the template assignment.
+        comp.template =
+            "window.__webui.templates['my-page']={h:'<style>.p{color:red}</style><p/>'};"
+                .to_string();
 
         let handler = WebUIHandler::new();
         let request = ServeRequest {

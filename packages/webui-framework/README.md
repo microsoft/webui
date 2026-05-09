@@ -8,7 +8,6 @@ This package is the browser-side runtime used by `webui build --plugin=webui`. I
 - `@observable`, `@attr`, and `@volatile` decorators
 - compiled template path mapping for direct DOM binding resolution
 - light DOM or shadow DOM rendering (`--dom=light|shadow` flag)
-- SSR state seeding from `window.__webui.state` (like Preact's props)
 
 If you are building WebUI apps in this repo, this is the component model used by examples like `examples/app/todo-webui`, `examples/app/commerce`, and `examples/app/contact-book-manager`.
 
@@ -208,7 +207,7 @@ Example from `examples/app/todo-webui`:
 </for>
 ```
 
-Root-level events (e.g. `@toggle-item="{onToggleItem(e)}"`) can be declared on the component's host element and are wired via `meta.re`.
+Root-level events (e.g. `@toggle-item="{onToggleItem(e)}"`) can be declared on the component template root and are wired directly via `meta.re`.
 
 ## Recommended Patterns
 
@@ -244,20 +243,26 @@ resource-constrained devices.
    and cached as a `DocumentFragment`.  Every subsequent instance uses
    `cloneNode(true)` — DOM cloning is significantly faster than HTML parsing.
 
-4. **Delegate events, don't multiply listeners.**
-   Event bindings use delegation: one listener per event type on the
-   component root, with handler names resolved from compiled paths.  200
-   items × 5 events = 1 delegated listener, not 1000 closures.
+4. **Delegate events where DOM semantics allow it.**
+   Safe bubbling element events share one listener per event type on the
+   component root, with handler names resolved from compiled paths.  Root
+   events and non-bubbling events attach directly.  This keeps `@click`,
+   `w-ref`, and `@observable` ergonomics unchanged while avoiding thousands
+   of duplicate listeners in large lists.
 
 5. **Single-pass hydration via path mapping.**
    SSR DOM is matched to compiled template bindings through
-   template-parallel traversal (`$resolveSSR`).  No marker comments, no
-   data attributes — just path-based node resolution.  The hydration walk
-   touches each DOM node exactly once.
+   template-parallel traversal (`$resolveSSR`).  Text, attribute, and event
+   targets need no marker comments or data attributes; structural repeat and
+   conditional comments act as anchors.  The hydration walk touches each DOM
+   node exactly once.
 
 6. **Keep the framework out of the GC's way.**
-   Fewer JS objects = fewer GC pauses.  Binding arrays are pre-built at
-   hydration time and reused across updates.  No per-update temporaries.
+    Fewer JS objects = fewer GC pauses.  Binding arrays are pre-built at
+    hydration time and reused across updates.  No per-update temporaries.
+    Destroyed components release compiled metadata, direct/delegated listeners,
+    refs, and binding arrays so removed route and conditional/repeat DOM can be
+    collected.
 
 ### Benchmark fixtures
 
@@ -285,7 +290,8 @@ When contributing to the runtime, avoid these patterns:
   pre-resolved at hydration time via compiled path mapping.
 - **Don't use recursion in hot paths.** Condition evaluation and DOM walks
   use iterative stacks.
-- **Don't create closures per binding.** Use delegation or shared handlers.
+- **Don't create closures per safe bubbling binding.** Use delegation or shared
+  handlers, and keep direct listeners for root or non-bubbling events.
 - **Don't re-parse template HTML.** Always clone from the cached fragment.
 
 ---
@@ -300,7 +306,7 @@ When contributing to the runtime, avoid these patterns:
 │                      │     │   (Rust/Go/C#/…)      │      │                      │
 │  HTML template       │     │                       │      │  SSR HTML (light or  │
 │  + expressions       │────▶│  TemplateMeta (JSON)  │────▶│  shadow DOM) +       │
-│  + @if / @for        │     │  + state data         │      │  __webui.state JSON  │
+│  + @if / @for        │     │  + state data         │      │  __webui.chain JSON  │
 │                      │     │                       │      │                      │
 │  Outputs:            │     │  Renders:             │      │  Hydrates:           │
 │  • TemplateMeta      │     │  • Full HTML page     │      │  • Path-based DOM    │
@@ -313,8 +319,8 @@ When contributing to the runtime, avoid these patterns:
 Angular all require a JavaScript runtime on the server.  This framework's SSR
 is driven by data (template metadata + state values), not code.  Any language
 that can read the compiled metadata and produce HTML can serve as the SSR
-backend.  No comment markers or data attributes are needed — the runtime
-resolves SSR DOM nodes via template-parallel path traversal.
+backend.  Text, attribute, and event targets are resolved via
+template-parallel path traversal instead of per-binding DOM markers.
 
 ### Build → Serve → Hydrate → Update
 
@@ -329,13 +335,13 @@ flowchart LR
     subgraph Serve ["Server (Any Language)"]
         M --> R[Route Handler]
         S[State Data] --> R
-        R --> HTML["Full SSR HTML<br/>(shadow or light DOM)<br/>+ TemplateMeta &lt;script&gt;<br/>+ __webui.state &lt;script&gt;"]
+        R --> HTML["Full SSR HTML<br/>(shadow or light DOM)<br/>+ TemplateMeta &lt;script&gt;<br/>+ __webui.chain &lt;script&gt;"]
     end
 
     subgraph Browser ["Browser"]
         HTML --> CE[Custom Element Upgrade]
         CE --> MT{$mount}
-        MT -- SSR DOM exists --> SSR["$applySSRState<br/>$hydrate (path-based)"]
+        MT -- SSR DOM exists --> SSR["$hydrateState<br/>$hydrate (path-based)"]
         MT -- No SSR DOM --> CL["$wire (from template)"]
         SSR --> BIND[Binding Arrays]
         CL --> BIND
@@ -347,7 +353,7 @@ flowchart LR
 
 ```mermaid
 graph TD
-    EL["element.ts (~850 lines)<br/><i>Orchestrator</i><br/>$mount, $wire, $hydrate,<br/>$resolveSSR, $applySSRState,<br/>$update, events, cleanup"]
+    EL["element.ts (~850 lines)<br/><i>Orchestrator</i><br/>$mount, $wire, $hydrate,<br/>$resolveSSR, $hydrateState,<br/>$update, events, cleanup"]
 
     DIFF["element/diff.ts (~130 lines)<br/><i>List Reconciliation</i><br/>keyed/sequential diffing<br/>for @for repeat blocks"]
 
@@ -377,11 +383,12 @@ graph TD
 ### SSR Hydration Path
 
 When the server renders a component, it emits HTML content (as a declarative
-shadow root or as light DOM children) along with a `window.__webui.state`
-JSON payload.  The browser parses this DOM before any JavaScript runs.
-When the component's JS loads and `connectedCallback` fires, the framework
-uses compiled template paths to resolve SSR DOM nodes without any marker
-comments or data attributes:
+shadow root or as light DOM children) along with a `window.__webui.chain`
+JSON payload (state lives at `chain[0].state` so it is freed together with
+the chain after initial hydration).  The browser parses this DOM before any
+JavaScript runs.  When the component's JS loads and `connectedCallback`
+fires, the framework uses compiled template paths to resolve SSR DOM nodes
+without per-binding marker comments or data attributes:
 
 ```mermaid
 sequenceDiagram
@@ -390,13 +397,13 @@ sequenceDiagram
     participant CE as Custom Element
     participant FW as Framework
 
-    Server->>Browser: HTML (shadow or light DOM)<br/>+ __webui.state JSON
+    Server->>Browser: HTML (shadow or light DOM)<br/>+ __webui.chain JSON
     Browser->>Browser: Parse HTML → DOM exists
     Browser->>CE: Custom element upgrade
     CE->>CE: attributeChangedCallback (pre-existing attrs)
     CE->>FW: connectedCallback() → $mount()
     FW->>FW: SSR DOM detected (shadow root or children exist)
-    FW->>FW: $applySSRState() — seed observables from __webui.state
+    FW->>FW: $hydrateState() — seed observables from chain[0].state
     FW->>FW: $hydrate() — template-parallel path resolution
     FW->>FW: $resolveSSR() — match SSR nodes via ordinal traversal
     FW->>FW: $wireEvents() + $wireRefs()
@@ -552,20 +559,21 @@ browser sees `42` in the DOM but the JavaScript property `this.count` is still
 `0` (the class default).  Without seeding, the first `$update()` would
 overwrite the SSR content with the wrong value.
 
-State seeding uses `window.__webui.state` — a JSON object emitted by the
-server handler as a `<script>` tag.  Like Preact's props, this delivers the
-same data used for SSR rendering to the client.  During `$mount()`,
-`$applySSRState()` writes matching keys directly to observable backing fields
-before any bindings are wired:
+State seeding reads `window.__webui.chain[0].state` — a single payload
+emitted in the consolidated bootstrap script.  Router apps populate this
+from the matched root route; non-router apps receive a state-only envelope.
+Either way, the chain (and embedded state) is freed after initial hydration
+so it cannot leak.  During `$mount()`, `$hydrateState()` writes matching
+keys directly to observable backing fields before any bindings are wired:
 
 ```mermaid
 flowchart LR
-    SCRIPT["&lt;script&gt;<br/>window.__webui.state = {<br/>  count: 42,<br/>  title: 'Hello'<br/>}"] --> APPLY["$applySSRState()"]
+    SCRIPT["&lt;script&gt;<br/>window.__webui.chain = [{<br/>  state: { count: 42, title: 'Hello' }<br/>}]"] --> APPLY["$hydrateState()"]
     APPLY --> SEED["Write to backing fields:<br/>this._count = 42<br/>this._title = 'Hello'"]
     SEED --> HYDRATE["$hydrate() — bindings match<br/>server-rendered DOM"]
 ```
 
-`$applySSRState()` only sets properties that exist in the component's
+`$hydrateState()` only sets properties that exist in the component's
 `@observable` set — unknown keys are ignored.  Writes go to the backing
 field (`_prop`) directly, avoiding reactive updates before bindings are wired.
 
@@ -611,8 +619,8 @@ are removed; new items are appended.
 On initial hydration, the repeat system walks existing SSR children and
 reconstructs collection instances by matching them against the compiled
 template via `$resolveSSR` path traversal.  State is already seeded from
-`window.__webui.state`, so repeat items reflect the server-rendered list
-without parsing marker comments.
+`window.__webui.chain[0].state`, so repeat items reflect the
+server-rendered list without parsing marker comments.
 
 ---
 
@@ -634,10 +642,9 @@ stylesheet specifier for a component.
 
 ## Path-Based Binding Resolution
 
-Unlike frameworks that use comment markers or data attributes to locate
-dynamic content, this framework uses **compiled template paths** — arrays of
-child-node indices that describe exactly where each binding lives in the DOM
-tree.
+Unlike frameworks that use marker comments or data attributes for every dynamic
+binding, this framework uses **compiled template paths** - arrays of child-node
+indices that describe exactly where each binding lives in the DOM tree.
 
 ### Client-created resolution (`$resolve`)
 
@@ -666,8 +673,9 @@ an element-ordinal or text-ordinal lookup:
 // For text nodes: same approach with text node ordinals.
 ```
 
-This template-parallel traversal eliminates the need for any marker comments,
-`data-*` attributes, or DOM annotations.  The SSR server emits clean HTML.
+This template-parallel traversal eliminates per-binding marker comments,
+`data-*` attributes, and DOM annotations. Structural repeat and conditional
+comments are retained only as runtime anchors.
 
 ---
 
@@ -679,7 +687,8 @@ This template-parallel traversal eliminates the need for any marker comments,
 | Reactive update | O(affected) | Per-path index skips unrelated bindings |
 | Conditional toggle | O(block size) | Create/destroy a block instance |
 | Repeat reconciliation | O(items) | Keyed map lookup or sequential scan |
-| Event wiring | O(events) | One-time during hydration |
+| Event wiring | O(events) | Delegated where safe, direct for root/non-bubbling events |
+| Teardown | O(instances) | Iterative cleanup releases listeners, refs, metadata, and bindings |
 
 ### What the framework does NOT do
 

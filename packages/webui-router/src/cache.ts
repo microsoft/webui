@@ -8,10 +8,48 @@
 
 import type { CacheConfig } from './types.js';
 
-/** JSON partial response from the server. */
+/** Per-route component state payload. */
+export type RouteState = Record<string, unknown>;
+
+/** State value for one route-chain entry. Null/undefined preserves current state. */
+export type RouteStateValue = RouteState | null | undefined;
+
+/**
+ * Route-scoped state payload keyed to the server-provided route chain.
+ *
+ * Array form is preferred: index `i` applies to `chain[i]`. Object form is
+ * accepted for hosts that prefer stable keys; supported keys are chain index
+ * (`"1"`), index + component (`"1:mail-thread-page"`), component tag, or route
+ * path. Object keys outside the active chain are ignored and can produce dev
+ * warnings.
+ */
+export type RouteStates = RouteStateValue[] | Record<string, RouteStateValue>;
+
+/**
+ * JSON partial response from the server for SPA navigation.
+ *
+ * ## State delivery
+ *
+ * State is delivered exclusively via the `states` channel — either as an
+ * array index-aligned with `chain`, or as an object keyed by chain index,
+ * `index:component`, component tag, or route path.
+ *
+ * Each chain entry's state is applied by `setState`, which picks only the
+ * @observable keys the component declares. To broadcast a single shared
+ * app-state object to every entry (parity with the SSR bootstrap shape),
+ * emit `states: [shared, shared, ...]` — JSON serializes the duplicates
+ * once, and the runtime carries N references to the same object.
+ *
+ * Priority: `entry.state` > `states[i]` > preserve current (no setState call).
+ */
 export interface PartialResponse {
-  /** Top-level application state (non-streaming responses). */
-  state?: Record<string, unknown>;
+  /**
+   * Per-entry route-scoped state delivered via `states` array or object.
+   * Array form is index-aligned with {@link chain}; object form may key by
+   * chain index, `index:component`, component tag, or route path.
+   * `null`/missing entries preserve the already-mounted component's state.
+   */
+  states?: RouteStates;
   /** Module CSS definitions to append before executing template scripts. */
   templateStyles?: string[];
   templates: string[];

@@ -304,6 +304,13 @@ importers:
         version: link:../../../packages/webui
 
   packages/webui:
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.3.5
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
     optionalDependencies:
       '@microsoft/webui-darwin-arm64':
         specifier: workspace:*
@@ -323,13 +330,6 @@ importers:
       '@microsoft/webui-win32-x64':
         specifier: workspace:*
         version: link:../webui-win32-x64
-    devDependencies:
-      '@types/node':
-        specifier: 'catalog:'
-        version: 25.3.5
-      typescript:
-        specifier: 'catalog:'
-        version: 5.9.3
 
   packages/webui-darwin-arm64: {}
 

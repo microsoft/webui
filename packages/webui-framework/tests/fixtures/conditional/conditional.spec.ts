@@ -17,6 +17,40 @@ test.describe('conditional fixture', () => {
     await expect(page.locator('test-conditional .details')).toHaveText('Details');
   });
 
+  test('removes direct event listeners when conditional content is removed', async ({ page }) => {
+    await page.addInitScript(() => {
+      const originalRemove = EventTarget.prototype.removeEventListener;
+      const counts = { blur: 0 };
+      EventTarget.prototype.removeEventListener = function patchedRemoveEventListener(
+        this: EventTarget,
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: boolean | EventListenerOptions,
+      ): void {
+        if (type === 'blur') counts.blur += 1;
+        return originalRemove.call(this, type, listener, options);
+      };
+      (window as unknown as Record<string, unknown>).__directRemovals = counts;
+    });
+
+    await page.goto('/conditional/fixture.html');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-conditional');
+      return el && (el as any).$ready === true;
+    });
+
+    await page.locator('test-conditional .toggle').click();
+    await expect(page.locator('test-conditional .direct')).toHaveCount(0);
+    const refCleared = await page.evaluate(() => {
+      const host = document.querySelector('test-conditional') as { directInput?: HTMLInputElement } | null;
+      return host?.directInput === undefined;
+    });
+    expect(refCleared).toBe(true);
+    await page.waitForFunction(() =>
+      ((window as unknown as Record<string, { blur: number }>).__directRemovals).blur >= 1,
+    );
+  });
+
   test('toggles the conditional body on click', async ({ page }) => {
     await page.locator('test-conditional .toggle').click();
     await expect(page.locator('test-conditional .details')).toHaveCount(0);

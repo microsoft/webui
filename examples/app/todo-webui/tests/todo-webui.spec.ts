@@ -177,13 +177,17 @@ test.describe('interactivity', () => {
       () => (document.querySelector('todo-app') as any)?.$ready === true,
     );
 
+    // Use the real keyboard simulator so the keydown event is fired with
+    // `composed: true` (as a real keystroke would be). Synthetic
+    // `new KeyboardEvent('keydown', { bubbles: true })` defaults to
+    // `composed: false`, which prevents the event from crossing the
+    // shadow-DOM boundary to the document-level delegated listener.
     await page.evaluate(() => {
       const app = document.querySelector('todo-app') as any;
       app.addInput.value = 'Press Enter todo';
-      app.addInput.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
-      );
+      app.addInput.focus();
     });
+    await page.keyboard.press('Enter');
 
     await expect(page.locator('todo-item[title="Press Enter todo"]')).toBeAttached();
   });

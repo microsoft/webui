@@ -629,7 +629,21 @@ pub unsafe extern "C" fn webui_render_partial(
             }
         };
         if let Some(obj) = result.as_object_mut() {
-            obj.insert("state".into(), state);
+            // Broadcast the same shared state object to every chain entry —
+            // each component picks only its own @observable keys. JSON
+            // serializes the duplicates once and the runtime carries N
+            // references to the same object, so memory cost is one pointer
+            // slot per entry.
+            let chain_len = obj
+                .get("chain")
+                .and_then(|c| c.as_array())
+                .map_or(1, std::vec::Vec::len);
+            let mut states = Vec::with_capacity(chain_len);
+            for _ in 0..chain_len.saturating_sub(1) {
+                states.push(state.clone());
+            }
+            states.push(state);
+            obj.insert("states".into(), serde_json::Value::Array(states));
         }
 
         match CString::new(result.to_string()) {

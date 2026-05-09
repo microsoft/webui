@@ -39,7 +39,7 @@ import {
 } from './route-element.js';
 
 import { NavigationCache } from './cache.js';
-import type { PartialResponse, RouteChainEntry } from './cache.js';
+import type { PartialResponse, RouteChainEntry, RouteStates } from './cache.js';
 import { registerTemplatesAndStyles, injectCssLinks, fetchComponentTemplates } from './templates.js';
 import { readStreamingPartial, applyDeferredStates } from './streaming.js';
 import type { StreamingContext } from './streaming.js';
@@ -48,10 +48,43 @@ import { PendingState, findPendingComponent, findErrorComponent } from './pendin
 import { setupPreloadListeners } from './preload.js';
 import { ensureComponentLoaded, resolveLoaders, LOADER_FAILED } from './loaders.js';
 import { buildChainFromSSR, findChangeLevel, findOrCreateRouteElement } from './chain.js';
+import { outOfChainStateKeys, stateForRouteEntry } from './route-state.js';
 
 export { parseQuery, filterQuery, WebUIRouteElement };
 
 const SSR_PRELOAD_SELECTOR = 'link[data-webui-ssr-preload]';
+
+type PartialData = PartialResponse & { inventory?: string; _deferredStates?: RouteStates };
+
+function collectInitialCss(target: Set<string>, css?: string[]): void {
+  if (css) {
+    for (let i = 0; i < css.length; i += 1) {
+      target.add(css[i]);
+    }
+  }
+
+  const links = document.querySelectorAll(
+    'link[rel="stylesheet"][href],link[data-webui-ssr-preload][href]',
+  );
+  for (let i = 0; i < links.length; i += 1) {
+    const href = links[i].getAttribute('href');
+    if (href) target.add(href);
+  }
+}
+
+function collectInitialStyles(target: Set<string>, styles?: string[]): void {
+  if (styles) {
+    for (let i = 0; i < styles.length; i += 1) {
+      target.add(styles[i]);
+    }
+  }
+
+  const styleTags = document.querySelectorAll('style[type="module"][specifier]');
+  for (let i = 0; i < styleTags.length; i += 1) {
+    const specifier = styleTags[i].getAttribute('specifier');
+    if (specifier) target.add(specifier);
+  }
+}
 
 export class WebUIRouter {
   private config: RouterConfig = {};
@@ -75,6 +108,7 @@ export class WebUIRouter {
   private pending = new PendingState();
   private excludePaths: string[] = [];
   private loadPromises = new Map<string, Promise<void>>();
+  private nonceValue = '';
   private ssrPreloadsCleared = false;
 
   /** The component tag of the currently active leaf route. */
@@ -87,6 +121,11 @@ export class WebUIRouter {
   get activeParams(): Record<string, string> {
     const leaf = this.activeChain[this.activeChain.length - 1];
     return leaf?.params ?? {};
+  }
+
+  /** Resolved nonce extracted from `<meta name="webui-nonce">` at startup. */
+  get nonce(): string {
+    return this.nonceValue;
   }
 
   /** Start the router. Lazily registers the `<webui-route>` custom element. */
@@ -111,34 +150,18 @@ export class WebUIRouter {
       customElements.define(ROUTE_SELECTOR, WebUIRouteElement);
     }
 
-    // Normalize window.__webui — ensure it exists with sensible defaults.
-    // Serves as the single source of truth for SSR metadata.
-    if (!window.__webui) {
-      // Legacy server fallback: populate from meta tags / DOM scan
-      const inv = document.querySelector('meta[name="webui-inventory"]')?.getAttribute('content') ?? '';
-      const nonce = document.querySelector('meta[name="webui-nonce"]')?.getAttribute('content') ?? '';
-      const css: string[] = [];
-      for (const link of document.querySelectorAll('link[rel="stylesheet"][href]')) {
-        css.push(link.getAttribute('href')!);
-      }
-      const styles: string[] = [];
-      for (const style of document.querySelectorAll('style[type="module"][specifier]')) {
-        styles.push(style.getAttribute('specifier')!);
-      }
-      (window as any).__webui = { inventory: inv, nonce, css, styles, templates: {} };
-    }
+    // CSP nonce comes from `<meta name="webui-nonce">` — the SSR handler always
+    // emits it and `window.__webui` no longer carries it. This is the only
+    // source the runtime consults.
+    this.nonceValue =
+      document.querySelector('meta[name="webui-nonce"]')?.getAttribute('content') ?? '';
+
     const meta = window.__webui!;
-    // Ensure sub-fields exist
-    if (!meta.inventory) meta.inventory = '';
-    if (!meta.nonce) meta.nonce = '';
-    if (!meta.css) meta.css = [];
-    if (!meta.styles) meta.styles = [];
     if (!meta.templates) meta.templates = {};
 
-    // Build O(1) lookup Sets from the global arrays, then free the arrays —
-    // they were one-shot SSR data; the Sets are the live lookup structure.
-    for (const href of meta.css) this.cssSet.add(href);
-    for (const spec of meta.styles) this.stylesSet.add(spec);
+    // Build O(1) lookup Sets from the SSR bootstrap arrays, then free them.
+    collectInitialCss(this.cssSet, meta.css);
+    collectInitialStyles(this.stylesSet, meta.styles);
     delete meta.css;
     delete meta.styles;
 
@@ -231,7 +254,7 @@ export class WebUIRouter {
       const inv = window.__webui!.inventory!;
       const endpoint = this.config.templateEndpoint ?? '/_webui/templates';
       const fetchPromise = fetchComponentTemplates(
-        missing, inv, endpoint, window.__webui!.nonce!, this.stylesSet,
+        missing, inv, endpoint, this.nonceValue, this.stylesSet,
         (inv) => this.updateInventory(inv),
       ).finally(() => {
         for (const tag of missing) this.loadPromises.delete(tag);
@@ -282,6 +305,16 @@ export class WebUIRouter {
 
   // ── Core Navigation ─────────────────────────────────────────────
 
+  /**
+   * Execute a navigation to the given target.
+   *
+   * On the **first** call (SSR hydration): builds the route chain from the
+   * server-embedded `window.__webui.chain`, preloads lazy component modules,
+   * applies deferred states from the NDJSON stream, then frees the bootstrap data.
+   *
+   * On **subsequent** calls (SPA navigation): fetches a JSON partial from the
+   * server, processes templates/CSS, and delegates to {@link commitWithData}.
+   */
   private async handleNavigation(target: NavigationTarget, signal?: AbortSignal): Promise<void> {
     const { requestPath } = target;
     this.currentRequestPath = requestPath;
@@ -291,14 +324,20 @@ export class WebUIRouter {
       this.isInitialNavigation = false;
       const thisGen = ++this.navGeneration;
       this.activeChain = buildChainFromSSR();
-      // Chain was one-shot SSR data — free it now that we've hydrated
-      delete window.__webui!.chain;
 
+      // Preload lazy component modules BEFORE deleting the chain.
+      // Lazy components (loaded via `import()`) call `customElements.define()`
+      // which triggers upgrade → connectedCallback → $hydrateState() that
+      // reads chain[0].state. Chain must still exist at that point.
       await Promise.all(
         this.activeChain
           .filter(entry => entry.component)
           .map(entry => ensureComponentLoaded(entry.component, this.loaders, this.loaderPromises)),
       );
+
+      // All components have mounted and consumed chain[0].state — free it.
+      delete window.__webui!.chain;
+
       if (thisGen !== this.navGeneration) return;
 
       const ssrFresh = this.config.ssrFresh !== false;
@@ -316,10 +355,6 @@ export class WebUIRouter {
         }
       }
 
-      // SSR state was consumed by framework $applySSRState() during
-      // DOMContentLoaded — free it to reduce memory.
-      delete window.__webui!.state;
-
       if (this.config.dev) {
         this.validateRoutes();
       }
@@ -331,7 +366,7 @@ export class WebUIRouter {
       this.navCache.gc();
       const thisGen = ++this.navGeneration;
 
-      let partialData: (PartialResponse & { inventory?: string }) | null = null;
+      let partialData: PartialData | null = null;
       const cached = this.navCache.lookup(requestPath);
       if (cached) {
         partialData = cached;
@@ -400,7 +435,7 @@ export class WebUIRouter {
     requestPath: string,
     signal?: AbortSignal,
     speculative?: boolean,
-  ): Promise<(PartialResponse & { inventory?: string }) | null> {
+  ): Promise<PartialData | null> {
     const fullPath = prependBasePath(requestPath, this.basePath);
     const headers: Record<string, string> = { 'Accept': 'application/x-ndjson, application/json' };
     if (window.__webui!.inventory) headers['X-WebUI-Inventory'] = window.__webui!.inventory!;
@@ -420,13 +455,20 @@ export class WebUIRouter {
       return readStreamingPartial(resp, requestPath, this.streamingContext(), signal, speculative);
     }
 
-    const data = await resp.json() as PartialResponse & { inventory?: string };
+    const data = await resp.json() as PartialData;
     if (signal?.aborted) return null;
-    registerTemplatesAndStyles(data, window.__webui!.nonce!, this.stylesSet, (inv) => this.updateInventory(inv));
+    registerTemplatesAndStyles(data, this.nonceValue, this.stylesSet, (inv) => this.updateInventory(inv));
     injectCssLinks(data, this.cssSet);
     return data;
   }
 
+  /**
+   * Mount a fresh component inside a route element.
+   *
+   * Destroys any existing component, creates a new element via
+   * `document.createElement`, appends it, then applies params, query,
+   * and state via {@link applyParamsQueryState}.
+   */
   private mountComponent(
     routeEl: HTMLElement,
     componentTag: string,
@@ -445,6 +487,25 @@ export class WebUIRouter {
     applyParamsQueryState(component, routeEl, params, state, query);
   }
 
+  /** Destroy a route entry's component and clear its DOM slot. */
+  private destroyEntry(entry: RouteChainEntry): void {
+    if (!entry.el) return;
+    const existing = entry.compEl
+      ?? (entry.component ? entry.el.querySelector(entry.component) : null);
+    if (existing && typeof (existing as unknown as { $destroy?: () => void }).$destroy === 'function') {
+      (existing as unknown as { $destroy: () => void }).$destroy();
+    }
+    entry.el.textContent = '';
+    entry.compEl = undefined;
+  }
+
+  /**
+   * Apply state to a reused (same-component) chain entry.
+   *
+   * Resolution order: loader override > entry.state > params+query only.
+   * Keep-alive entries only receive state when a loader provides fresh data
+   * or when the entry carries explicit server state.
+   */
   private applyState(
     entry: RouteChainEntry,
     query?: Record<string, string>,
@@ -484,9 +545,10 @@ export class WebUIRouter {
       get navGeneration() { return self.navGeneration; },
       get currentRequestPath() { return self.currentRequestPath; },
       get activeChain() { return self.activeChain; },
-      get nonce() { return window.__webui!.nonce!; },
+      get nonce() { return self.nonceValue; },
       get injectedStyles() { return self.stylesSet; },
       get injectedCss() { return self.cssSet; },
+      get dev() { return !!self.config.dev; },
       setDeferredReader(r) { self.deferredReader = r; },
       setDeferredGeneration(g) { self.deferredGeneration = g; },
       updateInventory(inv) { self.updateInventory(inv); },
@@ -543,27 +605,61 @@ export class WebUIRouter {
 
   // ── Commit ─────────────────────────────────────────────────────
 
+  /**
+   * Commit a navigation by building the route chain from server data,
+   * then mounting/updating components in the DOM.
+   *
+   * ## State resolution priority (per chain entry)
+   *
+   * 1. `entry.state` — per-entry state from the server partial (production
+   *    servers may set any entry; preferred for nested-route state isolation)
+   * 2. `states[i]` — deferred route-scoped state from NDJSON chunk 2
+   * 3. `undefined` — preserve the component's current state (no setState call)
+   *
+   * To broadcast a single shared app-state object to every entry (parity with
+   * the SSR bootstrap shape), the server should emit `states: [shared, shared,
+   * ...]` — JSON serializes the duplicates once and the runtime carries N
+   * references to the same object.
+   *
+   * ## Chain diff algorithm
+   *
+   * Finds `changeLevel` (first index where old/new chains diverge):
+   * - Entries before `changeLevel`: reuse DOM elements, apply new state only
+   * - Entries at/after `changeLevel`: destroy old, mount new components
+   * - Keep-alive entries bypass destruction (preserved for re-navigation)
+   */
   private async commitWithData(
-    partialData: PartialResponse & { inventory?: string },
+    partialData: PartialData,
     requestPath: string,
     query: Record<string, string>,
     signal?: AbortSignal,
     generation?: number,
   ): Promise<void> {
-    const topState = partialData.state ?? null;
-    const newChain: RouteChainEntry[] = (partialData.chain ?? []).map(e => ({
-      component: e.component ?? '',
-      path: e.path ?? '',
-      params: e.params ?? {},
-      exact: e.exact,
-      allowedQuery: e.allowedQuery,
-      keepAlive: e.keepAlive,
-      pendingComponent: e.pendingComponent,
-      errorComponent: e.errorComponent,
-      invalidates: e.invalidates,
-      // Per-entry state (streaming Chunk 2) > top-level state (non-streaming) > null
-      state: e.state ?? topState,
-    }));
+    const sourceChain = partialData.chain ?? [];
+    if (this.config.dev) {
+      this.validatePartialState(partialData, sourceChain);
+    }
+
+    const len = sourceChain.length;
+    const states = partialData.states;
+    const newChain: RouteChainEntry[] = new Array<RouteChainEntry>(len);
+    for (let i = 0; i < len; i++) {
+      const e = sourceChain[i];
+      const scopedState = stateForRouteEntry(states, sourceChain, i);
+      newChain[i] = {
+        component: e.component ?? '',
+        path: e.path ?? '',
+        params: e.params ?? {},
+        exact: e.exact,
+        allowedQuery: e.allowedQuery,
+        keepAlive: e.keepAlive,
+        pendingComponent: e.pendingComponent,
+        errorComponent: e.errorComponent,
+        invalidates: e.invalidates,
+        // Per-entry state > route-scoped states > preserve current
+        state: e.state ?? scopedState,
+      };
+    }
 
     if (newChain.length === 0) {
       console.warn(`[Router] No route matched for path: ${requestPath}`);
@@ -598,10 +694,9 @@ export class WebUIRouter {
     const isQueryOnlyChange = changeLevel === newChain.length && newChain.length > 0;
 
     const commitNavigation = (): void => {
-      // Deactivate old chain from leaf up
+      // Deactivate old chain visually from leaf up (no destruction yet)
       for (let i = this.activeChain.length - 1; i >= changeLevel; i--) {
         if (this.activeChain[i].el) deactivateRoute(this.activeChain[i].el!);
-        this.activeChain[i].compEl = undefined; // Release component reference
       }
       for (let i = 0; i < changeLevel; i++) {
         newChain[i].el = this.activeChain[i].el;
@@ -624,6 +719,7 @@ export class WebUIRouter {
         const oldEntry = i < this.activeChain.length ? this.activeChain[i] : null;
         const parent = i > 0 ? newChain[i - 1] : null;
         if (oldEntry?.component === entry.component && oldEntry?.el) {
+          // Same component at same position — reuse element, apply new state
           entry.el = oldEntry.el;
           entry.compEl = oldEntry.compEl;
           setRouteMeta(entry.el, {
@@ -633,6 +729,14 @@ export class WebUIRouter {
           if (entry.component) this.applyState(entry, query, loaderStates);
           activateRoute(entry.el, entry.params);
           continue;
+        }
+        // Different component — destroy old entry before mounting new one
+        // (but skip if old entry is keep-alive so it can be restored later)
+        if (oldEntry) {
+          const isOldKeepAlive = oldEntry.keepAlive
+            || (oldEntry.el ? getRouteMeta(oldEntry.el)?.keepAlive : false)
+            || false;
+          if (!isOldKeepAlive) this.destroyEntry(oldEntry);
         }
         const routeEl = findOrCreateRouteElement(parent, entry);
         entry.el = routeEl;
@@ -662,6 +766,19 @@ export class WebUIRouter {
         }
         activateRoute(routeEl, entry.params);
       }
+      // Destroy old entries past new chain length (route shortened),
+      // but preserve keep-alive entries so they survive re-navigation.
+      for (let i = newChain.length; i < this.activeChain.length; i++) {
+        const old = this.activeChain[i];
+        const isOldKeepAlive = old.keepAlive
+          || (old.el ? getRouteMeta(old.el)?.keepAlive : false)
+          || false;
+        if (isOldKeepAlive) {
+          if (old.el) deactivateRoute(old.el);
+        } else {
+          this.destroyEntry(old);
+        }
+      }
       this.activeChain = newChain;
     };
 
@@ -670,6 +787,18 @@ export class WebUIRouter {
       await transition.updateCallbackDone;
     } else {
       commitNavigation();
+    }
+  }
+
+  private validatePartialState(
+    partialData: PartialData,
+    chain: readonly RouteChainEntry[],
+  ): void {
+    if (partialData.states) {
+      const unknown = outOfChainStateKeys(partialData.states, chain);
+      if (unknown.length > 0) {
+        console.warn(`[Router Dev] Ignoring route-state entries outside the matched chain: ${unknown.join(', ')}`);
+      }
     }
   }
 

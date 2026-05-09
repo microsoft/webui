@@ -6,10 +6,8 @@ declare global {
     __webui?: {
       chain?: unknown[];
       inventory?: string;
-      nonce?: string;
       css?: string[];
       styles?: string[];
-      state?: Record<string, unknown>;
       templates?: Record<string, unknown>;
     };
   }

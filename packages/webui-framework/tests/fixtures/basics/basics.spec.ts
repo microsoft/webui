@@ -146,16 +146,17 @@ test.describe('basics: @input and @keydown events', () => {
     });
   });
 
-  // TODO: @input/@keydown events compile correctly in the template but
-  // the event listener doesn't fire after SSR hydration. This may be a
-  // path resolution mismatch between the template h-string and the SSR
-  // shadow root DOM. Tracking for investigation.
+  // TODO: @input/@keydown events in light-DOM components don't update text
+  // bindings after SSR hydration. The shadow-DOM case is fixed (commerce
+  // search bar works), but this light-DOM fixture exposes a separate issue
+  // — likely the text binding observer not reacting to @observable changes.
+  // Tracking for investigation.
   test.fixme('@input fires on text entry', async ({ page }) => {
     await page.evaluate(() => {
       const host = document.querySelector('test-basics') as any;
       const input = host?.shadowRoot?.querySelector('.text-input') as HTMLInputElement;
       input.value = 'typed';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     });
     await expect(page.locator('test-basics .input-value')).toHaveText('typed');
   });
@@ -164,7 +165,7 @@ test.describe('basics: @input and @keydown events', () => {
     await page.evaluate(() => {
       const host = document.querySelector('test-basics') as any;
       const input = host?.shadowRoot?.querySelector('.text-input') as HTMLInputElement;
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, composed: true }));
     });
     await expect(page.locator('test-basics .last-key')).toHaveText('ArrowDown');
   });

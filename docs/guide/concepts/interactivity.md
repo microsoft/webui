@@ -173,6 +173,12 @@ Attach event handlers with `@event` syntax:
 </div>
 ```
 
+This authoring model stays the same regardless of how the runtime wires the
+listener. Safe bubbling element events such as `@click` and `@keydown` are
+delegated through one listener per component root and event type. Root events
+and non-bubbling events such as `@mouseenter`, `@mouseleave`, `@focus`, and
+`@blur` are attached directly so native DOM semantics are preserved.
+
 ### DOM References
 
 Use `w-ref` to get a direct reference to a DOM element:
@@ -189,6 +195,10 @@ focusInput(): void {
   this.inputEl.focus();
 }
 ```
+
+When a conditional or repeat block is removed, any direct listeners owned by
+that block are removed and matching `w-ref` properties are cleared. Component
+destroy performs the same cleanup for the root instance.
 
 ### Conditional Rendering
 
@@ -293,6 +303,18 @@ onColorChange(e: CustomEvent): void {
 ```
 
 This pattern keeps components decoupled - the child doesn't know who is listening, and the parent reacts declaratively.
+
+## Hydration and Teardown
+
+Hydration wires compiled template metadata to the SSR DOM without a virtual DOM
+or runtime template parsing. The runtime keeps direct references to text,
+attribute, event, and ref targets so updates patch only affected nodes.
+
+When a component is permanently removed, `WebUIElement` disposes nested
+conditional and repeat instances iteratively, removes delegated and direct event
+listeners, clears `w-ref` properties that still point at removed nodes, releases
+compiled metadata references, and drops binding arrays. `keep-alive` routes opt
+out of this teardown intentionally so their DOM and local UI state can be reused.
 
 ## Styling
 

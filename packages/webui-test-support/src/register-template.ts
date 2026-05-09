@@ -32,6 +32,5 @@ export function registerCompiledTemplate(
 
 /** Render a template registration as an inline `<script>` tag. */
 export function renderTemplateScript(name: string, meta: TemplateMeta): string {
-  return `<script>(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w[${JSON.stringify(name)}]=${JSON.stringify(meta)};})();</script>`;
+  return `<script>window.__webui=window.__webui||{};window.__webui.templates=window.__webui.templates||{};window.__webui.templates[${JSON.stringify(name)}]=${JSON.stringify(meta)};</script>`;
 }
-

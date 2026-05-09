@@ -1,6 +1,7 @@
 <div class="controls">
   <button class="load" @click="{loadItems()}">Load</button>
   <button class="switch" @click="{switchItems()}">Switch</button>
+  <button class="clear" @click="{clearItems()}">Clear</button>
 </div>
 <ul class="items">
   <for each="item in items">
@@ -9,7 +10,7 @@
         <p class="current" data-href="{{item.href}}">{{item.title}}</p>
       </if>
       <if condition="item.activeClass != 'active'">
-        <button class="link" data-href="{{item.href}}" ?disabled="{{item.disabled}}">{{item.title}}</button>
+        <button class="link" data-href="{{item.href}}" ?disabled="{{item.disabled}}" @blur="{onLinkBlur()}">{{item.title}}</button>
       </if>
     </li>
   </for>

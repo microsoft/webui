@@ -12,6 +12,14 @@ interface BenchResult {
   allPropsPerUpdate: number;
 }
 
+interface EventBenchResult {
+  itemCount: number;
+  eventsPerItem: number;
+  totalListeners: number;
+  createMs: number;
+  memDeltaKB: number;
+}
+
 test.describe('bench fixture', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/bench/fixture.html');
@@ -52,4 +60,43 @@ test.describe('bench fixture', () => {
     //
     // We don't assert this ratio yet — this test captures the baseline.
   });
+});
+
+test('delegates repeated click events through the component root', async ({ page }) => {
+  await page.addInitScript(() => {
+    const original = EventTarget.prototype.addEventListener;
+    const counts = { click: 0 };
+    EventTarget.prototype.addEventListener = function patchedAddEventListener(
+      this: EventTarget,
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | AddEventListenerOptions,
+    ): void {
+      if (type === 'click') counts.click += 1;
+      return original.call(this, type, listener, options);
+    };
+    (window as unknown as Record<string, unknown>).__listenerCounts = counts;
+  });
+
+  await page.goto('/bench/fixture.html');
+  await page.waitForSelector('test-bench-events');
+
+  const before = await page.evaluate(() =>
+    ((window as unknown as Record<string, { click: number }>).__listenerCounts).click,
+  );
+  await page.locator('test-bench-events .run-events').click();
+  await page.waitForFunction(
+    () => (window as unknown as Record<string, unknown>).__eventBenchResult != null,
+  );
+
+  const result = await page.evaluate(
+    () => (window as unknown as Record<string, unknown>).__eventBenchResult as EventBenchResult,
+  );
+  const after = await page.evaluate(() =>
+    ((window as unknown as Record<string, { click: number }>).__listenerCounts).click,
+  );
+
+  expect(result.itemCount).toBe(200);
+  expect(result.eventsPerItem).toBe(5);
+  expect(after - before).toBeLessThanOrEqual(1);
 });

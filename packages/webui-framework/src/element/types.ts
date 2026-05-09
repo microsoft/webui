@@ -70,6 +70,13 @@ export interface TemplateInstance {
   attrs: AttrBinding[];
   conds: CondBinding[];
   repeats: RepeatBinding[];
+  refs: RefBinding[];
+}
+
+/** Component property assigned from a `w-ref` element. */
+export interface RefBinding {
+  name: string;
+  node: Element;
 }
 
 /** Direct reference to a conditional block with anchor + nested compiled block. */
@@ -95,6 +102,10 @@ export interface RepeatBinding {
   instances: RepeatItemInstance[];
   rootTag: string | null;
   attrMap: Record<string, string>;
+  /** Cached first-attr path used as the diff key.  Pre-computed from
+   *  `attrMap` at binding-creation time to avoid `Object.values()`
+   *  allocation per syncRepeat call.  null/empty when items are unkeyed. */
+  keyPath: string | null;
   rootBindings: CompiledAttrMeta[];
   /** Set to true once the collection has been explicitly set by client code. */
   synced?: boolean;
@@ -120,4 +131,3 @@ export interface RepeatHost {
   $removeInstance(instance: TemplateInstance): void;
   $insertInstanceAfter(cursor: Node | null, container: ParentNode & Node, instance: TemplateInstance): Node | null;
 }
-

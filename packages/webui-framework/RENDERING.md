@@ -33,14 +33,14 @@ Parse templates   →     Render with state    →     Framework adopts
 Compile metadata        Inject SSR markers         existing DOM,
                         Emit Declarative           wires bindings,
                         Shadow DOM                 strips markers
-                        Emit __webui.state         O(affected) updates
+                        Emit __webui.chain         O(affected) updates
 ```
 
-1. **Server renders HTML.** The handler walks compiled template metadata and application state and emits Declarative Shadow DOM (or light DOM) with five comment markers around structural blocks, plus a `<script>` tag carrying `window.__webui.state` and the per-component template metadata.
+1. **Server renders HTML.** The handler walks compiled template metadata and application state and emits Declarative Shadow DOM (or light DOM) with five comment markers around structural blocks, plus a `<script>` tag carrying `window.__webui` (chain with embedded state) and the per-component template metadata.
 2. **Browser parses HTML.** The parser creates shadow roots inline. The user sees a fully painted page before any framework code runs.
 3. **JavaScript loads.** The component class registers via `customElements.define`. The browser upgrades pre-existing tags and fires `connectedCallback`.
 4. **`$mount` decides client-or-SSR.** If a shadow root exists or the element already has children, the framework treats the DOM as SSR. Otherwise it parses the static template HTML (`meta.h`) and clones it into the element.
-5. **`$applySSRState` seeds observables.** Backing fields (`_count`, `_title`, ...) are written directly from `window.__webui.state` so reactive bindings observe values that match the painted DOM.
+5. **`$hydrateState` seeds observables.** Backing fields (`_count`, `_title`, ...) are written directly from `window.__webui.chain[0].state` so reactive bindings observe values that match the painted DOM. The chain (and embedded state) is freed after initial hydration.
 6. **`$hydrate` walks the DOM once.** Text, attribute, conditional, repeat, and event bindings are resolved by a single in-order pass that uses path indices plus marker-aware ordinal traversal.
 7. **Stale markers are removed.** Item markers (`<!--wi-->`) and closing markers (`<!--/wc-->`, `<!--/wr-->`) are deleted; start markers (`<!--wc-->`, `<!--wr-->`) stay as anchors for runtime updates.
 8. **Path index is built lazily on the first reactive change.** Subsequent updates are O(affected bindings).
@@ -110,28 +110,25 @@ Notice that there are no markers on `<h1>`, `<button>`, or the text inside `<spa
 
 ## Compiled template metadata
 
-The compiler emits one `TemplateMeta` per component, delivered as a JS IIFE inside a `<script>` tag (or evaluated directly during SPA partial navigation):
+The compiler emits one `TemplateMeta` per component, delivered as a compact JS assignment inside a `<script>` tag (or evaluated directly during SPA partial navigation):
 
 ```javascript
-(function () {
-  var w = (window.__webui || (window.__webui = {})).templates || (window.__webui.templates = {});
-  w['todo-app'] = {
-    h:  '<div class="todo"><ul></ul></div>',
-    tx: [/* text binding runs */],
-    a:  [/* attribute bindings */],
-    ag: [/* attribute target groups */],
-    c:  [/* conditional blocks */],
-    cl: [/* conditional anchor slots */],
-    r:  [/* repeat blocks */],
-    rl: [/* repeat anchor slots */],
-    e:  [/* event bindings */],
-    el: [/* event target paths */],
-    b:  [/* nested block table */],
-    sa: 'todo-app',
-    sd: 0,
-    re: [/* root host events */],
-  };
-})();
+window.__webui.templates['todo-app'] = {
+  h:  '<div class="todo"><ul></ul></div>',
+  tx: [/* text binding runs */],
+  a:  [/* attribute bindings */],
+  ag: [/* attribute target groups */],
+  c:  [/* conditional blocks */],
+  cl: [/* conditional anchor slots */],
+  r:  [/* repeat blocks */],
+  rl: [/* repeat anchor slots */],
+  e:  [/* event bindings */],
+  el: [/* event target paths */],
+  b:  [/* nested block table */],
+  sa: 'todo-app',
+  sd: 0,
+  re: [/* root host events */],
+};
 ```
 
 | Field | Purpose |
@@ -208,9 +205,9 @@ This avoids quadratic behaviour when a block has dozens of bindings: without the
 
 When the server renders `<span>42</span>` for `@observable count = 0`, the JS class default is still `0`. If the framework called `$update()` immediately, it would overwrite `42` with `0`.
 
-`$applySSRState` runs **before** any binding is wired:
+`$hydrateState` runs **before** any binding is wired:
 
-1. Read `window.__webui.state` (a JSON object emitted by the handler as a `<script>`).
+1. Read `window.__webui.chain[0].state` (a JSON object emitted by the handler as a `<script>`; the chain is freed after initial hydration to release memory).
 2. Look up the component's `@observable` property names via the decorator registry.
 3. For each key in state that matches an observable name, write directly to the backing field: `this._count = 42`. **Not** through the setter, so no reactive update fires.
 
@@ -285,7 +282,7 @@ When the repeat root has no attribute bindings, items are matched by index. Exce
 
 ### SSR repeat reading
 
-On initial hydration, `$hydrate`'s repeat phase walks `<!--wi-->` markers to discover the rendered items, then runs `$hydrate` recursively on each item with a scope frame that introduces the item variable. State is already seeded from `window.__webui.state`, so item observables match the server-rendered DOM. The `<!--wi-->` markers are then collected for deletion.
+On initial hydration, `$hydrate`'s repeat phase walks `<!--wi-->` markers to discover the rendered items, then runs `$hydrate` recursively on each item with a scope frame that introduces the item variable. State is already seeded from `window.__webui.chain[0].state`, so item observables match the server-rendered DOM. The `<!--wi-->` markers are then collected for deletion.
 
 ---
 
@@ -425,7 +422,7 @@ Everything else is internal and may change without notice.
 - Performance: `performance.getEntriesByName('webui:hydrate:total', 'measure')` after `webui:hydration-complete`.
 - Per-component lifecycle: instrument `connectedCallback` / `disconnectedCallback` on a subclass.
 - Marker layout: View Source on the SSR HTML. The five comment markers should be balanced; mismatched pairs almost always indicate a handler-plugin bug.
-- "Template metadata not found": the `<script>` tag carrying the IIFE is missing from the page. Check the build output.
+- "Template metadata not found": the `<script>` tag carrying the template assignment is missing from the page. Check the build output.
 - A binding that does not update: confirm the property is `@observable` (not just a class field) and the path appears in the template. Check `$pathIndex` after the first update if you can attach a debugger.
 
 ---

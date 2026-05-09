@@ -19,7 +19,7 @@ export interface BuildOptions {
   entry?: string;
   /** CSS delivery strategy: "link" (default), "style", or "module". */
   css?: "link" | "style" | "module";
-  /** Parser plugin name. */
+  /** Parser plugin (e.g., "fast-v3" for FAST 3 hydration; "fast"/"fast-v2" are deprecated FAST 2 compatibility aliases). */
   plugin?: string;
   /** Additional component sources (npm packages or local paths). */
   components?: string[];
@@ -59,7 +59,7 @@ export interface RenderOptions {
   entry?: string;
   /** URL path to match routes against (default: "/"). */
   requestPath?: string;
-  /** Handler plugin name. */
+  /** Handler plugin name (e.g., "fast-v3" for FAST 3 hydration; "fast"/"fast-v2" are deprecated FAST 2 compatibility aliases). */
   plugin?: string;
 }
 
@@ -67,17 +67,26 @@ export interface RenderOptions {
 export interface ComponentTemplatesResponse {
   /** Module CSS `<style>` strings for the requested components. */
   templateStyles: string[];
-  /** Component template payload strings for the requested components. */
+  /** `<f-template>` HTML strings for the requested components. */
   templates: string[];
   /** Updated hex bitmask of loaded component templates. */
   inventory: string;
 }
 
 /** Complete JSON partial response from the server for client-side navigation. */
+export type RouteState = Record<string, unknown>;
+export type RouteStateValue = RouteState | null | undefined;
+export type RouteStates = RouteStateValue[] | Record<string, RouteStateValue>;
+
 export interface PartialResponse {
-  /** Application state for the matched route. */
-  state: Record<string, unknown>;
-  /** Component template payload strings the client doesn't already have. */
+  /**
+   * Route-scoped application state for matched chain entries — the only
+   * supported state delivery channel. Array form is index-aligned with
+   * `chain`; object form may target chain index, `index:component`, component
+   * tag, or route path. `null`/missing entries preserve the current state.
+   */
+  states?: RouteStates;
+  /** `<f-template>` HTML strings the client doesn't already have. */
   templates: string[];
   /** Updated hex bitmask of loaded component templates. */
   inventory: string;
@@ -89,6 +98,11 @@ export interface PartialResponse {
     path: string;
     params?: Record<string, string>;
     exact?: boolean;
+    allowedQuery?: string;
+    keepAlive?: boolean;
+    pendingComponent?: string;
+    errorComponent?: string;
+    invalidates?: string[];
   }>;
 }
 
@@ -270,8 +284,10 @@ export function inspect(protocolData: Buffer): string {
 /**
  * Produce a complete JSON partial response for client-side navigation.
  *
- * Returns a JSON string with `state`, `templates`, `inventory`, `path`, and `chain`.
- * Pipe directly to the HTTP response — no post-processing needed.
+ * Returns a JSON string with `templates`, `inventory`, `path`, and `chain`.
+ * State delivery for SPA navigation is handled by the higher-level
+ * `serve_request` (in webui-cli/serve), which injects per-route state into
+ * each chain entry before sending the response.
  *
  * If you need to inspect the response, parse it with the exported `PartialResponse` type:
  * ```ts

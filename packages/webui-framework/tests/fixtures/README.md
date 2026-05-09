@@ -23,7 +23,7 @@ The test server (`tests/server.ts`) uses `fixture-render.ts` to:
 
 1. **Discover** fixture dirs that have `src/index.html`
 2. **Build** each via `@microsoft/webui` `build()` → compiles templates to protocol
-3. **Render** via `render()` → produces SSR HTML with hydration markers, template IIFEs, and inventory
+3. **Render** via `render()` → produces SSR HTML with hydration markers, template registration scripts, and inventory
 4. **Inject** the `<script>` tag for the bundled `element.ts`
 5. **Serve** the result at `/<name>/fixture.html`
 
@@ -60,7 +60,7 @@ initial values. These are used for SSR rendering:
 ## Dynamic children pattern
 
 Components only created via `document.createElement()` (not in any template) won't
-have their template IIFEs included in the pipeline output because the handler only
+have their template registrations included in the pipeline output because the handler only
 emits templates for **reachable** components.
 
 **Fix:** Add the child to the page template inside a false `<if>` block:
@@ -73,7 +73,7 @@ emits templates for **reachable** components.
 ```
 
 With `state.json`: `{ "showChild": false }`. This makes the child reachable (so its
-template IIFE is emitted) without rendering it during SSR.
+template registration is emitted) without rendering it during SSR.
 
 ## Light-DOM fixtures
 

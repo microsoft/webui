@@ -40,7 +40,13 @@ declare global {
   interface Window {
     /** Consolidated SSR bootstrap object — single script block. */
     __webui?: {
-      state?: Record<string, unknown>;
+      /**
+       * Single state-delivery channel. Router apps populate one entry per
+       * matched route; non-router apps receive a single state-only envelope
+       * at index 0. The chain (and its embedded state) is freed after
+       * initial hydration to release memory.
+       */
+      chain?: Array<{ state?: Record<string, unknown>; [key: string]: unknown }>;
       templates?: Record<string, TemplateMeta>;
       [key: string]: unknown;
     };

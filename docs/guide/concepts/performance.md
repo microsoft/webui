@@ -21,6 +21,42 @@ Five architectural choices keep WebUI fast without any tuning:
 - **Protocol Buffers** - templates and the render protocol are serialized to a
   compact binary format (`protocol.bin`) that decodes static state significantly faster than
   JSON-based template representations, keeping only dynamic-time state in JSON.
+- **Route-scoped navigation state** - client navigation fetches only matched
+  route-chain state and missing templates. Hidden route state and already-loaded
+  templates stay out of the payload.
+
+### Client Performance Budgets
+
+Use these budgets as guardrails for routed apps:
+
+| Budget | Target |
+|--------|--------|
+| Route partial state | Only matched chain entries; use `states`, not broad `state` |
+| Template payload | Only templates absent from `X-WebUI-Inventory` |
+| Event listeners | One delegated listener per event type per component root where possible |
+| Startup bootstrap | No unrelated route state, unused route templates, or duplicated nonce/CSS/style metadata in `window.__webui` |
+| Template inventory | Send only templates missing from the client's inventory bitmask |
+| Memory after navigation | Non-keep-alive routes destroyed; keep-alive routes intentionally retained |
+
+### Routed App Payload Model
+
+Initial SSR emits a compact `window.__webui` bootstrap with the matched route
+chain, template inventory, optional non-empty state, and an empty template
+registry before compact template registrations run. CSP nonce, stylesheet links,
+SSR preload links, and module style tags already exist in the DOM, so the router
+seeds its dedupe Sets from those nodes instead of carrying duplicate arrays in
+JSON.
+
+Client navigation should keep the same budget:
+
+- Send `states` only for matched route-chain entries that need fresh server data.
+- Use `null` for parent entries whose client-owned UI state should survive.
+- Let `X-WebUI-Inventory` filter out templates the browser already has.
+- Avoid global stores and broad SPA snapshots in partial responses.
+
+Hydration and teardown follow the same memory rule. Removed conditional and
+repeat instances release their direct listeners and `w-ref` references, component
+destroy releases `$meta`, and non-keep-alive routes are emptied on deactivation.
 
 ## SSR Performance Showdown
 
@@ -83,6 +119,11 @@ Each layer of the architecture contributes to the overall performance profile:
   only the affected DOM nodes - not entire subtrees. This keeps hydration and
   reactive updates fast even in large documents.
 
+- **Partial route state.** On Navigation API transitions, the server returns the
+  matched route chain and state for the visible route entries only. Parent route
+  components keep their local UI state unless they receive a targeted state
+  entry.
+
 ## Light DOM vs Shadow DOM
 
 Shadow DOM provides style encapsulation but has a performance cost. Benchmark
@@ -140,6 +181,12 @@ consistent performance:
   character.
 - **No per-request template re-parsing** - load the compiled protocol once at
   startup and reuse it for every request.
+- **No broad navigation snapshots** - route partials should use `states` so a
+  thread navigation does not resend folder lists, settings, search results, or
+  other hidden state.
+- **No hidden route retention unless requested** - non-keep-alive routes should
+  be destroyed on deactivation. Use `keep-alive` only when preserving local UI
+  state is worth the memory.
 
 ## Running Benchmarks
 
@@ -166,6 +213,15 @@ ls target/criterion/report/index.html
 Each benchmark uses [Criterion.rs](https://github.com/bheisler/criterion.rs)
 for statistical rigor - results include confidence intervals, outlier
 detection, and comparison against previous runs.
+
+For client-side framework/router work, measure:
+
+- FCP and LCP for initial route loads.
+- Hydration duration from `webui:hydrate:total`.
+- JS heap and renderer RSS after hydration and after repeated navigations.
+- DOM node count and event listener count.
+- Route partial bytes, template bytes, and CSS/JS transfer bytes.
+- Interaction latency for common actions such as opening a detail route.
 
 ## Measuring Hydration Performance
 

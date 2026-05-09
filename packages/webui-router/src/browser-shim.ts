@@ -16,12 +16,17 @@ interface BrowserGlobals {
   document: {
     createElement(): Record<string, unknown>;
     querySelector(): null;
+    querySelectorAll(): never[];
+    addEventListener(): void;
+    removeEventListener(): void;
     body: { children: never[]; appendChild(): void };
     createDocumentFragment(): { appendChild(): void };
     startViewTransition: undefined;
-    head: { appendChild(): void };
+    head: { appendChild(): void; querySelectorAll(): never[] };
   };
   window: typeof globalThis;
+  CustomEvent: typeof Event;
+  dispatchEvent(event: Event): boolean;
   navigation: {
     addEventListener(): void;
     removeEventListener(): void;
@@ -50,14 +55,30 @@ if (typeof document === 'undefined') {
   g.document = {
     createElement: () => ({ setAttribute() {}, style: {} }),
     querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener() {},
+    removeEventListener() {},
     body: { children: [], appendChild() {} },
     createDocumentFragment: () => ({ appendChild() {} }),
     startViewTransition: undefined,
-    head: { appendChild() {} },
+    head: { appendChild() {}, querySelectorAll: () => [] },
   };
 }
 if (typeof window === 'undefined') {
   g.window = globalThis;
+}
+if (typeof CustomEvent === 'undefined') {
+  g.CustomEvent = class CustomEvent extends Event {
+    readonly detail: unknown;
+
+    constructor(type: string, init?: CustomEventInit) {
+      super(type, init);
+      this.detail = init?.detail;
+    }
+  };
+}
+if (typeof globalThis.dispatchEvent === 'undefined') {
+  g.dispatchEvent = () => true;
 }
 if (!g.navigation) {
   g.navigation = {

@@ -6,7 +6,7 @@
 //! # Overview
 //!
 //! Compiles HTML templates into structured metadata objects stored as raw
-//! JS IIFE strings in the protocol. During SSR the handler wraps them in
+//! JS assignment snippets in the protocol. During SSR the handler wraps them in
 //! a single `<script>` tag; during SPA navigation the router evaluates
 //! them directly. Each metadata object contains
 //! **marker-free static HTML** plus locator arrays for client-created DOM
@@ -58,7 +58,7 @@
 //! 3. **`register_component_template`** — caches the component's final template
 //!    HTML for later compilation (deduplicates by tag name).
 //! 4. **`take_component_templates`** — called after parsing is complete;
-//!    compiles each tracked component into a raw JS IIFE string.
+//!    compiles each tracked component into a raw JS assignment snippet.
 
 use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use crate::component_registry::Component;
@@ -79,7 +79,7 @@ struct TrackedComponent {
 /// WebUI Framework parser plugin.
 ///
 /// Intercepts `@event` attributes and component registrations during parsing,
-/// then compiles each component's HTML template into a metadata JS IIFE string.
+/// then compiles each component's HTML template into a metadata JS assignment string.
 ///
 /// # Event tracking
 ///
@@ -119,8 +119,8 @@ impl WebUIParserPlugin {
 
     /// Compile all tracked components and return `(tag_name, script_block)` pairs.
     ///
-    /// Each script block is a self-executing IIFE that registers a metadata
-    /// object into `window.__webui.templates[tagName]`. Call this after all
+    /// Each script block registers a metadata object into
+    /// `window.__webui.templates[tagName]`. Call this after all
     /// HTML parsing is complete.
     #[must_use]
     pub fn take_component_templates(&self) -> Vec<(String, String)> {
@@ -301,10 +301,10 @@ enum CompiledAttrPart {
     Dynamic(String),
 }
 
-/// Generate a compiled template as a raw JS IIFE string.
+/// Generate a compiled template as a raw JS assignment string.
 ///
-/// The output is a self-executing function that registers the component's
-/// metadata on `window.__webui.templates[tagName]`.  During SSR, the
+/// The output registers the component's metadata on
+/// `window.__webui.templates[tagName]`.  During SSR, the
 /// handler wraps one or more of these in a single `<script>` tag.  During
 /// SPA partial navigation, the router evaluates them directly.
 ///
@@ -313,8 +313,8 @@ enum CompiledAttrPart {
 /// 1. Extract `@event` bindings from the `<template>` wrapper (→ `root_events`).
 /// 2. Strip the `<template shadowrootmode="…">` wrapper if present.
 /// 3. Compile the inner body via [`compile_to_metadata`].
-/// 4. Serialize into a self-executing IIFE that registers the metadata
-///    on `window.__webui.templates[tagName]`.
+/// 4. Serialize into a compact assignment that registers the metadata on
+///    `window.__webui.templates[tagName]`.
 ///
 /// # Compilation rules
 ///
@@ -348,7 +348,7 @@ fn generate_compiled_template_with_root_source(
     let meta = compile_to_metadata(body, root_events);
 
     let mut out = String::with_capacity(512 + html_content.len());
-    out.push_str("(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w['");
+    out.push_str("window.__webui.templates['");
     out.push_str(tag_name);
     out.push_str("']={");
 
@@ -396,7 +396,7 @@ fn generate_compiled_template_with_root_source(
         out.push(']');
     }
 
-    out.push_str("};})();\n");
+    out.push_str("};\n");
     out
 }
 

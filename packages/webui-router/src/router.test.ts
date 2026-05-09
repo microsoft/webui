@@ -90,9 +90,6 @@ describe('WebUIRouter', () => {
     (globals() as any).__webui = {
       templates: {},
       inventory: '',
-      nonce: '',
-      css: [],
-      styles: [],
     };
   });
 
@@ -152,18 +149,124 @@ describe('WebUIRouter', () => {
     });
   });
 
+  describe('startup bootstrap payload', () => {
+    test('start reads nonce from <meta name="webui-nonce"> and CSS/styles from DOM', () => {
+      const origQuerySelector = (globalThis as any).document.querySelector;
+      const origQuerySelectorAll = (globalThis as any).document.querySelectorAll;
+
+      (globals() as any).__webui = {
+        templates: {},
+        inventory: '0f',
+        chain: [],
+      };
+
+      (globalThis as any).document.querySelector = (selector: string) => {
+        if (selector === 'meta[name="webui-nonce"]') {
+          return { getAttribute: (name: string) => name === 'content' ? 'test-nonce' : null };
+        }
+        return null;
+      };
+      (globalThis as any).document.querySelectorAll = (selector: string) => {
+        if (selector.includes('link[')) {
+          return [
+            { getAttribute: (name: string) => name === 'href' ? '/shell.css' : null },
+            { getAttribute: (name: string) => name === 'href' ? '/preloaded.css' : null },
+          ];
+        }
+        if (selector.includes('style[')) {
+          return [
+            { getAttribute: (name: string) => name === 'specifier' ? 'app-shell' : null },
+          ];
+        }
+        return [];
+      };
+
+      const router = new WebUIRouter();
+      try {
+        router.start();
+        const priv = router as any;
+
+        assert.equal(priv.nonce, 'test-nonce');
+        assert.equal(priv.cssSet.has('/shell.css'), true);
+        assert.equal(priv.cssSet.has('/preloaded.css'), true);
+        assert.equal(priv.stylesSet.has('app-shell'), true);
+        assert.equal(Object.prototype.hasOwnProperty.call(globals().__webui!, 'css'), false);
+        assert.equal(Object.prototype.hasOwnProperty.call(globals().__webui!, 'styles'), false);
+      } finally {
+        router.destroy();
+        (globalThis as any).document.querySelector = origQuerySelector;
+        (globalThis as any).document.querySelectorAll = origQuerySelectorAll;
+      }
+    });
+
+    // Regression: the SSR bootstrap (`window.__webui`) carries only chain,
+    // inventory, and templates — never a `nonce` field. The nonce lives in
+    // `<meta name="webui-nonce">` and is the only source the runtime reads.
+    // Without this, partial-navigation script registration is blocked by CSP.
+    test('start resolves nonce exclusively from <meta name="webui-nonce">', () => {
+      const origQuerySelector = (globalThis as any).document.querySelector;
+
+      (globals() as any).__webui = {
+        templates: {},
+        inventory: '0f',
+        chain: [],
+      };
+
+      (globalThis as any).document.querySelector = (selector: string) => {
+        if (selector === 'meta[name="webui-nonce"]') {
+          return { getAttribute: (name: string) => name === 'content' ? 'meta-nonce' : null };
+        }
+        return null;
+      };
+
+      const router = new WebUIRouter();
+      try {
+        router.start();
+        assert.equal((router as any).nonce, 'meta-nonce');
+      } finally {
+        router.destroy();
+        (globalThis as any).document.querySelector = origQuerySelector;
+      }
+    });
+
+    // When the meta tag is missing, the nonce defaults to the empty string.
+    // Test environments that lack a CSP header will see this; production
+    // SSR always emits the meta tag.
+    test('start defaults nonce to empty string when meta tag is absent', () => {
+      const origQuerySelector = (globalThis as any).document.querySelector;
+
+      (globals() as any).__webui = {
+        templates: {},
+        inventory: '0f',
+        chain: [],
+      };
+
+      (globalThis as any).document.querySelector = () => null;
+
+      const router = new WebUIRouter();
+      try {
+        router.start();
+        assert.equal((router as any).nonce, '');
+      } finally {
+        router.destroy();
+        (globalThis as any).document.querySelector = origQuerySelector;
+      }
+    });
+  });
+
   describe('template execution in fetchPartial', () => {
-    test('Function-based execution registers templates without DOM', () => {
+    test('Function-based execution registers compact template assignments without DOM', () => {
       // Simulate what fetchPartial does with the template script string
       const tmpl =
-        '<script>(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});' +
-        "w['test-comp']={h:\"<div>hello</div>\"};" +
-        '})();</script>';
+        '<script>' +
+        "window.__webui.templates['test-comp']={h:\"<div>hello</div>\"};" +
+        '</script>';
 
       const start = tmpl.indexOf('>') + 1;
       const end = tmpl.lastIndexOf('<');
       // eslint-disable-next-line no-new-func
       const run = Function(tmpl.substring(start, end));
+      globals().__webui!.templates = {};
       run();
 
       const registry = globals().__webui!.templates!;
@@ -204,8 +307,8 @@ describe('WebUIRouter', () => {
             '<style type="module" specifier="beta">.beta{color:blue}</style>',
           ],
           templates: [
-            '(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w["alpha"]={h:"<div>a</div>"};})();',
-            '(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w["beta"]={h:"<div>b</div>"};})();',
+            'window.__webui.templates["alpha"]={h:"<div>a</div>"};',
+            'window.__webui.templates["beta"]={h:"<div>b</div>"};',
           ],
           path: '/',
           chain: [],
@@ -244,8 +347,8 @@ describe('WebUIRouter', () => {
 
       try {
         const router = new WebUIRouter();
-        // Set nonce on the global (source of truth)
-        globals().__webui!.nonce = 'test-nonce';
+        // Seed the private startup nonce without running a full navigation.
+        (router as unknown as { nonceValue: string }).nonceValue = 'test-nonce';
         const fetchPartial = (router as any).fetchPartial.bind(router) as (
           path: string,
           signal?: AbortSignal,
@@ -256,10 +359,10 @@ describe('WebUIRouter', () => {
         assert.ok(result, 'should return partial data');
         // Styles must be appended BEFORE scripts
         assert.deepEqual(order, ['style:alpha', 'style:beta', 'script']);
-        // All JS IIFEs batched into one script tag
+        // All JS template assignments batched into one script tag
         assert.equal(scriptBodies.length, 1, 'all JS should be batched into one script tag');
-        assert.ok(scriptBodies[0].includes('w["alpha"]'), 'batch should include alpha IIFE');
-        assert.ok(scriptBodies[0].includes('w["beta"]'), 'batch should include beta IIFE');
+        assert.ok(scriptBodies[0].includes('templates["alpha"]'), 'batch should include alpha assignment');
+        assert.ok(scriptBodies[0].includes('templates["beta"]'), 'batch should include beta assignment');
         // CSP nonce preserved
         assert.deepEqual(scriptNonces, ['test-nonce'], 'batched script should carry the nonce');
         // Templates actually registered
@@ -287,7 +390,7 @@ describe('WebUIRouter', () => {
           state: {},
           templateStyles: [],
           templates: [
-            '(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w["link-comp"]={h:"<div/>"};})();',
+            'window.__webui.templates["link-comp"]={h:"<div/>"};',
           ],
           path: '/',
           chain: [],
@@ -370,7 +473,7 @@ describe('WebUIRouter', () => {
           json: async () => ({
             state: {},
             templates: [
-              '<script>(function(){window.__webui.templates["abort-test"]={h:"<div/>"};})()</script>',
+              'window.__webui.templates["abort-test"]={h:"<div/>"};',
             ],
             path: '/',
             chain: [],
@@ -946,6 +1049,70 @@ describe('WebUIRouter', () => {
   });
 
   describe('keep-alive state preservation', () => {
+    test('destroyEntry destroys and clears non-keep-alive components', () => {
+      const router = new WebUIRouter();
+      const priv = router as any;
+
+      let destroyed = false;
+      const mockCompEl = {
+        $destroy: () => { destroyed = true; },
+      };
+      const mockRouteEl = {
+        textContent: 'old content',
+        style: {} as Record<string, string>,
+        hasAttribute: () => false,
+        getAttribute: () => null,
+        removeAttribute() {},
+        querySelector: (sel: string) => sel === 'test-comp' ? mockCompEl : null,
+        firstElementChild: mockCompEl,
+      };
+
+      priv.destroyEntry({
+        component: 'test-comp',
+        path: '/',
+        params: {},
+        el: mockRouteEl,
+        compEl: mockCompEl,
+        keepAlive: false,
+      });
+
+      assert.equal(destroyed, true, 'component should be destroyed');
+      assert.equal(mockRouteEl.textContent, '', 'route DOM should be cleared');
+    });
+
+    test('destroyEntry still destroys keep-alive components when called explicitly', () => {
+      const router = new WebUIRouter();
+      const priv = router as any;
+
+      let destroyed = false;
+      const mockCompEl = {
+        $destroy: () => { destroyed = true; },
+      };
+      const mockRouteEl = {
+        textContent: 'keep me',
+        style: {} as Record<string, string>,
+        hasAttribute: (name: string) => name === 'keep-alive',
+        getAttribute: () => null,
+        removeAttribute() {},
+        querySelector: (sel: string) => sel === 'test-comp' ? mockCompEl : null,
+        firstElementChild: mockCompEl,
+      };
+
+      // destroyEntry is only called when we've decided to replace,
+      // so it unconditionally destroys regardless of keep-alive flag.
+      priv.destroyEntry({
+        component: 'test-comp',
+        path: '/',
+        params: {},
+        el: mockRouteEl,
+        compEl: mockCompEl,
+        keepAlive: true,
+      });
+
+      assert.equal(destroyed, true, 'destroyEntry should always destroy when called');
+      assert.equal(mockRouteEl.textContent, '', 'destroyEntry should always clear DOM');
+    });
+
     test('applyState skips setState for keep-alive with null state', () => {
       const router = new WebUIRouter();
       const priv = router as any;
@@ -1033,6 +1200,33 @@ describe('WebUIRouter', () => {
 
       priv.applyState(entry, {}, new Map());
       assert.deepEqual(setStateArg, { from: 'server' }, 'non-keep-alive should use per-entry state');
+    });
+  });
+
+  describe('route-scoped state diagnostics', () => {
+    test('warns when route-scoped state targets entries outside the chain', () => {
+      const router = new WebUIRouter();
+      const priv = router as any;
+      const origWarn = console.warn;
+      const warnings: string[] = [];
+      console.warn = (message: string) => { warnings.push(message); };
+
+      try {
+        priv.validatePartialState(
+          {
+            states: { 'thread-page': { id: '42' }, settings: { tab: 'mail' } },
+            templates: [],
+            path: '/',
+            chain: [],
+          },
+          [{ component: 'thread-page', path: 'email/:id', params: { id: '42' } }],
+        );
+      } finally {
+        console.warn = origWarn;
+      }
+
+      assert.equal(warnings.length, 1);
+      assert.ok(warnings[0].includes('settings'));
     });
   });
 

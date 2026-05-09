@@ -89,7 +89,7 @@ pub trait HandlerPlugin {
 
     /// Emit component templates collected during SSR.  The default emits
     /// each template as-is (suitable for FAST `<f-template>` tags).  The
-    /// WebUI plugin overrides this to wrap all raw JS IIFE templates in a
+    /// WebUI plugin overrides this to wrap all raw JS template snippets in a
     /// single `<script>` tag.
     fn emit_templates(
         &self,
@@ -103,7 +103,7 @@ pub trait HandlerPlugin {
 
     /// Return raw JS template source strings for the given components.
     ///
-    /// Plugins whose templates are executable JS (e.g. WebUI IIFEs) override
+    /// Plugins whose templates are executable JS (e.g. WebUI snippets) override
     /// this so `lib.rs` can embed them in the consolidated `window.__webui`
     /// script block — eliminating a separate `<script>` tag.  Returns `None`
     /// when templates are non-JS (e.g. HTML `<f-template>` tags).

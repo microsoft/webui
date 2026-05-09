@@ -878,8 +878,12 @@ fn walk_children_for_inventory_and_chain(
 ///
 /// Returns the matched route chain, templates, inventory, and cache tags.
 /// **State is not included** — the caller is responsible for adding
-/// application state to the response (e.g. as a top-level `"state"` field
-/// for non-streaming, or as NDJSON Chunk 2 for streaming).
+/// application state to the response. The runtime reads state from
+/// `chain[i].state` (per-entry) or `states[i]` (broadcast). To deliver a
+/// single shared app-state object to every entry (parity with the SSR
+/// bootstrap shape), emit `states: [shared, shared, ...]` — JSON serializes
+/// the duplicates once and the runtime carries N references to the same
+/// object.
 ///
 /// Returns a `serde_json::Value` object with fields:
 /// - `templateStyles`: module CSS definition tags for inventory-new components (empty for Link/Style)
@@ -1800,8 +1804,7 @@ mod tests {
             .components
             .entry("my-page".to_string())
             .or_default();
-        component.template =
-            "(function(){window.__webui.templates['my-page']={h:'<p>page</p>'};})();".to_string();
+        component.template = "window.__webui.templates['my-page']={h:'<p>page</p>'};".to_string();
         component.css = ".page{color:red}".to_string();
 
         let mut index = ProtocolIndex::new(&protocol);
@@ -1825,7 +1828,7 @@ mod tests {
             "module style should contain the CSS content"
         );
 
-        // templates should contain only the clean JS IIFE
+        // templates should contain only the clean JS assignment
         let templates = partial["templates"]
             .as_array()
             .expect("templates should be an array");
@@ -1838,15 +1841,15 @@ mod tests {
             templates[0]
                 .as_str()
                 .unwrap_or_default()
-                .starts_with("(function()"),
-            "template should be a raw JS IIFE"
+                .starts_with("window.__webui.templates"),
+            "template should be a raw JS assignment"
         );
     }
 
     #[test]
     fn test_render_partial_link_strategy_has_empty_template_styles() {
         // Link-strategy components have css_href but no css content.
-        // templateStyles should be empty; templates should contain the IIFE.
+        // templateStyles should be empty; templates should contain the JS assignment.
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -1866,7 +1869,7 @@ mod tests {
             .components
             .entry("my-page".to_string())
             .or_default();
-        component.template = "(function(){})();".to_string();
+        component.template = "window.__webui.templates['my-page']={h:''};".to_string();
         component.css_href = "my-page.css".to_string();
         // css is empty — Link strategy stores href, not content
 
@@ -1883,14 +1886,14 @@ mod tests {
             styles.is_empty(),
             "Link strategy should produce empty templateStyles: {styles:?}"
         );
-        assert_eq!(templates.len(), 1, "should include the template IIFE");
+        assert_eq!(templates.len(), 1, "should include the template assignment");
     }
 
     #[test]
     fn test_render_partial_style_strategy_has_empty_template_styles() {
         // Style-strategy components have CSS embedded in the template HTML
         // (as <style>...</style>), not in component.css.
-        // templateStyles should be empty; templates should contain the IIFE.
+        // templateStyles should be empty; templates should contain the JS assignment.
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -1912,7 +1915,7 @@ mod tests {
             .or_default();
         // Style strategy: CSS is inside the template HTML, not in component.css
         component.template =
-            "(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w['my-page']={h:'<style>.p{color:red}</style><p>page</p>'};})();"
+            "window.__webui.templates['my-page']={h:'<style>.p{color:red}</style><p>page</p>'};"
                 .to_string();
         // css is empty for Style strategy
 
@@ -1929,7 +1932,7 @@ mod tests {
             styles.is_empty(),
             "Style strategy should produce empty templateStyles: {styles:?}"
         );
-        assert_eq!(templates.len(), 1, "should include the template IIFE");
+        assert_eq!(templates.len(), 1, "should include the template assignment");
         assert!(
             templates[0]
                 .as_str()
@@ -1960,7 +1963,7 @@ mod tests {
             .components
             .entry("my-page".to_string())
             .or_default();
-        component.template = "(function(){})();".to_string();
+        component.template = "window.__webui.templates['my-page']={h:''};".to_string();
         // No CSS — simulates Link or Style mode
 
         let mut index = ProtocolIndex::new(&protocol);
@@ -1995,7 +1998,7 @@ mod tests {
             .components
             .entry("my-page".to_string())
             .or_default();
-        component.template = "(function(){})();".to_string();
+        component.template = "window.__webui.templates['my-page']={h:''};".to_string();
         component.css = ".page{color:red}".to_string();
 
         let mut index = ProtocolIndex::new(&protocol);
@@ -2083,7 +2086,7 @@ mod tests {
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
         for name in ["app-shell", "my-navbar", "page-about", "cart-panel"] {
             let comp = protocol.components.entry(name.to_string()).or_default();
-            comp.template = format!("(function(){{/* {name} */}})();");
+            comp.template = format!("window.__webui.templates['{name}']={{h:''}};");
             comp.css = format!(".{name}{{display:block}}");
         }
 
@@ -2215,7 +2218,8 @@ mod tests {
             .components
             .entry("settings-dialog".to_string())
             .or_default();
-        comp.template = "(function(){window.__webui.templates['settings-dialog']={h:'<div>Settings</div>'};})();".to_string();
+        comp.template =
+            "window.__webui.templates['settings-dialog']={h:'<div>Settings</div>'};".to_string();
         comp.css = ".dialog{position:fixed}".to_string();
 
         let index = ProtocolIndex::new(&protocol);
@@ -2247,7 +2251,7 @@ mod tests {
             .components
             .entry("my-dialog".to_string())
             .or_default();
-        comp.template = "(function(){})();".to_string();
+        comp.template = "window.__webui.templates['my-dialog']={h:''};".to_string();
         comp.css = ".d{color:red}".to_string();
 
         let index = ProtocolIndex::new(&protocol);
