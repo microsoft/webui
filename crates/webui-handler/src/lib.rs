@@ -617,9 +617,13 @@ impl WebUIHandler {
                 .map(|c| c.css.as_str())
                 .filter(|s| !s.is_empty())
             {
-                context
-                    .writer
-                    .write("<style type=\"module\" specifier=\"")?;
+                context.writer.write("<style type=\"module\"")?;
+                if let Some(ref nonce) = context.nonce {
+                    context.writer.write(" nonce=\"")?;
+                    context.writer.write(nonce)?;
+                    context.writer.write("\"")?;
+                }
+                context.writer.write(" specifier=\"")?;
                 context.writer.write(&component.fragment_id)?;
                 context.writer.write("\">")?;
                 context.writer.write(css)?;
@@ -944,9 +948,13 @@ impl WebUIHandler {
                         .map(|c| c.css.as_str())
                         .filter(|s| !s.is_empty())
                     {
-                        context
-                            .writer
-                            .write("<style type=\"module\" specifier=\"")?;
+                        context.writer.write("<style type=\"module\"")?;
+                        if let Some(ref nonce) = context.nonce {
+                            context.writer.write(" nonce=\"")?;
+                            context.writer.write(nonce)?;
+                            context.writer.write("\"")?;
+                        }
+                        context.writer.write(" specifier=\"")?;
                         context.writer.write(name)?;
                         context.writer.write("\">")?;
                         context.writer.write(css)?;
@@ -6680,6 +6688,150 @@ mod tests {
         assert!(
             html.contains("w['cart-panel']"),
             "rendered cart-panel template should be emitted: {html}"
+        );
+    }
+
+    // ── CSP nonce on <style type="module"> ───────────────────────────
+    //
+    // When `RenderOptions::with_nonce(...)` is set, every inline
+    // `<style type="module">` definition emitted during SSR must include
+    // `nonce="VALUE"` so strict CSP `style-src 'nonce-...'` policies allow
+    // it. The without-nonce case is already covered by other CSS module
+    // tests (e.g. `test_css_module_emitted_for_route_components`) — those
+    // assert the exact `<style type="module" specifier="...">` substring,
+    // which double-serves as a regression guard that no nonce attribute
+    // leaks in when none is configured.
+
+    #[test]
+    fn test_css_module_emits_nonce_attribute_when_nonce_set() {
+        // Per-component first-render path (`emit_css_module`).
+        let template = r#"<h1>Dashboard</h1>"#;
+
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::raw("</head><body>".to_string()),
+                    WebUIFragment::route("/", "dash-page"),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        fragments.insert(
+            "dash-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw(template.to_string())],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        let comp = protocol
+            .components
+            .entry("dash-page".to_string())
+            .or_default();
+        comp.css = "h1{font-size:2rem}".to_string();
+        comp.template = "(function(){})();".to_string();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/").with_nonce("test-nonce-123"),
+            &mut writer,
+        )
+        .unwrap();
+
+        let html = writer.get_content();
+
+        assert!(
+            html.contains(
+                r#"<style type="module" nonce="test-nonce-123" specifier="dash-page">h1{font-size:2rem}</style>"#
+            ),
+            "CSS module tag should include nonce attribute in canonical order: {html}"
+        );
+    }
+
+    #[test]
+    fn test_unrendered_css_module_emits_nonce_attribute_when_nonce_set() {
+        // Body-end emission path for reachable-but-unrendered components
+        // (the second site touched by the patch). Triggered via a false
+        // `<if>` block under hydration; requires the WebUI plugin so the
+        // body_end hook executes.
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::raw("</head><body><app-shell>".to_string()),
+                    WebUIFragment::component("app-shell"),
+                    WebUIFragment::raw("</app-shell>".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::if_cond(
+                    ConditionExpr::identifier("hasItems"),
+                    "cart-items",
+                )],
+            },
+        );
+        fragments.insert(
+            "cart-items".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("product-card")],
+            },
+        );
+        fragments.insert(
+            "product-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<div>Card</div>".to_string())],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        for name in ["app-shell", "product-card"] {
+            let comp = protocol.components.entry(name.to_string()).or_default();
+            comp.template = format!(
+                "(function(){{var w=(window.__webui||(window.__webui={{}})).templates||(window.__webui.templates={{}});w['{name}']={{h:'<div/>'}};}})();\n"
+            );
+            comp.css = format!(".{name}{{display:block}}");
+        }
+
+        // Render with hasItems=false so product-card is reachable but not
+        // rendered, forcing its CSS module emission through the body_end path.
+        let state = test_json!({ "hasItems": false });
+        let mut writer = TestWriter::new();
+
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/").with_nonce("test-nonce-123"),
+                &mut writer,
+            )
+            .unwrap();
+
+        let html = writer.get_content();
+
+        assert!(
+            html.contains(
+                r#"<style type="module" nonce="test-nonce-123" specifier="product-card">.product-card{display:block}</style>"#
+            ),
+            "Unrendered (body_end) CSS module tag should include nonce attribute in canonical order: {html}"
         );
     }
 

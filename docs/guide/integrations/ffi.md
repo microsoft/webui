@@ -136,7 +136,7 @@ Destroy a handler instance created by `webui_handler_create`. Passing `NULL` is 
 void webui_handler_set_nonce(void *handler_ptr, const char *nonce);
 ```
 
-Set the CSP nonce for inline `<script>` tags on a handler instance. When set, all subsequent renders will include `nonce="VALUE"` on inline script tags and emit a `<meta name="webui-nonce" content="VALUE">` tag in the `<head>`.
+Set the CSP nonce for inline tags on a handler instance. When set, all subsequent renders include `nonce="VALUE"` on both inline `<script>` tags and inline `<style type="module">` tags emitted during SSR, and emit a `<meta name="webui-nonce" content="VALUE">` tag in the `<head>`.
 
 - `handler_ptr`, pointer returned by `webui_handler_create`.
 - `nonce`, null-terminated UTF-8 string (typically a base64-encoded random value), or `NULL` to clear a previously set nonce.

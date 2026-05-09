@@ -471,9 +471,12 @@ mod tests {
         // mp-cart-panel is a non-route sibling inside mp-app whose FNV-1a hash
         // collides with mp-app (both map to bit 218). The inventory filter must
         // not drop it due to this collision. The style is emitted inline in the
-        // component's light DOM during SSR rendering.
+        // component's light DOM during SSR rendering. Asserting on the
+        // `specifier="..."` substring (rather than the full opening tag) keeps
+        // this check robust to additional attributes such as the CSP `nonce`
+        // that the commerce frontend injects via `RenderOptions::with_nonce`.
         assert!(
-            html.contains(r#"<style type="module" specifier="mp-cart-panel">"#),
+            html.contains(r#"specifier="mp-cart-panel""#),
             "mp-cart-panel module style should be present in SSR output for /about"
         );
     }
