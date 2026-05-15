@@ -1,30 +1,48 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Criterion writer-path benchmarks (commit 1: baseline-only).
+//! Benchmarks comparing buffered vs streaming render paths.
 //!
-//! Measures wall-clock render throughput for the two paths that exist
-//! on `origin/main`:
+//! Two benchmark groups against the real contact-book-manager protocol
+//! at three contact scales (10/100/1000):
 //!
-//! 1. **`string`**            — pre-allocated `String` buffer. The
-//!    baseline most hosts use today.
-//! 2. **`string+postinject`** — `string` followed by a case-insensitive
-//!    `</body>` byte-window scan + concat. Mirrors the legacy
-//!    dev-server livereload pipeline.
+//! ## `writer_paths` — total render throughput
 //!
-//! Subsequent commits in this branch will add a `streaming` row (once
-//! the StreamingWriter primitive lands) and a `streaming+inject(opts)`
-//! row (once the signal-based injection API lands). Compare with
-//! `cargo bench -p microsoft-webui --bench streaming_bench --
-//! --save-baseline NAME` and `--baseline NAME`.
+//! Compares four writer paths head-to-head, measuring **total** render
+//! time (producer + consumer drain). All paths produce byte-identical
+//! output; the only thing changing is how the bytes are delivered.
+//!
+//! 1. **String** — baseline. Pre-allocated `String` buffer.
+//! 2. **StreamingWriter** — bounded tokio mpsc, default capacity = 4 chunks.
+//! 3. **StreamingWriter + RenderOptions inject** — production path:
+//!    head/body inject HTML emitted by the handler at the structural
+//!    `head_end`/`body_end` signal boundaries. Zero scan cost.
+//! 4. **String + post-render inject** — mirrors the legacy
+//!    `lr.inject(&buf)` path the streaming work replaces.
+//!
+//! ## `ttfb` — time-to-first-byte
+//!
+//! Measures the latency from "render started" to "first chunk available
+//! to the consumer." This is the metric streaming was designed to
+//! improve. For each scenario, compares:
+//!
+//! * **buffered_ttfb** — String render: full render time (no chunks
+//!   until end).
+//! * **streaming_ttfb** — Streaming render: time until first 4 KB
+//!   chunk is available on the receiver.
+//!
+//! Run with: `cargo bench -p microsoft-webui --bench streaming_bench`
 
 #![allow(missing_docs)]
 
+use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde_json::{json, Value};
 use std::hint::black_box;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+use webui::streaming::StreamingWriter;
 use webui::{build, BuildOptions, CssStrategy, DomStrategy, ResponseWriter, WebUIHandler};
 use webui_handler::RenderOptions;
 use webui_protocol::WebUIProtocol;
@@ -35,8 +53,8 @@ const SAMPLE_SIZE: usize = 50;
 
 // Body inject script used by the `string+postinject` baseline path
 // (mirrors the dev-mode livereload script that the legacy `lr.inject`
-// post-render pipeline injects). Future commits replace this with
-// signal-based injection.
+// post-render pipeline injects). The signal-based alternative API
+// lands in the next commit (`with_head_inject` / `with_body_inject`).
 const BODY_INJECT: &str = r#"<script>(function(){var e=new EventSource('/__webui/livereload');e.addEventListener('reload',function(){location.reload()})})();</script>"#;
 
 // ── State generation ──────────────────────────────────────────────────
@@ -117,7 +135,7 @@ fn build_protocol() -> WebUIProtocol {
     .protocol
 }
 
-// ── Writers ───────────────────────────────────────────────────────────
+// ── Writers ────────────────────────────────────────────────────────────
 
 struct StringWriter {
     buf: String,
@@ -139,26 +157,19 @@ impl ResponseWriter for StringWriter {
     }
 }
 
-fn post_inject(html: &str, script: &str) -> String {
-    if let Some(idx) = html
-        .as_bytes()
-        .windows(7)
-        .position(|w| w.eq_ignore_ascii_case(b"</body>"))
-    {
-        let mut out = String::with_capacity(html.len() + script.len() + 2);
-        out.push_str(&html[..idx]);
-        out.push_str(script);
-        out.push_str(&html[idx..]);
-        out
-    } else {
-        let mut out = String::with_capacity(html.len() + script.len());
-        out.push_str(html);
-        out.push_str(script);
-        out
+/// Drain a tokio mpsc receiver synchronously, summing bytes received.
+/// Uses `try_recv` in a tight loop because the producer thread fills
+/// the channel before the bench iteration ends; no async runtime is
+/// involved in the measurement window.
+fn drain_total(mut rx: mpsc::Receiver<Bytes>) -> usize {
+    let mut total = 0;
+    while let Some(chunk) = rx.blocking_recv() {
+        total += chunk.len();
     }
+    total
 }
 
-// ── Bench ─────────────────────────────────────────────────────────────
+// ── writer_paths group: total render throughput ───────────────────────
 
 fn bench_writers(c: &mut Criterion) {
     let protocol = build_protocol();
@@ -167,26 +178,28 @@ fn bench_writers(c: &mut Criterion) {
         .map(|&n| (n, build_state(n)))
         .collect();
 
-    // Warm-up to compute output size for capacity hints.
-    let output_size = {
-        let h = WebUIHandler::new();
-        let mut w = StringWriter::with_capacity(128 * 1024);
-        h.handle(
-            &protocol,
-            &states[0].1,
-            &RenderOptions::new("index.html", "/"),
-            &mut w,
-        )
-        .expect("warmup");
-        w.buf.len()
-    };
+    // Measure output size per scenario (used for throughput).
+    let sizes: Vec<usize> = states
+        .iter()
+        .map(|(_, state)| {
+            let h = WebUIHandler::new();
+            let mut w = StringWriter::with_capacity(512 * 1024);
+            h.handle(
+                &protocol,
+                state,
+                &RenderOptions::new("index.html", "/"),
+                &mut w,
+            )
+            .unwrap();
+            w.buf.len()
+        })
+        .collect();
 
     let mut group = c.benchmark_group("writer_paths");
     group.measurement_time(MEASUREMENT_TIME);
     group.sample_size(SAMPLE_SIZE);
 
-    for (count, state) in &states {
-        let count = *count;
+    for ((count, state), &output_size) in states.iter().zip(sizes.iter()) {
         group.throughput(Throughput::Bytes(output_size as u64));
 
         // Path 1: String (baseline).
@@ -209,8 +222,37 @@ fn bench_writers(c: &mut Criterion) {
             },
         );
 
-        // Path 2: String + post-render injection (mirrors the legacy
-        // livereload `lr.inject(&buf)` pipeline).
+        // Path 2: StreamingWriter (bounded). Drain on the same thread
+        // by running the producer first (fills channel up to its
+        // capacity, then producer would block) — but with chunks
+        // sized to fit in the channel we don't block.
+        // To measure honestly without a separate thread, we use a
+        // capacity that holds the entire output (~16 chunks for 64 KB).
+        group.bench_with_input(
+            BenchmarkId::new(format!("streaming/{count}"), output_size),
+            state,
+            |b, state| {
+                let h = WebUIHandler::new();
+                let cap = (output_size / StreamingWriter::CHUNK_TARGET) + 4;
+                b.iter(|| {
+                    let (tx, rx) = mpsc::channel::<Bytes>(cap);
+                    let mut w = StreamingWriter::new(tx);
+                    h.handle(
+                        black_box(&protocol),
+                        black_box(state),
+                        &RenderOptions::new("index.html", "/"),
+                        &mut w,
+                    )
+                    .unwrap();
+                    ResponseWriter::end(&mut w).unwrap();
+                    drop(w);
+                    black_box(drain_total(rx));
+                });
+            },
+        );
+
+        // Path 3: String + post-render injection (mirrors the OLD
+        // livereload path the streaming work replaces).
         group.bench_with_input(
             BenchmarkId::new(format!("string+postinject/{count}"), output_size),
             state,
@@ -234,5 +276,112 @@ fn bench_writers(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_writers);
+/// Mirror of the legacy livereload injection: case-insensitive
+/// `</body>` byte-window scan, then concatenate into a new String.
+fn post_inject(html: &str, script: &str) -> String {
+    if let Some(idx) = html
+        .as_bytes()
+        .windows(7)
+        .position(|w| w.eq_ignore_ascii_case(b"</body>"))
+    {
+        let mut out = String::with_capacity(html.len() + script.len() + 2);
+        out.push_str(&html[..idx]);
+        out.push_str(script);
+        out.push_str(&html[idx..]);
+        out
+    } else {
+        let mut out = String::with_capacity(html.len() + script.len());
+        out.push_str(html);
+        out.push_str(script);
+        out
+    }
+}
+
+// ── ttfb group: time-to-first-byte (the streaming claim) ──────────────
+
+/// Spawn the render on a dedicated thread (mirroring the production
+/// `spawn_blocking` shape) and measure the time from "spawn" to "first
+/// chunk available on the receiver." This is what the user sees as
+/// "time to first byte" minus network latency.
+///
+/// Note: we deliberately drop the receiver after the first chunk to
+/// measure latency, which causes the producer to error out with
+/// `ClientDisconnected` on its next flush — that's the *correct*
+/// production behaviour (cancel the render). We swallow that error
+/// here because it's expected.
+fn streaming_ttfb(protocol: &WebUIProtocol, state: &Value) -> Duration {
+    let (tx, mut rx) = mpsc::channel::<Bytes>(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
+    let proto = protocol.clone();
+    let st = state.clone();
+    let start = Instant::now();
+    std::thread::spawn(move || {
+        let h = WebUIHandler::new();
+        let mut w = StreamingWriter::new(tx);
+        // Both calls may legitimately return Err(ClientDisconnected)
+        // when the bench drops the receiver after the first chunk —
+        // that's the production-correct cancellation path.
+        let _ = h.handle(&proto, &st, &RenderOptions::new("index.html", "/"), &mut w);
+        let _ = ResponseWriter::end(&mut w);
+    });
+    // Block until the first chunk arrives.
+    let _ = rx.blocking_recv();
+    start.elapsed()
+}
+
+/// Buffered baseline: the receiver only sees bytes when the entire
+/// render has completed and the result is handed off. This is what
+/// `pnpm start:server` did before streaming.
+fn buffered_ttfb(protocol: &WebUIProtocol, state: &Value) -> Duration {
+    let h = WebUIHandler::new();
+    let cap = 64 * 1024;
+    let start = Instant::now();
+    let mut w = StringWriter::with_capacity(cap);
+    h.handle(
+        protocol,
+        state,
+        &RenderOptions::new("index.html", "/"),
+        &mut w,
+    )
+    .unwrap();
+    // "First byte" is when the response is complete in the buffered
+    // model — there's nothing to send before that.
+    start.elapsed()
+}
+
+fn bench_ttfb(c: &mut Criterion) {
+    let protocol = build_protocol();
+    let states: Vec<(usize, Value)> = CONTACT_COUNTS
+        .iter()
+        .map(|&n| (n, build_state(n)))
+        .collect();
+
+    let mut group = c.benchmark_group("ttfb");
+    group.measurement_time(MEASUREMENT_TIME);
+    group.sample_size(SAMPLE_SIZE);
+
+    for (count, state) in &states {
+        group.bench_with_input(BenchmarkId::new("buffered", count), state, |b, state| {
+            b.iter_custom(|iters| {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
+                    total += buffered_ttfb(&protocol, state);
+                }
+                total
+            });
+        });
+
+        group.bench_with_input(BenchmarkId::new("streaming", count), state, |b, state| {
+            b.iter_custom(|iters| {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
+                    total += streaming_ttfb(&protocol, state);
+                }
+                total
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_writers, bench_ttfb);
 criterion_main!(benches);

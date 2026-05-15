@@ -8,29 +8,30 @@ change and compares.
 This document is the reference for what to run, when to run it, and
 how to compare results.
 
-> **This commit** is the first in a multi-commit pipeline that adds
-> the streaming SSR feature. At this commit, only the *baseline*
-> render paths exist: `string` (pre-allocated buffer) and
-> `string+postinject` (legacy buffer-then-byte-scan injection).
-> Subsequent commits add the `streaming` writer, the
-> `streaming+inject(opts)` signal-based injection, an end-to-end TTFB
-> bench, and the real-Chromium Playwright bench — all measurable
-> against the baselines captured here.
+> **This commit** adds the `StreamingWriter` / `ChunkPool` primitive
+> plus three new bench layers on top of the baseline-only benches
+> from the previous commit. The full bench matrix at this commit
+> covers `string` / `string+postinject` (legacy paths) and
+> `streaming` / `streaming POOLED` (the new primitive). The next
+> commit adds the signal-based per-render injection API and the
+> corresponding `streaming+inject(opts)` rows.
 
 ## Quick reference
 
 | Bench | Layer | Wall time | What it measures | Use when |
 |---|---|---|---|---|
-| `cargo xtask bench all` | criterion micro | ~5 min | per-fn wall-clock for parser, handler, protocol, expressions, state, webui | full snapshot of every micro-bench |
-| `cargo xtask bench streaming` | criterion micro | ~60 s | writer-path wall-clock (`string`, `string+postinject` at this commit) | inner-loop iteration on the rendering module |
+| `cargo xtask bench all` | criterion micro | ~5 min | per-fn wall-clock for parser, handler, protocol, expressions, state, webui (incl. streaming + contact-book) | full snapshot of every micro-bench |
+| `cargo xtask bench streaming` | criterion micro | ~60 s | writer-path wall-clock + first-chunk TTFB | inner-loop iteration on the streaming module |
 | `cargo xtask bench contact-book` | criterion micro | ~90 s | end-to-end render at 10/100/1000 contacts | inner-loop iteration on handler/state/expressions |
 | `cargo xtask bench streaming-resource` | example | ~30 s | exact alloc count + bytes + getrusage CPU + RSS | proving zero-alloc claims; allocation regression hunting |
-| `cargo xtask bench full` (= `streaming-all`) | suite | ~2 min | runs criterion writer-paths + resource bench in sequence | quick before/after snapshot |
+| `cargo xtask bench streaming-e2e-ttfb` | example | ~10 s | HTTP-level TTFB / TTLB through actix | confirming wire-level streaming win |
+| `cargo xtask bench streaming-browser` | Playwright | ~30 s | real Chromium TTFB / FCP / LCP / DCL / load | proving user-perceived paint improvement |
+| `cargo xtask bench full` (= `streaming-all`) | suite | ~3 min | runs all four streaming-related benches in sequence | full streaming evidence pack for a PR |
 
 ## The before/after workflow
 
 All benches support **named baselines**. The flag pattern is
-identical across criterion and example benches:
+identical across criterion, example, and Playwright benches:
 
 ```bash
 # 1. Snapshot current numbers as 'before'
@@ -44,7 +45,9 @@ cargo xtask bench full --baseline before
 
 Baselines are stored at `target/bench-baselines/`:
 
-* `resource-<name>.json`        — alloc + RSS + CPU table
+* `resource-<name>.json`            — alloc + RSS + CPU table
+* `e2e-ttfb-<name>.json`            — HTTP TTFB/TTLB table
+* `browser-<name>.json`             — browser metrics table
 * `target/criterion/<bench>/<name>` — criterion's native baseline
                                        directory tree
 
@@ -58,6 +61,8 @@ improvement; positive = regression.
 | criterion (well-isolated wall-clock) | < ±2% | > ±5% |
 | streaming-resource (alloc count) | exact — any change matters | any non-zero |
 | streaming-resource (bytes, CPU) | < ±2% | > ±5% |
+| streaming-e2e-ttfb (loopback) | < ±10% | > ±20% |
+| streaming-browser (real Chromium) | < ±5% | > ±15% |
 
 ## Anatomy of each bench
 
@@ -71,7 +76,7 @@ Standard criterion harnesses. Each crate has its own `benches/` dir:
 * `crates/webui-expressions/benches/expressions_bench.rs`
 * `crates/webui-state/benches/state_bench.rs`
 * `crates/webui/benches/contact_book_bench.rs` — end-to-end render
-* `crates/webui/benches/streaming_bench.rs` — writer-path wall-clock
+* `crates/webui/benches/streaming_bench.rs` — writer-path wall-clock + TTFB
 
 These integrate with criterion's HTML reports
 (`target/criterion/report/index.html`) and native baseline support
@@ -94,28 +99,47 @@ runs each render path 2000 times and prints a table with:
 * **sys µs/run** — `ru_stime` delta / iters.
 * **process RSS** — `ru_maxrss` high-water mark at phase end.
 
-The baseline support uses the same JSON snapshot format as the other
-non-criterion benches, so before/after deltas show up as a Δ%-table.
+Baseline support uses a JSON snapshot format compatible with
+`--save NAME` / `--compare NAME` (also wired into `cargo xtask bench
+streaming-resource --save-baseline NAME` / `--baseline NAME`).
 
-```bash
-cargo xtask bench streaming-resource --save-baseline before
-# … change …
-cargo xtask bench streaming-resource --baseline before
-```
+### `streaming-e2e-ttfb` (in-process actix)
 
-## Coming in later commits
+`crates/webui/examples/streaming_e2e_ttfb_bench.rs`
 
-* **`streaming` writer-path row** — once `StreamingWriter` lands, the
-  criterion `writer_paths` group and the resource bench gain a
-  streaming row that can be diffed against the `string` baseline
-  captured here.
-* **`streaming+inject(opts)` row** — once the structural signal-based
-  injection API lands, both benches gain a row measuring the new
-  inject path against the legacy `string+postinject` baseline.
-* **`streaming-e2e-ttfb`** — in-process actix server measuring real
-  HTTP TTFB / TTLB.
-* **`streaming-browser`** — Playwright in real Chromium measuring
-  TTFB / FCP / LCP / DCL / load.
+Boots a real actix-web server in a background thread, then makes
+HTTP GETs against `/buf` (buffered) and `/stream` (streaming)
+endpoints. Measures `responseStart - requestStart` (TTFB) and
+`responseEnd - requestStart` (TTLB) using a synthetic per-write
+delay (`?delay_us=`) to simulate slower-rendering pages. Reports
+median + p99 across N iterations per scenario.
 
-The full reference for those benches lands in the commit that
-introduces each one.
+### `streaming-browser` (Playwright in real Chromium)
+
+`examples/integration/streaming-browser-bench/`
+
+The most realistic bench: a Playwright suite that boots a small
+hand-built Rust server with `/buf` and `/stream` endpoints, then
+navigates a real Chromium tab to each and reports browser-perceived
+metrics from `PerformanceObserver`:
+
+* **TTFB** — `responseStart - requestStart`
+* **FCP** — first-contentful-paint
+* **LCP** — largest-contentful-paint
+* **DCL** — DOMContentLoaded
+* **load** — load event
+
+The server is intentionally hand-built (does not use the WebUI
+handler) so the bench isolates the streaming-vs-buffered question
+without confounding from handler implementation details. Baseline
+support via `WEBUI_BENCH_SAVE` / `WEBUI_BENCH_COMPARE` env vars,
+which `cargo xtask bench streaming-browser --save-baseline NAME` /
+`--baseline NAME` set automatically.
+
+## Coming in the next commit
+
+* **`streaming+inject(opts)` rows** — once the structural
+  signal-based injection API (`RenderOptions::with_head_inject` /
+  `with_body_inject`) lands, both the criterion bench and the
+  resource bench gain rows measuring the new inject path against
+  the legacy `string+postinject` baseline.

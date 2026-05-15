@@ -1,50 +1,60 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Memory + CPU benchmark for the SSR render paths (commit 1: baseline-only).
+//! Memory + CPU benchmark for the streaming render paths (commit 2:
+//! adds `streaming` and `streaming POOLED` rows on top of the
+//! `string` / `string+postinject` baselines from the previous commit).
 //!
-//! Measures **per-render resource usage** — allocations, bytes allocated,
-//! user CPU time, peak RSS — for the two render paths that exist on
-//! `origin/main`:
+//! Measures **per-render resource usage** for four writer paths:
 //!
-//! 1. `string`            — pre-allocated `String` buffer (the default
-//!    `ResponseWriter` pattern most hosts use today).
-//! 2. `string+postinject` — `string` followed by a case-insensitive
-//!    byte-window scan for `</body>` + concatenation into a fresh
-//!    `String`. Mirrors the legacy dev-server livereload pipeline
-//!    (`lr.inject(&buf)`) and matches what any host has to do to
-//!    splice a per-request `<script>` before `</body>` without a
-//!    structured injection API.
+//! 1. `string`            — pre-allocated `String` buffer (baseline).
+//! 2. `string+postinject` — String + `</body>` byte-window scan +
+//!    concat. Mirrors the legacy livereload path.
+//! 3. `streaming`         — bounded tokio mpsc-backed `StreamingWriter`,
+//!    coalesced ~4 KB chunks.
+//! 4. `streaming POOLED`  — streaming with shared `ChunkPool` for
+//!    chunk-buffer recycling across renders.
 //!
-//! Later commits in this branch add `streaming` and
-//! `streaming+inject(opts)` rows once the streaming primitive and the
-//! signal-based injection API land. The bench supports baseline save
-//! / compare so the BEFORE numbers captured here can be compared
-//! against the AFTER numbers from later commits:
+//! The next commit adds a `streaming+inject(opts)` row exercising the
+//! signal-based per-render HTML injection API.
+//!
+//! For each path × scale (10 / 100 / 1000 contacts) it reports:
+//!
+//! * **allocations**  — count of `alloc` calls (custom GlobalAlloc)
+//! * **bytes allocated** — total bytes requested
+//! * **CPU user time** — `getrusage(RUSAGE_SELF).ru_utime` delta
+//! * **peak RSS** — `ru_maxrss` high-water mark
+//!
+//! Unlike criterion (which only reports wall-clock), this gives a
+//! direct allocator-level view useful for verifying that the streaming
+//! writer's "zero per-write allocation" claim actually holds in the
+//! production path.
+//!
+//! Usage:
 //!
 //! ```sh
-//! # On this commit: save baseline
-//! cargo run --release --example streaming_resource_bench -p microsoft-webui -- --save before
-//! # Later commit: diff
-//! cargo run --release --example streaming_resource_bench -p microsoft-webui -- --compare before
+//! cargo run --release --example streaming_resource_bench -p microsoft-webui
 //! ```
-//!
-//! Baselines live at `target/bench-baselines/resource-<name>.json`.
 
 #![allow(missing_docs)]
-// SAFETY EXEMPTION: this is a benchmarking example, not library code.
-// The custom `GlobalAlloc` forwards to the system allocator with the
-// same layout it received; `libc::getrusage` is given a fully-zeroed,
-// stack-allocated `rusage` struct. The workspace `unsafe_code = "deny"`
-// lint applies to production library code; benchmarking infra is
-// exempted at the file level.
+// SAFETY EXEMPTION: This is a benchmark example, not library code.
+// `GlobalAlloc` and `libc::getrusage` require `unsafe` blocks; their
+// callers here have correct contracts (forwarding to System allocator
+// with original layouts; `rusage` is fully zero-initialised before the
+// FFI call). The workspace `unsafe_code = "deny"` lint applies to
+// production library code; benchmarking infrastructure is exempted at
+// the file level with this attribute.
 #![allow(unsafe_code)]
 
+use bytes::Bytes;
 use serde_json::{json, Value};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+use webui::streaming::{ChunkPool, StreamingWriter};
 use webui::{build, BuildOptions, CssStrategy, DomStrategy, ResponseWriter, WebUIHandler};
 use webui_handler::RenderOptions;
 use webui_protocol::WebUIProtocol;
@@ -77,6 +87,8 @@ unsafe impl GlobalAlloc for CountingAlloc {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // Realloc to a strictly larger size counts as one new allocation
+        // for the size delta — matches what most heap profilers do.
         if new_size > layout.size() {
             ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
             ALLOC_BYTES.fetch_add(new_size - layout.size(), Ordering::Relaxed);
@@ -102,6 +114,8 @@ fn alloc_snapshot() -> (usize, usize) {
 struct Rusage {
     user_cpu: Duration,
     sys_cpu: Duration,
+    /// Maximum resident set size, in bytes (macOS) or KB (Linux).
+    /// Normalised by `max_rss_bytes`.
     max_rss_raw: i64,
 }
 
@@ -168,7 +182,7 @@ struct PerIter {
     rss_bytes: i64,
 }
 
-// ── State + protocol ──────────────────────────────────────────────────
+// ── State + protocol setup ────────────────────────────────────────────
 
 const FIRST_NAMES: &[&str] = &[
     "Sarah", "Marcus", "Yuki", "Priya", "James", "Amara", "Luis", "Emma", "David", "Fatima",
@@ -246,12 +260,12 @@ fn build_protocol() -> WebUIProtocol {
     .protocol
 }
 
-// Body inject script used by `string+postinject` — mirrors the legacy
-// dev-mode livereload pipeline. Subsequent commits introduce a
-// signal-based alternative that this baseline can be compared against.
+// Body inject script used by the `string+postinject` baseline path.
+// Mirrors the dev-mode livereload script. The signal-based alternative
+// API (`with_head_inject` / `with_body_inject`) lands in the next commit.
 const BODY_INJECT: &str = r#"<script>(function(){var e=new EventSource('/__webui/livereload');e.addEventListener('reload',function(){location.reload()})})();</script>"#;
 
-// ── Writers + post-inject ─────────────────────────────────────────────
+// ── Writers ────────────────────────────────────────────────────────────
 
 struct StringWriter {
     buf: String,
@@ -273,10 +287,14 @@ impl ResponseWriter for StringWriter {
     }
 }
 
-/// Case-insensitive `</body>` byte-window scan + concat. Allocates one
-/// fresh `String` for the merged output. This is the cost of every
-/// per-request HTML inject when no structured injection API is
-/// available — the path origin/main hosts have to take today.
+fn drain_total(mut rx: mpsc::Receiver<Bytes>) -> usize {
+    let mut total = 0;
+    while let Some(chunk) = rx.blocking_recv() {
+        total += chunk.len();
+    }
+    total
+}
+
 fn post_inject(html: &str, script: &str) -> String {
     if let Some(idx) = html
         .as_bytes()
@@ -311,6 +329,51 @@ fn run_string(protocol: &WebUIProtocol, state: &Value, output_size: usize) -> us
     w.buf.len()
 }
 
+fn run_streaming(protocol: &WebUIProtocol, state: &Value, output_size: usize) -> usize {
+    let h = WebUIHandler::new();
+    let cap = (output_size / StreamingWriter::CHUNK_TARGET) + 4;
+    let (tx, rx) = mpsc::channel::<Bytes>(cap);
+    let mut w = StreamingWriter::new(tx);
+    h.handle(
+        protocol,
+        state,
+        &RenderOptions::new("index.html", "/"),
+        &mut w,
+    )
+    .expect("render");
+    ResponseWriter::end(&mut w).expect("end");
+    drop(w);
+    drain_total(rx)
+}
+
+/// Production composition with the lock-free shared chunk pool.
+/// `pool` is shared across all calls (lives for the whole bench run)
+/// to mirror the actual server's startup-time pool. The next commit
+/// adds an `+ inject` variant on top of this baseline.
+fn run_streaming_pooled(
+    protocol: &WebUIProtocol,
+    state: &Value,
+    output_size: usize,
+    pool: &Arc<ChunkPool>,
+) -> usize {
+    let h = WebUIHandler::new();
+    let cap = (output_size / StreamingWriter::CHUNK_TARGET) + 4;
+    let (tx, rx) = mpsc::channel::<Bytes>(cap);
+    let mut w = StreamingWriter::new_pooled(tx, Arc::clone(pool));
+    h.handle(
+        protocol,
+        state,
+        &RenderOptions::new("index.html", "/"),
+        &mut w,
+    )
+    .expect("render");
+    ResponseWriter::end(&mut w).expect("end");
+    drop(w);
+    // Drain consumes the Bytes — drops PooledChunk owners — releases
+    // chunk Vec back to the pool. This is exactly the actix lifecycle.
+    drain_total(rx)
+}
+
 fn run_string_postinject(protocol: &WebUIProtocol, state: &Value, output_size: usize) -> usize {
     let h = WebUIHandler::new();
     let mut w = StringWriter::with_capacity(output_size);
@@ -331,7 +394,8 @@ fn measure<F>(iters: usize, mut f: F) -> ResourceDelta
 where
     F: FnMut(),
 {
-    // Warm up: first runs are dominated by lazy initialisations.
+    // Warm up: first runs are dominated by lazy initialisations
+    // (formatter caches, allocator slabs, etc.).
     for _ in 0..3 {
         f();
     }
@@ -426,8 +490,9 @@ fn warmup_output_size(protocol: &WebUIProtocol, state: &Value) -> usize {
     w.buf.len()
 }
 
-// ── Snapshot save / compare ───────────────────────────────────────────
+// ── Snapshot serialization ────────────────────────────────────────────
 
+/// One row of the bench, in JSON-friendly form (no formatters).
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SnapshotRow {
     label: String,
@@ -448,131 +513,153 @@ struct Snapshot {
     rows: Vec<SnapshotRow>,
 }
 
-fn baseline_path(name: &str) -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let dir = manifest
+const SNAPSHOT_SCHEMA: u32 = 1;
+
+fn snapshot_path(name: &str) -> std::path::PathBuf {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest
         .join("..")
         .join("..")
         .join("target")
-        .join("bench-baselines");
-    std::fs::create_dir_all(&dir).expect("create bench-baselines dir");
-    dir.join(format!("resource-{name}.json"))
+        .join("bench-baselines")
+        .join(format!("resource-{name}.json"))
 }
 
 fn save_snapshot(name: &str, rows: &[SnapshotRow]) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let path = snapshot_path(name);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     let snap = Snapshot {
-        schema: 1,
+        schema: SNAPSHOT_SCHEMA,
         name: name.to_string(),
-        timestamp_unix: now,
-        rows: rows
-            .iter()
-            .map(|r| SnapshotRow {
-                label: r.label.clone(),
-                iters: r.iters,
-                allocs_per_run: r.allocs_per_run,
-                bytes_per_run: r.bytes_per_run,
-                user_cpu_us_per_run: r.user_cpu_us_per_run,
-                sys_cpu_us_per_run: r.sys_cpu_us_per_run,
-                wall_us_per_run: r.wall_us_per_run,
-                rss_high_water_bytes: r.rss_high_water_bytes,
-            })
-            .collect(),
+        timestamp_unix: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        rows: rows.iter().map(SnapshotRow::clone_data).collect(),
     };
-    let p = baseline_path(name);
-    let bytes = serde_json::to_vec_pretty(&snap).expect("serialize snapshot");
-    std::fs::write(&p, bytes).expect("write snapshot");
-    println!("\n✔ Baseline saved to {}", p.display());
+    let json = match serde_json::to_string_pretty(&snap) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("snapshot: serialize failed: {e}");
+            return;
+        }
+    };
+    if let Err(e) = std::fs::write(&path, json) {
+        eprintln!("snapshot: write {} failed: {e}", path.display());
+        return;
+    }
+    println!();
+    println!("✔ Baseline saved to {}", path.display());
 }
 
 fn load_snapshot(name: &str) -> Option<Snapshot> {
-    let p = baseline_path(name);
-    if !p.exists() {
-        eprintln!(
-            "\n⚠ baseline '{}' not found at {} — run with --save first",
-            name,
-            p.display()
-        );
-        return None;
+    let path = snapshot_path(name);
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(_) => {
+            eprintln!(
+                "compare: baseline '{name}' not found at {} — run with --save {name} first",
+                path.display()
+            );
+            return None;
+        }
+    };
+    match serde_json::from_slice::<Snapshot>(&bytes) {
+        Ok(s) if s.schema == SNAPSHOT_SCHEMA => Some(s),
+        Ok(s) => {
+            eprintln!(
+                "compare: baseline '{name}' has schema {} (expected {SNAPSHOT_SCHEMA}); regenerate with --save",
+                s.schema
+            );
+            None
+        }
+        Err(e) => {
+            eprintln!("compare: parse {} failed: {e}", path.display());
+            None
+        }
     }
-    let raw = std::fs::read(&p).ok()?;
-    serde_json::from_slice::<Snapshot>(&raw).ok()
+}
+
+impl SnapshotRow {
+    fn clone_data(&self) -> SnapshotRow {
+        SnapshotRow {
+            label: self.label.clone(),
+            iters: self.iters,
+            allocs_per_run: self.allocs_per_run,
+            bytes_per_run: self.bytes_per_run,
+            user_cpu_us_per_run: self.user_cpu_us_per_run,
+            sys_cpu_us_per_run: self.sys_cpu_us_per_run,
+            wall_us_per_run: self.wall_us_per_run,
+            rss_high_water_bytes: self.rss_high_water_bytes,
+        }
+    }
 }
 
 fn print_diff(current: &[SnapshotRow], baseline: &Snapshot) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let mins_old = now.saturating_sub(baseline.timestamp_unix) / 60;
-    let age_label = match mins_old {
-        0 => "<1m ago".to_string(),
-        1..=59 => format!("{mins_old}m ago"),
-        60..=1439 => format!("{}h ago", mins_old / 60),
-        _ => format!("{}d ago", mins_old / 1440),
-    };
+    println!();
     println!(
-        "\nDiff vs baseline '{}' (saved {})",
-        baseline.name, age_label
+        "Diff vs baseline '{}' (saved {} ago)",
+        baseline.name,
+        format_age(baseline.timestamp_unix)
     );
     println!(
         "| {:<42} | {:>14} | {:>14} | {:>14} |",
         "row", "allocs Δ%", "bytes Δ%", "user_cpu Δ%"
     );
     println!("|{:-<44}|{:->16}|{:->16}|{:->16}|", "", "", "", "");
-
-    let baseline_by_label: std::collections::HashMap<&str, &SnapshotRow> = baseline
-        .rows
-        .iter()
-        .map(|r| (r.label.as_str(), r))
-        .collect();
-
-    for row in current {
-        let label = row.label.as_str();
-        if let Some(base) = baseline_by_label.get(label) {
-            let pct = |old: f64, new: f64| -> String {
-                if old == 0.0 {
-                    "—".to_string()
-                } else {
-                    let d = (new - old) / old * 100.0;
-                    format!("{d:>13.1}%")
-                }
-            };
-            println!(
-                "| {:<42} | {:>14} | {:>14} | {:>14} |",
-                label,
-                pct(base.allocs_per_run, row.allocs_per_run),
-                pct(base.bytes_per_run, row.bytes_per_run),
-                pct(base.user_cpu_us_per_run, row.user_cpu_us_per_run),
-            );
-        } else {
-            println!(
-                "| {:<42} | {:>14} | {:>14} | {:>14} |",
-                label, "(new row)", "—", "—"
-            );
-        }
+    for cur in current {
+        let base = baseline.rows.iter().find(|b| b.label == cur.label);
+        let (a, b, c) = match base {
+            Some(base) => (
+                pct_change(base.allocs_per_run, cur.allocs_per_run),
+                pct_change(base.bytes_per_run, cur.bytes_per_run),
+                pct_change(base.user_cpu_us_per_run, cur.user_cpu_us_per_run),
+            ),
+            None => {
+                println!(
+                    "| {:<42} | {:>14} | {:>14} | {:>14} |",
+                    cur.label, "(new row)", "—", "—"
+                );
+                continue;
+            }
+        };
+        println!(
+            "| {:<42} | {:>13.1}% | {:>13.1}% | {:>13.1}% |",
+            cur.label, a, b, c
+        );
     }
-    println!("\nNegative Δ% = improvement; positive = regression. Threshold for action: ±5%.");
+    println!();
+    println!("Negative Δ% = improvement; positive = regression. Threshold for action: ±5%.");
+    println!();
 }
 
-fn delta_to_row(label: &str, delta: ResourceDelta) -> SnapshotRow {
-    let pi = delta.per_iter();
-    SnapshotRow {
-        label: label.to_string(),
-        iters: delta.iters,
-        allocs_per_run: pi.allocs,
-        bytes_per_run: pi.bytes,
-        user_cpu_us_per_run: pi.user_cpu_us,
-        sys_cpu_us_per_run: pi.sys_cpu_us,
-        wall_us_per_run: pi.wall_us,
-        rss_high_water_bytes: pi.rss_bytes,
+fn pct_change(base: f64, current: f64) -> f64 {
+    if base == 0.0 {
+        return 0.0;
+    }
+    ((current - base) / base) * 100.0
+}
+
+fn format_age(then_unix: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let secs = now.saturating_sub(then_unix);
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86400)
     }
 }
 
-// ── CLI args ──────────────────────────────────────────────────────────
+// ── CLI parsing ───────────────────────────────────────────────────────
 
 enum Mode {
     Print,
@@ -581,22 +668,21 @@ enum Mode {
 }
 
 fn parse_args() -> Mode {
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--save" => {
-                let name = args.next().unwrap_or_else(|| {
-                    eprintln!("--save requires a name");
+                return iter.next().map(Mode::Save).unwrap_or_else(|| {
+                    eprintln!("--save requires a baseline name");
                     std::process::exit(2);
                 });
-                return Mode::Save(name);
             }
             "--compare" => {
-                let name = args.next().unwrap_or_else(|| {
-                    eprintln!("--compare requires a name");
+                return iter.next().map(Mode::Compare).unwrap_or_else(|| {
+                    eprintln!("--compare requires a baseline name");
                     std::process::exit(2);
                 });
-                return Mode::Compare(name);
             }
             "--help" | "-h" => {
                 println!(
@@ -623,8 +709,8 @@ fn main() {
     let scales = [10usize, 100, 1000];
     let iters_per_scale = 2_000;
 
-    println!("WebUI SSR resource benchmark (commit 1: baseline paths only)");
-    println!("============================================================");
+    println!("WebUI streaming resource benchmark");
+    println!("==================================");
     println!(
         "Build: {} | iterations per row: {}",
         if cfg!(debug_assertions) {
@@ -642,11 +728,16 @@ fn main() {
 
     let protocol = build_protocol();
 
+    // One pool shared across the whole bench — this is exactly how the
+    // production server uses it (constructed at startup, lives forever).
+    let pool = Arc::new(ChunkPool::new(256, StreamingWriter::CHUNK_TARGET + 1024));
+
     let paths: &[(&str, fn(&WebUIProtocol, &Value, usize) -> usize)] = &[
         (
             "string",
             run_string as fn(&WebUIProtocol, &Value, usize) -> usize,
         ),
+        ("streaming", run_streaming),
         ("string+postinject", run_string_postinject),
     ];
 
@@ -663,6 +754,14 @@ fn main() {
             print_row(&format!("{row_label} ({output_size}B)"), delta);
             snapshot_rows.push(delta_to_row(&row_label, delta));
         }
+        // Pooled path measured separately because the closure needs to
+        // capture the shared pool (can't use a fn pointer).
+        let delta = measure(iters_per_scale, || {
+            std::hint::black_box(run_streaming_pooled(&protocol, &state, output_size, &pool));
+        });
+        let row_label = format!("streaming POOLED/{scale}");
+        print_row(&format!("{row_label} ({output_size}B)"), delta);
+        snapshot_rows.push(delta_to_row(&row_label, delta));
         println!(
             "|{:-<28}|{:->9}|{:->12}|{:->15}|{:->11}|{:->13}|{:->12}|{:->16}|",
             "", "", "", "", "", "", "", ""
@@ -684,5 +783,19 @@ fn main() {
                 print_diff(&snapshot_rows, &baseline);
             }
         }
+    }
+}
+
+fn delta_to_row(label: &str, delta: ResourceDelta) -> SnapshotRow {
+    let pi = delta.per_iter();
+    SnapshotRow {
+        label: label.to_string(),
+        iters: delta.iters,
+        allocs_per_run: pi.allocs,
+        bytes_per_run: pi.bytes,
+        user_cpu_us_per_run: pi.user_cpu_us,
+        sys_cpu_us_per_run: pi.sys_cpu_us,
+        wall_us_per_run: pi.wall_us,
+        rss_high_water_bytes: pi.rss_bytes,
     }
 }

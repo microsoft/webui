@@ -25,12 +25,16 @@ use crate::process::{self, ManagedChild, ReservedPort};
 use crate::util;
 
 /// Maximum time to wait for a server port to become ready.
-/// CI environments are slower; local servers should be up almost instantly.
+/// CI environments are slower, but local runs also need slack: when 8+
+/// `pnpm start:server` processes spawn concurrently, each runs `cargo run`,
+/// and even with prebuilt artifacts cargo briefly checks the workspace
+/// graph under a shared filesystem lock — easily exceeding the few seconds
+/// of actual server startup.
 fn port_timeout() -> Duration {
     if std::env::var_os("CI").is_some() {
         Duration::from_secs(60)
     } else {
-        Duration::from_secs(5)
+        Duration::from_secs(30)
     }
 }
 
@@ -185,6 +189,44 @@ pub fn run(args: &[String]) -> ExitCode {
         Err(msg) => {
             eprintln!(
                 "  {} workspace build failed",
+                console::style("✘").red().bold(),
+            );
+            eprintln!("    {msg}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    // Build native Rust artifacts that example servers and Node test fixtures
+    // load at runtime. Without this:
+    // - Framework e2e tests load a stale libwebui_node dylib and produce
+    //   mismatched SSR output (release profile, loaded by the Node addon).
+    // - Example `pnpm start:server` scripts compile webui-cli on the critical
+    //   path via `cargo run` and overflow the port-readiness timeout (debug
+    //   profile, used by `cargo run` defaults).
+    eprintln!(
+        "\n{} Building Rust runtime artifacts...",
+        console::style("▸").cyan().bold(),
+    );
+    match util::run_command_quiet(
+        "cargo",
+        &["build", "--release", "-p", "microsoft-webui-node"],
+        None,
+    ) {
+        Ok(()) => eprintln!("  {}", console::style("✔ webui-node (release)").green()),
+        Err(msg) => {
+            eprintln!(
+                "  {} webui-node release build failed",
+                console::style("✘").red().bold(),
+            );
+            eprintln!("    {msg}");
+            return ExitCode::FAILURE;
+        }
+    }
+    match util::run_command_quiet("cargo", &["build", "-p", "microsoft-webui-cli"], None) {
+        Ok(()) => eprintln!("  {}", console::style("✔ webui-cli (debug)").green()),
+        Err(msg) => {
+            eprintln!(
+                "  {} webui-cli debug build failed",
                 console::style("✘").red().bold(),
             );
             eprintln!("    {msg}");

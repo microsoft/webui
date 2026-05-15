@@ -24,12 +24,21 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.12" }
 microsoft-webui-discovery = { path = "../webui-discovery", version = "0.0.12" }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
+bytes = { workspace = true }
+tokio = { workspace = true }
+memchr = { workspace = true }
+crossbeam-queue = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+actix-web = { workspace = true }
+awc = { workspace = true }
+futures-util = { workspace = true }
 libc = { workspace = true }
 microsoft-webui-handler = { path = "../webui-handler", version = "0.0.12" }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.12" }
@@ -45,6 +54,10 @@ harness = false
 [[example]]
 name = "streaming_resource_bench"
 path = "examples/streaming_resource_bench.rs"
+
+[[example]]
+name = "streaming_e2e_ttfb_bench"
+path = "examples/streaming_e2e_ttfb_bench.rs"
 
 [lints]
 workspace = true

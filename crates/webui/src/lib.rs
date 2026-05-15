@@ -26,6 +26,7 @@
 
 mod error;
 pub mod server;
+pub mod streaming;
 
 pub use error::WebUIError;
 

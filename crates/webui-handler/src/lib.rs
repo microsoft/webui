@@ -55,6 +55,24 @@ pub enum HandlerError {
 
     #[error("Plugin data error: {0}")]
     PluginData(String),
+
+    /// The HTTP client disconnected before the render completed.
+    ///
+    /// Streaming `ResponseWriter` implementations return this from
+    /// `write()` once their channel/socket is closed, so the handler
+    /// can abort the render rather than do CPU work that has nowhere
+    /// to go. Allocation-free (the variant carries no payload).
+    #[error("client disconnected")]
+    ClientDisconnected,
+
+    /// The streaming writer's flush exceeded its configured deadline.
+    ///
+    /// Indicates a slow/unresponsive consumer (slow-loris client,
+    /// stuck proxy, etc.). The render thread is freed; downstream
+    /// telemetry should distinguish this from `ClientDisconnected`
+    /// so ops can alert on slow-client attacks.
+    #[error("streaming flush timed out")]
+    StreamTimeout,
 }
 
 pub type Result<T> = std::result::Result<T, HandlerError>;

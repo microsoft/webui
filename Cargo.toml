@@ -4,6 +4,7 @@ members = [
     "xtask",
     "examples/integration/rust",
     "examples/integration/ssr-performance-showdown",
+    "examples/integration/streaming-browser-bench/server",
     "examples/app/commerce/server",
     "examples/demo/server",
 ]
@@ -46,6 +47,10 @@ mime_guess = "2.0.5"
 html-escape = "0.2.13"
 async-stream = "0.3.6"
 futures-util = "0.3.31"
+tokio-stream = "0.1.18"
+bytes = "1.10.1"
+crossbeam-queue = "0.3.12"
+memchr = "2.8.0"
 notify = "8.2.0"
 notify-debouncer-mini = "0.7.0"
 percent-encoding = "2.3.2"

@@ -1,149 +1,95 @@
-# Contact Book Benchmark
+# `microsoft-webui` benches
 
-End-to-end performance benchmark for the WebUI framework, using the
-**contact-book-manager** example application as a realistic workload.
+Two criterion benches in this directory:
 
-## What it measures
+* **`contact_book_bench.rs`** — end-to-end render of the
+  contact-book-manager template at 10 / 100 / 1 000 contacts. Measures
+  protocol parsing and full-render wall-clock without/with the FAST 2.x
+  hydration plugin.
+* **`streaming_bench.rs`** — writer-path wall-clock comparison: `String`
+  baseline vs `StreamingWriter` vs `String + post-injection` (the
+  legacy livereload path that the next commit's signal-based
+  injection API replaces). Includes a separate `ttfb` group that
+  measures time-to-first-chunk for the streaming path.
 
-| Benchmark Group | What it does |
+Two **examples** (in `crates/webui/examples/`) round out the suite:
+
+* **`streaming_resource_bench.rs`** — exact allocation count, bytes
+  allocated, getrusage CPU time, and peak RSS via a custom
+  `GlobalAlloc`. The only bench in the workspace that gives exact
+  allocation numbers.
+* **`streaming_e2e_ttfb_bench.rs`** — HTTP-level TTFB through a real
+  actix-web server.
+
+A separate Playwright package handles browser-perceived metrics:
+
+* **`examples/integration/streaming-browser-bench/`** — TTFB / FCP /
+  LCP / DCL / load measured by Chromium via `PerformanceObserver`.
+
+For the cross-bench picture and recommended workflow, see
+[`BENCHMARKS.md`](../../../BENCHMARKS.md) at the repo root.
+
+## Quick reference
+
+| Command | What it does |
 |---|---|
-| **`contact_book_protocol_parse`** | Deserializes the compiled protocol binary (`WebUIProtocol::from_protobuf`) — measures the cost of loading a protocol at startup. |
-| **`contact_book_render`** | Renders the full contact-book dashboard (protocol + state → HTML) without any hydration plugin, at 10 / 100 / 1,000 contacts. |
-| **`contact_book_render_fast_plugin`** | Same rendering with the deprecated @microsoft/fast-element 2.x compatibility plugin enabled, which injects legacy FAST hydration markers. |
+| `cargo xtask bench contact-book` | run the criterion contact-book bench |
+| `cargo xtask bench streaming` | run the criterion streaming bench |
+| `cargo xtask bench streaming-resource` | run the resource-counting example |
+| `cargo xtask bench streaming-e2e-ttfb` | run the HTTP-level TTFB example |
+| `cargo xtask bench streaming-browser` | run the Playwright browser-metrics test |
+| `cargo xtask bench full` | run all four streaming-related benches in sequence |
+| `cargo xtask bench all` | run every criterion bench in the workspace |
 
-### Why it stays up to date
-
-The protocol is **compiled from live source** at benchmark time via
-`webui::build()` against `examples/app/contact-book-manager/src/`. There is no
-cached binary — any change to the contact-book-manager templates is
-automatically reflected in the next benchmark run.
-
-## Running the benchmark
-
-### Quick validation (no measurements)
+All commands accept `--save-baseline NAME` to record current numbers
+and `--baseline NAME` to compare against a saved baseline:
 
 ```bash
-cargo bench -p webui --bench contact_book_bench -- --test
+cargo xtask bench full --save-baseline before
+# … make change …
+cargo xtask bench full --baseline before
 ```
 
-Compiles in release mode and runs each benchmark once to verify correctness.
-Takes ~1 minute (mostly compile time).
-
-### Full benchmark
-
-```bash
-cargo bench -p webui --bench contact_book_bench
-```
-
-Runs all benchmark groups with 30-second measurement windows. Produces:
-
-1. **Criterion output** — per-benchmark timing, throughput (MiB/s), and change
-   detection printed inline.
-2. **Summary table** — a compact table printed at the end with Iters, Avg, Min,
-   Max, Dev%, P50, P90, P99, IQR, and output Bytes for every scenario.
-3. **HTML reports** — detailed charts saved to `target/criterion/report/index.html`.
-
-### Run a single group
-
-```bash
-# Only protocol parsing
-cargo bench -p webui --bench contact_book_bench -- "contact_book_protocol_parse"
-
-# Only rendering at 100 contacts
-cargo bench -p webui --bench contact_book_bench -- "contact_book_render/contacts/100"
-
-# Only @microsoft/fast-element 2.x compatibility plugin benchmarks
-cargo bench -p webui --bench contact_book_bench -- "contact_book_render_fast_plugin"
-```
+Snapshots live under `target/bench-baselines/`. Criterion baselines
+live under `target/criterion/<bench>/<name>` (criterion's native
+location).
 
 ## Reading the results
 
-### Inline output
-
-Criterion prints results as each benchmark completes:
-
-```
-contact_book_render/contacts/100
-                        time:   [5.05 ms 5.09 ms 5.12 ms]
-                        thrpt:  [10.5 MiB/s 10.6 MiB/s 10.6 MiB/s]
-```
-
-- **time** — [lower bound, estimate, upper bound] at 95% confidence.
-- **thrpt** — throughput in MiB/s based on HTML output size.
-
-### Summary table
-
-Printed at the end of a full run:
+Each bench prints a human-readable table to stdout. When `--baseline
+NAME` is set, a Δ%-table is printed comparing current to baseline:
 
 ```
-===================== WebUI Contact Book — Performance Summary =====================
-Story                  Iters   Avg(ms)     Min       Max   Dev%     P50     P90     P99     IQR   Bytes
--------------------------------------------------------------------------------------
-ProtocolParse          55000      0.05    0.04      0.37  12.0%    0.05    0.05    0.08    0.00   28538
-Render/10               4600      0.65    0.61     10.34  28.2%    0.63    0.66    1.22    0.02   25960
-Render/100               600      4.94    4.70      9.03   9.4%    4.80    5.21    7.43    0.11   56397
-Render/1000               53     57.50   53.78     67.33   4.6%   57.20   60.90   62.28    4.31  362930
-RenderFAST/10           4600      0.65    0.61      1.83  13.7%    0.63    0.66    1.19    0.02   31052
-RenderFAST/100           600      5.02    4.72      9.86  14.1%    4.81    5.26    9.09    0.11   68149
-RenderFAST/1000           51     59.53   53.19     72.35   7.2%   58.64   64.56   72.35    4.83  443082
-=====================================================================================
+Diff vs baseline 'before' (saved 30s ago)
+| row                                 |  allocs Δ% |   bytes Δ% | user_cpu Δ% |
+|-------------------------------------|------------|------------|-------------|
+| string/100                          |       0.0% |       0.0% |        1.2% |
+| streaming/100                       |       0.0% |       0.0% |       -2.1% |
+| streaming POOLED/100                |       0.0% |       0.0% |       -3.4% |
 ```
 
-| Column | Meaning |
-|---|---|
-| **Iters** | Total iterations completed during the sampling window. |
-| **Avg(ms)** | Mean time per iteration. |
-| **Min / Max** | Fastest and slowest observed iteration. |
-| **Dev%** | Standard deviation as a percentage of the mean. |
-| **P50 / P90 / P99** | Percentile latencies (P50 = median). |
-| **IQR** | Interquartile range (P75 − P25) — lower means more consistent. |
-| **Bytes** | Output size in bytes (protocol size for parse, HTML size for render). |
+Negative Δ% = improvement; positive = regression.
 
-## Detecting regressions and improvements
+## Detecting regressions
 
-### Automatic change detection
+| Source | Treat as noise | Treat as signal |
+|---|---|---|
+| criterion wall-clock | < ±2% | > ±5% |
+| streaming-resource alloc count | exact — any change matters | any non-zero |
+| streaming-resource bytes/CPU | < ±2% | > ±5% |
+| streaming-e2e-ttfb (loopback) | < ±10% | > ±20% |
+| streaming-browser (real Chromium) | < ±5% | > ±15% |
 
-When you run the benchmark a second time, criterion compares against the
-previous baseline and reports the delta:
+For criterion's HTML reports with PDF/CDF plots and violin
+comparisons, open `target/criterion/report/index.html`.
 
-```
-contact_book_render/contacts/100
-                        time:   [5.05 ms 5.09 ms 5.12 ms]
-                 change:
-                        time:   [+2.60% +3.37% +4.20%] (p = 0.00 < 0.05)
-                        Performance has regressed.
-```
+## Tips for reliable measurements
 
-- **Performance has improved** — the change is statistically significant and
-  faster.
-- **Performance has regressed** — the change is statistically significant and
-  slower.
-- **No change in performance** — the difference is within noise.
-
-### HTML reports
-
-Open `target/criterion/report/index.html` in a browser. Each benchmark has:
-
-- **PDF/CDF plots** of iteration times.
-- **Before/after violin plots** when a baseline exists.
-- **Regression analysis** with confidence intervals.
-
-### Tips for reliable measurements
-
-- **Close other applications** — CPU-intensive background work adds noise.
-- **Run on the same machine** — cross-machine comparisons are not meaningful.
-- **Use release mode** — `cargo bench` always compiles with optimizations;
-  debug builds are not representative.
-- **Compare P50 over Avg** — the median is more robust to outliers than the
-  mean, especially on machines with thermal throttling or background activity.
-- **Watch IQR and Dev%** — high values indicate noisy measurements. Re-run if
-  Dev% exceeds ~15% for the larger benchmarks.
-
-### Resetting the baseline
-
-To discard previous results and start fresh:
-
-```bash
-rm -rf target/criterion
-cargo bench -p webui --bench contact_book_bench
-```
+- **Close other applications** — background CPU adds noise.
+- **Plug in laptops** — battery savers throttle.
+- **Always release mode** — `cargo bench` and `cargo xtask bench`
+  guarantee this; never rely on debug numbers.
+- **Compare P50 over Avg** — median is more robust to outliers.
+- **Re-run if Dev% > 15%** for any criterion row.
+- **Reset baseline:** `rm -rf target/criterion target/bench-baselines`
+  and re-run.

@@ -172,15 +172,17 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
 
     match target {
         Some("streaming-resource") => bench_resource(save_baseline, compare_baseline),
+        Some("streaming-e2e-ttfb") => bench_e2e_ttfb(save_baseline, compare_baseline),
+        Some("streaming-browser") => bench_browser(save_baseline, compare_baseline),
         Some("streaming-all") | Some("full") => {
-            // The full bench suite available at this commit:
-            // criterion writer-path + custom-allocator resource bench.
-            // Subsequent commits will add the streaming E2E TTFB bench
-            // and the Playwright browser bench.
+            // The full bench suite: criterion micro + resource + e2e + browser.
+            // Each phase passes through the baseline flags.
             type BenchPhase = fn(Option<String>, Option<String>) -> ExitCode;
             let phases: &[(&str, BenchPhase)] = &[
                 ("criterion (microsoft-webui)", bench_webui_criterion_phase),
                 ("streaming-resource", bench_resource),
+                ("streaming-e2e-ttfb", bench_e2e_ttfb),
+                ("streaming-browser", bench_browser),
             ];
             for (label, f) in phases {
                 eprintln!(
@@ -247,7 +249,8 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
                         "Unknown bench target '{other}'.\n\
                          Criterion targets: parser, handler, protocol, expressions, state, \
                          contact-book, streaming, all.\n\
-                         Non-criterion targets: streaming-resource, streaming-all (= full)."
+                         Non-criterion targets: streaming-resource, streaming-e2e-ttfb, \
+                         streaming-browser, streaming-all (= full)."
                     );
                     return ExitCode::FAILURE;
                 }
@@ -337,6 +340,66 @@ fn bench_resource(save: Option<String>, compare: Option<String>) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("streaming-resource bench failed: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn bench_e2e_ttfb(save: Option<String>, compare: Option<String>) -> ExitCode {
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "--release".into(),
+        "--example".into(),
+        "streaming_e2e_ttfb_bench".into(),
+        "-p".into(),
+        "microsoft-webui".into(),
+    ];
+    if save.is_some() || compare.is_some() {
+        args.push("--".into());
+        if let Some(name) = save {
+            args.push("--save".into());
+            args.push(name);
+        }
+        if let Some(name) = compare {
+            args.push("--compare".into());
+            args.push(name);
+        }
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    match run_command("cargo", &arg_refs, None) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("streaming-e2e-ttfb bench failed: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn bench_browser(save: Option<String>, compare: Option<String>) -> ExitCode {
+    use std::process::Command;
+    let bench_dir = std::path::PathBuf::from("examples")
+        .join("integration")
+        .join("streaming-browser-bench");
+    if !bench_dir.join("package.json").exists() {
+        eprintln!("streaming-browser bench: {} not found", bench_dir.display());
+        return ExitCode::FAILURE;
+    }
+    let mut cmd = Command::new("pnpm");
+    cmd.arg("test").current_dir(&bench_dir);
+    if let Some(name) = save.as_ref() {
+        cmd.env("WEBUI_BENCH_SAVE", name);
+    }
+    if let Some(name) = compare.as_ref() {
+        cmd.env("WEBUI_BENCH_COMPARE", name);
+    }
+    match cmd.status() {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(status) => {
+            eprintln!("streaming-browser bench exited with {status}");
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("streaming-browser bench: failed to spawn pnpm: {e}");
             ExitCode::FAILURE
         }
     }
