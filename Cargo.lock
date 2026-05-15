@@ -1775,10 +1775,12 @@ name = "microsoft-webui"
 version = "0.0.12"
 dependencies = [
  "criterion",
+ "libc",
  "microsoft-webui-discovery",
  "microsoft-webui-handler",
  "microsoft-webui-parser",
  "microsoft-webui-protocol",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",

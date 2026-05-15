@@ -19,6 +19,12 @@ default = ["fs"]
 fs = ["walkdir"]
 cli = ["clap"]
 
+[package.metadata.cargo-shear]
+# `clap` is used only via `cfg_attr(feature = "cli", derive(clap::ValueEnum))`
+# attribute macros; cargo-shear doesn't expand macros by default and so
+# reports a false positive without `--expand`.
+ignored = ["clap"]
+
 [dependencies]
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.12" }
 thiserror = { workspace = true }
