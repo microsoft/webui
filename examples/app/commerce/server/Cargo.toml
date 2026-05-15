@@ -18,7 +18,6 @@ mime_guess = { workspace = true }
 thiserror = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
-html-escape = { workspace = true }
 rustls = { workspace = true }
 rcgen = { workspace = true }
 microsoft-webui = { path = "../../../../crates/webui" }

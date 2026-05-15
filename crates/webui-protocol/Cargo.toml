@@ -24,7 +24,6 @@ regenerate-proto = ["dep:prost-build"]
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 prost = { workspace = true }
 
 [build-dependencies]

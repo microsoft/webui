@@ -25,13 +25,11 @@ microsoft-webui-dev-server = { path = "../webui-dev-server", version = "0.0.12" 
 clap = { workspace = true }
 anyhow = { workspace = true }
 console = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 actix-web = { workspace = true }
 awc = { workspace = true }
 expand-tilde = { workspace = true }
 mime_guess = { workspace = true }
-walkdir = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

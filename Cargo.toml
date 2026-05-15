@@ -25,7 +25,6 @@ thiserror = "2.0.18"
 anyhow = "1.0.101"
 log = "0.4.29"
 env_logger = "0.11.9"
-async-trait = "0.1.89"
 tokio = { version = "1.52.1", features = ["full"] }
 clap = { version = "4.6.1", features = ["derive", "color"] }
 console = "0.16.3"
@@ -51,7 +50,6 @@ notify = "8.2.0"
 notify-debouncer-mini = "0.7.0"
 percent-encoding = "2.3.2"
 tree-sitter = "0.26.8"
-tree-sitter-language = "0.1.7"
 tree-sitter-html = "0.23.2"
 tree-sitter-css = "0.25.0"
 walkdir = "2.5.0"
@@ -62,17 +60,10 @@ serde_yaml = "0.9"
 libc = "0.2.186"
 time = { version = "0.3", features = ["local-offset", "formatting", "macros"] }
 which = "8.0.2"
-windows = { version = "0.62.2", features = [
-    "Win32_Foundation",
-    "Win32_System_LibraryLoader",
-    "Win32_System_Console",
-] }
 
 # Test dependencies
 criterion = "0.8.2"
-mockall = "0.14.0"
 tempfile = "3.27.0"
-tokio-test = "0.4.5"
 
 # Build dependencies
 prost-build = "0.14.3"

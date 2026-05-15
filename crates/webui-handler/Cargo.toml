@@ -24,7 +24,6 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.12" }
-tokio = { workspace = true }
 criterion = { workspace = true }
 
 [[bench]]

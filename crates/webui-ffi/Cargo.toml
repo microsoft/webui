@@ -27,9 +27,7 @@ regenerate-header = ["dep:cbindgen"]
 microsoft-webui-handler = { path = "../webui-handler", version = "0.0.12" }
 microsoft-webui-parser = { path = "../webui-parser", version = "0.0.12", optional = true }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.12" }
-serde = { workspace = true }
 serde_json = { workspace = true }
-libc = { workspace = true }
 
 [build-dependencies]
 cbindgen = { workspace = true, optional = true }

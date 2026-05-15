@@ -20,13 +20,9 @@ fs = ["walkdir"]
 cli = ["clap"]
 
 [dependencies]
-microsoft-webui-expressions = { path = "../webui-expressions", version = "0.0.12" }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.12" }
-serde = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 tree-sitter = { workspace = true }
-tree-sitter-language = { workspace = true }
 tree-sitter-html = { workspace = true }
 tree-sitter-css = { workspace = true }
 html-escape = { workspace = true }
@@ -34,8 +30,6 @@ walkdir = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 
 [dev-dependencies]
-mockall = { workspace = true }
-tempfile = { workspace = true }
 microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.12" }
 criterion = { workspace = true }
 

@@ -15,7 +15,6 @@ categories = ["web-programming"]
 name = "webui_state"
 
 [dependencies]
-serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
