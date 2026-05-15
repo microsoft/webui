@@ -286,6 +286,23 @@ test.describe('sort filtering', () => {
     // Switch to Shirts via sidebar
     await page.locator('mp-category-nav').getByRole('link', { name: 'Shirts' }).first().click();
     await expect(page).toHaveURL('/search/shirts');
+    // Wait for the filter-list DOM to reflect the new category before
+    // clicking. `toHaveURL` only verifies the URL bar (set by the
+    // router on partial-nav response), but the filter-list components
+    // re-render asynchronously from the same response. Without this
+    // wait, a fast clicker (or a slow CI) can hit a stale filter-list
+    // link whose `href` still encodes the previous category, sending
+    // the click to `/search/stickers?sort=...` instead of shirts.
+    // The streaming SSR pipeline widened this race window on slower
+    // CI runners where chunk delivery + DOM patch can interleave with
+    // the URL update; this assertion makes the test deterministic.
+    // Count-based wait (not visibility) because mp-filter-list emits
+    // both a desktop and a mobile-only variant of the link; the
+    // mobile variant is `display:none` in the chromium project but
+    // both share the same updated href once the DOM patch lands.
+    await expect(
+      page.locator('mp-filter-list a[href*="/search/shirts?sort=price-desc"]'),
+    ).not.toHaveCount(0);
 
     // Sort by price high to low
     await page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).first().click();

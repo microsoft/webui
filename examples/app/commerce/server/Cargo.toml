@@ -22,6 +22,10 @@ rustls = { workspace = true }
 rcgen = { workspace = true }
 microsoft-webui = { path = "../../../../crates/webui" }
 microsoft-webui-handler = { path = "../../../../crates/webui-handler" }
+bytes = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+log = { workspace = true }
 
 [lints]
 workspace = true

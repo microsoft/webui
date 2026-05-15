@@ -19,6 +19,7 @@
 //! A 30-second `:heartbeat` comment keeps the connection alive through
 //! intermediate proxies that drop idle TCP streams.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use actix_web::http::header::{CACHE_CONTROL, CONTENT_TYPE};
@@ -53,7 +54,7 @@ pub enum ReloadEvent {
 pub struct LiveReload {
     endpoint: String,
     tx: broadcast::Sender<ReloadEvent>,
-    client_script: String,
+    client_script: Arc<str>,
 }
 
 impl LiveReload {
@@ -67,7 +68,7 @@ impl LiveReload {
     pub fn new(endpoint: impl Into<String>) -> Self {
         let endpoint = endpoint.into();
         let (tx, _rx) = broadcast::channel::<ReloadEvent>(RELOAD_CHANNEL_CAPACITY);
-        let client_script = build_client_script(&endpoint);
+        let client_script: Arc<str> = Arc::from(build_client_script(&endpoint));
         Self {
             endpoint,
             tx,
@@ -86,6 +87,16 @@ impl LiveReload {
     #[must_use]
     pub fn client_script(&self) -> &str {
         &self.client_script
+    }
+
+    /// Cheap-cloneable reference to the client script.
+    ///
+    /// Use this when the script needs to be moved into a per-request
+    /// closure (e.g. a streaming render thread). Cloning an `Arc<str>`
+    /// is a single atomic increment — no allocation, no copy.
+    #[must_use]
+    pub fn client_script_arc(&self) -> Arc<str> {
+        Arc::clone(&self.client_script)
     }
 
     /// Inject [`Self::client_script`] immediately before `</body>` in

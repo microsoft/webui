@@ -61,7 +61,7 @@
 use bytes::Bytes;
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Sender;
 use webui_handler::{HandlerError, ResponseWriter, Result};
 
@@ -520,6 +520,16 @@ enum SendOutcome {
 ///
 /// When `timeout` is `None` we skip the runtime-handle TLS lookup
 /// entirely (saves ~10 ns/flush; meaningful at 10k+ RPS).
+///
+/// **Slow-loris guard fail-safety.** If `timeout` is `Some` but no
+/// tokio runtime is in TLS, we MUST NOT silently fall through to an
+/// unbounded `blocking_send` — that would defeat the documented
+/// slow-loris bound (`timeout × concurrent_renders`). Instead we
+/// emit a `log::warn!` once per process so operators see the
+/// misconfiguration, then enforce the deadline ourselves with a
+/// runtime-free `try_send` + `std::thread::sleep` poll loop. The
+/// poll interval is short relative to the typical timeout (30 s in
+/// production), so the worst-case wakeup overshoot is bounded.
 fn send_with_optional_timeout(
     tx: &Sender<Bytes>,
     payload: Bytes,
@@ -541,16 +551,58 @@ fn send_with_optional_timeout(
             Err(_) => SendOutcome::TimedOut,
         };
     }
-    // No runtime: the documented usage requires a runtime when
-    // `with_flush_timeout` is set, so this branch only triggers in
-    // misuse or tests. Fall back to untimed blocking_send.
-    debug_assert!(
-        false,
-        "StreamingWriter::with_flush_timeout requires a tokio runtime in TLS"
-    );
-    match tx.blocking_send(payload) {
-        Ok(()) => SendOutcome::Ok,
-        Err(_) => SendOutcome::Disconnected,
+    // No runtime in TLS. Calling `tx.blocking_send` from inside a
+    // tokio worker that's not `spawn_blocking` would panic ("Cannot
+    // block the current thread from within a runtime") and with
+    // `panic = "abort"` in the workspace release profile that aborts
+    // the whole process. Calling it from a raw `std::thread::spawn`
+    // would silently disable the slow-loris bound. Neither is
+    // acceptable, so we enforce the deadline ourselves with a
+    // try_send poll loop.
+    no_runtime_timeout_warn_once();
+    runtime_free_send(tx, payload, deadline)
+}
+
+fn no_runtime_timeout_warn_once() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        log::warn!(
+            "StreamingWriter::with_flush_timeout was set, but no tokio runtime is in TLS. \
+             Falling back to a runtime-free poll loop (slow-loris bound is preserved but \
+             with a small wakeup overshoot). Wire the writer from `spawn_blocking` to use \
+             the precise tokio path."
+        );
+    }
+}
+
+/// Runtime-free deadline-bounded send. Polls `try_send` with a
+/// short `thread::sleep` between attempts. The poll interval is
+/// 1 ms, so wakeup overshoot vs the configured deadline is bounded
+/// by 1 ms — negligible compared to the typical 30 s production
+/// timeout. Backs off to a longer interval after the first second
+/// to keep idle CPU low for large timeouts.
+fn runtime_free_send(tx: &Sender<Bytes>, payload: Bytes, deadline: Duration) -> SendOutcome {
+    use tokio::sync::mpsc::error::TrySendError;
+    let start = Instant::now();
+    let mut payload = payload;
+    let mut interval = Duration::from_millis(1);
+    let backoff_after = Duration::from_secs(1);
+    loop {
+        match tx.try_send(payload) {
+            Ok(()) => return SendOutcome::Ok,
+            Err(TrySendError::Closed(_)) => return SendOutcome::Disconnected,
+            Err(TrySendError::Full(returned)) => {
+                if start.elapsed() >= deadline {
+                    return SendOutcome::TimedOut;
+                }
+                std::thread::sleep(interval);
+                if start.elapsed() >= backoff_after && interval < Duration::from_millis(50) {
+                    interval = Duration::from_millis(50);
+                }
+                payload = returned;
+            }
+        }
     }
 }
 
@@ -567,13 +619,21 @@ impl ResponseWriter for StreamingWriter {
     }
 
     fn end(&mut self) -> Result<()> {
-        // On end, attempt a final flush but never error out: the caller
-        // is finishing the response, and a terminated channel here
-        // means the client gave up.
-        if self.terminated.is_none() {
-            let _ = self.flush_buf();
+        // Surface the final-flush error so the caller can distinguish
+        // "fully delivered" from "client gave up at the very last
+        // chunk." If `terminated` is already set, `write()` already
+        // surfaced the error earlier — return Ok here so the caller
+        // doesn't see the same disconnect twice.
+        //
+        // This is the contract that motivated introducing
+        // `HandlerError::ClientDisconnected` / `StreamTimeout` in the
+        // first place: callers want a programmatic signal so they can
+        // decrement `render_errors_total` correctly and avoid logging
+        // truncated responses as 200-OK successes.
+        if self.terminated.is_some() {
+            return Ok(());
         }
-        Ok(())
+        self.flush_buf()
     }
 }
 
@@ -638,7 +698,32 @@ mod tests {
         let big = "x".repeat(StreamingWriter::CHUNK_TARGET);
         let _ = ResponseWriter::write(&mut w, &big);
         assert!(w.is_terminated());
+        // Already-terminated end() returns Ok — the error was already
+        // surfaced via write() and the caller acted on it.
         ResponseWriter::end(&mut w).unwrap();
+    }
+
+    /// Regression for the bug Akrosh caught: when the writer hasn't
+    /// yet flushed (sub-`chunk_target` content) and the receiver has
+    /// disconnected, `end()` MUST surface the typed error rather than
+    /// silently returning `Ok(())` and lying to the caller about a
+    /// successful response.
+    #[test]
+    fn streaming_writer_end_surfaces_first_flush_error() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(1);
+        let mut w = StreamingWriter::new(tx);
+        drop(rx);
+        // Below `chunk_target` — no automatic flush from write(),
+        // so `terminated` is None at the time end() runs.
+        ResponseWriter::write(&mut w, "small").unwrap();
+        assert!(!w.is_terminated(), "no automatic flush yet");
+
+        let result = ResponseWriter::end(&mut w);
+        assert!(
+            matches!(result, Err(HandlerError::ClientDisconnected)),
+            "end() must surface ClientDisconnected from final flush, got {result:?}"
+        );
+        assert!(w.is_terminated(), "writer must be marked terminated");
     }
 
     #[test]
@@ -657,6 +742,57 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::channel::<Bytes>(8);
         let w = StreamingWriter::new(tx).with_chunk_size(1);
         assert_eq!(w.chunk_target, StreamingWriter::MIN_CHUNK_TARGET);
+    }
+
+    /// Positive test for the slow-loris guard. Without a tokio runtime
+    /// in TLS, `with_flush_timeout` is forced down the runtime-free
+    /// poll-loop path. Fill a 1-slot channel without consuming it,
+    /// then verify the writer surfaces `Err(StreamTimeout)` after the
+    /// configured deadline (and does NOT silently fall through to an
+    /// untimed `blocking_send` as the previous implementation did).
+    ///
+    /// Akrosh's review caught this gap: the slow-loris bound was
+    /// previously the framework's only DoS guard but had no positive
+    /// test, and the fallback path was a `debug_assert!(false)` that
+    /// compiled to a no-op in release.
+    #[test]
+    fn streaming_writer_flush_timeout_fires_without_runtime() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<Bytes>(1);
+        let mut w = StreamingWriter::new(tx)
+            .with_chunk_size(64)
+            .with_flush_timeout(Duration::from_millis(150));
+
+        // Fill the 1-slot channel.
+        ResponseWriter::write(&mut w, &"x".repeat(64)).unwrap();
+        // Next flush has nowhere to go → must time out within
+        // ~deadline + 1 ms (poll interval). Allow a generous CI cushion.
+        let start = Instant::now();
+        let result = ResponseWriter::write(&mut w, &"y".repeat(64));
+        let elapsed = start.elapsed();
+
+        assert!(
+            matches!(result, Err(HandlerError::StreamTimeout)),
+            "expected Err(StreamTimeout), got {result:?}"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(150),
+            "must wait at least the deadline; elapsed={elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "must not block much past the deadline; elapsed={elapsed:?}"
+        );
+        assert!(w.is_terminated(), "writer must be marked terminated");
+
+        // Subsequent writes short-circuit (no second timeout wait).
+        let start = Instant::now();
+        let result2 = ResponseWriter::write(&mut w, "more");
+        assert!(matches!(result2, Err(HandlerError::StreamTimeout)));
+        assert!(
+            start.elapsed() < Duration::from_millis(50),
+            "subsequent writes must short-circuit; elapsed={:?}",
+            start.elapsed()
+        );
     }
 
     // ── ChunkPool tests ─────────────────────────────────────────────

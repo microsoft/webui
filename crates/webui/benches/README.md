@@ -7,9 +7,10 @@ Two criterion benches in this directory:
   protocol parsing and full-render wall-clock without/with the FAST 2.x
   hydration plugin.
 * **`streaming_bench.rs`** — writer-path wall-clock comparison: `String`
-  baseline vs `StreamingWriter` vs `String + post-injection` (the
-  legacy livereload path that the next commit's signal-based
-  injection API replaces). Includes a separate `ttfb` group that
+  baseline vs `StreamingWriter` vs `StreamingWriter + RenderOptions
+  inject` (per-render head/body inject via the handler's signal-based
+  hook) vs `String + post-injection` (the legacy livereload path the
+  streaming module replaces). Includes a separate `ttfb` group that
   measures time-to-first-chunk for the streaming path.
 
 Two **examples** (in `crates/webui/examples/`) round out the suite:
@@ -65,7 +66,7 @@ Diff vs baseline 'before' (saved 30s ago)
 |-------------------------------------|------------|------------|-------------|
 | string/100                          |       0.0% |       0.0% |        1.2% |
 | streaming/100                       |       0.0% |       0.0% |       -2.1% |
-| streaming POOLED/100                |       0.0% |       0.0% |       -3.4% |
+| streaming+inject(opts) POOLED/100   |       0.0% |       0.0% |       -3.4% |
 ```
 
 Negative Δ% = improvement; positive = regression.

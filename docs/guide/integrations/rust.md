@@ -151,6 +151,61 @@ async fn main() {
 </webui-tab-panel>
 </webui-tabs>
 
+## Streaming SSR
+
+For production, prefer the framework-provided `webui::streaming::StreamingWriter` over a hand-rolled `String` buffer. It coalesces small writes into ~4 KB chunks, ships them over a **bounded** `tokio::mpsc` channel (backpressure on slow clients), and recycles chunk buffers through a shared `ChunkPool` so steady-state RPS does zero per-flush allocation.
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+use bytes::Bytes;
+use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
+use webui::streaming::{ChunkPool, StreamingWriter};
+use webui::{WebUIHandler, RenderOptions, ResponseWriter};
+
+// One shared pool per server (constructed at startup, lives forever).
+let chunk_pool = Arc::new(ChunkPool::new(
+    256,                                       // ~1.25 MiB peak pool memory
+    StreamingWriter::CHUNK_TARGET + 1024,
+));
+
+// Per request:
+let (tx, rx) = mpsc::channel::<Bytes>(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
+actix_web::rt::task::spawn_blocking({
+    let chunk_pool = Arc::clone(&chunk_pool);
+    move || {
+        // `with_flush_timeout` bounds the slow-loris DoS surface to
+        // `30s × concurrent_renders`. `end()` returns the typed error
+        // from the final flush — log truncated streams at debug.
+        let mut writer = StreamingWriter::new_pooled(tx, chunk_pool)
+            .with_flush_timeout(Duration::from_secs(30));
+        let options = RenderOptions::new("index.html", &request_path)
+            .with_nonce(&csp_nonce)
+            .with_body_inject(&livereload_script); // per-request inject
+        if let Err(e) = handler.handle(&proto, &state, &options, &mut writer) {
+            log::error!("render failed: {e}");
+        }
+        if let Err(e) = ResponseWriter::end(&mut writer) {
+            log::debug!("stream truncated: {e}");
+        }
+    }
+});
+HttpResponse::Ok()
+    .content_type("text/html; charset=utf-8")
+    .streaming(tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok::<_, actix_web::Error>))
+```
+
+### Per-request HTML injection
+
+`with_head_inject` / `with_body_inject` splice host-provided HTML at the parser-synthesized `head_end` / `body_end` structural boundaries — zero scan cost, and cannot mis-fire on `</head>` / `</body>` literals appearing inside HTML comments, `<iframe srcdoc>`, or inline `<script>`. Typical uses: per-request `<link rel="preload">` hints, dev livereload script, OpenTelemetry trace IDs.
+
+> **Safety:** the HTML is written verbatim, no escaping. Untrusted input is a direct XSS vector. Pre-escape with `webui_handler::encode_safe` (re-exported for this purpose) if your content path may include user data.
+
+### Typed streaming errors
+
+`StreamingWriter` returns `HandlerError::ClientDisconnected` (receiver dropped) or `HandlerError::StreamTimeout` (flush deadline exceeded) from both `write()` and `end()`, so callers can distinguish "fully delivered" from "client cancelled" for correct telemetry.
+
 ## API Reference
 
 ### Build
@@ -182,3 +237,22 @@ async fn main() {
 | `css_file_count` | `usize` | CSS files produced |
 | `protocol_size_bytes` | `usize` | Protocol binary size |
 | `token_count` | `usize` | CSS tokens discovered |
+
+### RenderOptions
+
+| Field / builder | Type | Description |
+|---|---|---|
+| `RenderOptions::new(entry_id, request_path)` | constructor | Entry fragment + route-matching path |
+| `with_nonce(&str)` | builder | CSP nonce reflected onto inline `<script>` / `<style type="module">`. Empty string normalises to `None`. |
+| `with_head_inject(&str)` | builder | Raw HTML emitted immediately before `</head>` at the parser's structural boundary (see [Streaming SSR](#streaming-ssr)). |
+| `with_body_inject(&str)` | builder | Raw HTML emitted immediately before `</body>`. Same structural-boundary contract. |
+
+### HandlerError variants
+
+| Variant | When |
+|---|---|
+| `ClientDisconnected` | Streaming receiver dropped; caller should abort the render. |
+| `StreamTimeout` | `with_flush_timeout` deadline exceeded; ops should alert on slow-loris patterns. |
+| `MissingFragment(String)` | `entry_id` not found in the protocol. |
+| `TypeError(String)` / `Evaluation(String)` | Template/expression runtime errors. |
+

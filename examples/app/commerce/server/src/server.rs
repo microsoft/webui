@@ -3,13 +3,19 @@
 
 use actix_web::http::header::LOCATION;
 use actix_web::{web, HttpRequest, HttpResponse};
+use bytes::Bytes;
 use serde_json::Value;
+use std::time::Duration;
+use tokio_stream::StreamExt;
+use webui::streaming::StreamingWriter;
+use webui_handler::ResponseWriter;
 
 use crate::app::AppState;
 use crate::cart::{self, build_cart_state, clear_cookie, cookie_for_cart};
 use crate::catalog::Catalog;
 use crate::error::ServerError;
 use crate::extractors::{CartMutationInput, CartMutationPayload, RequestContext};
+use crate::frontend::FrontendRuntime;
 use crate::security;
 use crate::state;
 
@@ -18,6 +24,15 @@ struct CartResponseOptions<'a> {
     cart: cart::StoredCart,
     redirect_to: Option<&'a str>,
     open_cart: bool,
+}
+
+struct StreamingHtmlOptions {
+    frontend: FrontendRuntime,
+    route_path: String,
+    page_state: Value,
+    nonce: String,
+    head_inject: String,
+    chunk_pool: std::sync::Arc<webui::streaming::ChunkPool>,
 }
 
 pub(crate) fn configure_app(cfg: &mut web::ServiceConfig) {
@@ -75,14 +90,18 @@ async fn handle_frontend_request(
     }
 
     let nonce = security::generate_nonce();
-    let html = data
-        .frontend()
-        .render_html(context.route_path(), &page_state, &nonce)
-        .map_err(ServerError::RenderFailed)?;
-    Ok(html_response(
+    let preload_tags = build_head_preload_tags(&image_preloads);
+    let frontend = data.frontend().clone();
+    Ok(streaming_html_response(
         &context,
-        inject_head_preload_tags(html, &image_preloads),
-        &nonce,
+        StreamingHtmlOptions {
+            frontend,
+            route_path: context.route_path().to_string(),
+            page_state,
+            nonce,
+            head_inject: preload_tags,
+            chunk_pool: data.chunk_pool(),
+        },
     ))
 }
 
@@ -192,30 +211,72 @@ fn partial_response(
     builder.json(payload)
 }
 
-fn html_response(context: &RequestContext, html: String, nonce: &str) -> HttpResponse {
+/// Stream the SSR HTML response. Spawns the synchronous render onto a
+/// blocking pool thread; chunks flow into a `tokio::sync::mpsc`-backed
+/// channel via [`StreamingWriter`], with image-preload `<link>` tags
+/// spliced in front of `</head>` via `RenderOptions::with_head_inject` —
+/// the handler emits them at the parser-synthesized `head_end` signal
+/// boundary, with zero scan cost and no risk of false-marker mis-fire
+/// on `</head>` literals appearing inside HTML comments / `srcdoc`.
+///
+/// Headers (Content-Type, Cache-Control, CSP, optional clear-cart cookie)
+/// are committed to the response builder before the first chunk flushes,
+/// so downstream proxies see them on the first byte.
+fn streaming_html_response(
+    context: &RequestContext,
+    options: StreamingHtmlOptions,
+) -> HttpResponse {
+    let StreamingHtmlOptions {
+        frontend,
+        route_path,
+        page_state,
+        nonce,
+        head_inject,
+        chunk_pool,
+    } = options;
+
     let mut builder = HttpResponse::Ok();
     builder.content_type("text/html; charset=utf-8");
     builder.insert_header(("Cache-Control", "private, no-store"));
     builder.insert_header(("Vary", "Accept, Cookie"));
-    builder.insert_header(("Content-Security-Policy", security::csp_header(nonce)));
+    builder.insert_header(("Content-Security-Policy", security::csp_header(&nonce)));
     if context.cart_read().should_reset {
         builder.cookie(clear_cookie());
     }
-    builder.body(html)
-}
 
-fn inject_head_preload_tags(mut html: String, image_urls: &[String]) -> String {
-    let Some(head_end) = html.find("</head>") else {
-        return html;
-    };
-
-    let preloads = build_head_preload_tags(image_urls);
-    if preloads.is_empty() {
-        return html;
-    }
-
-    html.insert_str(head_end, &preloads);
-    html
+    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
+    let route_path_for_log = route_path.clone();
+    actix_web::rt::task::spawn_blocking(move || {
+        // Pool-acquired chunk buffers recycle across requests (no
+        // per-flush Vec allocation in steady state). 30 s flush
+        // deadline caps slow-loris DoS: an attacker can pin a render
+        // thread for at most 30 s per chunk, then we abort and free
+        // the thread.
+        // `head_inject` is forwarded into the handler's RenderOptions
+        // and emitted at the structural `head_end` boundary — no
+        // byte-level scanner needed.
+        let mut writer =
+            StreamingWriter::new_pooled(tx, chunk_pool).with_flush_timeout(Duration::from_secs(30));
+        if let Err(e) =
+            frontend.render_html_to(&route_path, &page_state, &nonce, &head_inject, &mut writer)
+        {
+            // Log the detail; emit a fixed HTML comment so an
+            // attacker-controlled error message cannot break out of
+            // the comment via `-->`.
+            log::error!("render failed for {route_path_for_log}: {e}");
+            let _ = ResponseWriter::write(&mut writer, "<!-- webui: render error -->");
+        }
+        // `end()` surfaces the typed error from the final flush;
+        // log a truncated stream at debug so it's visible to ops
+        // but doesn't spam production logs (browser-navigated-away
+        // is normal long-tail behaviour).
+        if let Err(e) = ResponseWriter::end(&mut writer) {
+            log::debug!("render stream truncated for {route_path_for_log}: {e}");
+        }
+    });
+    // Zero-overhead Stream adapter (no async_stream! coroutine).
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok::<Bytes, actix_web::Error>);
+    builder.streaming(stream)
 }
 
 /// Build SSR-only `<link rel="preload">` tags for images and scripts.

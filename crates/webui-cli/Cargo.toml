@@ -30,6 +30,10 @@ actix-web = { workspace = true }
 awc = { workspace = true }
 expand-tilde = { workspace = true }
 mime_guess = { workspace = true }
+bytes = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+log = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

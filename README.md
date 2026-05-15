@@ -25,6 +25,8 @@ Visit **[microsoft.github.io/webui](https://microsoft.github.io/webui)** for:
 - [Playground](https://microsoft.github.io/webui/playground/) — Try WebUI in the browser
 - [Tutorials](https://microsoft.github.io/webui/tutorials/hello-world) — Hello World, Todo App
 
+For performance: see **[`BENCHMARKS.md`](BENCHMARKS.md)** for the bench suite, what each layer measures, and the before/after comparison workflow.
+
 ## Install
 
 ```bash
@@ -55,7 +57,7 @@ All development tasks go through `cargo xtask`:
 | `cargo xtask build` | Build the workspace + examples |
 | `cargo xtask build-wasm` | Build WASM playground module |
 | `cargo xtask docs` | Build the documentation site |
-| `cargo xtask bench <crate>` | Run benchmarks (parser, handler, protocol, expressions, state, all) |
+| `cargo xtask bench <target>` | Run benchmarks (`parser`, `handler`, `protocol`, `expressions`, `state`, `contact-book`, `streaming`, `streaming-resource`, `streaming-e2e-ttfb`, `streaming-browser`, `streaming-all`/`full`, `all`). Add `--save-baseline NAME` / `--baseline NAME` for before/after comparison. See [`BENCHMARKS.md`](BENCHMARKS.md). |
 | `cargo xtask dev <app>` | Run example app in dev mode |
 | `cargo xtask version <semver>` | Update version across all Cargo.toml and package.json files |
 | `cargo xtask publish-stage` | Stage release artifacts into `publish/` (supports `--native-only` and `--pack-only`) |

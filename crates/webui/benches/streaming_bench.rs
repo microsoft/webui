@@ -51,10 +51,7 @@ const CONTACT_COUNTS: &[usize] = &[10, 100, 1000];
 const MEASUREMENT_TIME: Duration = Duration::from_secs(8);
 const SAMPLE_SIZE: usize = 50;
 
-// Body inject script used by the `string+postinject` baseline path
-// (mirrors the dev-mode livereload script that the legacy `lr.inject`
-// post-render pipeline injects). The signal-based alternative API
-// lands in the next commit (`with_head_inject` / `with_body_inject`).
+const HEAD_INJECT: &str = r#"<link rel="preload" as="image" href="/img/hero.jpg" fetchpriority="high"><link rel="preload" as="image" href="/img/p1.jpg"><link rel="preload" as="image" href="/img/p2.jpg">"#;
 const BODY_INJECT: &str = r#"<script>(function(){var e=new EventSource('/__webui/livereload');e.addEventListener('reload',function(){location.reload()})})();</script>"#;
 
 // ── State generation ──────────────────────────────────────────────────
@@ -251,7 +248,33 @@ fn bench_writers(c: &mut Criterion) {
             },
         );
 
-        // Path 3: String + post-render injection (mirrors the OLD
+        // Path 3: Streaming + RenderOptions inject (production path).
+        // The contact-book template is Shadow DOM (no <head>/<body>),
+        // so the head_end/body_end signals never fire; the inject
+        // strings are configured but unused. Cost = essentially the
+        // same as path 2 (streaming alone).
+        group.bench_with_input(
+            BenchmarkId::new(format!("streaming+inject(opts)/{count}"), output_size),
+            state,
+            |b, state| {
+                let h = WebUIHandler::new();
+                let cap = (output_size / StreamingWriter::CHUNK_TARGET) + 4;
+                b.iter(|| {
+                    let (tx, rx) = mpsc::channel::<Bytes>(cap);
+                    let mut w = StreamingWriter::new(tx);
+                    let opts = RenderOptions::new("index.html", "/")
+                        .with_head_inject(HEAD_INJECT)
+                        .with_body_inject(BODY_INJECT);
+                    h.handle(black_box(&protocol), black_box(state), &opts, &mut w)
+                        .unwrap();
+                    ResponseWriter::end(&mut w).unwrap();
+                    drop(w);
+                    black_box(drain_total(rx));
+                });
+            },
+        );
+
+        // Path 4: String + post-render injection (mirrors the OLD
         // livereload path the streaming work replaces).
         group.bench_with_input(
             BenchmarkId::new(format!("string+postinject/{count}"), output_size),

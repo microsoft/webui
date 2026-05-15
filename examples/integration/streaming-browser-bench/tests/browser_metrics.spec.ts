@@ -74,13 +74,22 @@ const SCENARIOS = [
 
 const ITERS = 8;
 
-async function measure(page: import('@playwright/test').Page, url: string): Promise<PageMetrics> {
-  // Install LCP PerformanceObserver BEFORE navigation so it captures
-  // entries from page load. `largest-contentful-paint` is only
-  // delivered via PerformanceObserver — `getEntriesByType` returns
-  // nothing for it. We stash entries on a global array and read them
-  // back after the page has settled.
-  await page.addInitScript(() => {
+/// Install the LCP `PerformanceObserver` exactly once on the
+/// browser context. Playwright's `page.addInitScript` is **cumulative**
+/// — each call adds another script that runs on every subsequent
+/// navigation. Calling it inside `measure` (as we did originally)
+/// would register N copies of the observer over N navigations, which
+/// is benchmark-skewing waste. This helper enforces the install-once
+/// contract by guarding on a context-level flag.
+async function ensureLcpObserverInstalled(page: import('@playwright/test').Page): Promise<void> {
+  const ctx = page.context() as unknown as { __lcpObserverInstalled?: boolean };
+  if (ctx.__lcpObserverInstalled) {
+    return;
+  }
+  ctx.__lcpObserverInstalled = true;
+  await page.context().addInitScript(() => {
+    // Reset on every new document — the observer below is registered
+    // fresh per page, but the array must be empty at navigation start.
     (window as any).__lcpEntries = [] as PerformanceEntry[];
     try {
       const obs = new PerformanceObserver((list) => {
@@ -95,19 +104,50 @@ async function measure(page: import('@playwright/test').Page, url: string): Prom
       // Older browsers without LCP support — fall through, lcp will be 0.
     }
   });
+}
 
+/// Wait for LCP to stabilise. Chromium can keep refining the LCP
+/// candidate as more elements paint; reading too early gives an
+/// artificially low value. Poll `__lcpEntries.length` until it
+/// stops growing for `STABLE_MS`, capped at `MAX_WAIT_MS` so the
+/// test cannot hang on adversarial pages.
+async function waitForLcpStable(page: import('@playwright/test').Page): Promise<void> {
+  const POLL_MS = 50;
+  const STABLE_MS = 200;
+  const MAX_WAIT_MS = 2000;
+  const start = Date.now();
+  let prevLen = -1;
+  let stableFor = 0;
+  while (Date.now() - start < MAX_WAIT_MS) {
+    await page.waitForTimeout(POLL_MS);
+    const curLen = await page.evaluate(
+      () => ((window as any).__lcpEntries as unknown[] | undefined)?.length ?? 0,
+    );
+    if (curLen === prevLen) {
+      stableFor += POLL_MS;
+      if (stableFor >= STABLE_MS) {
+        return;
+      }
+    } else {
+      stableFor = 0;
+      prevLen = curLen;
+    }
+  }
+}
+
+async function measure(page: import('@playwright/test').Page, url: string): Promise<PageMetrics> {
+  await ensureLcpObserverInstalled(page);
   await page.goto(url, { waitUntil: 'load' });
-
-  // LCP can keep updating after `load` (the browser refines the
-  // candidate as more elements paint). Wait briefly for it to settle.
-  await page.waitForTimeout(300);
+  await waitForLcpStable(page);
 
   return page.evaluate(async () => {
     const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
     const paints = performance.getEntriesByType('paint') as PerformancePaintTiming[];
     const fcp = paints.find((p) => p.name === 'first-contentful-paint');
 
-    // LCP comes from the PerformanceObserver installed via addInitScript.
+    // LCP comes from the PerformanceObserver installed via the
+    // context's init script (registered once via
+    // `ensureLcpObserverInstalled`).
     const lcpEntries = ((window as any).__lcpEntries || []) as PerformanceEntry[];
     const lcp = lcpEntries.length ? lcpEntries[lcpEntries.length - 1] : undefined;
 

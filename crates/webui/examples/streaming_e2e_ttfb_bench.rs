@@ -248,7 +248,11 @@ async fn handle_stream(
         let inner = StreamingWriter::new(tx);
         let mut writer = DelayingStreamingWriter { inner, delay };
         let h = WebUIHandler::new();
-        let opts = RenderOptions::new("index.html", "/");
+        // RenderOptions inject — handler emits at the structural
+        // head_end/body_end signal boundaries; zero scan cost.
+        let opts = RenderOptions::new("index.html", "/")
+            .with_head_inject("<link rel=preload>")
+            .with_body_inject("<script>/* lr */</script>");
         let _ = h.handle(&st.protocol, &st.state, &opts, &mut writer);
         let _ = ResponseWriter::end(&mut writer);
     });

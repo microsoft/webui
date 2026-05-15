@@ -71,9 +71,16 @@ Each layer of the architecture contributes to the overall performance profile:
   deserialization is an order of magnitude faster than JSON parsing for
   equivalent payloads.
 
-- **Streaming output.** The `ResponseWriter` trait enables flushing HTML chunks
-  to the client as they are produced. This reduces time-to-first-byte and
-  avoids buffering the entire response in memory.
+- **Streaming output with backpressure.** The `webui::streaming::StreamingWriter`
+  coalesces handler writes into ~4 KB chunks and pushes them through a
+  bounded `tokio::mpsc` channel, so the browser starts parsing while
+  the server is still serializing. A shared lock-free `ChunkPool`
+  recycles chunk buffers across requests (zero per-flush allocation
+  in steady state), and a configurable flush deadline bounds the
+  slow-loris DoS surface. Real-Chromium measurement on a 250 ms render
+  shows TTFB drops from 265 ms (buffered) to 0.4 ms (streaming), with
+  FCP / LCP from 284 ms to 56 ms. See `BENCHMARKS.md` and
+  `examples/integration/streaming-browser-bench/`.
 
 - **No JavaScript runtime.** There is no V8, no garbage collector pauses, and
   no JIT warmup. The hot path is pure compiled Rust with predictable, low-

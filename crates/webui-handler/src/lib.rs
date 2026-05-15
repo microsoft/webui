@@ -12,6 +12,17 @@ pub mod route_handler;
 pub mod route_matcher;
 pub(crate) mod route_renderer;
 
+/// Minimal HTML escaper for the 6 XSS-critical characters
+/// (`& < > " ' /`). Returns `Cow::Borrowed` when no escaping is
+/// needed (zero allocation on the happy path), `Cow::Owned` when
+/// any character had to be replaced.
+///
+/// Re-exported here so external callers of `RenderOptions::with_head_inject`
+/// / `with_body_inject` can pre-escape untrusted content with the
+/// same escaper the handler uses internally for SSR text content,
+/// without having to pull in a separate HTML-escape crate.
+pub use html_encode::encode_safe;
+
 use plugin::HandlerPlugin;
 use route_matcher::CompiledRouteCache;
 use serde::Serialize;
@@ -99,6 +110,19 @@ pub struct RenderOptions<'a> {
     /// When set, all inline scripts include `nonce="VALUE"` and a
     /// `<meta name="webui-nonce">` tag is emitted for the client router.
     pub nonce: Option<&'a str>,
+    /// Optional HTML to emit immediately before the document's
+    /// `</head>` close. Used for per-request `<link rel="preload">`
+    /// hints, CSP `<meta>` tags beyond the built-in nonce, etc.
+    /// Inserted at the structural `head_end` boundary identified by
+    /// the parser — never matched against a byte pattern, so cannot
+    /// be tricked by `</head>` literals appearing in HTML comments,
+    /// `srcdoc` attributes, or inline scripts.
+    pub head_inject: Option<&'a str>,
+    /// Optional HTML to emit immediately before the document's
+    /// `</body>` close. Used for dev livereload `<script>`, analytics
+    /// snippets, OpenTelemetry trace IDs, etc.
+    /// Same structural-boundary guarantee as [`head_inject`](Self::head_inject).
+    pub body_inject: Option<&'a str>,
 }
 
 impl<'a> RenderOptions<'a> {
@@ -109,13 +133,52 @@ impl<'a> RenderOptions<'a> {
             entry_id,
             request_path,
             nonce: None,
+            head_inject: None,
+            body_inject: None,
         }
     }
 
-    /// Set the CSP nonce for inline scripts.
+    /// Set the CSP nonce for inline scripts. Pass an empty string to
+    /// disable (`None` semantics) — empty `<meta name="webui-nonce"
+    /// content="">` would be browser-ignored noise.
     #[must_use]
     pub fn with_nonce(mut self, nonce: &'a str) -> Self {
-        self.nonce = Some(nonce);
+        self.nonce = if nonce.is_empty() { None } else { Some(nonce) };
+        self
+    }
+
+    /// Set HTML to emit immediately before `</head>`.
+    /// Pass an empty string to disable (`None` semantics).
+    ///
+    /// # Safety (XSS warning)
+    ///
+    /// The provided HTML is written verbatim — **no HTML escaping is
+    /// performed**. Callers MUST ensure the content is fully trusted
+    /// (typically a `&'static str` or build-time-derived bytes such as
+    /// dev livereload script, image preload `<link>` tags, or A/B test
+    /// markers). Passing user-controlled or attacker-influenced content
+    /// here is a direct cross-site scripting vulnerability. If your
+    /// caller path may include untrusted data, escape with the host's
+    /// HTML escaper (e.g. [`webui_handler::encode_safe`](crate::encode_safe))
+    /// **before** calling this builder.
+    #[must_use]
+    pub fn with_head_inject(mut self, html: &'a str) -> Self {
+        self.head_inject = if html.is_empty() { None } else { Some(html) };
+        self
+    }
+
+    /// Set HTML to emit immediately before `</body>`.
+    /// Pass an empty string to disable (`None` semantics).
+    ///
+    /// # Safety (XSS warning)
+    ///
+    /// Same contract as [`with_head_inject`](Self::with_head_inject):
+    /// the HTML is written verbatim with **no escaping**, so callers
+    /// MUST ensure the content is fully trusted. Untrusted content is
+    /// a direct XSS vector.
+    #[must_use]
+    pub fn with_body_inject(mut self, html: &'a str) -> Self {
+        self.body_inject = if html.is_empty() { None } else { Some(html) };
         self
     }
 }
@@ -136,11 +199,14 @@ struct WebUIProcessContext<'a> {
     local_vars: HashMap<String, Value>,
     /// Accumulates component attribute values between attrStart and the component fragment.
     component_attrs: HashMap<String, Value>,
-    /// URL path for server-side route matching.
-    request_path: String,
+    /// URL path for server-side route matching. Borrowed from
+    /// `RenderOptions<'a>::request_path` — zero-copy.
+    request_path: &'a str,
     /// Base path for resolving relative route paths (`./`).
     /// Updated as the handler descends into nested matched routes.
-    route_base: String,
+    /// `Cow` keeps the initial `"/"` literal zero-copy; nested-route
+    /// descent owns the recomputed path.
+    route_base: Cow<'a, str>,
     /// Component names visited during rendering (for selective f-template emission
     /// and CSS module dedup — only the first render of each component emits
     /// its `<style type="module">` tag).
@@ -151,9 +217,38 @@ struct WebUIProcessContext<'a> {
     /// Contains the children of the currently matched route fragment.
     route_children: Vec<webui_protocol::WebUiFragmentRoute>,
     /// Entry fragment ID — used to compute the initial inventory at head_end.
-    entry_id: String,
+    /// Borrowed from `RenderOptions<'a>::entry_id` — zero-copy.
+    entry_id: &'a str,
     /// CSP nonce for inline `<script>` tags (None = no nonce attribute).
-    nonce: Option<String>,
+    /// Borrowed from `RenderOptions<'a>::nonce` — zero-copy.
+    nonce: Option<&'a str>,
+    /// Lazily-built component-name → bit-position map. Built on first
+    /// access at `head_end` (CSS preload emission) or `body_end`
+    /// (inventory hex), then reused — avoids the second protocol walk
+    /// when both signals fire (the typical case for full-page renders).
+    component_index_cache: Option<HashMap<String, u32>>,
+    /// HTML emitted at the structural `head_end` boundary (before
+    /// `</head>`), after the built-in nonce/CSS-preload emissions.
+    /// Zero-copy borrow of the caller's `RenderOptions<'a>::head_inject`
+    /// (no per-render clone — saves an allocation when the host passes
+    /// a `&'static str` such as a dev livereload script).
+    head_inject: Option<&'a str>,
+    /// HTML emitted at the structural `body_end` boundary (before
+    /// `</body>`), after the built-in template-IIFE emissions.
+    /// Same zero-copy borrow as [`head_inject`](Self::head_inject).
+    body_inject: Option<&'a str>,
+    /// Tracks whether the `head_end` hook has already fired in this
+    /// render. Defends against malformed protocols that emit the
+    /// signal more than once (e.g., a template with multiple `<head>`
+    /// tags) — without this, host-supplied `head_inject` HTML, CSS
+    /// preload `<link>` tags, and the CSP `<meta>` nonce would be
+    /// duplicated, which can be a CSP-bypass / cache-bloat vector.
+    head_end_emitted: bool,
+    /// Tracks whether the `body_end` hook has already fired in this
+    /// render. Defends against malformed protocols emitting the
+    /// signal twice — without this, hydration `<script>` blocks and
+    /// host-supplied `body_inject` would be duplicated.
+    body_end_emitted: bool,
     /// Per-render compiled route cache (avoids re-parsing route patterns within a single render).
     route_cache: CompiledRouteCache,
     /// Counter for `data-ri` attributes on matched route elements.
@@ -332,12 +427,12 @@ impl WebUIHandler {
     ///
     /// `options.entry_id` selects the fragment to start rendering from.
     /// `options.request_path` controls server-side route matching.
-    pub fn handle(
+    pub fn handle<'a>(
         &self,
-        protocol: &WebUIProtocol,
-        state: &Value,
-        options: &RenderOptions<'_>,
-        writer: &mut dyn ResponseWriter,
+        protocol: &'a WebUIProtocol,
+        state: &'a Value,
+        options: &RenderOptions<'a>,
+        writer: &'a mut dyn ResponseWriter,
     ) -> Result<()> {
         if !protocol.fragments.contains_key(options.entry_id) {
             return Err(HandlerError::MissingFragment(options.entry_id.to_string()));
@@ -349,13 +444,27 @@ impl WebUIHandler {
             writer,
             local_vars: HashMap::new(),
             component_attrs: HashMap::new(),
-            request_path: options.request_path.to_string(),
-            route_base: "/".to_string(),
+            request_path: options.request_path,
+            route_base: Cow::Borrowed("/"),
             rendered_components: HashSet::new(),
             plugin: self.plugin_factory.map(|f| f()),
             route_children: Vec::new(),
-            entry_id: options.entry_id.to_string(),
-            nonce: options.nonce.map(String::from),
+            entry_id: options.entry_id,
+            // Defensive normalisation: empty strings become `None`
+            // even when the caller bypassed the `with_*` builders by
+            // writing directly to the `pub` field. An empty nonce
+            // would emit `<script nonce="">`, which under a strict
+            // `Content-Security-Policy: script-src 'nonce-...'` is a
+            // hard CSP failure that blocks every inline script. The
+            // same uniform treatment for inject fields keeps the API
+            // contract consistent regardless of how the option was
+            // populated.
+            nonce: options.nonce.filter(|s| !s.is_empty()),
+            head_inject: options.head_inject.filter(|s| !s.is_empty()),
+            body_inject: options.body_inject.filter(|s| !s.is_empty()),
+            head_end_emitted: false,
+            component_index_cache: None,
+            body_end_emitted: false,
             route_cache: CompiledRouteCache::new(),
             route_chain_index: 0,
         };
@@ -370,12 +479,12 @@ impl WebUIHandler {
     /// binding markers. Use this when rendering a component outside the
     /// normal page render flow (e.g., re-rendering a route component with
     /// modified state).
-    pub fn handle_as_component(
+    pub fn handle_as_component<'a>(
         &self,
-        protocol: &WebUIProtocol,
-        state: &Value,
-        entry_id: &str,
-        writer: &mut dyn ResponseWriter,
+        protocol: &'a WebUIProtocol,
+        state: &'a Value,
+        entry_id: &'a str,
+        writer: &'a mut dyn ResponseWriter,
     ) -> Result<()> {
         if !protocol.fragments.contains_key(entry_id) {
             return Err(HandlerError::MissingFragment(entry_id.to_string()));
@@ -387,13 +496,18 @@ impl WebUIHandler {
             writer,
             local_vars: HashMap::new(),
             component_attrs: HashMap::new(),
-            request_path: String::new(),
-            route_base: "/".to_string(),
+            request_path: "",
+            route_base: Cow::Borrowed("/"),
             rendered_components: HashSet::new(),
             plugin: self.plugin_factory.map(|f| f()),
             route_children: Vec::new(),
-            entry_id: entry_id.to_string(),
+            entry_id,
             nonce: None,
+            head_inject: None,
+            body_inject: None,
+            head_end_emitted: false,
+            component_index_cache: None,
+            body_end_emitted: false,
             route_cache: CompiledRouteCache::new(),
             route_chain_index: 0,
         };
@@ -443,7 +557,7 @@ impl WebUIHandler {
         // Resolves relative paths (`./`) using the current route_base.
         let best_route = route_renderer::find_best_route_match(
             fragments,
-            &context.request_path,
+            context.request_path,
             &context.route_base,
             &mut context.route_cache,
         );
@@ -497,7 +611,7 @@ impl WebUIHandler {
         }
 
         // Find the best matching child route
-        let request_segments = route_matcher::split_request_path(&context.request_path);
+        let request_segments = route_matcher::split_request_path(context.request_path);
         let mut best: Option<(usize, route_matcher::RouteMatch)> = None;
         for (idx, child) in children.iter().enumerate() {
             let resolved = route_matcher::resolve_route_path_cow(&child.path, &context.route_base);
@@ -534,10 +648,10 @@ impl WebUIHandler {
                 let saved_route_children = std::mem::take(&mut context.route_children);
 
                 if rm.consumed_segments > 0 {
-                    context.route_base = route_matcher::compute_route_base(
-                        &context.request_path,
+                    context.route_base = Cow::Owned(route_matcher::compute_route_base(
+                        context.request_path,
                         rm.consumed_segments,
-                    );
+                    ));
                 }
 
                 context.route_children = grandchildren;
@@ -636,7 +750,7 @@ impl WebUIHandler {
                 .filter(|s| !s.is_empty())
             {
                 context.writer.write("<style type=\"module\"")?;
-                if let Some(ref nonce) = context.nonce {
+                if let Some(nonce) = context.nonce {
                     context.writer.write(" nonce=\"")?;
                     context.writer.write(nonce)?;
                     context.writer.write("\"")?;
@@ -690,10 +804,10 @@ impl WebUIHandler {
                 let saved_route_base = context.route_base.clone();
                 let saved_route_children = std::mem::take(&mut context.route_children);
                 if let Some((_, ref rm)) = best_route {
-                    context.route_base = route_matcher::compute_route_base(
-                        &context.request_path,
+                    context.route_base = Cow::Owned(route_matcher::compute_route_base(
+                        context.request_path,
                         rm.consumed_segments,
-                    );
+                    ));
                 }
 
                 context.route_children = route_frag.children.clone();
@@ -825,28 +939,47 @@ impl WebUIHandler {
             p.on_for_start(&for_loop.fragment_id, context.writer)?;
         }
 
-        let item_name = &for_loop.item;
+        // Hot-loop optimisation: the loop variable name is `String`-keyed
+        // in `local_vars`. The naive impl re-inserts (and so re-allocates
+        // the key) on every iteration — a 1000-item loop pays 2000 String
+        // clones for the key alone. Instead, we save the outer-scope
+        // value (if any) ONCE before the loop, install the key ONCE with
+        // an empty placeholder, then overwrite the value in-place each
+        // iteration via `get_mut`. Restoration at the end happens once.
+        let item_name = for_loop.item.as_str();
+        let saved_value = context.local_vars.remove(item_name);
+        // Pre-insert the key so per-iteration `get_mut` is infallible.
+        // Cost: at most one `String::from(item_name)` for the lifetime
+        // of the loop, regardless of iteration count.
+        if !items.is_empty() {
+            context
+                .local_vars
+                .insert(item_name.to_string(), Value::Null);
+        }
         for (i, item) in items.into_iter().enumerate() {
             if let Some(p) = &mut context.plugin {
                 p.on_repeat_item_start(i, context.writer)?;
                 p.push_scope();
             }
 
-            // Save only the overwritten key instead of cloning the entire HashMap.
-            let saved_value = context.local_vars.insert(item_name.clone(), item);
-            self.process_fragment_id(&for_loop.fragment_id, context)?;
-            match saved_value {
-                Some(value) => {
-                    context.local_vars.insert(item_name.clone(), value);
-                }
-                None => {
-                    context.local_vars.remove(item_name.as_str());
-                }
+            // O(1) value swap; no key allocation.
+            if let Some(slot) = context.local_vars.get_mut(item_name) {
+                *slot = item;
             }
+            self.process_fragment_id(&for_loop.fragment_id, context)?;
 
             if let Some(p) = &mut context.plugin {
                 p.pop_scope();
                 p.on_repeat_item_end(i, context.writer)?;
+            }
+        }
+        // Restore outer scope (or remove the placeholder we installed).
+        match saved_value {
+            Some(value) => {
+                context.local_vars.insert(item_name.to_string(), value);
+            }
+            None => {
+                context.local_vars.remove(item_name);
             }
         }
 
@@ -867,9 +1000,12 @@ impl WebUIHandler {
         signal: &webui_protocol::WebUIFragmentSignal,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        // Hook: emit nonce meta and CSS <link> tags before </head>
-        if signal.raw && signal.value == "head_end" {
-            if let Some(ref nonce) = context.nonce {
+        // Hook: emit nonce meta and CSS <link> tags before </head>.
+        // Guarded by `head_end_emitted` so a malformed protocol cannot
+        // emit nonce/preloads/inject more than once per render.
+        if signal.raw && signal.value == "head_end" && !context.head_end_emitted {
+            context.head_end_emitted = true;
+            if let Some(nonce) = context.nonce {
                 context
                     .writer
                     .write("<meta name=\"webui-nonce\" content=\"")?;
@@ -893,14 +1029,16 @@ impl WebUIHandler {
             let is_shadow = context.protocol.dom_strategy() == webui_protocol::DomStrategy::Shadow;
 
             if is_link {
-                let comp_index = crate::route_handler::build_component_index(context.protocol);
+                let comp_index = context.component_index_cache.get_or_insert_with(|| {
+                    crate::route_handler::build_component_index(context.protocol)
+                });
                 let (needed_components, _) =
                     crate::route_handler::get_needed_components_for_request(
                         context.protocol,
-                        &context.entry_id,
-                        &context.request_path,
+                        context.entry_id,
+                        context.request_path,
                         "",
-                        &comp_index,
+                        comp_index,
                     )?;
 
                 for name in &needed_components {
@@ -925,169 +1063,196 @@ impl WebUIHandler {
                     }
                 }
             }
+
+            // Per-render `head_inject` HTML — image preloads, A/B test
+            // markers, etc. supplied by the host via RenderOptions.
+            // Emitted at the structural head_end boundary, after the
+            // built-in nonce + CSS-link emissions, so host injects
+            // appear immediately before `</head>`.
+            if let Some(html) = context.head_inject {
+                context.writer.write(html)?;
+            }
         }
 
-        // Hook: emit component templates before body_end when hydration is enabled.
-        if signal.raw && signal.value == "body_end" && context.plugin.is_some() {
-            // Build the component → index map for the inventory bitfield.
-            let comp_index = crate::route_handler::build_component_index(context.protocol);
+        // Hook: emit component templates and host body_inject before </body>.
+        // Single guarded block so the dedup flag protects both the
+        // hydration emission and the host inject from a malformed
+        // protocol that fires `body_end` more than once per render.
+        if signal.raw && signal.value == "body_end" && !context.body_end_emitted {
+            context.body_end_emitted = true;
+            if context.plugin.is_some() {
+                // Build (or reuse cached) component → index map.
+                let comp_index = context.component_index_cache.get_or_insert_with(|| {
+                    crate::route_handler::build_component_index(context.protocol)
+                });
 
-            // Compute the inventory hex from actually rendered components.
-            let inventory_hex = crate::route_handler::encode_component_inventory(
-                &context.rendered_components,
-                &comp_index,
-            );
+                // Compute the inventory hex from actually rendered components.
+                let inventory_hex = crate::route_handler::encode_component_inventory(
+                    &context.rendered_components,
+                    comp_index,
+                );
 
-            // Emit templates for all REACHABLE components on the current route,
-            // not just those rendered in this SSR pass. Components inside false
-            // <if> blocks or empty <for> loops are reachable via client-side
-            // state changes and need their templates available without a server
-            // round-trip. The graph walker follows conditional and loop branches
-            // unconditionally, but only descends into the matched route chain —
-            // components on other routes are delivered via SPA partial navigation.
-            let reachable = crate::route_handler::collect_reachable_components_for_request(
-                context.protocol,
-                &context.entry_id,
-                &context.request_path,
-                &mut context.route_cache,
-            );
+                // Emit templates for all REACHABLE components on the current route,
+                // not just those rendered in this SSR pass. Components inside false
+                // <if> blocks or empty <for> loops are reachable via client-side
+                // state changes and need their templates available without a server
+                // round-trip. The graph walker follows conditional and loop branches
+                // unconditionally, but only descends into the matched route chain —
+                // components on other routes are delivered via SPA partial navigation.
+                let reachable = crate::route_handler::collect_reachable_components_for_request(
+                    context.protocol,
+                    context.entry_id,
+                    context.request_path,
+                    &mut context.route_cache,
+                );
 
-            // Emit CSS module definitions for reachable-but-unrendered components.
-            // Rendered components already got their <style type="module"> inline
-            // during the render pass (via emit_css_module). Unrendered components
-            // need their definitions here so the framework can adopt them when
-            // the <if> condition flips true client-side.
-            for name in &reachable {
-                if !context.rendered_components.contains(name) {
-                    if let Some(css) = context
-                        .protocol
-                        .components
-                        .get(name)
-                        .map(|c| c.css.as_str())
-                        .filter(|s| !s.is_empty())
-                    {
-                        context.writer.write("<style type=\"module\"")?;
-                        if let Some(ref nonce) = context.nonce {
-                            context.writer.write(" nonce=\"")?;
-                            context.writer.write(nonce)?;
-                            context.writer.write("\"")?;
-                        }
-                        context.writer.write(" specifier=\"")?;
-                        context.writer.write(name)?;
-                        context.writer.write("\">")?;
-                        context.writer.write(css)?;
-                        context.writer.write("</style>")?;
-                    }
-                }
-            }
-
-            // Try to collect template JS sources for merging into the
-            // consolidated script block. If the plugin returns None
-            // (non-JS templates, e.g. FAST), fall back to separate emission.
-            let template_js = context
-                .plugin
-                .as_ref()
-                .and_then(|p| p.collect_template_js(context.protocol, &reachable));
-
-            if template_js.is_none() {
-                // Non-JS templates (FAST plugins) - emit separately
-                if let Some(ref p) = context.plugin {
-                    p.emit_templates(
-                        context.protocol,
-                        &reachable,
-                        context.nonce.as_deref(),
-                        context.writer,
-                    )?;
-                }
-            }
-
-            // ── Consolidated SSR script block ──────────────────────────
-            //
-            // Merges all SSR metadata into a single <script> tag:
-            //   1. Bootstrap meta  (window.__webui: chain, inventory, nonce, css, styles, state, templates)
-            //   2. Template IIFEs  (write into window.__webui.templates)
-            //
-            // Single-script reduces HTML parse overhead and ensures all
-            // SSR metadata is available atomically before DOMContentLoaded.
-
-            // Chain
-            let chain = crate::route_handler::collect_route_chain(
-                context.protocol,
-                &context.entry_id,
-                &context.request_path,
-                &mut context.route_cache,
-            );
-            let chain_json: Vec<Value> = chain
-                .iter()
-                .map(crate::route_handler::RouteChainEntry::to_json)
-                .collect();
-
-            // CSS hrefs emitted during SSR (Link-strategy components)
-            let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
-            let mut css_hrefs: Vec<&str> = Vec::new();
-            if is_link {
+                // Emit CSS module definitions for reachable-but-unrendered components.
+                // Rendered components already got their <style type="module"> inline
+                // during the render pass (via emit_css_module). Unrendered components
+                // need their definitions here so the framework can adopt them when
+                // the <if> condition flips true client-side.
                 for name in &reachable {
-                    if let Some(href) = context
+                    if !context.rendered_components.contains(name) {
+                        if let Some(css) = context
+                            .protocol
+                            .components
+                            .get(name)
+                            .map(|c| c.css.as_str())
+                            .filter(|s| !s.is_empty())
+                        {
+                            context.writer.write("<style type=\"module\"")?;
+                            if let Some(nonce) = context.nonce {
+                                context.writer.write(" nonce=\"")?;
+                                context.writer.write(nonce)?;
+                                context.writer.write("\"")?;
+                            }
+                            context.writer.write(" specifier=\"")?;
+                            context.writer.write(name)?;
+                            context.writer.write("\">")?;
+                            context.writer.write(css)?;
+                            context.writer.write("</style>")?;
+                        }
+                    }
+                }
+
+                // Try to collect template JS sources for merging into the
+                // consolidated script block. If the plugin returns None
+                // (non-JS templates, e.g. FAST), fall back to separate emission.
+                let template_js = context
+                    .plugin
+                    .as_ref()
+                    .and_then(|p| p.collect_template_js(context.protocol, &reachable));
+
+                if template_js.is_none() {
+                    // Non-JS templates (FAST plugins) - emit separately
+                    if let Some(ref p) = context.plugin {
+                        p.emit_templates(
+                            context.protocol,
+                            &reachable,
+                            context.nonce,
+                            context.writer,
+                        )?;
+                    }
+                }
+
+                // ── Consolidated SSR script block ──────────────────────────
+                //
+                // Merges all SSR metadata into a single <script> tag:
+                //   1. Bootstrap meta  (window.__webui: chain, inventory, nonce, css, styles, state, templates)
+                //   2. Template IIFEs  (write into window.__webui.templates)
+                //
+                // Single-script reduces HTML parse overhead and ensures all
+                // SSR metadata is available atomically before DOMContentLoaded.
+
+                // Chain
+                let chain = crate::route_handler::collect_route_chain(
+                    context.protocol,
+                    context.entry_id,
+                    context.request_path,
+                    &mut context.route_cache,
+                );
+                let chain_json: Vec<Value> = chain
+                    .iter()
+                    .map(crate::route_handler::RouteChainEntry::to_json)
+                    .collect();
+
+                // CSS hrefs emitted during SSR (Link-strategy components)
+                let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
+                let mut css_hrefs: Vec<&str> = Vec::new();
+                if is_link {
+                    for name in &reachable {
+                        if let Some(href) = context
+                            .protocol
+                            .components
+                            .get(name)
+                            .map(|c| c.css_href.as_str())
+                            .filter(|h| !h.is_empty())
+                        {
+                            css_hrefs.push(href);
+                        }
+                    }
+                }
+
+                // Module style specifiers emitted during SSR
+                let mut style_specs: Vec<&str> = Vec::new();
+                for name in &reachable {
+                    if context
                         .protocol
                         .components
                         .get(name)
-                        .map(|c| c.css_href.as_str())
-                        .filter(|h| !h.is_empty())
+                        .map(|c| !c.css.is_empty())
+                        .unwrap_or(false)
                     {
-                        css_hrefs.push(href);
+                        style_specs.push(name);
                     }
                 }
-            }
 
-            // Module style specifiers emitted during SSR
-            let mut style_specs: Vec<&str> = Vec::new();
-            for name in &reachable {
-                if context
-                    .protocol
-                    .components
-                    .get(name)
-                    .map(|c| !c.css.is_empty())
-                    .unwrap_or(false)
-                {
-                    style_specs.push(name);
+                // Open the consolidated <script> tag
+                if let Some(nonce) = context.nonce {
+                    context.writer.write("<script nonce=\"")?;
+                    context.writer.write(nonce)?;
+                    context.writer.write("\">")?;
+                } else {
+                    context.writer.write("<script>")?;
                 }
-            }
 
-            // Open the consolidated <script> tag
-            if let Some(ref nonce) = context.nonce {
-                context.writer.write("<script nonce=\"")?;
-                context.writer.write(nonce)?;
-                context.writer.write("\">")?;
-            } else {
-                context.writer.write("<script>")?;
-            }
+                // 1. Emit window.__webui bootstrap object (chain, inventory,
+                //    nonce, css, styles, state — all in one JSON assignment)
+                context.writer.write("window.__webui=")?;
+                write_webui_bootstrap(
+                    context.writer,
+                    WebUiBootstrap {
+                        state: context.state,
+                        chain: &chain_json,
+                        inventory: &inventory_hex,
+                        nonce: context.nonce,
+                        css_hrefs: &css_hrefs,
+                        style_specs: &style_specs,
+                    },
+                )?;
+                context.writer.write(";")?;
 
-            // 1. Emit window.__webui bootstrap object (chain, inventory,
-            //    nonce, css, styles, state — all in one JSON assignment)
-            context.writer.write("window.__webui=")?;
-            write_webui_bootstrap(
-                context.writer,
-                WebUiBootstrap {
-                    state: context.state,
-                    chain: &chain_json,
-                    inventory: &inventory_hex,
-                    nonce: context.nonce.as_deref(),
-                    css_hrefs: &css_hrefs,
-                    style_specs: &style_specs,
-                },
-            )?;
-            context.writer.write(";")?;
-
-            // 2. Template IIFEs — write into window.__webui.templates
-            //    (parser-generated IIFEs reference this object directly)
-            if let Some(ref tmpls) = template_js {
-                context.writer.write("\n")?;
-                for tmpl in tmpls {
-                    context.writer.write(tmpl)?;
+                // 2. Template IIFEs — write into window.__webui.templates
+                //    (parser-generated IIFEs reference this object directly)
+                if let Some(ref tmpls) = template_js {
+                    context.writer.write("\n")?;
+                    for tmpl in tmpls {
+                        context.writer.write(tmpl)?;
+                    }
                 }
+
+                context.writer.write("</script>\n")?;
             }
 
-            context.writer.write("</script>\n")?;
+            // Per-render `body_inject` HTML — dev livereload script,
+            // analytics, etc. supplied by the host via RenderOptions.
+            // Inside the dedup block but outside the plugin-only
+            // sub-block above, so it fires regardless of whether a
+            // hydration plugin is active. Appears immediately before
+            // `</body>`.
+            if let Some(html) = context.body_inject {
+                context.writer.write(html)?;
+            }
         }
 
         if let Some(p) = &mut context.plugin {
@@ -1297,12 +1462,12 @@ impl WebUIHandler {
     /// Render the UI based on the protocol and state.
     ///
     /// Like `handle()` but does not call `writer.end()`.
-    pub fn render(
+    pub fn render<'a>(
         &self,
-        protocol: &WebUIProtocol,
-        state: &Value,
-        options: &RenderOptions<'_>,
-        writer: &mut dyn ResponseWriter,
+        protocol: &'a WebUIProtocol,
+        state: &'a Value,
+        options: &RenderOptions<'a>,
+        writer: &'a mut dyn ResponseWriter,
     ) -> Result<()> {
         let mut context = WebUIProcessContext {
             protocol,
@@ -1310,13 +1475,20 @@ impl WebUIHandler {
             writer,
             local_vars: HashMap::new(),
             component_attrs: HashMap::new(),
-            request_path: options.request_path.to_string(),
-            route_base: "/".to_string(),
+            request_path: options.request_path,
+            route_base: Cow::Borrowed("/"),
             rendered_components: HashSet::new(),
             plugin: self.plugin_factory.map(|f| f()),
             route_children: Vec::new(),
-            entry_id: options.entry_id.to_string(),
-            nonce: options.nonce.map(String::from),
+            entry_id: options.entry_id,
+            // Same defensive normalisation as `handle()`. See the
+            // doc-comment there for the CSP-outage rationale.
+            nonce: options.nonce.filter(|s| !s.is_empty()),
+            head_inject: options.head_inject.filter(|s| !s.is_empty()),
+            body_inject: options.body_inject.filter(|s| !s.is_empty()),
+            head_end_emitted: false,
+            component_index_cache: None,
+            body_end_emitted: false,
             route_cache: CompiledRouteCache::new(),
             route_chain_index: 0,
         };
@@ -7028,6 +7200,503 @@ mod tests {
         assert!(
             !settings_tag.contains("query="),
             "route without allowed_query should not emit query attr: {settings_tag}"
+        );
+    }
+
+    // ── Per-render head_inject / body_inject (replaces the byte-scanner
+    //    InjectingStreamingWriter approach with structural signal-based
+    //    injection) ───────────────────────────────────────────────────
+
+    fn build_head_body_protocol() -> WebUIProtocol {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head><title>x</title>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::raw("</head><body>hello".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        WebUIProtocol::new(fragments)
+    }
+
+    #[test]
+    fn head_inject_emits_at_head_end_boundary() {
+        let protocol = build_head_body_protocol();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        let opts = RenderOptions::new("index.html", "/").with_head_inject("<link rel=preload>");
+        handle(&protocol, &state, &opts, &mut writer).unwrap();
+        let html = writer.get_content();
+        // The inject must appear immediately before `</head>`.
+        let inject_idx = html
+            .find("<link rel=preload>")
+            .expect("inject HTML missing");
+        let head_close_idx = html.find("</head>").expect("</head> missing");
+        assert!(
+            inject_idx < head_close_idx,
+            "head_inject must appear before </head>: {html}"
+        );
+        // No duplicate.
+        assert_eq!(html.matches("<link rel=preload>").count(), 1);
+    }
+
+    #[test]
+    fn body_inject_emits_at_body_end_boundary() {
+        let protocol = build_head_body_protocol();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        let opts = RenderOptions::new("index.html", "/").with_body_inject("<script>lr</script>");
+        handle(&protocol, &state, &opts, &mut writer).unwrap();
+        let html = writer.get_content();
+        let inject_idx = html
+            .find("<script>lr</script>")
+            .expect("inject HTML missing");
+        let body_close_idx = html.find("</body>").expect("</body> missing");
+        assert!(
+            inject_idx < body_close_idx,
+            "body_inject must appear before </body>: {html}"
+        );
+        assert_eq!(html.matches("<script>lr</script>").count(), 1);
+    }
+
+    #[test]
+    fn injects_are_no_op_when_unset() {
+        let protocol = build_head_body_protocol();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        let html = writer.get_content();
+        assert!(!html.contains("<link rel=preload>"));
+        assert!(!html.contains("<script>lr</script>"));
+    }
+
+    #[test]
+    fn empty_inject_string_treated_as_unset() {
+        let protocol = build_head_body_protocol();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        let opts = RenderOptions::new("index.html", "/")
+            .with_head_inject("")
+            .with_body_inject("");
+        handle(&protocol, &state, &opts, &mut writer).unwrap();
+        // No injection happens — empty strings are normalised to None
+        // by the builder, so the output is identical to the no-options case.
+        let html = writer.get_content();
+        assert!(html.contains("</head>"));
+        assert!(html.contains("</body>"));
+    }
+
+    #[test]
+    fn inject_html_is_passed_through_verbatim() {
+        // The handler does NOT escape the inject string — hosts pass
+        // raw HTML they trust. This test pins that contract: a `<` in
+        // the inject is emitted as-is, not encoded as `&lt;`.
+        let protocol = build_head_body_protocol();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        let opts =
+            RenderOptions::new("index.html", "/").with_body_inject("<script>var x=1;</script>");
+        handle(&protocol, &state, &opts, &mut writer).unwrap();
+        assert!(writer.get_content().contains("<script>var x=1;</script>"));
+    }
+
+    /// Both injects fire and appear at the correct structural
+    /// positions. Critically, this is robust against `</head>` /
+    /// `</body>` literals appearing elsewhere in the document — the
+    /// signal-based emitter cannot mis-fire on byte patterns inside
+    /// HTML comments, `<iframe srcdoc>`, or inline scripts (which the
+    /// previous byte-scanner could).
+    #[test]
+    fn injects_robust_against_marker_literals_in_content() {
+        let mut fragments = HashMap::new();
+        // The body intentionally contains `</body>` and `</head>`
+        // literals before the actual structural close — these came
+        // from a (hypothetical) iframe srcdoc or comment.
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head><title>x</title>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::raw(
+                        "</head><body><!-- </body> </head> --><p>hi</p>".to_string(),
+                    ),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        let opts = RenderOptions::new("index.html", "/")
+            .with_head_inject("<HEAD-INJ>")
+            .with_body_inject("<BODY-INJ>");
+        handle(&protocol, &state, &opts, &mut writer).unwrap();
+        let html = writer.get_content();
+        // The head inject sits between `<title>x</title>` and the
+        // first `</head>` — the structural one, not the comment one.
+        let head_inj_idx = html.find("<HEAD-INJ>").expect("head inject missing");
+        let head_close_idx = html.find("</head>").expect("</head> missing");
+        assert!(head_inj_idx < head_close_idx);
+        // The body inject sits before the structural `</body>` — NOT
+        // before the `</body>` literal in the comment (which would
+        // require the inject to appear inside `<p>hi</p>` somewhere).
+        let body_inj_idx = html.find("<BODY-INJ>").expect("body inject missing");
+        // Find the LAST `</body>` (the structural one).
+        let body_close_idx = html.rfind("</body>").expect("</body> missing");
+        assert!(
+            body_inj_idx < body_close_idx,
+            "body_inject must precede the structural </body>: {html}"
+        );
+        // And the comment is preserved verbatim.
+        assert!(html.contains("<!-- </body> </head> -->"));
+    }
+
+    /// Coverage-14: both `head_inject` AND `body_inject` set in the
+    /// same render. Each fires at the correct structural boundary and
+    /// neither leaks into the other's region.
+    #[test]
+    fn both_injects_fire_at_correct_boundaries() {
+        let protocol = build_head_body_protocol();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        let opts = RenderOptions::new("index.html", "/")
+            .with_head_inject("<META-HEAD>")
+            .with_body_inject("<SCRIPT-BODY>");
+        handle(&protocol, &state, &opts, &mut writer).unwrap();
+        let html = writer.get_content();
+        let head_idx = html.find("<META-HEAD>").expect("head inject missing");
+        let head_close = html.find("</head>").expect("</head> missing");
+        let body_idx = html.find("<SCRIPT-BODY>").expect("body inject missing");
+        let body_close = html.find("</body>").expect("</body> missing");
+        assert!(head_idx < head_close, "head_inject before </head>");
+        assert!(head_close < body_idx, "body_inject after </head>");
+        assert!(body_idx < body_close, "body_inject before </body>");
+        assert_eq!(html.matches("<META-HEAD>").count(), 1);
+        assert_eq!(html.matches("<SCRIPT-BODY>").count(), 1);
+    }
+
+    /// Coverage-15 / Bug-3 (security defense): a malformed protocol
+    /// emitting `head_end` and `body_end` more than once must NOT
+    /// duplicate the host inject HTML. Without the dedup guard,
+    /// double-emission would amplify Security-2 (a 1 MiB inject ×
+    /// 1000 duplicate signals = 1 GiB output).
+    #[test]
+    fn injects_dedupe_against_duplicate_signals() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::signal("head_end", true), // duplicate
+                    WebUIFragment::signal("head_end", true), // triplicate
+                    WebUIFragment::raw("</head><body>".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::signal("body_end", true), // duplicate
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        let opts = RenderOptions::new("index.html", "/")
+            .with_head_inject("<HINJ>")
+            .with_body_inject("<BINJ>");
+        handle(&protocol, &state, &opts, &mut writer).unwrap();
+        let html = writer.get_content();
+        assert_eq!(
+            html.matches("<HINJ>").count(),
+            1,
+            "head_inject must emit exactly once even with duplicate head_end signals"
+        );
+        assert_eq!(
+            html.matches("<BINJ>").count(),
+            1,
+            "body_inject must emit exactly once even with duplicate body_end signals"
+        );
+    }
+
+    /// Coverage-15: a Shadow-DOM / component-only protocol that has NO
+    /// `<head>` / `<body>` tags must NOT emit the inject (the signals
+    /// never fire). Verifies the injects are no-ops, not panics.
+    #[test]
+    fn injects_no_op_when_no_head_or_body_signals() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw(
+                    "<my-component>hi</my-component>".to_string(),
+                )],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        let opts = RenderOptions::new("index.html", "/")
+            .with_head_inject("<HINJ>")
+            .with_body_inject("<BINJ>");
+        handle(&protocol, &state, &opts, &mut writer).unwrap();
+        let html = writer.get_content();
+        assert!(!html.contains("<HINJ>"), "head_inject must not appear");
+        assert!(!html.contains("<BINJ>"), "body_inject must not appear");
+        assert!(html.contains("<my-component>"));
+    }
+
+    /// Coverage-19: the handler's `&self` is shared across threads.
+    /// Two concurrent renders with different inject values must NOT
+    /// cross-contaminate (each thread sees only its own inject).
+    /// Per-render mutable state lives on the `WebUIProcessContext`,
+    /// which is stack-allocated per call.
+    #[test]
+    fn concurrent_renders_with_different_injects_do_not_cross_contaminate() {
+        let protocol = std::sync::Arc::new(build_head_body_protocol());
+        let state = std::sync::Arc::new(test_json!({}));
+        let handler = std::sync::Arc::new(WebUIHandler::new());
+
+        const N_THREADS: usize = 16;
+        let mut handles = Vec::with_capacity(N_THREADS);
+        for tid in 0..N_THREADS {
+            let h = std::sync::Arc::clone(&handler);
+            let p = std::sync::Arc::clone(&protocol);
+            let s = std::sync::Arc::clone(&state);
+            handles.push(std::thread::spawn(move || {
+                let head = format!("<HEAD-T{tid}>");
+                let body = format!("<BODY-T{tid}>");
+                let mut writer = TestWriter::new();
+                let opts = RenderOptions::new("index.html", "/")
+                    .with_head_inject(&head)
+                    .with_body_inject(&body);
+                h.handle(&p, &s, &opts, &mut writer).unwrap();
+                let html = writer.get_content();
+                // Must contain my own injects exactly once.
+                assert_eq!(html.matches(&head).count(), 1);
+                assert_eq!(html.matches(&body).count(), 1);
+                // Must NOT contain any other thread's inject.
+                for other in 0..N_THREADS {
+                    if other == tid {
+                        continue;
+                    }
+                    let other_head = format!("<HEAD-T{other}>");
+                    let other_body = format!("<BODY-T{other}>");
+                    assert!(
+                        !html.contains(&other_head),
+                        "tid {tid} saw {other}'s head_inject"
+                    );
+                    assert!(
+                        !html.contains(&other_body),
+                        "tid {tid} saw {other}'s body_inject"
+                    );
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("worker panicked");
+        }
+    }
+
+    /// Coverage-17: a large (1 MiB) head_inject must round-trip
+    /// correctly without panic, truncation, or excessive overhead.
+    /// (No size cap is enforced by the handler — the host owns the
+    /// safety contract; see `with_head_inject` doc comment.)
+    #[test]
+    fn large_inject_roundtrips_without_truncation() {
+        let protocol = build_head_body_protocol();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        let big = "x".repeat(1024 * 1024);
+        let opts = RenderOptions::new("index.html", "/").with_head_inject(&big);
+        handle(&protocol, &state, &opts, &mut writer).unwrap();
+        let html = writer.get_content();
+        assert!(
+            html.contains(&big),
+            "large head_inject must be present verbatim ({} bytes)",
+            big.len()
+        );
+        // Sanity: only one copy.
+        assert_eq!(html.matches(&big).count(), 1);
+    }
+
+    /// `with_nonce("")` must normalize to `None` (no `<meta>` emitted),
+    /// matching the empty-string semantics of `with_head_inject` /
+    /// `with_body_inject`. An empty content attribute is browser-
+    /// ignored noise.
+    #[test]
+    fn empty_nonce_treated_as_unset() {
+        let protocol = build_head_body_protocol();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        let opts = RenderOptions::new("index.html", "/").with_nonce("");
+        handle(&protocol, &state, &opts, &mut writer).unwrap();
+        assert!(
+            !writer.get_content().contains("webui-nonce"),
+            "empty nonce must not emit <meta name=\"webui-nonce\">"
+        );
+    }
+
+    /// Regression for the bug Akrosh caught: the `pub` fields on
+    /// `RenderOptions` let a caller bypass the `with_*` builder
+    /// normalisation, e.g.:
+    ///
+    /// ```ignore
+    /// RenderOptions { nonce: Some(""), ..RenderOptions::new(e, p) }
+    /// ```
+    ///
+    /// Without defensive normalisation at handler init, this would
+    /// emit `<script nonce="">` on every inline script. Under a
+    /// strict `Content-Security-Policy: script-src 'nonce-...'` an
+    /// empty nonce is a HARD CSP failure that blocks every inline
+    /// script — a complete inline-script-execution outage.
+    ///
+    /// The handler now treats `Some("")` identically to `None` for
+    /// all three injection points (nonce / head_inject / body_inject)
+    /// regardless of how the option was populated.
+    #[test]
+    fn empty_field_bypass_is_normalised_at_handler_init() {
+        let protocol = build_head_body_protocol();
+        let state = test_json!({});
+
+        // Bypass the `with_nonce` builder by writing the field directly.
+        let opts_with_empty_nonce = RenderOptions {
+            nonce: Some(""),
+            ..RenderOptions::new("index.html", "/")
+        };
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &opts_with_empty_nonce, &mut writer).unwrap();
+        let html = writer.get_content();
+        assert!(
+            !html.contains("webui-nonce"),
+            "field-bypass empty nonce must not emit `<meta name=\"webui-nonce\">`"
+        );
+        assert!(
+            !html.contains("nonce=\"\""),
+            "field-bypass empty nonce must not emit `nonce=\"\"` (would be a hard CSP failure)"
+        );
+
+        // Same defence for inject fields.
+        let opts_with_empty_injects = RenderOptions {
+            head_inject: Some(""),
+            body_inject: Some(""),
+            ..RenderOptions::new("index.html", "/")
+        };
+        let mut writer = TestWriter::new();
+        handle(&protocol, &state, &opts_with_empty_injects, &mut writer).unwrap();
+        // No assertion needed beyond "doesn't panic and doesn't emit
+        // empty inject markers" — the head_end / body_end paths must
+        // treat the empty inject as no-op the same way the builder does.
+    }
+
+    /// Regression for the deep-audit's Bug-6 claim. The for-loop hot-
+    /// path optimisation (insert key once + `get_mut`-swap value
+    /// in-place) was suspected of corrupting the outer scope when a
+    /// nested `<for>` loop reuses the same variable name. This test
+    /// proves the optimisation is correct under that condition by
+    /// requiring the outer `item` to be visible before, between, and
+    /// after the inner loop, with its value preserved across inner
+    /// iterations.
+    ///
+    /// Trace through the optimisation on `outer = [A, B]`,
+    /// `inner = [X, Y]` with both loops using `item` as the variable:
+    ///
+    ///   outer pre-insert "item": Null
+    ///   iter 1: get_mut → write A
+    ///     emit "outer:A"
+    ///     enter inner: saved = remove("item") = Some(A)
+    ///                  pre-insert "item": Null
+    ///                  iter 1: write X → emit "inner:X"
+    ///                  iter 2: write Y → emit "inner:Y"
+    ///                  restore: insert("item", A)   ← outer's A back
+    ///     emit "outer:A again"               ← reads A correctly
+    ///   iter 2: get_mut → write B (overwrites the restored A,
+    ///                              but that's correct — we're now
+    ///                              in iter 2 of the outer loop)
+    ///     emit "outer:B"
+    ///     enter inner: saved = remove("item") = Some(B), …, restore B
+    ///     emit "outer:B again"
+    ///
+    /// If the audit's claim were correct — that the outer's `get_mut`
+    /// somehow held a reference past the inner loop and clobbered the
+    /// restoration — we'd see corrupted values in the "outer:X again"
+    /// emissions. The assertion below pins the correct sequence.
+    #[test]
+    fn nested_for_loops_reusing_same_variable_name_dont_corrupt_scope() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("["),
+                    WebUIFragment::for_loop("item", "outer", "outer_body"),
+                    WebUIFragment::raw("]"),
+                ],
+            },
+        );
+        fragments.insert(
+            "outer_body".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("(O="),
+                    WebUIFragment::signal("item.tag", false),
+                    WebUIFragment::for_loop("item", "inner", "inner_body"),
+                    WebUIFragment::raw(",O="),
+                    WebUIFragment::signal("item.tag", false),
+                    WebUIFragment::raw(")"),
+                ],
+            },
+        );
+        fragments.insert(
+            "inner_body".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("[I="),
+                    WebUIFragment::signal("item.tag", false),
+                    WebUIFragment::raw("]"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({
+            "outer": [{"tag": "A"}, {"tag": "B"}],
+            "inner": [{"tag": "X"}, {"tag": "Y"}],
+        });
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        // Expected sequence:
+        //   outer iter 1 (item=A):
+        //     emit "(O=A"               ← outer A before inner
+        //     inner iter 1 (item=X) emit "[I=X]"
+        //     inner iter 2 (item=Y) emit "[I=Y]"
+        //     emit ",O=A)"              ← outer A AFTER inner restore
+        //   outer iter 2 (item=B):
+        //     emit "(O=B"
+        //     inner iter 1 (item=X) emit "[I=X]"
+        //     inner iter 2 (item=Y) emit "[I=Y]"
+        //     emit ",O=B)"
+        assert_eq!(
+            writer.get_content(),
+            "[(O=A[I=X][I=Y],O=A)(O=B[I=X][I=Y],O=B)]",
+            "outer `item` must stay bound to its iteration value across the inner loop's save/restore"
         );
     }
 }

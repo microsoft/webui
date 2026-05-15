@@ -66,14 +66,33 @@ impl FrontendRuntime {
         )
     }
 
-    pub fn render_html(&self, route_path: &str, state: &Value, nonce: &str) -> Result<String> {
-        let mut writer = MemoryWriter::with_capacity(16_384);
+    /// Stream the SSR HTML for `route_path` into `writer`. Used by the
+    /// streaming response path to avoid materialising the full HTML in
+    /// memory before sending the first byte to the client. The writer is
+    /// typically a [`webui::streaming::StreamingWriter`].
+    ///
+    /// `head_inject` (optional) is HTML emitted at the structural
+    /// `</head>` close — used here for per-request `<link
+    /// rel="preload">` image hints. Inserted by the handler at the
+    /// `head_end` signal boundary, so it cannot mis-fire on `</head>`
+    /// literals appearing in HTML comments / `srcdoc` / scripts.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_html_to<W: ResponseWriter>(
+        &self,
+        route_path: &str,
+        state: &Value,
+        nonce: &str,
+        head_inject: &str,
+        writer: &mut W,
+    ) -> Result<()> {
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
-        let opts = RenderOptions::new(&self.entry, route_path).with_nonce(nonce);
+        let opts = RenderOptions::new(&self.entry, route_path)
+            .with_nonce(nonce)
+            .with_head_inject(head_inject);
         handler
-            .handle(&self.protocol, state, &opts, &mut writer)
+            .handle(&self.protocol, state, &opts, writer)
             .with_context(|| format!("Failed to render HTML for {route_path}"))?;
-        Ok(writer.buf)
+        Ok(())
     }
 
     #[must_use]
@@ -216,29 +235,6 @@ pub fn request_path(req: &HttpRequest) -> String {
         || req.path().to_string(),
         |value| value.as_str().to_string(),
     )
-}
-
-struct MemoryWriter {
-    buf: String,
-}
-
-impl MemoryWriter {
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            buf: String::with_capacity(capacity),
-        }
-    }
-}
-
-impl ResponseWriter for MemoryWriter {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
-        self.buf.push_str(content);
-        Ok(())
-    }
-
-    fn end(&mut self) -> webui_handler::Result<()> {
-        Ok(())
-    }
 }
 
 #[cfg(test)]

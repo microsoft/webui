@@ -1,22 +1,20 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Memory + CPU benchmark for the streaming render paths (commit 2:
-//! adds `streaming` and `streaming POOLED` rows on top of the
-//! `string` / `string+postinject` baselines from the previous commit).
+//! Memory + CPU benchmark for the streaming render paths.
 //!
-//! Measures **per-render resource usage** for four writer paths:
+//! Measures **per-render resource usage** — not just wall-clock time —
+//! across the five writer paths exercised by `crates/webui/benches/
+//! streaming_bench.rs`:
 //!
-//! 1. `string`            — pre-allocated `String` buffer (baseline).
-//! 2. `string+postinject` — String + `</body>` byte-window scan +
-//!    concat. Mirrors the legacy livereload path.
-//! 3. `streaming`         — bounded tokio mpsc-backed `StreamingWriter`,
-//!    coalesced ~4 KB chunks.
-//! 4. `streaming POOLED`  — streaming with shared `ChunkPool` for
-//!    chunk-buffer recycling across renders.
-//!
-//! The next commit adds a `streaming+inject(opts)` row exercising the
-//! signal-based per-render HTML injection API.
+//! 1. `string`                            — pre-allocated `String` buffer.
+//! 2. `streaming`                         — `StreamingWriter` alone.
+//! 3. `streaming+inject(opts)`            — production composition with
+//!    `RenderOptions::with_head_inject` / `with_body_inject` (handler
+//!    emits at the parser-synthesized `head_end` / `body_end` signals).
+//! 4. `string+postinject`                 — legacy `lr.inject(&buf)` reference.
+//! 5. `streaming+inject(opts) POOLED`     — production path with shared
+//!    `ChunkPool` for chunk-buffer recycling.
 //!
 //! For each path × scale (10 / 100 / 1000 contacts) it reports:
 //!
@@ -260,9 +258,7 @@ fn build_protocol() -> WebUIProtocol {
     .protocol
 }
 
-// Body inject script used by the `string+postinject` baseline path.
-// Mirrors the dev-mode livereload script. The signal-based alternative
-// API (`with_head_inject` / `with_body_inject`) lands in the next commit.
+const HEAD_INJECT: &str = r#"<link rel="preload" as="image" href="/img/hero.jpg" fetchpriority="high"><link rel="preload" as="image" href="/img/p1.jpg"><link rel="preload" as="image" href="/img/p2.jpg">"#;
 const BODY_INJECT: &str = r#"<script>(function(){var e=new EventSource('/__webui/livereload');e.addEventListener('reload',function(){location.reload()})})();</script>"#;
 
 // ── Writers ────────────────────────────────────────────────────────────
@@ -346,11 +342,34 @@ fn run_streaming(protocol: &WebUIProtocol, state: &Value, output_size: usize) ->
     drain_total(rx)
 }
 
-/// Production composition with the lock-free shared chunk pool.
-/// `pool` is shared across all calls (lives for the whole bench run)
-/// to mirror the actual server's startup-time pool. The next commit
-/// adds an `+ inject` variant on top of this baseline.
-fn run_streaming_pooled(
+/// Streaming with `RenderOptions::with_head_inject` /
+/// `with_body_inject`. Note: the contact-book template is a Shadow
+/// DOM template with no `<head>`/`<body>` tags, so `head_end` /
+/// `body_end` signals never fire and the inject strings are NOT
+/// emitted. This row therefore measures "inject configured but never
+/// triggered" — which on the new signal-based path costs **nothing**
+/// (just two `Option<String>` fields on the context). The legacy
+/// byte-scanner approach had to scan every output byte looking for
+/// never-present markers, costing ~14 µs of pure overhead.
+fn run_streaming_with_inject(protocol: &WebUIProtocol, state: &Value, output_size: usize) -> usize {
+    let h = WebUIHandler::new();
+    let cap = (output_size / StreamingWriter::CHUNK_TARGET) + 4;
+    let (tx, rx) = mpsc::channel::<Bytes>(cap);
+    let mut w = StreamingWriter::new(tx);
+    let opts = RenderOptions::new("index.html", "/")
+        .with_head_inject(HEAD_INJECT)
+        .with_body_inject(BODY_INJECT);
+    h.handle(protocol, state, &opts, &mut w).expect("render");
+    ResponseWriter::end(&mut w).expect("end");
+    drop(w);
+    drain_total(rx)
+}
+
+/// Production composition with the lock-free shared chunk pool +
+/// signal-based inject. `pool` is shared across all calls (lives for
+/// the whole bench run) to mirror the actual server's startup-time
+/// pool.
+fn run_streaming_pooled_with_inject(
     protocol: &WebUIProtocol,
     state: &Value,
     output_size: usize,
@@ -360,13 +379,10 @@ fn run_streaming_pooled(
     let cap = (output_size / StreamingWriter::CHUNK_TARGET) + 4;
     let (tx, rx) = mpsc::channel::<Bytes>(cap);
     let mut w = StreamingWriter::new_pooled(tx, Arc::clone(pool));
-    h.handle(
-        protocol,
-        state,
-        &RenderOptions::new("index.html", "/"),
-        &mut w,
-    )
-    .expect("render");
+    let opts = RenderOptions::new("index.html", "/")
+        .with_head_inject(HEAD_INJECT)
+        .with_body_inject(BODY_INJECT);
+    h.handle(protocol, state, &opts, &mut w).expect("render");
     ResponseWriter::end(&mut w).expect("end");
     drop(w);
     // Drain consumes the Bytes — drops PooledChunk owners — releases
@@ -738,6 +754,7 @@ fn main() {
             run_string as fn(&WebUIProtocol, &Value, usize) -> usize,
         ),
         ("streaming", run_streaming),
+        ("streaming+inject(opts)", run_streaming_with_inject),
         ("string+postinject", run_string_postinject),
     ];
 
@@ -757,9 +774,14 @@ fn main() {
         // Pooled path measured separately because the closure needs to
         // capture the shared pool (can't use a fn pointer).
         let delta = measure(iters_per_scale, || {
-            std::hint::black_box(run_streaming_pooled(&protocol, &state, output_size, &pool));
+            std::hint::black_box(run_streaming_pooled_with_inject(
+                &protocol,
+                &state,
+                output_size,
+                &pool,
+            ));
         });
-        let row_label = format!("streaming POOLED/{scale}");
+        let row_label = format!("streaming+inject(opts) POOLED/{scale}");
         print_row(&format!("{row_label} ({output_size}B)"), delta);
         snapshot_rows.push(delta_to_row(&row_label, delta));
         println!(

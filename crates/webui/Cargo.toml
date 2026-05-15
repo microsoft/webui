@@ -28,6 +28,7 @@ bytes = { workspace = true }
 tokio = { workspace = true }
 memchr = { workspace = true }
 crossbeam-queue = { workspace = true }
+log = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

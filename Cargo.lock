@@ -1760,8 +1760,10 @@ version = "3.0.0"
 dependencies = [
  "actix-web",
  "anyhow",
+ "bytes",
  "clap",
  "hmac",
+ "log",
  "microsoft-webui",
  "microsoft-webui-handler",
  "mime_guess",
@@ -1771,6 +1773,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
@@ -1790,6 +1794,7 @@ dependencies = [
  "crossbeam-queue",
  "futures-util",
  "libc",
+ "log",
  "memchr",
  "microsoft-webui-discovery",
  "microsoft-webui-handler",
@@ -1810,9 +1815,11 @@ dependencies = [
  "actix-web",
  "anyhow",
  "awc",
+ "bytes",
  "clap",
  "console",
  "expand-tilde",
+ "log",
  "microsoft-webui",
  "microsoft-webui-dev-server",
  "microsoft-webui-discovery",
@@ -1822,6 +1829,8 @@ dependencies = [
  "mime_guess",
  "serde_json",
  "tempfile",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]

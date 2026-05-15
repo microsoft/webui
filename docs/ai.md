@@ -884,6 +884,8 @@ let mut handler = WebUIHandler::new();
 handler.handle(&protocol, &state, &options, &mut writer)?;
 ```
 
+**Streaming SSR (production).** Use `webui::streaming::StreamingWriter::new_pooled(tx, chunk_pool)` with a process-wide `ChunkPool` for bounded backpressure + zero per-flush allocation. Configure `.with_flush_timeout(Duration::from_secs(30))` to bound slow-loris DoS. Use `RenderOptions::with_head_inject(html)` / `with_body_inject(html)` for per-request HTML splicing at parser-synthesized `head_end` / `body_end` boundaries (no byte-scanner, cannot mis-fire on literals in comments / srcdoc). `HandlerError::ClientDisconnected` and `StreamTimeout` are returned from both `write()` and `end()` for telemetry. Pre-escape untrusted inject content with `webui_handler::encode_safe`.
+
 ### Node.js
 
 ```javascript

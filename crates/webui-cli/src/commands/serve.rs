@@ -14,6 +14,8 @@ use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio_stream::StreamExt;
+use webui::streaming::StreamingWriter;
 use webui::WebUIHandler;
 use webui_dev_server::{spawn_watcher, sse_handler, LiveReload, WatchConfig};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
@@ -361,6 +363,12 @@ fn run(args: &ServeArgs) -> Result<()> {
         plugin: args.app_args.plugin,
         token_css: render_config.token_css,
         base_path: args.base_path.clone(),
+        // Pool sized for typical concurrent renders × channel capacity.
+        // 256 buffers × 5 KiB ≈ 1.25 MiB peak pool memory — bounded.
+        chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
+            256,
+            StreamingWriter::CHUNK_TARGET + 1024,
+        )),
     });
     let lr_data = livereload.map(web::Data::new);
 
@@ -532,6 +540,10 @@ struct ServerContext {
     token_css: Option<HashMap<String, String>>,
     /// Base path for sub-path deployment.
     base_path: Option<String>,
+    /// Shared chunk-buffer pool. One pool per server; recycled across
+    /// every streaming render so steady-state RPS does not allocate
+    /// fresh chunk buffers per flush.
+    chunk_pool: Arc<webui::streaming::ChunkPool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -628,7 +640,12 @@ async fn resolve_state(context: &ServerContext, request_path: &str) -> Value {
 }
 
 /// Render a full HTML page using route matching from `route_path` and state lookup from
-/// `request_path`, which may include a query string.
+/// `request_path`, which may include a query string. Streams chunks via
+/// [`StreamingWriter`]; when livereload is active, the dev-mode `<script>`
+/// is spliced before `</body>` via `RenderOptions::with_body_inject` —
+/// the handler emits it at the parser-synthesized `body_end` signal
+/// boundary, with zero scan cost and no risk of false-marker mis-fire
+/// on `</body>` literals appearing inside HTML comments / `srcdoc`.
 async fn render_page_response(
     context: &web::Data<ServerContext>,
     route_path: &str,
@@ -658,26 +675,66 @@ async fn render_page_response(
         }
     }
 
-    let mut writer = MemoryWriter::with_capacity(4096);
-    let handler = create_handler(plugin);
+    // Livereload script as Arc<str> so the producer thread holds a
+    // single cheap clone, not a per-request String.
+    let livereload_script: Option<Arc<str>> =
+        context.livereload.as_ref().map(|lr| lr.client_script_arc());
+    let route_path = route_path.to_string();
+    let chunk_pool = Arc::clone(&context.chunk_pool);
 
-    if let Err(e) = handler.handle(
-        &proto,
-        &state,
-        &RenderOptions::new(&entry, route_path),
-        &mut writer,
-    ) {
-        return HttpResponse::InternalServerError().body(format!("Render error: {e}"));
-    }
+    // Bounded channel: backpressure when client is slow, no unbounded
+    // memory growth. Capacity is in chunks (≈ 4 KB each).
+    let (tx, rx) =
+        tokio::sync::mpsc::channel::<bytes::Bytes>(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
+    let route_path_for_log = route_path.clone();
+    actix_web::rt::task::spawn_blocking(move || {
+        // 30 s flush deadline caps slow-loris DoS: an attacker can pin
+        // a render thread for at most 30 s per chunk, then we abort
+        // and free the thread.
+        // Pool-acquired chunk buffers recycle across requests — steady-
+        // state RPS does not allocate fresh chunk Vec per flush.
+        let mut writer = StreamingWriter::new_pooled(tx, chunk_pool)
+            .with_flush_timeout(std::time::Duration::from_secs(30));
+        // Build RenderOptions with optional body_inject for livereload.
+        // The handler emits the inject string at the structural
+        // body_end boundary identified by the parser — zero scan cost,
+        // no risk of false-marker mis-firing on `</body>` literals
+        // appearing inside HTML comments / srcdoc / inline scripts.
+        let opts_owner = RenderOptions::new(&entry, &route_path);
+        let opts = match livereload_script.as_deref() {
+            Some(script) => opts_owner.with_body_inject(script),
+            None => opts_owner,
+        };
+        let handler = create_handler(plugin);
+        if let Err(e) = handler.handle(&proto, &state, &opts, &mut writer) {
+            // Status 200 + headers are already on the wire — we cannot
+            // return an HTTP error. Log the detail so ops sees it;
+            // emit a fixed HTML comment so an attacker-controlled
+            // error message cannot break out of the comment via `-->`.
+            log::error!("render failed for {route_path_for_log}: {e}");
+            let _ = ResponseWriter::write(&mut writer, "<!-- webui: render error -->");
+        }
+        // `end()` now returns the typed error from the final flush
+        // (`ClientDisconnected` / `StreamTimeout`) rather than
+        // silently swallowing it. Log truncated-response cases at
+        // debug so they're visible to operators without spamming
+        // production logs — these are normal "browser navigated away
+        // during a long-tail render" events.
+        if let Err(e) = ResponseWriter::end(&mut writer) {
+            log::debug!("render stream truncated for {route_path_for_log}: {e}");
+        }
+    });
 
-    let html = match &context.livereload {
-        Some(lr) => lr.inject(&writer.buf),
-        None => writer.buf,
-    };
-
+    // Zero-overhead Stream adapter (no async_stream! coroutine).
+    let stream =
+        tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok::<bytes::Bytes, actix_web::Error>);
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
-        .body(html)
+        // Streaming responses with attacker-influencable timing should
+        // not be cached by intermediaries; the body may be partial on
+        // error paths.
+        .insert_header(("Cache-Control", "no-store"))
+        .streaming(stream)
 }
 
 async fn handle_index(req: HttpRequest, context: web::Data<ServerContext>) -> HttpResponse {
@@ -1486,6 +1543,10 @@ mod tests {
             plugin: None,
             token_css: None,
             base_path: None,
+            chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
+                4,
+                StreamingWriter::CHUNK_TARGET + 1024,
+            )),
         });
 
         let app = actix_test::init_service(

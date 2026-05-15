@@ -495,10 +495,22 @@ pub struct RenderOptions<'a> {
     pub entry_id: &'a str,
     /// The URL path to match routes against (e.g., `"/contacts/42"`).
     pub request_path: &'a str,
+    /// Optional CSP nonce reflected into the `<meta name="webui-nonce">`
+    /// tag and onto every emitted inline `<script>` / `<style type="module">`.
+    pub nonce: Option<&'a str>,
+    /// Optional HTML emitted at the structural `head_end` boundary —
+    /// see [Per-Render HTML Injection](#per-render-html-injection).
+    pub head_inject: Option<&'a str>,
+    /// Optional HTML emitted at the structural `body_end` boundary —
+    /// same contract as `head_inject`.
+    pub body_inject: Option<&'a str>,
 }
 
 impl<'a> RenderOptions<'a> {
     pub fn new(entry_id: &'a str, request_path: &'a str) -> Self;
+    pub fn with_nonce(self, nonce: &'a str) -> Self;
+    pub fn with_head_inject(self, html: &'a str) -> Self;
+    pub fn with_body_inject(self, html: &'a str) -> Self;
 }
 
 impl WebUIHandler {
@@ -632,6 +644,107 @@ pub trait ResponseWriter {
     fn end(&mut self) -> Result<()>;
 }
 ```
+
+### Streaming Response Writers (`webui::streaming`)
+
+Hosts that support HTTP response streaming can render directly into a
+network-bound channel instead of buffering the full HTML in memory.
+The `webui::streaming` module provides:
+
+- **`StreamingWriter`** — coalesces writes into ~4 KB chunks and pushes
+  them through a **bounded** `tokio::sync::mpsc::Sender<Bytes>`. The
+  bound (`DEFAULT_CHANNEL_CAPACITY = 4` chunks) provides backpressure
+  via `blocking_send`: a slow client parks the render thread instead
+  of letting unbounded chunks accumulate. A configurable flush
+  deadline (`with_flush_timeout`) caps the maximum time a producer
+  thread can be parked, bounding the slow-loris DoS surface. When the
+  receiver is dropped (client disconnect) or the deadline elapses,
+  `write` returns a typed error (`HandlerError::ClientDisconnected` /
+  `HandlerError::StreamTimeout`) so the handler aborts the render
+  rather than waste CPU producing bytes that have nowhere to go.
+
+- **`ChunkPool`** — lock-free shared pool of chunk buffers. Used via
+  `StreamingWriter::new_pooled` to recycle the per-flush `Vec<u8>`
+  across requests, eliminating per-flush heap allocation in
+  steady-state high-RPS workloads.
+
+### Per-Render HTML Injection
+
+For HTML that must be spliced at the structural `</head>` or `</body>`
+close (image preload `<link>` tags, dev livereload `<script>`, CSP
+nonce reflections, analytics, etc.), use `RenderOptions::with_head_inject`
+/ `with_body_inject`. The parser already synthesises `head_end` and
+`body_end` signal fragments at the structural boundaries; the handler
+emits the inject HTML there with **zero scan cost** and **no risk of
+mis-firing on `</head>` / `</body>` literals appearing inside HTML
+comments, `<iframe srcdoc>`, or inline scripts** (which a byte-level
+scanner could).
+
+**Safety contract — the host owns escaping.** Both inject fields
+accept **raw HTML**; the handler writes them verbatim. Callers MUST
+ensure the content is fully trusted (typically `&'static str` such as
+a dev livereload script, or build-time-derived bytes such as image
+preload `<link>` tags). Passing user-controlled content here is a
+direct cross-site scripting (XSS) vector. If your call path may
+include untrusted data, escape it with the host's HTML escaper (e.g.
+`webui_handler::encode_safe`, re-exported from `webui_handler` for
+exactly this use) **before** calling `with_head_inject` /
+`with_body_inject`.
+
+**Defensive dedup.** The handler emits each inject (and the built-in
+nonce `<meta>`, CSS preload `<link>` tags, hydration `<script>`)
+**exactly once per render** even when the protocol contains duplicate
+`head_end` / `body_end` signals. This protects against malformed
+protocols emitting a 1 MiB inject N times to amplify resource use.
+
+**Zero-allocation borrow.** The inject fields are stored as
+`Option<&'a str>` on both `RenderOptions<'a>` and the per-render
+context — no `String::from` clone. A host passing a `&'static str`
+pays zero per-render allocation for these tags.
+
+**Usage (actix-web):**
+```rust
+let (tx, rx) = tokio::sync::mpsc::channel(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
+let pool = Arc::clone(&app_state.chunk_pool); // shared, startup-time
+actix_web::rt::task::spawn_blocking(move || {
+    let mut writer = StreamingWriter::new_pooled(tx, pool)
+        .with_flush_timeout(Duration::from_secs(30));
+    let opts = RenderOptions::new(&entry, &request_path)
+        .with_head_inject(preload_html)   // optional
+        .with_body_inject(livereload_html); // optional
+    if let Err(e) = handler.handle(&proto, &state, &opts, &mut writer) {
+        log::error!("render failed: {e}");
+        let _ = ResponseWriter::write(&mut writer, "<!-- webui: render error -->");
+    }
+    let _ = ResponseWriter::end(&mut writer);
+});
+let stream = tokio_stream::wrappers::ReceiverStream::new(rx)
+    .map(Ok::<bytes::Bytes, actix_web::Error>);
+HttpResponse::Ok()
+    .content_type("text/html; charset=utf-8")
+    .insert_header(("Cache-Control", "no-store"))
+    .streaming(stream)
+```
+
+**Trade-offs:**
+
+- **Status committed before render.** Streaming sets `200 OK` and headers
+  before the first chunk is generated. Render errors cannot become
+  HTTP errors; hosts must `log::error!` (and ideally increment a
+  `render_errors_total` metric) so ops sees them. A fixed-string
+  `<!-- webui: render error -->` HTML comment is appended to the
+  partial body — never the error message itself, to prevent attacker-
+  controlled error text from breaking out of the comment via `-->`.
+- **Streaming has a small CPU cost** vs buffering (channel sends,
+  mpsc round-trips) — `StreamingWriter` adds ~5 % over a `String`
+  baseline. Per-render HTML injection via `head_inject` / `body_inject`
+  adds essentially zero cost (one `writer.write(inject)` call inside
+  the existing `head_end` / `body_end` handler hook). The benefit
+  (lower TTFB on slow renders) outweighs the cost for any render long
+  enough that first-chunk latency matters; for sub-millisecond renders
+  served over loopback it doesn't help. See `BENCHMARKS.md` for the
+  full measurement suite (criterion + custom-allocator + HTTP-level +
+  Playwright browser).
 
 ### Handler Plugin System
 The handler supports framework-specific hydration plugins. Plugins receive lifecycle

@@ -3,6 +3,7 @@
 
 use anyhow::Result;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::catalog::Catalog;
 use crate::frontend::FrontendRuntime;
@@ -15,6 +16,11 @@ pub(crate) struct AppState {
     rate_limiter: RateLimiter,
     image_cache: ImageCache,
     base_path: String,
+    /// Shared lock-free chunk-buffer pool used by every streaming
+    /// response. One pool per server; recycles chunk Vec across all
+    /// concurrent renders. Sized for ~256 in-flight chunks ≈ 1.25 MiB
+    /// peak pool memory; bounded.
+    chunk_pool: Arc<webui::streaming::ChunkPool>,
 }
 
 impl AppState {
@@ -24,12 +30,17 @@ impl AppState {
         // 60 mutation requests per IP per minute
         let rate_limiter = RateLimiter::new(60, 60);
         let image_cache = ImageCache::load(&app_root.join("images"))?;
+        let chunk_pool = Arc::new(webui::streaming::ChunkPool::new(
+            256,
+            webui::streaming::StreamingWriter::CHUNK_TARGET + 1024,
+        ));
         Ok(Self {
             catalog,
             frontend,
             rate_limiter,
             image_cache,
             base_path: base_path.to_string(),
+            chunk_pool,
         })
     }
 
@@ -66,6 +77,12 @@ impl AppState {
     #[must_use]
     pub(crate) fn rate_limiter(&self) -> &RateLimiter {
         &self.rate_limiter
+    }
+
+    /// Cheap-cloneable handle to the shared chunk pool.
+    #[must_use]
+    pub(crate) fn chunk_pool(&self) -> Arc<webui::streaming::ChunkPool> {
+        Arc::clone(&self.chunk_pool)
     }
 }
 
