@@ -9,6 +9,7 @@ Pick the handler that matches your stack:
 - [**Electron**](./electron), Desktop apps via Electron with custom `webui://` protocol
 - [**WebAssembly**](./wasm), In-browser rendering for playgrounds and client-side use
 - [**C / FFI**](./ffi), Shared library for Go, C#, Python, and any language with C interop
+- [**Incremental adoption**](./incremental-adoption), Ship a single FAST 3.x element behind a kill switch before standing up the full SSR pipeline
 
 ## How Handlers Work
 

@@ -154,6 +154,10 @@
           {
             "text": "WebAssembly",
             "link": "/guide/integrations/wasm"
+          },
+          {
+            "text": "Incremental adoption",
+            "link": "/guide/integrations/incremental-adoption"
           }
         ]
       },
