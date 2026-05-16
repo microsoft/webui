@@ -36,7 +36,8 @@ pub use webui_handler::route_handler::{
     ProtocolIndex,
 };
 pub use webui_handler::route_matcher::CompiledRouteCache;
-pub use webui_handler::{plugin::HandlerPlugin, HandlerError, ResponseWriter, WebUIHandler};
+pub use webui_handler::Result as HandlerResult;
+pub use webui_handler::{plugin::HandlerPlugin, HandlerError, RenderOptions, ResponseWriter, WebUIHandler};
 pub use webui_parser::CssStrategy;
 pub use webui_parser::DomStrategy;
 pub use webui_parser::Plugin;
