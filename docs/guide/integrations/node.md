@@ -19,14 +19,18 @@ npm install @microsoft/webui
 ```js
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
-import { render } from '@microsoft/webui';
+import { renderStream } from '@microsoft/webui';
 
 const protocol = readFileSync('./dist/protocol.bin');
 
 const server = createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/html' });
-  render(protocol, JSON.stringify({ title: "Home" }), 'index.html', req.url,
-    (chunk) => res.write(chunk));
+  renderStream(
+    protocol,
+    { title: 'Home' },
+    (chunk) => res.write(chunk),
+    { entry: 'index.html', requestPath: req.url },
+  );
   res.end();
 });
 
@@ -46,10 +50,11 @@ Bun.serve({
   port: 3000,
   fetch(req) {
     const url = new URL(req.url);
-    const chunks: string[] = [];
-    render(protocolData, JSON.stringify({ title: "Home" }), 'index.html', url.pathname,
-      (chunk: string) => chunks.push(chunk));
-    return new Response(chunks.join(''), {
+    const html = render(protocolData, { title: 'Home' }, {
+      entry: 'index.html',
+      requestPath: url.pathname,
+    });
+    return new Response(html, {
       headers: { 'Content-Type': 'text/html' },
     });
   },
@@ -67,10 +72,11 @@ const protocolData = Buffer.from(protocol);
 
 Deno.serve({ port: 3000 }, (req) => {
   const url = new URL(req.url);
-  const chunks: string[] = [];
-  render(protocolData, JSON.stringify({ title: "Home" }), 'index.html', url.pathname,
-    (chunk: string) => chunks.push(chunk));
-  return new Response(chunks.join(''), {
+  const html = render(protocolData, { title: 'Home' }, {
+    entry: 'index.html',
+    requestPath: url.pathname,
+  });
+  return new Response(html, {
     headers: { 'Content-Type': 'text/html' },
   });
 });
@@ -84,8 +90,19 @@ Deno.serve({ port: 3000 }, (req) => {
 | Function | Description |
 |----------|-------------|
 | `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, stats }` |
-| `render(protocol, state, entry, requestPath, onChunk, plugin?)` | Render protocol with route matching, streaming HTML fragments via callback |
+| `render(protocol, state, options?)` | Render protocol with route matching. Returns the rendered HTML as a string |
+| `renderStream(protocol, state, onChunk, options?)` | Render with streaming output. Each HTML fragment is passed to `onChunk` as it is produced |
 | `inspect(protocol)` | Convert protocol to JSON for debugging |
+
+### RenderOptions
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `entry` | `string` | `"index.html"` | Fragment ID to start rendering from |
+| `requestPath` | `string` | `"/"` | URL path to match routes against |
+| `plugin` | `string` | - | Handler plugin name (see [Plugins](/guide/concepts/plugins/)) |
+
+`state` accepts either an object (auto-serialized) or a pre-stringified JSON string.
 
 ### BuildOptions
 
