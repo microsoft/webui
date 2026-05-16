@@ -9,6 +9,7 @@ Pick the handler that matches your stack:
 - [**Electron**](./electron), Desktop apps via Electron with custom `webui://` protocol
 - [**WebAssembly**](./wasm), In-browser rendering for playgrounds and client-side use
 - [**C / FFI**](./ffi), Shared library for Go, C#, Python, and any language with C interop
+- [**Embedded fragments**](./fragments), Render a single named fragment from a host that isn't itself a WebUI app
 
 ## How Handlers Work
 
