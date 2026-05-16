@@ -37,6 +37,8 @@ pub use webui_handler::route_handler::{
 };
 pub use webui_handler::route_matcher::CompiledRouteCache;
 pub use webui_handler::{plugin::HandlerPlugin, HandlerError, ResponseWriter, WebUIHandler};
+pub use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
+pub use webui_handler::plugin::webui::WebUIHydrationPlugin;
 pub use webui_parser::CssStrategy;
 pub use webui_parser::DomStrategy;
 pub use webui_parser::Plugin;
