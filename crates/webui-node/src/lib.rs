@@ -75,6 +75,8 @@ pub struct JsBuildOptions {
     pub entry: Option<String>,
     /// CSS mode: "link" (default) or "style".
     pub css: Option<String>,
+    /// DOM strategy for component rendering: "shadow" (default) or "light".
+    pub dom: Option<String>,
     /// Plugin identifier (see crate documentation for available identifiers).
     pub plugin: Option<String>,
     /// Additional component sources (npm packages or local paths).
@@ -94,6 +96,13 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         .map_err(NapiError::from_reason)?
         .unwrap_or_default();
 
+    let dom = options
+        .dom
+        .map(|s| s.parse::<webui::DomStrategy>())
+        .transpose()
+        .map_err(NapiError::from_reason)?
+        .unwrap_or_default();
+
     let plugin = options
         .plugin
         .map(|s| s.parse::<webui::Plugin>())
@@ -104,7 +113,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         app_dir: std::path::PathBuf::from(&options.app_dir),
         entry: options.entry.unwrap_or_else(|| "index.html".to_string()),
         css,
-        dom: webui::DomStrategy::Shadow,
+        dom,
         plugin,
         components: options.components.unwrap_or_default(),
     };
@@ -458,6 +467,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: None,
+            dom: None,
             plugin: None,
             components: None,
         };
@@ -478,6 +488,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: Some("page.html".to_string()),
             css: None,
+            dom: None,
             plugin: None,
             components: None,
         };
@@ -492,6 +503,7 @@ mod tests {
             app_dir: "/nonexistent/path".to_string(),
             entry: None,
             css: None,
+            dom: None,
             plugin: None,
             components: None,
         };
@@ -509,6 +521,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: Some("bogus".to_string()),
+            dom: None,
             plugin: None,
             components: None,
         };
@@ -528,6 +541,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: Some("link".to_string()),
+            dom: None,
             plugin: None,
             components: None,
         };
@@ -538,6 +552,70 @@ mod tests {
         assert_eq!(result.css_files[0], "my-card.css");
         assert!(result.css_files[1].contains("color: red"));
         assert_eq!(result.stats.css_file_count, 1);
+    }
+
+    #[test]
+    fn test_build_with_light_dom_omits_shadow_root_template() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<my-card>Hi</my-card>").unwrap();
+        std::fs::write(dir.path().join("my-card.html"), "<div><slot></slot></div>").unwrap();
+
+        let options = JsBuildOptions {
+            app_dir: dir.path().to_string_lossy().to_string(),
+            entry: None,
+            css: None,
+            dom: Some("light".to_string()),
+            plugin: None,
+            components: None,
+        };
+
+        let result = build(options).unwrap();
+        let json = inspect(result.protocol).unwrap();
+        assert!(
+            !json.contains("shadowrootmode"),
+            "light DOM build should not emit shadowrootmode wrappers, got: {json}"
+        );
+    }
+
+    #[test]
+    fn test_build_with_shadow_dom_emits_shadow_root_template() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<my-card>Hi</my-card>").unwrap();
+        std::fs::write(dir.path().join("my-card.html"), "<div><slot></slot></div>").unwrap();
+
+        let options = JsBuildOptions {
+            app_dir: dir.path().to_string_lossy().to_string(),
+            entry: None,
+            css: None,
+            dom: Some("shadow".to_string()),
+            plugin: None,
+            components: None,
+        };
+
+        let result = build(options).unwrap();
+        let json = inspect(result.protocol).unwrap();
+        assert!(
+            json.contains("shadowrootmode"),
+            "shadow DOM build should emit shadowrootmode wrappers, got: {json}"
+        );
+    }
+
+    #[test]
+    fn test_build_invalid_dom() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<h1>Hello</h1>").unwrap();
+
+        let options = JsBuildOptions {
+            app_dir: dir.path().to_string_lossy().to_string(),
+            entry: None,
+            css: None,
+            dom: Some("bogus".to_string()),
+            plugin: None,
+            components: None,
+        };
+
+        let result = build(options);
+        assert!(result.is_err());
     }
 
     #[test]

@@ -111,6 +111,7 @@ Deno.serve({ port: 3000 }, (req) => {
 | `appDir` | `string` | - | Path to app folder |
 | `entry` | `string` | `"index.html"` | Entry file |
 | `css` | `"link" \| "style" \| "module"` | `"link"` | CSS delivery strategy |
+| `dom` | `"shadow" \| "light"` | `"shadow"` | DOM strategy for component rendering |
 | `plugin` | `string` | - | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `string[]` | - | External component sources |
 
