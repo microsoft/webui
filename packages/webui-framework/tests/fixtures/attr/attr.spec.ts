@@ -47,6 +47,58 @@ test.describe('attr fixture', () => {
     await expect(page.locator('test-attr .display')).toHaveText('Running');
   });
 
+  test('reflects direct @attr property updates to host attributes', async ({ page }) => {
+    await page.evaluate(() => {
+      const host = document.querySelector('test-attr') as { label: string; displayValue: string } | null;
+      if (host) {
+        host.label = 'bob';
+        host.displayValue = 'Visible';
+      }
+    });
+
+    await expect(page.locator('test-attr')).toHaveAttribute('label', 'bob');
+    await expect(page.locator('test-attr')).toHaveAttribute('display-value', 'Visible');
+    await expect(page.locator('test-attr .label')).toHaveText('bob');
+    await expect(page.locator('test-attr .display')).toHaveText('Visible');
+  });
+
+  test('reflects @attr values applied through setState', async ({ page }) => {
+    await page.evaluate(() => {
+      const host = document.querySelector('test-attr') as {
+        label: string;
+        displayValue: string;
+        setState(state: Record<string, unknown>): void;
+      } | null;
+      host?.setState({ label: 'State Label', displayValue: 'State Value' });
+    });
+
+    await expect(page.locator('test-attr')).toHaveAttribute('label', 'State Label');
+    await expect(page.locator('test-attr')).toHaveAttribute('display-value', 'State Value');
+    await expect(page.locator('test-attr .label')).toHaveText('State Label');
+    await expect(page.locator('test-attr .display')).toHaveText('State Value');
+  });
+
+  test('reflects @attr property values set before connection', async ({ page }) => {
+    await page.evaluate(() => {
+      const host = document.createElement('test-attr') as HTMLElement & {
+        label: string;
+        displayValue: string;
+      };
+      host.id = 'dynamic-attr';
+      host.label = 'Preconnect';
+      host.displayValue = 'Before Append';
+      document.body.appendChild(host);
+    });
+    await page.waitForFunction(() => {
+      return (document.querySelector('#dynamic-attr') as any)?.$ready === true;
+    });
+
+    await expect(page.locator('#dynamic-attr')).toHaveAttribute('label', 'Preconnect');
+    await expect(page.locator('#dynamic-attr')).toHaveAttribute('display-value', 'Before Append');
+    await expect(page.locator('#dynamic-attr .label')).toHaveText('Preconnect');
+    await expect(page.locator('#dynamic-attr .display')).toHaveText('Before Append');
+  });
+
   test('keeps event markers from hijacking attr hydration targets', async ({ page }) => {
     await page.evaluate(() => {
       const host = document.querySelector('test-attr') as { ctaHref: string } | null;
@@ -91,29 +143,33 @@ test.describe('attr fixture', () => {
   });
 
   test('boolean attr updates template bindings', async ({ page }) => {
-    // Initially false — no data-active attribute
     await expect(page.locator('test-attr .bool-target')).not.toHaveAttribute('data-active');
+    await expect(page.locator('test-attr')).not.toHaveAttribute('is-active');
 
-    // Set to true via property
     await page.evaluate(() => {
       (document.querySelector('test-attr') as any).isActive = true;
     });
 
+    await expect(page.locator('test-attr')).toHaveAttribute('is-active', '');
     await expect(page.locator('test-attr .bool-target')).toHaveAttribute('data-active', '');
+
+    await page.evaluate(() => {
+      (document.querySelector('test-attr') as any).isActive = false;
+    });
+
+    await expect(page.locator('test-attr')).not.toHaveAttribute('is-active');
+    await expect(page.locator('test-attr .bool-target')).not.toHaveAttribute('data-active');
   });
 
   test('boolean attr sets checkbox checked property', async ({ page }) => {
-    // Initially unchecked
     await expect(page.locator('test-attr .bool-check')).not.toBeChecked();
 
-    // Set to true
     await page.evaluate(() => {
       (document.querySelector('test-attr') as any).isActive = true;
     });
 
     await expect(page.locator('test-attr .bool-check')).toBeChecked();
 
-    // Set back to false
     await page.evaluate(() => {
       (document.querySelector('test-attr') as any).isActive = false;
     });

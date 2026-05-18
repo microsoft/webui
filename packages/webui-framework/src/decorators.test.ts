@@ -4,7 +4,40 @@
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
-import { toKebabCase } from './decorators.js';
+import { attr, getObservableNames, observable, toKebabCase } from './decorators.js';
+
+class FakeElement {
+  $ready = true;
+  isConnected = false;
+  private readonly attrs = new Map<string, string>();
+
+  getAttribute(name: string): string | null {
+    return this.attrs.get(name) ?? null;
+  }
+
+  hasAttribute(name: string): boolean {
+    return this.attrs.has(name);
+  }
+
+  setAttribute(name: string, value: string): void {
+    const oldValue = this.getAttribute(name);
+    const newValue = String(value);
+    this.attrs.set(name, newValue);
+    this.attributeChangedCallback?.(name, oldValue, newValue);
+  }
+
+  removeAttribute(name: string): void {
+    const oldValue = this.getAttribute(name);
+    this.attrs.delete(name);
+    this.attributeChangedCallback?.(name, oldValue, null);
+  }
+
+  attributeChangedCallback?(
+    name: string,
+    oldValue: string | null,
+    newValue: string | null,
+  ): void;
+}
 
 describe('toKebabCase', () => {
   test('converts multi-word ARIA properties to correct attribute names', () => {
@@ -77,5 +110,60 @@ describe('toKebabCase', () => {
     assert.equal(toKebabCase('myProp'), 'my-prop');
     assert.equal(toKebabCase('totalContacts'), 'total-contacts');
     assert.equal(toKebabCase('dataTitle'), 'data-title');
+  });
+});
+
+describe('observable decorators', () => {
+  test('@observable registers reactive property names', () => {
+    class TestElement {}
+    observable(TestElement.prototype, 'count');
+
+    assert.equal(getObservableNames(TestElement).has('count'), true);
+  });
+
+  test('@attr registers reactive property names', () => {
+    class TestElement {}
+    attr(TestElement.prototype, 'label');
+
+    assert.equal(getObservableNames(TestElement).has('label'), true);
+  });
+
+  test('@attr reflects property values without stringifying backing state', () => {
+    class TestElement extends FakeElement {}
+    attr(TestElement.prototype, 'count');
+
+    const element = new TestElement() as TestElement & { count: number };
+    element.count = 5;
+
+    assert.equal(element.getAttribute('count'), '5');
+    assert.equal(element.count, 5);
+  });
+
+  test('@attr reacts to string attribute changes', () => {
+    class TestElement extends FakeElement {}
+    attr({ attribute: 'display-value' })(TestElement.prototype, 'displayValue');
+
+    const element = new TestElement() as TestElement & { displayValue: string | null };
+    element.setAttribute('display-value', 'Ready');
+
+    assert.equal(element.displayValue, 'Ready');
+  });
+
+  test('@attr boolean mode reflects presence and removal', () => {
+    class TestElement extends FakeElement {}
+    attr({ mode: 'boolean', attribute: 'is-active' })(TestElement.prototype, 'isActive');
+
+    const element = new TestElement() as TestElement & { isActive: boolean };
+    element.isActive = true;
+    assert.equal(element.hasAttribute('is-active'), true);
+
+    element.isActive = false;
+    assert.equal(element.hasAttribute('is-active'), false);
+
+    element.setAttribute('is-active', '');
+    assert.equal(element.isActive, true);
+
+    element.removeAttribute('is-active');
+    assert.equal(element.isActive, false);
   });
 });

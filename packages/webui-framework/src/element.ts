@@ -50,7 +50,7 @@ import type {
   TemplateNodePath,
 } from './template.js';
 import { hydrationStart, hydrationEnd } from './lifecycle.js';
-import { getObservableNames } from './decorators.js';
+import { getObservableNames, syncAttrProperties } from './decorators.js';
 import { syncRepeat, dotWalk } from './element/diff.js';
 import {
   collectItemMarkers,
@@ -258,6 +258,7 @@ export class WebUIElement extends HTMLElement {
     this.$meta = meta;
     this.$hydrated = true;
     this.$ready = true;
+    syncAttrProperties(this, this.constructor as Function);
 
     // Client-created components: flush current attr/observable values
     // into the freshly-wired template DOM. Call $updateInstance directly
@@ -1433,4 +1434,3 @@ export class WebUIElement extends HTMLElement {
     return seen ? { path, prefix, suffix } : null;
   }
 }
-

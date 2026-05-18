@@ -92,21 +92,36 @@ export function toKebabCase(str: string): string {
  * Shared logic for installing a reactive getter/setter on a class prototype.
  * The backing value is stored in a private `_prop` field on the instance.
  */
+interface AttrDefinition {
+  attribute: string;
+  property: string;
+  boolean: boolean;
+}
+
+type ReactiveInstance = Record<string | symbol, unknown>;
+
+const reflectingAttribute = Symbol('webui.reflectingAttribute');
+
 function createReactiveProperty(
   proto: Record<string, unknown>,
   name: string,
+  attrDefinition?: AttrDefinition,
 ): void {
   const backingKey = `_${name}`;
   const changedKey = `${name}Changed`;
 
   Object.defineProperty(proto, name, {
-    get(this: Record<string, unknown>) {
+    get(this: ReactiveInstance) {
       return this[backingKey];
     },
-    set(this: Record<string, unknown>, newValue: unknown) {
+    set(this: ReactiveInstance, newValue: unknown) {
       const oldValue = this[backingKey];
-      if (oldValue === newValue) return;
+      if (Object.is(oldValue, newValue)) return;
       this[backingKey] = newValue;
+
+      if (attrDefinition && this['$ready'] === true) {
+        reflectPropertyToAttribute(this, attrDefinition, newValue);
+      }
 
       const cb = this[changedKey];
       if (typeof cb === 'function') {
@@ -121,6 +136,56 @@ function createReactiveProperty(
     enumerable: true,
     configurable: true,
   });
+}
+
+function reflectPropertyToAttribute(
+  instance: ReactiveInstance,
+  definition: AttrDefinition,
+  value: unknown,
+): void {
+  const element = instance as unknown as HTMLElement;
+  const attrName = definition.attribute;
+
+  if (definition.boolean) {
+    const shouldHaveAttribute = Boolean(value);
+    if (element.hasAttribute(attrName) === shouldHaveAttribute) return;
+    setReflectingAttribute(instance, attrName);
+    try {
+      if (shouldHaveAttribute) element.setAttribute(attrName, '');
+      else element.removeAttribute(attrName);
+    } finally {
+      restoreReflectingAttribute(instance);
+    }
+    return;
+  }
+
+  if (value == null) {
+    if (!element.hasAttribute(attrName)) return;
+    setReflectingAttribute(instance, attrName);
+    try {
+      element.removeAttribute(attrName);
+    } finally {
+      restoreReflectingAttribute(instance);
+    }
+    return;
+  }
+
+  const attrValue = typeof value === 'string' ? value : String(value);
+  if (element.getAttribute(attrName) === attrValue) return;
+  setReflectingAttribute(instance, attrName);
+  try {
+    element.setAttribute(attrName, attrValue);
+  } finally {
+    restoreReflectingAttribute(instance);
+  }
+}
+
+function setReflectingAttribute(instance: ReactiveInstance, attrName: string): void {
+  instance[reflectingAttribute] = attrName;
+}
+
+function restoreReflectingAttribute(instance: ReactiveInstance): void {
+  instance[reflectingAttribute] = undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +204,15 @@ export function getObservableNames(ctor: Function): Set<string> {
   return observableRegistry.get(ctor) ?? EMPTY_SET;
 }
 
+function registerObservableProperty(ctor: Function, name: string): void {
+  let names = observableRegistry.get(ctor);
+  if (!names) {
+    names = new Set();
+    observableRegistry.set(ctor, names);
+  }
+  names.add(name);
+}
+
 /**
  * Marks a property as observable. When the value changes the decorator will:
  * 1. Call `this.<prop>Changed(oldValue, newValue)` if defined.
@@ -147,10 +221,7 @@ export function getObservableNames(ctor: Function): Set<string> {
  */
 export function observable(target: object, name: string): void {
   const ctor = (target as Record<string, unknown>).constructor as Function;
-  if (!observableRegistry.has(ctor)) {
-    observableRegistry.set(ctor, new Set());
-  }
-  observableRegistry.get(ctor)!.add(name);
+  registerObservableProperty(ctor, name);
   createReactiveProperty(target as Record<string, unknown>, name);
 }
 
@@ -162,10 +233,10 @@ export function observable(target: object, name: string): void {
  * Registry of attribute-name → property-name mappings per constructor.
  * Used by `attributeChangedCallback` to route attribute changes to properties.
  */
-const attrMap = new WeakMap<Function, Map<string, string>>();
+const attrByAttribute = new WeakMap<Function, Map<string, AttrDefinition>>();
 
-/** Registry of boolean-mode attribute names per constructor. */
-const boolAttrs = new WeakMap<Function, Set<string>>();
+/** Registry of property-name → attribute metadata, used for mount-time sync. */
+const attrByProperty = new WeakMap<Function, Map<string, AttrDefinition>>();
 
 /**
  * Like {@link observable} but also reflects to/from an HTML attribute
@@ -197,28 +268,37 @@ function applyAttr(
   const ctor = proto.constructor as typeof HTMLElement & {
     _observedAttrs?: string[];
   };
+  const attrName = options?.attribute ?? toKebabCase(name);
+  const definition: AttrDefinition = {
+    attribute: attrName,
+    property: name,
+    boolean: options?.mode === 'boolean',
+  };
 
-  // 1. Install the reactive getter/setter (same as @observable).
-  createReactiveProperty(proto, name);
+  // 1. Install the reactive getter/setter (same as @observable), with
+  // attribute reflection enabled after the element finishes hydration.
+  registerObservableProperty(ctor, name);
+  createReactiveProperty(proto, name, definition);
 
   // 2. Register the attribute mapping.
-  const attrName = options?.attribute ?? toKebabCase(name);
-  if (!attrMap.has(ctor)) {
-    attrMap.set(ctor, new Map());
+  let byAttribute = attrByAttribute.get(ctor);
+  if (!byAttribute) {
+    byAttribute = new Map();
+    attrByAttribute.set(ctor, byAttribute);
   }
-  attrMap.get(ctor)!.set(attrName, name);
+  byAttribute.set(attrName, definition);
 
-  // Track boolean-mode attrs.
-  if (options?.mode === 'boolean') {
-    if (!boolAttrs.has(ctor)) {
-      boolAttrs.set(ctor, new Set());
-    }
-    boolAttrs.get(ctor)!.add(attrName);
+  let byProperty = attrByProperty.get(ctor);
+  if (!byProperty) {
+    byProperty = new Map();
+    attrByProperty.set(ctor, byProperty);
   }
+  byProperty.set(name, definition);
 
   // 3. Accumulate observed attributes on the constructor.
-  if (!ctor._observedAttrs) {
-    ctor._observedAttrs = [];
+  if (!Object.prototype.hasOwnProperty.call(ctor, '_observedAttrs')) {
+    const inheritedAttrs = ctor._observedAttrs;
+    ctor._observedAttrs = inheritedAttrs ? inheritedAttrs.slice() : [];
 
     // Define the static getter that `customElements.define` inspects.
     Object.defineProperty(ctor, 'observedAttributes', {
@@ -240,11 +320,15 @@ function applyAttr(
       newVal: string | null,
     ) {
       // Route the attribute change to the corresponding property.
-      const map = attrMap.get(this.constructor as Function);
-      const propName = map?.get(attribute);
-      if (propName !== undefined) {
-        const isBool = boolAttrs.get(this.constructor as Function)?.has(attribute);
-        (this as Record<string, unknown>)[propName] = isBool ? newVal !== null : newVal;
+      const map = attrByAttribute.get(this.constructor as Function);
+      const definition = map?.get(attribute);
+      if (
+        definition !== undefined &&
+        (this as ReactiveInstance)[reflectingAttribute] !== attribute
+      ) {
+        (this as Record<string, unknown>)[definition.property] = definition.boolean
+          ? newVal !== null
+          : newVal;
       }
 
       // Preserve any pre-existing attributeChangedCallback.
@@ -255,6 +339,23 @@ function applyAttr(
   }
 
   ctor._observedAttrs!.push(attrName);
+}
+
+export function syncAttrProperties(
+  instance: object,
+  ctor: Function,
+): void {
+  const attrs = attrByProperty.get(ctor);
+  if (!attrs) return;
+
+  const reactiveInstance = instance as ReactiveInstance;
+  for (const definition of attrs.values()) {
+    reflectPropertyToAttribute(
+      reactiveInstance,
+      definition,
+      reactiveInstance[definition.property],
+    );
+  }
 }
 
 export function attr(target: object, name: string): void;
