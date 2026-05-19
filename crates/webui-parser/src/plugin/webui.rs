@@ -2114,6 +2114,7 @@ fn extract_adopted_stylesheet_specifier(html: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::TemplateRootAttribute;
     use super::*;
 
     fn assert_no_client_markers(result: &str) {
@@ -2147,6 +2148,24 @@ mod tests {
         assert_eq!(plugin.classify_attribute("@keydown"), AttributeAction::Skip);
         assert_eq!(plugin.classify_attribute("w-ref"), AttributeAction::Keep);
         assert_eq!(plugin.classify_attribute("class"), AttributeAction::Keep);
+    }
+
+    #[test]
+    fn host_and_template_element_attribute_hooks_default_to_no_injection() {
+        // The WebUI parser plugin does not opt into the generic
+        // host/template attribute injection hooks — both default to
+        // returning `None` regardless of any captured template root attrs.
+        let mut plugin = WebUIParserPlugin::new();
+        plugin.on_template_root_attributes(
+            "host-card",
+            &[TemplateRootAttribute {
+                name: "autofocus".to_string(),
+                value: None,
+                raw_text: "autofocus".to_string(),
+            }],
+        );
+        assert!(plugin.host_element_attributes("host-card", &[]).is_none());
+        assert!(plugin.template_element_attributes("host-card").is_none());
     }
 
     #[test]

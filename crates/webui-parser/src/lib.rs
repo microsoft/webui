@@ -18,7 +18,7 @@ pub use css_parser::CssParser;
 pub use error::{ParserError, Result};
 pub use handlebars_parser::HandlebarsParser;
 
-use crate::plugin::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
+use crate::plugin::{AttributeAction, ParserPlugin, ParserPluginArtifacts, TemplateRootAttribute};
 use std::collections::{HashMap, HashSet};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIteratorMut};
 use tree_sitter_html::LANGUAGE;
@@ -216,6 +216,11 @@ pub struct HtmlParser {
     /// (e.g., `:root { --color-primary: #0078d4; }`). These are excluded
     /// from the final token set since the app already provides their values.
     token_definitions: HashSet<String>,
+
+    /// Per-tag set of attribute names that the parser has already invoked
+    /// `ParserPlugin::on_template_root_attributes` for. Prevents redundant
+    /// re-extraction when the same component is encountered repeatedly.
+    captured_template_root_attrs: HashSet<String>,
 }
 
 impl HtmlParser {
@@ -241,6 +246,7 @@ impl HtmlParser {
             plugin: None,
             token_store: HashSet::new(),
             token_definitions: HashSet::new(),
+            captured_template_root_attrs: HashSet::new(),
             parser,
         }
     }
@@ -1644,6 +1650,8 @@ impl HtmlParser {
         self.token_store
             .extend(component_data.css_tokens.iter().cloned());
 
+        self.ensure_template_root_attrs_captured(component)?;
+
         let processed = self.build_component_template(
             component,
             &component_data.html_content,
@@ -1691,12 +1699,25 @@ impl HtmlParser {
             .map(|n| n.kind() == "self_closing_tag")
             .unwrap_or(false);
 
+        // Capture the component's <template> root attributes for the active
+        // plugin BEFORE emitting anything for the host opening tag. This
+        // ensures the first usage of a component has a populated plugin
+        // cache when the host_element_attributes hook is called below.
+        self.ensure_template_root_attrs_captured(tag_name)?;
+
         // Emit "<tagname"
         self.add_raw_fragment(&format!("<{}", tag_name));
 
         // Process attributes — component-aware
         if let Some(tag_node) = tag_node {
             let binding_count = self.process_tag_attributes(tag_node, source, fragments, true)?;
+
+            // Generic plugin extension point: allow the active plugin to
+            // append additional attributes onto the host opening tag.
+            // The plugin owns all framework-specific policy (skip lists,
+            // author-conflict normalization, DOM strategy gating).
+            self.apply_plugin_host_element_attributes(tag_node, source, tag_name)?;
+
             if let Some(ref mut p) = self.plugin {
                 if let Some(data) = p.finish_element(binding_count) {
                     self.add_fragment(WebUIFragment::plugin(data), fragments);
@@ -1771,6 +1792,74 @@ impl HtmlParser {
         Ok(())
     }
 
+    /// Notify the active parser plugin (once per unique component tag) of
+    /// the attributes declared on the root `<template>` element of the
+    /// component's source HTML. Plugins use this to capture per-component
+    /// metadata they will later inject via
+    /// [`ParserPlugin::host_element_attributes`] or
+    /// [`ParserPlugin::template_element_attributes`].
+    ///
+    /// Idempotent and cheap on the hot path: subsequent calls for an
+    /// already-captured tag are a single set membership check.
+    fn ensure_template_root_attrs_captured(&mut self, tag_name: &str) -> Result<()> {
+        if self.plugin.is_none() {
+            return Ok(());
+        }
+        if self.captured_template_root_attrs.contains(tag_name) {
+            return Ok(());
+        }
+        let Some(component_html) = self
+            .component_registry
+            .get(tag_name)
+            .map(|c| c.html_content.clone())
+        else {
+            // Component is not registered yet; skip silently. The error path
+            // is reported elsewhere when the directive can't be resolved.
+            return Ok(());
+        };
+        let attrs = self.extract_template_root_attributes(&component_html);
+        if let Some(ref mut p) = self.plugin {
+            p.on_template_root_attributes(tag_name, &attrs);
+        }
+        self.captured_template_root_attrs
+            .insert(tag_name.to_string());
+        Ok(())
+    }
+
+    /// Call the active plugin's `host_element_attributes` hook and splice
+    /// its returned text (prefixed by a single space) into the raw buffer
+    /// immediately after the author-supplied attributes on the host opening
+    /// tag.
+    ///
+    /// The author attribute names are collected source-preserved (no
+    /// normalization). The plugin owns all policy.
+    fn apply_plugin_host_element_attributes(
+        &mut self,
+        tag_node: Node,
+        source: &str,
+        tag_name: &str,
+    ) -> Result<()> {
+        if self.plugin.is_none() {
+            return Ok(());
+        }
+        let author_names = self.collect_author_attr_names(tag_node, source)?;
+        let name_refs: Vec<&str> = author_names.iter().map(String::as_str).collect();
+        let injected = self
+            .plugin
+            .as_mut()
+            .and_then(|p| p.host_element_attributes(tag_name, &name_refs));
+        if let Some(text) = injected {
+            if !text.is_empty() {
+                // Splice as two raw fragments to avoid an extra String
+                // allocation for the leading separator; both calls append
+                // to the same raw_buffer.
+                self.add_raw_fragment(" ");
+                self.add_raw_fragment(&text);
+            }
+        }
+        Ok(())
+    }
+
     /// Process component template HTML: wrap in shadow DOM template if needed,
     /// inject CSS snippet (link or inline style), and strip runtime-only attributes.
     /// When `adopted_specifier` is `Some`, it is stored in template metadata
@@ -1800,6 +1889,7 @@ impl HtmlParser {
         };
 
         self.process_component_template(
+            tag_name,
             html,
             css_injection.as_deref(),
             adopted_specifier.as_deref(),
@@ -1810,7 +1900,9 @@ impl HtmlParser {
     ///
     /// - **Shadow DOM** (`DomStrategy::Shadow`): wraps content in
     ///   `<template shadowrootmode="open">`, preserves `:host` CSS,
-    ///   optionally adds `shadowrootadoptedstylesheets`.
+    ///   optionally adds `shadowrootadoptedstylesheets`. Plugins may
+    ///   append additional attributes via
+    ///   [`ParserPlugin::template_element_attributes`].
     /// - **Light DOM** (`DomStrategy::Light`): strips any existing shadow DOM
     ///   wrapper, outputs plain HTML.
     ///
@@ -1818,6 +1910,7 @@ impl HtmlParser {
     /// from the opening `<template>` tag.
     fn process_component_template(
         &mut self,
+        tag_name: &str,
         html: &str,
         css_snippet: Option<&str>,
         adopted_specifier: Option<&str>,
@@ -1856,10 +1949,28 @@ impl HtmlParser {
                 });
                 let adopted_ref = adopted_attr.as_deref().unwrap_or_default();
 
-                let mut result =
-                    String::with_capacity(45 + adopted_ref.len() + snippet.len() + inner.len());
+                // Plugin extension point: allow the active plugin to append
+                // additional attributes onto the inner <template> wrapper.
+                // The plugin returns text without a leading separator space;
+                // the parser inserts one.
+                let plugin_attrs = self
+                    .plugin
+                    .as_mut()
+                    .and_then(|p| p.template_element_attributes(tag_name))
+                    .filter(|s| !s.is_empty());
+
+                let mut result = String::with_capacity(
+                    45 + adopted_ref.len()
+                        + plugin_attrs.as_ref().map(|s| s.len() + 1).unwrap_or(0)
+                        + snippet.len()
+                        + inner.len(),
+                );
                 result.push_str("<template shadowrootmode=\"open\"");
                 result.push_str(adopted_ref);
+                if let Some(extra) = plugin_attrs {
+                    result.push(' ');
+                    result.push_str(&extra);
+                }
                 result.push('>');
                 result.push_str(snippet);
                 result.push_str(&inner);
@@ -1877,6 +1988,101 @@ impl HtmlParser {
                 result
             }
         }
+    }
+
+    /// Collect attribute names from a usage-site opening tag in their
+    /// source-preserved spelling. Used to inform the active plugin's
+    /// [`ParserPlugin::host_element_attributes`] hook so the plugin can
+    /// apply any framework-specific conflict resolution policy.
+    fn collect_author_attr_names(&self, tag_node: Node, source: &str) -> Result<Vec<String>> {
+        let mut names = Vec::new();
+        let mut cursor = tag_node.walk();
+        for child in tag_node.named_children(&mut cursor) {
+            if child.kind() != "attribute" {
+                continue;
+            }
+            let name = self.get_attr_name(child, source)?;
+            names.push(name);
+        }
+        Ok(names)
+    }
+
+    /// Extract the attributes declared on the root `<template>` element of
+    /// a component's source HTML, in source order. Returns an empty `Vec`
+    /// when the HTML does not begin with a `<template>` element.
+    ///
+    /// This is a generic structural helper: no skip lists are applied and
+    /// no normalization is performed. All decisions about which attributes
+    /// are meaningful (event prefixes, framework directives, dynamic
+    /// values, etc.) live in the plugin layer.
+    fn extract_template_root_attributes(&mut self, html: &str) -> Vec<TemplateRootAttribute> {
+        let trimmed = html.trim_start();
+        if !trimmed.starts_with("<template") {
+            return Vec::new();
+        }
+
+        let tree = match self.parser.parse(html, None) {
+            Some(t) => t,
+            None => return Vec::new(),
+        };
+
+        let root = tree.root_node();
+        let Some(tag) = Self::find_first_node(root, "start_tag") else {
+            return Vec::new();
+        };
+
+        // Verify the start_tag we found is the <template> wrapper. Tree-sitter
+        // exposes the tag name as the first child of a start_tag node.
+        let mut tag_name_cursor = tag.walk();
+        let tag_name_is_template = tag
+            .children(&mut tag_name_cursor)
+            .find(|c| c.kind() == "tag_name")
+            .map(|n| &html[n.start_byte()..n.end_byte()])
+            .map(|s| s.eq_ignore_ascii_case("template"))
+            .unwrap_or(false);
+        if !tag_name_is_template {
+            return Vec::new();
+        }
+
+        let mut attrs = Vec::new();
+        let mut cursor = tag.walk();
+        for child in tag.named_children(&mut cursor) {
+            if child.kind() != "attribute" {
+                continue;
+            }
+            let Some(name_node) = child.child(0) else {
+                continue;
+            };
+            let name_text = &html[name_node.start_byte()..name_node.end_byte()];
+            let raw_text = &html[child.start_byte()..child.end_byte()];
+
+            // The attribute's value (if any) is exposed by tree-sitter as a
+            // sibling node; fall back to manual parsing only if the grammar
+            // doesn't surface a value child.
+            let mut value: Option<String> = None;
+            let mut value_cursor = child.walk();
+            for grandchild in child.named_children(&mut value_cursor) {
+                match grandchild.kind() {
+                    "quoted_attribute_value" => {
+                        let raw = &html[grandchild.start_byte()..grandchild.end_byte()];
+                        let stripped = raw.trim_matches(|c| c == '"' || c == '\'');
+                        value = Some(stripped.to_string());
+                    }
+                    "attribute_value" => {
+                        value =
+                            Some(html[grandchild.start_byte()..grandchild.end_byte()].to_string());
+                    }
+                    _ => {}
+                }
+            }
+
+            attrs.push(TemplateRootAttribute {
+                name: name_text.to_string(),
+                value,
+                raw_text: raw_text.to_string(),
+            });
+        }
+        attrs
     }
 
     /// Strip attributes starting with @, :, or ? from the opening template tag.
@@ -4659,6 +4865,353 @@ mod tests {
                 signal("value2"),
                 raw("<button>Click2</button>"),
             ]
+        );
+    }
+
+    // ── Template host-attr propagation (FAST plugins only) ──────────
+
+    use crate::plugin::fast_v2::FastV2ParserPlugin;
+    use crate::plugin::fast_v3::FastV3ParserPlugin;
+    use crate::plugin::webui::WebUIParserPlugin;
+
+    /// Collect the joined raw HTML text emitted into the entry fragment list
+    /// up to (and including) the opening `>` of the host element, by
+    /// concatenating consecutive `Raw` fragments. Useful for asserting the
+    /// shape of `<my-component attrs...>` regardless of how interior
+    /// `Attribute` fragments are interleaved.
+    fn joined_raw_prefix(fragments: &[WebUIFragment]) -> String {
+        let mut out = String::new();
+        for f in fragments {
+            if let Some(Fragment::Raw(raw)) = f.fragment.as_ref() {
+                out.push_str(&raw.value);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn extract_template_root_attributes_returns_empty_when_no_template_wrapper() {
+        let mut parser = HtmlParser::new();
+        let attrs = parser.extract_template_root_attributes("<div>plain content</div>");
+        assert!(attrs.is_empty());
+    }
+
+    #[test]
+    fn extract_template_root_attributes_returns_all_attrs_in_source_order() {
+        // Generic structural extraction: every attribute on the root <template>
+        // is returned (including framework-internal ones like shadowrootmode).
+        // Plugins apply any skip-list policy themselves.
+        let mut parser = HtmlParser::new();
+        let attrs = parser.extract_template_root_attributes(
+            r#"<template shadowrootmode="open" autofocus tabindex="0"><div>x</div></template>"#,
+        );
+        let names: Vec<&str> = attrs.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["shadowrootmode", "autofocus", "tabindex"]);
+        assert_eq!(attrs[0].value.as_deref(), Some("open"));
+        assert_eq!(attrs[1].value, None);
+        assert_eq!(attrs[2].value.as_deref(), Some("0"));
+        assert_eq!(attrs[2].raw_text, r#"tabindex="0""#);
+    }
+
+    #[test]
+    fn extract_template_root_attributes_preserves_case_and_prefixed_names() {
+        // Generic extraction does not normalize or skip prefixed attribute
+        // names — that's the plugin's policy.
+        let mut parser = HtmlParser::new();
+        let attrs = parser.extract_template_root_attributes(
+            r#"<template @click="onClick()" :data="state" ?disabled="x" f-ref="r" autofocus></template>"#,
+        );
+        let names: Vec<&str> = attrs.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["@click", ":data", "?disabled", "f-ref", "autofocus"]
+        );
+    }
+
+    #[test]
+    fn extract_template_root_attributes_only_uses_root_template() {
+        // A nested <template> deeper in the component must not contribute
+        // attrs — only the root wrapper does.
+        let mut parser = HtmlParser::new();
+        let attrs = parser.extract_template_root_attributes(
+            r#"<template shadowrootmode="open"><div><template autofocus><span/></template></div></template>"#,
+        );
+        let names: Vec<&str> = attrs.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["shadowrootmode"]);
+    }
+
+    #[test]
+    fn extract_template_root_attributes_handles_dynamic_value_text() {
+        // Dynamic value content is returned verbatim. Plugins decide whether
+        // to act on it.
+        let mut parser = HtmlParser::new();
+        let attrs = parser.extract_template_root_attributes(
+            r#"<template title="{{label}}" autofocus></template>"#,
+        );
+        let names: Vec<&str> = attrs.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["title", "autofocus"]);
+        assert_eq!(attrs[0].value.as_deref(), Some("{{label}}"));
+    }
+
+    #[test]
+    fn fast_v2_propagates_static_template_host_attrs_on_shadow_dom() {
+        let mut plugin = FastV2ParserPlugin::new();
+        plugin.set_dom_strategy(DomStrategy::Shadow);
+        let mut parser = HtmlParser::with_plugin(Box::new(plugin));
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        parser
+            .component_registry
+            .register_component(
+                "host-card",
+                r#"<template shadowrootmode="open" autofocus tabindex="0"><div>content</div></template>"#,
+                None,
+            )
+            .expect("register host-card");
+
+        parser
+            .parse("index.html", "<host-card></host-card>")
+            .expect("parse");
+        let records = parser.into_fragment_records();
+        let prefix = joined_raw_prefix(&records["index.html"].fragments);
+
+        assert!(
+            prefix.contains("<host-card autofocus tabindex=\"0\">"),
+            "expected host attrs propagated onto host element opening tag, got: {prefix}"
+        );
+    }
+
+    #[test]
+    fn fast_v3_propagates_static_template_host_attrs_on_shadow_dom() {
+        let mut plugin = FastV3ParserPlugin::new();
+        plugin.set_dom_strategy(DomStrategy::Shadow);
+        let mut parser = HtmlParser::with_plugin(Box::new(plugin));
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        parser
+            .component_registry
+            .register_component(
+                "host-card",
+                r#"<template shadowrootmode="open" autofocus tabindex="0"><div>content</div></template>"#,
+                None,
+            )
+            .expect("register host-card");
+
+        parser
+            .parse("index.html", "<host-card></host-card>")
+            .expect("parse");
+        let records = parser.into_fragment_records();
+        let prefix = joined_raw_prefix(&records["index.html"].fragments);
+
+        assert!(
+            prefix.contains("<host-card autofocus tabindex=\"0\">"),
+            "expected host attrs propagated onto host element opening tag, got: {prefix}"
+        );
+    }
+
+    #[test]
+    fn webui_plugin_does_not_propagate_template_host_attrs() {
+        let mut parser = HtmlParser::with_plugin(Box::new(WebUIParserPlugin::new()));
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        parser
+            .component_registry
+            .register_component(
+                "host-card",
+                r#"<template shadowrootmode="open" autofocus><div>content</div></template>"#,
+                None,
+            )
+            .expect("register host-card");
+
+        parser
+            .parse("index.html", "<host-card></host-card>")
+            .expect("parse");
+        let records = parser.into_fragment_records();
+        let prefix = joined_raw_prefix(&records["index.html"].fragments);
+
+        assert!(
+            !prefix.contains("autofocus"),
+            "WebUI plugin must not propagate host attrs, got: {prefix}"
+        );
+        assert!(prefix.contains("<host-card>"), "got: {prefix}");
+    }
+
+    #[test]
+    fn fast_v2_author_host_attr_wins_on_conflict() {
+        let mut plugin = FastV2ParserPlugin::new();
+        plugin.set_dom_strategy(DomStrategy::Shadow);
+        let mut parser = HtmlParser::with_plugin(Box::new(plugin));
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        parser
+            .component_registry
+            .register_component(
+                "host-card",
+                r#"<template shadowrootmode="open" autofocus tabindex="0"><div/></template>"#,
+                None,
+            )
+            .expect("register host-card");
+
+        parser
+            .parse("index.html", r#"<host-card tabindex="9"></host-card>"#)
+            .expect("parse");
+        let records = parser.into_fragment_records();
+        let entry = &records["index.html"].fragments;
+        let prefix = joined_raw_prefix(entry);
+
+        // The template's tabindex="0" must NOT appear in the raw stream
+        // (suppressed by author's tabindex="9").
+        assert!(
+            !prefix.contains(r#"tabindex="0""#),
+            "author tabindex must win, template tabindex=0 leaked into raw: {prefix}"
+        );
+        // The author's tabindex="9" is emitted as a WebUIFragmentAttribute
+        // (raw_value=true) on a component, not as raw text.
+        let author_tabindex = entry.iter().any(|f| match f.fragment.as_ref() {
+            Some(Fragment::Attribute(a)) => a.name == "tabindex" && a.value == "9" && a.raw_value,
+            _ => false,
+        });
+        assert!(
+            author_tabindex,
+            "expected author tabindex=\"9\" Attribute fragment, got: {entry:?}"
+        );
+        assert!(prefix.contains(" autofocus"), "got: {prefix}");
+    }
+
+    #[test]
+    fn fast_v2_propagation_normalizes_author_boolean_binding_prefix_for_conflict() {
+        // Author writes `?autofocus="{{x}}"` (dynamic boolean); template has
+        // static `autofocus`. The author's dynamic binding must win — no static
+        // duplicate may be propagated.
+        let mut plugin = FastV2ParserPlugin::new();
+        plugin.set_dom_strategy(DomStrategy::Shadow);
+        let mut parser = HtmlParser::with_plugin(Box::new(plugin));
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        parser
+            .component_registry
+            .register_component(
+                "host-card",
+                r#"<template shadowrootmode="open" autofocus><div/></template>"#,
+                None,
+            )
+            .expect("register host-card");
+
+        parser
+            .parse(
+                "index.html",
+                r#"<host-card ?autofocus="{{x}}"></host-card>"#,
+            )
+            .expect("parse");
+        let records = parser.into_fragment_records();
+        let prefix = joined_raw_prefix(&records["index.html"].fragments);
+
+        assert!(
+            !prefix.contains(" autofocus"),
+            "author ?autofocus must suppress template autofocus, got: {prefix}"
+        );
+    }
+
+    #[test]
+    fn fast_v2_event_handler_does_not_suppress_unrelated_static_attr() {
+        // Author's `@click` is an event listener, not a `click` attribute. It
+        // must NOT suppress a propagated `click` static host attribute (a
+        // contrived but illustrative case).
+        let mut plugin = FastV2ParserPlugin::new();
+        plugin.set_dom_strategy(DomStrategy::Shadow);
+        let mut parser = HtmlParser::with_plugin(Box::new(plugin));
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        parser
+            .component_registry
+            .register_component(
+                "host-card",
+                r#"<template shadowrootmode="open" data-track="x" autofocus><div/></template>"#,
+                None,
+            )
+            .expect("register host-card");
+
+        parser
+            .parse(
+                "index.html",
+                r#"<host-card @click="onClick()"></host-card>"#,
+            )
+            .expect("parse");
+        let records = parser.into_fragment_records();
+        let prefix = joined_raw_prefix(&records["index.html"].fragments);
+
+        assert!(
+            prefix.contains(r#"data-track="x""#),
+            "unrelated propagated attr must not be suppressed by @event, got: {prefix}"
+        );
+        assert!(prefix.contains(" autofocus"), "got: {prefix}");
+    }
+
+    #[test]
+    fn fast_v2_propagation_gated_on_shadow_dom_strategy() {
+        // In Light DOM mode there is no declarative shadow root template, so
+        // propagation must not occur even with a FAST plugin active.
+        let mut plugin = FastV2ParserPlugin::new();
+        plugin.set_dom_strategy(DomStrategy::Light);
+        let mut parser = HtmlParser::with_plugin(Box::new(plugin));
+        parser.set_dom_strategy(DomStrategy::Light);
+        parser
+            .component_registry
+            .register_component(
+                "host-card",
+                r#"<template autofocus><div>content</div></template>"#,
+                None,
+            )
+            .expect("register host-card");
+
+        parser
+            .parse("index.html", "<host-card></host-card>")
+            .expect("parse");
+        let records = parser.into_fragment_records();
+        let prefix = joined_raw_prefix(&records["index.html"].fragments);
+
+        assert!(
+            !prefix.contains("autofocus"),
+            "Light DOM must not propagate host attrs, got: {prefix}"
+        );
+    }
+
+    #[test]
+    fn fast_v2_propagation_only_captures_once_per_component_tag() {
+        // Two usages of the same component should both receive the propagated
+        // attrs without re-extracting (the parser only notifies the plugin
+        // about template root attrs once per tag).
+        let mut plugin = FastV2ParserPlugin::new();
+        plugin.set_dom_strategy(DomStrategy::Shadow);
+        let mut parser = HtmlParser::with_plugin(Box::new(plugin));
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        parser
+            .component_registry
+            .register_component(
+                "host-card",
+                r#"<template shadowrootmode="open" autofocus><div/></template>"#,
+                None,
+            )
+            .expect("register host-card");
+
+        parser
+            .parse(
+                "index.html",
+                "<host-card></host-card><host-card></host-card>",
+            )
+            .expect("parse");
+
+        assert!(
+            parser.captured_template_root_attrs.contains("host-card"),
+            "expected host-card recorded as already-captured"
+        );
+        assert_eq!(
+            parser.captured_template_root_attrs.len(),
+            1,
+            "expected exactly one captured component tag, got: {:?}",
+            parser.captured_template_root_attrs
+        );
+
+        let records = parser.into_fragment_records();
+        let prefix = joined_raw_prefix(&records["index.html"].fragments);
+        let autofocus_count = prefix.matches(" autofocus").count();
+        assert_eq!(
+            autofocus_count, 2,
+            "both usages should receive autofocus, got: {prefix}"
         );
     }
 }

@@ -977,6 +977,17 @@ pub trait ParserPlugin {
     ) -> Result<()>;
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
     fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
+    fn on_template_root_attributes(
+        &mut self,
+        tag_name: &str,
+        attributes: &[TemplateRootAttribute],
+    ) {}
+    fn host_element_attributes(
+        &mut self,
+        tag_name: &str,
+        author_attr_names: &[&str],
+    ) -> Option<String> { None }
+    fn template_element_attributes(&mut self, tag_name: &str) -> Option<String> { None }
     fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts;
 }
 ```
@@ -986,6 +997,9 @@ pub trait ParserPlugin {
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
 - **Component registration**: `register_component_template` receives the final processed component template HTML
+- **Template root attribute capture**: `on_template_root_attributes` is called once per unique component tag with the structured list of attributes declared on the root `<template>` element of its definition. Plugins use this to populate any per-component metadata they will later splice via `host_element_attributes` or `template_element_attributes`. The slice is empty when the component has no `<template>` wrapper. The parser performs no skip-list filtering; framework-specific policy lives entirely in the plugin
+- **Host element attribute injection**: `host_element_attributes` is called once per usage site, after the author-supplied attributes on the host opening tag have been processed. The plugin returns optional verbatim text (without a leading space — the parser inserts one separator) to splice immediately after the author attributes and before any element completion bytes. `author_attr_names` is the source-preserved list of attribute names declared at the usage site so plugins can apply their own conflict policy. Used by the FAST v2 and FAST v3 plugins to propagate static template root attributes onto the host custom element under Shadow DOM
+- **Inner `<template>` attribute injection**: `template_element_attributes` is called once per unique component tag while the parser is constructing the inner `<template shadowrootmode="open">` wrapper. The returned text (without a leading space — the parser inserts one) is spliced after the framework-internal attributes (`shadowrootmode`, `shadowrootadoptedstylesheets`)
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts
 
 **Selecting parser plugins**

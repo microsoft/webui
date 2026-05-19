@@ -7,9 +7,10 @@
 //! artifacts after parsing. Converts WebUI Framework template syntax (`<if>`, `<for>`, `{{}}`)
 //! into FAST-compatible syntax (`<f-when>`, `<f-repeat>`, `{}`).
 
-use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
+use super::fast_host_attrs::FastHostAttrs;
+use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts, TemplateRootAttribute};
 use crate::component_registry::Component;
-use crate::{CssStrategy, Result};
+use crate::{CssStrategy, DomStrategy, Result};
 use webui_protocol::FastElementData;
 
 /// Information about a tracked component for `<f-template>` generation.
@@ -26,11 +27,16 @@ struct TrackedComponent {
 /// - Tracks components encountered during parsing
 /// - Returns `<f-template>` artifacts with converted FAST syntax after parsing
 /// - Emits binding attribute counts as `Plugin` protocol fragment data
+/// - Propagates static host attributes declared on a component's inner
+///   `<template>` wrapper onto the host custom element opening tag at SSR
+///   time when configured for Shadow DOM rendering (see [`set_dom_strategy`])
 pub struct FastV2ParserPlugin {
     /// Components tracked during parsing, in discovery order.
     components: Vec<TrackedComponent>,
     /// CSS delivery strategy for f-templates.
     css_strategy: CssStrategy,
+    /// FAST-specific host-attribute propagation cache (Shadow DOM only).
+    host_attrs: FastHostAttrs,
 }
 
 impl FastV2ParserPlugin {
@@ -40,12 +46,20 @@ impl FastV2ParserPlugin {
         Self {
             components: Vec::new(),
             css_strategy: CssStrategy::Link,
+            host_attrs: FastHostAttrs::new(),
         }
     }
 
     /// Set the CSS delivery strategy for generated f-templates.
     pub fn set_css_strategy(&mut self, strategy: CssStrategy) {
         self.css_strategy = strategy;
+    }
+
+    /// Set the DOM strategy. Required for FAST host-attribute propagation
+    /// to fire — propagation only occurs when the strategy is Shadow.
+    pub fn set_dom_strategy(&mut self, strategy: DomStrategy) -> &mut Self {
+        self.host_attrs.set_dom_strategy(strategy);
+        self
     }
 
     /// Take the individual component f-template strings, keyed by tag name.
@@ -77,6 +91,14 @@ impl Default for FastV2ParserPlugin {
 }
 
 impl ParserPlugin for FastV2ParserPlugin {
+    fn on_template_root_attributes(
+        &mut self,
+        tag_name: &str,
+        attributes: &[TemplateRootAttribute],
+    ) {
+        self.host_attrs.capture(tag_name, attributes);
+    }
+
     fn register_component_template(
         &mut self,
         tag_name: &str,
@@ -120,6 +142,15 @@ impl ParserPlugin for FastV2ParserPlugin {
         } else {
             None
         }
+    }
+
+    fn host_element_attributes(
+        &mut self,
+        tag_name: &str,
+        author_attr_names: &[&str],
+    ) -> Option<String> {
+        self.host_attrs
+            .produce_for_host(tag_name, author_attr_names)
     }
 
     fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts {
@@ -1366,5 +1397,106 @@ mod tests {
         assert_eq!(find_tag_close(r#"<if condition="a >= b">"#), Some(22));
         assert_eq!(find_tag_close("<br>"), Some(3));
         assert_eq!(find_tag_close("<br/>"), Some(4));
+    }
+
+    #[test]
+    fn on_template_root_attributes_captures_static_attrs_for_shadow_dom_host_injection() {
+        let mut plugin = FastV2ParserPlugin::new();
+        plugin.set_dom_strategy(DomStrategy::Shadow);
+        plugin.on_template_root_attributes(
+            "host-card",
+            &[
+                TemplateRootAttribute {
+                    name: "autofocus".to_string(),
+                    value: None,
+                    raw_text: "autofocus".to_string(),
+                },
+                TemplateRootAttribute {
+                    name: "tabindex".to_string(),
+                    value: Some("0".to_string()),
+                    raw_text: "tabindex=\"0\"".to_string(),
+                },
+            ],
+        );
+
+        let out = plugin
+            .host_element_attributes("host-card", &[])
+            .expect("expected host attrs to be produced");
+        assert_eq!(out, "autofocus tabindex=\"0\"");
+    }
+
+    #[test]
+    fn host_element_attributes_skips_when_dom_strategy_is_light() {
+        let mut plugin = FastV2ParserPlugin::new();
+        plugin.set_dom_strategy(DomStrategy::Light);
+        plugin.on_template_root_attributes(
+            "host-card",
+            &[TemplateRootAttribute {
+                name: "autofocus".to_string(),
+                value: None,
+                raw_text: "autofocus".to_string(),
+            }],
+        );
+
+        assert!(plugin.host_element_attributes("host-card", &[]).is_none());
+    }
+
+    #[test]
+    fn host_element_attributes_suppresses_conflicting_author_attrs() {
+        let mut plugin = FastV2ParserPlugin::new();
+        plugin.set_dom_strategy(DomStrategy::Shadow);
+        plugin.on_template_root_attributes(
+            "host-card",
+            &[TemplateRootAttribute {
+                name: "tabindex".to_string(),
+                value: Some("0".to_string()),
+                raw_text: "tabindex=\"0\"".to_string(),
+            }],
+        );
+
+        assert!(plugin
+            .host_element_attributes("host-card", &["tabindex"])
+            .is_none());
+    }
+
+    #[test]
+    fn host_element_attributes_filters_fast_client_only_directives() {
+        let mut plugin = FastV2ParserPlugin::new();
+        plugin.set_dom_strategy(DomStrategy::Shadow);
+        plugin.on_template_root_attributes(
+            "host-card",
+            &[
+                TemplateRootAttribute {
+                    name: "shadowrootmode".to_string(),
+                    value: Some("open".to_string()),
+                    raw_text: "shadowrootmode=\"open\"".to_string(),
+                },
+                TemplateRootAttribute {
+                    name: "@click".to_string(),
+                    value: Some("onClick()".to_string()),
+                    raw_text: "@click=\"onClick()\"".to_string(),
+                },
+                TemplateRootAttribute {
+                    name: "f-ref".to_string(),
+                    value: Some("r".to_string()),
+                    raw_text: "f-ref=\"r\"".to_string(),
+                },
+                TemplateRootAttribute {
+                    name: "title".to_string(),
+                    value: Some("{{label}}".to_string()),
+                    raw_text: "title=\"{{label}}\"".to_string(),
+                },
+                TemplateRootAttribute {
+                    name: "autofocus".to_string(),
+                    value: None,
+                    raw_text: "autofocus".to_string(),
+                },
+            ],
+        );
+
+        let out = plugin
+            .host_element_attributes("host-card", &[])
+            .expect("autofocus should survive filtering");
+        assert_eq!(out, "autofocus");
     }
 }

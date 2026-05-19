@@ -110,6 +110,53 @@ pub trait ParserPlugin {
     /// Return opaque bytes to emit as a Plugin protocol fragment.
     fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
 
+    /// Called once per unique component tag with the structured list of
+    /// attributes declared on the root `<template>` element of that
+    /// component's source HTML. Use this to capture per-component
+    /// metadata that will later be injected via
+    /// [`host_element_attributes`] or [`template_element_attributes`].
+    /// The slice is empty when the component has no `<template>` wrapper.
+    /// The parser performs no skip-list filtering — plugins own all
+    /// framework-specific policy.
+    fn on_template_root_attributes(
+        &mut self,
+        tag_name: &str,
+        attributes: &[TemplateRootAttribute],
+    ) {
+        let _ = (tag_name, attributes);
+    }
+
+    /// Inject additional attributes onto a component's host opening tag.
+    /// Called once per usage site, after author-supplied attributes have
+    /// been processed. Return text **without** a leading separator space —
+    /// the parser inserts a single space before splicing.
+    ///
+    /// `author_attr_names` lists the source-preserved attribute names
+    /// written at the usage site so plugins can apply framework-specific
+    /// conflict policy (e.g. FAST's `:`/`?` binding-prefix normalization).
+    ///
+    /// Used by the FAST v2 and FAST v3 plugins to propagate static
+    /// template root attributes onto the host custom element under
+    /// Shadow DOM rendering.
+    fn host_element_attributes(
+        &mut self,
+        tag_name: &str,
+        author_attr_names: &[&str],
+    ) -> Option<String> {
+        let _ = (tag_name, author_attr_names);
+        None
+    }
+
+    /// Inject additional attributes onto the inner
+    /// `<template shadowrootmode="open">` wrapper emitted for a component
+    /// in Shadow DOM mode. Called once per unique component tag while
+    /// the parser is constructing the wrapper. Return text **without** a
+    /// leading separator space — the parser inserts a single space.
+    fn template_element_attributes(&mut self, tag_name: &str) -> Option<String> {
+        let _ = tag_name;
+        None
+    }
+
     /// Consume the plugin and return captured build artifacts.
     fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts {
         ParserPluginArtifacts::None

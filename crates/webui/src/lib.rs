@@ -203,11 +203,13 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         Some(Plugin::Fast | Plugin::FastV2) => {
             let mut plugin = FastV2ParserPlugin::new();
             plugin.set_css_strategy(options.css);
+            plugin.set_dom_strategy(options.dom);
             HtmlParser::with_plugin(Box::new(plugin))
         }
         Some(Plugin::FastV3) => {
             let mut plugin = FastV3ParserPlugin::new();
             plugin.set_css_strategy(options.css);
+            plugin.set_dom_strategy(options.dom);
             HtmlParser::with_plugin(Box::new(plugin))
         }
         Some(Plugin::WebUI) => {
