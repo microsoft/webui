@@ -121,6 +121,17 @@ describe('observable decorators', () => {
     assert.equal(getObservableNames(TestElement).has('count'), true);
   });
 
+  test('@observable names inherit through subclasses', () => {
+    class BaseElement {}
+    observable(BaseElement.prototype, 'baseCount');
+    class TestElement extends BaseElement {}
+    observable(TestElement.prototype, 'count');
+
+    const names = getObservableNames(TestElement);
+    assert.equal(names.has('baseCount'), true);
+    assert.equal(names.has('count'), true);
+  });
+
   test('@attr registers reactive property names', () => {
     class TestElement {}
     attr(TestElement.prototype, 'label');
@@ -165,5 +176,31 @@ describe('observable decorators', () => {
 
     element.removeAttribute('is-active');
     assert.equal(element.isActive, false);
+  });
+
+  test('@attr metadata inherits through subclasses', () => {
+    class BaseElement extends FakeElement {}
+    attr(BaseElement.prototype, 'baseLabel');
+    class TestElement extends BaseElement {}
+    attr(TestElement.prototype, 'label');
+
+    const names = getObservableNames(TestElement);
+    assert.equal(names.has('baseLabel'), true);
+    assert.equal(names.has('label'), true);
+
+    const element = new TestElement() as TestElement & {
+      baseLabel: string;
+      label: string;
+    };
+    element.setAttribute('base-label', 'Base');
+    element.setAttribute('label', 'Child');
+
+    assert.equal(element.baseLabel, 'Base');
+    assert.equal(element.label, 'Child');
+
+    element.baseLabel = 'Updated Base';
+    element.label = 'Updated Child';
+    assert.equal(element.getAttribute('base-label'), 'Updated Base');
+    assert.equal(element.getAttribute('label'), 'Updated Child');
   });
 });

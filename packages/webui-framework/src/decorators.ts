@@ -102,6 +102,11 @@ type ReactiveInstance = Record<string | symbol, unknown>;
 
 const reflectingAttribute = Symbol('webui.reflectingAttribute');
 
+function parentConstructor(ctor: Function): Function | null {
+  const parent = Object.getPrototypeOf(ctor);
+  return typeof parent === 'function' && parent !== Function.prototype ? parent : null;
+}
+
 function createReactiveProperty(
   proto: Record<string, unknown>,
   name: string,
@@ -201,13 +206,19 @@ const observableRegistry = new WeakMap<Function, Set<string>>();
 const EMPTY_SET: Set<string> = Object.freeze(new Set<string>()) as Set<string>;
 
 export function getObservableNames(ctor: Function): Set<string> {
-  return observableRegistry.get(ctor) ?? EMPTY_SET;
+  const names = observableRegistry.get(ctor);
+  if (names) return names;
+
+  const parent = parentConstructor(ctor);
+  return parent ? getObservableNames(parent) : EMPTY_SET;
 }
 
 function registerObservableProperty(ctor: Function, name: string): void {
   let names = observableRegistry.get(ctor);
   if (!names) {
-    names = new Set();
+    const parent = parentConstructor(ctor);
+    const inherited = parent ? getObservableNames(parent) : EMPTY_SET;
+    names = inherited.size > 0 ? new Set(inherited) : new Set();
     observableRegistry.set(ctor, names);
   }
   names.add(name);
@@ -237,6 +248,42 @@ const attrByAttribute = new WeakMap<Function, Map<string, AttrDefinition>>();
 
 /** Registry of property-name → attribute metadata, used for mount-time sync. */
 const attrByProperty = new WeakMap<Function, Map<string, AttrDefinition>>();
+
+function inheritedAttrMap(
+  registry: WeakMap<Function, Map<string, AttrDefinition>>,
+  ctor: Function,
+): Map<string, AttrDefinition> | undefined {
+  let current = parentConstructor(ctor);
+  while (current) {
+    const map = registry.get(current);
+    if (map) return map;
+    current = parentConstructor(current);
+  }
+  return undefined;
+}
+
+function attrDefinitionFor(
+  ctor: Function,
+  attribute: string,
+): AttrDefinition | undefined {
+  let current: Function | null = ctor;
+  while (current) {
+    const definition = attrByAttribute.get(current)?.get(attribute);
+    if (definition) return definition;
+    current = parentConstructor(current);
+  }
+  return undefined;
+}
+
+function attrPropertyMapFor(ctor: Function): Map<string, AttrDefinition> | undefined {
+  let current: Function | null = ctor;
+  while (current) {
+    const map = attrByProperty.get(current);
+    if (map) return map;
+    current = parentConstructor(current);
+  }
+  return undefined;
+}
 
 /**
  * Like {@link observable} but also reflects to/from an HTML attribute
@@ -283,14 +330,16 @@ function applyAttr(
   // 2. Register the attribute mapping.
   let byAttribute = attrByAttribute.get(ctor);
   if (!byAttribute) {
-    byAttribute = new Map();
+    const inherited = inheritedAttrMap(attrByAttribute, ctor);
+    byAttribute = inherited ? new Map(inherited) : new Map();
     attrByAttribute.set(ctor, byAttribute);
   }
   byAttribute.set(attrName, definition);
 
   let byProperty = attrByProperty.get(ctor);
   if (!byProperty) {
-    byProperty = new Map();
+    const inherited = inheritedAttrMap(attrByProperty, ctor);
+    byProperty = inherited ? new Map(inherited) : new Map();
     attrByProperty.set(ctor, byProperty);
   }
   byProperty.set(name, definition);
@@ -320,8 +369,7 @@ function applyAttr(
       newVal: string | null,
     ) {
       // Route the attribute change to the corresponding property.
-      const map = attrByAttribute.get(this.constructor as Function);
-      const definition = map?.get(attribute);
+      const definition = attrDefinitionFor(this.constructor as Function, attribute);
       if (
         definition !== undefined &&
         (this as ReactiveInstance)[reflectingAttribute] !== attribute
@@ -345,7 +393,7 @@ export function syncAttrProperties(
   instance: object,
   ctor: Function,
 ): void {
-  const attrs = attrByProperty.get(ctor);
+  const attrs = attrPropertyMapFor(ctor);
   if (!attrs) return;
 
   const reactiveInstance = instance as ReactiveInstance;
