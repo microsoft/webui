@@ -247,6 +247,16 @@ HttpResponse::Ok()
 | `with_head_inject(&str)` | builder | Raw HTML emitted immediately before `</head>` at the parser's structural boundary (see [Streaming SSR](#streaming-ssr)). |
 | `with_body_inject(&str)` | builder | Raw HTML emitted immediately before `</body>`. Same structural-boundary contract. |
 
+#### Selecting a fragment with `entry_id`
+
+`entry_id` accepts any fragment key in the built protocol, not just `"index.html"`. Each HTML file inside `appDir` is registered under its relative path: `appDir/index.html` becomes `"index.html"`, `appDir/widgets/citation.html` becomes `"widgets/citation.html"`. List the keys in a built protocol with `webui inspect dist/protocol.bin`.
+
+This lets a non-WebUI host pick which fragment to splice into its response. Implement `ResponseWriter` (see the Examples above) to push chunks onto whatever the host expects (a `Vec<u8>`, an `axum::body::Bytes` channel, a websocket frame), and call `handler.handle(&protocol, &state, &options, &mut writer)` with the matching `RenderOptions::new(entry_id, request_path)`. Passing an `entry_id` that does not match a key returns `HandlerError::MissingFragment(name)`.
+
+FAST-v3 components are an exception: an `<f-template name="my-component">` block is stored in the protocol's component map, not the fragment map, so it cannot be passed as `entry_id` directly. To render a single component for embedding, add a thin wrapper HTML file (e.g., `<my-component></my-component>` saved as `src/my-component-entry.html`) and pass that wrapper's key as `entry_id`.
+
+> `render_partial` (see [Routing](/guide/concepts/routing)) is a different API: it returns a JSON object consumed by the WebUI client-side router during in-app navigation. Use `WebUIHandler::handle` with `entry_id` when you want raw HTML for a non-WebUI host.
+
 ### HandlerError variants
 
 | Variant | When |
