@@ -51,7 +51,7 @@ Include it explicitly when you need **root host events** - event listeners on th
 </template>
 ```
 
-When you include the `<template>` tag, the framework uses yours instead of auto-injecting one.
+When you include the `<template>` tag, the framework uses yours instead of auto-injecting one. Any `shadowroot`-prefixed attributes you add (`shadowrootmode`, `shadowrootclonable`, `shadowrootdelegatesfocus`, `shadowrootserializable`, `shadowrootadoptedstylesheets`) are preserved on the rendered wrapper, so you can opt into closed-mode shadow DOM, clone-on-attach, or extra adopted-stylesheet specifiers without losing them at build time. Both `shadowrootmode` and the legacy `shadowroot` attribute are emitted as a paired alias on the wrapper for older user agents and tooling. When the FAST plugins (`fast-v2` / `fast-v3`) are active, those `shadowroot*` attributes are placed on the outer `<f-template>` element rather than the inner `<template>`.
 
 ## How Components Work
 

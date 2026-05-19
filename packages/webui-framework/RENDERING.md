@@ -87,7 +87,7 @@ Template:
 Server output:
 
 ```html
-<template shadowrootmode="open">
+<template shadowrootmode="open" shadowroot="open">
   <h1>My List</h1>
   <button>Toggle</button>
   <!--wc--><p>Now you see me</p><!--/wc-->

@@ -955,6 +955,17 @@ pub enum CssStrategy {
 
 Set via `parser.set_css_strategy(CssStrategy::Style)`.
 
+#### Shadow DOM `<template>` wrapper
+
+When `DomStrategy::Shadow` is active, the parser wraps each component's content in a declarative shadow DOM `<template>`. The wrapper preserves any `shadowroot`-prefixed attributes the user wrote on their own outer `<template>` and applies these rules:
+
+- **Mode** — the value of `shadowrootmode` (or, if not present, a bare legacy `shadowroot=` attribute) is captured. Both attributes are then **always** emitted on the wrapper as `shadowrootmode="<mode>" shadowroot="<mode>"` (the legacy `shadowroot` attribute is emitted as a paired alias for older browsers / linters that look for either form). When the user supplies neither, the mode defaults to `"open"`.
+- **Other shadow-root attrs** — `shadowrootclonable`, `shadowrootdelegatesfocus`, `shadowrootserializable`, and any other `shadowroot*` attribute is preserved verbatim on the emitted `<template>`.
+- **`shadowrootadoptedstylesheets`** — when the user supplies a value AND the CSS Module strategy would also generate one, the two are **merged** into a single space-separated list (user-supplied specifiers come first in their original order; parser-generated specifiers are appended only if not already present, deduplicated).
+- **Runtime / non-shadowroot user attrs on `<template>`** — `@event`, `:prop`, `?bool`, and any other non-`shadowroot*` attribute on the user's `<template>` is stripped from the emitted wrapper (it is captured by the framework plugin via root-event metadata or simply ignored).
+
+In **FAST plugin** modes (`fast-v2`, `fast-v3`) the same `shadowroot*` attributes are moved to the **outer `<f-template>`** element rather than the inner `<template>` — `<f-template>` is the framework-owned transport element that the FAST runtime consumes, and the inner `<template>` always has all `shadowroot*` attributes stripped so the browser does not auto-activate it as a declarative shadow root inside `<f-template>`. The `shadowrootadoptedstylesheets` merge rule applies the same way on `<f-template>`.
+
 #### Primary Method
 ```rust
 pub fn parse(&mut self, fragment_id: &str, html_content: &str) -> Result<(), ParserError>
