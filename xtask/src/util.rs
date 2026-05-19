@@ -72,7 +72,25 @@ pub fn run_command_quiet(cmd: &str, args: &[&str], cwd: Option<&Path>) -> Result
 /// On Windows `CreateProcessW` cannot launch `.cmd`/`.bat` scripts directly.
 /// This function uses `which` to resolve the executable path and, when the
 /// target is a shell script, wraps it in `cmd.exe /c <resolved_path>`.
+///
+/// For cargo invocations, this also forces `CARGO_INCREMENTAL=0`. xtask is
+/// only used for one-shot work (gate, examples, bench, packaging, E2E) and
+/// never for an inner edit-compile loop, so incremental compilation provides
+/// no benefit. Leaving it on causes the workspace `target/` dir to balloon
+/// (the incremental cache and per-feature fingerprint variants grow into the
+/// tens of gigabytes), which then makes every subsequent cargo invocation pay
+/// huge startup time scanning hundreds of thousands of stale fingerprint
+/// files. Disabling it here keeps `cargo xtask check` reliably fast on
+/// long-lived working copies.
 pub fn build_command(cmd: &str, args: &[&str]) -> Command {
+    let mut command = build_command_inner(cmd, args);
+    if cmd == "cargo" {
+        command.env("CARGO_INCREMENTAL", "0");
+    }
+    command
+}
+
+fn build_command_inner(cmd: &str, args: &[&str]) -> Command {
     #[cfg(windows)]
     {
         resolve_windows_command(cmd, args)
