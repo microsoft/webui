@@ -190,15 +190,15 @@ impl<'a> RenderOptions<'a> {
 ///
 /// # Thread safety
 ///
-/// `WebUIHandler` is `Send + Sync` (auto-derived). The only field is a
-/// function pointer to a plugin factory; nothing in the handler itself
-/// is borrowed or mutable across renders. Per-render state lives in a
-/// local [`WebUIProcessContext`] created inside [`render`](Self::render).
+/// `WebUIHandler` is already `Send + Sync` (auto-derived). The only field
+/// is a function pointer to a plugin factory; nothing in the handler
+/// itself is borrowed or mutable across renders. Per-render state lives
+/// in a private `WebUIProcessContext` created inside [`handle`](Self::handle).
 ///
 /// This means you can share a single handler across threads without
 /// locking. The typical pattern is to construct it once at startup,
 /// wrap it in an [`Arc`](std::sync::Arc) (or store it in router
-/// `State`), and call [`render`](Self::render) with `&self` from
+/// `State`), and call [`handle`](Self::handle) with `&self` from
 /// any request task:
 ///
 /// ```ignore
