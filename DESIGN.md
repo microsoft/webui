@@ -977,6 +977,7 @@ pub trait ParserPlugin {
     ) -> Result<()>;
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
     fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
+    fn propagate_template_host_attrs(&self) -> bool { false }
     fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts;
 }
 ```
@@ -986,6 +987,7 @@ pub trait ParserPlugin {
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
 - **Component registration**: `register_component_template` receives the final processed component template HTML
+- **Template host attr propagation**: `propagate_template_host_attrs` opts the plugin in to host-attribute propagation — when `true`, static attributes declared on the inner root `<template>` of a component definition are spliced onto every host custom-element opening tag rendered with the Shadow DOM strategy. Author attributes at the usage site take precedence on conflict (with `:` and `?` binding prefixes normalized against the static name). Client-only directives (`@*`, `:*`, `?*`, `f-ref`, `f-slotted`, `f-children`) and template-internal attrs (`shadowrootmode`, `shadowrootadoptedstylesheets`) are never propagated, and dynamic `{{…}}` host attrs are skipped in this pass. Defaults to `false` (WebUI plugin); the FAST v2 and FAST v3 plugins opt in
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts
 
 **Selecting parser plugins**

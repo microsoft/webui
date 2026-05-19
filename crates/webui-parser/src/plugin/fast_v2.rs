@@ -122,6 +122,10 @@ impl ParserPlugin for FastV2ParserPlugin {
         }
     }
 
+    fn propagate_template_host_attrs(&self) -> bool {
+        true
+    }
+
     fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts {
         ParserPluginArtifacts::ComponentTemplates(self.take_component_templates())
     }
@@ -1366,5 +1370,14 @@ mod tests {
         assert_eq!(find_tag_close(r#"<if condition="a >= b">"#), Some(22));
         assert_eq!(find_tag_close("<br>"), Some(3));
         assert_eq!(find_tag_close("<br/>"), Some(4));
+    }
+
+    #[test]
+    fn propagate_template_host_attrs_is_enabled() {
+        let plugin = FastV2ParserPlugin::new();
+        assert!(
+            plugin.propagate_template_host_attrs(),
+            "FAST v2 parser plugin must enable host-attr propagation"
+        );
     }
 }
