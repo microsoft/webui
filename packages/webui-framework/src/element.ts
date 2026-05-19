@@ -50,7 +50,7 @@ import type {
   TemplateNodePath,
 } from './template.js';
 import { hydrationStart, hydrationEnd } from './lifecycle.js';
-import { getObservableNames } from './decorators.js';
+import { getObservableNames, isAttributeProperty, syncAttrProperties } from './decorators.js';
 import { syncRepeat, dotWalk } from './element/diff.js';
 import {
   collectItemMarkers,
@@ -258,6 +258,7 @@ export class WebUIElement extends HTMLElement {
     this.$meta = meta;
     this.$hydrated = true;
     this.$ready = true;
+    syncAttrProperties(this, this.constructor as Function);
 
     // Client-created components: flush current attr/observable values
     // into the freshly-wired template DOM. Call $updateInstance directly
@@ -361,9 +362,10 @@ export class WebUIElement extends HTMLElement {
   private $applySSRState(): void {
     const state = window.__webui?.state;
     if (!state || typeof state !== 'object') return;
-    const names = getObservableNames(this.constructor as Function);
+    const ctor = this.constructor as Function;
+    const names = getObservableNames(ctor);
     for (const key of Object.keys(state)) {
-      if (names.has(key)) {
+      if (names.has(key) && !isAttributeProperty(ctor, key)) {
         // Write to backing field directly — no reactive update yet
         (this as Record<string, unknown>)[`_${key}`] = state[key];
       }
@@ -1221,31 +1223,62 @@ export class WebUIElement extends HTMLElement {
       return observableNames.has(root) ? root : '*';
     };
 
-    const r = this.$root;
-    for (const t of r.texts) {
-      if (t.parts) {
-        for (const p of t.parts) {
-          if (typeof p !== 'string') ensure(keyFor(p[0])).texts.push(t);
+    const isLocalPath = (path: string, scope?: ScopeFrame): boolean => {
+      const dot = path.indexOf('.');
+      const root = dot > -1 ? path.slice(0, dot) : path;
+      let current = scope;
+      while (current) {
+        if (current.name === root) return true;
+        current = current.parent;
+      }
+      return false;
+    };
+
+    const visit = (instance: TemplateInstance): void => {
+      for (const t of instance.texts) {
+        if (t.parts) {
+          for (const p of t.parts) {
+            if (typeof p !== 'string' && !isLocalPath(p[0], t.scope)) {
+              ensure(keyFor(p[0])).texts.push(t);
+            }
+          }
+        } else if (t.path && !isLocalPath(t.path, t.scope)) {
+          ensure(keyFor(t.path)).texts.push(t);
         }
       }
-    }
-    for (const a of r.attrs) {
-      if (a.path) ensure(keyFor(a.path)).attrs.push(a);
-      if (a.parts) {
-        for (const p of a.parts) {
-          if (typeof p !== 'string') ensure(keyFor(p[0])).attrs.push(a);
+      for (const a of instance.attrs) {
+        if (a.path && !isLocalPath(a.path, a.scope)) {
+          ensure(keyFor(a.path)).attrs.push(a);
+        }
+        if (a.parts) {
+          for (const p of a.parts) {
+            if (typeof p !== 'string' && !isLocalPath(p[0], a.scope)) {
+              ensure(keyFor(p[0])).attrs.push(a);
+            }
+          }
+        }
+        if (a.condition) {
+          for (const p of a.condition[1]) {
+            if (!isLocalPath(p, a.scope)) ensure(keyFor(p)).attrs.push(a);
+          }
         }
       }
-      if (a.condition) {
-        for (const p of a.condition[1]) ensure(keyFor(p)).attrs.push(a);
+      for (const c of instance.conds) {
+        for (const p of c.condition[1]) {
+          if (!isLocalPath(p, c.scope)) ensure(keyFor(p)).conds.push(c);
+        }
+        if (c.instance) visit(c.instance);
       }
-    }
-    for (const c of r.conds) {
-      for (const p of c.condition[1]) ensure(keyFor(p)).conds.push(c);
-    }
-    for (const rep of r.repeats) {
-      ensure(keyFor(rep.collection)).repeats.push(rep);
-    }
+      for (const rep of instance.repeats) {
+        if (!isLocalPath(rep.collection, rep.scope)) {
+          ensure(keyFor(rep.collection)).repeats.push(rep);
+        }
+        for (let i = 0; i < rep.instances.length; i++) {
+          visit(rep.instances[i].instance);
+        }
+      }
+    };
+    visit(this.$root);
 
     // Store wildcard bindings separately — avoids duplicating them into every path
     const wc = index.get('*');
@@ -1433,4 +1466,3 @@ export class WebUIElement extends HTMLElement {
     return seen ? { path, prefix, suffix } : null;
   }
 }
-

@@ -1,11 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { WebUIElement, observable } from '../../../src/index.js';
+import { WebUIElement, attr, observable } from '../../../src/index.js';
 
 export class TestSidebarRepeat extends WebUIElement {
-  @observable page = 'dashboard';
-  @observable activeGroup = '';
+  @attr page = 'dashboard';
+  @attr activeGroup = '';
   @observable groups: string[] = ['work', 'family', 'friends', 'other'];
 
   syncGroups(): void {
@@ -14,4 +14,3 @@ export class TestSidebarRepeat extends WebUIElement {
 }
 
 TestSidebarRepeat.define('test-sidebar-repeat');
-
