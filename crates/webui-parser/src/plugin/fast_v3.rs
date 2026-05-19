@@ -9,6 +9,7 @@
 
 use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use crate::component_registry::Component;
+use crate::tag_scan::find_tag_close;
 use crate::{CssStrategy, Result};
 use webui_protocol::FastElementData;
 
@@ -400,21 +401,6 @@ fn convert_route_tag(tag_str: &str, result: &mut String) -> Option<usize> {
     }
 
     Some(close + 1)
-}
-
-/// Find the position of the tag-closing `>` that is NOT inside a quoted
-/// attribute value.  Returns `None` when no unquoted `>` is found.
-fn find_tag_close(tag_str: &str) -> Option<usize> {
-    let bytes = tag_str.as_bytes();
-    let mut in_quote = false;
-    for (i, &b) in bytes.iter().enumerate() {
-        match b {
-            b'"' => in_quote = !in_quote,
-            b'>' if !in_quote => return Some(i),
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Extract the value of a named attribute from a tag string.
@@ -1355,16 +1341,5 @@ mod tests {
             output.contains("⭐"),
             "UTF-8 star should be preserved: {output}"
         );
-    }
-
-    #[test]
-    fn find_tag_close_skips_quoted_gt() {
-        assert_eq!(
-            find_tag_close(r#"<if condition="a > b">"#),
-            Some(21) // the `>` after the closing quote
-        );
-        assert_eq!(find_tag_close(r#"<if condition="a >= b">"#), Some(22));
-        assert_eq!(find_tag_close("<br>"), Some(3));
-        assert_eq!(find_tag_close("<br/>"), Some(4));
     }
 }

@@ -11,6 +11,7 @@ mod error;
 mod handlebars_parser;
 pub mod plugin;
 mod route_parser;
+mod tag_scan;
 
 pub use component_registry::{Component, ComponentRegistry};
 pub use condition_parser::ConditionParser;
@@ -1806,16 +1807,32 @@ impl HtmlParser {
         )
     }
 
-    /// Process component template HTML.
+    /// Process component template HTML for SSR output.
     ///
-    /// - **Shadow DOM** (`DomStrategy::Shadow`): wraps content in
-    ///   `<template shadowrootmode="open">`, preserves `:host` CSS,
-    ///   optionally adds `shadowrootadoptedstylesheets`.
-    /// - **Light DOM** (`DomStrategy::Light`): strips any existing shadow DOM
-    ///   wrapper, outputs plain HTML.
+    /// The developer's authored `<template>` wrapper is the source of truth.
     ///
-    /// In both modes, runtime-only attributes (`@`, `:`, `?`) are stripped
-    /// from the opening `<template>` tag.
+    /// - **Dev supplied `<template ...>`:** preserved verbatim — including
+    ///   signal-fragment attrs (`foo="{{x}}"`), `shadowrootmode`,
+    ///   `shadowrootadoptedstylesheets`, and any other custom attributes.
+    ///   The only modification is stripping runtime-only attributes
+    ///   (`@event`, `:bind`, `?cond`) from the opening tag, since those
+    ///   are protocol metadata and never appear in HTML output. If a CSS
+    ///   snippet is supplied, it is injected immediately inside the opening
+    ///   tag (before the dev's children) so styles still apply. The
+    ///   `adopted_specifier` is ignored — when the dev manages the wrapper,
+    ///   they also manage CSS adoption.
+    ///
+    /// - **Dev omitted `<template>`:**
+    ///   - `DomStrategy::Shadow` wraps the content in a framework-controlled
+    ///     `<template shadowrootmode="open">`, optionally adding
+    ///     `shadowrootadoptedstylesheets="<tag>"` for the CSS-module strategy.
+    ///   - `DomStrategy::Light` emits the content as-is (with the CSS snippet
+    ///     prepended, if any).
+    ///
+    /// Performance: zero recursion, zero regex. The dev-template path runs a
+    /// fast single-pass byte scan to skip tree-sitter entirely when the
+    /// opening tag has no runtime-attribute prefixes. The output buffer is
+    /// pre-sized to avoid reallocation in the hot path.
     fn process_component_template(
         &mut self,
         html: &str,
@@ -1825,63 +1842,83 @@ impl HtmlParser {
         let trimmed = html.trim();
         let snippet = css_snippet.unwrap_or_default();
 
-        // Extract inner content — strip <template shadowrootmode> wrapper if present
-        let has_template = trimmed.starts_with("<template");
-        let inner = if has_template {
+        if trimmed.starts_with("<template") {
+            // Dev owns the wrapper — never modify its attributes.
+            // `adopted_specifier` is intentionally unused: when the developer
+            // manages the wrapper, they manage CSS adoption too.
+            let _ = adopted_specifier;
             let stripped = self.strip_runtime_attrs_from_template(trimmed);
-            if let Some(open_end) = stripped.find('>') {
-                let inner_start = open_end + 1;
-                let inner_end = stripped.rfind("</template>").unwrap_or(stripped.len());
-                if inner_start < inner_end {
-                    stripped[inner_start..inner_end].to_string()
-                } else {
-                    String::new()
+
+            if snippet.is_empty() {
+                return stripped;
+            }
+
+            // Splice the CSS snippet right after the opening `<template …>` tag.
+            // Quote-aware scan avoids matching a `>` inside an attribute value
+            // (e.g., `data-x="a>b"`).
+            match tag_scan::find_tag_close(&stripped) {
+                Some(open_end) => {
+                    let mut result = String::with_capacity(stripped.len() + snippet.len());
+                    result.push_str(&stripped[..=open_end]);
+                    result.push_str(snippet);
+                    result.push_str(&stripped[open_end + 1..]);
+                    result
                 }
-            } else {
-                trimmed.to_string()
+                // Malformed opening tag (no closing `>`): emit as-is rather
+                // than panic. The downstream parser surfaces the error.
+                None => stripped,
             }
         } else {
-            trimmed.to_string()
-        };
-
-        match self.dom_strategy {
-            DomStrategy::Shadow => {
-                // Re-wrap in shadow DOM template
-                let adopted_attr = adopted_specifier.map(|spec| {
-                    let mut s = String::with_capacity(35 + spec.len());
-                    s.push_str(" shadowrootadoptedstylesheets=\"");
-                    s.push_str(spec);
-                    s.push('"');
-                    s
-                });
-                let adopted_ref = adopted_attr.as_deref().unwrap_or_default();
-
-                let mut result =
-                    String::with_capacity(45 + adopted_ref.len() + snippet.len() + inner.len());
-                result.push_str("<template shadowrootmode=\"open\"");
-                result.push_str(adopted_ref);
-                result.push('>');
-                result.push_str(snippet);
-                result.push_str(&inner);
-                result.push_str("</template>");
-                result
-            }
-            DomStrategy::Light => {
-                // Plain light-DOM output
-                if snippet.is_empty() && adopted_specifier.is_none() {
-                    return inner;
+            match self.dom_strategy {
+                DomStrategy::Shadow => {
+                    let adopted = adopted_specifier.unwrap_or_default();
+                    let adopted_extra = if adopted.is_empty() {
+                        0
+                    } else {
+                        33 + adopted.len()
+                    };
+                    let mut result =
+                        String::with_capacity(45 + adopted_extra + snippet.len() + trimmed.len());
+                    result.push_str("<template shadowrootmode=\"open\"");
+                    if !adopted.is_empty() {
+                        result.push_str(" shadowrootadoptedstylesheets=\"");
+                        result.push_str(adopted);
+                        result.push('"');
+                    }
+                    result.push('>');
+                    result.push_str(snippet);
+                    result.push_str(trimmed);
+                    result.push_str("</template>");
+                    result
                 }
-                let mut result = String::with_capacity(snippet.len() + inner.len() + 16);
-                result.push_str(snippet);
-                result.push_str(&inner);
-                result
+                DomStrategy::Light => {
+                    if snippet.is_empty() {
+                        return trimmed.to_string();
+                    }
+                    let mut result = String::with_capacity(snippet.len() + trimmed.len());
+                    result.push_str(snippet);
+                    result.push_str(trimmed);
+                    result
+                }
             }
         }
     }
 
-    /// Strip attributes starting with @, :, or ? from the opening template tag.
-    /// Uses tree-sitter to parse the tag and reconstruct it without runtime attrs.
+    /// Strip attributes starting with `@`, `:`, or `?` from the opening
+    /// `<template>` tag.
+    ///
+    /// Performance: a fast-path quote-aware byte scan checks whether any
+    /// runtime-prefixed attribute exists. If not, we return the original
+    /// HTML unchanged without invoking tree-sitter — the common case for
+    /// most components.
     fn strip_runtime_attrs_from_template(&mut self, html: &str) -> String {
+        // Fast path: skip tree-sitter when the opening tag has no runtime
+        // attribute prefixes. Bounded to the opening tag (stops at the
+        // first unquoted `>`), so cost is O(tag-size) bytes.
+        if !tag_scan::opening_tag_has_runtime_prefix(html) {
+            return html.to_string();
+        }
+
         let tree = match self.parser.parse(html, None) {
             Some(t) => t,
             None => return html.to_string(),
@@ -2245,6 +2282,9 @@ mod tests {
 
     #[test]
     fn test_component_no_double_wrap_template() {
+        // Developer-authored <template foo="bar"> must be preserved verbatim
+        // in --dom=light. The framework only strips runtime-only attrs;
+        // every other attribute is the developer's responsibility.
         let mut parser = HtmlParser::new();
         parser.set_dom_strategy(DomStrategy::Light);
         parser
@@ -2268,11 +2308,19 @@ mod tests {
             ]
         );
 
-        assert_stream!(records, "custom-element", [raw("<slot></slot>"),]);
+        assert_stream!(
+            records,
+            "custom-element",
+            [raw(r#"<template foo="bar"><slot></slot></template>"#),]
+        );
     }
 
     #[test]
     fn test_component_styled_no_double_wrap() {
+        // --dom=light with a developer-supplied <template> wrapper preserves
+        // the wrapper verbatim. CSS is the default `Link` strategy which
+        // injects only in shadow DOM, so in light mode there is no CSS
+        // snippet to splice into the wrapper.
         let mut parser = HtmlParser::new();
         parser.set_dom_strategy(DomStrategy::Light);
         parser
@@ -2287,11 +2335,19 @@ mod tests {
         assert!(result.is_ok());
         let records = parser.into_fragment_records();
 
-        assert_stream!(records, "custom-element", [raw(r#"<slot></slot>"#),]);
+        assert_stream!(
+            records,
+            "custom-element",
+            [raw(r#"<template foo="bar"><slot></slot></template>"#),]
+        );
     }
 
     #[test]
     fn test_component_strip_runtime_attrs() {
+        // Runtime-only attributes (`@event`, `:bind`, `?cond`) are stripped
+        // from the opening <template> tag, but the wrapper itself is
+        // preserved. After stripping in this case the wrapper becomes
+        // `<template>` with no attributes.
         let mut parser = HtmlParser::new();
         parser.set_dom_strategy(DomStrategy::Light);
         parser
@@ -2306,7 +2362,11 @@ mod tests {
         assert!(result.is_ok());
         let records = parser.into_fragment_records();
 
-        assert_stream!(records, "custom-element", [raw("<slot></slot>"),]);
+        assert_stream!(
+            records,
+            "custom-element",
+            [raw("<template><slot></slot></template>"),]
+        );
     }
 
     #[test]
@@ -3594,7 +3654,162 @@ mod tests {
         );
     }
 
-    // ── Ported from NodeJS generator.test.js ─────────────────────────
+    // ── Dev-authored <template> wrapper handling ────────────────────
+    //
+    // These tests verify that when a developer includes a `<template>`
+    // wrapper in their component HTML, the framework respects it instead
+    // of stripping/normalizing it:
+    //
+    //   --dom=light  : dev `<template ...>` preserved verbatim (including
+    //                  signal-fragment attrs like `foo="{{foo}}"`); no
+    //                  wrapper added when dev omits one.
+    //   --dom=shadow : dev `<template ...>` preserved verbatim (framework
+    //                  does NOT inject `shadowrootmode="open"` or overwrite
+    //                  a dev-supplied `shadowrootmode="closed"`); wrapper
+    //                  added only when dev omits one.
+    //
+    // Calls `process_component_template` directly so the assertions observe
+    // the exact HTML string the framework emits for the component template
+    // (this is what gets handed to the inner parse + plugin hooks).
+
+    #[test]
+    fn light_preserves_dev_template_with_static_attrs() {
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Light);
+        let processed = parser.process_component_template(
+            r#"<template foo="bar"><div>hi</div></template>"#,
+            None,
+            None,
+        );
+        assert!(
+            processed.contains(r#"<template foo="bar">"#),
+            "[--dom=light] expected dev <template foo=\"bar\"> preserved verbatim, got: {processed}"
+        );
+        assert!(
+            processed.contains("</template>"),
+            "[--dom=light] expected closing </template> preserved, got: {processed}"
+        );
+    }
+
+    #[test]
+    fn light_preserves_dev_template_with_signal_fragment_attrs() {
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Light);
+        let processed = parser.process_component_template(
+            r#"<template foo="{{foo}}"><div>hi</div></template>"#,
+            None,
+            None,
+        );
+        assert!(
+            processed.contains(r#"<template foo="{{foo}}">"#),
+            "[--dom=light] expected dev <template foo=\"{{{{foo}}}}\"> with signal preserved, got: {processed}"
+        );
+    }
+
+    #[test]
+    fn light_preserves_dev_template_with_multiple_attrs() {
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Light);
+        let processed = parser.process_component_template(
+            r#"<template autofocus tabindex="0" role="region" data-x="y"><div>hi</div></template>"#,
+            None,
+            None,
+        );
+        assert!(
+            processed.contains("autofocus")
+                && processed.contains(r#"tabindex="0""#)
+                && processed.contains(r#"role="region""#)
+                && processed.contains(r#"data-x="y""#),
+            "[--dom=light] expected ALL dev template attrs preserved, got: {processed}"
+        );
+    }
+
+    #[test]
+    fn light_no_template_no_wrapper_added() {
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Light);
+        let processed = parser.process_component_template("<div>hi</div>", None, None);
+        assert!(
+            !processed.contains("<template"),
+            "[--dom=light] framework must NOT add <template> wrapper when dev omits one, got: {processed}"
+        );
+        assert!(
+            processed.contains("<div>hi</div>"),
+            "[--dom=light] expected inner content emitted as-is, got: {processed}"
+        );
+    }
+
+    #[test]
+    fn shadow_preserves_dev_template_with_static_attrs() {
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        let processed = parser.process_component_template(
+            r#"<template foo="bar"><div>hi</div></template>"#,
+            None,
+            None,
+        );
+        assert!(
+            processed.contains(r#"<template foo="bar">"#),
+            "[--dom=shadow] dev <template foo=\"bar\"> must be preserved verbatim, got: {processed}"
+        );
+        assert!(
+            !processed.contains(r#"shadowrootmode="open""#),
+            "[--dom=shadow] framework must NOT inject shadowrootmode when dev already supplied a <template>, got: {processed}"
+        );
+    }
+
+    #[test]
+    fn shadow_preserves_dev_template_with_shadowrootmode_closed() {
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        let processed = parser.process_component_template(
+            r#"<template shadowrootmode="closed"><div>hi</div></template>"#,
+            None,
+            None,
+        );
+        assert!(
+            processed.contains(r#"shadowrootmode="closed""#),
+            "[--dom=shadow] framework must respect dev's shadowrootmode=\"closed\" (developer is managing), got: {processed}"
+        );
+        assert!(
+            !processed.contains(r#"shadowrootmode="open""#),
+            "[--dom=shadow] framework must not overwrite dev's shadowrootmode with \"open\", got: {processed}"
+        );
+    }
+
+    #[test]
+    fn shadow_preserves_dev_template_with_signal_fragment_attrs() {
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        let processed = parser.process_component_template(
+            r#"<template foo="{{foo}}"><div>hi</div></template>"#,
+            None,
+            None,
+        );
+        assert!(
+            processed.contains(r#"<template foo="{{foo}}">"#),
+            "[--dom=shadow] dev <template> with signal-fragment attr must be preserved, got: {processed}"
+        );
+    }
+
+    #[test]
+    fn shadow_adds_template_wrapper_when_dev_omits_it() {
+        let mut parser = HtmlParser::new();
+        parser.set_dom_strategy(DomStrategy::Shadow);
+        let processed = parser.process_component_template("<div>hi</div>", None, None);
+        assert!(
+            processed.contains(r#"<template shadowrootmode="open""#),
+            "[--dom=shadow] framework MUST add <template shadowrootmode=\"open\"> when dev omits a wrapper, got: {processed}"
+        );
+        assert!(
+            processed.contains("<div>hi</div>"),
+            "[--dom=shadow] inner content must survive wrapping, got: {processed}"
+        );
+        assert!(
+            processed.contains("</template>"),
+            "[--dom=shadow] framework-added wrapper must be closed, got: {processed}"
+        );
+    }
 
     // test_signal_with_default_value — SKIPPED
     // The NodeJS `<f-signal value="testSignal">Default Text</f-signal>` feature

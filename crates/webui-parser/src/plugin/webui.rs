@@ -62,6 +62,7 @@
 
 use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use crate::component_registry::Component;
+use crate::tag_scan::find_tag_close;
 use crate::{ConditionParser, CssStrategy, DomStrategy, Result};
 use std::cell::Cell;
 use std::fmt::Write;
@@ -897,7 +898,7 @@ fn compile_section(input: &str, blocks: &mut Vec<TemplateSectionMeta>) -> Templa
 
             // <outlet ... /> → keep as <outlet></outlet>
             if remaining.starts_with("<outlet") {
-                if let Some(close) = find_tag_end(remaining) {
+                if let Some(close) = find_tag_close(remaining) {
                     meta.html.push_str("<outlet></outlet>");
                     i += close + 1;
                     continue;
@@ -1342,7 +1343,7 @@ fn parse_fragment_start_tag(input: &str) -> Option<(FragmentElement, usize)> {
         return None;
     }
 
-    let end = find_tag_end(input)?;
+    let end = find_tag_close(input)?;
     let tag_content = &input[1..end];
     let tag_body = tag_content.trim_end();
     let self_closing = tag_body.ends_with('/');
@@ -1492,7 +1493,7 @@ fn strip_template_wrapper(html: &str) -> &str {
     if !html.starts_with("<template") {
         return html;
     }
-    let Some(open_end) = find_tag_end(html) else {
+    let Some(open_end) = find_tag_close(html) else {
         return html;
     };
     let inner_start = open_end + 1;
@@ -1632,7 +1633,7 @@ fn parse_if_block(input: &str) -> Option<(ConditionExpr, String, usize)> {
     let condition = compile_condition_expr(&tag_content[cond_start..cond_end]);
 
     // Extract body (after the closing >)
-    let body_start = find_tag_end(tag_content)? + 1;
+    let body_start = find_tag_close(tag_content)? + 1;
     let body = tag_content[body_start..].trim().to_string();
 
     Some((condition, body, end_pos + close_tag.len()))
@@ -1672,7 +1673,7 @@ fn parse_for_block(input: &str) -> Option<(String, String, String, usize)> {
     let collection = parts[2].to_string();
 
     // Extract body
-    let body_start = find_tag_end(tag_content)? + 1;
+    let body_start = find_tag_close(tag_content)? + 1;
     let body = tag_content[body_start..].trim().to_string();
 
     Some((collection, item_var, body, end_pos + close_tag.len()))
@@ -1751,7 +1752,7 @@ fn parse_regular_tag(input: &str, meta: &mut TemplateSectionMeta) -> Option<(Str
         return None;
     }
 
-    let end = find_tag_end(input)?;
+    let end = find_tag_close(input)?;
     let tag_content = &input[1..end];
     let tag_body = tag_content.trim_end();
     let self_closing = tag_body.ends_with('/');
@@ -1957,28 +1958,6 @@ fn parse_regular_tag(input: &str, meta: &mut TemplateSectionMeta) -> Option<(Str
     Some((out, end + 1))
 }
 
-fn find_tag_end(input: &str) -> Option<usize> {
-    let bytes = input.as_bytes();
-    let mut quote: Option<u8> = None;
-    let mut i = 1;
-
-    while i < bytes.len() {
-        let ch = bytes[i];
-        if let Some(active) = quote {
-            if ch == active {
-                quote = None;
-            }
-        } else if ch == b'"' || ch == b'\'' {
-            quote = Some(ch);
-        } else if ch == b'>' {
-            return Some(i);
-        }
-        i += 1;
-    }
-
-    None
-}
-
 enum EventHandler {
     Valid(String, bool),
     Invalid(String),
@@ -2075,7 +2054,7 @@ fn extract_root_events(html: &str) -> Vec<(String, String, bool)> {
     if !html.starts_with("<template") {
         return Vec::new();
     }
-    let Some(close) = find_tag_end(html) else {
+    let Some(close) = find_tag_close(html) else {
         return Vec::new();
     };
     let tag = &html[..close];
@@ -2102,7 +2081,7 @@ fn extract_adopted_stylesheet_specifier(html: &str) -> Option<String> {
     if !html.starts_with("<template") {
         return None;
     }
-    let close = find_tag_end(html)?;
+    let close = find_tag_close(html)?;
     let tag = &html[..close];
     let attr = "shadowrootadoptedstylesheets=\"";
     let start = tag.find(attr)? + attr.len();
