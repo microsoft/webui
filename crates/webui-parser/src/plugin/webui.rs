@@ -2150,6 +2150,15 @@ mod tests {
     }
 
     #[test]
+    fn propagate_template_host_attrs_is_disabled() {
+        let plugin = WebUIParserPlugin::new();
+        assert!(
+            !plugin.propagate_template_host_attrs(),
+            "WebUI parser plugin must not opt into host-attr propagation"
+        );
+    }
+
+    #[test]
     fn test_metadata_has_text_bindings() {
         let result = generate_compiled_template("my-comp", "<h1>{{title}}</h1>");
         assert_no_client_markers(&result);

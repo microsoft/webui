@@ -110,6 +110,16 @@ pub trait ParserPlugin {
     /// Return opaque bytes to emit as a Plugin protocol fragment.
     fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
 
+    /// Opt in to propagating static attributes declared on the inner root
+    /// `<template>` of a component definition onto every host custom-element
+    /// opening tag rendered with the Shadow DOM strategy. Author attributes
+    /// at the usage site win on conflict; client-only directives and
+    /// template-internal attrs are skipped. Defaults to `false`; the FAST v2
+    /// and FAST v3 plugins opt in.
+    fn propagate_template_host_attrs(&self) -> bool {
+        false
+    }
+
     /// Consume the plugin and return captured build artifacts.
     fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts {
         ParserPluginArtifacts::None

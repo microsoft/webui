@@ -68,6 +68,20 @@ pub trait ParserPlugin {
     /// Returns optional opaque bytes to emit as a `Plugin` protocol fragment.
     fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
 
+    /// Whether the plugin wants non-client-only attributes declared on the
+    /// inner `<template>` of a component definition to be propagated onto the
+    /// host custom element opening tag during SSR.
+    ///
+    /// The propagation is gated on `DomStrategy::Shadow` and only applies to
+    /// static attributes (those whose value does not contain `{{`). Author-
+    /// provided host attributes always win on conflict.
+    ///
+    /// Defaults to `false`. Override and return `true` from FAST plugins to
+    /// mirror declarative shadow DOM host-attr propagation.
+    fn propagate_template_host_attrs(&self) -> bool {
+        false
+    }
+
     /// Consume the plugin and return any build artifacts it captured.
     fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts {
         ParserPluginArtifacts::None
