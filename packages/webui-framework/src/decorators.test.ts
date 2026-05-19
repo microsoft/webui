@@ -4,7 +4,13 @@
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
-import { attr, getObservableNames, observable, toKebabCase } from './decorators.js';
+import {
+  attr,
+  getObservableNames,
+  isAttributeProperty,
+  observable,
+  toKebabCase,
+} from './decorators.js';
 
 class FakeElement {
   $ready = true;
@@ -187,6 +193,9 @@ describe('observable decorators', () => {
     const names = getObservableNames(TestElement);
     assert.equal(names.has('baseLabel'), true);
     assert.equal(names.has('label'), true);
+    assert.equal(isAttributeProperty(TestElement, 'baseLabel'), true);
+    assert.equal(isAttributeProperty(TestElement, 'label'), true);
+    assert.equal(isAttributeProperty(TestElement, 'missing'), false);
 
     const element = new TestElement() as TestElement & {
       baseLabel: string;

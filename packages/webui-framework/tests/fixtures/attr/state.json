@@ -1,5 +1,5 @@
 {
-  "label": "Status",
+  "label": "Global Label",
   "displayValue": "Ready",
   "ctaHref": "/checkout",
   "isActive": false,

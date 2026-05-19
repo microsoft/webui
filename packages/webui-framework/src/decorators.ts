@@ -285,6 +285,10 @@ function attrPropertyMapFor(ctor: Function): Map<string, AttrDefinition> | undef
   return undefined;
 }
 
+export function isAttributeProperty(ctor: Function, property: string): boolean {
+  return attrPropertyMapFor(ctor)?.has(property) === true;
+}
+
 /**
  * Like {@link observable} but also reflects to/from an HTML attribute
  * (kebab-case). The decorator patches `observedAttributes` and

@@ -16,6 +16,7 @@ test.describe('attr fixture', () => {
   test('renders attribute-backed SSR text', async ({ page }) => {
     await expect(page.locator('test-attr .label')).toHaveText('Status');
     await expect(page.locator('test-attr .display')).toHaveText('Ready');
+    await expect(page.locator('test-attr')).toHaveAttribute('label', 'Status');
   });
 
   test('updates default attribute names reactively', async ({ page }) => {
