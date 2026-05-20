@@ -104,6 +104,16 @@ Deno.serve({ port: 3000 }, (req) => {
 
 `state` accepts either an object (auto-serialized) or a pre-stringified JSON string.
 
+#### Selecting a fragment with `entry`
+
+`entry` accepts any fragment key in the built protocol, not just `"index.html"`. Each HTML file inside `appDir` is registered under its relative path: `appDir/index.html` becomes `"index.html"`, `appDir/widgets/citation.html` becomes `"widgets/citation.html"`. List the keys in a built protocol with `npx webui inspect dist/protocol.bin`.
+
+This lets a non-WebUI host pick which fragment to splice into its response. The host stays in charge of the surrounding HTML; WebUI renders the named fragment and the rest of the protocol is ignored. Passing an `entry` that does not match a key throws an error.
+
+FAST-v3 components are an exception: an `<f-template name="my-component">` block is stored in the protocol's component map, not the fragment map, so it cannot be passed as `entry` directly. To render a single component for embedding, add a thin wrapper HTML file (e.g., `<my-component></my-component>` saved as `src/my-component-entry.html`) and pass that wrapper's key as `entry`.
+
+> `renderPartial` (see [Routing](/guide/concepts/routing)) is a different API: it returns a JSON object consumed by the WebUI client-side router during in-app navigation. Use `render` / `renderStream` with `entry` when you want raw HTML for a non-WebUI host.
+
 ### BuildOptions
 
 | Field | Type | Default | Description |
