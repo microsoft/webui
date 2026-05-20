@@ -6,9 +6,11 @@ The `webui` crate provides high-performance build and rendering of WebUI protoco
 
 ```toml
 [dependencies]
-webui = "*" # see https://crates.io/crates/webui for latest version
+microsoft-webui = "*" # see https://crates.io/crates/microsoft-webui for latest version
 serde_json = "1"
 ```
+
+The crate is published as `microsoft-webui` on crates.io; the bare `webui` name is owned by an unrelated project. Cargo's default rename rules mean items remain importable as `use webui::...` because the crate sets `[lib] name = "webui"` internally.
 
 ## Examples
 
@@ -27,11 +29,11 @@ use std::fs;
 struct StringWriter(String);
 
 impl ResponseWriter for StringWriter {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
+    fn write(&mut self, content: &str) -> webui::HandlerResult<()> {
         self.0.push_str(content);
         Ok(())
     }
-    fn end(&mut self) -> webui_handler::Result<()> { Ok(()) }
+    fn end(&mut self) -> webui::HandlerResult<()> { Ok(()) }
 }
 
 #[actix_web::main]
@@ -70,11 +72,11 @@ use std::{fs, sync::Arc};
 struct StringWriter(String);
 
 impl ResponseWriter for StringWriter {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
+    fn write(&mut self, content: &str) -> webui::HandlerResult<()> {
         self.0.push_str(content);
         Ok(())
     }
-    fn end(&mut self) -> webui_handler::Result<()> { Ok(()) }
+    fn end(&mut self) -> webui::HandlerResult<()> { Ok(()) }
 }
 
 #[tokio::main]
@@ -112,11 +114,11 @@ use std::{fs, sync::Arc};
 struct StringWriter(String);
 
 impl ResponseWriter for StringWriter {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
+    fn write(&mut self, content: &str) -> webui::HandlerResult<()> {
         self.0.push_str(content);
         Ok(())
     }
-    fn end(&mut self) -> webui_handler::Result<()> { Ok(()) }
+    fn end(&mut self) -> webui::HandlerResult<()> { Ok(()) }
 }
 
 #[tokio::main]
