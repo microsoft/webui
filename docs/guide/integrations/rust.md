@@ -258,3 +258,41 @@ HttpResponse::Ok()
 | `MissingFragment(String)` | `entry_id` not found in the protocol. |
 | `TypeError(String)` / `Evaluation(String)` | Template/expression runtime errors. |
 
+## Thread safety
+
+`WebUIHandler` is `Send + Sync`. The handler is stateless: per-render state lives in a local context created inside `handle`, and the only stored field is a plugin factory function pointer. Construct one handler at startup, wrap it in an [`Arc`], and call `handler.handle(...)` from any request task without locking.
+
+### Sharing a handler across tasks
+
+The realistic pattern is "construct once, clone into many tasks":
+
+```rust
+use std::sync::Arc;
+use webui::{RenderOptions, WebUIHandler, WebUIProtocol};
+use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let protocol = Arc::new(WebUIProtocol::from_protobuf_file("dist/protocol.bin")?);
+    let handler = Arc::new(WebUIHandler::with_plugin(|| {
+        Box::new(FastV3HydrationPlugin::new())
+    }));
+
+    while let Some(request) = accept_request().await {
+        let handler = Arc::clone(&handler);
+        let protocol = Arc::clone(&protocol);
+        tokio::spawn(async move {
+            let options = RenderOptions::new("index.html", &request.path);
+            let mut writer = request.into_writer();
+            if let Err(error) = handler.handle(&protocol, &request.state, &options, &mut writer) {
+                tracing::error!(?error, "render failed");
+            }
+        });
+    }
+    Ok(())
+}
+```
+
+The same shape applies to other async runtimes (`actix_web::rt::spawn`, `smol::spawn`, etc.) and to thread pools (`std::thread::spawn` with a `move` closure cloning the `Arc`). Because `handle` takes `&self`, no `Mutex` is needed; concurrent renders run in parallel.
+
+[`Arc`]: https://doc.rust-lang.org/std/sync/struct.Arc.html

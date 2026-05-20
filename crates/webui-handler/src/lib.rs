@@ -187,6 +187,27 @@ impl<'a> RenderOptions<'a> {
 ///
 /// The handler is stateless: plugin instances are created per-render from
 /// the stored factory function, allowing concurrent renders with `&self`.
+///
+/// # Thread safety
+///
+/// `WebUIHandler` is already `Send + Sync` (auto-derived). The only field
+/// is a function pointer to a plugin factory; nothing in the handler
+/// itself is borrowed or mutable across renders. Per-render state lives
+/// in a private `WebUIProcessContext` created inside [`handle`](Self::handle).
+///
+/// This means you can share a single handler across threads without
+/// locking. The typical pattern is to construct it once at startup,
+/// wrap it in an [`Arc`](std::sync::Arc) (or store it in router
+/// `State`), and call [`handle`](Self::handle) with `&self` from
+/// any request task:
+///
+/// ```ignore
+/// use std::sync::Arc;
+/// use webui::WebUIHandler;
+///
+/// let handler = Arc::new(WebUIHandler::new());
+/// // ... clone `handler` into each request handler closure ...
+/// ```
 pub struct WebUIHandler {
     plugin_factory: Option<fn() -> Box<dyn HandlerPlugin>>,
 }
@@ -1535,6 +1556,14 @@ mod tests {
         WebUIFragmentAttribute,
     };
     use webui_test_utils::test_json;
+
+    // Compile-time guarantee that the handler can be shared across threads.
+    // If a future change introduces a non-Send/Sync field, this fails to
+    // compile, prompting an update to both the type and its documentation.
+    const _: fn() = || {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<WebUIHandler>();
+    };
 
     // A simple test writer implementation
     struct TestWriter {

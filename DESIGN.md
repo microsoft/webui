@@ -486,7 +486,7 @@ pub enum ExpressionError {
 ### Core API
 ```rust
 pub struct WebUIHandler {
-    plugin: Option<Box<dyn HandlerPlugin>>,
+    plugin_factory: Option<fn() -> Box<dyn HandlerPlugin>>,
 }
 
 /// Options controlling how the handler renders a protocol.
@@ -515,10 +515,10 @@ impl<'a> RenderOptions<'a> {
 
 impl WebUIHandler {
     pub fn new() -> Self;
-    pub fn with_plugin(plugin: Box<dyn HandlerPlugin>) -> Self;
+    pub fn with_plugin(factory: fn() -> Box<dyn HandlerPlugin>) -> Self;
 
     pub fn handle(
-        &mut self,
+        &self,
         protocol: &WebUIProtocol,
         state: &Value,
         options: &RenderOptions<'_>,
@@ -526,6 +526,16 @@ impl WebUIHandler {
     ) -> Result<()>;
 }
 ```
+
+#### Thread safety
+
+`WebUIHandler` is `Send + Sync` (auto-derived; the sole field is a function
+pointer). The handler is stateless — per-render state lives in a local
+context created inside `handle`, and plugin instances are created fresh per
+render from the stored factory. A single handler can therefore be shared
+across threads (typically wrapped in `Arc`) and `handle` called with `&self`
+from concurrent tasks. No `Mutex` is required; concurrent renders run in
+parallel.
 
 #### ProtocolIndex
 
@@ -564,35 +574,39 @@ pub fn match_route_cached(
 
 #### Partial and Action Response Functions
 
+These are free functions in `webui_handler::route_handler`; they operate
+on the protocol + index directly and do not take a `WebUIHandler` (the
+handler is only needed when emitting HTML through a `ResponseWriter`).
+
 ```rust
 /// Produce a JSON partial response for client-side navigation.
-/// `protocol_index` provides cached route matching and component indices.
+/// `index` provides cached route matching and component indices.
 pub fn render_partial(
-    handler: &mut WebUIHandler,
     protocol: &WebUIProtocol,
-    protocol_index: &mut ProtocolIndex,
-    options: &RenderOptions<'_>,
+    entry_id: &str,
+    request_path: &str,
     inventory_hex: &str,
-) -> Result<PartialResponse, HandlerError>;
+    index: &mut ProtocolIndex,
+) -> Result<Value, HandlerError>;
 
-/// Produce a response for a mutation action (POST).
-/// `protocol_index` provides cached route matching and component indices.
+/// Produce a JSON response for a POST mutation action.
+/// `index` provides cached route matching for invalidation-tag resolution.
 pub fn render_action_response(
-    handler: &mut WebUIHandler,
     protocol: &WebUIProtocol,
-    protocol_index: &mut ProtocolIndex,
-    options: &RenderOptions<'_>,
-    inventory_hex: &str,
-) -> Result<ActionResponse, HandlerError>;
+    state: Value,
+    entry_id: &str,
+    request_path: &str,
+    index: &mut ProtocolIndex,
+) -> Value;
 
-/// Emit client template scripts/markup for the given components.
-/// `protocol_index` provides the component index for inventory tracking.
+/// Return compiled templates and CSS for specific components by tag name.
+/// `index` provides the component index for inventory tracking.
 pub fn render_component_templates(
-    handler: &WebUIHandler,
     protocol: &WebUIProtocol,
-    protocol_index: &ProtocolIndex,
-    components: &[String],
-) -> Vec<String>;
+    component_tags: &[&str],
+    inventory_hex: &str,
+    index: &ProtocolIndex,
+) -> Result<Value, HandlerError>;
 ```
 
 #### Component Inventory Functions
