@@ -35,6 +35,12 @@ implementations are loaded.
 
 ## Using Plugins with Handlers
 
+::: warning Hydration plugin is required for interactivity
+A handler constructed without a plugin (`WebUIHandler::new()` in Rust, no `plugin` option in Node.js, `webui_handler_create` in C) emits the rendered HTML but does **not** inject the hydration markers (`data-fe`, `<!--fe:b-->`, etc.) that client runtimes look for. The page renders correctly server-side but `enableHydration()` finds nothing to bind to, so client-side interactivity will silently not work.
+
+For any component that needs to be interactive after hydration, construct the handler with the matching plugin (`FastV3HydrationPlugin` for FAST 3.x, `WebUIHydrationPlugin` for the WebUI framework). The plain `WebUIHandler::new()` form is appropriate only for static SSR where the page is not expected to come alive on the client.
+:::
+
 <webui-tabs>
 <webui-tab slot="tab" active>Rust</webui-tab>
 <webui-tab slot="tab">Node.js</webui-tab>
