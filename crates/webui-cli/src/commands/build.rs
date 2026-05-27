@@ -583,6 +583,8 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
             },
             out: custom_path.clone(),
         })
@@ -615,6 +617,8 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
             },
             out: nested.clone(),
         })
