@@ -51,9 +51,10 @@ Path inputs for `APP`, `--state`, and `--servedir` support absolute paths, relat
 | `module` | Emits `<style type="module" specifier="component">` definitions and adds `shadowrootadoptedstylesheets` to `<template>` tags. The browser shares a single `CSSStyleSheet` across all shadow roots that adopt it. No separate CSS files are written. Based on the [Declarative CSS Module Scripts](https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ShadowDOM/explainer.md) proposal. |
 
 For long-lived CDN/browser caching in `link` mode, include `[hash]` in the CSS
-filename template. `[hash]` is SHA-256 truncated to 8 hex characters. The CSS
-file is still written to `--out`; `--css-public-base` only changes the href
-stored in `protocol.bin` and emitted in `<link>` tags.
+filename template. `[hash]` is the component CSS file's SHA-256 content hash
+truncated to 8 hex characters. The CSS file is still written to `--out`;
+`--css-public-base` only changes the href stored in `protocol.bin` and emitted
+in `<link>` tags.
 
 **DOM Strategies:**
 

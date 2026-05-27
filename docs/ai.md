@@ -518,9 +518,10 @@ webui build ./src --out ./dist \
   --css-public-base "https://cdn.example.com/assets"
 ```
 
-`[hash]` is SHA-256 truncated to 8 hex characters. The CSS files are still
-written to `--out`; `--css-public-base` changes only the href compiled into
-`protocol.bin` and emitted in stylesheet `<link>` tags.
+`[hash]` is the component CSS file's SHA-256 content hash truncated to 8 hex
+characters. The CSS files are still written to `--out`; `--css-public-base`
+changes only the href compiled into `protocol.bin` and emitted in stylesheet
+`<link>` tags.
 
 ### Serve (dev server)
 
