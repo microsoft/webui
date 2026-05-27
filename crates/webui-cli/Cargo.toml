@@ -16,12 +16,12 @@ name = "webui"
 path = "src/main.rs"
 
 [dependencies]
-microsoft-webui = { path = "../webui", version = "0.0.13", features = ["cli"] }
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.13" }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.13" }
-microsoft-webui-discovery = { path = "../webui-discovery", version = "0.0.13" }
-microsoft-webui-tokens = { path = "../webui-tokens", version = "0.0.13" }
-microsoft-webui-dev-server = { path = "../webui-dev-server", version = "0.0.13" }
+microsoft-webui = { path = "../webui", version = "0.0.14", features = ["cli"] }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.14" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.14" }
+microsoft-webui-discovery = { path = "../webui-discovery", version = "0.0.14" }
+microsoft-webui-tokens = { path = "../webui-tokens", version = "0.0.14" }
+microsoft-webui-dev-server = { path = "../webui-dev-server", version = "0.0.14" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 console = { workspace = true }
@@ -37,7 +37,7 @@ log = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.13" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.14" }
 
 [lints]
 workspace = true
