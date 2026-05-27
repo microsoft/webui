@@ -31,7 +31,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | Argument | Description | Default |
 |----------|-------------|---------|
 | `APP` | Path to the app folder | `.` (current directory) |
-| `--out <OUT>` | Output folder for protocol and assets | *(required)* |
+| `--out <OUT>` | Output folder for protocol and assets, or a `.bin` file path to set the protocol filename (e.g. `./dist/app1.bin`) | *(required)* |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <STRATEGY>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
 | `--plugin <NAME>` | Load a parser plugin | *(none)* |
@@ -80,6 +80,10 @@ webui build ./my-app --out ./dist --components @reactive-ui
 
 # Build with components from a local shared library
 webui build ./my-app --out ./dist --components ./shared/components
+
+# Customize the protocol filename (useful when building multiple apps to one folder)
+webui build ./src/apps/app1 --out ./dist/app1.bin
+webui build ./src/apps/app2 --out ./dist/app2.bin
 ```
 
 ### `webui inspect`

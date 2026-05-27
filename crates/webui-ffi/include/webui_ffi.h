@@ -58,9 +58,9 @@ void webui_handler_destroy(void *handler_ptr);
 ///
 /// # Thread Safety
 ///
-/// Handler instances are NOT thread-safe. Callers must serialize all calls
-/// to the same handler_ptr (e.g., via a mutex). Do not call set_nonce
-/// concurrently with render or destroy on the same handler.
+/// Handler instances are **not** thread-safe. Callers must serialize access
+/// to a single `handler_ptr` — do not call `set_nonce` concurrently with
+/// `render` or other operations on the same handler.
 ///
 /// # Safety
 ///
