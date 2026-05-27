@@ -4,6 +4,7 @@
 use anyhow::{Context, Result};
 use clap::Args;
 use expand_tilde::expand_tilde;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -28,19 +29,21 @@ pub struct BuildArgs {
 /// the parent becomes the output directory (or `.` if none) and the file name
 /// becomes the protocol filename. Otherwise `out` is treated as a directory and
 /// the default `protocol.bin` filename is used.
-fn resolve_out(out: &Path) -> (PathBuf, String) {
+///
+/// The filename is kept as an `OsString` so non-UTF8 paths round-trip unchanged.
+fn resolve_out(out: &Path) -> (PathBuf, OsString) {
     if out.extension().and_then(|e| e.to_str()) == Some("bin") {
         let name = out
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "protocol.bin".to_string());
+            .map(OsString::from)
+            .unwrap_or_else(|| OsString::from("protocol.bin"));
         let dir = match out.parent() {
             Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
             _ => PathBuf::from("."),
         };
         (dir, name)
     } else {
-        (out.to_path_buf(), "protocol.bin".to_string())
+        (out.to_path_buf(), OsString::from("protocol.bin"))
     }
 }
 
@@ -72,11 +75,12 @@ fn run(args: &BuildArgs) -> Result<()> {
         .with_context(|| format!("App folder not found: {}", args.app_args.app.display()))?;
 
     let (out_dir, protocol_name) = resolve_out(&out);
+    let protocol_path = out_dir.join(&protocol_name);
 
     output::header("WebUI Build");
     output::field("App", &app.display());
     output::field("Entry", &args.app_args.entry);
-    output::field("Output", &out_dir.join(&protocol_name).display());
+    output::field("Output", &protocol_path.display());
     output::field("CSS", &args.app_args.css);
     if let Some(ref plugin_name) = args.app_args.plugin {
         output::field("Plugin", plugin_name);
@@ -91,8 +95,8 @@ fn run(args: &BuildArgs) -> Result<()> {
 
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("Failed to create {}", out_dir.display()))?;
-    fs::write(out_dir.join(&protocol_name), &result.protocol_bytes)
-        .with_context(|| format!("Failed to write {} to {}", protocol_name, out_dir.display()))?;
+    fs::write(&protocol_path, &result.protocol_bytes)
+        .with_context(|| format!("Failed to write {}", protocol_path.display()))?;
     for (name, content) in &result.css_files {
         fs::write(out_dir.join(name), content)
             .with_context(|| format!("Failed to write {name} to {}", out_dir.display()))?;
@@ -121,7 +125,10 @@ fn run(args: &BuildArgs) -> Result<()> {
     }
 
     let files_written = 1 + stats.css_file_count;
-    output::success(&format!("Wrote {}", console::style(&protocol_name).bold()));
+    output::success(&format!(
+        "Wrote {}",
+        console::style(Path::new(&protocol_name).display()).bold()
+    ));
 
     output::finish(&format!(
         "Build complete ({} file{} written) {}",
