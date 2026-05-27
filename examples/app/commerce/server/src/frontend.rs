@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use webui::{build, BuildOptions, CssStrategy, DomStrategy, Plugin, WebUIHandler, WebUIProtocol};
+use webui::{build, BuildOptions, CssStrategy, Plugin, WebUIHandler, WebUIProtocol};
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::route_handler;
 use webui_handler::{RenderOptions, ResponseWriter};
@@ -38,9 +38,8 @@ impl FrontendRuntime {
             app_dir,
             entry: "index.html".to_string(),
             css,
-            dom: DomStrategy::Shadow,
             plugin: Some(Plugin::WebUI),
-            components: Vec::new(),
+            ..BuildOptions::default()
         })
         .with_context(|| "Failed to build the commerce WebUI protocol")?;
 

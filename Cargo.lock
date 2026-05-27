@@ -1924,6 +1924,7 @@ dependencies = [
  "html-escape",
  "microsoft-webui-protocol",
  "microsoft-webui-test-utils",
+ "sha2",
  "thiserror",
  "tree-sitter",
  "tree-sitter-css",

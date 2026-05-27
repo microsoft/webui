@@ -10,14 +10,13 @@
 use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use crate::component_registry::Component;
 use crate::tag_scan::find_tag_close;
-use crate::{CssStrategy, Result};
+use crate::{CssLinkOptions, CssStrategy, Result};
 use webui_protocol::FastElementData;
 
 /// Information about a tracked component for `<f-template>` generation.
 struct TrackedComponent {
     tag_name: String,
-    html_content: String,
-    css_content: Option<String>,
+    template_html: String,
 }
 
 /// FAST 3 parser plugin used by `fast-v3`.
@@ -30,8 +29,6 @@ struct TrackedComponent {
 pub struct FastV3ParserPlugin {
     /// Components tracked during parsing, in discovery order.
     components: Vec<TrackedComponent>,
-    /// CSS delivery strategy for f-templates.
-    css_strategy: CssStrategy,
 }
 
 impl FastV3ParserPlugin {
@@ -40,13 +37,7 @@ impl FastV3ParserPlugin {
     pub fn new() -> Self {
         Self {
             components: Vec::new(),
-            css_strategy: CssStrategy::Link,
         }
-    }
-
-    /// Set the CSS delivery strategy for generated f-templates.
-    pub fn set_css_strategy(&mut self, strategy: CssStrategy) {
-        self.css_strategy = strategy;
     }
 
     /// Take the individual component f-template strings, keyed by tag name.
@@ -59,12 +50,7 @@ impl FastV3ParserPlugin {
         self.components
             .iter()
             .map(|comp| {
-                let tmpl = generate_f_template(
-                    &comp.tag_name,
-                    &comp.html_content,
-                    comp.css_content.as_deref(),
-                    self.css_strategy,
-                );
+                let tmpl = generate_f_template_from_processed(&comp.tag_name, &comp.template_html);
                 (comp.tag_name.clone(), tmpl)
             })
             .collect()
@@ -82,7 +68,7 @@ impl ParserPlugin for FastV3ParserPlugin {
         &mut self,
         tag_name: &str,
         component: &Component,
-        _processed_template: &str,
+        processed_template: &str,
     ) -> Result<()> {
         // Only track each component once (avoids duplicate <f-template> blocks
         // when a component is used in multiple parent templates)
@@ -91,9 +77,9 @@ impl ParserPlugin for FastV3ParserPlugin {
         }
         self.components.push(TrackedComponent {
             tag_name: tag_name.to_string(),
-            html_content: component.html_content.clone(),
-            css_content: component.css_content.clone(),
+            template_html: processed_template.to_string(),
         });
+        let _ = component;
         Ok(())
     }
 
@@ -138,6 +124,44 @@ pub fn generate_f_template(
     css_content: Option<&str>,
     css_strategy: CssStrategy,
 ) -> String {
+    generate_f_template_with_css_options(
+        tag_name,
+        html_content,
+        css_content,
+        css_strategy,
+        &CssLinkOptions::default(),
+    )
+}
+
+fn generate_f_template_from_processed(tag_name: &str, processed_template: &str) -> String {
+    let mut output = String::with_capacity(256);
+    output.push_str("<f-template name=\"");
+    output.push_str(tag_name);
+    output.push_str("\">\n");
+
+    let converted = convert_btr_to_fast(processed_template);
+    let trimmed = minify_inter_tag_whitespace(converted.trim());
+
+    if trimmed.starts_with("<template") {
+        output.push_str(&trimmed);
+    } else {
+        output.push_str("<template>");
+        output.push_str(&trimmed);
+        output.push_str("</template>");
+    }
+
+    output.push_str("\n</f-template>\n");
+    output
+}
+
+/// Generate a FAST 3 f-template with Link CSS filename/href options.
+pub fn generate_f_template_with_css_options(
+    tag_name: &str,
+    html_content: &str,
+    css_content: Option<&str>,
+    css_strategy: CssStrategy,
+    css_link_options: &CssLinkOptions,
+) -> String {
     let mut output = String::with_capacity(256);
     output.push_str("<f-template name=\"");
     output.push_str(tag_name);
@@ -148,11 +172,12 @@ pub fn generate_f_template(
 
     // Build the CSS injection string based on the configured strategy
     let css_injection = match css_strategy {
-        CssStrategy::Link => css_content.map(|_| {
-            let mut s = String::with_capacity(40 + tag_name.len());
+        CssStrategy::Link => css_content.map(|css| {
+            let href = css_link_options.resolve(tag_name, css);
+            let mut s = String::with_capacity(40 + href.href.len());
             s.push_str("<link rel=\"stylesheet\" href=\"");
-            s.push_str(tag_name);
-            s.push_str(".css\">");
+            s.push_str(&href.href);
+            s.push_str("\">");
             s
         }),
         CssStrategy::Style => css_content.map(|css| {
@@ -754,7 +779,11 @@ mod tests {
         let mut plugin = FastV3ParserPlugin::new();
         let comp = make_component("my-comp", "<div>hello</div>", Some("div { color: red; }"));
         plugin
-            .register_component_template("my-comp", &comp, &comp.html_content)
+            .register_component_template(
+                "my-comp",
+                &comp,
+                r#"<template><link rel="stylesheet" href="my-comp.css"><div>hello</div></template>"#,
+            )
             .unwrap();
 
         let templates = plugin.take_component_templates();
@@ -789,10 +818,13 @@ mod tests {
     #[test]
     fn component_template_css_strategy_style() {
         let mut plugin = FastV3ParserPlugin::new();
-        plugin.set_css_strategy(crate::CssStrategy::Style);
         let comp = make_component("my-comp", "<div>hello</div>", Some("div { color: red; }"));
         plugin
-            .register_component_template("my-comp", &comp, &comp.html_content)
+            .register_component_template(
+                "my-comp",
+                &comp,
+                r#"<template><style>div { color: red; }</style><div>hello</div></template>"#,
+            )
             .unwrap();
 
         let templates = plugin.take_component_templates();
@@ -811,10 +843,13 @@ mod tests {
     #[test]
     fn component_template_css_strategy_module() {
         let mut plugin = FastV3ParserPlugin::new();
-        plugin.set_css_strategy(crate::CssStrategy::Module);
         let comp = make_component("my-comp", "<div>hello</div>", Some("div { color: red; }"));
         plugin
-            .register_component_template("my-comp", &comp, &comp.html_content)
+            .register_component_template(
+                "my-comp",
+                &comp,
+                r#"<template shadowrootadoptedstylesheets="my-comp"><div>hello</div></template>"#,
+            )
             .unwrap();
 
         let templates = plugin.take_component_templates();
@@ -846,10 +881,13 @@ mod tests {
     #[test]
     fn component_template_css_strategy_module_no_css() {
         let mut plugin = FastV3ParserPlugin::new();
-        plugin.set_css_strategy(crate::CssStrategy::Module);
         let comp = make_component("my-comp", "<div>hello</div>", None);
         plugin
-            .register_component_template("my-comp", &comp, &comp.html_content)
+            .register_component_template(
+                "my-comp",
+                &comp,
+                r#"<template><div>hello</div></template>"#,
+            )
             .unwrap();
 
         let templates = plugin.take_component_templates();

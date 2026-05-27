@@ -46,9 +46,21 @@ build_to_disk(
         dom: DomStrategy::Shadow,      // or DomStrategy::Light for light DOM
         plugin: Some(Plugin::FastV3),    // @microsoft/fast-element 3.x hydration plugin
         components: vec![],             // additional component sources
+        ..BuildOptions::default()
     },
     Path::new("dist"),
 )?;
+```
+
+For CDN/cache-friendly Link-mode CSS, override only the CSS asset fields:
+
+```rust
+BuildOptions {
+    app_dir: "src".into(),
+    css_file_name_template: "[name]-[hash].[ext]".into(),
+    css_public_base: Some("https://cdn.example.com/assets".into()),
+    ..BuildOptions::default()
+}
 ```
 
 ### Render
@@ -101,7 +113,7 @@ let partial = route_handler::render_partial(
 
 | Type | Description |
 |------|-------------|
-| `BuildOptions` | Build configuration (app_dir, entry, css, plugin, components) |
+| `BuildOptions` | Build configuration (app_dir, entry, css, plugin, components, css_file_name_template, css_public_base) |
 | `BuildResult` | Build output (protocol, css_files, component_templates, stats) |
 | `BuildStats` | Build metrics (duration, fragment_count, protocol_size_bytes) |
 | `WebUIProtocol` | Compiled protocol (from protobuf binary) |

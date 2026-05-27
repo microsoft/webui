@@ -13,7 +13,7 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use webui::{build, BuildOptions, CssStrategy, DomStrategy, Plugin};
+use webui::{build, BuildOptions, Plugin};
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::WebUIProtocol;
@@ -45,10 +45,8 @@ impl ShellState {
         let result = build(BuildOptions {
             app_dir: src_dir,
             entry: "index.html".to_string(),
-            css: CssStrategy::Link,
-            dom: DomStrategy::Shadow,
             plugin: Some(Plugin::WebUI),
-            components: Vec::new(),
+            ..BuildOptions::default()
         })
         .map_err(|e| anyhow::anyhow!("Failed to build shell protocol: {e}"))?;
 

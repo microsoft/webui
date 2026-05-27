@@ -47,4 +47,8 @@ pub enum WebUIError {
     /// Handler rendering error.
     #[error("{0}")]
     Rendering(#[from] webui_handler::HandlerError),
+
+    /// Invalid build-option configuration.
+    #[error("Invalid build options: {0}")]
+    InvalidBuildOptions(String),
 }

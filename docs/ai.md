@@ -507,6 +507,20 @@ webui build ./src --out ./dist --plugin=webui
 | `--dom <MODE>` | `shadow` | `shadow` or `light` |
 | `--plugin <NAME>` | none | Plugin identifier (e.g. `webui`) |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
+| `--css-file-name-template <TEMPLATE>` | `[name].[ext]` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
+| `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
+
+For CDN/browser caching in `link` mode, prefer:
+
+```bash
+webui build ./src --out ./dist \
+  --css-file-name-template "[name]-[hash].[ext]" \
+  --css-public-base "https://cdn.example.com/assets"
+```
+
+`[hash]` is SHA-256 truncated to 8 hex characters. The CSS files are still
+written to `--out`; `--css-public-base` changes only the href compiled into
+`protocol.bin` and emitted in stylesheet `<link>` tags.
 
 ### Serve (dev server)
 
@@ -528,6 +542,8 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
 | `--api-port <PORT>` | none | Proxy route requests to API server |
 | `--theme <PACKAGE>` | none | Design token theme (see below) |
+| `--css-file-name-template <TEMPLATE>` | `[name].[ext]` | Link-mode CSS filename template |
+| `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
 
 ### Inspect
 

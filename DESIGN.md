@@ -51,7 +51,10 @@ pub struct ComponentData {
     pub template: String,
     /// Component CSS content for the Module strategy.
     pub css: String,
-    /// External stylesheet href for the Link CSS strategy (e.g. "/my-card.css").
+    /// External stylesheet href for the Link CSS strategy.
+    /// Default format is `<component-name>.css`, but build-time naming
+    /// templates can produce hashed names (e.g. `my-card-a1b2c3d4.css`) and/or
+    /// prepend a CDN/public base URL.
     /// Always set when CssStrategy::Link is active and the component has CSS.
     /// Empty for Style/Module strategies and for components without CSS.
     /// The handler uses `css_strategy` and `dom_strategy` on `WebUIProtocol` to
@@ -949,11 +952,11 @@ pub enum CssStrategy {
 }
 ```
 
-- **Link** (default): Emits `<link>` tags referencing external `.css` files only for components whose discovery/registration data included CSS. Used by the CLI for production builds where CSS files are served separately.
+- **Link** (default): Emits `<link>` tags referencing external `.css` files only for components whose discovery/registration data included CSS. Used by the CLI for production builds where CSS files are served separately. Output filenames are configurable with a naming template (`[name]`, `[hash]`, `[ext]`), defaulting to `[name].[ext]`. `[hash]` is SHA-256 truncated to 8 hex chars. An optional public base prefix can be applied so protocol `css_href` values point to CDN URLs. The resolved href is used consistently for handler-emitted head links and parser/plugin-generated component template stylesheet links.
 - **Style**: Embeds the full CSS content in `<style>` tags inside the shadow DOM template. Used when all files are needed in-memory.
 - **Module**: Uses the [Declarative CSS Module Scripts](https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ShadowDOM/explainer.md) proposal. During SSR, emits a `<style type="module" specifier="component-name">` definition in each component's light DOM on first render (e.g., `<my-comp><style type="module" ...>CSS</style><template ...>`) and adds `shadowrootadoptedstylesheets="component-name"` to each shadow root `<template>`. Components inside false `<if>` blocks or empty `<for>` loops that were not rendered during SSR get their module style definitions emitted at `body_end`, so client-side activation can adopt them. When a CSP nonce is configured (via `RenderOptions::with_nonce` / `webui_handler_set_nonce`), the SSR-emitted `<style type="module">` tags include `nonce="VALUE"` (in `type`, `nonce`, `specifier` order) so strict `style-src 'nonce-...'` policies allow them, matching the existing nonce treatment of inline `<script>` tags. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. During SPA partial navigation, module style definitions for newly needed components are sent in the `templateStyles` array; the router appends them to `<head>` before executing template scripts. WebUI Framework compiled metadata carries the adopted stylesheet specifier (`sa`) so client-created components can adopt the registered stylesheet on their shadow root.
 
-Set via `parser.set_css_strategy(CssStrategy::Style)`.
+Set at construction time with `HtmlParser::with_options(ParserOptions::try_new(...))`.
 
 #### Primary Method
 ```rust
@@ -1012,6 +1015,7 @@ parser.parse("index.html", &html)?;
 **CLI integration:**
 ```bash
 webui build ./templates --out ./dist --plugin=<name>
+webui build ./templates --out ./dist --css-file-name-template="[name]-[hash].[ext]" --css-public-base="https://cdn.example.com/assets"
 webui serve ./templates --state ./data/state.json --plugin=<name>
 ```
 
@@ -1439,4 +1443,3 @@ The CLI specification and usage details are maintained in [crates/webui-cli/READ
 ## Example Workflow
 
 Examples and end-to-end walkthroughs are maintained in [examples/README.md](examples/README.md)
-

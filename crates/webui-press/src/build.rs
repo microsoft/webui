@@ -362,10 +362,9 @@ pub fn build_docs_with_cache(
         let build_result = webui::build(BuildOptions {
             app_dir: page_tmp.clone(),
             entry: "index.html".to_string(),
-            css: webui::CssStrategy::Link,
-            dom: webui::DomStrategy::Shadow,
             plugin: Some(webui::Plugin::WebUI),
             components: component_sources.clone(),
+            ..BuildOptions::default()
         })
         .map_err(|e| Error::Build(format!("{}: {e}", page.path)))?;
 
@@ -503,10 +502,9 @@ pub fn build_docs_with_cache(
     let nf_build = webui::build(BuildOptions {
         app_dir: nf_tmp.clone(),
         entry: "index.html".to_string(),
-        css: webui::CssStrategy::Link,
-        dom: webui::DomStrategy::Shadow,
         plugin: Some(webui::Plugin::WebUI),
         components: component_sources.clone(),
+        ..BuildOptions::default()
     })
     .map_err(|e| Error::Build(format!("404 build failed: {e}")))?;
 

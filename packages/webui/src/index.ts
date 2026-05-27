@@ -23,6 +23,10 @@ export interface BuildOptions {
   plugin?: string;
   /** Additional component sources (npm packages or local paths). */
   components?: string[];
+  /** Link-mode CSS filename template. Tokens: [name], [hash], [ext]. */
+  cssFileNameTemplate?: string;
+  /** Optional base URL/path prefix for Link-mode CSS hrefs. */
+  cssPublicBase?: string;
   /** Output directory (used by CLI fallback for build-to-disk). */
   outDir?: string;
 }
@@ -109,6 +113,8 @@ interface NativeAddon {
     css?: string;
     plugin?: string;
     components?: string[];
+    cssFileNameTemplate?: string;
+    cssPublicBase?: string;
   }): BuildResult;
   inspect(protocolData: Buffer): string;
   renderPartial(protocolData: Buffer, stateJson: string, entryId: string, requestPath: string, inventoryHex: string): string;
@@ -175,6 +181,12 @@ export function build(options: BuildOptions): BuildResult {
     for (const c of options.components) {
       args.push("--components", c);
     }
+  }
+  if (options.cssFileNameTemplate) {
+    args.push("--css-file-name-template", options.cssFileNameTemplate);
+  }
+  if (options.cssPublicBase) {
+    args.push("--css-public-base", options.cssPublicBase);
   }
   if (options.outDir) args.push("--out", options.outDir);
 

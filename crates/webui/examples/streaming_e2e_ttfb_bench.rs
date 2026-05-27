@@ -63,7 +63,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use webui::streaming::StreamingWriter;
-use webui::{build, BuildOptions, CssStrategy, DomStrategy, ResponseWriter, WebUIHandler};
+use webui::{build, BuildOptions, CssStrategy, ResponseWriter, WebUIHandler};
 use webui_handler::RenderOptions;
 use webui_protocol::WebUIProtocol;
 
@@ -137,9 +137,7 @@ fn build_protocol() -> WebUIProtocol {
         app_dir,
         entry: "index.html".to_string(),
         css: CssStrategy::Style,
-        dom: DomStrategy::Shadow,
-        plugin: None,
-        components: Vec::new(),
+        ..BuildOptions::default()
     })
     .expect("failed to build contact-book-manager protocol")
     .protocol

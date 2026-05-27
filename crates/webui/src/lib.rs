@@ -9,16 +9,12 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use webui::{build, BuildOptions, CssStrategy, DomStrategy};
+//! use webui::{build, BuildOptions};
 //! use std::path::PathBuf;
 //!
 //! let result = build(BuildOptions {
 //!     app_dir: PathBuf::from("./src"),
-//!     entry: "index.html".to_string(),
-//!     css: CssStrategy::Link,
-//!     dom: DomStrategy::Shadow,
-//!     plugin: None,
-//!     components: Vec::new(),
+//!     ..BuildOptions::default()
 //! }).unwrap();
 //!
 //! println!("Built {} fragments in {:?}", result.stats.fragment_count, result.stats.duration);
@@ -42,9 +38,12 @@ pub use webui_handler::{
 };
 pub use webui_parser::CssStrategy;
 pub use webui_parser::DomStrategy;
+pub use webui_parser::ParserOptions;
 pub use webui_parser::Plugin;
+pub use webui_parser::DEFAULT_CSS_FILE_NAME_TEMPLATE;
 pub use webui_protocol::WebUIProtocol;
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
@@ -69,6 +68,27 @@ pub struct BuildOptions {
     pub plugin: Option<Plugin>,
     /// Additional component sources (npm packages or local paths).
     pub components: Vec<String>,
+    /// Link-mode CSS filename template using `[name]`, `[hash]`, and `[ext]`.
+    /// Ignored unless `css == CssStrategy::Link`.
+    pub css_file_name_template: String,
+    /// Optional URL/base-path prefix for Link-mode `css_href` values.
+    /// When set, emitted protocol hrefs become `<base>/<filename>`.
+    pub css_public_base: Option<String>,
+}
+
+impl Default for BuildOptions {
+    fn default() -> Self {
+        Self {
+            app_dir: std::path::PathBuf::from("."),
+            entry: "index.html".to_string(),
+            css: CssStrategy::Link,
+            dom: DomStrategy::Shadow,
+            plugin: None,
+            components: Vec::new(),
+            css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+            css_public_base: None,
+        }
+    }
 }
 
 /// Statistics about a completed build.
@@ -202,27 +222,27 @@ struct RawBuildOutput {
 
 /// Internal build logic shared by `build()` and `build_to_disk()`.
 fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIError> {
+    let parser_options = ParserOptions::try_new(
+        options.css,
+        options.dom,
+        &options.css_file_name_template,
+        options.css_public_base.as_deref(),
+    )
+    .map_err(|e| WebUIError::InvalidBuildOptions(e.to_string()))?;
+    let css_link_options = parser_options.css_link_options.clone();
+
     let mut parser = match options.plugin {
         Some(Plugin::Fast | Plugin::FastV2) => {
-            let mut plugin = FastV2ParserPlugin::new();
-            plugin.set_css_strategy(options.css);
-            HtmlParser::with_plugin(Box::new(plugin))
+            HtmlParser::with_plugin_options(Box::new(FastV2ParserPlugin::new()), parser_options)
         }
         Some(Plugin::FastV3) => {
-            let mut plugin = FastV3ParserPlugin::new();
-            plugin.set_css_strategy(options.css);
-            HtmlParser::with_plugin(Box::new(plugin))
+            HtmlParser::with_plugin_options(Box::new(FastV3ParserPlugin::new()), parser_options)
         }
         Some(Plugin::WebUI) => {
-            let mut plugin = WebUIParserPlugin::new();
-            plugin.set_css_strategy(options.css);
-            plugin.set_dom_strategy(options.dom);
-            HtmlParser::with_plugin(Box::new(plugin))
+            HtmlParser::with_plugin_options(Box::new(WebUIParserPlugin::new()), parser_options)
         }
-        None => HtmlParser::new(),
+        None => HtmlParser::with_options(parser_options),
     };
-    parser.set_css_strategy(options.css);
-    parser.set_dom_strategy(options.dom);
 
     // Register app directory components
     parser
@@ -259,7 +279,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         }
     }
 
-    let component_count = parser.component_registry_mut().len();
+    let component_count = parser.component_registry().len();
 
     // Parse entry HTML
     let entry_path = options.app_dir.join(&options.entry);
@@ -274,14 +294,15 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             source,
         })?;
 
-    // Snapshot CSS before consuming the parser
     let css_snapshot: Vec<(String, String)> = parser
-        .component_registry_mut()
+        .component_registry()
         .get_all()
-        .filter_map(|c| {
-            c.css_content
+        .filter(|component| parser.has_fragment(&component.tag_name))
+        .filter_map(|component| {
+            component
+                .css_content
                 .as_ref()
-                .map(|css| (c.tag_name.clone(), css.clone()))
+                .map(|css| (component.tag_name.clone(), css.clone()))
         })
         .collect();
 
@@ -316,6 +337,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     let is_module = options.css == CssStrategy::Module;
     let is_link = options.css == CssStrategy::Link;
     let mut css_files: Vec<(String, String)> = Vec::new();
+    let mut emitted_names: HashSet<String> = HashSet::new();
     for (tag, css) in css_snapshot {
         if !protocol.fragments.contains_key(&tag) {
             continue;
@@ -323,10 +345,15 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         if is_module {
             protocol.components.entry(tag).or_default().css = css.trim().to_string();
         } else if is_link {
-            let safe_tag = tag.replace(['/', '\\'], "-");
-            let href = format!("{safe_tag}.css");
-            protocol.components.entry(tag).or_default().css_href = href;
-            css_files.push((format!("{safe_tag}.css"), css));
+            let resolved = css_link_options.resolve(&tag, &css);
+            if !emitted_names.insert(resolved.filename.clone()) {
+                return Err(WebUIError::InvalidBuildOptions(format!(
+                    "CSS filename collision for Link strategy: '{}'. Adjust --css-file-name-template to include [name] or a longer hash.",
+                    resolved.filename
+                )));
+            }
+            protocol.components.entry(tag).or_default().css_href = resolved.href;
+            css_files.push((resolved.filename, css));
         }
         // Style strategy: CSS is already baked into raw fragments by the
         // parser — nothing to store in the protocol or emit as files.
@@ -355,6 +382,21 @@ mod tests {
     use tempfile::TempDir;
     use webui_protocol::web_ui_fragment::Fragment;
 
+    struct StringWriter {
+        buf: String,
+    }
+
+    impl ResponseWriter for StringWriter {
+        fn write(&mut self, content: &str) -> webui_handler::Result<()> {
+            self.buf.push_str(content);
+            Ok(())
+        }
+
+        fn end(&mut self) -> webui_handler::Result<()> {
+            Ok(())
+        }
+    }
+
     fn create_app_dir(files: &[(&str, &str)]) -> TempDir {
         let dir = TempDir::new().unwrap();
         for (name, content) in files {
@@ -370,11 +412,7 @@ mod tests {
     fn default_options(app_dir: &Path) -> BuildOptions {
         BuildOptions {
             app_dir: app_dir.to_path_buf(),
-            entry: "index.html".to_string(),
-            css: CssStrategy::Link,
-            dom: DomStrategy::Shadow,
-            plugin: None,
-            components: Vec::new(),
+            ..BuildOptions::default()
         }
     }
 
@@ -423,6 +461,182 @@ mod tests {
         assert_eq!(result.css_files[0].0, "my-card.css");
         assert!(result.css_files[0].1.contains("color: red"));
         assert_eq!(result.stats.css_file_count, 1);
+    }
+
+    #[test]
+    fn test_build_with_css_hashed_filename_template() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>Hello</my-card>"),
+            ("my-card.html", "<div><slot></slot></div>"),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.css_file_name_template = "[name]-[hash].[ext]".to_string();
+        let result = build(options).unwrap();
+
+        assert_eq!(result.css_files.len(), 1);
+        let generated = &result.css_files[0].0;
+        assert!(generated.starts_with("my-card-"));
+        assert!(generated.ends_with(".css"));
+        assert_eq!(generated.len(), "my-card-".len() + 8 + ".css".len());
+        assert_eq!(
+            result
+                .protocol
+                .components
+                .get("my-card")
+                .map(|c| c.css_href.as_str()),
+            Some(generated.as_str())
+        );
+    }
+
+    #[test]
+    fn test_css_public_base_prefixes_css_href_only() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>Hello</my-card>"),
+            ("my-card.html", "<div><slot></slot></div>"),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.css_file_name_template = "[name]-[hash].[ext]".to_string();
+        options.css_public_base = Some("https://cdn.example.com/assets".to_string());
+        let result = build(options).unwrap();
+
+        let filename = &result.css_files[0].0;
+        assert!(filename.starts_with("my-card-"));
+        let expected_href = format!("https://cdn.example.com/assets/{filename}");
+        assert_eq!(
+            result
+                .protocol
+                .components
+                .get("my-card")
+                .map(|c| c.css_href.as_str()),
+            Some(expected_href.as_str())
+        );
+    }
+
+    #[test]
+    fn test_css_public_base_emits_parser_and_handler_links() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<html><head></head><body><my-card>Hello</my-card></body></html>",
+            ),
+            ("my-card.html", "<div><slot></slot></div>"),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.css_file_name_template = "[name]-[hash].[ext]".to_string();
+        options.css_public_base = Some("https://cdn.example.com/assets".to_string());
+        let result = build(options).unwrap();
+
+        let filename = &result.css_files[0].0;
+        let expected_href = format!("https://cdn.example.com/assets/{filename}");
+        let component_html = result.protocol.fragments["my-card"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert!(
+            component_html.contains(&format!(
+                r#"<link rel="stylesheet" href="{expected_href}">"#
+            )),
+            "parser-generated component template should use CDN href: {component_html}"
+        );
+
+        let handler = WebUIHandler::new();
+        let mut writer = StringWriter { buf: String::new() };
+        handler
+            .handle(
+                &result.protocol,
+                &serde_json::json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        assert!(
+            writer.buf.contains(&format!(
+                r#"<link rel="preload" href="{expected_href}" as="style" data-webui-ssr-preload="style">"#
+            )),
+            "handler head preload should use CDN href: {}",
+            writer.buf
+        );
+    }
+
+    #[test]
+    fn test_css_public_base_emits_webui_plugin_template_links() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>Hello</my-card>"),
+            ("my-card.html", "<div><slot></slot></div>"),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.css_file_name_template = "[name]-[hash].[ext]".to_string();
+        options.css_public_base = Some("https://cdn.example.com/assets".to_string());
+        let result = build(options).unwrap();
+
+        let filename = &result.css_files[0].0;
+        let expected_href = format!("https://cdn.example.com/assets/{filename}");
+        let template = &result.protocol.components["my-card"].template;
+        assert!(
+            template.contains(&format!(r#"href=\"{expected_href}\""#)),
+            "plugin component template should use CDN href: {template}"
+        );
+    }
+
+    #[test]
+    fn test_css_public_base_emits_fast_plugin_template_links() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>Hello</my-card>"),
+            ("my-card.html", "<div><slot></slot></div>"),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::FastV3);
+        options.css_file_name_template = "[name]-[hash].[ext]".to_string();
+        options.css_public_base = Some("https://cdn.example.com/assets".to_string());
+        let result = build(options).unwrap();
+
+        let filename = &result.css_files[0].0;
+        let expected_href = format!("https://cdn.example.com/assets/{filename}");
+        let template = &result.protocol.components["my-card"].template;
+        assert!(
+            template.contains(&format!(r#"href="{expected_href}""#)),
+            "FAST component template should use CDN href: {template}"
+        );
+    }
+
+    #[test]
+    fn test_invalid_css_template_is_rejected() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>Hello</my-card>"),
+            ("my-card.html", "<div><slot></slot></div>"),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.css_file_name_template = "[name]-[bogus].[ext]".to_string();
+        let result = build(options);
+
+        assert!(matches!(result, Err(WebUIError::InvalidBuildOptions(_))));
+    }
+
+    #[test]
+    fn test_css_filename_collision_is_rejected() {
+        let app = create_app_dir(&[
+            ("index.html", "<card-a>A</card-a><card-b>B</card-b>"),
+            ("card-a.html", "<div><slot></slot></div>"),
+            ("card-a.css", ".x { color: red; }"),
+            ("card-b.html", "<div><slot></slot></div>"),
+            ("card-b.css", ".x { color: red; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.css_file_name_template = "[hash].[ext]".to_string();
+        let result = build(options);
+
+        assert!(matches!(result, Err(WebUIError::InvalidBuildOptions(_))));
     }
 
     #[test]
@@ -709,10 +923,7 @@ mod tests {
         let result = build(BuildOptions {
             app_dir,
             entry: "index.html".to_string(),
-            css: CssStrategy::Link,
-            dom: DomStrategy::Shadow,
-            plugin: None,
-            components: Vec::new(),
+            ..BuildOptions::default()
         })
         .unwrap();
 
@@ -878,11 +1089,7 @@ mod tests {
     fn test_build_nonexistent_app_dir() {
         let options = BuildOptions {
             app_dir: PathBuf::from("/nonexistent/path/that/does/not/exist"),
-            entry: "index.html".to_string(),
-            css: CssStrategy::Link,
-            dom: DomStrategy::Shadow,
-            plugin: None,
-            components: Vec::new(),
+            ..BuildOptions::default()
         };
         let result = build(options);
         assert!(result.is_err());
