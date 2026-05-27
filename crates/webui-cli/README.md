@@ -23,7 +23,7 @@ webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `APP` | `.` | Template/component directory |
-| `--out` | *(required)* | Output directory for protocol.bin + CSS |
+| `--out` | *(required)* | Output directory for protocol.bin + CSS, or a `.bin` file path to customize the protocol filename (e.g. `./dist/app1.bin`) |
 | `--entry` | `index.html` | Entry HTML file |
 | `--css` | `link` | CSS mode: `link` (external files) or `style` (inline) |
 | `--plugin` | *(none)* | Plugin identifier (see [Plugins](https://microsoft.github.io/webui/guide/concepts/plugins/) for available identifiers) |
@@ -33,6 +33,7 @@ webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 ```bash
 webui build ./src --out ./dist
 webui build ./src --out ./dist --plugin webui --css style
+webui build ./src --out ./dist/app1.bin
 webui build ./src --out ./dist --css-file-name-template "[name]-[hash].[ext]"
 webui build ./src --out ./dist --css-file-name-template "[name]-[hash].[ext]" --css-public-base "https://cdn.example.com/assets"
 ```

@@ -4,7 +4,9 @@
 use anyhow::{Context, Result};
 use clap::Args;
 use expand_tilde::expand_tilde;
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use super::common::*;
 use crate::utils::output;
@@ -14,9 +16,35 @@ pub struct BuildArgs {
     #[command(flatten)]
     pub app_args: AppArgs,
 
-    /// Output folder for the built protocol and assets
+    /// Output destination. Either a folder (e.g. `./dist`) or a `.bin` file path
+    /// (e.g. `./dist/app1.bin`). When a `.bin` file path is given, the protocol
+    /// is written with that filename and CSS files are emitted next to it.
     #[arg(long)]
     pub out: PathBuf,
+}
+
+/// Resolve the `--out` argument into `(output_directory, protocol_filename)`.
+///
+/// If `out` ends with a `.bin` extension, it is treated as a full file path:
+/// the parent becomes the output directory (or `.` if none) and the file name
+/// becomes the protocol filename. Otherwise `out` is treated as a directory and
+/// the default `protocol.bin` filename is used.
+///
+/// The filename is kept as an `OsString` so non-UTF8 paths round-trip unchanged.
+fn resolve_out(out: &Path) -> (PathBuf, OsString) {
+    if out.extension().and_then(|e| e.to_str()) == Some("bin") {
+        let name = out
+            .file_name()
+            .map(OsString::from)
+            .unwrap_or_else(|| OsString::from("protocol.bin"));
+        let dir = match out.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        (dir, name)
+    } else {
+        (out.to_path_buf(), OsString::from("protocol.bin"))
+    }
 }
 
 pub fn execute(args: &BuildArgs) -> Result<()> {
@@ -46,10 +74,13 @@ fn run(args: &BuildArgs) -> Result<()> {
         .canonicalize()
         .with_context(|| format!("App folder not found: {}", args.app_args.app.display()))?;
 
+    let (out_dir, protocol_name) = resolve_out(&out);
+    let protocol_path = out_dir.join(&protocol_name);
+
     output::header("WebUI Build");
     output::field("App", &app.display());
     output::field("Entry", &args.app_args.entry);
-    output::field("Output", &out.display());
+    output::field("Output", &protocol_path.display());
     output::field("CSS", &args.app_args.css);
     if let Some(ref plugin_name) = args.app_args.plugin {
         output::field("Plugin", plugin_name);
@@ -60,7 +91,17 @@ fn run(args: &BuildArgs) -> Result<()> {
     eprintln!();
 
     let build_options = args.app_args.to_build_options(&app);
-    let stats = webui::build_to_disk(build_options, &out).with_context(|| "Build failed")?;
+    let result = webui::build(build_options).with_context(|| "Build failed")?;
+
+    fs::create_dir_all(&out_dir)
+        .with_context(|| format!("Failed to create {}", out_dir.display()))?;
+    fs::write(&protocol_path, &result.protocol_bytes)
+        .with_context(|| format!("Failed to write {}", protocol_path.display()))?;
+    for (name, content) in &result.css_files {
+        fs::write(out_dir.join(name), content)
+            .with_context(|| format!("Failed to write {name} to {}", out_dir.display()))?;
+    }
+    let stats = result.stats;
 
     output::success(&format!(
         "Registered {} component{}",
@@ -84,7 +125,10 @@ fn run(args: &BuildArgs) -> Result<()> {
     }
 
     let files_written = 1 + stats.css_file_count;
-    output::success(&format!("Wrote {}", console::style("protocol.bin").bold()));
+    output::success(&format!(
+        "Wrote {}",
+        console::style(Path::new(&protocol_name).display()).bold()
+    ));
 
     output::finish(&format!(
         "Build complete ({} file{} written) {}",
@@ -519,6 +563,90 @@ mod tests {
         let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
 
         assert_eq!(protocol.tokens, vec!["spacing-m", "text-color"]);
+    }
+
+    #[test]
+    fn test_build_custom_protocol_name() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<my-card>Hi</my-card>"),
+            ("my-card.html", "<div><slot></slot></div>"),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+        let custom_path = out_dir.path().join("app1.bin");
+
+        run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: None,
+                components: Vec::new(),
+                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+            },
+            out: custom_path.clone(),
+        })
+        .unwrap();
+
+        // Protocol is written under the requested filename, not protocol.bin.
+        assert!(custom_path.exists());
+        assert!(!out_dir.path().join("protocol.bin").exists());
+
+        // The bytes are a valid protocol.
+        let bytes = fs::read(&custom_path).unwrap();
+        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
+        assert!(protocol.fragments.contains_key("index.html"));
+
+        // CSS files are emitted next to the renamed protocol.
+        assert!(out_dir.path().join("my-card.css").exists());
+    }
+
+    #[test]
+    fn test_build_custom_protocol_name_creates_parent_dir() {
+        let app_dir = create_app_dir(&[("index.html", "<h1>Hello</h1>")]);
+        let out_dir = TempDir::new().unwrap();
+        let nested = out_dir.path().join("nested").join("app2.bin");
+
+        run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: None,
+                components: Vec::new(),
+                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+            },
+            out: nested.clone(),
+        })
+        .unwrap();
+
+        assert!(nested.exists());
+        assert!(!nested.parent().unwrap().join("protocol.bin").exists());
+    }
+
+    #[test]
+    fn test_resolve_out_directory() {
+        let (dir, name) = resolve_out(Path::new("./dist"));
+        assert_eq!(dir, PathBuf::from("./dist"));
+        assert_eq!(name, "protocol.bin");
+    }
+
+    #[test]
+    fn test_resolve_out_bin_file_with_parent() {
+        let (dir, name) = resolve_out(Path::new("./dist/app1.bin"));
+        assert_eq!(dir, PathBuf::from("./dist"));
+        assert_eq!(name, "app1.bin");
+    }
+
+    #[test]
+    fn test_resolve_out_bin_file_no_parent() {
+        let (dir, name) = resolve_out(Path::new("app1.bin"));
+        assert_eq!(dir, PathBuf::from("."));
+        assert_eq!(name, "app1.bin");
     }
 
     #[test]
