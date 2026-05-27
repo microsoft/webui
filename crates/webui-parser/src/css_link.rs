@@ -130,9 +130,9 @@ fn validate_css_link_template(template: &str) -> Result<()> {
             "css_file_name_template cannot be empty".to_string(),
         ));
     }
-    if template.contains('/') || template.contains('\\') {
+    if contains_invalid_filename_template_byte(template) {
         return Err(ParserError::Css(
-            "css_file_name_template cannot contain path separators".to_string(),
+            "css_file_name_template must be ASCII and cannot contain path separators, Windows-reserved filename characters, control characters, or whitespace".to_string(),
         ));
     }
     if template.contains("..") {
@@ -140,13 +140,6 @@ fn validate_css_link_template(template: &str) -> Result<()> {
             "css_file_name_template cannot contain '..'".to_string(),
         ));
     }
-    if contains_invalid_href_byte(template) {
-        return Err(ParserError::Css(
-            "css_file_name_template cannot contain quotes, angle brackets, backslashes, or whitespace"
-                .to_string(),
-        ));
-    }
-
     let bytes = template.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
@@ -195,6 +188,7 @@ fn validate_css_public_base(base: &str) -> Result<()> {
 }
 
 fn format_css_link_filename(template: &str, name: &str, hash: &str) -> String {
+    debug_assert!(template.is_ascii());
     let mut out = String::with_capacity(template.len() + 16);
     let bytes = template.as_bytes();
     let mut i = 0usize;
@@ -247,6 +241,16 @@ fn contains_invalid_href_byte(value: &str) -> bool {
         .any(|b| matches!(b, b'"' | b'\'' | b'<' | b'>' | b'\\') || b.is_ascii_whitespace())
 }
 
+fn contains_invalid_filename_template_byte(value: &str) -> bool {
+    !value.is_ascii()
+        || value.bytes().any(|b| {
+            matches!(
+                b,
+                0x00..=0x1F | b'"' | b'*' | b'/' | b':' | b'<' | b'>' | b'?' | b'\\' | b'|'
+            ) || b.is_ascii_whitespace()
+        })
+}
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
@@ -273,5 +277,19 @@ mod tests {
             first.filename.rsplit_once('-').map(|(_, hash)| hash),
             second.filename.rsplit_once('-').map(|(_, hash)| hash)
         );
+    }
+
+    #[test]
+    fn filename_template_rejects_filesystem_unsafe_characters() {
+        for template in [
+            "[name]:[hash].[ext]",
+            "[name]*[hash].[ext]",
+            "[name]?[hash].[ext]",
+            "[name]|[hash].[ext]",
+            "résumé-[hash].[ext]",
+        ] {
+            let result = CssLinkOptions::try_new(template.to_string(), None);
+            assert!(result.is_err(), "template should be rejected: {template}");
+        }
     }
 }

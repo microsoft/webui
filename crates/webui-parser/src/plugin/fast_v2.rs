@@ -118,6 +118,10 @@ impl ParserPlugin for FastV2ParserPlugin {
 ///
 /// Used by the server to generate templates on demand for route components
 /// that weren't encountered during initial parsing.
+///
+/// This uses default Link-mode CSS filenames. Call
+/// [`generate_f_template_with_css_options`] when the build uses custom CSS
+/// filename templates or a public CSS base.
 pub fn generate_f_template(
     tag_name: &str,
     html_content: &str,

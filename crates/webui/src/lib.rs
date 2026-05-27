@@ -348,7 +348,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             let resolved = css_link_options.resolve(&tag, &css);
             if !emitted_names.insert(resolved.filename.clone()) {
                 return Err(WebUIError::InvalidBuildOptions(format!(
-                    "CSS filename collision for Link strategy: '{}'. Adjust --css-file-name-template to include [name] or a longer hash.",
+                    "CSS filename collision for Link strategy: '{}'. Adjust --css-file-name-template to include [name] or another unique component-specific segment.",
                     resolved.filename
                 )));
             }
