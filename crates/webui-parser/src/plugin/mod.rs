@@ -13,7 +13,7 @@ pub mod fast_v3;
 pub mod webui;
 
 use crate::component_registry::Component;
-use crate::Result;
+use crate::{ParserOptions, Result};
 
 /// Parser-owned decision about how an attribute should be handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +50,9 @@ pub trait ParserPlugin {
     /// Plugins can use this to reset fragment-local counters while preserving
     /// global build-level state such as tracked component templates.
     fn start_fragment(&mut self, _fragment_id: &str) {}
+
+    /// Called when parser output options change.
+    fn configure(&mut self, _options: &ParserOptions) {}
 
     /// Called when a component template has been fully processed for the active
     /// CSS strategy and wrapped for shadow DOM rendering.

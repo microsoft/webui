@@ -341,8 +341,7 @@ fn parser_css_strategy_bench(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(input.len() as u64));
 
     group.bench_function("external_css", |b| {
-        let mut parser = HtmlParser::new();
-        parser.set_css_strategy(CssStrategy::Link);
+        let mut parser = HtmlParser::with_options(CssStrategy::Link);
         b.iter(|| {
             parser
                 .parse("index.html", black_box(&input))
@@ -351,8 +350,7 @@ fn parser_css_strategy_bench(c: &mut Criterion) {
     });
 
     group.bench_function("inline_css", |b| {
-        let mut parser = HtmlParser::new();
-        parser.set_css_strategy(CssStrategy::Style);
+        let mut parser = HtmlParser::with_options(CssStrategy::Style);
         b.iter(|| {
             parser
                 .parse("index.html", black_box(&input))

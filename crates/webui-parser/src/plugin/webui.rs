@@ -63,7 +63,7 @@
 use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use crate::component_registry::Component;
 use crate::tag_scan::find_tag_close;
-use crate::{ConditionParser, CssStrategy, DomStrategy, Result};
+use crate::{ConditionParser, DomStrategy, ParserOptions, Result};
 use std::cell::Cell;
 use std::fmt::Write;
 use webui_protocol::{condition_expr, ConditionExpr, WebUIElementData};
@@ -108,14 +108,6 @@ impl WebUIParserPlugin {
             next_event_idx: Cell::new(0),
             dom_strategy: DomStrategy::default(),
         }
-    }
-
-    pub fn set_css_strategy(&mut self, strategy: CssStrategy) {
-        let _ = strategy;
-    }
-
-    pub fn set_dom_strategy(&mut self, strategy: DomStrategy) {
-        self.dom_strategy = strategy;
     }
 
     /// Compile all tracked components and return `(tag_name, script_block)` pairs.
@@ -172,6 +164,10 @@ impl ParserPlugin for WebUIParserPlugin {
     fn start_fragment(&mut self, _fragment_id: &str) {
         self.element_events.set(0);
         self.next_event_idx.set(0);
+    }
+
+    fn configure(&mut self, options: &ParserOptions) {
+        self.dom_strategy = options.dom_strategy;
     }
 
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {

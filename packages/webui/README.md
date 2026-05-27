@@ -38,6 +38,8 @@ const result = build({
   css: "link",           // CSS strategy: "link" or "style"
   plugin: "webui",       // Parser plugin name
   components: [],        // Additional component sources
+  cssFileNameTemplate: "[name]-[hash].[ext]", // Link-mode CSS filename template
+  cssPublicBase: "https://cdn.example.com/assets", // Optional CDN/public href base
   outDir: "./dist",      // Output directory for CLI fallback
 });
 

@@ -228,6 +228,8 @@ HttpResponse::Ok()
 | `css` | `CssStrategy` | `Link` | CSS delivery: `Link`, `Style`, or `Module` |
 | `plugin` | `Option<String>` | `None` | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `Vec<String>` | `[]` | External component sources |
+| `css_file_name_template` | `String` | `"[name].[ext]"` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
+| `css_public_base` | `Option<String>` | `None` | Public URL/path prefix for Link-mode CSS hrefs |
 
 ### BuildStats
 
@@ -257,4 +259,3 @@ HttpResponse::Ok()
 | `StreamTimeout` | `with_flush_timeout` deadline exceeded; ops should alert on slow-loris patterns. |
 | `MissingFragment(String)` | `entry_id` not found in the protocol. |
 | `TypeError(String)` / `Evaluation(String)` | Template/expression runtime errors. |
-

@@ -81,6 +81,10 @@ pub struct JsBuildOptions {
     pub plugin: Option<String>,
     /// Additional component sources (npm packages or local paths).
     pub components: Option<Vec<String>>,
+    /// Link-mode CSS filename template using [name], [hash], [ext].
+    pub css_file_name_template: Option<String>,
+    /// Optional base URL/path prefix for Link-mode css hrefs.
+    pub css_public_base: Option<String>,
 }
 
 /// Build a WebUI application from an app directory.
@@ -116,6 +120,10 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         dom,
         plugin,
         components: options.components.unwrap_or_default(),
+        css_file_name_template: options
+            .css_file_name_template
+            .unwrap_or_else(|| webui::DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string()),
+        css_public_base: options.css_public_base,
     };
 
     let result = webui::build(build_options)
@@ -470,6 +478,8 @@ mod tests {
             dom: None,
             plugin: None,
             components: None,
+            css_file_name_template: None,
+            css_public_base: None,
         };
 
         let result = build(options).unwrap();
@@ -491,6 +501,8 @@ mod tests {
             dom: None,
             plugin: None,
             components: None,
+            css_file_name_template: None,
+            css_public_base: None,
         };
 
         let result = build(options).unwrap();
@@ -506,6 +518,8 @@ mod tests {
             dom: None,
             plugin: None,
             components: None,
+            css_file_name_template: None,
+            css_public_base: None,
         };
 
         let result = build(options);
@@ -524,6 +538,8 @@ mod tests {
             dom: None,
             plugin: None,
             components: None,
+            css_file_name_template: None,
+            css_public_base: None,
         };
 
         let result = build(options);
@@ -544,6 +560,8 @@ mod tests {
             dom: None,
             plugin: None,
             components: None,
+            css_file_name_template: None,
+            css_public_base: None,
         };
 
         let result = build(options).unwrap();
@@ -567,6 +585,8 @@ mod tests {
             dom: Some("light".to_string()),
             plugin: None,
             components: None,
+            css_file_name_template: None,
+            css_public_base: None,
         };
 
         let result = build(options).unwrap();
@@ -590,6 +610,8 @@ mod tests {
             dom: Some("shadow".to_string()),
             plugin: None,
             components: None,
+            css_file_name_template: None,
+            css_public_base: None,
         };
 
         let result = build(options).unwrap();
@@ -612,6 +634,8 @@ mod tests {
             dom: Some("bogus".to_string()),
             plugin: None,
             components: None,
+            css_file_name_template: None,
+            css_public_base: None,
         };
 
         let result = build(options);

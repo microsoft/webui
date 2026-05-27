@@ -273,8 +273,7 @@ fn parse_to_protocol(
         .get(entry)
         .ok_or_else(|| BuildError::MissingEntry(entry.to_string()))?;
 
-    let mut parser = HtmlParser::new();
-    parser.set_css_strategy(CssStrategy::Style);
+    let mut parser = HtmlParser::with_options(CssStrategy::Style);
 
     // Register components from virtual files (no filesystem needed)
     for (filename, content) in files {

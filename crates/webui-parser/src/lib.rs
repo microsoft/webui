@@ -6,6 +6,7 @@
 //! This module handles parsing WebUI-specific directives like <for>, <if>, etc.
 mod component_registry;
 mod condition_parser;
+mod css_link;
 mod css_parser;
 mod error;
 mod handlebars_parser;
@@ -15,6 +16,7 @@ mod tag_scan;
 
 pub use component_registry::{Component, ComponentRegistry};
 pub use condition_parser::ConditionParser;
+pub use css_link::{CssLinkHref, CssLinkOptions, DEFAULT_CSS_FILE_NAME_TEMPLATE};
 pub use css_parser::CssParser;
 pub use error::{ParserError, Result};
 pub use handlebars_parser::HandlebarsParser;
@@ -97,6 +99,74 @@ impl std::str::FromStr for DomStrategy {
             other => Err(format!(
                 "Unknown DOM strategy: {other}. Use \"shadow\" or \"light\"."
             )),
+        }
+    }
+}
+
+/// Build/output options that affect parser-generated component templates.
+#[derive(Debug, Clone, Default)]
+pub struct ParserOptions {
+    /// Strategy for how component CSS is delivered.
+    pub css_strategy: CssStrategy,
+    /// Strategy for how component DOM is rendered.
+    pub dom_strategy: DomStrategy,
+    /// Link-mode CSS filename/href options.
+    pub css_link_options: CssLinkOptions,
+}
+
+impl ParserOptions {
+    /// Create parser output options.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParserError::Css`] when Link-mode CSS link options are invalid.
+    pub fn try_new(
+        css_strategy: CssStrategy,
+        dom_strategy: DomStrategy,
+        css_file_name_template: &str,
+        css_public_base: Option<&str>,
+    ) -> Result<Self> {
+        let css_link_options = if css_strategy == CssStrategy::Link {
+            CssLinkOptions::try_new(
+                css_file_name_template.to_string(),
+                css_public_base.map(std::string::ToString::to_string),
+            )?
+        } else {
+            CssLinkOptions::default()
+        };
+
+        Ok(Self {
+            css_strategy,
+            dom_strategy,
+            css_link_options,
+        })
+    }
+}
+
+impl From<CssStrategy> for ParserOptions {
+    fn from(css_strategy: CssStrategy) -> Self {
+        Self {
+            css_strategy,
+            ..Self::default()
+        }
+    }
+}
+
+impl From<DomStrategy> for ParserOptions {
+    fn from(dom_strategy: DomStrategy) -> Self {
+        Self {
+            dom_strategy,
+            ..Self::default()
+        }
+    }
+}
+
+impl From<(CssStrategy, DomStrategy)> for ParserOptions {
+    fn from((css_strategy, dom_strategy): (CssStrategy, DomStrategy)) -> Self {
+        Self {
+            css_strategy,
+            dom_strategy,
+            ..Self::default()
         }
     }
 }
@@ -200,11 +270,8 @@ pub struct HtmlParser {
     /// Buffer for accumulating raw content
     raw_buffer: String,
 
-    /// How component CSS is delivered in output.
-    css_strategy: CssStrategy,
-
-    /// How component DOM is structured (shadow or light).
-    dom_strategy: DomStrategy,
+    /// Parser output options for generated component templates.
+    options: ParserOptions,
 
     /// Optional parser plugin for framework-specific behavior.
     plugin: Option<Box<dyn ParserPlugin>>,
@@ -220,8 +287,16 @@ pub struct HtmlParser {
 }
 
 impl HtmlParser {
-    /// Create a new directive parser.
+    /// Create a new directive parser with default parser options.
+    #[must_use]
     pub fn new() -> Self {
+        Self::with_options(ParserOptions::default())
+    }
+
+    /// Create a new directive parser with explicit parser options.
+    #[must_use]
+    pub fn with_options(options: impl Into<ParserOptions>) -> Self {
+        let options = options.into();
         let mut parser = Parser::new();
         // Grammar is statically linked — set_language cannot fail at runtime.
         #[allow(clippy::disallowed_methods)]
@@ -237,8 +312,7 @@ impl HtmlParser {
             handlebars_parser: HandlebarsParser::new(),
             raw_buffer: String::new(),
             fragment_records: WebUIFragmentRecords::new(),
-            css_strategy: CssStrategy::default(),
-            dom_strategy: DomStrategy::default(),
+            options,
             plugin: None,
             token_store: HashSet::new(),
             token_definitions: HashSet::new(),
@@ -246,28 +320,39 @@ impl HtmlParser {
         }
     }
 
-    /// Create a new parser with a plugin for framework-specific behavior.
+    /// Create a new parser with a plugin and default parser options.
+    #[must_use]
     pub fn with_plugin(plugin: Box<dyn ParserPlugin>) -> Self {
-        let mut p = Self::new();
+        Self::with_plugin_options(plugin, ParserOptions::default())
+    }
+
+    /// Create a new parser with a plugin and explicit parser options.
+    #[must_use]
+    pub fn with_plugin_options(
+        plugin: Box<dyn ParserPlugin>,
+        options: impl Into<ParserOptions>,
+    ) -> Self {
+        let mut p = Self::with_options(options);
         p.plugin = Some(plugin);
+        p.configure_plugin();
         p
     }
 
-    /// Set the CSS strategy for component stylesheet delivery.
-    pub fn set_css_strategy(&mut self, strategy: CssStrategy) -> &mut Self {
-        self.css_strategy = strategy;
-        self
-    }
-
-    /// Set the DOM strategy for component rendering (shadow or light).
-    pub fn set_dom_strategy(&mut self, strategy: DomStrategy) -> &mut Self {
-        self.dom_strategy = strategy;
-        self
+    fn configure_plugin(&mut self) {
+        if let Some(ref mut plugin) = self.plugin {
+            plugin.configure(&self.options);
+        }
     }
 
     /// Get a mutable reference to the component registry.
     pub fn component_registry_mut(&mut self) -> &mut ComponentRegistry {
         &mut self.component_registry
+    }
+
+    /// Get a shared reference to the component registry.
+    #[must_use]
+    pub fn component_registry(&self) -> &ComponentRegistry {
+        &self.component_registry
     }
 
     pub fn into_fragment_records(mut self) -> WebUIFragmentRecords {
@@ -1782,16 +1867,21 @@ impl HtmlParser {
         html: &str,
         css_content: Option<&str>,
     ) -> String {
-        let adopted_specifier = match self.css_strategy {
+        let adopted_specifier = match self.options.css_strategy {
             CssStrategy::Module if css_content.is_some() => Some(tag_name.to_string()),
             _ => None,
         };
-        let css_injection = match self.css_strategy {
+        let css_injection = match self.options.css_strategy {
             CssStrategy::Link => {
                 // In light DOM mode, CSS links go in <head> (emitted by handler),
                 // not inside each component template.
-                if css_content.is_some() && self.dom_strategy == DomStrategy::Shadow {
-                    Some(format!("<link rel=\"stylesheet\" href=\"{tag_name}.css\">"))
+                if let (Some(css), DomStrategy::Shadow) = (css_content, self.options.dom_strategy) {
+                    let href = self.options.css_link_options.resolve(tag_name, css);
+                    let mut link = String::with_capacity(31 + href.href.len());
+                    link.push_str("<link rel=\"stylesheet\" href=\"");
+                    link.push_str(&href.href);
+                    link.push_str("\">");
+                    Some(link)
                 } else {
                     None
                 }
@@ -1869,7 +1959,7 @@ impl HtmlParser {
                 None => stripped,
             }
         } else {
-            match self.dom_strategy {
+            match self.options.dom_strategy {
                 DomStrategy::Shadow => {
                     let adopted = adopted_specifier.unwrap_or_default();
                     let adopted_extra = if adopted.is_empty() {
@@ -2134,8 +2224,7 @@ mod tests {
 
     #[test]
     fn test_component_directive() {
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Light);
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(
@@ -2212,8 +2301,7 @@ mod tests {
         // child components (mp-navbar, mp-cart-panel, mp-footer) plus an <outlet>.
         // The parser must emit Fragment::Component entries for ALL child components
         // so the inventory walk finds them.
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Shadow);
+        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
 
         parser
             .component_registry
@@ -2285,8 +2373,7 @@ mod tests {
         // Developer-authored <template foo="bar"> must be preserved verbatim
         // in --dom=light. The framework only strips runtime-only attrs;
         // every other attribute is the developer's responsibility.
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Light);
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(
@@ -2321,8 +2408,7 @@ mod tests {
         // the wrapper verbatim. CSS is the default `Link` strategy which
         // injects only in shadow DOM, so in light mode there is no CSS
         // snippet to splice into the wrapper.
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Light);
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(
@@ -2348,8 +2434,7 @@ mod tests {
         // from the opening <template> tag, but the wrapper itself is
         // preserved. After stripping in this case the wrapper becomes
         // `<template>` with no attributes.
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Light);
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(
@@ -2396,8 +2481,7 @@ mod tests {
 
     #[test]
     fn test_component_legacy_no_styles() {
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Light);
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component("custom-element", "<div>Custom Element</div>", None)
@@ -2446,8 +2530,7 @@ mod tests {
 
     #[test]
     fn test_component_nested_self_closing_in_slot() {
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Light);
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component("custom-icon", "<svg><slot></slot></svg>", None)
@@ -3425,8 +3508,7 @@ mod tests {
     #[test]
     fn test_component_multiple_nested() {
         // Port of: 'handle multiple nested web components'
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Light);
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(
@@ -3563,8 +3645,7 @@ mod tests {
 
     #[test]
     fn test_css_strategy_inline_emits_style_tag() {
-        let mut parser = HtmlParser::new();
-        parser.set_css_strategy(CssStrategy::Style);
+        let mut parser = HtmlParser::with_options(CssStrategy::Style);
         parser
             .component_registry_mut()
             .register_component("my-card", "<p><slot></slot></p>", Some("p { color: red; }"))
@@ -3593,9 +3674,7 @@ mod tests {
 
     #[test]
     fn test_css_strategy_module_emits_adopted_stylesheets() {
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Light);
-        parser.set_css_strategy(CssStrategy::Module);
+        let mut parser = HtmlParser::with_options((CssStrategy::Module, DomStrategy::Light));
         parser
             .component_registry_mut()
             .register_component("my-card", "<p><slot></slot></p>", Some("p { color: red; }"))
@@ -3631,8 +3710,7 @@ mod tests {
 
     #[test]
     fn test_css_strategy_module_no_css_no_adopted_attr() {
-        let mut parser = HtmlParser::new();
-        parser.set_css_strategy(CssStrategy::Module);
+        let mut parser = HtmlParser::with_options(CssStrategy::Module);
         parser
             .component_registry_mut()
             .register_component("my-card", "<p><slot></slot></p>", None)
@@ -3674,8 +3752,7 @@ mod tests {
 
     #[test]
     fn light_preserves_dev_template_with_static_attrs() {
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Light);
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         let processed = parser.process_component_template(
             r#"<template foo="bar"><div>hi</div></template>"#,
             None,
@@ -3693,8 +3770,7 @@ mod tests {
 
     #[test]
     fn light_preserves_dev_template_with_signal_fragment_attrs() {
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Light);
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         let processed = parser.process_component_template(
             r#"<template foo="{{foo}}"><div>hi</div></template>"#,
             None,
@@ -3708,8 +3784,7 @@ mod tests {
 
     #[test]
     fn light_preserves_dev_template_with_multiple_attrs() {
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Light);
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         let processed = parser.process_component_template(
             r#"<template autofocus tabindex="0" role="region" data-x="y"><div>hi</div></template>"#,
             None,
@@ -3726,8 +3801,7 @@ mod tests {
 
     #[test]
     fn light_no_template_no_wrapper_added() {
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Light);
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         let processed = parser.process_component_template("<div>hi</div>", None, None);
         assert!(
             !processed.contains("<template"),
@@ -3741,8 +3815,7 @@ mod tests {
 
     #[test]
     fn shadow_preserves_dev_template_with_static_attrs() {
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Shadow);
+        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
         let processed = parser.process_component_template(
             r#"<template foo="bar"><div>hi</div></template>"#,
             None,
@@ -3760,8 +3833,7 @@ mod tests {
 
     #[test]
     fn shadow_preserves_dev_template_with_shadowrootmode_closed() {
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Shadow);
+        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
         let processed = parser.process_component_template(
             r#"<template shadowrootmode="closed"><div>hi</div></template>"#,
             None,
@@ -3779,8 +3851,7 @@ mod tests {
 
     #[test]
     fn shadow_preserves_dev_template_with_signal_fragment_attrs() {
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Shadow);
+        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
         let processed = parser.process_component_template(
             r#"<template foo="{{foo}}"><div>hi</div></template>"#,
             None,
@@ -3794,8 +3865,7 @@ mod tests {
 
     #[test]
     fn shadow_adds_template_wrapper_when_dev_omits_it() {
-        let mut parser = HtmlParser::new();
-        parser.set_dom_strategy(DomStrategy::Shadow);
+        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
         let processed = parser.process_component_template("<div>hi</div>", None, None);
         assert!(
             processed.contains(r#"<template shadowrootmode="open""#),

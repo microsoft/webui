@@ -151,6 +151,8 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
             dom: DomStrategy::Shadow,
             plugin: None,
             components: Vec::new(),
+            css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+            css_public_base: None,
         },
         out: out.to_path_buf(),
     })
@@ -254,6 +256,8 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
             },
             out: out_dir.path().to_path_buf(),
         })
@@ -370,6 +374,8 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: vec![ext_path],
+                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
             },
             out: out_dir.path().to_path_buf(),
         })
@@ -450,6 +456,8 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: vec!["test-widget".to_string()],
+                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
             },
             out: out_dir.path().to_path_buf(),
         })
@@ -527,6 +535,8 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: vec!["@myui".to_string()],
+                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
             },
             out: out_dir.path().to_path_buf(),
         })

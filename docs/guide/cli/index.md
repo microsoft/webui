@@ -23,7 +23,7 @@ cargo install microsoft-webui-cli
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]...
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--css-file-name-template <TEMPLATE>] [--css-public-base <BASE>]
 ```
 
 **Arguments:**
@@ -37,6 +37,8 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--plugin <NAME>` | Load a parser plugin | *(none)* |
 | `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
+| `--css-file-name-template <TEMPLATE>` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
+| `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
 
 Path inputs for `APP`, `--state`, and `--servedir` support absolute paths, relative paths, `~/...`, and `file://...` URI-style values.
 
@@ -47,6 +49,12 @@ Path inputs for `APP`, `--state`, and `--servedir` support absolute paths, relat
 | `link` | Emits `<link>` tags referencing external `.css` files. CSS files are copied to the output folder. |
 | `style` | Embeds CSS content directly in `<style>` tags inside shadow DOM templates. No separate CSS files are written. |
 | `module` | Emits `<style type="module" specifier="component">` definitions and adds `shadowrootadoptedstylesheets` to `<template>` tags. The browser shares a single `CSSStyleSheet` across all shadow roots that adopt it. No separate CSS files are written. Based on the [Declarative CSS Module Scripts](https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ShadowDOM/explainer.md) proposal. |
+
+For long-lived CDN/browser caching in `link` mode, include `[hash]` in the CSS
+filename template. `[hash]` is the component CSS file's SHA-256 content hash
+truncated to 8 hex characters. The CSS file is still written to `--out`;
+`--css-public-base` only changes the href stored in `protocol.bin` and emitted
+in `<link>` tags.
 
 **DOM Strategies:**
 
@@ -71,6 +79,14 @@ webui build ./my-app --out ./dist --entry home.html
 
 # Build with style CSS (no external CSS files)
 webui build ./my-app --out ./dist --css style
+
+# Build link-mode CSS with content-hashed filenames
+webui build ./my-app --out ./dist --css-file-name-template "[name]-[hash].[ext]"
+
+# Point generated stylesheet hrefs at a CDN/public asset root
+webui build ./my-app --out ./dist \
+  --css-file-name-template "[name]-[hash].[ext]" \
+  --css-public-base "https://cdn.example.com/assets"
 
 # Build with the WebUI Framework plugin (hydration support)
 webui build ./my-app --out ./dist --plugin=webui
@@ -118,7 +134,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--api-port <PORT>] [--theme <VALUE>]
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--api-port <PORT>] [--theme <VALUE>] [--css-file-name-template <TEMPLATE>] [--css-public-base <BASE>]
 ```
 
 **Arguments:**
@@ -137,6 +153,8 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--api-port <PORT>` | Proxy route requests to your API server on this port. The dev server forwards navigation requests so your backend can provide real state data. | *(none)* |
 | `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Resolved tokens are injected into the render state. | *(none)* |
+| `--css-file-name-template <TEMPLATE>` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
+| `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
 
 The `APP` directory should contain your entry HTML and component files.
 

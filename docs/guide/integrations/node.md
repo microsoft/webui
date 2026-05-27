@@ -114,6 +114,8 @@ Deno.serve({ port: 3000 }, (req) => {
 | `dom` | `"shadow" \| "light"` | `"shadow"` | DOM strategy for component rendering |
 | `plugin` | `string` | - | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `string[]` | - | External component sources |
+| `cssFileNameTemplate` | `string` | `"[name].[ext]"` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
+| `cssPublicBase` | `string` | - | Public URL/path prefix for Link-mode CSS hrefs |
 
 ### BuildStats
 

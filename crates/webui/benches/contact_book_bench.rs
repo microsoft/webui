@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use webui::{build, BuildOptions, CssStrategy, DomStrategy, ResponseWriter, WebUIHandler};
+use webui::{build, BuildOptions, CssStrategy, ResponseWriter, WebUIHandler};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::RenderOptions;
 use webui_protocol::WebUIProtocol;
@@ -252,9 +252,7 @@ fn build_contact_book_protocol() -> (WebUIProtocol, Vec<u8>) {
         app_dir,
         entry: "index.html".to_string(),
         css: CssStrategy::Style,
-        dom: DomStrategy::Shadow,
-        plugin: None,
-        components: Vec::new(),
+        ..BuildOptions::default()
     })
     .expect("failed to build contact-book-manager protocol");
 

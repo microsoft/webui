@@ -17,7 +17,7 @@ This installs the `webui` binary.
 Build a WebUI application into a compiled protocol and CSS files.
 
 ```bash
-webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>]
+webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--css-file-name-template <TEMPLATE>] [--css-public-base <BASE>]
 ```
 
 | Option | Default | Description |
@@ -27,11 +27,15 @@ webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>]
 | `--entry` | `index.html` | Entry HTML file |
 | `--css` | `link` | CSS mode: `link` (external files) or `style` (inline) |
 | `--plugin` | *(none)* | Plugin identifier (see [Plugins](https://microsoft.github.io/webui/guide/concepts/plugins/) for available identifiers) |
+| `--css-file-name-template` | `[name].[ext]` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
+| `--css-public-base` | *(none)* | Optional base URL/path prepended to Link-mode stylesheet hrefs |
 
 ```bash
 webui build ./src --out ./dist
 webui build ./src --out ./dist --plugin webui --css style
 webui build ./src --out ./dist/app1.bin
+webui build ./src --out ./dist --css-file-name-template "[name]-[hash].[ext]"
+webui build ./src --out ./dist --css-file-name-template "[name]-[hash].[ext]" --css-public-base "https://cdn.example.com/assets"
 ```
 
 ### `webui serve`
@@ -39,7 +43,7 @@ webui build ./src --out ./dist/app1.bin
 Start a development server with live rebuild and HMR.
 
 ```bash
-webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-port <PORT>] [--plugin <NAME>] [--watch]
+webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-port <PORT>] [--plugin <NAME>] [--watch] [--css-file-name-template <TEMPLATE>] [--css-public-base <BASE>]
 ```
 
 | Option | Default | Description |
@@ -51,6 +55,8 @@ webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-por
 | `--api-port` | *(none)* | Proxy API requests to this port |
 | `--plugin` | *(none)* | Plugin identifier (see [Plugins](https://microsoft.github.io/webui/guide/concepts/plugins/) for available identifiers) |
 | `--watch` | off | Enable file watching + HMR |
+| `--css-file-name-template` | `[name].[ext]` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
+| `--css-public-base` | *(none)* | Optional base URL/path prepended to Link-mode stylesheet hrefs |
 
 ```bash
 webui serve ./src --state ./data/state.json --port 3000 --watch
