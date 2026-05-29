@@ -122,28 +122,52 @@ interface NativeAddon {
 }
 
 let addon: NativeAddon | null = null;
+let addonLoadError: unknown = null;
+let addonLoadAttempted = false;
 let fallbackWarned = false;
+let cliFallbackWarned = false;
 
 function loadAddon(): NativeAddon | null {
   if (addon) return addon;
+  if (addonLoadAttempted) return null;
+  addonLoadAttempted = true;
 
   const addonPath = resolve("addon");
-  if (addonPath) {
-    try {
-      // .node files load via require(), native libs (.dylib/.so/.dll) via dlopen
-      if (addonPath.endsWith(".node")) {
-        addon = require(addonPath) as NativeAddon;
-      } else {
-        const m: { exports: NativeAddon } = { exports: {} as NativeAddon };
-        process.dlopen(m, addonPath);
-        addon = m.exports;
-      }
-      return addon;
-    } catch {
-      // Fall through to WASM.
-    }
+  if (!addonPath) {
+    addonLoadError = new Error(
+      `No native addon binary found for ${platformKey()}. ` +
+        `Install the platform-specific @microsoft/webui-${platformKey()} package.`,
+    );
+    return null;
   }
-  return null;
+
+  try {
+    // .node files load via require(), native libs (.dylib/.so/.dll) via dlopen
+    if (addonPath.endsWith(".node")) {
+      addon = require(addonPath) as NativeAddon;
+    } else {
+      const m: { exports: NativeAddon } = { exports: {} as NativeAddon };
+      process.dlopen(m, addonPath);
+      addon = m.exports;
+    }
+    return addon;
+  } catch (e) {
+    // Record the failure so we can surface it in error paths and the
+    // WASM/CLI fallback warning. Previously this was a silent `catch {}`
+    // which hid serious problems like missing VC++ runtimes, ABI
+    // mismatches, or corrupted addon binaries.
+    addonLoadError = e;
+    return null;
+  }
+}
+
+function describeAddonError(): string {
+  if (!addonLoadError) return "";
+  const msg =
+    addonLoadError instanceof Error
+      ? addonLoadError.message
+      : String(addonLoadError);
+  return ` Native addon load failed: ${msg}`;
 }
 
 function warnFallback(): void {
@@ -152,7 +176,8 @@ function warnFallback(): void {
   console.warn(
     `[webui] Native addon not available for ${platformKey()}. ` +
       `Using WASM fallback — performance may be degraded.\n` +
-      `Install the platform-specific package for optimal performance.`,
+      `Install the platform-specific package for optimal performance.` +
+      describeAddonError(),
   );
 }
 
@@ -169,7 +194,19 @@ export function build(options: BuildOptions): BuildResult {
   const binPath = resolve("bin");
   if (!binPath) {
     throw new Error(
-      "[webui] Cannot build: no native addon or CLI binary available.",
+      "[webui] Cannot build: no native addon or CLI binary available." +
+        describeAddonError(),
+    );
+  }
+
+  if (addonLoadError && !cliFallbackWarned) {
+    // Warn once per process. A long-running dev server may call `build()`
+    // many times per second; spamming a multi-line warning on every call
+    // is noisy and (for some terminals) actually expensive.
+    cliFallbackWarned = true;
+    console.warn(
+      `[webui] Native addon failed to load; falling back to CLI binary at ${binPath}.` +
+        describeAddonError(),
     );
   }
 
