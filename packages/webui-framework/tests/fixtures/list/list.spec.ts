@@ -125,4 +125,12 @@ test.describe('list fixture', () => {
     // Item 1 should now be 'done' — 2 "Done" labels total
     await expect(page.locator('test-list-item .done')).toHaveCount(2);
   });
+
+  test('passes repeat scope values to event handlers', async ({ page }) => {
+    await page.locator('test-list .loop-arg').nth(1).click();
+    await expect(page.locator('test-list .last-loop-arg')).toHaveText('arg=2 typeof=string args.length=1');
+
+    await page.locator('test-list .loop-arg-event').nth(0).click();
+    await expect(page.locator('test-list .last-loop-arg')).toHaveText('arg=1 event=click args.length=2');
+  });
 });

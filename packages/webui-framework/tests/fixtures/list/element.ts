@@ -27,6 +27,7 @@ export class TestList extends WebUIElement {
     { id: '1', title: 'Alpha', state: 'pending', flagged: false },
     { id: '2', title: 'Beta', state: 'done', flagged: true },
   ];
+  @observable lastLoopArg = '';
   nextId = 3;
 
   addItem(): void {
@@ -64,7 +65,14 @@ export class TestList extends WebUIElement {
   clearItems(): void {
     this.items = [];
   }
+
+  selectItem(id: string): void {
+    this.lastLoopArg = `arg=${id} typeof=${typeof id} args.length=${arguments.length}`;
+  }
+
+  selectItemWithEvent(id: string, e: Event): void {
+    this.lastLoopArg = `arg=${id} event=${e.type} args.length=${arguments.length}`;
+  }
 }
 
 TestList.define('test-list');
-

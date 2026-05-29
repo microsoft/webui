@@ -447,12 +447,11 @@ interface TemplateMeta {
   cl?: SlotPath[];                     // Conditional anchor slots
   r?: [collection, itemVar, blockIdx][];// Repeat blocks
   rl?: SlotPath[];                     // Repeat anchor slots
-  e?: [event, handler, needsEvent][];  // Events
-  el?: NodePath[];                     // Event target paths
+  e?: [event, handler, argSpecs, targetPath][]; // Events
   b?: TemplateBlockMeta[];             // Nested block metadata
   sa?: string;                         // Adopted stylesheet specifier
   sd?: boolean;                        // Shadow DOM flag for client-created
-  re?: [event, handler, needsEvent][];  // Root-level events
+  re?: [event, handler, argSpecs][];    // Root-level events
 }
 ```
 

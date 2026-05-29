@@ -47,6 +47,8 @@ import type {
   CompiledAttrMeta,
   CompiledAttrPart,
   CompiledCondition,
+  CompiledEventArgs,
+  CompiledEventArg,
   TemplateNodePath,
 } from './template.js';
 import { hydrationStart, hydrationEnd } from './lifecycle.js';
@@ -589,7 +591,7 @@ export class WebUIElement extends HTMLElement {
     // Events + refs — resolve BEFORE anchors shift childNode indices.
     // Events target element nodes (not text/comment positions), but anchor
     // insertions still shift childNode indices for sibling elements.
-    this.$finalize(root, meta, (r, p) => this.$resolve(r, p));
+    this.$finalize(root, meta, (r, p) => this.$resolve(r, p), scope);
 
     // Now insert anchors using pre-resolved references
 
@@ -922,7 +924,7 @@ export class WebUIElement extends HTMLElement {
     }
 
     // Events + refs — this is the last phase that uses $resolveSSR.
-    this.$finalize(ssrRoot, meta, (r, p) => this.$resolveSSR(r, tplDom, p, pathStart));
+    this.$finalize(ssrRoot, meta, (r, p) => this.$resolveSSR(r, tplDom, p, pathStart), scope);
 
     // All path-based resolution is complete. Remove the SSR markers that
     // were kept alive for structural-block skipping.  Start markers
@@ -1103,8 +1105,9 @@ export class WebUIElement extends HTMLElement {
     root: Node,
     meta: TemplateBlockMeta,
     resolver: (root: Node, path: TemplateNodePath) => Node | null,
+    scope?: ScopeFrame,
   ): void {
-    this.$wireEvents(root, meta, resolver);
+    this.$wireEvents(root, meta, resolver, scope);
     if ((meta as TemplateMeta).re) this.$wireRoot((meta as TemplateMeta).re!);
     this.$wireRefs(root);
   }
@@ -1114,29 +1117,58 @@ export class WebUIElement extends HTMLElement {
     root: Node,
     meta: TemplateBlockMeta,
     resolver: (root: Node, path: TemplateNodePath) => Node | null,
+    scope?: ScopeFrame,
   ): void {
     if (!meta.e) return;
     for (let i = 0; i < meta.e.length; i++) {
-      const [eventName, handlerName, needsEvent, target] = meta.e[i];
+      const [eventName, handlerName, args, target] = meta.e[i];
       const el = resolver(root, target);
       if (!el || el.nodeType !== 1) continue;
-      this.$addEvent(el as Element, eventName, handlerName, needsEvent);
+      this.$addEvent(el as Element, eventName, handlerName, args, scope);
     }
   }
 
   /** Wire root-level events on the host element (or shadow root when present). */
-  private $wireRoot(re: [string, string, number][]): void {
+  private $wireRoot(re: [string, string, CompiledEventArgs][]): void {
     const target = this.shadowRoot ?? this;
     for (let i = 0; i < re.length; i++) {
-      this.$addEvent(target, re[i][0], re[i][1], re[i][2]);
+      this.$addEvent(target, re[i][0], re[i][1], re[i][2], undefined);
     }
   }
 
   /** Attach a single event listener. */
-  private $addEvent(target: EventTarget, eventName: string, handlerName: string, _needsEvent: number): void {
+  private $addEvent(
+    target: EventTarget,
+    eventName: string,
+    handlerName: string,
+    args: CompiledEventArgs,
+    scope?: ScopeFrame,
+  ): void {
     const method = (this as Record<string, unknown>)[handlerName];
     if (typeof method !== 'function') return;
-    target.addEventListener(eventName, (method as Function).bind(this));
+    target.addEventListener(eventName, (event) => {
+      (method as Function).apply(this, this.$resolveEventArgs(args, event, scope));
+    });
+  }
+
+  private $resolveEventArgs(args: CompiledEventArgs, event: Event, scope?: ScopeFrame): unknown[] {
+    if (typeof args === 'number') return args ? [event] : [];
+    const resolved: unknown[] = [];
+    for (let i = 0; i < args.length; i++) {
+      resolved.push(this.$resolveEventArg(args[i], event, scope));
+    }
+    return resolved;
+  }
+
+  private $resolveEventArg(arg: CompiledEventArg, event: Event, scope?: ScopeFrame): unknown {
+    switch (arg[0]) {
+      case 'e': return event;
+      case 'p': return this.$resolveValue(arg[1], scope);
+      case 's': return arg[1];
+      case 'n': return arg[1];
+      case 'b': return !!arg[1];
+      case 'z': return null;
+    }
   }
 
   /** Find w-ref attributes and assign to component properties. */

@@ -307,7 +307,7 @@ On reactive flip:
 
 Two flavours:
 
-- **Element events** (`@click="{handler()}"`): wired via `$wireEvents`. The compiled metadata emits `[event, handler, needsEvent]` plus a target path. Handlers are looked up by name on the component instance and bound at hydration time.
+- **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `[event, handler, argSpecs, targetPath]`. Handlers are looked up by name on the component instance, and `argSpecs` are resolved against the captured render scope at dispatch time.
 - **Root events** (`re` field): attached to the host element rather than the shadow root. Used for `@custom-event` on the component's `<template>` root.
 
 Listener cleanup is automatic. `$destroy` (called from `disconnectedCallback` via a microtask, so repeat reconciliation moves don't trigger teardown) removes everything wired during `$mount`.

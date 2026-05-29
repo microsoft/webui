@@ -41,7 +41,15 @@ export type CompiledAttrMeta =
   | [name: string, kind: 3, parts: CompiledAttrPart[]];
 
 export type CompiledRepeatMeta = [collection: string, itemVar: string, blockIndex: number, slot: TemplateSlotPath];
-export type CompiledEventMeta = [name: string, handler: string, needsEvent: number, target: TemplateNodePath];
+export type CompiledEventArg =
+  | ['e']
+  | ['p', string]
+  | ['s', string]
+  | ['n', number]
+  | ['b', number]
+  | ['z'];
+export type CompiledEventArgs = CompiledEventArg[] | number;
+export type CompiledEventMeta = [name: string, handler: string, args: CompiledEventArgs, target: TemplateNodePath];
 
 export interface TemplateBlockMeta {
   h: string;
@@ -56,7 +64,7 @@ export interface TemplateBlockMeta {
 export interface TemplateMeta extends TemplateBlockMeta {
   b?: TemplateBlockMeta[];
   sa?: string;
-  re?: [string, string, number][];
+  re?: [string, string, CompiledEventArgs][];
   /** Shadow DOM flag — when true, client-created components use shadow root. */
   sd?: boolean;
 }

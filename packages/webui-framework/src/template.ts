@@ -13,7 +13,7 @@
  * - `cl` — conditional anchor slots
  * - `r`  — repeat/for blocks `[collection, itemVar, blockIndex]`
  * - `rl` — repeat anchor slots
- * - `e`  — element events `[eventName, handlerName, needsEvent]`
+ * - `e`  — element events `[eventName, handlerName, argSpecs, targetPath]`
  * - `el` — event target element paths
  * - `b`  — nested compiled block metadata
  * - `sa` — adopted stylesheet specifier for CSS module strategy
@@ -27,6 +27,8 @@ export type {
   CompiledAttrPart,
   CompiledCondition,
   CompiledConditionalMeta,
+  CompiledEventArg,
+  CompiledEventArgs,
   CompiledTextRunMeta,
   TemplateBlockMeta,
   TemplateMeta,

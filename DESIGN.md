@@ -1235,11 +1235,10 @@ Each component's compiled template is registered in `window.__webui.templates[ta
 | `cl`  | `SlotPath[]`                      | Conditional anchor slots aligned to `c[]`          |
 | `r`   | `[collection, itemVar, blockIndex][]` | Repeat blocks                                  |
 | `rl`  | `SlotPath[]`                      | Repeat anchor slots aligned to `r[]`               |
-| `e`   | `[event, handler, needsEvent][]`  | Body events                                        |
-| `el`  | `NodePath[]`                      | Event target element paths aligned to `e[]`        |
+| `e`   | `[event, handler, argSpecs, targetPath][]` | Body events                              |
 | `b`   | `TemplateBlockMeta[]`             | Nested compiled block table referenced by `c` / `r` |
 | `sa`  | `string`                          | Optional module-mode adopted stylesheet specifier copied from `shadowrootadoptedstylesheets` |
-| `re`  | `[event, handler, needsEvent][]`  | Root events, attached to the host element          |
+| `re`  | `[event, handler, argSpecs][]`    | Root events, attached to the host element          |
 
 All arrays are optional — omitted from the output when empty to minimize payload.
 
@@ -1271,6 +1270,14 @@ Logical operators also match the protocol enum values:
 - `[name, 2, ConditionExpr]` — boolean attribute binding, e.g. `?disabled="{{expr}}"`
 - `[name, 3, parts]` — mixed/template attribute binding, e.g. `class="item {{state}}"`
 
+`argSpecs` for event handlers are resolved at dispatch time against the captured scope chain for the rendered template block:
+
+- `["e"]` passes the DOM event object
+- `["p", path]` resolves a component or active `<for>` scope path, e.g. `item.id`
+- `["s", value]`, `["n", value]`, `["b", 0|1]`, and `["z"]` pass string, number, boolean, and `null` literals
+
+For example, `@click="{selectItem(item.id)}"` calls `selectItem` with the current repeat item id, while `@click="{selectItem(item.id, e)}"` passes the item id followed by the event object. `@click="{selectItem(e)}"` keeps the existing event-passing behavior, and `@click="{selectItem()}"` calls the handler with no arguments.
+
 ### Compilation rules
 
 The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webui.rs`) transforms the HTML template in a single forward pass, then finalizes it into marker-free client HTML plus locator metadata:
@@ -1284,7 +1291,7 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 | `:config="{{settings}}"`, `:value="{{searchQuery}}"` | `a[]` + `ag[]` | element kept marker-free |
 | `<if condition="expr">body</if>`     | `c[]` + `cl[]` + `b[]` | block removed; anchor slot stored |
 | `<for each="v in coll">body</for>`   | `r[]` + `rl[]` + `b[]` | block removed; anchor slot stored |
-| `@event="{handler(e)}"`              | `e[]` + `el[]`         | element kept marker-free          |
+| `@event="{handler(item.id, e)}"`     | `e[]`                  | element kept marker-free          |
 | `@event` on `<template>` wrapper     | `re[N]`                | *(stripped)*                      |
 | `w-ref="name"`                       | *(stays)*              | *(unchanged)*                     |
 | `<outlet />`                         | *(stays)*              | `<outlet></outlet>`               |
@@ -1332,7 +1339,7 @@ The WebUI handler plugin emits only these five comment markers. Text bindings, a
 
 - SSR hydration uses one DOM walk to discover `<!--wr-->`, `<!--wi-->`, and `<!--wc-->` comment markers, wire the relevant bindings using compiled metadata path indices, then remove SSR-only markers.
 - Client-created DOM never reparses template syntax; it clones marker-free `h` and resolves `tx`, `ag`, `cl`, `rl`, and `el` locators directly.
-- Events are resolved from compiled `e[]` and `el[]` metadata entries using path indices. The runtime installs one delegated listener per event type on the shadow root. Root events from `re[]` attach directly to the host element.
+- Events are resolved from compiled `e[]` metadata entries using path indices. The runtime installs listeners on target elements and resolves handler arguments against the scope captured when that block was rendered. Root events from `re[]` attach directly to the host element.
 - The full package entrypoint supports repeat metadata (`r[]` / `rl[]`). The additive `@microsoft/webui-framework/element-no-repeat` entrypoint preserves the same public `WebUIElement` API but must reject compiled templates that contain repeat metadata.
 
 Detailed component examples, decorators, and package entrypoint guidance live in [packages/webui-framework/README.md](packages/webui-framework/README.md) rather than being duplicated in this design spec.

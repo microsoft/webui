@@ -249,8 +249,8 @@ struct TemplateSectionMeta {
     repeats: Vec<(String, String, usize)>,
     /// Client repeat anchor slots aligned to `repeats`.
     repeat_slots: Vec<SlotLocator>,
-    /// Body-level events: `(event_name, handler_method, needs_event_arg)`.
-    events: Vec<(String, String, bool)>,
+    /// Body-level events: `(event_name, handler_method, argument_specs)`.
+    events: Vec<EventBinding>,
     /// Client event target element paths aligned to `events`.
     event_targets: Vec<Vec<usize>>,
 }
@@ -271,7 +271,19 @@ struct TemplateMeta {
     blocks: Vec<TemplateSectionMeta>,
     /// Root-level events from the `<template>` wrapper tag.
     /// Attached to the host element (shadow root host) by the client.
-    root_events: Vec<(String, String, bool)>,
+    root_events: Vec<EventBinding>,
+}
+
+type EventBinding = (String, String, Vec<EventArg>);
+
+#[derive(Clone, Debug, PartialEq)]
+enum EventArg {
+    Event,
+    Path(String),
+    String(String),
+    Number(String),
+    Bool(bool),
+    Null,
 }
 
 enum CompiledAttrBinding {
@@ -364,7 +376,7 @@ fn generate_compiled_template_with_root_source(
     // re: root events
     if !meta.root_events.is_empty() {
         out.push_str(",re:[");
-        for (i, (event, handler, needs_event)) in meta.root_events.iter().enumerate() {
+        for (i, (event, handler, args)) in meta.root_events.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
@@ -373,7 +385,7 @@ fn generate_compiled_template_with_root_source(
             out.push(',');
             emit_js_string(handler, &mut out);
             out.push(',');
-            out.push(if *needs_event { '1' } else { '0' });
+            emit_js_event_args(args, &mut out);
             out.push(']');
         }
         out.push(']');
@@ -429,6 +441,36 @@ fn emit_js_string(s: &str, out: &mut String) {
         index += ch.len_utf8();
     }
     out.push('"');
+}
+
+fn emit_js_event_args(args: &[EventArg], out: &mut String) {
+    out.push('[');
+    for (i, arg) in args.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        match arg {
+            EventArg::Event => out.push_str(r#"["e"]"#),
+            EventArg::Path(path) => {
+                out.push_str(r#"["p","#);
+                emit_js_string(path, out);
+                out.push(']');
+            }
+            EventArg::String(value) => {
+                out.push_str(r#"["s","#);
+                emit_js_string(value, out);
+                out.push(']');
+            }
+            EventArg::Number(value) => {
+                out.push_str(r#"["n","#);
+                out.push_str(value);
+                out.push(']');
+            }
+            EventArg::Bool(value) => out.push_str(if *value { r#"["b",1]"# } else { r#"["b",0]"# }),
+            EventArg::Null => out.push_str(r#"["z"]"#),
+        }
+    }
+    out.push(']');
 }
 
 fn emit_js_attr_binding(binding: &CompiledAttrBinding, out: &mut String) {
@@ -755,7 +797,7 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
 
     if !meta.events.is_empty() {
         out.push_str(",e:[");
-        for (i, ((event, handler, needs_event), target)) in meta
+        for (i, ((event, handler, args), target)) in meta
             .events
             .iter()
             .zip(meta.event_targets.iter())
@@ -769,7 +811,7 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
             out.push(',');
             emit_js_string(handler, out);
             out.push(',');
-            out.push(if *needs_event { '1' } else { '0' });
+            emit_js_event_args(args, out);
             out.push(',');
             emit_js_node_path(target, out);
             out.push(']');
@@ -796,7 +838,7 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
 ///   SSR `data-ev="COUNT"` markers that are later replaced by client locators.
 /// - **Everything else** — copied verbatim to the intermediate static HTML.
 ///
-fn compile_to_metadata(input: &str, root_events: Vec<(String, String, bool)>) -> TemplateMeta {
+fn compile_to_metadata(input: &str, root_events: Vec<EventBinding>) -> TemplateMeta {
     let mut blocks = Vec::new();
     let mut root = compile_section(input, &mut blocks);
     finalize_template_section(&mut root);
@@ -910,8 +952,8 @@ fn compile_section(input: &str, blocks: &mut Vec<TemplateSectionMeta>) -> Templa
 
         // @event attributes → replace with a per-element event-count marker
         if bytes[i] == b'@' && is_inside_tag(input, i) {
-            if let Some((event_name, handler, needs_event, consumed)) = parse_event_attr(input, i) {
-                meta.events.push((event_name, handler, needs_event));
+            if let Some((event_name, handler, args, consumed)) = parse_event_attr(input, i) {
+                meta.events.push((event_name, handler, args));
                 meta.html.push_str("data-ev=\"1\"");
                 i += consumed;
                 continue;
@@ -1675,16 +1717,15 @@ fn parse_for_block(input: &str) -> Option<(String, String, String, usize)> {
     Some((collection, item_var, body, end_pos + close_tag.len()))
 }
 
-/// Parse `@event="{handler()}"` or `@event={handler()}` → `(event_name, handler_name, needs_event, consumed)`.
+/// Parse `@event="{handler()}"` or `@event={handler()}` into event metadata.
 ///
 /// Supports three value quoting styles:
 /// - `@click="{onClick()}"` — quoted with braces inside
 /// - `@click={onClick()}` — unquoted braces
 /// - `@click='onClick()'` — single-quoted
 ///
-/// The handler name is extracted from the function call syntax. `needs_event`
-/// is `true` when the argument list contains `(e)`.
-fn parse_event_attr(input: &str, pos: usize) -> Option<(String, String, bool, usize)> {
+/// The handler name and full argument list are extracted from the function call syntax.
+fn parse_event_attr(input: &str, pos: usize) -> Option<(String, String, Vec<EventArg>, usize)> {
     let remaining = &input[pos..];
     let eq_pos = remaining.find('=')?;
     let event_name = remaining[1..eq_pos].to_string(); // skip @
@@ -1720,22 +1761,19 @@ fn parse_event_attr(input: &str, pos: usize) -> Option<(String, String, bool, us
         .unwrap_or(raw_value)
         .trim();
 
-    // Extract method name from "handler()" or "handler(e)"
+    // Extract method name and argument specs from "handler(...)".
     if inner.is_empty() {
         return None;
     }
-    let paren = match inner.find('(') {
-        Some(p) => p,
-        None => panic!(
+    match parse_event_handler(inner) {
+        EventHandler::Valid(handler_name, args) => Some((event_name, handler_name, args, total_consumed)),
+        EventHandler::Empty => None,
+        EventHandler::Invalid(_raw) => panic!(
             "Invalid @{event_name} handler: \"{inner}\". \
              Use @{event_name}=\"{{handler()}}\" or \
              @{event_name}=\"{{handler(e)}}\" to pass the event.",
         ),
-    };
-    let handler_name = inner[..paren].to_string();
-    let needs_event = inner.contains("(e)");
-
-    Some((event_name, handler_name, needs_event, total_consumed))
+    }
 }
 
 fn parse_regular_tag(input: &str, meta: &mut TemplateSectionMeta) -> Option<(String, usize)> {
@@ -1842,9 +1880,9 @@ fn parse_regular_tag(input: &str, meta: &mut TemplateSectionMeta) -> Option<(Str
                 continue;
             };
             match parse_event_handler(raw_value) {
-                EventHandler::Valid(handler_name, needs_event) => {
+                EventHandler::Valid(handler_name, args) => {
                     meta.events
-                        .push((event_name.to_string(), handler_name, needs_event));
+                        .push((event_name.to_string(), handler_name, args));
                 }
                 EventHandler::Invalid(raw) => {
                     panic!(
@@ -1955,7 +1993,7 @@ fn parse_regular_tag(input: &str, meta: &mut TemplateSectionMeta) -> Option<(Str
 }
 
 enum EventHandler {
-    Valid(String, bool),
+    Valid(String, Vec<EventArg>),
     Invalid(String),
     Empty,
 }
@@ -1970,13 +2008,105 @@ fn parse_event_handler(raw_value: &str) -> EventHandler {
     if inner.is_empty() {
         return EventHandler::Empty;
     }
-    // `handler(e)` → needs event, `handler()` → no event
     match inner.find('(') {
         Some(paren) => {
-            EventHandler::Valid(inner[..paren].trim().to_string(), inner.contains("(e)"))
+            let close = match inner.rfind(')') {
+                Some(close) if close > paren => close,
+                _ => return EventHandler::Invalid(inner.to_string()),
+            };
+            let handler_name = inner[..paren].trim();
+            if handler_name.is_empty() {
+                return EventHandler::Invalid(inner.to_string());
+            }
+            EventHandler::Valid(handler_name.to_string(), parse_event_args(&inner[paren + 1..close]))
         }
         None => EventHandler::Invalid(inner.to_string()),
     }
+}
+
+fn parse_event_args(raw_args: &str) -> Vec<EventArg> {
+    split_event_args(raw_args)
+        .into_iter()
+        .filter_map(|arg| parse_event_arg(arg.trim()))
+        .collect()
+}
+
+fn split_event_args(raw_args: &str) -> Vec<&str> {
+    let mut args = Vec::new();
+    let mut start = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    for (idx, byte) in raw_args.bytes().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if byte == b'\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(q) = quote {
+            if byte == q {
+                quote = None;
+            }
+            continue;
+        }
+        if byte == b'"' || byte == b'\'' {
+            quote = Some(byte);
+            continue;
+        }
+        if byte == b',' {
+            args.push(&raw_args[start..idx]);
+            start = idx + 1;
+        }
+    }
+    args.push(&raw_args[start..]);
+    args
+}
+
+fn parse_event_arg(arg: &str) -> Option<EventArg> {
+    if arg.is_empty() {
+        return None;
+    }
+    if arg == "e" {
+        return Some(EventArg::Event);
+    }
+    if arg == "true" {
+        return Some(EventArg::Bool(true));
+    }
+    if arg == "false" {
+        return Some(EventArg::Bool(false));
+    }
+    if arg == "null" {
+        return Some(EventArg::Null);
+    }
+    if let Some(value) = parse_quoted_event_string(arg) {
+        return Some(EventArg::String(value));
+    }
+    if is_number_literal(arg) {
+        return Some(EventArg::Number(arg.to_string()));
+    }
+    Some(EventArg::Path(arg.to_string()))
+}
+
+fn parse_quoted_event_string(arg: &str) -> Option<String> {
+    let bytes = arg.as_bytes();
+    if bytes.len() < 2 {
+        return None;
+    }
+    let quote = bytes[0];
+    if (quote != b'"' && quote != b'\'') || bytes[bytes.len() - 1] != quote {
+        return None;
+    }
+    Some(arg[1..arg.len() - 1].replace("\\\"", "\"").replace("\\'", "'"))
+}
+
+fn is_number_literal(arg: &str) -> bool {
+    !arg.is_empty()
+        && arg.parse::<f64>().is_ok()
+        && arg
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'+' | b'e' | b'E'))
 }
 
 fn extract_single_handlebars(value: &str) -> Option<String> {
@@ -2046,7 +2176,7 @@ fn parse_attr_parts(value: &str) -> Option<Vec<CompiledAttrPart>> {
 ///
 /// These become "root events" (`re` array) attached to the host element
 /// rather than to an element inside the shadow DOM.
-fn extract_root_events(html: &str) -> Vec<(String, String, bool)> {
+fn extract_root_events(html: &str) -> Vec<EventBinding> {
     if !html.starts_with("<template") {
         return Vec::new();
     }
@@ -2061,8 +2191,8 @@ fn extract_root_events(html: &str) -> Vec<(String, String, bool)> {
 
     while i < len {
         if bytes[i] == b'@' {
-            if let Some((name, handler, needs_event, consumed)) = parse_event_attr(tag, i) {
-                events.push((name, handler, needs_event));
+            if let Some((name, handler, args, consumed)) = parse_event_attr(tag, i) {
+                events.push((name, handler, args));
                 i += consumed;
                 continue;
             }
@@ -2231,7 +2361,22 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains("\"keydown\""));
         assert!(result.contains("\"onKey\""));
-        assert!(result.contains(",1")); // needs_event = true
+        assert!(result.contains(r#"["e"]"#)); // event argument
+    }
+
+    #[test]
+    fn test_metadata_has_event_path_args() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<button @click="{selectItem(item.id, e, 'ok', 7, true, null)}">Go</button>"#,
+        );
+        assert_no_client_markers(&result);
+        assert!(result.contains(r#"["p","item.id"]"#));
+        assert!(result.contains(r#"["e"]"#));
+        assert!(result.contains(r#"["s","ok"]"#));
+        assert!(result.contains(r#"["n",7]"#));
+        assert!(result.contains(r#"["b",1]"#));
+        assert!(result.contains(r#"["z"]"#));
     }
 
     #[test]
@@ -2679,8 +2824,8 @@ mod tests {
         let result =
             generate_compiled_template("my-comp", r#"<button @click="{onClick()}">Go</button>"#);
         assert!(
-            result.contains(r#"["click","onClick",0,[0]]"#),
-            "needs_event should be 0"
+            result.contains(r#"["click","onClick",[],[0]]"#),
+            "empty argument list should be preserved"
         );
     }
 
@@ -2693,7 +2838,7 @@ mod tests {
         assert!(result.contains(",re:["));
         assert!(result.contains("\"submit\""));
         assert!(result.contains("\"onSubmit\""));
-        assert!(result.contains(",0]"), "needs_event should be 0 for no (e)");
+        assert!(result.contains(r#"["submit","onSubmit",[]]"#), "empty root argument list should be preserved");
     }
 
     #[test]
@@ -2893,7 +3038,7 @@ mod tests {
     fn test_parse_event_handler_with_parens() {
         assert!(matches!(
             parse_event_handler("{onClick()}"),
-            EventHandler::Valid(ref name, false) if name == "onClick"
+            EventHandler::Valid(ref name, ref args) if name == "onClick" && args.is_empty()
         ));
     }
 
@@ -2901,7 +3046,24 @@ mod tests {
     fn test_parse_event_handler_with_event_arg() {
         assert!(matches!(
             parse_event_handler("{onClick(e)}"),
-            EventHandler::Valid(ref name, true) if name == "onClick"
+            EventHandler::Valid(ref name, ref args) if name == "onClick" && args == &vec![EventArg::Event]
+        ));
+    }
+
+    #[test]
+    fn test_parse_event_handler_with_mixed_args() {
+        assert!(matches!(
+            parse_event_handler("{onClick(item.id, e, 'ok', 7, false, null)}"),
+            EventHandler::Valid(ref name, ref args)
+                if name == "onClick"
+                    && args == &vec![
+                        EventArg::Path("item.id".to_string()),
+                        EventArg::Event,
+                        EventArg::String("ok".to_string()),
+                        EventArg::Number("7".to_string()),
+                        EventArg::Bool(false),
+                        EventArg::Null,
+                    ]
         ));
     }
 
