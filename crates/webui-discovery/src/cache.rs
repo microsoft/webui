@@ -13,8 +13,14 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::process;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::DiscoveredComponent;
+
+/// Process-local counter used to disambiguate concurrent temp files within
+/// a single process (e.g. two threads calling `put` for different keys).
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Serialized cache entry stored as JSON on disk.
 #[derive(Serialize, Deserialize)]
@@ -145,12 +151,34 @@ impl DiscoveryCache {
         let json = serde_json::to_string(&entry).context("Failed to serialize cache entry")?;
 
         // Write to temp file then rename for atomic operation
-        // (prevents corruption from concurrent builds)
-        let temp_file = self.cache_dir.join(format!("{key}.tmp"));
+        // (prevents corruption from concurrent builds).
+        //
+        // The temp file name must be unique per writer — otherwise two
+        // concurrent processes (or two threads in the same process)
+        // racing the same {key}.tmp would overwrite each other's bytes
+        // and at least one of the renames would observe a partially
+        // written or already-renamed source.
+        //
+        // PID alone is insufficient because (a) the OS recycles PIDs and
+        // (b) two threads in the same process share one PID; we therefore
+        // append a process-local atomic counter as well.
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp_file = self
+            .cache_dir
+            .join(format!("{key}.{}.{}.tmp", process::id(), counter));
         fs::write(&temp_file, &json)
             .with_context(|| format!("Failed to write temp cache file: {}", temp_file.display()))?;
-        fs::rename(&temp_file, &cache_file)
-            .with_context(|| format!("Failed to finalize cache file: {}", cache_file.display()))?;
+        // On Windows, std::fs::rename uses MoveFileExW with
+        // MOVEFILE_REPLACE_EXISTING, which is atomic with respect to
+        // concurrent open-for-read of the destination as of Rust 1.62+.
+        // If the rename fails (e.g., another writer raced ahead) we
+        // remove our orphaned temp file to avoid leaking files on disk.
+        if let Err(e) = fs::rename(&temp_file, &cache_file) {
+            let _ = fs::remove_file(&temp_file);
+            return Err(e).with_context(|| {
+                format!("Failed to finalize cache file: {}", cache_file.display())
+            });
+        }
 
         Ok(())
     }
@@ -245,5 +273,70 @@ mod tests {
         // Should gracefully return None, not error
         let cached = cache.get("test-pkg", &pkg_json).unwrap();
         assert!(cached.is_none());
+    }
+
+    #[test]
+    fn test_concurrent_put_does_not_corrupt_cache() {
+        // Regression test for: two writers racing on the same temp file
+        // path overwrote each other and produced a partial/empty
+        // cache.json. With PID+counter suffixes each writer has its own
+        // temp file; the rename loser cleans up after itself.
+        use std::thread;
+
+        let cache = DiscoveryCache::open().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pkg_json = tmp.path().join("package.json");
+        fs::write(&pkg_json, r#"{"name":"test","version":"1.0.0"}"#).unwrap();
+
+        // Build a payload large enough that the temp-file write window
+        // overlaps with sibling threads.
+        let big_html = "x".repeat(64 * 1024);
+        let components = vec![DiscoveredComponent {
+            tag_name: "test-comp".to_string(),
+            html_content: big_html.clone(),
+            css_content: None,
+            source: "test-pkg".to_string(),
+        }];
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let c = DiscoveryCache::open().unwrap();
+            let p = pkg_json.clone();
+            let comp = components.clone();
+            handles.push(thread::spawn(move || {
+                c.put("test-pkg", &p, &comp).unwrap();
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // After all writers exit the cache must be readable and
+        // structurally intact.
+        let cached = cache.get("test-pkg", &pkg_json).unwrap();
+        let cached = cached.expect("cache should contain a valid entry");
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].html_content, big_html);
+
+        // No `.tmp` leftovers should remain for OUR key. We scope to our
+        // own cache_key prefix because `cache_dir` is shared across the
+        // whole `cargo test` process; a sibling test (e.g.
+        // `test_cache_round_trip`) racing the directory at the moment of
+        // our scan must not flake this assertion.
+        let our_key = DiscoveryCache::cache_key("test-pkg", &pkg_json);
+        let stragglers: Vec<_> = fs::read_dir(&cache.cache_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let s = name.to_string_lossy();
+                s.starts_with(&our_key) && s.ends_with(".tmp")
+            })
+            .collect();
+        assert!(
+            stragglers.is_empty(),
+            "leftover temp files: {:?}",
+            stragglers.iter().map(|e| e.path()).collect::<Vec<_>>()
+        );
     }
 }
