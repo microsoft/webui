@@ -1,9 +1,14 @@
 <h2 class="page-title">{{groupName}}</h2>
-<div class="contact-list-container">
-  <for each="contact in contacts">
-    <cb-contact-card id="{{contact.id}}" first-name="{{contact.firstName}}" last-name="{{contact.lastName}}"
-      email="{{contact.email}}" phone="{{contact.phone}}" company="{{contact.company}}" group="{{contact.group}}"
-      favorite="{{contact.favorite}}" initials="{{contact.initials}}" avatar-color="{{contact.avatarColor}}"
-      notes="{{contact.notes}}" address="{{contact.address}}"></cb-contact-card>
-  </for>
-</div>
+<if condition="contacts.length">
+  <div class="contact-list-container">
+    <for each="contact in contacts">
+      <cb-contact-card id="{{contact.id}}" first-name="{{contact.firstName}}" last-name="{{contact.lastName}}"
+        email="{{contact.email}}" phone="{{contact.phone}}" company="{{contact.company}}" group="{{contact.group}}"
+        favorite="{{contact.favorite}}" initials="{{contact.initials}}" avatar-color="{{contact.avatarColor}}"
+        notes="{{contact.notes}}" address="{{contact.address}}"></cb-contact-card>
+    </for>
+  </div>
+</if>
+<if condition="!contacts.length">
+  <cb-empty-state title="No contacts found" message="Try adjusting your search."></cb-empty-state>
+</if>

@@ -246,6 +246,70 @@ test.describe('contact edit does not corrupt sidebar groups', () => {
   });
 });
 
+// ── Search tests ────────────────────────────────────────────────
+
+test.describe('search', () => {
+  test('filters contacts on the contacts page as the user types', async ({ page }) => {
+    await page.goto('/contacts');
+    await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(15);
+
+    const searchInput = page.locator('cb-header .search-input');
+    await searchInput.fill('Sarah');
+
+    // Only Sarah Chen should remain
+    await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(1);
+    await expect(page.locator('cb-page-contacts cb-contact-card')).toContainText('Sarah');
+  });
+
+  test('shows empty state when search has no matches', async ({ page }) => {
+    await page.goto('/contacts');
+    const searchInput = page.locator('cb-header .search-input');
+    await searchInput.fill('zzz_no_match_zzz');
+
+    await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(0);
+    await expect(page.locator('cb-page-contacts cb-empty-state')).toBeVisible();
+  });
+
+  test('restores full list when search is cleared', async ({ page }) => {
+    await page.goto('/contacts');
+    const searchInput = page.locator('cb-header .search-input');
+    await searchInput.fill('Sarah');
+    await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(1);
+
+    await searchInput.clear();
+    await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(15);
+  });
+
+  test('filters favorites page as the user types', async ({ page }) => {
+    await page.goto('/favorites');
+    const initialCount = await page.locator('cb-page-favorites cb-contact-card').count();
+    expect(initialCount).toBeGreaterThan(0);
+
+    const searchInput = page.locator('cb-header .search-input');
+    await searchInput.fill('Sarah');
+
+    await expect(page.locator('cb-page-favorites cb-contact-card')).toHaveCount(1);
+    await expect(page.locator('cb-page-favorites cb-contact-card')).toContainText('Sarah');
+  });
+
+  test('search persists when navigating back to contacts page', async ({ page }) => {
+    await page.goto('/contacts');
+    const searchInput = page.locator('cb-header .search-input');
+    await searchInput.fill('Sarah');
+    await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(1);
+
+    // Navigate to a contact detail
+    await page.locator('cb-page-contacts cb-contact-card').click();
+    await expect(page.locator('cb-contact-detail')).toBeVisible();
+
+    // Navigate back — search box still shows query, contacts page should re-filter
+    await page.locator('cb-sidebar').getByRole('link', { name: /All Contacts/ }).click();
+    await expect(page).toHaveURL('/contacts');
+    await expect(page.locator('cb-header .search-input')).toHaveValue('Sarah');
+    await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(1);
+  });
+});
+
 // ── Visual regression tests ──────────────────────────────────────
 
 test.describe('visual regression', () => {
