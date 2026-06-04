@@ -1766,7 +1766,9 @@ fn parse_event_attr(input: &str, pos: usize) -> Option<(String, String, Vec<Even
         return None;
     }
     match parse_event_handler(inner) {
-        EventHandler::Valid(handler_name, args) => Some((event_name, handler_name, args, total_consumed)),
+        EventHandler::Valid(handler_name, args) => {
+            Some((event_name, handler_name, args, total_consumed))
+        }
         EventHandler::Empty => None,
         EventHandler::Invalid(_raw) => panic!(
             "Invalid @{event_name} handler: \"{inner}\". \
@@ -2018,7 +2020,10 @@ fn parse_event_handler(raw_value: &str) -> EventHandler {
             if handler_name.is_empty() {
                 return EventHandler::Invalid(inner.to_string());
             }
-            EventHandler::Valid(handler_name.to_string(), parse_event_args(&inner[paren + 1..close]))
+            EventHandler::Valid(
+                handler_name.to_string(),
+                parse_event_args(&inner[paren + 1..close]),
+            )
         }
         None => EventHandler::Invalid(inner.to_string()),
     }
@@ -2098,7 +2103,11 @@ fn parse_quoted_event_string(arg: &str) -> Option<String> {
     if (quote != b'"' && quote != b'\'') || bytes[bytes.len() - 1] != quote {
         return None;
     }
-    Some(arg[1..arg.len() - 1].replace("\\\"", "\"").replace("\\'", "'"))
+    Some(
+        arg[1..arg.len() - 1]
+            .replace("\\\"", "\"")
+            .replace("\\'", "'"),
+    )
 }
 
 fn is_number_literal(arg: &str) -> bool {
@@ -2838,7 +2847,10 @@ mod tests {
         assert!(result.contains(",re:["));
         assert!(result.contains("\"submit\""));
         assert!(result.contains("\"onSubmit\""));
-        assert!(result.contains(r#"["submit","onSubmit",[]]"#), "empty root argument list should be preserved");
+        assert!(
+            result.contains(r#"["submit","onSubmit",[]]"#),
+            "empty root argument list should be preserved"
+        );
     }
 
     #[test]
