@@ -1341,6 +1341,22 @@ fn parse_fragment_nodes(input: &str) -> Vec<FragmentNode> {
             if let Some((element, consumed)) = parse_fragment_start_tag(remaining) {
                 if element.self_closing {
                     push_fragment_node(&mut roots, &mut stack, FragmentNode::Element(element));
+                } else if is_raw_text_element(&element.tag_name) {
+                    let content_start = index + consumed;
+                    if let Some((raw_content, raw_consumed)) =
+                        parse_raw_text_element_content(input, content_start, &element.tag_name)
+                    {
+                        let mut element = element;
+                        if !raw_content.is_empty() {
+                            element
+                                .children
+                                .push(FragmentNode::Text(raw_content.to_string()));
+                        }
+                        push_fragment_node(&mut roots, &mut stack, FragmentNode::Element(element));
+                        index = content_start + raw_consumed;
+                        continue;
+                    }
+                    stack.push(element);
                 } else {
                     stack.push(element);
                 }
@@ -1492,6 +1508,40 @@ fn is_void_element(tag_name: &str) -> bool {
 }
 
 // ── Parsing helpers ────────────────────────────────────────────────
+
+/// HTML raw-text elements must not scan their contents for nested tags while
+/// deriving client locator paths.
+fn is_raw_text_element(tag_name: &str) -> bool {
+    tag_name.eq_ignore_ascii_case("style") || tag_name.eq_ignore_ascii_case("script")
+}
+
+fn parse_raw_text_element_content<'a>(
+    input: &'a str,
+    content_start: usize,
+    tag_name: &str,
+) -> Option<(&'a str, usize)> {
+    let close_tag = format!("</{}>", tag_name.to_ascii_lowercase());
+    let remaining = input.get(content_start..)?;
+    let close_pos = find_ascii_case_insensitive(remaining, &close_tag)?;
+    let raw_content = &remaining[..close_pos];
+    Some((raw_content, close_pos + close_tag.len()))
+}
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+
+    let haystack_bytes = haystack.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    if needle_bytes.len() > haystack_bytes.len() {
+        return None;
+    }
+
+    haystack_bytes
+        .windows(needle_bytes.len())
+        .position(|window| window.eq_ignore_ascii_case(needle_bytes))
+}
 
 /// Find the position of `count` consecutive closing braces (`}`).
 /// Returns `Some(start_of_closing_braces)` or `None` if not found.
@@ -2550,6 +2600,23 @@ mod tests {
             r#"<template shadowrootmode="open"><style>.root{color:red}</style><p>hi</p></template>"#,
         );
         assert!(result.contains(r#"h:"<style>.root{color:red}</style><p>hi</p>""#));
+    }
+
+    #[test]
+    fn test_compiled_template_treats_style_content_as_raw_text() {
+        let result = generate_compiled_template(
+            "my-component",
+            r#"<template shadowrootmode="open"><style>:host { display: block; }
+
+/* The <my-component> element renders items from the data array. */
+.container { padding: 16px; background: #e0e0e0; }</style><div class="container"><span>Hello from my-component</span></div></template>"#,
+        );
+
+        assert!(result.contains(r#"h:"<style>:host { display: block; }\n\n/* The <my-component> element renders items from the data array. */\n.container { padding: 16px; background: #e0e0e0; }</style><div class=\"container\"><span>Hello from my-component</span></div>""#));
+        assert!(
+            !result.contains("</my-component><div"),
+            "style contents must not be parsed as HTML tags: {result}"
+        );
     }
 
     #[test]

@@ -820,6 +820,38 @@ mod tests {
     }
 
     #[test]
+    fn test_build_inline_css_comment_with_html_like_tag_preserves_template_html() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-component></my-component>"),
+            (
+                "my-component.html",
+                r#"<div class="container"><span>Hello from my-component</span></div>"#,
+            ),
+            (
+                "my-component.css",
+                r#":host { display: block; }
+
+/* The <my-component> element renders items from the data array. */
+.container { padding: 16px; background: #e0e0e0; }"#,
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.css = CssStrategy::Style;
+        options.plugin = Some(Plugin::WebUI);
+
+        let result = build(options).unwrap();
+        let template = &result.protocol.components["my-component"].template;
+
+        assert!(template.contains(
+            r#"</style><div class=\"container\"><span>Hello from my-component</span></div>""#
+        ));
+        assert!(
+            !template.contains("</my-component><div"),
+            "CSS comment tag text must not corrupt the client template: {template}"
+        );
+    }
+
+    #[test]
     fn test_build_module_css() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
