@@ -1,25 +1,27 @@
-# TODO: The maintainer of this repo has not yet edited this file
-
-**REPO OWNER**: Do you want Customer Service & Support (CSS) support for this product/project?
-
-- **No CSS support:** Fill out this template with information about how to file issues and get help.
-- **Yes CSS support:** Fill out an intake form at [aka.ms/onboardsupport](https://aka.ms/onboardsupport). CSS will work with/help you to determine next steps.
-- **Not sure?** Fill out an intake as though the answer were "Yes". CSS will help you decide.
-
-*Then remove this first heading from this SUPPORT.MD file before publishing your repo.*
-
 # Support
 
-## How to file issues and get help  
+WebUI is in active development. Support is provided through GitHub Issues for actionable bug reports, feature requests, and documentation needs.
 
-This project uses GitHub Issues to track bugs and feature requests. Please search the existing 
-issues before filing new issues to avoid duplicates.  For new issues, file your bug or 
-feature request as a new Issue.
+## Before opening an issue
 
-For help and questions about using this project, please **REPO MAINTAINER: INSERT INSTRUCTIONS HERE 
-FOR HOW TO ENGAGE REPO OWNERS OR COMMUNITY FOR HELP. COULD BE A STACK OVERFLOW TAG OR OTHER
-CHANNEL. WHERE WILL YOU HELP PEOPLE?**.
+- Search the [existing issues](https://github.com/microsoft/webui/issues) to avoid duplicates.
+- Check the [documentation](https://microsoft.github.io/webui) for current guidance.
+- Include enough detail for maintainers to understand the need or reproduce the problem.
 
-## Microsoft Support Policy  
+## Where to ask
 
-Support for this **PROJECT or PRODUCT** is limited to the resources listed above.
+| Need | Use |
+|------|-----|
+| Bug report | Open a GitHub Issue using the guidance in [`CONTRIBUTING.md#bugs`](CONTRIBUTING.md#bugs). |
+| Feature request | Open a GitHub Issue using the guidance in [`CONTRIBUTING.md#feature-requests`](CONTRIBUTING.md#feature-requests). |
+| Documentation issue | Open a GitHub Issue using the guidance in [`CONTRIBUTING.md#documentation-issues`](CONTRIBUTING.md#documentation-issues). |
+| Security vulnerability | Do not open a public issue. Follow [`SECURITY.md`](SECURITY.md). |
+| Pull request | Pull requests are not being accepted right now. See [`CONTRIBUTING.md#pull-requests-are-paused`](CONTRIBUTING.md#pull-requests-are-paused). |
+
+## What to include
+
+For bugs, include a minimal reproduction, exact steps, expected behavior, actual behavior, environment details, and relevant logs. For feature or documentation requests, describe the need, who is affected, and what outcome would solve it.
+
+## Microsoft Support Policy
+
+Support for this project is limited to the resources listed above.
