@@ -209,7 +209,7 @@ struct WebUIProcessContext<'a> {
     route_base: Cow<'a, str>,
     /// Component names visited during rendering (for selective f-template emission
     /// and CSS module dedup — only the first render of each component emits
-    /// its `<style type="module">` tag).
+    /// its `<script type="importmap">` data-URI tag).
     rendered_components: HashSet<String>,
     /// Per-render plugin instance created from the handler's factory.
     plugin: Option<Box<dyn HandlerPlugin>>,
@@ -727,15 +727,94 @@ impl WebUIHandler {
         Ok(())
     }
 
-    /// Emit a `<style type="module">` tag for a component's CSS module definition.
+    /// Emit a `<script type="importmap">` tag that registers a component's
+    /// CSS module under its specifier via a `data:text/css,…` URI.
     ///
-    /// Only emits on first render of this component (deduped by `rendered_components`).
-    /// Placed in the component's light DOM so the browser can register the CSS module:
-    /// `<my-comp><style type="module" specifier="my-comp">CSS</style><template ...>`.
+    /// Why: the legacy emission shape `<style type="module" specifier="X">`
+    /// requires a browser-side CSS-module-style-tag pipeline that not all
+    /// host browsers ship. Import maps with data URIs are a standards-only
+    /// workaround that works the same way (the browser resolves the CSS
+    /// module by specifier from the importmap) without depending on the
+    /// `<style type="module">` shape.
     ///
-    /// This keeps SSR output lean — only components actually rendered on the current
-    /// route get their style definitions. Components on other routes receive their
-    /// definitions via `templateStyles` during SPA partial navigation.
+    /// Produces, for a component `my-comp` with CSS `span{color:blue;}`:
+    /// `<script type="importmap" nonce="...">{"imports":{"my-comp":"data:text/css,span%7Bcolor:blue;%7D"}}</script>`.
+    ///
+    /// CSP: importmap scripts are subject to `script-src`, so the per-render
+    /// nonce is applied identically to the legacy `<style type="module">`
+    /// path and to the bootstrap `<script>` emit.
+    ///
+    /// Multiple Import Maps must be supported by the host browser
+    /// (Chrome 133+). Each call emits an independent importmap; the
+    /// browser merges them at the document level.
+    fn emit_css_module_importmap(
+        &self,
+        specifier: &str,
+        css: &str,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        // Percent-encode the CSS source so it survives:
+        //   - the JSON string container (we still need to JSON-escape the
+        //     surrounding URI, which serde_json handles for us below),
+        //   - the data: URI parser in the browser (which treats `#` as a
+        //     fragment delimiter and `%` as an escape).
+        // We only encode characters that would actually mis-parse —
+        // everything else stays human-readable to keep DevTools' importmap
+        // view legible.
+        fn percent_encode_css_for_data_uri(css: &str) -> String {
+            use std::fmt::Write as _;
+            let mut out = String::with_capacity(css.len());
+            for b in css.bytes() {
+                let needs_encoding = matches!(
+                    b,
+                    b'%' | b'#' | b'"' | b' ' | b'\t' | b'\n' | b'\r'
+                ) || b < 0x20
+                    || b >= 0x80;
+                if needs_encoding {
+                    let _ = write!(&mut out, "%{:02X}", b);
+                } else {
+                    out.push(char::from(b));
+                }
+            }
+            out
+        }
+
+        let data_uri = format!("data:text/css,{}", percent_encode_css_for_data_uri(css));
+        // Routing the body through serde_json guarantees correct JSON
+        // escaping of the specifier (which may contain characters that
+        // need escaping in JSON) and of the data URI.
+        let body = serde_json::json!({
+            "imports": {
+                specifier: data_uri,
+            },
+        })
+        .to_string();
+
+        context.writer.write("<script type=\"importmap\"")?;
+        if let Some(nonce) = context.nonce {
+            context.writer.write(" nonce=\"")?;
+            context.writer.write(nonce)?;
+            context.writer.write("\"")?;
+        }
+        context.writer.write(">")?;
+        context.writer.write(&body)?;
+        context.writer.write("</script>")?;
+        Ok(())
+    }
+
+    /// Emit a `<script type="importmap">` tag for a component's CSS module
+    /// definition (data-URI form — see `emit_css_module_importmap`).
+    ///
+    /// Only emits on first render of this component (deduped by
+    /// `rendered_components`). Placed in the component's light DOM so the
+    /// browser registers the CSS module under the component's specifier
+    /// before the shadow root template is parsed:
+    /// `<my-comp><script type="importmap" nonce="...">{"imports":{"my-comp":"data:text/css,..."}}</script><template ...>`.
+    ///
+    /// This keeps SSR output lean — only components actually rendered on the
+    /// current route get their style definitions. Components on other routes
+    /// receive their definitions via `templateStyles` during SPA partial
+    /// navigation.
     fn emit_css_module(
         &self,
         component: &webui_protocol::WebUIFragmentComponent,
@@ -749,17 +828,7 @@ impl WebUIHandler {
                 .map(|c| c.css.as_str())
                 .filter(|s| !s.is_empty())
             {
-                context.writer.write("<style type=\"module\"")?;
-                if let Some(nonce) = context.nonce {
-                    context.writer.write(" nonce=\"")?;
-                    context.writer.write(nonce)?;
-                    context.writer.write("\"")?;
-                }
-                context.writer.write(" specifier=\"")?;
-                context.writer.write(&component.fragment_id)?;
-                context.writer.write("\">")?;
-                context.writer.write(css)?;
-                context.writer.write("</style>")?;
+                self.emit_css_module_importmap(&component.fragment_id, css, context)?;
             }
         }
         Ok(())
@@ -847,10 +916,10 @@ impl WebUIHandler {
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         // Emit CSS module into the component's light DOM on first encounter.
-        // Only rendered components get their <style type="module"> definition
+        // Only rendered components get their CSS module importmap definition
         // during SSR. Components on other routes will receive theirs via the
         // templateStyles array in the SPA partial response instead.
-        // Produces: <my-comp><style type="module" specifier="my-comp">CSS</style><template ...>
+        // Produces: <my-comp><script type="importmap" nonce="...">{"imports":{"my-comp":"data:text/css,..."}}</script><template ...>
         if !context.rendered_components.contains(&component.fragment_id) {
             self.emit_css_module(component, context)?;
         }
@@ -1023,8 +1092,9 @@ impl WebUIHandler {
             //   Link + Light  → <link rel="stylesheet"> (no shadow root)
             //
             // Style-strategy embeds CSS inside the shadow DOM template.
-            // Module-strategy emits <style type="module"> inline in each
-            // component's light DOM during rendering (via emit_css_module).
+            // Module-strategy emits a <script type="importmap"> data-URI
+            // inline in each component's light DOM during rendering (via
+            // emit_css_module).
             let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
             let is_shadow = context.protocol.dom_strategy() == webui_protocol::DomStrategy::Shadow;
 
@@ -1107,10 +1177,10 @@ impl WebUIHandler {
                 );
 
                 // Emit CSS module definitions for reachable-but-unrendered components.
-                // Rendered components already got their <style type="module"> inline
-                // during the render pass (via emit_css_module). Unrendered components
-                // need their definitions here so the framework can adopt them when
-                // the <if> condition flips true client-side.
+                // Rendered components already got their importmap inline during the
+                // render pass (via emit_css_module). Unrendered components need their
+                // definitions here so the framework can adopt them when the <if>
+                // condition flips true client-side.
                 for name in &reachable {
                     if !context.rendered_components.contains(name) {
                         if let Some(css) = context
@@ -1120,17 +1190,7 @@ impl WebUIHandler {
                             .map(|c| c.css.as_str())
                             .filter(|s| !s.is_empty())
                         {
-                            context.writer.write("<style type=\"module\"")?;
-                            if let Some(nonce) = context.nonce {
-                                context.writer.write(" nonce=\"")?;
-                                context.writer.write(nonce)?;
-                                context.writer.write("\"")?;
-                            }
-                            context.writer.write(" specifier=\"")?;
-                            context.writer.write(name)?;
-                            context.writer.write("\">")?;
-                            context.writer.write(css)?;
-                            context.writer.write("</style>")?;
+                            self.emit_css_module_importmap(name, css, context)?;
                         }
                     }
                 }
@@ -6262,13 +6322,17 @@ mod tests {
 
         let html = writer.get_content();
 
-        // CSS module should appear exactly once
+        // CSS module importmap should appear exactly once
         let count = html
-            .matches(r#"<style type="module" specifier="my-card">"#)
+            .matches(r#"<script type="importmap""#)
             .count();
         assert_eq!(
             count, 1,
-            "CSS module should be emitted once, got {count} in: {html}"
+            "CSS module importmap should be emitted once, got {count} in: {html}"
+        );
+        assert!(
+            html.contains(r#""my-card":"data:text/css,"#),
+            "Importmap must register my-card under a data: URI: {html}"
         );
 
         // Template content should appear twice (once per component instance)
@@ -6280,8 +6344,8 @@ mod tests {
 
         // CSS module should be in <body> (inline), not in <head>
         let css_pos = html
-            .find(r#"<style type="module""#)
-            .expect("CSS module missing");
+            .find(r#"<script type="importmap""#)
+            .expect("CSS module importmap missing");
         let body_pos = html.find("<body>").expect("<body> missing");
         assert!(
             css_pos > body_pos,
@@ -6328,7 +6392,7 @@ mod tests {
     #[test]
     fn test_non_module_strategy_no_css_in_head() {
         // When component_css is empty (Link/Style strategies), no
-        // <style type="module"> tags should appear in <head>.
+        // CSS module importmap tags should appear in <head>.
         let template = r#"<p>hello</p>"#;
 
         let mut fragments = HashMap::new();
@@ -6368,7 +6432,11 @@ mod tests {
 
         assert!(
             !html.contains(r#"<style type="module""#),
-            "Non-module strategy should not emit CSS modules in <head>: {html}"
+            "Non-module strategy should not emit legacy CSS module tags in <head>: {html}"
+        );
+        assert!(
+            !html.contains(r#"<script type="importmap""#),
+            "Non-module strategy should not emit CSS module importmaps in <head>: {html}"
         );
         assert!(
             html.contains("<p>hello</p>"),
@@ -6421,7 +6489,11 @@ mod tests {
         );
         assert!(
             !html.contains(r#"<style type="module""#),
-            "Style strategy should not emit module CSS in <head>: {html}"
+            "Style strategy should not emit legacy module CSS in <head>: {html}"
+        );
+        assert!(
+            !html.contains(r#"<script type="importmap""#),
+            "Style strategy should not emit CSS module importmaps in <head>: {html}"
         );
     }
 
@@ -6487,7 +6559,11 @@ mod tests {
         );
         assert!(
             !html.contains(r#"<style type="module""#),
-            "Link strategy should not emit module CSS: {html}"
+            "Link strategy should not emit legacy module CSS: {html}"
+        );
+        assert!(
+            !html.contains(r#"<script type="importmap""#),
+            "Link strategy should not emit CSS module importmaps: {html}"
         );
     }
 
@@ -6624,11 +6700,11 @@ mod tests {
 
         let html = writer.get_content();
 
-        // CSS module must be INSIDE the component tag (light DOM)
+        // CSS module importmap must be INSIDE the component tag (light DOM)
         let tag_open = html.find("<my-card>").expect("<my-card> missing");
         let css_pos = html
-            .find(r#"<style type="module""#)
-            .expect("CSS module missing");
+            .find(r#"<script type="importmap""#)
+            .expect("CSS module importmap missing");
         let tag_close = html.rfind("</my-card>").expect("</my-card> missing");
         assert!(
             css_pos > tag_open && css_pos < tag_close,
@@ -6690,10 +6766,8 @@ mod tests {
         let html = writer.get_content();
 
         assert!(
-            html.contains(
-                r#"<style type="module" specifier="dash-page">h1{font-size:2rem}</style>"#
-            ),
-            "Route component should have CSS module: {html}"
+            html.contains(r#""dash-page":"data:text/css,h1{font-size:2rem}""#),
+            "Route component should have CSS module importmap with data: URI: {html}"
         );
         assert!(
             html.contains("<h1>Dashboard</h1>"),
@@ -6866,8 +6940,8 @@ mod tests {
         // product-card CSS module IS in the output — reachable components need
         // their stylesheet definitions for client-side <if> activation.
         assert!(
-            html.contains(r#"specifier="product-card""#),
-            "reachable product-card CSS module should be emitted: {html}"
+            html.contains(r#""product-card":"data:text/css,"#),
+            "reachable product-card CSS module importmap should be emitted: {html}"
         );
 
         // app-shell and cart-panel SHOULD be in the output (they were rendered)
@@ -6881,16 +6955,14 @@ mod tests {
         );
     }
 
-    // ── CSP nonce on <style type="module"> ───────────────────────────
+    // ── CSP nonce on CSS module importmap ───────────────────────────
     //
     // When `RenderOptions::with_nonce(...)` is set, every inline
-    // `<style type="module">` definition emitted during SSR must include
-    // `nonce="VALUE"` so strict CSP `style-src 'nonce-...'` policies allow
-    // it. The without-nonce case is already covered by other CSS module
-    // tests (e.g. `test_css_module_emitted_for_route_components`) — those
-    // assert the exact `<style type="module" specifier="...">` substring,
-    // which double-serves as a regression guard that no nonce attribute
-    // leaks in when none is configured.
+    // `<script type="importmap">` definition emitted during SSR for a
+    // component CSS module must include `nonce="VALUE"` so strict CSP
+    // `script-src 'nonce-...'` policies allow it. The without-nonce case
+    // is already covered by other CSS module tests (e.g.
+    // `test_css_module_emitted_for_route_components`).
 
     #[test]
     fn test_css_module_emits_nonce_attribute_when_nonce_set() {
@@ -6940,9 +7012,9 @@ mod tests {
 
         assert!(
             html.contains(
-                r#"<style type="module" nonce="test-nonce-123" specifier="dash-page">h1{font-size:2rem}</style>"#
+                r#"<script type="importmap" nonce="test-nonce-123">{"imports":{"dash-page":"data:text/css,h1{font-size:2rem}"}}</script>"#
             ),
-            "CSS module tag should include nonce attribute in canonical order: {html}"
+            "CSS module importmap tag should include nonce attribute in canonical order: {html}"
         );
     }
 
@@ -7019,9 +7091,9 @@ mod tests {
 
         assert!(
             html.contains(
-                r#"<style type="module" nonce="test-nonce-123" specifier="product-card">.product-card{display:block}</style>"#
+                r#"<script type="importmap" nonce="test-nonce-123">{"imports":{"product-card":"data:text/css,.product-card{display:block}"}}</script>"#
             ),
-            "Unrendered (body_end) CSS module tag should include nonce attribute in canonical order: {html}"
+            "Unrendered (body_end) CSS module importmap tag should include nonce attribute in canonical order: {html}"
         );
     }
 
