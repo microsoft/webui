@@ -197,7 +197,12 @@ pub fn generate_f_template_with_css_options(
     if trimmed.starts_with("<template") {
         if let Some(close_pos) = trimmed.find('>') {
             output.push_str(&trimmed[..close_pos]);
-            if css_strategy == CssStrategy::Module && css_content.is_some() {
+            // For CssStrategy::Module the framework owns CSS adoption, but
+            // honor an existing dev-supplied attribute (e.g. multi-specifier).
+            if css_strategy == CssStrategy::Module
+                && css_content.is_some()
+                && !trimmed[..close_pos].contains("shadowrootadoptedstylesheets=")
+            {
                 output.push_str(" shadowrootadoptedstylesheets=\"");
                 output.push_str(tag_name);
                 output.push('"');
