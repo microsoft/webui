@@ -60,6 +60,7 @@
 //!    compiles each tracked component into a raw JS IIFE string.
 
 use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
+use crate::comment_policy;
 use crate::component_registry::Component;
 use crate::tag_scan::find_tag_close;
 use crate::{ConditionParser, DomStrategy, ParserOptions, Result};
@@ -1015,7 +1016,7 @@ fn compile_style_content(input: &str, meta: &mut TemplateSectionMeta) {
             if let Some(close) = input[index + 2..].find("*/") {
                 let end = index + 2 + close + 2;
                 let comment = &input[index..end];
-                if is_legal_css_comment(comment) {
+                if comment_policy::is_legal_css_comment(comment) {
                     meta.html.push_str(comment);
                 }
                 index = end;
@@ -1023,10 +1024,10 @@ fn compile_style_content(input: &str, meta: &mut TemplateSectionMeta) {
             }
         }
 
-        if is_css_line_comment_start(input, index) {
-            let end = find_css_line_comment_end(input, index + 2);
+        if comment_policy::is_css_line_comment_start(input, index) {
+            let end = comment_policy::find_css_line_comment_end(input, index + 2);
             let comment = &input[index..end];
-            if is_legal_css_comment(comment) {
+            if comment_policy::is_legal_css_comment(comment) {
                 meta.html.push_str(comment);
             }
             index = end;
@@ -1044,28 +1045,6 @@ fn compile_style_content(input: &str, meta: &mut TemplateSectionMeta) {
         meta.html.push(ch);
         index += ch.len_utf8();
     }
-}
-
-fn is_legal_css_comment(comment: &str) -> bool {
-    let trimmed = comment.trim_start();
-    trimmed.starts_with("//!")
-        || trimmed.starts_with("/*!")
-        || comment.contains("@license")
-        || comment.contains("@preserve")
-}
-
-fn is_css_line_comment_start(input: &str, index: usize) -> bool {
-    let bytes = input.as_bytes();
-    if index + 1 >= bytes.len() || bytes[index] != b'/' || bytes[index + 1] != b'/' {
-        return false;
-    }
-    index == 0 || bytes[index - 1].is_ascii_whitespace() || matches!(bytes[index - 1], b'{' | b';')
-}
-
-fn find_css_line_comment_end(input: &str, start: usize) -> usize {
-    input[start..]
-        .find('\n')
-        .map_or(input.len(), |offset| start + offset)
 }
 
 fn find_style_element_bounds(input: &str, index: usize) -> Option<(usize, usize, usize)> {

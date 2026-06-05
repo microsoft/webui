@@ -6,7 +6,7 @@
 //! This module uses tree-sitter-css to parse CSS files
 //! and process styles for components.
 
-use crate::{LegalComments, ParserError, Result};
+use crate::{comment_policy, LegalComments, ParserError, Result};
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
@@ -219,7 +219,7 @@ impl CssParser {
         Self::walk_css_tree(tree.root_node(), css_content, &mut context);
 
         tokens.retain(|t| !definitions.contains(t));
-        let stripped = Self::strip_ranges(css_content, comment_ranges.as_mut_slice());
+        let stripped = comment_policy::strip_ranges(css_content, comment_ranges.as_mut_slice());
         Ok((tokens, definitions, stripped))
     }
 
@@ -258,7 +258,7 @@ impl CssParser {
                 "declaration" => {
                     Self::collect_custom_property_definition(node, source, context.definitions);
                 }
-                kind if Self::is_comment_node(kind) => {
+                kind if comment_policy::is_css_comment_node(kind) => {
                     if let Some(ranges) = context.comment_ranges.as_deref_mut() {
                         Self::push_removable_comment_range(
                             source,
@@ -292,7 +292,7 @@ impl CssParser {
         let mut stack = vec![root];
 
         while let Some(node) = stack.pop() {
-            if Self::is_comment_node(node.kind()) {
+            if comment_policy::is_css_comment_node(node.kind()) {
                 Self::push_removable_comment_range(source, node, legal_comments, ranges);
             }
 
@@ -312,43 +312,10 @@ impl CssParser {
         ranges: &mut Vec<(usize, usize)>,
     ) {
         let comment = &source[node.start_byte()..node.end_byte()];
-        if legal_comments == LegalComments::Inline && Self::is_legal_comment(comment) {
+        if comment_policy::should_preserve_css_comment(comment, legal_comments) {
             return;
         }
         ranges.push((node.start_byte(), node.end_byte()));
-    }
-
-    fn is_legal_comment(comment: &str) -> bool {
-        let trimmed = comment.trim_start();
-        trimmed.starts_with("//!")
-            || trimmed.starts_with("/*!")
-            || comment.contains("@license")
-            || comment.contains("@preserve")
-    }
-
-    fn is_comment_node(kind: &str) -> bool {
-        matches!(kind, "comment" | "js_comment")
-    }
-
-    fn strip_ranges<'a>(source: &'a str, ranges: &mut [(usize, usize)]) -> Cow<'a, str> {
-        if ranges.is_empty() {
-            return Cow::Borrowed(source);
-        }
-
-        ranges.sort_unstable_by_key(|(start, _)| *start);
-        let mut stripped = String::with_capacity(source.len());
-        let mut last_end = 0usize;
-
-        for &(start, end) in ranges.iter() {
-            if start < last_end {
-                continue;
-            }
-            stripped.push_str(&source[last_end..start]);
-            last_end = end;
-        }
-
-        stripped.push_str(&source[last_end..]);
-        Cow::Owned(stripped)
     }
 
     /// If `node` is a `var()` call expression, extract its `plain_value`

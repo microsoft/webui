@@ -4,6 +4,7 @@
 //! Directive parser for WebUI template directives.
 //!
 //! This module handles parsing WebUI-specific directives like <for>, <if>, etc.
+mod comment_policy;
 mod component_registry;
 mod condition_parser;
 mod css_link;
@@ -1957,7 +1958,7 @@ impl HtmlParser {
     }
 
     fn strip_template_comments(&mut self, html: String) -> Result<String> {
-        if !html.contains("<!--") && !html.contains("/*") {
+        if !html.contains("<!--") && !html.contains("/*") && !html.contains("//") {
             return Ok(html);
         }
 
@@ -1986,7 +1987,7 @@ impl HtmlParser {
             }
         }
 
-        Ok(Self::strip_ranges(&html, ranges.as_mut_slice()).into_owned())
+        Ok(comment_policy::strip_ranges(&html, ranges.as_mut_slice()).into_owned())
     }
 
     /// Collect HTML comment ranges and `<style>` raw-text ranges in one
@@ -2023,30 +2024,6 @@ impl HtmlParser {
                 }
             }
         }
-    }
-
-    fn strip_ranges<'a>(
-        source: &'a str,
-        ranges: &mut [(usize, usize)],
-    ) -> std::borrow::Cow<'a, str> {
-        if ranges.is_empty() {
-            return std::borrow::Cow::Borrowed(source);
-        }
-
-        ranges.sort_unstable_by_key(|(start, _)| *start);
-        let mut stripped = String::with_capacity(source.len());
-        let mut last_end = 0usize;
-
-        for &(start, end) in ranges.iter() {
-            if start < last_end {
-                continue;
-            }
-            stripped.push_str(&source[last_end..start]);
-            last_end = end;
-        }
-
-        stripped.push_str(&source[last_end..]);
-        std::borrow::Cow::Owned(stripped)
     }
 
     /// Strip attributes starting with `@`, `:`, or `?` from the opening
@@ -4524,6 +4501,33 @@ mod tests {
         assert!(!template.contains("@click"));
         assert!(!template.contains("?hidden"));
         assert!(!template.contains("-->"));
+    }
+
+    #[test]
+    fn test_webui_plugin_strips_component_style_line_comments_before_metadata() {
+        let mut parser =
+            HtmlParser::with_plugin(Box::new(crate::plugin::webui::WebUIParserPlugin::new()));
+        parser
+            .component_registry_mut()
+            .register_component(
+                "x-style",
+                "<style>// {{ignored}}\n.x { color: red; }</style><div>hello</div>",
+                None,
+            )
+            .expect("register failed");
+
+        parser
+            .parse("index.html", "<x-style></x-style>")
+            .expect("parse failed");
+
+        let artifacts = parser.take_plugin_artifacts();
+        let ParserPluginArtifacts::ComponentTemplates(templates) = artifacts else {
+            panic!("expected component templates");
+        };
+        let template = &templates[0].1;
+        assert!(template.contains(".x { color: red; }"));
+        assert!(!template.contains("ignored"));
+        assert!(!template.contains("//"));
     }
 
     // ── Token collection tests ───────────────────────────────────────
