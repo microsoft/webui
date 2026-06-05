@@ -1958,7 +1958,10 @@ impl HtmlParser {
     }
 
     fn strip_template_comments(&mut self, html: String) -> Result<String> {
-        if !html.contains("<!--") && !html.contains("/*") && !html.contains("//") {
+        if !html.contains("<!--")
+            && !html.contains("/*")
+            && !Self::may_contain_style_line_comment(&html)
+        {
             return Ok(html);
         }
 
@@ -1976,7 +1979,7 @@ impl HtmlParser {
 
         for (style_start, style_end) in style_ranges {
             let css = &html[style_start..style_end];
-            if !css.contains("/*") {
+            if !css.contains("/*") && !css.contains("//") {
                 continue;
             }
             let css_ranges = self
@@ -1987,7 +1990,32 @@ impl HtmlParser {
             }
         }
 
+        if ranges.is_empty() {
+            return Ok(html);
+        }
+
         Ok(comment_policy::strip_ranges(&html, ranges.as_mut_slice()).into_owned())
+    }
+
+    fn may_contain_style_line_comment(html: &str) -> bool {
+        if !html.contains("//") {
+            return false;
+        }
+
+        let bytes = html.as_bytes();
+        let mut index = 0usize;
+        while index + 6 <= bytes.len() {
+            if bytes[index] == b'<'
+                && bytes.get(index + 1) != Some(&b'/')
+                && bytes[index + 1..]
+                    .get(..5)
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(b"style"))
+            {
+                return true;
+            }
+            index += 1;
+        }
+        false
     }
 
     /// Collect HTML comment ranges and `<style>` raw-text ranges in one
