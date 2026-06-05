@@ -187,8 +187,13 @@ Supported operators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`, `!`
 ```html
 <button @click="{handleClick()}">Click me</button>
 <input @keydown="{onKeydown(e)}" />
+<button @click="{selectItem(item.id, 'details', e)}">Select</button>
 <div @mouseenter="{onHover()}" @mouseleave="{onLeave()}">Hover</div>
 ```
+
+Event handler arguments can be `e`, dotted component or repeat-scope paths,
+string/number/boolean/null literals, or a mix of those. Nested JavaScript
+expressions are not parsed in templates.
 
 ### DOM references
 
@@ -766,17 +771,9 @@ togglePanel(): void { this.isPanelOpen = !this.isPanelOpen; }
 </for>
 ```
 
-Note: `remove(item.id)` does not work as written because template event
-handlers cannot pass arguments from loop scope. Instead, use a child
-component that emits a custom event:
-
-```html
-<for each="item in items">
-  <list-item id="{{item.id}}" text="{{item.text}}"
-    @remove-item="{onRemove(e)}">
-  </list-item>
-</for>
-```
+`remove(item.id)` receives the current loop item's id. The framework captures
+the active repeat scope during hydration and resolves the path when the click
+event fires.
 
 ### Boolean attribute styling
 

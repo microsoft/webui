@@ -167,11 +167,27 @@ Attach event handlers with `@event` syntax:
 <!-- Access the event object -->
 <input @keydown="{onKeydown(e)}" />
 
+<!-- Pass repeat-scope values and literals -->
+<for each="item in items">
+  <button @click="{selectItem(item.id, 'details', e)}">
+    {{item.name}}
+  </button>
+</for>
+
 <!-- Multiple events on one element -->
 <div @mouseenter="{onHover()}" @mouseleave="{onLeave()}">
   Hover me
 </div>
 ```
+
+Event handlers use method-call syntax only. Arguments can be:
+
+- `e` for the native DOM event
+- Dotted component or repeat-scope paths such as `item.id`
+- String, number, boolean, and `null` literals
+
+General JavaScript expressions and nested function calls are not parsed in
+templates. Compute those values in the component class or pass a supported path.
 
 ### DOM References
 
@@ -258,6 +274,27 @@ onKeydown(e: KeyboardEvent): void {
 
 ```html
 <input @keydown="{onKeydown(e)}" />
+```
+
+### Passing Values from Repeats
+
+Handlers inside a `<for>` block can receive the current item through a dotted
+path. The framework captures the active repeat scope during hydration and
+resolves the argument when the event fires:
+
+```typescript
+selectItem(id: string, e: MouseEvent): void {
+  e.preventDefault();
+  this.selectedId = id;
+}
+```
+
+```html
+<for each="item in items">
+  <button @click="{selectItem(item.id, e)}">
+    {{item.title}}
+  </button>
+</for>
 ```
 
 ### Custom Events and Parent-Child Communication

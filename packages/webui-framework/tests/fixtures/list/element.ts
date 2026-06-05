@@ -28,6 +28,7 @@ export class TestList extends WebUIElement {
     { id: '2', title: 'Beta', state: 'done', flagged: true },
   ];
   @observable lastLoopArg = '';
+  @observable afterRepeat = '';
   nextId = 3;
 
   addItem(): void {
@@ -64,6 +65,10 @@ export class TestList extends WebUIElement {
 
   clearItems(): void {
     this.items = [];
+  }
+
+  setAfterRepeat(): void {
+    this.afterRepeat = 'After';
   }
 
   selectItem(id: string): void {

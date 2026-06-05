@@ -694,7 +694,12 @@ export class WebUIElement extends HTMLElement {
           const textNode = document.createTextNode('');
           instance.texts.push({ node: textNode, parts, scope, raw: true, rawParent });
         } else {
-          const textNode = this.$findSSRText(ssrParent, tplParent, beforeIndex);
+          let textNode = this.$findSSRText(ssrParent, tplParent, beforeIndex);
+          if (!textNode) {
+            textNode = document.createTextNode('');
+            const insertRef = this.$findSSRSlotRef(ssrParent, tplParent, beforeIndex);
+            ssrParent.insertBefore(textNode, insertRef);
+          }
           if (textNode) instance.texts.push({ node: textNode, parts, scope });
         }
       }
@@ -787,7 +792,11 @@ export class WebUIElement extends HTMLElement {
 
         const blockMeta = this.$block(blockIndex);
         const { attrMap, rootBindings } = this.$repeatMaps(blockIndex, itemVar);
-        const rootTag = blockMeta ? this.$rootTag(blockMeta) : null;
+        const blockTplDom = blockMeta ? getTemplateDom(blockMeta) : null;
+        const rootTag = blockMeta && blockTplDom?.childNodes.length === 1 && blockTplDom.children.length === 1
+          ? this.$rootTag(blockMeta)
+          : null;
+        const keyPath = Object.values(attrMap)[0];
 
         // Find the next <!--wr--> marker in ssrParent (after any previously found one)
         const marker = this.$findMarker(ssrParent, MARKER_REPEAT_START, lastRepMarker);
@@ -814,15 +823,13 @@ export class WebUIElement extends HTMLElement {
           ? collectItemMarkers(anchor)
           : { items: [] as Comment[], end: null as Comment | null };
 
-        if (blockMeta && items.length > 0 && anchor.parentNode && itemMarkers.length > 0) {
+        if (blockMeta && blockTplDom && items.length > 0 && anchor.parentNode && itemMarkers.length > 0) {
           if (itemMarkers.length !== items.length) {
             console.warn(
               `[webui] hydration: repeat marker count (${itemMarkers.length}) ≠ data length (${items.length}) for "${collection}"`,
             );
           }
           const firstKey = Object.keys(attrMap)[0];
-          const blockTplDom = getTemplateDom(blockMeta);
-
           const limit = Math.min(itemMarkers.length, items.length);
           for (let j = 0; j < limit; j++) {
             const itemValue = items[j];
@@ -838,68 +845,25 @@ export class WebUIElement extends HTMLElement {
                 repeatInsts.push({ key, value: itemValue, instance: childInstance });
               }
             } else {
-              // Text-only repeat item — wire nested conditionals from markers
-              const inst: TemplateInstance = {
-                scope: itemScope, nodes: [],
-                texts: EMPTY_ARR as unknown as TextBinding[],
-                attrs: EMPTY_ARR as unknown as AttrBinding[],
-                conds: [],
-                repeats: EMPTY_ARR as unknown as RepeatBinding[],
-              };
-
-              if (blockMeta.c) {
-                // Walk between this <!--wi--> and the next boundary to find <!--wc--> markers
-                let cursor: Node | null = itemMarkers[j].nextSibling;
-                const nextBound = j + 1 < itemMarkers.length ? itemMarkers[j + 1] : endMarker;
-                const itemParent = itemMarkers[j].parentNode;
-
-                for (let ci = 0; ci < blockMeta.c.length; ci++) {
-                  const [condCond, condBlockIndex] = blockMeta.c[ci];
-
-                  // Find <!--wc--> within this item's range
-                  let condAnchor: Comment | null = null;
-                  while (cursor && cursor !== nextBound) {
-                    if (cursor.nodeType === 8 && (cursor as Comment).data === MARKER_COND_START) {
-                      condAnchor = cursor as Comment;
-                      cursor = cursor.nextSibling;
-                      break;
-                    }
-                    cursor = cursor.nextSibling;
-                  }
-                  if (!condAnchor) {
-                    condAnchor = document.createComment('');
-                    if (itemParent) itemParent.insertBefore(condAnchor, cursor ?? null);
-                  }
-
-                  const condMet = condCond[0](this.$resolver, itemScope);
-                  let condInstance: TemplateInstance | null = null;
-
-                  if (condMet) {
-                    const condBlockMeta = this.$block(condBlockIndex);
-                    if (condBlockMeta) {
-                      condInstance = this.$hydrateCondContent(condAnchor, condBlockMeta, itemScope);
-                    }
-                  }
-
-                  // Remove <!--/wc--> end marker and advance cursor past it
-                  const lastNode = condInstance ? condInstance.nodes[condInstance.nodes.length - 1] : condAnchor;
-                  const endM = lastNode?.nextSibling;
-                  if (endM && endM.nodeType === 8 && (endM as Comment).data === MARKER_COND_END) {
-                    cursor = endM.nextSibling;
-                    endM.parentNode?.removeChild(endM);
-                  } else {
-                    cursor = lastNode?.nextSibling ?? null;
-                  }
-
-                  inst.conds.push({
-                    condition: condCond, blockIndex: condBlockIndex,
-                    anchor: condAnchor, scope: itemScope,
-                    instance: condInstance,
-                  });
-                }
+              const itemParent = itemMarkers[j].parentNode;
+              const nextBound = j + 1 < itemMarkers.length ? itemMarkers[j + 1] : endMarker;
+              const wrapper = document.createElement('div');
+              let cursor = itemMarkers[j].nextSibling;
+              while (cursor && cursor !== nextBound) {
+                const next = cursor.nextSibling;
+                wrapper.appendChild(cursor);
+                cursor = next;
               }
-
-              repeatInsts.push({ key: String(j), value: itemValue, instance: inst });
+              const inst = this.$hydrate(wrapper, blockMeta, blockTplDom, itemScope);
+              inst.nodes = childNodesArray(wrapper);
+              let afterNode: Node = itemMarkers[j];
+              for (let nodeIndex = 0; nodeIndex < inst.nodes.length; nodeIndex++) {
+                const node = inst.nodes[nodeIndex];
+                itemParent?.insertBefore(node, afterNode.nextSibling);
+                afterNode = node;
+              }
+              const key = keyPath ? String(dotWalk(itemValue, keyPath, 0) ?? '') : null;
+              repeatInsts.push({ key, value: itemValue, instance: inst });
             }
           }
 
@@ -1057,6 +1021,18 @@ export class WebUIElement extends HTMLElement {
     return null;
   }
 
+  /** Find the SSR insertion reference for an empty text slot. */
+  private $findSSRSlotRef(ssrParent: Node, tplParent: Node, beforeIndex: number): Node | null {
+    const ordinals = getTplOrdinals(tplParent);
+    const children = tplParent.childNodes;
+    for (let i = beforeIndex; i < children.length; i++) {
+      const entry = ordinals.get(i);
+      if (!entry) continue;
+      return findByOrdinal(ssrParent, entry[0], entry[1]);
+    }
+    return null;
+  }
+
   /** Extract root tag name from block metadata. */
   private $rootTag(meta: TemplateBlockMeta): string | null {
     let cached = rootTagCache.get(meta);
@@ -1146,13 +1122,24 @@ export class WebUIElement extends HTMLElement {
   ): void {
     const method = (this as Record<string, unknown>)[handlerName];
     if (typeof method !== 'function') return;
+    if (args.length === 0) {
+      target.addEventListener(eventName, () => {
+        (method as Function).call(this);
+      });
+      return;
+    }
+    if (args.length === 1 && args[0][0] === 'e') {
+      target.addEventListener(eventName, (event) => {
+        (method as Function).call(this, event);
+      });
+      return;
+    }
     target.addEventListener(eventName, (event) => {
       (method as Function).apply(this, this.$resolveEventArgs(args, event, scope));
     });
   }
 
   private $resolveEventArgs(args: CompiledEventArgs, event: Event, scope?: ScopeFrame): unknown[] {
-    if (typeof args === 'number') return args ? [event] : [];
     const resolved: unknown[] = [];
     for (let i = 0; i < args.length; i++) {
       resolved.push(this.$resolveEventArg(args[i], event, scope));
