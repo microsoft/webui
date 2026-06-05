@@ -48,7 +48,7 @@ export type CompiledEventArg =
   | ['n', number]
   | ['b', number]
   | ['z'];
-export type CompiledEventArgs = CompiledEventArg[] | number;
+export type CompiledEventArgs = CompiledEventArg[];
 export type CompiledEventMeta = [name: string, handler: string, args: CompiledEventArgs, target: TemplateNodePath];
 
 export interface TemplateBlockMeta {

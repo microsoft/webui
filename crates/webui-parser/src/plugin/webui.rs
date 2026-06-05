@@ -10,7 +10,7 @@
 //! a single `<script>` tag; during SPA navigation the router evaluates
 //! them directly. Each metadata object contains
 //! **marker-free static HTML** plus locator arrays for client-created DOM
-//! (`tx`, `ag`, `cl`, `rl`, `el`) and semantic arrays (`a`, `c`, `r`, `e`,
+//! (`tx`, `ag`, `cl`, `rl`) and semantic arrays (`a`, `c`, `r`, `e`,
 //! `re`, `b`). The client runtime resolves those locators once and then
 //! patches direct node references — **no template string parsing, no regex,
 //! no DOM scanning** on the client-created path.
@@ -25,11 +25,10 @@
 //!   ag: [[[0], 0, 1]],
 //!   c: [[[1, "state", 3, "'done'"], 0]],
 //!   cl: [[[0], 1]],
-//!   e: [["click", "onClick", 0]],
-//!   el: [[0]],
+//!   e: [["click", "onClick", [], [0]]],
 //!   b: [{ h: "<span class=\"check\">✓</span>" }],
 //!   sa: "my-component",
-//!   re: [["submit", "onSubmit", 1]],
+//!   re: [["submit", "onSubmit", [["e"]]]],
 //! };
 //! ```
 //!
@@ -337,7 +336,7 @@ enum CompiledAttrPart {
 /// | `<for each="v in coll">body</for>`    | `r[]` + `rl[]` + `b[]`     | block removed; anchor slot stored |
 /// | `<link>` / `<style>` child nodes      | `h`                        | preserved in static HTML          |
 /// | module adopted stylesheet specifier   | `sa`                       | stored from `<template>` wrapper  |
-/// | `@event="{handler(e)}"`               | `e[]` + `el[]`             | element kept marker-free          |
+/// | `@event="{handler(e)}"`               | `e[]`                      | element kept marker-free          |
 /// | `w-ref="name"` / `w-ref={name}`       | *(stays in HTML)*          | *(unchanged)*                     |
 /// | `<outlet />` / `<outlet>`             | *(stays in HTML)*          | `<outlet></outlet>`               |
 pub fn generate_compiled_template(tag_name: &str, html_content: &str) -> String {
@@ -2016,41 +2015,54 @@ fn parse_event_handler(raw_value: &str) -> EventHandler {
                 Some(close) if close > paren => close,
                 _ => return EventHandler::Invalid(inner.to_string()),
             };
-            let handler_name = inner[..paren].trim();
-            if handler_name.is_empty() {
+            if !inner[close + 1..].trim().is_empty() {
                 return EventHandler::Invalid(inner.to_string());
             }
-            EventHandler::Valid(
-                handler_name.to_string(),
-                parse_event_args(&inner[paren + 1..close]),
-            )
+            let handler_name = inner[..paren].trim();
+            if !is_valid_identifier(handler_name) {
+                return EventHandler::Invalid(inner.to_string());
+            }
+            let Some(args) = parse_event_args(&inner[paren + 1..close]) else {
+                return EventHandler::Invalid(inner.to_string());
+            };
+            EventHandler::Valid(handler_name.to_string(), args)
         }
         None => EventHandler::Invalid(inner.to_string()),
     }
 }
 
-fn parse_event_args(raw_args: &str) -> Vec<EventArg> {
-    split_event_args(raw_args)
-        .into_iter()
-        .filter_map(|arg| parse_event_arg(arg.trim()))
-        .collect()
+fn parse_event_args(raw_args: &str) -> Option<Vec<EventArg>> {
+    if raw_args.trim().is_empty() {
+        return Some(Vec::new());
+    }
+
+    let raw_parts = split_event_args(raw_args)?;
+    let mut args = Vec::with_capacity(raw_parts.len());
+    for arg in raw_parts {
+        let trimmed = arg.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        args.push(parse_event_arg(trimmed)?);
+    }
+    Some(args)
 }
 
-fn split_event_args(raw_args: &str) -> Vec<&str> {
+fn split_event_args(raw_args: &str) -> Option<Vec<&str>> {
     let mut args = Vec::new();
     let mut start = 0usize;
     let mut quote: Option<u8> = None;
     let mut escaped = false;
     for (idx, byte) in raw_args.bytes().enumerate() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if byte == b'\\' {
-            escaped = true;
-            continue;
-        }
         if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if byte == b'\\' {
+                escaped = true;
+                continue;
+            }
             if byte == q {
                 quote = None;
             }
@@ -2065,8 +2077,11 @@ fn split_event_args(raw_args: &str) -> Vec<&str> {
             start = idx + 1;
         }
     }
+    if quote.is_some() || escaped {
+        return None;
+    }
     args.push(&raw_args[start..]);
-    args
+    Some(args)
 }
 
 fn parse_event_arg(arg: &str) -> Option<EventArg> {
@@ -2088,10 +2103,13 @@ fn parse_event_arg(arg: &str) -> Option<EventArg> {
     if let Some(value) = parse_quoted_event_string(arg) {
         return Some(EventArg::String(value));
     }
+    if is_quoted_event_arg_start(arg) {
+        return None;
+    }
     if is_number_literal(arg) {
         return Some(EventArg::Number(arg.to_string()));
     }
-    Some(EventArg::Path(arg.to_string()))
+    is_valid_event_path(arg).then(|| EventArg::Path(arg.to_string()))
 }
 
 fn parse_quoted_event_string(arg: &str) -> Option<String> {
@@ -2116,6 +2134,49 @@ fn is_number_literal(arg: &str) -> bool {
         && arg
             .bytes()
             .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'+' | b'e' | b'E'))
+}
+
+fn is_quoted_event_arg_start(arg: &str) -> bool {
+    matches!(arg.as_bytes().first(), Some(b'"' | b'\''))
+}
+
+fn is_valid_event_path(path: &str) -> bool {
+    let mut parts = path.split('.');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if !is_valid_identifier(first) {
+        return false;
+    }
+    for part in parts {
+        if part.is_empty() || (!is_valid_identifier(part) && !is_ascii_digits(part)) {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_valid_identifier(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    if !is_identifier_start(first) {
+        return false;
+    }
+    bytes.all(is_identifier_continue)
+}
+
+fn is_identifier_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$'
+}
+
+fn is_identifier_continue(byte: u8) -> bool {
+    is_identifier_start(byte) || byte.is_ascii_digit()
+}
+
+fn is_ascii_digits(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn extract_single_handlebars(value: &str) -> Option<String> {
@@ -2483,7 +2544,7 @@ mod tests {
         );
         assert_no_client_markers(&result);
         assert!(result.contains(r#"h:"<p>hi</p>""#));
-        assert!(result.contains(r#",re:[["click","onClick",0]]"#));
+        assert!(result.contains(r#",re:[["click","onClick",[]]]"#));
     }
 
     #[test]
@@ -2612,7 +2673,9 @@ mod tests {
             .unwrap();
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
-        assert!(templates[0].1.contains(r#",re:[["click","onClick",1]]"#));
+        assert!(templates[0]
+            .1
+            .contains(r#",re:[["click","onClick",[["e"]]]]"#));
     }
 
     #[test]
@@ -3076,6 +3139,58 @@ mod tests {
                         EventArg::Bool(false),
                         EventArg::Null,
                     ]
+        ));
+    }
+
+    #[test]
+    fn test_parse_event_handler_rejects_trailing_tokens() {
+        assert!(matches!(
+            parse_event_handler("{onClick(e)} trailing"),
+            EventHandler::Invalid(ref raw) if raw == "{onClick(e)} trailing"
+        ));
+        assert!(matches!(
+            parse_event_handler("{onClick(e) trailing}"),
+            EventHandler::Invalid(ref raw) if raw == "onClick(e) trailing"
+        ));
+    }
+
+    #[test]
+    fn test_parse_event_handler_rejects_empty_args() {
+        assert!(matches!(
+            parse_event_handler("{onClick(, e)}"),
+            EventHandler::Invalid(ref raw) if raw == "onClick(, e)"
+        ));
+        assert!(matches!(
+            parse_event_handler("{onClick(e,)}"),
+            EventHandler::Invalid(ref raw) if raw == "onClick(e,)"
+        ));
+    }
+
+    #[test]
+    fn test_parse_event_handler_rejects_malformed_args() {
+        assert!(matches!(
+            parse_event_handler("{onClick('unterminated)}"),
+            EventHandler::Invalid(ref raw) if raw == "onClick('unterminated)"
+        ));
+        assert!(matches!(
+            parse_event_handler("{onClick(other())}"),
+            EventHandler::Invalid(ref raw) if raw == "onClick(other())"
+        ));
+        assert!(matches!(
+            parse_event_handler("{onClick(count + 1)}"),
+            EventHandler::Invalid(ref raw) if raw == "onClick(count + 1)"
+        ));
+    }
+
+    #[test]
+    fn test_parse_event_handler_rejects_invalid_handler_name() {
+        assert!(matches!(
+            parse_event_handler("{handler.name()}"),
+            EventHandler::Invalid(ref raw) if raw == "handler.name()"
+        ));
+        assert!(matches!(
+            parse_event_handler("{1handler()}"),
+            EventHandler::Invalid(ref raw) if raw == "1handler()"
         ));
     }
 

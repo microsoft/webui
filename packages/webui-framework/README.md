@@ -183,7 +183,7 @@ The WebUI plugin compiles these template features into runtime metadata:
 
 - text bindings: `{{title}}`
 - attribute bindings: `href="{{item.href}}"`
-- event handlers: `@click="{onClick()}"`
+- event handlers: `@click="{onClick()}"`, `@click="{onSelect(item.id, e)}"`
 - refs: `w-ref="addInput"`
 - conditionals: `<if condition="...">`
 - repeats: `<for each="item in items">`
@@ -244,10 +244,10 @@ resource-constrained devices.
    and cached as a `DocumentFragment`.  Every subsequent instance uses
    `cloneNode(true)` — DOM cloning is significantly faster than HTML parsing.
 
-4. **Delegate events, don't multiply listeners.**
-   Event bindings use delegation: one listener per event type on the
-   component root, with handler names resolved from compiled paths.  200
-   items × 5 events = 1 delegated listener, not 1000 closures.
+4. **Resolve event targets once.**
+   Event bindings store their target path in compiled metadata.  Hydration
+   resolves each target once, installs the listener directly, and captures the
+   active repeat scope so handler arguments like `item.id` are read at dispatch.
 
 5. **Single-pass hydration via path mapping.**
    SSR DOM is matched to compiled template bindings through
@@ -285,7 +285,8 @@ When contributing to the runtime, avoid these patterns:
   pre-resolved at hydration time via compiled path mapping.
 - **Don't use recursion in hot paths.** Condition evaluation and DOM walks
   use iterative stacks.
-- **Don't create closures per binding.** Use delegation or shared handlers.
+- **Don't allocate on the update path for events.** Event listeners are created
+  once during hydration and should not trigger extra DOM lookup work later.
 - **Don't re-parse template HTML.** Always clone from the cached fragment.
 
 ---
@@ -460,7 +461,7 @@ interface TemplateMeta {
 Template:
 ```html
 <h1>{{title}}</h1>
-<button @click="increment">Count: {{count}}</button>
+<button @click="{increment()}">Count: {{count}}</button>
 ```
 
 Compiled metadata:
@@ -471,8 +472,7 @@ Compiled metadata:
     [[[0], 0], [["title"]]],           // slot in <h1>, dynamic "title"
     [[[1], 1], ["Count: ", ["count"]]]  // slot in <button>, static + dynamic
   ],
-  e: [["click", "increment", 0]],      // click → increment, no event arg
-  el: [[1]]                            // event target is child[1] (button)
+  e: [["click", "increment", [], [1]]] // click -> increment, no event args
 }
 ```
 

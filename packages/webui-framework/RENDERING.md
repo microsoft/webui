@@ -124,8 +124,7 @@ The compiler emits one `TemplateMeta` per component, delivered as a JS IIFE insi
     cl: [/* conditional anchor slots */],
     r:  [/* repeat blocks */],
     rl: [/* repeat anchor slots */],
-    e:  [/* event bindings */],
-    el: [/* event target paths */],
+    e:  [/* event bindings and target paths */],
     b:  [/* nested block table */],
     sa: 'todo-app',
     sd: 0,
@@ -141,7 +140,7 @@ The compiler emits one `TemplateMeta` per component, delivered as a JS IIFE insi
 | `a` / `ag` | Attribute bindings and the elements they target. |
 | `c` / `cl` | Conditional blocks and their anchor slot paths. |
 | `r` / `rl` | Repeat blocks and their anchor slot paths. |
-| `e` / `el` | Event bindings and their target paths. |
+| `e` | Event bindings with handler argument specs and target paths. |
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
 | `sa` | Adopted-stylesheet specifier (CSS module). |
 | `sd` | Truthy when client-created instances should attach a shadow root. |
@@ -307,7 +306,7 @@ On reactive flip:
 
 Two flavours:
 
-- **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `[event, handler, argSpecs, targetPath]`. Handlers are looked up by name on the component instance, and `argSpecs` are resolved against the captured render scope at dispatch time.
+- **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `[event, handler, argSpecs, targetPath]`. Hydration resolves `targetPath` to the real element, installs the listener there, and captures the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time.
 - **Root events** (`re` field): attached to the host element rather than the shadow root. Used for `@custom-event` on the component's `<template>` root.
 
 Listener cleanup is automatic. `$destroy` (called from `disconnectedCallback` via a microtask, so repeat reconciliation moves don't trigger teardown) removes everything wired during `$mount`.

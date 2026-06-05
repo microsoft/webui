@@ -81,7 +81,7 @@ After the browser renders the server HTML, JavaScript loads and Web Components *
 1. **Custom elements upgrade** - the browser calls `connectedCallback` for each registered Web Component
 2. **Shadow root detection** - the framework finds the existing Declarative Shadow DOM root (it does **not** recreate the DOM)
 3. **Bindings wired** - template expressions (`{{count}}`, `?disabled`) are connected to class properties
-4. **Events connected** - `@click`, `@keydown`, and other event handlers are attached
+4. **Events connected** - `@click`, `@keydown`, and other handlers are attached with their compiled argument scopes
 5. **Reactive state activated** - `@observable` properties become live; changes trigger targeted DOM updates
 
 ### Islands Architecture
