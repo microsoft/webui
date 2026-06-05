@@ -6,6 +6,7 @@
 //! This crate provides functionality to process and render WebUI protocols
 //! into final HTML output based on provided data.
 
+pub(crate) mod css_module;
 pub(crate) mod html_encode;
 pub mod plugin;
 pub mod route_handler;
@@ -730,91 +731,33 @@ impl WebUIHandler {
     /// Emit a `<script type="importmap">` tag that registers a component's
     /// CSS module under its specifier via a `data:text/css,…` URI.
     ///
-    /// Why: the legacy emission shape `<style type="module" specifier="X">`
-    /// requires a browser-side CSS-module-style-tag pipeline that not all
-    /// host browsers ship. Import maps with data URIs are a standards-only
-    /// workaround that works the same way (the browser resolves the CSS
-    /// module by specifier from the importmap) without depending on the
-    /// `<style type="module">` shape.
+    /// Requires Multiple Import Maps (Chrome 133+); each call emits an
+    /// independent importmap that the browser merges at the document
+    /// level. The per-render CSP nonce is applied when set (importmap
+    /// scripts honor `script-src`).
     ///
-    /// Produces, for a component `my-comp` with CSS `span{color:blue;}`:
-    /// `<script type="importmap" nonce="...">{"imports":{"my-comp":"data:text/css,span%7Bcolor:blue;%7D"}}</script>`.
-    ///
-    /// CSP: importmap scripts are subject to `script-src`, so the per-render
-    /// nonce is applied identically to the legacy `<style type="module">`
-    /// path and to the bootstrap `<script>` emit.
-    ///
-    /// Multiple Import Maps must be supported by the host browser
-    /// (Chrome 133+). Each call emits an independent importmap; the
-    /// browser merges them at the document level.
+    /// Example for `my-comp` with CSS `span{color:blue;}`:
+    /// `<script type="importmap" nonce="...">{"imports":{"my-comp":"data:text/css,span{color:blue;}"}}</script>`
     fn emit_css_module_importmap(
         &self,
         specifier: &str,
         css: &str,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        // Percent-encode the CSS source so it survives:
-        //   - the JSON string container (we still need to JSON-escape the
-        //     surrounding URI, which serde_json handles for us below),
-        //   - the data: URI parser in the browser (which treats `#` as a
-        //     fragment delimiter and `%` as an escape).
-        // We only encode characters that would actually mis-parse —
-        // everything else stays human-readable to keep DevTools' importmap
-        // view legible.
-        fn percent_encode_css_for_data_uri(css: &str) -> String {
-            use std::fmt::Write as _;
-            let mut out = String::with_capacity(css.len());
-            for b in css.bytes() {
-                let needs_encoding = matches!(
-                    b,
-                    b'%' | b'#' | b'"' | b' ' | b'\t' | b'\n' | b'\r'
-                ) || b < 0x20
-                    || b >= 0x80;
-                if needs_encoding {
-                    let _ = write!(&mut out, "%{:02X}", b);
-                } else {
-                    out.push(char::from(b));
-                }
-            }
-            out
-        }
-
-        let data_uri = format!("data:text/css,{}", percent_encode_css_for_data_uri(css));
-        // Routing the body through serde_json guarantees correct JSON
-        // escaping of the specifier (which may contain characters that
-        // need escaping in JSON) and of the data URI.
-        let body = serde_json::json!({
-            "imports": {
-                specifier: data_uri,
-            },
-        })
-        .to_string();
-
-        context.writer.write("<script type=\"importmap\"")?;
-        if let Some(nonce) = context.nonce {
-            context.writer.write(" nonce=\"")?;
-            context.writer.write(nonce)?;
-            context.writer.write("\"")?;
-        }
-        context.writer.write(">")?;
-        context.writer.write(&body)?;
-        context.writer.write("</script>")?;
+        let tag = crate::css_module::build_importmap_tag(specifier, css, context.nonce);
+        context.writer.write(&tag)?;
         Ok(())
     }
 
-    /// Emit a `<script type="importmap">` tag for a component's CSS module
-    /// definition (data-URI form — see `emit_css_module_importmap`).
+    /// Emit a component's CSS module importmap on its first render
+    /// (deduped by `rendered_components`) into the component's light DOM,
+    /// so the browser registers it under the component's specifier
+    /// before the shadow root template is parsed. See
+    /// [`Self::emit_css_module_importmap`] for the emitted shape.
     ///
-    /// Only emits on first render of this component (deduped by
-    /// `rendered_components`). Placed in the component's light DOM so the
-    /// browser registers the CSS module under the component's specifier
-    /// before the shadow root template is parsed:
-    /// `<my-comp><script type="importmap" nonce="...">{"imports":{"my-comp":"data:text/css,..."}}</script><template ...>`.
-    ///
-    /// This keeps SSR output lean — only components actually rendered on the
-    /// current route get their style definitions. Components on other routes
-    /// receive their definitions via `templateStyles` during SPA partial
-    /// navigation.
+    /// Only components rendered on the current route get inline
+    /// definitions; others receive theirs via `templateStyles` during
+    /// SPA partial navigation.
     fn emit_css_module(
         &self,
         component: &webui_protocol::WebUIFragmentComponent,
@@ -915,11 +858,8 @@ impl WebUIHandler {
         component: &webui_protocol::WebUIFragmentComponent,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        // Emit CSS module into the component's light DOM on first encounter.
-        // Only rendered components get their CSS module importmap definition
-        // during SSR. Components on other routes will receive theirs via the
-        // templateStyles array in the SPA partial response instead.
-        // Produces: <my-comp><script type="importmap" nonce="...">{"imports":{"my-comp":"data:text/css,..."}}</script><template ...>
+        // Emit the component's CSS module importmap into its light DOM
+        // on first encounter (see `emit_css_module`).
         if !context.rendered_components.contains(&component.fragment_id) {
             self.emit_css_module(component, context)?;
         }
@@ -1085,16 +1025,12 @@ impl WebUIHandler {
             }
 
             // Emit CSS <link> tags in <head> for Link-strategy components.
-            //
-            // The protocol carries css_strategy and dom_strategy set at build
-            // time. For components with a non-empty css_href:
+            // For components with a non-empty css_href:
             //   Link + Shadow → <link rel="preload"> (stylesheet is in shadow root)
             //   Link + Light  → <link rel="stylesheet"> (no shadow root)
             //
-            // Style-strategy embeds CSS inside the shadow DOM template.
-            // Module-strategy emits a <script type="importmap"> data-URI
-            // inline in each component's light DOM during rendering (via
-            // emit_css_module).
+            // Style and Module strategies emit their CSS during component
+            // rendering (shadow-DOM template / importmap respectively).
             let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
             let is_shadow = context.protocol.dom_strategy() == webui_protocol::DomStrategy::Shadow;
 
@@ -1176,10 +1112,8 @@ impl WebUIHandler {
                     &mut context.route_cache,
                 );
 
-                // Emit CSS module definitions for reachable-but-unrendered components.
-                // Rendered components already got their importmap inline during the
-                // render pass (via emit_css_module). Unrendered components need their
-                // definitions here so the framework can adopt them when the <if>
+                // Emit CSS module importmaps for reachable-but-unrendered
+                // components so the framework can adopt them when an `<if>`
                 // condition flips true client-side.
                 for name in &reachable {
                     if !context.rendered_components.contains(name) {
@@ -6323,9 +6257,7 @@ mod tests {
         let html = writer.get_content();
 
         // CSS module importmap should appear exactly once
-        let count = html
-            .matches(r#"<script type="importmap""#)
-            .count();
+        let count = html.matches(r#"<script type="importmap""#).count();
         assert_eq!(
             count, 1,
             "CSS module importmap should be emitted once, got {count} in: {html}"

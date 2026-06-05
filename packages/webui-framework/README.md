@@ -624,7 +624,7 @@ The framework supports three CSS delivery strategies:
 |----------|-------------|
 | **Link** | `<link>` tag baked into `meta.h` — loaded by the browser naturally |
 | **Inline** | `<style>` tag baked into `meta.h` — no external request |
-| **Module** | `<style type="module" specifier="tag-name">` in the HTML payload, parsed into a `CSSStyleSheet` and applied via `adoptedStyleSheets` for shadow DOM isolation |
+| **Module** | `<script type="importmap">{"imports":{"tag-name":"data:text/css,..."}}</script>` in the HTML payload registers the CSS as a module under `tag-name`. The framework imports it via `import(tag, { with: { type: 'css' } })` and applies the resulting `CSSStyleSheet` via `adoptedStyleSheets` for shadow DOM isolation |
 
 CSS module stylesheets are cached so each component instance adopts the same
 parsed sheet without re-parsing CSS.  The `meta.sa` field specifies the

@@ -494,12 +494,12 @@ mod tests {
             .collect::<String>();
 
         assert!(
-            combined_styles.contains(r#"<style type="module" specifier="mp-product-grid">"#),
-            "module partials should return module CSS definitions separately: {combined_styles}"
+            combined_styles.contains(r#""mp-product-grid":"data:text/css,"#),
+            "module partials should return mp-product-grid CSS as an importmap entry: {combined_styles}"
         );
         assert!(
-            !combined_templates.contains(r#"<style type="module" specifier="mp-product-grid">"#),
-            "template scripts should not be prefixed with module styles: {combined_templates}"
+            !combined_templates.contains(r#""mp-product-grid":"data:text/css,"#),
+            "template scripts should not embed module CSS importmap entries: {combined_templates}"
         );
         assert!(
             !combined_templates.contains(r#"<link rel="stylesheet" href="/mp-product-grid.css""#),
@@ -550,38 +550,37 @@ mod tests {
 
         // mp-cart-panel is a non-route sibling inside mp-app whose FNV-1a hash
         // collides with mp-app (both map to bit 218). The inventory filter must
-        // not drop it due to this collision. The style is emitted inline in the
-        // component's light DOM during SSR rendering.
+        // not drop it due to this collision. The CSS is emitted via a
+        // <script type="importmap"> tag in the component's light DOM during SSR.
         assert!(
-            html.contains(r#"<style type="module""#),
-            "SSR output should contain at least one inline <style type=\"module\"> tag: {html}"
+            html.contains(r#"<script type="importmap""#),
+            "SSR output should contain at least one inline <script type=\"importmap\"> tag: {html}"
         );
         assert!(
-            html.contains(r#"specifier="mp-cart-panel""#),
-            "mp-cart-panel module style should be present in SSR output for /about"
+            html.contains(r#""mp-cart-panel":"data:text/css,"#),
+            "mp-cart-panel CSS module should be registered via importmap in SSR output for /about"
         );
 
-        // Locate the mp-cart-panel <style type="module"> opening tag and verify
-        // it carries a CSP nonce that matches the value in the response's
-        // Content-Security-Policy header. This guards the end-to-end wiring
-        // from `RenderOptions::with_nonce` through to the inline style tag,
-        // which strict `style-src 'nonce-...'` policies require.
-        let cart_panel_specifier = r#"specifier="mp-cart-panel""#;
-        let specifier_pos = html
-            .find(cart_panel_specifier)
-            .expect("mp-cart-panel specifier substring located above");
-        let tag_start = html[..specifier_pos]
-            .rfind("<style")
-            .expect("specifier must be preceded by a <style opening tag");
-        let tag_end = specifier_pos
-            + html[specifier_pos..]
+        // Locate the <script type="importmap"> tag that registers mp-cart-panel
+        // and verify it carries a CSP nonce matching the response's
+        // Content-Security-Policy header. Strict `script-src 'nonce-...'`
+        // policies require this nonce on every importmap script.
+        let cart_panel_entry = r#""mp-cart-panel":"data:text/css,"#;
+        let entry_pos = html
+            .find(cart_panel_entry)
+            .expect("mp-cart-panel importmap entry located above");
+        let tag_start = html[..entry_pos]
+            .rfind("<script")
+            .expect("importmap entry must be inside a <script> tag");
+        let tag_end = tag_start
+            + html[tag_start..]
                 .find('>')
-                .expect("opening <style> tag must terminate");
+                .expect("opening <script> tag must terminate");
         let cart_panel_tag = &html[tag_start..=tag_end];
         let expected_nonce_attr = format!(r#"nonce="{nonce}""#);
         assert!(
             cart_panel_tag.contains(&expected_nonce_attr),
-            "mp-cart-panel <style type=\"module\"> tag should carry the response CSP nonce \
+            "mp-cart-panel <script type=\"importmap\"> tag should carry the response CSP nonce \
              (expected `{expected_nonce_attr}` in `{cart_panel_tag}`)"
         );
     }

@@ -322,7 +322,7 @@ Three delivery modes, set by the compiler from `<link>` / `<style>` declarations
 |---|---|
 | **Link** | `<link rel="stylesheet">` baked into `meta.h`. The browser fetches it normally. |
 | **Inline** | `<style>` element baked into `meta.h`. No extra request. |
-| **Module** | A `<style type="module" specifier="tag-name">` block in the page payload, parsed once into a `CSSStyleSheet` and applied to every instance via `adoptedStyleSheets` (`meta.sa` carries the specifier). |
+| **Module** | A `<script type="importmap">{"imports":{"tag-name":"data:text/css,..."}}</script>` block in the page payload registers the CSS as a module. The framework retrieves the same `CSSStyleSheet` via `import(tag, { with: { type: 'css' } })` and applies it to every instance via `adoptedStyleSheets` (`meta.sa` carries the specifier). |
 
 Module sheets are cached, so each instance pays the cost of one `adoptedStyleSheets` push, not a full CSS parse.
 

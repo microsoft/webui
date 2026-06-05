@@ -191,8 +191,10 @@ describe('WebUIRouter', () => {
       const origHead = (globalThis as any).document.head;
 
       const order: string[] = [];
-      const scriptBodies: string[] = [];
-      const scriptNonces: string[] = [];
+      const templateScriptBodies: string[] = [];
+      const templateScriptNonces: string[] = [];
+      const importmapBodies: string[] = [];
+      const importmapNonces: string[] = [];
 
       (globalThis as any).fetch = async () => ({
         ok: true,
@@ -200,8 +202,8 @@ describe('WebUIRouter', () => {
         json: async () => ({
           state: {},
           templateStyles: [
-            '<style type="module" specifier="alpha">.alpha{color:red}</style>',
-            '<style type="module" specifier="beta">.beta{color:blue}</style>',
+            '<script type="importmap">{"imports":{"alpha":"data:text/css,.alpha{color:red}"}}</script>',
+            '<script type="importmap">{"imports":{"beta":"data:text/css,.beta{color:blue}"}}</script>',
           ],
           templates: [
             '(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w["alpha"]={h:"<div>a</div>"};})();',
@@ -226,13 +228,18 @@ describe('WebUIRouter', () => {
       (globalThis as any).document.querySelector = () => null;
       (globalThis as any).document.head = {
         appendChild(el: Record<string, unknown>) {
-          if (el.tagName === 'style') {
-            order.push(`style:${(el.attributes as Record<string, string>).specifier}`);
+          if (el.tagName === 'script' && el.type === 'importmap') {
+            const body = el.textContent as string;
+            const parsed = JSON.parse(body) as { imports: Record<string, string> };
+            const specifier = Object.keys(parsed.imports)[0];
+            order.push(`importmap:${specifier}`);
+            importmapBodies.push(body);
+            importmapNonces.push(el.nonce as string);
             return el;
           }
           order.push('script');
-          scriptNonces.push(el.nonce as string);
-          scriptBodies.push(el.textContent as string);
+          templateScriptNonces.push(el.nonce as string);
+          templateScriptBodies.push(el.textContent as string);
           // eslint-disable-next-line no-new-func
           Function(el.textContent as string)();
           return el;
@@ -254,14 +261,49 @@ describe('WebUIRouter', () => {
         const result = await fetchPartial('/test');
 
         assert.ok(result, 'should return partial data');
-        // Styles must be appended BEFORE scripts
-        assert.deepEqual(order, ['style:alpha', 'style:beta', 'script']);
+        // SSR and SPA paths emit ONE <script type="importmap"> per component
+        // (consistent 1:1 mapping); importmap scripts must be appended
+        // BEFORE the batched template script.
+        assert.deepEqual(order, ['importmap:alpha', 'importmap:beta', 'script']);
         // All JS IIFEs batched into one script tag
-        assert.equal(scriptBodies.length, 1, 'all JS should be batched into one script tag');
-        assert.ok(scriptBodies[0].includes('w["alpha"]'), 'batch should include alpha IIFE');
-        assert.ok(scriptBodies[0].includes('w["beta"]'), 'batch should include beta IIFE');
-        // CSP nonce preserved
-        assert.deepEqual(scriptNonces, ['test-nonce'], 'batched script should carry the nonce');
+        assert.equal(
+          templateScriptBodies.length,
+          1,
+          'all JS templates should be batched into one script tag',
+        );
+        assert.ok(
+          templateScriptBodies[0].includes('w["alpha"]'),
+          'batch should include alpha IIFE',
+        );
+        assert.ok(
+          templateScriptBodies[0].includes('w["beta"]'),
+          'batch should include beta IIFE',
+        );
+        // CSP nonce preserved on every emitted script (importmaps + template batch).
+        assert.deepEqual(
+          templateScriptNonces,
+          ['test-nonce'],
+          'batched template script should carry the nonce',
+        );
+        assert.deepEqual(
+          importmapNonces,
+          ['test-nonce', 'test-nonce'],
+          'each appended importmap script should carry the per-request nonce',
+        );
+        // Each importmap body should register exactly one specifier.
+        assert.equal(
+          importmapBodies.length,
+          2,
+          'one importmap script per component (1:1 with SSR emission)',
+        );
+        assert.ok(
+          importmapBodies[0].includes('"alpha":"data:text/css,'),
+          'alpha importmap body should register alpha under a data:text/css URI',
+        );
+        assert.ok(
+          importmapBodies[1].includes('"beta":"data:text/css,'),
+          'beta importmap body should register beta under a data:text/css URI',
+        );
         // Templates actually registered
         assert.ok(globals().__webui?.templates?.['alpha'], 'alpha template should register');
         assert.ok(globals().__webui?.templates?.['beta'], 'beta template should register');
