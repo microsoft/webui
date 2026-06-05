@@ -36,7 +36,7 @@ let result = build(BuildOptions {
 | `build_to_disk(options, out_dir)` | Build and write `protocol.bin` + CSS to disk |
 
 ```rust
-use webui::{build_to_disk, BuildOptions, CssStrategy, DomStrategy, Plugin};
+use webui::{build_to_disk, BuildOptions, CssStrategy, DomStrategy, LegalComments, Plugin};
 
 build_to_disk(
     BuildOptions {
@@ -45,6 +45,7 @@ build_to_disk(
         css: CssStrategy::Link,        // or CssStrategy::Style for inline
         dom: DomStrategy::Shadow,      // or DomStrategy::Light for light DOM
         plugin: Some(Plugin::FastV3),    // @microsoft/fast-element 3.x hydration plugin
+        legal_comments: LegalComments::Inline, // preserve legal CSS comments
         components: vec![],             // additional component sources
         ..BuildOptions::default()
     },
@@ -62,6 +63,10 @@ BuildOptions {
     ..BuildOptions::default()
 }
 ```
+
+`LegalComments::Inline` is the default and preserves legal CSS comments
+containing `@license` or `@preserve`, or starting with `/*!` or `//!`. Use
+`LegalComments::None` to strip all HTML and CSS comments from build output.
 
 ### Render
 

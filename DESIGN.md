@@ -933,6 +933,7 @@ pub struct HtmlParser {
     condition_parser: ConditionParser,
     handlebars_parser: HandlebarsParser,
     css_strategy: CssStrategy,
+    legal_comments: LegalComments,
     // Other fields...
 }
 ```
@@ -958,6 +959,26 @@ pub enum CssStrategy {
 - **Module**: Registers each component's CSS as a CSS Module via an [Import Map](https://html.spec.whatwg.org/multipage/webappapis.html#import-maps) entry whose value is a `data:text/css,...` URI. During SSR, the handler emits a `<script type="importmap">{"imports":{"component-name":"data:text/css,..."}}</script>` in each component's light DOM on first render (e.g., `<my-comp><script type="importmap">...</script><template ...>`) and adds `shadowrootadoptedstylesheets="component-name"` to each shadow root `<template>`. When the developer supplies their own `<template>` wrapper (e.g., to attach `@event` handlers), they MUST declare `shadowrootadoptedstylesheets="component-name"` on it — the parser returns `ParserError::MissingAdoptedStylesheets` at build time if the attribute is absent, so adoption can never silently fail. Multi-specifier values (`shadowrootadoptedstylesheets="component-name other-sheet"`) are honored verbatim. Components inside false `<if>` blocks or empty `<for>` loops that were not rendered during SSR get their importmap definitions emitted at `body_end`, so client-side activation can adopt them. CSS bytes are percent-encoded as needed to survive the `data:` URI parser (`%`, `#`, `"`, whitespace, and non-ASCII / control bytes); the importmap JSON object is built via `serde_json` so the specifier and URI value are correctly JSON-escaped. **Requires browser support for [Multiple Import Maps](https://github.com/WICG/import-maps/blob/main/proposals/multiple-import-maps.md) (Chrome 133+)** so each component's importmap can be emitted independently and merged into the document-level resolution table by the browser. When a CSP nonce is configured (via `RenderOptions::with_nonce` / `webui_handler_set_nonce`), the SSR-emitted `<script type="importmap">` tags include `nonce="VALUE"` (in `type`, `nonce` order) so strict `script-src 'nonce-...'` policies allow them, matching the existing nonce treatment of inline `<script>` tags. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. During SPA partial navigation, definitions for newly needed components are sent in the `templateStyles` array as `<script type="importmap">{"imports":{...}}</script>` strings (without a `nonce` attribute - the router materializes each tag client-side and applies the per-request nonce when appending to `<head>` before executing template scripts). WebUI Framework compiled metadata carries the adopted stylesheet specifier (`sa`) so client-created components can adopt the registered stylesheet on their shadow root.
 
 Set at construction time with `HtmlParser::with_options(ParserOptions::try_new(...))`.
+
+#### Legal Comments
+```rust
+/// Strategy for preserving legal comments in generated output.
+pub enum LegalComments {
+    /// Strip every HTML and CSS comment.
+    None,
+    /// Preserve legal CSS comments inline and strip all other comments.
+    Inline,
+}
+```
+
+The default is `LegalComments::Inline`, which preserves CSS comments that match
+esbuild's legal-comment convention: comments containing `@license` or
+`@preserve`, or comments starting with `/*!` or `//!`. WebUI supports only
+`none` and `inline` modes. HTML comments are always stripped, and bindings or
+directives inside HTML comments never produce fragments or plugin metadata.
+CSS comments are stripped from external component CSS, inline `<style>` content,
+component template CSS, and plugin-captured component templates unless they are
+legal comments and `inline` preservation is active.
 
 #### Primary Method
 ```rust
@@ -989,7 +1010,7 @@ pub trait ParserPlugin {
 - **Fragment start**: `start_fragment` runs before each `HtmlParser::parse(...)` call so plugins can reset fragment-local counters
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
-- **Component registration**: `register_component_template` receives the final processed component template HTML
+- **Component registration**: `register_component_template` receives the final processed component template HTML after HTML/CSS comment stripping
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts
 
 **Selecting parser plugins**
@@ -1043,6 +1064,7 @@ actionable message so stale dev processes can be stopped explicitly.
 - Handle attributes and special elements
 - Omit closing tags when the HTML parser produces no end tag (void elements, etc.)
 - Handle self-closing tags (`/>` syntax) for SVG and other elements
+- Strip HTML comment nodes before output; comment contents are never parsed for signals, directives, attributes, or plugin metadata
 
 #### Buffer Management
 - **Buffer Isolation:** Isolate directive content from parent context
@@ -1106,6 +1128,7 @@ impl CssParser {
 - Convert dynamic variables to signals
 - Handle nested variable references
 - Process inline and external CSS
+- Strip CSS comments during parsing, preserving only legal comments when `LegalComments::Inline` is active
 
 ### CSS Token Hoisting
 
@@ -1131,22 +1154,16 @@ The iterative walker visits each `call_expression` node independently, so nested
 The `HtmlParser` maintains a `token_store: HashSet<String>` that accumulates tokens from two sources:
 
 1. **Component CSS** — when a component is first encountered during parsing, its pre-extracted `css_tokens` (stored in the `Component` struct at registration time) are merged into the token store.
-2. **Inline `<style>` tags** — when the parser processes a `style_element` node, it calls `extract_tokens` on the CSS content and merges the result.
+2. **Inline `<style>` tags** — when the parser processes a `style_element` node, it extracts token usages and definitions while stripping removable CSS comments in the same tree-sitter walk.
 
 After parsing completes, `HtmlParser::take_tokens()` returns the sorted, deduplicated token list for inclusion in the protocol.
 
-#### Comment-Based Signal Bindings
+#### Comment Handling
 
-HTML comments containing handlebars expressions are parsed as signal fragments:
-
-```html
-<!--{{tokens}}-->        → Signal { value: "tokens", raw: false }
-<!--{{{tokens}}}-->      → Signal { value: "tokens", raw: true }
-<!--{{tokens.light}}-->  → Signal { value: "tokens.light", raw: false }
-<!-- regular comment -->  → Raw (preserved as-is)
-```
-
-This mechanism is general-purpose (not limited to `tokens`) and enables comment-based placeholders for runtime value injection in HTML files. The existing handlebars parser is reused for expression parsing within comment delimiters.
+HTML comments are stripped from parser output. Comment contents are never parsed
+for signals, directives, attributes, or plugin metadata. CSS comments are
+stripped from inline `<style>` elements and component CSS, except legal comments
+when `LegalComments::Inline` is active.
 
 ### Design Token Resolution (`webui-tokens`)
 

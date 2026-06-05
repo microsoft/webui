@@ -104,6 +104,40 @@ impl std::str::FromStr for DomStrategy {
     }
 }
 
+/// Strategy for preserving legal comments in generated output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
+pub enum LegalComments {
+    /// Strip every HTML and CSS comment.
+    None,
+    /// Preserve legal CSS comments inline and strip all other comments.
+    #[default]
+    Inline,
+}
+
+impl std::fmt::Display for LegalComments {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LegalComments::None => write!(f, "none"),
+            LegalComments::Inline => write!(f, "inline"),
+        }
+    }
+}
+
+impl std::str::FromStr for LegalComments {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "none" => Ok(LegalComments::None),
+            "inline" => Ok(LegalComments::Inline),
+            other => Err(format!(
+                "Unknown legal comments strategy: {other}. Use \"none\" or \"inline\"."
+            )),
+        }
+    }
+}
+
 /// Build/output options that affect parser-generated component templates.
 #[derive(Debug, Clone, Default)]
 pub struct ParserOptions {
@@ -113,6 +147,8 @@ pub struct ParserOptions {
     pub dom_strategy: DomStrategy,
     /// Link-mode CSS filename/href options.
     pub css_link_options: CssLinkOptions,
+    /// Legal comment preservation strategy.
+    pub legal_comments: LegalComments,
 }
 
 impl ParserOptions {
@@ -127,6 +163,27 @@ impl ParserOptions {
         css_file_name_template: &str,
         css_public_base: Option<&str>,
     ) -> Result<Self> {
+        Self::try_new_with_legal_comments(
+            css_strategy,
+            dom_strategy,
+            css_file_name_template,
+            css_public_base,
+            LegalComments::default(),
+        )
+    }
+
+    /// Create parser output options with an explicit legal comment policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParserError::Css`] when Link-mode CSS link options are invalid.
+    pub fn try_new_with_legal_comments(
+        css_strategy: CssStrategy,
+        dom_strategy: DomStrategy,
+        css_file_name_template: &str,
+        css_public_base: Option<&str>,
+        legal_comments: LegalComments,
+    ) -> Result<Self> {
         let css_link_options = if css_strategy == CssStrategy::Link {
             CssLinkOptions::try_new(
                 css_file_name_template.to_string(),
@@ -140,6 +197,7 @@ impl ParserOptions {
             css_strategy,
             dom_strategy,
             css_link_options,
+            legal_comments,
         })
     }
 }
@@ -306,7 +364,7 @@ impl HtmlParser {
             .expect("Error loading HTML grammar");
 
         Self {
-            component_registry: ComponentRegistry::new(),
+            component_registry: ComponentRegistry::with_legal_comments(options.legal_comments),
             css_parser: CssParser::new(),
             id_counter: FragmentIdCounter::new(),
             condition_parser: ConditionParser::new(),
@@ -530,78 +588,6 @@ impl HtmlParser {
         Ok(())
     }
 
-    /// Scan CSS text for `/* ... */` comments that contain exactly one
-    /// handlebars expression (e.g. `/*{{{tokens.light}}}*/`). Replace
-    /// each matching comment with a signal fragment and keep everything
-    /// else as raw CSS.
-    ///
-    /// A comment is a "signal placeholder" when:
-    /// 1. Its trimmed inner text parses to exactly one signal fragment.
-    /// 2. There is no other text around the signal inside the comment.
-    ///
-    /// Non-matching comments and all non-comment CSS are emitted as raw.
-    fn extract_style_comment_signals(
-        &mut self,
-        css: &str,
-        fragments: &mut Vec<WebUIFragment>,
-    ) -> Result<()> {
-        let bytes = css.as_bytes();
-        let len = bytes.len();
-        let mut pos = 0;
-
-        while pos < len {
-            // Find the next comment opening
-            let Some(open) = css[pos..].find("/*") else {
-                // No more comments — emit remaining CSS as raw
-                self.add_raw_fragment(&css[pos..]);
-                break;
-            };
-            let open = pos + open;
-
-            // Find the matching close
-            let Some(close_offset) = css[open + 2..].find("*/") else {
-                // Unterminated comment — emit rest as raw
-                self.add_raw_fragment(&css[pos..]);
-                break;
-            };
-            let close = open + 2 + close_offset;
-            let after_close = close + 2;
-
-            // Extract and trim the inner text of the comment
-            let inner = css[open + 2..close].trim();
-
-            // Try to parse the inner text with the handlebars parser.
-            // Accept only if it produces exactly one signal fragment.
-            let is_signal = if !inner.is_empty() {
-                match self.handlebars_parser.parse(inner) {
-                    Ok(ref parsed) if parsed.len() == 1 => {
-                        matches!(parsed[0].fragment.as_ref(), Some(Fragment::Signal(_)))
-                    }
-                    _ => false,
-                }
-            } else {
-                false
-            };
-
-            if is_signal {
-                // Emit CSS before the comment as raw
-                self.add_raw_fragment(&css[pos..open]);
-
-                // Emit the signal fragment (re-parse to extract it)
-                let parsed = self.handlebars_parser.parse(inner)?;
-                self.add_fragment(parsed.into_iter().next().unwrap_or_default(), fragments);
-            } else {
-                // Not a signal placeholder — emit everything including
-                // the comment as raw CSS
-                self.add_raw_fragment(&css[pos..after_close]);
-            }
-
-            pos = after_close;
-        }
-
-        Ok(())
-    }
-
     /// Process all non-structural child nodes inside an element-like container.
     fn process_content_children(
         &mut self,
@@ -673,27 +659,22 @@ impl HtmlParser {
                 }
             }
             "style_element" => {
-                // Process inline CSS — extract tokens and recognise
-                // comment-delimited signal placeholders (e.g. /*{{{tokens.light}}}*/).
+                // Process inline CSS: extract tokens and strip comments in one
+                // tree-sitter pass.
                 self.add_raw_fragment("<style>");
                 for child in node.named_children(&mut node.walk()) {
                     if child.kind() == "raw_text" {
                         let style_content = &source[child.start_byte()..child.end_byte()];
 
-                        // Single parse: extract both token usages and definitions.
-                        // This must run on the *original* style source, unmodified.
-                        if let Ok((tokens, defs)) = self
+                        let (tokens, defs, stripped) = self
                             .css_parser
-                            .extract_tokens_and_definitions(style_content)
-                        {
-                            self.token_store.extend(tokens);
-                            self.token_definitions.extend(defs);
-                        }
-
-                        // Scan for CSS comments that contain exactly one
-                        // handlebars expression. Replace those comments with
-                        // signal fragments; leave everything else as raw CSS.
-                        self.extract_style_comment_signals(style_content, fragments)?;
+                            .extract_tokens_definitions_and_strip_comments(
+                                style_content,
+                                self.options.legal_comments,
+                            )?;
+                        self.token_store.extend(tokens);
+                        self.token_definitions.extend(defs);
+                        self.add_raw_fragment(&stripped);
                     }
                 }
                 self.add_raw_fragment("</style>");
@@ -726,11 +707,9 @@ impl HtmlParser {
                 let content = &source[node.start_byte()..node.end_byte()];
                 self.add_raw_fragment(content);
             }
-            // HTML comment: check for handlebars bindings like <!--{{tokens}}-->
-            "comment" => {
-                let content = &source[node.start_byte()..node.end_byte()];
-                self.process_comment(content, fragments)?;
-            }
+            // HTML comments are build-time-only authoring notes. They never
+            // produce fragments and bindings inside them are ignored.
+            "comment" => {}
             // For other node types (like head, body), traverse their children
             _ => {
                 self.process_html_node(node, source, fragments)?;
@@ -1317,47 +1296,6 @@ impl HtmlParser {
         Ok(())
     }
 
-    /// Process an HTML comment node.
-    ///
-    /// If the comment contains handlebars expressions (e.g., `<!--{{tokens}}-->`),
-    /// parse them as signal fragments. Otherwise, preserve the comment as raw content.
-    fn process_comment(&mut self, content: &str, fragments: &mut Vec<WebUIFragment>) -> Result<()> {
-        // Strip <!-- and --> delimiters to get the inner text
-        let inner = content
-            .strip_prefix("<!--")
-            .and_then(|s| s.strip_suffix("-->"))
-            .unwrap_or("");
-
-        let trimmed = inner.trim();
-
-        // Quick check: if no handlebars syntax, preserve as raw comment
-        if !trimmed.contains("{{") {
-            self.add_raw_fragment(content);
-            return Ok(());
-        }
-
-        // Parse the inner text through the handlebars parser
-        let parsed = self.handlebars_parser.parse(trimmed)?;
-
-        // Check if the result is *only* signal fragments (no raw text mixed in).
-        // If all fragments are signals, emit them without comment delimiters.
-        // If there's any raw text mixed in, preserve the whole comment as-is.
-        let all_signals = parsed
-            .iter()
-            .all(|f| matches!(f.fragment.as_ref(), Some(Fragment::Signal(_))));
-
-        if all_signals && !parsed.is_empty() {
-            for fragment in parsed {
-                self.add_fragment(fragment, fragments);
-            }
-        } else {
-            // Mixed content or parse result has raw parts — keep as raw comment
-            self.add_raw_fragment(content);
-        }
-
-        Ok(())
-    }
-
     /// Process a <for> directive.
     fn process_for_directive(
         &mut self,
@@ -1887,7 +1825,14 @@ impl HtmlParser {
                     None
                 }
             }
-            CssStrategy::Style => css_content.map(|css| format!("<style>{}</style>", css.trim())),
+            CssStrategy::Style => css_content.map(|css| {
+                let trimmed = css.trim();
+                let mut style = String::with_capacity(15 + trimmed.len());
+                style.push_str("<style>");
+                style.push_str(trimmed);
+                style.push_str("</style>");
+                style
+            }),
             CssStrategy::Module => None,
         };
 
@@ -1935,7 +1880,7 @@ impl HtmlParser {
         let trimmed = html.trim();
         let snippet = css_snippet.unwrap_or_default();
 
-        if trimmed.starts_with("<template") {
+        let processed = if trimmed.starts_with("<template") {
             let stripped = self.strip_runtime_attrs_from_template(trimmed);
 
             // For `CssStrategy::Module`, the dev must declare
@@ -1954,26 +1899,26 @@ impl HtmlParser {
             }
 
             if snippet.is_empty() {
-                return Ok(stripped);
-            }
-
-            // Splice the CSS snippet right after the opening `<template …>` tag.
-            // Quote-aware scan avoids matching a `>` inside an attribute value
-            // (e.g., `data-x="a>b"`).
-            Ok(match tag_scan::find_tag_close(&stripped) {
-                Some(open_end) => {
-                    let mut result = String::with_capacity(stripped.len() + snippet.len());
-                    result.push_str(&stripped[..=open_end]);
-                    result.push_str(snippet);
-                    result.push_str(&stripped[open_end + 1..]);
-                    result
+                stripped
+            } else {
+                // Splice the CSS snippet right after the opening `<template …>` tag.
+                // Quote-aware scan avoids matching a `>` inside an attribute value
+                // (e.g., `data-x="a>b"`).
+                match tag_scan::find_tag_close(&stripped) {
+                    Some(open_end) => {
+                        let mut result = String::with_capacity(stripped.len() + snippet.len());
+                        result.push_str(&stripped[..=open_end]);
+                        result.push_str(snippet);
+                        result.push_str(&stripped[open_end + 1..]);
+                        result
+                    }
+                    // Malformed opening tag (no closing `>`): emit as-is rather
+                    // than panic. The downstream parser surfaces the error.
+                    None => stripped,
                 }
-                // Malformed opening tag (no closing `>`): emit as-is rather
-                // than panic. The downstream parser surfaces the error.
-                None => stripped,
-            })
+            }
         } else {
-            Ok(match self.options.dom_strategy {
+            match self.options.dom_strategy {
                 DomStrategy::Shadow => {
                     let adopted = adopted_specifier.unwrap_or_default();
                     let adopted_extra = if adopted.is_empty() {
@@ -1997,15 +1942,111 @@ impl HtmlParser {
                 }
                 DomStrategy::Light => {
                     if snippet.is_empty() {
-                        return Ok(trimmed.to_string());
+                        trimmed.to_string()
+                    } else {
+                        let mut result = String::with_capacity(snippet.len() + trimmed.len());
+                        result.push_str(snippet);
+                        result.push_str(trimmed);
+                        result
                     }
-                    let mut result = String::with_capacity(snippet.len() + trimmed.len());
-                    result.push_str(snippet);
-                    result.push_str(trimmed);
-                    result
                 }
-            })
+            }
+        };
+
+        self.strip_template_comments(processed)
+    }
+
+    fn strip_template_comments(&mut self, html: String) -> Result<String> {
+        if !html.contains("<!--") && !html.contains("/*") {
+            return Ok(html);
         }
+
+        let tree = self.parser.parse(&html, None).ok_or_else(|| {
+            ParserError::Html("Failed to parse HTML for comment stripping".into())
+        })?;
+
+        let mut ranges = Vec::new();
+        let mut style_ranges = Vec::new();
+        Self::collect_html_comment_and_style_ranges(
+            tree.root_node(),
+            &mut ranges,
+            &mut style_ranges,
+        );
+
+        for (style_start, style_end) in style_ranges {
+            let css = &html[style_start..style_end];
+            if !css.contains("/*") {
+                continue;
+            }
+            let css_ranges = self
+                .css_parser
+                .removable_comment_ranges(css, self.options.legal_comments)?;
+            for (start, end) in css_ranges {
+                ranges.push((style_start + start, style_start + end));
+            }
+        }
+
+        Ok(Self::strip_ranges(&html, ranges.as_mut_slice()).into_owned())
+    }
+
+    /// Collect HTML comment ranges and `<style>` raw-text ranges in one
+    /// iterative walk. CSS comments are stripped by `CssParser` from each
+    /// collected style range so CSS grammar rules decide comment boundaries.
+    #[allow(clippy::cast_possible_truncation)] // tree-sitter child indices are u32
+    fn collect_html_comment_and_style_ranges(
+        root: Node<'_>,
+        comment_ranges: &mut Vec<(usize, usize)>,
+        style_ranges: &mut Vec<(usize, usize)>,
+    ) {
+        let mut stack = vec![root];
+
+        while let Some(node) = stack.pop() {
+            match node.kind() {
+                "comment" => comment_ranges.push((node.start_byte(), node.end_byte())),
+                "style_element" => {
+                    let count = node.child_count();
+                    for i in 0..count {
+                        if let Some(child) = node.child(i as u32) {
+                            if child.kind() == "raw_text" {
+                                style_ranges.push((child.start_byte(), child.end_byte()));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            let count = node.child_count();
+            for i in (0..count).rev() {
+                if let Some(child) = node.child(i as u32) {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+
+    fn strip_ranges<'a>(
+        source: &'a str,
+        ranges: &mut [(usize, usize)],
+    ) -> std::borrow::Cow<'a, str> {
+        if ranges.is_empty() {
+            return std::borrow::Cow::Borrowed(source);
+        }
+
+        ranges.sort_unstable_by_key(|(start, _)| *start);
+        let mut stripped = String::with_capacity(source.len());
+        let mut last_end = 0usize;
+
+        for &(start, end) in ranges.iter() {
+            if start < last_end {
+                continue;
+            }
+            stripped.push_str(&source[last_end..start]);
+            last_end = end;
+        }
+
+        stripped.push_str(&source[last_end..]);
+        std::borrow::Cow::Owned(stripped)
     }
 
     /// Strip attributes starting with `@`, `:`, or `?` from the opening
@@ -3778,7 +3819,7 @@ mod tests {
                 None,
                 None,
             )
-            .unwrap();
+            .expect("process failed");
         assert!(
             processed.contains(r#"<template foo="bar">"#),
             "[--dom=light] expected dev <template foo=\"bar\"> preserved verbatim, got: {processed}"
@@ -3798,7 +3839,7 @@ mod tests {
                 None,
                 None,
             )
-            .unwrap();
+            .expect("process failed");
         assert!(
             processed.contains(r#"<template foo="{{foo}}">"#),
             "[--dom=light] expected dev <template foo=\"{{{{foo}}}}\"> with signal preserved, got: {processed}"
@@ -3808,13 +3849,12 @@ mod tests {
     #[test]
     fn light_preserves_dev_template_with_multiple_attrs() {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
-        let processed = parser
-            .process_component_template(
-                r#"<template autofocus tabindex="0" role="region" data-x="y"><div>hi</div></template>"#,
-                None,
-                None,
-            )
-            .unwrap();
+        let processed = parser.process_component_template(
+            r#"<template autofocus tabindex="0" role="region" data-x="y"><div>hi</div></template>"#,
+            None,
+            None,
+        )
+        .expect("process failed");
         assert!(
             processed.contains("autofocus")
                 && processed.contains(r#"tabindex="0""#)
@@ -3829,7 +3869,7 @@ mod tests {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         let processed = parser
             .process_component_template("<div>hi</div>", None, None)
-            .unwrap();
+            .expect("process failed");
         assert!(
             !processed.contains("<template"),
             "[--dom=light] framework must NOT add <template> wrapper when dev omits one, got: {processed}"
@@ -3849,7 +3889,7 @@ mod tests {
                 None,
                 None,
             )
-            .unwrap();
+            .expect("process failed");
         assert!(
             processed.contains(r#"<template foo="bar">"#),
             "[--dom=shadow] dev <template foo=\"bar\"> must be preserved verbatim, got: {processed}"
@@ -3869,7 +3909,7 @@ mod tests {
                 None,
                 None,
             )
-            .unwrap();
+            .expect("process failed");
         assert!(
             processed.contains(r#"shadowrootmode="closed""#),
             "[--dom=shadow] framework must respect dev's shadowrootmode=\"closed\" (developer is managing), got: {processed}"
@@ -3889,7 +3929,7 @@ mod tests {
                 None,
                 None,
             )
-            .unwrap();
+            .expect("process failed");
         assert!(
             processed.contains(r#"<template foo="{{foo}}">"#),
             "[--dom=shadow] dev <template> with signal-fragment attr must be preserved, got: {processed}"
@@ -3901,7 +3941,7 @@ mod tests {
         let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
         let processed = parser
             .process_component_template("<div>hi</div>", None, None)
-            .unwrap();
+            .expect("process failed");
         assert!(
             processed.contains(r#"<template shadowrootmode="open""#),
             "[--dom=shadow] framework MUST add <template shadowrootmode=\"open\"> when dev omits a wrapper, got: {processed}"
@@ -4395,70 +4435,95 @@ mod tests {
         );
     }
 
-    // ── Comment binding tests ────────────────────────────────────────
+    // ── Comment stripping tests ──────────────────────────────────────
 
     #[test]
-    fn test_comment_handlebars_signal() {
+    fn test_comment_handlebars_signal_is_stripped() {
         let mut parser = HtmlParser::new();
         let html = "<!--{{tokens}}-->";
         parser.parse("test.html", html).expect("parse failed");
         let records = parser.into_fragment_records();
 
-        assert_stream!(records, "test.html", [signal("tokens")]);
+        assert_stream!(records, "test.html", []);
     }
 
     #[test]
-    fn test_comment_triple_brace_raw_signal() {
+    fn test_comment_triple_brace_raw_signal_is_stripped() {
         let mut parser = HtmlParser::new();
         let html = "<!--{{{tokens}}}-->";
         parser.parse("test.html", html).expect("parse failed");
         let records = parser.into_fragment_records();
 
-        assert_stream!(records, "test.html", [signal_raw("tokens")]);
+        assert_stream!(records, "test.html", []);
     }
 
     #[test]
-    fn test_comment_regular_preserved() {
+    fn test_comment_regular_stripped() {
         let mut parser = HtmlParser::new();
         let html = "<!-- regular comment -->";
         parser.parse("test.html", html).expect("parse failed");
         let records = parser.into_fragment_records();
 
-        assert_stream!(records, "test.html", [raw("<!-- regular comment -->")]);
+        assert_stream!(records, "test.html", []);
     }
 
     #[test]
-    fn test_comment_dotted_signal() {
+    fn test_comment_dotted_signal_is_stripped() {
         let mut parser = HtmlParser::new();
         let html = "<!--{{tokens.light}}-->";
         parser.parse("test.html", html).expect("parse failed");
         let records = parser.into_fragment_records();
 
-        assert_stream!(records, "test.html", [signal("tokens.light")]);
+        assert_stream!(records, "test.html", []);
     }
 
     #[test]
-    fn test_comment_arbitrary_identifier() {
+    fn test_comment_arbitrary_identifier_is_stripped() {
         let mut parser = HtmlParser::new();
         let html = "<!--{{someOtherBinding}}-->";
         parser.parse("test.html", html).expect("parse failed");
         let records = parser.into_fragment_records();
 
-        assert_stream!(records, "test.html", [signal("someOtherBinding")]);
+        assert_stream!(records, "test.html", []);
     }
 
     #[test]
-    fn test_comment_with_surrounding_content() {
+    fn test_comment_with_surrounding_content_is_stripped() {
         let mut parser = HtmlParser::new();
         let html = "<div><!--{{tokens}}--></div>";
         parser.parse("test.html", html).expect("parse failed");
         let records = parser.into_fragment_records();
 
-        assert_stream!(
-            records,
-            "test.html",
-            [raw("<div>"), signal("tokens"), raw("</div>")]
-        );
+        assert_stream!(records, "test.html", [raw("<div></div>")]);
+    }
+
+    #[test]
+    fn test_webui_plugin_strips_component_comments_before_metadata() {
+        let mut parser =
+            HtmlParser::with_plugin(Box::new(crate::plugin::webui::WebUIParserPlugin::new()));
+        parser
+            .component_registry_mut()
+            .register_component(
+                "x-bleed",
+                r#"<!-- {{path}} @click="{bad()}" ?hidden="{{bad}}" --><div>hello</div>"#,
+                None,
+            )
+            .expect("register failed");
+
+        parser
+            .parse("index.html", "<x-bleed></x-bleed>")
+            .expect("parse failed");
+
+        let artifacts = parser.take_plugin_artifacts();
+        let ParserPluginArtifacts::ComponentTemplates(templates) = artifacts else {
+            panic!("expected component templates");
+        };
+        let template = &templates[0].1;
+        assert!(template.contains("<div>hello</div>"));
+        assert!(!template.contains("{{path}}"));
+        assert!(!template.contains("@click"));
+        assert!(!template.contains("?hidden"));
+        assert!(!template.contains("-->"));
     }
 
     // ── Token collection tests ───────────────────────────────────────
@@ -4871,7 +4936,7 @@ mod tests {
     }
 
     #[test]
-    fn test_style_element_with_handlebars_signal() {
+    fn test_style_element_with_handlebars_signal_comment_is_stripped() {
         let mut parser = HtmlParser::new();
         let html = r#"<html><head><style>
 :root {
@@ -4883,14 +4948,11 @@ mod tests {
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
 
-        // Comment-delimited signal: the /* */ are stripped, signal emitted.
         assert_stream!(
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>\n:root {\n    "),
-                signal_raw("tokens.light"),
-                raw("\n}\n</style>"),
+                raw("<html><head><style>\n:root {\n    \n}\n</style>"),
                 signal_raw("head_end"),
                 raw("</head><body>"),
                 signal_raw("body_start"),
@@ -4901,7 +4963,7 @@ mod tests {
     }
 
     #[test]
-    fn test_style_comment_signal_with_spaces() {
+    fn test_style_comment_signal_with_spaces_is_stripped() {
         let mut parser = HtmlParser::new();
         let html = r#"<html><head><style>
 :root {
@@ -4913,14 +4975,11 @@ mod tests {
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
 
-        // Spaces inside comment are trimmed before parsing.
         assert_stream!(
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>\n:root {\n    "),
-                signal_raw("tokens.light"),
-                raw("\n}\n</style>"),
+                raw("<html><head><style>\n:root {\n    \n}\n</style>"),
                 signal_raw("head_end"),
                 raw("</head><body>"),
                 signal_raw("body_start"),
@@ -4931,7 +4990,7 @@ mod tests {
     }
 
     #[test]
-    fn test_style_comment_signal_double_brace() {
+    fn test_style_comment_signal_double_brace_is_stripped() {
         let mut parser = HtmlParser::new();
         let html = "<html><head><style>/*{{themeCss}}*/</style></head><body></body></html>";
 
@@ -4939,14 +4998,11 @@ mod tests {
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
 
-        // Double-brace in a comment is also valid.
         assert_stream!(
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>"),
-                signal("themeCss"),
-                raw("</style>"),
+                raw("<html><head><style></style>"),
                 signal_raw("head_end"),
                 raw("</head><body>"),
                 signal_raw("body_start"),
@@ -4957,9 +5013,8 @@ mod tests {
     }
 
     #[test]
-    fn test_style_comment_with_extra_text_stays_raw() {
+    fn test_style_comment_with_extra_text_is_stripped() {
         let mut parser = HtmlParser::new();
-        // Extra text around the signal inside the comment → not a placeholder
         let html = "<html><head><style>/* theme: {{token}} */</style></head><body></body></html>";
 
         let result = parser.parse("test.html", html);
@@ -4970,7 +5025,7 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>/* theme: {{token}} */</style>"),
+                raw("<html><head><style></style>"),
                 signal_raw("head_end"),
                 raw("</head><body>"),
                 signal_raw("body_start"),
@@ -4981,9 +5036,8 @@ mod tests {
     }
 
     #[test]
-    fn test_style_comment_with_multiple_signals_stays_raw() {
+    fn test_style_comment_with_multiple_signals_is_stripped() {
         let mut parser = HtmlParser::new();
-        // Two signals in one comment → not a placeholder
         let html = "<html><head><style>/*{{a}}{{b}}*/</style></head><body></body></html>";
 
         let result = parser.parse("test.html", html);
@@ -4994,7 +5048,7 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>/*{{a}}{{b}}*/</style>"),
+                raw("<html><head><style></style>"),
                 signal_raw("head_end"),
                 raw("</head><body>"),
                 signal_raw("body_start"),
@@ -5030,7 +5084,7 @@ mod tests {
     }
 
     #[test]
-    fn test_style_mixed_css_and_comment_signal() {
+    fn test_style_mixed_css_and_comment_signal_is_stripped() {
         let mut parser = HtmlParser::new();
         let html = r#"<html><head><style>
   .a { color: red; }
@@ -5046,9 +5100,54 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>\n  .a { color: red; }\n  "),
-                signal("themeCss"),
-                raw("\n  .b { color: blue; }\n</style>"),
+                raw("<html><head><style>\n  .a { color: red; }\n  \n  .b { color: blue; }\n</style>"),
+                signal_raw("head_end"),
+                raw("</head><body>"),
+                signal_raw("body_start"),
+                signal_raw("body_end"),
+                raw("</body></html>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_style_legal_comment_preserved_inline_by_default() {
+        let mut parser = HtmlParser::new();
+        let html = "<html><head><style>/*! @license MIT */ .x { color: red; } /* remove */</style></head><body></body></html>";
+
+        parser.parse("test.html", html).expect("parse failed");
+        let fragment_records = parser.into_fragment_records();
+
+        assert_stream!(
+            fragment_records,
+            "test.html",
+            [
+                raw("<html><head><style>/*! @license MIT */ .x { color: red; } </style>"),
+                signal_raw("head_end"),
+                raw("</head><body>"),
+                signal_raw("body_start"),
+                signal_raw("body_end"),
+                raw("</body></html>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_style_legal_comments_none_strips_legal_comment() {
+        let mut parser = HtmlParser::with_options(ParserOptions {
+            legal_comments: LegalComments::None,
+            ..ParserOptions::default()
+        });
+        let html = "<html><head><style>/*! @license MIT */ .x { color: red; }</style></head><body></body></html>";
+
+        parser.parse("test.html", html).expect("parse failed");
+        let fragment_records = parser.into_fragment_records();
+
+        assert_stream!(
+            fragment_records,
+            "test.html",
+            [
+                raw("<html><head><style> .x { color: red; }</style>"),
                 signal_raw("head_end"),
                 raw("</head><body>"),
                 signal_raw("body_start"),

@@ -38,6 +38,7 @@ pub use webui_handler::{
 };
 pub use webui_parser::CssStrategy;
 pub use webui_parser::DomStrategy;
+pub use webui_parser::LegalComments;
 pub use webui_parser::ParserOptions;
 pub use webui_parser::Plugin;
 pub use webui_parser::DEFAULT_CSS_FILE_NAME_TEMPLATE;
@@ -74,6 +75,8 @@ pub struct BuildOptions {
     /// Optional URL/base-path prefix for Link-mode `css_href` values.
     /// When set, emitted protocol hrefs become `<base>/<filename>`.
     pub css_public_base: Option<String>,
+    /// Legal comment preservation strategy.
+    pub legal_comments: LegalComments,
 }
 
 impl Default for BuildOptions {
@@ -87,6 +90,7 @@ impl Default for BuildOptions {
             components: Vec::new(),
             css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
             css_public_base: None,
+            legal_comments: LegalComments::default(),
         }
     }
 }
@@ -222,11 +226,12 @@ struct RawBuildOutput {
 
 /// Internal build logic shared by `build()` and `build_to_disk()`.
 fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIError> {
-    let parser_options = ParserOptions::try_new(
+    let parser_options = ParserOptions::try_new_with_legal_comments(
         options.css,
         options.dom,
         &options.css_file_name_template,
         options.css_public_base.as_deref(),
+        options.legal_comments,
     )
     .map_err(|e| WebUIError::InvalidBuildOptions(e.to_string()))?;
     let css_link_options = parser_options.css_link_options.clone();
@@ -461,6 +466,54 @@ mod tests {
         assert_eq!(result.css_files[0].0, "my-card.css");
         assert!(result.css_files[0].1.contains("color: red"));
         assert_eq!(result.stats.css_file_count, 1);
+    }
+
+    #[test]
+    fn test_build_strips_non_legal_css_comments_from_output_file() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>Hello</my-card>"),
+            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.css",
+                "/* remove var(--ignored) */ .card { color: var(--textColor); }",
+            ),
+        ]);
+        let result = build(default_options(app.path())).unwrap();
+
+        assert_eq!(result.css_files[0].1, " .card { color: var(--textColor); }");
+        assert_eq!(result.protocol.tokens, vec!["textColor"]);
+    }
+
+    #[test]
+    fn test_build_preserves_legal_css_comments_by_default() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>Hello</my-card>"),
+            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.css",
+                "/*! @license MIT */ .card { color: red; } /* remove */",
+            ),
+        ]);
+        let result = build(default_options(app.path())).unwrap();
+
+        assert_eq!(
+            result.css_files[0].1,
+            "/*! @license MIT */ .card { color: red; } "
+        );
+    }
+
+    #[test]
+    fn test_build_legal_comments_none_strips_legal_css_comments() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>Hello</my-card>"),
+            ("my-card.html", "<div><slot></slot></div>"),
+            ("my-card.css", "/*! @license MIT */ .card { color: red; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.legal_comments = LegalComments::None;
+        let result = build(options).unwrap();
+
+        assert_eq!(result.css_files[0].1, " .card { color: red; }");
     }
 
     #[test]

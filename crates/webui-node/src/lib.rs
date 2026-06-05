@@ -85,6 +85,8 @@ pub struct JsBuildOptions {
     pub css_file_name_template: Option<String>,
     /// Optional base URL/path prefix for Link-mode css hrefs.
     pub css_public_base: Option<String>,
+    /// Legal comment handling: "inline" (default) or "none".
+    pub legal_comments: Option<String>,
 }
 
 /// Build a WebUI application from an app directory.
@@ -113,6 +115,13 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         .transpose()
         .map_err(NapiError::from_reason)?;
 
+    let legal_comments = options
+        .legal_comments
+        .map(|s| s.parse::<webui::LegalComments>())
+        .transpose()
+        .map_err(NapiError::from_reason)?
+        .unwrap_or_default();
+
     let build_options = webui::BuildOptions {
         app_dir: std::path::PathBuf::from(&options.app_dir),
         entry: options.entry.unwrap_or_else(|| "index.html".to_string()),
@@ -124,6 +133,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
             .css_file_name_template
             .unwrap_or_else(|| webui::DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string()),
         css_public_base: options.css_public_base,
+        legal_comments,
     };
 
     let result = webui::build(build_options)
@@ -480,6 +490,7 @@ mod tests {
             components: None,
             css_file_name_template: None,
             css_public_base: None,
+            legal_comments: None,
         };
 
         let result = build(options).unwrap();
@@ -503,6 +514,7 @@ mod tests {
             components: None,
             css_file_name_template: None,
             css_public_base: None,
+            legal_comments: None,
         };
 
         let result = build(options).unwrap();
@@ -520,6 +532,7 @@ mod tests {
             components: None,
             css_file_name_template: None,
             css_public_base: None,
+            legal_comments: None,
         };
 
         let result = build(options);
@@ -540,6 +553,7 @@ mod tests {
             components: None,
             css_file_name_template: None,
             css_public_base: None,
+            legal_comments: None,
         };
 
         let result = build(options);
@@ -562,6 +576,7 @@ mod tests {
             components: None,
             css_file_name_template: None,
             css_public_base: None,
+            legal_comments: None,
         };
 
         let result = build(options).unwrap();
@@ -570,6 +585,54 @@ mod tests {
         assert_eq!(result.css_files[0], "my-card.css");
         assert!(result.css_files[1].contains("color: red"));
         assert_eq!(result.stats.css_file_count, 1);
+    }
+
+    #[test]
+    fn test_build_legal_comments_none_strips_legal_css() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<my-card>Hello</my-card>").unwrap();
+        std::fs::write(dir.path().join("my-card.html"), "<div><slot></slot></div>").unwrap();
+        std::fs::write(
+            dir.path().join("my-card.css"),
+            "/*! @license MIT */ .card { color: red; }",
+        )
+        .unwrap();
+
+        let options = JsBuildOptions {
+            app_dir: dir.path().to_string_lossy().to_string(),
+            entry: None,
+            css: Some("link".to_string()),
+            dom: None,
+            plugin: None,
+            components: None,
+            css_file_name_template: None,
+            css_public_base: None,
+            legal_comments: Some("none".to_string()),
+        };
+
+        let result = build(options).unwrap();
+        assert_eq!(result.css_files[1], " .card { color: red; }");
+    }
+
+    #[test]
+    fn test_build_invalid_legal_comments() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<h1>Hello</h1>").unwrap();
+
+        let options = JsBuildOptions {
+            app_dir: dir.path().to_string_lossy().to_string(),
+            entry: None,
+            css: None,
+            dom: None,
+            plugin: None,
+            components: None,
+            css_file_name_template: None,
+            css_public_base: None,
+            legal_comments: Some("linked".to_string()),
+        };
+
+        let result = build(options);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -587,6 +650,7 @@ mod tests {
             components: None,
             css_file_name_template: None,
             css_public_base: None,
+            legal_comments: None,
         };
 
         let result = build(options).unwrap();
@@ -612,6 +676,7 @@ mod tests {
             components: None,
             css_file_name_template: None,
             css_public_base: None,
+            legal_comments: None,
         };
 
         let result = build(options).unwrap();
@@ -636,6 +701,7 @@ mod tests {
             components: None,
             css_file_name_template: None,
             css_public_base: None,
+            legal_comments: None,
         };
 
         let result = build(options);

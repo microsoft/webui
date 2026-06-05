@@ -21,7 +21,7 @@ fn build_attribute_heavy_template(repetitions: usize) -> String {
         html.push_str("<button ");
         html.push_str("class=\"btn {{theme}} {{size}}\" ");
         html.push_str("?disabled=\"{{isDisabled}}\" ");
-        html.push_str(":config=\"{{settings}}\" ");
+        html.push_str("config=\"{{settings}}\" ");
         html.push_str("title=\"item ");
         html.push_str(&idx.to_string());
         html.push_str(" {{tooltip}}\" ");
@@ -72,7 +72,7 @@ fn build_component_heavy_template(components: usize) -> String {
         let component_name = component_names[idx % component_names.len()];
         html.push('<');
         html.push_str(component_name);
-        html.push_str(" title=\"{{title}}\" :props=\"{{props}}\" ?active=\"{{active}}\">");
+        html.push_str(" title=\"{{title}}\" props=\"{{props}}\" ?active=\"{{active}}\">");
         html.push_str("<span>slot ");
         html.push_str(&idx.to_string());
         html.push_str("</span></");
@@ -230,11 +230,11 @@ fn build_dashboard_template() -> String {
     html.push_str("      </div>\n");
     html.push_str("    </if>\n");
     html.push_str("    <h2>{{pageTitle}}</h2>\n");
-    html.push_str("    <x-stats-card title=\"{{stats.usersTitle}}\" :data=\"{{stats.users}}\" ");
+    html.push_str("    <x-stats-card title=\"{{stats.usersTitle}}\" data=\"{{stats.users}}\" ");
     html.push_str("?loading=\"{{stats.loading}}\">\n");
     html.push_str("      <span>{{stats.usersCount}} total</span>\n");
     html.push_str("    </x-stats-card>\n");
-    html.push_str("    <x-stats-card title=\"{{stats.ordersTitle}}\" :data=\"{{stats.orders}}\" ");
+    html.push_str("    <x-stats-card title=\"{{stats.ordersTitle}}\" data=\"{{stats.orders}}\" ");
     html.push_str("?loading=\"{{stats.loading}}\">\n");
     html.push_str("      <span>{{stats.ordersCount}} total</span>\n");
     html.push_str("    </x-stats-card>\n");

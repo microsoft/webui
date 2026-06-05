@@ -116,6 +116,7 @@ Deno.serve({ port: 3000 }, (req) => {
 | `components` | `string[]` | - | External component sources |
 | `cssFileNameTemplate` | `string` | `"[name].[ext]"` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `cssPublicBase` | `string` | - | Public URL/path prefix for Link-mode CSS hrefs |
+| `legalComments` | `"inline" \| "none"` | `"inline"` | Preserve legal CSS comments inline, or strip all comments |
 
 ### BuildStats
 

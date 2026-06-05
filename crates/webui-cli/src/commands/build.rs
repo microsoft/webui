@@ -153,6 +153,7 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
             components: Vec::new(),
             css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
             css_public_base: None,
+            legal_comments: LegalComments::Inline,
         },
         out: out.to_path_buf(),
     })
@@ -258,6 +259,7 @@ mod tests {
                 components: Vec::new(),
                 css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
         })
@@ -376,6 +378,7 @@ mod tests {
                 components: vec![ext_path],
                 css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
         })
@@ -458,6 +461,7 @@ mod tests {
                 components: vec!["test-widget".to_string()],
                 css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
         })
@@ -537,6 +541,7 @@ mod tests {
                 components: vec!["@myui".to_string()],
                 css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
         })
@@ -585,6 +590,7 @@ mod tests {
                 components: Vec::new(),
                 css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                legal_comments: LegalComments::Inline,
             },
             out: custom_path.clone(),
         })
@@ -619,6 +625,7 @@ mod tests {
                 components: Vec::new(),
                 css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
+                legal_comments: LegalComments::Inline,
             },
             out: nested.clone(),
         })

@@ -5,6 +5,7 @@ use clap::Args;
 use std::path::PathBuf;
 pub use webui::CssStrategy;
 pub use webui::DomStrategy;
+pub use webui::LegalComments;
 pub use webui::Plugin;
 pub use webui::DEFAULT_CSS_FILE_NAME_TEMPLATE;
 
@@ -42,6 +43,10 @@ pub struct AppArgs {
     /// Optional base URL/path prefix for Link-mode css hrefs
     #[arg(long)]
     pub css_public_base: Option<String>,
+
+    /// Legal comment handling: inline preserves legal CSS comments, none strips all comments
+    #[arg(long, value_enum, default_value_t = LegalComments::Inline)]
+    pub legal_comments: LegalComments,
 }
 
 impl AppArgs {
@@ -56,6 +61,7 @@ impl AppArgs {
             components: self.components.clone(),
             css_file_name_template: self.css_file_name_template.clone(),
             css_public_base: self.css_public_base.clone(),
+            legal_comments: self.legal_comments,
         }
     }
 }
@@ -75,6 +81,7 @@ mod tests {
             components: Vec::new(),
             css_file_name_template: "[name]-[hash].[ext]".to_string(),
             css_public_base: Some("https://cdn.example.com/assets".to_string()),
+            legal_comments: LegalComments::None,
         };
         let options = args.to_build_options(std::path::Path::new("."));
 
@@ -83,5 +90,6 @@ mod tests {
             options.css_public_base.as_deref(),
             Some("https://cdn.example.com/assets")
         );
+        assert_eq!(options.legal_comments, LegalComments::None);
     }
 }

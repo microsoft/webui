@@ -23,7 +23,7 @@ cargo install microsoft-webui-cli
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--css-file-name-template <TEMPLATE>] [--css-public-base <BASE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--css-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -39,6 +39,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--css-file-name-template <TEMPLATE>` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
 | `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
+| `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
 
 Path inputs for `APP`, `--state`, and `--servedir` support absolute paths, relative paths, `~/...`, and `file://...` URI-style values.
 
@@ -55,6 +56,14 @@ filename template. `[hash]` is the component CSS file's SHA-256 content hash
 truncated to 8 hex characters. The CSS file is still written to `--out`;
 `--css-public-base` only changes the href stored in `protocol.bin` and emitted
 in `<link>` tags.
+
+**Comment handling:**
+
+WebUI strips HTML comments and CSS comments at build time. Bindings or
+directives inside HTML comments are ignored and never produce fragments or
+hydration metadata. With the default `--legal-comments inline`, CSS comments
+that contain `@license` or `@preserve`, or start with `/*!` or `//!`, are
+preserved inline. Use `--legal-comments none` to strip all comments.
 
 **DOM Strategies:**
 
@@ -134,7 +143,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--api-port <PORT>] [--theme <VALUE>] [--css-file-name-template <TEMPLATE>] [--css-public-base <BASE>]
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--api-port <PORT>] [--theme <VALUE>] [--css-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -155,6 +164,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Resolved tokens are injected into the render state. | *(none)* |
 | `--css-file-name-template <TEMPLATE>` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
 | `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
+| `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
 
 The `APP` directory should contain your entry HTML and component files.
 

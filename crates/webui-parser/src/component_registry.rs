@@ -5,7 +5,7 @@
 //!
 //! This module manages the registry of web components used in the application.
 
-use crate::{CssParser, ParserError, Result};
+use crate::{CssParser, LegalComments, ParserError, Result};
 use std::collections::HashMap;
 #[cfg(feature = "fs")]
 use std::fs;
@@ -45,6 +45,8 @@ pub struct ComponentRegistry {
     components: HashMap<String, Component>,
     /// Reusable CSS parser for token extraction during registration.
     css_parser: CssParser,
+    /// Legal comment preservation policy for component CSS.
+    legal_comments: LegalComments,
 }
 
 impl Default for ComponentRegistry {
@@ -56,9 +58,14 @@ impl Default for ComponentRegistry {
 impl ComponentRegistry {
     /// Create a new component registry.
     pub fn new() -> Self {
+        Self::with_legal_comments(LegalComments::default())
+    }
+
+    pub(crate) fn with_legal_comments(legal_comments: LegalComments) -> Self {
         Self {
             components: HashMap::new(),
             css_parser: CssParser::new(),
+            legal_comments,
         }
     }
 
@@ -143,7 +150,7 @@ impl ComponentRegistry {
                     context: format!("Failed to read CSS file: {}", css_path.display()),
                     source,
                 })?;
-                let tokens = self.extract_sorted_tokens(&content)?;
+                let (content, tokens) = self.process_css_content(&content)?;
                 (Some(content), tokens)
             } else {
                 (None, Vec::new())
@@ -190,16 +197,19 @@ impl ComponentRegistry {
         }
 
         // Extract CSS tokens if CSS content is provided
-        let css_tokens = match css_content {
-            Some(css) => self.extract_sorted_tokens(css)?,
-            None => Vec::new(),
+        let (css_content, css_tokens) = match css_content {
+            Some(css) => {
+                let (content, tokens) = self.process_css_content(css)?;
+                (Some(content), tokens)
+            }
+            None => (None, Vec::new()),
         };
 
         // Create component with dummy path since it's coming from string content
         let component: Component = Component {
             tag_name: tag_name.to_string(),
             html_content: html_content.to_string(),
-            css_content: css_content.map(ToString::to_string),
+            css_content,
             css_tokens,
             source_path: PathBuf::new(), // Empty path since it's not from a file
             class_name: None,
@@ -211,11 +221,13 @@ impl ComponentRegistry {
     }
 
     /// Extract CSS tokens from content and return as a sorted `Vec`.
-    fn extract_sorted_tokens(&mut self, css_content: &str) -> Result<Vec<String>> {
-        let tokens = self.css_parser.extract_tokens(css_content)?;
+    fn process_css_content(&mut self, css_content: &str) -> Result<(String, Vec<String>)> {
+        let (tokens, _definitions, stripped) = self
+            .css_parser
+            .extract_tokens_definitions_and_strip_comments(css_content, self.legal_comments)?;
         let mut sorted: Vec<String> = tokens.into_iter().collect();
         sorted.sort();
-        Ok(sorted)
+        Ok((stripped.into_owned(), sorted))
     }
 
     /// Check if a tag name is registered as a component.
@@ -327,6 +339,64 @@ mod tests {
             .expect("Failed to retrieve registered component");
         assert_eq!(component.html_content, html_content);
         assert_eq!(component.css_content.as_deref(), Some(css_content));
+    }
+
+    #[test]
+    fn test_register_component_strips_css_comments() {
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_component(
+                "style-component",
+                "<p>Styled</p>",
+                Some("/* var(--ignored) */ p { color: var(--textColor); } /* remove */"),
+            )
+            .expect("register failed");
+
+        let component = registry
+            .get("style-component")
+            .expect("Failed to retrieve registered component");
+        assert_eq!(
+            component.css_content.as_deref(),
+            Some(" p { color: var(--textColor); } ")
+        );
+        assert_eq!(component.css_tokens, vec!["textColor"]);
+    }
+
+    #[test]
+    fn test_register_component_preserves_legal_css_comments_by_default() {
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_component(
+                "legal-component",
+                "<p>Styled</p>",
+                Some("/*! @license MIT */ p { color: red; } /* remove */"),
+            )
+            .expect("register failed");
+
+        let component = registry
+            .get("legal-component")
+            .expect("Failed to retrieve registered component");
+        assert_eq!(
+            component.css_content.as_deref(),
+            Some("/*! @license MIT */ p { color: red; } ")
+        );
+    }
+
+    #[test]
+    fn test_register_component_strips_legal_css_comments_when_disabled() {
+        let mut registry = ComponentRegistry::with_legal_comments(LegalComments::None);
+        registry
+            .register_component(
+                "legal-component",
+                "<p>Styled</p>",
+                Some("/*! @license MIT */ p { color: red; }"),
+            )
+            .expect("register failed");
+
+        let component = registry
+            .get("legal-component")
+            .expect("Failed to retrieve registered component");
+        assert_eq!(component.css_content.as_deref(), Some(" p { color: red; }"));
     }
 
     #[test]

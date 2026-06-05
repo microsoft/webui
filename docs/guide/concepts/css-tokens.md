@@ -54,34 +54,21 @@ If a custom property is both **defined** and **used** in the same CSS file, it i
 /* Result: only "designSystemColor" is hoisted */
 ```
 
-## Comment-Based Token Bindings
+## Comment Handling
 
-<div v-pre>
+HTML and CSS comments are stripped at build time. Bindings inside HTML comments
+are ignored, so comments cannot be used as token placeholders. CSS legal
+comments are preserved only when `--legal-comments inline` is active.
 
-To create a placeholder where token values will be injected at render time, use an HTML comment with handlebars syntax:
+Inject resolved token declarations through normal state bindings instead:
 
 ```html
 <style>
   :root {
-    <!--{{tokens}}-->
+    {{{tokens.light}}}
   }
 </style>
 ```
-
-The `&lt;!--{{tokens}}--&gt;` comment is parsed as a **Signal fragment** with value `"tokens"`. At render time, the host can replace this signal with actual CSS variable declarations based on the hoisted token list and the active theme.
-
-### Binding Syntax
-
-| Syntax | Result |
-|--------|--------|
-| `&lt;!--{{tokens}}--&gt;` | Signal fragment (escaped) |
-| `&lt;!--{{{tokens}}}--&gt;` | Signal fragment (raw/unescaped) |
-| `&lt;!--{{tokens.light}}--&gt;` | Signal fragment with dotted path |
-| `<!-- regular comment -->` | Preserved as raw content |
-
-This mechanism is general-purpose - any `{{identifier}}` inside an HTML comment becomes a signal fragment.
-
-</div>
 
 ## Protocol Output
 

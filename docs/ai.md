@@ -514,6 +514,7 @@ webui build ./src --out ./dist --plugin=webui
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
 | `--css-file-name-template <TEMPLATE>` | `[name].[ext]` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
+| `--legal-comments <MODE>` | `inline` | `inline` preserves legal CSS comments, `none` strips all comments |
 
 For CDN/browser caching in `link` mode, prefer:
 
@@ -527,6 +528,11 @@ webui build ./src --out ./dist \
 characters. The CSS files are still written to `--out`; `--css-public-base`
 changes only the href compiled into `protocol.bin` and emitted in stylesheet
 `<link>` tags.
+
+HTML and CSS comments are stripped at build time. Bindings inside HTML comments
+are ignored. Legal CSS comments containing `@license` or `@preserve`, or
+starting with `/*!` or `//!`, are preserved only when `--legal-comments inline`
+is active.
 
 ### Serve (dev server)
 
@@ -550,6 +556,7 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 | `--theme <PACKAGE>` | none | Design token theme (see below) |
 | `--css-file-name-template <TEMPLATE>` | `[name].[ext]` | Link-mode CSS filename template |
 | `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
+| `--legal-comments <MODE>` | `inline` | `inline` preserves legal CSS comments, `none` strips all comments |
 
 ### Inspect
 
@@ -659,11 +666,11 @@ property declarations into the render state. Only available on `webui serve`.
 }
 ```
 
-**Template usage** - use a comment-based signal to inject tokens:
+**Template usage** - use a raw state binding to inject tokens:
 ```html
 <style>
   :root {
-    <!--{{{tokens.light}}}-->
+    {{{tokens.light}}}
   }
 </style>
 ```
