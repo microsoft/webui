@@ -10,8 +10,6 @@ If a maintainer invites a pull request for a focused change, most contributions 
 
 ## Issues we welcome
 
-We welcome GitHub Issues for:
-
 - Bugs with clear reproduction steps.
 - Feature requests that explain the need and expected outcome.
 - Documentation issues that identify confusing, missing, or incorrect guidance.
