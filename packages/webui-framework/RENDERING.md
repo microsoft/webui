@@ -106,6 +106,8 @@ Notice that there are no markers on `<h1>`, `<button>`, or the text inside `<spa
 
 `<!--wc-->` and `<!--wr-->` start markers are kept after hydration as runtime anchors. They are the insertion points used when the condition flips or the repeat collection grows.
 
+Hydration assumes SSR DOM, marker comments, and compiled metadata come from the same trusted WebUI compiler/handler version. Hand-edited marker streams are unsupported; every `<!--wr-->` and `<!--wc-->` must have its matching closing marker.
+
 ---
 
 ## Compiled template metadata

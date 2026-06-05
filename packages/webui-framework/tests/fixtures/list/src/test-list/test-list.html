@@ -4,6 +4,7 @@
     <button class="prepend" @click="{prependItem()}">Prepend</button>
     <button class="reverse" @click="{reverseItems()}">Reverse</button>
     <button class="clear" @click="{clearItems()}">Clear</button>
+    <button class="set-after-repeat" @click="{setAfterRepeat()}">Set After</button>
     <span class="count">{{items.length}}</span>
   </div>
   <div class="items">
@@ -12,6 +13,7 @@
       <button class="loop-arg" @click="{selectItem(item.id)}">{{item.title}}</button>
       <button class="loop-arg-event" @click="{selectItemWithEvent(item.id, e)}">{{item.title}}</button>
     </for>
+    {{afterRepeat}}<span class="after-repeat-tail">Tail</span>
   </div>
   <div class="last-loop-arg">{{lastLoopArg}}</div>
 </template>

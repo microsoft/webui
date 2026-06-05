@@ -133,4 +133,17 @@ test.describe('list fixture', () => {
     await page.locator('test-list .loop-arg-event').nth(0).click();
     await expect(page.locator('test-list .last-loop-arg')).toHaveText('arg=1 event=click args.length=2');
   });
+
+  test('hydrates empty text slots after repeat content at the correct position', async ({ page }) => {
+    await page.locator('test-list .set-after-repeat').click();
+
+    const textBeforeTail = await page.evaluate(() => {
+      const host = document.querySelector('test-list');
+      const root = host?.shadowRoot ?? host;
+      const tail = root?.querySelector('.after-repeat-tail');
+      return tail?.previousSibling?.textContent?.trim() ?? '';
+    });
+
+    expect(textBeforeTail).toBe('After');
+  });
 });

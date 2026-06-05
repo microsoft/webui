@@ -697,7 +697,7 @@ export class WebUIElement extends HTMLElement {
           let textNode = this.$findSSRText(ssrParent, tplParent, beforeIndex);
           if (!textNode) {
             textNode = document.createTextNode('');
-            const insertRef = ssrParent.childNodes[Math.min(beforeIndex, ssrParent.childNodes.length)] ?? null;
+            const insertRef = this.$findSSRSlotRef(ssrParent, tplParent, beforeIndex);
             ssrParent.insertBefore(textNode, insertRef);
           }
           if (textNode) instance.texts.push({ node: textNode, parts, scope });
@@ -1017,6 +1017,18 @@ export class WebUIElement extends HTMLElement {
         return child as Text;
       }
       child = child.nextSibling;
+    }
+    return null;
+  }
+
+  /** Find the SSR insertion reference for an empty text slot. */
+  private $findSSRSlotRef(ssrParent: Node, tplParent: Node, beforeIndex: number): Node | null {
+    const ordinals = getTplOrdinals(tplParent);
+    const children = tplParent.childNodes;
+    for (let i = beforeIndex; i < children.length; i++) {
+      const entry = ordinals.get(i);
+      if (!entry) continue;
+      return findByOrdinal(ssrParent, entry[0], entry[1]);
     }
     return null;
   }
