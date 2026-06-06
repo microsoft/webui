@@ -18,15 +18,15 @@ fn build_attribute_heavy_template(repetitions: usize) -> String {
     html.push_str("<body><div class=\"root\">");
 
     for idx in 0..repetitions {
-        html.push_str("<button ");
+        html.push_str("<x-bench-button ");
         html.push_str("class=\"btn {{theme}} {{size}}\" ");
         html.push_str("?disabled=\"{{isDisabled}}\" ");
-        html.push_str("config=\"{{settings}}\" ");
+        html.push_str(":config=\"{{settings}}\" ");
         html.push_str("title=\"item ");
         html.push_str(&idx.to_string());
         html.push_str(" {{tooltip}}\" ");
         html.push_str("data-x=\"{{meta}}\">");
-        html.push_str("{{label}}</button>");
+        html.push_str("{{label}}</x-bench-button>");
     }
 
     html.push_str("</div></body>");
@@ -230,11 +230,11 @@ fn build_dashboard_template() -> String {
     html.push_str("      </div>\n");
     html.push_str("    </if>\n");
     html.push_str("    <h2>{{pageTitle}}</h2>\n");
-    html.push_str("    <x-stats-card title=\"{{stats.usersTitle}}\" data=\"{{stats.users}}\" ");
+    html.push_str("    <x-stats-card title=\"{{stats.usersTitle}}\" :data=\"{{stats.users}}\" ");
     html.push_str("?loading=\"{{stats.loading}}\">\n");
     html.push_str("      <span>{{stats.usersCount}} total</span>\n");
     html.push_str("    </x-stats-card>\n");
-    html.push_str("    <x-stats-card title=\"{{stats.ordersTitle}}\" data=\"{{stats.orders}}\" ");
+    html.push_str("    <x-stats-card title=\"{{stats.ordersTitle}}\" :data=\"{{stats.orders}}\" ");
     html.push_str("?loading=\"{{stats.loading}}\">\n");
     html.push_str("      <span>{{stats.ordersCount}} total</span>\n");
     html.push_str("    </x-stats-card>\n");
@@ -258,6 +258,51 @@ fn build_dashboard_template() -> String {
     html
 }
 
+fn parser_with_bench_components() -> HtmlParser {
+    let mut parser = HtmlParser::new();
+    register_bench_components(&mut parser);
+    parser
+}
+
+fn parser_with_bench_components_and_options(
+    options: impl Into<webui_parser::ParserOptions>,
+) -> HtmlParser {
+    let mut parser = HtmlParser::with_options(options);
+    register_bench_components(&mut parser);
+    parser
+}
+
+fn parser_with_bench_components_and_fast_plugin() -> HtmlParser {
+    let mut parser = HtmlParser::with_plugin(Box::new(FastV2ParserPlugin::new()));
+    register_bench_components(&mut parser);
+    parser
+}
+
+fn register_bench_components(parser: &mut HtmlParser) {
+    let registry = parser.component_registry_mut();
+    registry
+        .register_component("x-bench-button", "<slot></slot>", None)
+        .unwrap_or_else(|error| panic!("failed to register x-bench-button: {error}"));
+    registry
+        .register_component("x-card", "<slot></slot>", None)
+        .unwrap_or_else(|error| panic!("failed to register x-card: {error}"));
+    registry
+        .register_component("x-panel", "<slot></slot>", None)
+        .unwrap_or_else(|error| panic!("failed to register x-panel: {error}"));
+    registry
+        .register_component("x-banner", "<slot></slot>", None)
+        .unwrap_or_else(|error| panic!("failed to register x-banner: {error}"));
+    registry
+        .register_component("x-dialog", "<slot></slot>", None)
+        .unwrap_or_else(|error| panic!("failed to register x-dialog: {error}"));
+    registry
+        .register_component("x-item", "<slot></slot>", None)
+        .unwrap_or_else(|error| panic!("failed to register x-item: {error}"));
+    registry
+        .register_component("x-stats-card", "<slot></slot>", None)
+        .unwrap_or_else(|error| panic!("failed to register x-stats-card: {error}"));
+}
+
 fn parser_parse_reuse_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("parser_parse_reuse");
 
@@ -271,7 +316,7 @@ fn parser_parse_reuse_bench(c: &mut Criterion) {
     for (name, input) in scenarios {
         group.throughput(Throughput::Bytes(input.len() as u64));
         group.bench_with_input(BenchmarkId::new("reuse", name), &input, |b, html| {
-            let mut parser = HtmlParser::new();
+            let mut parser = parser_with_bench_components();
             b.iter(|| {
                 parser
                     .parse("index.html", black_box(html))
@@ -290,7 +335,7 @@ fn parser_parse_fresh_vs_reuse(c: &mut Criterion) {
 
     group.bench_function("fresh_per_iteration", |b| {
         b.iter(|| {
-            let mut parser = HtmlParser::new();
+            let mut parser = parser_with_bench_components();
             parser
                 .parse("index.html", black_box(&input))
                 .unwrap_or_else(|error| panic!("fresh parse failed: {error}"));
@@ -298,7 +343,7 @@ fn parser_parse_fresh_vs_reuse(c: &mut Criterion) {
     });
 
     group.bench_function("reuse_single_parser", |b| {
-        let mut parser = HtmlParser::new();
+        let mut parser = parser_with_bench_components();
         b.iter(|| {
             parser
                 .parse("index.html", black_box(&input))
@@ -315,7 +360,7 @@ fn parser_plugin_bench(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(input.len() as u64));
 
     group.bench_function("without_plugin", |b| {
-        let mut parser = HtmlParser::new();
+        let mut parser = parser_with_bench_components();
         b.iter(|| {
             parser
                 .parse("index.html", black_box(&input))
@@ -324,7 +369,7 @@ fn parser_plugin_bench(c: &mut Criterion) {
     });
 
     group.bench_function("with_fast_plugin", |b| {
-        let mut parser = HtmlParser::with_plugin(Box::new(FastV2ParserPlugin::new()));
+        let mut parser = parser_with_bench_components_and_fast_plugin();
         b.iter(|| {
             parser
                 .parse("index.html", black_box(&input))
@@ -341,7 +386,7 @@ fn parser_css_strategy_bench(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(input.len() as u64));
 
     group.bench_function("external_css", |b| {
-        let mut parser = HtmlParser::with_options(CssStrategy::Link);
+        let mut parser = parser_with_bench_components_and_options(CssStrategy::Link);
         b.iter(|| {
             parser
                 .parse("index.html", black_box(&input))
@@ -350,7 +395,7 @@ fn parser_css_strategy_bench(c: &mut Criterion) {
     });
 
     group.bench_function("inline_css", |b| {
-        let mut parser = HtmlParser::with_options(CssStrategy::Style);
+        let mut parser = parser_with_bench_components_and_options(CssStrategy::Style);
         b.iter(|| {
             parser
                 .parse("index.html", black_box(&input))
@@ -368,7 +413,7 @@ fn parser_size_sweep_bench(c: &mut Criterion) {
         let input = build_attribute_heavy_template(size);
         group.throughput(Throughput::Bytes(input.len() as u64));
         group.bench_with_input(BenchmarkId::new("attrs", size), &input, |b, html| {
-            let mut parser = HtmlParser::new();
+            let mut parser = parser_with_bench_components();
             b.iter(|| {
                 parser
                     .parse("index.html", black_box(html))
@@ -393,7 +438,7 @@ fn parser_realistic_bench(c: &mut Criterion) {
     for (name, input) in scenarios {
         group.throughput(Throughput::Bytes(input.len() as u64));
         group.bench_with_input(BenchmarkId::new("parse", name), &input, |b, html| {
-            let mut parser = HtmlParser::new();
+            let mut parser = parser_with_bench_components();
             b.iter(|| {
                 parser
                     .parse("index.html", black_box(html))
@@ -414,7 +459,7 @@ fn parser_text_vs_directive_bench(c: &mut Criterion) {
     // Normalize comparison by using similar-sized inputs
     group.throughput(Throughput::Bytes(text_input.len() as u64));
     group.bench_function("text_heavy", |b| {
-        let mut parser = HtmlParser::new();
+        let mut parser = parser_with_bench_components();
         b.iter(|| {
             parser
                 .parse("index.html", black_box(&text_input))
@@ -424,7 +469,7 @@ fn parser_text_vs_directive_bench(c: &mut Criterion) {
 
     group.throughput(Throughput::Bytes(directive_input.len() as u64));
     group.bench_function("directive_heavy", |b| {
-        let mut parser = HtmlParser::new();
+        let mut parser = parser_with_bench_components();
         b.iter(|| {
             parser
                 .parse("index.html", black_box(&directive_input))

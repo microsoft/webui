@@ -226,7 +226,7 @@ struct RawBuildOutput {
 
 /// Internal build logic shared by `build()` and `build_to_disk()`.
 fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIError> {
-    let parser_options = ParserOptions::try_new_with_legal_comments(
+    let parser_options = ParserOptions::try_new(
         options.css,
         options.dom,
         &options.css_file_name_template,

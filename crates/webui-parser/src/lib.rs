@@ -163,26 +163,6 @@ impl ParserOptions {
         dom_strategy: DomStrategy,
         css_file_name_template: &str,
         css_public_base: Option<&str>,
-    ) -> Result<Self> {
-        Self::try_new_with_legal_comments(
-            css_strategy,
-            dom_strategy,
-            css_file_name_template,
-            css_public_base,
-            LegalComments::default(),
-        )
-    }
-
-    /// Create parser output options with an explicit legal comment policy.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ParserError::Css`] when Link-mode CSS link options are invalid.
-    pub fn try_new_with_legal_comments(
-        css_strategy: CssStrategy,
-        dom_strategy: DomStrategy,
-        css_file_name_template: &str,
-        css_public_base: Option<&str>,
         legal_comments: LegalComments,
     ) -> Result<Self> {
         let css_link_options = if css_strategy == CssStrategy::Link {
