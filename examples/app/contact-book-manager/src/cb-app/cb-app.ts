@@ -2,8 +2,8 @@
 // Licensed under the MIT license.
 
 import { WebUIElement, observable } from '@microsoft/webui-framework';
-import { Router } from '@microsoft/webui-router';
-import { api } from '#api';
+import { Router, isStateful } from '@microsoft/webui-router';
+import { api, type Contact } from '#api';
 
 // Child components used in cb-app.html
 import '#organisms/cb-header/cb-header.js';
@@ -21,8 +21,63 @@ export class CbApp extends WebUIElement {
   @observable totalFavorites = '0';
   @observable groups: string[] = [];
 
+  private searchGen = 0;
+
+  private readonly onNavigated = (): void => {
+    if (this.searchQuery) void this.applySearch(this.searchQuery);
+  };
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    window.addEventListener('webui:route:navigated', this.onNavigated);
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    window.removeEventListener('webui:route:navigated', this.onNavigated);
+  }
+
   onSearch(e: SearchChangeEvent): void {
     this.searchQuery = e.detail.value;
+    void this.applySearch(e.detail.value);
+  }
+
+  private async applySearch(query: string): Promise<void> {
+    const gen = ++this.searchGen;
+    const root = this.shadowRoot;
+    if (!root) return;
+
+    const activeRoute = root.querySelector('webui-route[active]');
+    if (!activeRoute) return;
+
+    const contactsPage = activeRoute.querySelector('cb-page-contacts');
+    const favoritesPage = activeRoute.querySelector('cb-page-favorites');
+    const groupPage = activeRoute.querySelector('cb-page-group');
+
+    let pageEl: Element | null = null;
+    let favorites = false;
+    let group = '';
+
+    if (contactsPage) {
+      pageEl = contactsPage;
+    } else if (favoritesPage) {
+      pageEl = favoritesPage;
+      favorites = true;
+    } else if (groupPage) {
+      pageEl = groupPage;
+      group = this.activeGroup;
+    }
+
+    if (!pageEl) return;
+
+    const contacts: Contact[] = await api.contacts.list({
+      q: query || undefined,
+      favorites: favorites || undefined,
+      group: group || undefined,
+    });
+
+    if (gen !== this.searchGen) return;
+    if (isStateful(pageEl)) pageEl.setState({ contacts });
   }
 
   onSelectContact(e: ContactEvent): void {
