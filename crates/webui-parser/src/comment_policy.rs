@@ -47,6 +47,9 @@ pub(crate) fn strip_ranges<'a>(source: &'a str, ranges: &mut [(usize, usize)]) -
 
     for &(start, end) in ranges.iter() {
         if start < last_end {
+            if end > last_end {
+                last_end = end;
+            }
             continue;
         }
         stripped.push_str(&source[last_end..start]);
@@ -55,4 +58,25 @@ pub(crate) fn strip_ranges<'a>(source: &'a str, ranges: &mut [(usize, usize)]) -
 
     stripped.push_str(&source[last_end..]);
     Cow::Owned(stripped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_ranges_removes_overlapping_tail() {
+        let mut ranges = [(2, 5), (4, 8)];
+        let stripped = strip_ranges("0123456789", &mut ranges);
+
+        assert_eq!(stripped.as_ref(), "0189");
+    }
+
+    #[test]
+    fn strip_ranges_handles_unsorted_overlaps() {
+        let mut ranges = [(7, 9), (2, 5), (4, 8)];
+        let stripped = strip_ranges("0123456789", &mut ranges);
+
+        assert_eq!(stripped.as_ref(), "019");
+    }
 }
