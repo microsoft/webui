@@ -39,8 +39,9 @@ pub enum CssStrategy {
     Link,
     /// Embed CSS content in `<style>` tags within the component.
     Style,
-    /// Emit a `<style type="module" specifier="component">` definition once per
-    /// page. The client runtime applies it via the document's adopted stylesheets.
+    /// Register each component's CSS module as a `<script type="importmap">`
+    /// data-URI entry. The client runtime applies the registered sheet via
+    /// the document's adopted stylesheets.
     Module,
 }
 
@@ -3714,10 +3715,15 @@ mod tests {
             "Should not have <link> in module mode: {template_text}"
         );
         // No CSS module baked into raw fragments — CSS is stored in
-        // protocol.components, populated by the build system.
+        // protocol.components, populated by the build system, and emitted
+        // by the handler (SSR inline + SPA partials) as importmap scripts.
         assert!(
             !template_text.contains(r#"<style type="module""#),
-            "CSS module should NOT be in raw fragments: {template_text}"
+            "CSS module should NOT be in raw fragments (legacy shape): {template_text}"
+        );
+        assert!(
+            !template_text.contains(r#"<script type="importmap""#),
+            "CSS module importmap should NOT be in raw fragments: {template_text}"
         );
     }
 

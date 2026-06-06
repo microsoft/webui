@@ -247,7 +247,7 @@ HttpResponse::Ok()
 | Field / builder | Type | Description |
 |---|---|---|
 | `RenderOptions::new(entry_id, request_path)` | constructor | Entry fragment + route-matching path |
-| `with_nonce(&str)` | builder | CSP nonce reflected onto inline `<script>` / `<style type="module">`. Empty string normalises to `None`. |
+| `with_nonce(&str)` | builder | CSP nonce reflected onto inline `<script>` tags (including the `<script type="importmap">` tags that register Module-strategy CSS). Empty string normalises to `None`. |
 | `with_head_inject(&str)` | builder | Raw HTML emitted immediately before `</head>` at the parser's structural boundary (see [Streaming SSR](#streaming-ssr)). |
 | `with_body_inject(&str)` | builder | Raw HTML emitted immediately before `</body>`. Same structural-boundary contract. |
 

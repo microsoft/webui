@@ -1029,13 +1029,11 @@ fn collect_component_assets(protocol: &WebUIProtocol, tags: &[&str]) -> (Vec<Val
             continue;
         }
         if !component.css.is_empty() {
-            let mut s = String::with_capacity(40 + tag.len() + component.css.len());
-            s.push_str("<style type=\"module\" specifier=\"");
-            s.push_str(tag);
-            s.push_str("\">");
-            s.push_str(&component.css);
-            s.push_str("</style>");
-            style_array.push(Value::String(s));
+            // No nonce here — the per-request CSP nonce is attached
+            // client-side by the router when it materializes each
+            // importmap script tag into the DOM.
+            let tag_html = crate::css_module::build_importmap_tag(tag, &component.css, None);
+            style_array.push(Value::String(tag_html));
         }
         tmpl_array.push(Value::String(component.template.clone()));
     }
@@ -1810,19 +1808,15 @@ mod tests {
             .as_array()
             .expect("templateStyles should be an array");
         assert_eq!(styles.len(), 1);
+        let style_html = styles[0].as_str().unwrap_or_default();
         assert!(
-            styles[0]
-                .as_str()
-                .unwrap_or_default()
-                .contains("specifier=\"my-page\""),
-            "module style should carry the component specifier"
+            style_html.starts_with(r#"<script type="importmap""#)
+                && style_html.contains(r#""my-page":"data:text/css,"#),
+            "module style entry should be an importmap registering the component specifier: {style_html}"
         );
         assert!(
-            styles[0]
-                .as_str()
-                .unwrap_or_default()
-                .contains(".page{color:red}"),
-            "module style should contain the CSS content"
+            style_html.contains(".page{color:red}"),
+            "module style entry should contain the CSS content verbatim inside the data: URI: {style_html}"
         );
 
         // templates should contain only the clean JS IIFE
@@ -2227,10 +2221,18 @@ mod tests {
         assert_eq!(templates.len(), 1);
         assert!(templates[0].as_str().unwrap().contains("settings-dialog"));
         assert_eq!(styles.len(), 1);
-        assert!(styles[0]
-            .as_str()
-            .unwrap()
-            .contains(".dialog{position:fixed}"));
+        let style_html = styles[0].as_str().unwrap();
+        assert!(
+            style_html.starts_with(r#"<script type="importmap""#)
+                && style_html.contains(r#""settings-dialog":"data:text/css,"#),
+            "templateStyles entry should be an importmap registering settings-dialog: {style_html}"
+        );
+        // CSS content is embedded inside the data: URI verbatim — `{`, `}`,
+        // `\` are not in the percent-encode set.
+        assert!(
+            style_html.contains(".dialog{position:fixed}"),
+            "templateStyles entry should contain the CSS content verbatim: {style_html}"
+        );
     }
 
     #[test]

@@ -622,7 +622,7 @@ When `Accept: application/json` or `application/x-ndjson`:
 ```json
 {
   "state": { "name": "Alice", "email": "alice@example.com" },
-  "templateStyles": ["<style type=\"module\" specifier=\"user-detail\">...</style>"],
+  "templateStyles": ["<script type=\"importmap\">{\"imports\":{\"user-detail\":\"data:text/css,...\"}}</script>"],
   "templates": ["(function(){var w=window.__webui.templates||...})();"],
   "inventory": "04000400...",
   "path": "/users/42",

@@ -122,8 +122,25 @@ export class WebUIRouter {
         css.push(link.getAttribute('href')!);
       }
       const styles: string[] = [];
-      for (const style of document.querySelectorAll('style[type="module"][specifier]')) {
-        styles.push(style.getAttribute('specifier')!);
+      // Scan SSR-emitted CSS module importmaps (one per component) and
+      // collect their specifiers so SPA partials skip re-registering them.
+      // Other consumers may emit unrelated importmaps; we filter to entries
+      // whose URI starts with `data:text/css,` to stay scoped to WebUI's
+      // CSS module shape.
+      for (const script of document.querySelectorAll('script[type="importmap"]')) {
+        try {
+          const parsed = JSON.parse(script.textContent ?? '{}') as {
+            imports?: Record<string, unknown>;
+          };
+          if (!parsed.imports || typeof parsed.imports !== 'object') continue;
+          for (const [specifier, uri] of Object.entries(parsed.imports)) {
+            if (typeof uri === 'string' && uri.startsWith('data:text/css,')) {
+              styles.push(specifier);
+            }
+          }
+        } catch {
+          // Not WebUI's importmap shape — skip.
+        }
       }
       (window as any).__webui = { inventory: inv, nonce, css, styles, templates: {} };
     }

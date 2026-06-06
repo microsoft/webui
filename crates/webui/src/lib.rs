@@ -830,7 +830,7 @@ mod tests {
         options.css = CssStrategy::Module;
 
         let result = build(options).unwrap();
-        // Module mode uses <style type="module"> — no external CSS files
+        // Module mode emits <script type="importmap"> data URIs — no external CSS files
         assert!(result.css_files.is_empty());
         assert_eq!(result.stats.css_file_count, 0);
         assert!(result.stats.fragment_count > 0);

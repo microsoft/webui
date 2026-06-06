@@ -24,38 +24,46 @@ export function registerTemplatesAndStyles(
     updateInventory(data.inventory);
   }
 
-  // 1. Module CSS: inject <style type="module"> definitions into <head>
+  // 1. CSS modules: each entry is a `<script type="importmap">` tag
+  //    registering one or more component CSS modules under a data:text/css
+  //    URI. Append one importmap script per entry (matching the SSR
+  //    handler's 1:1 emission) so SSR and SPA produce the same DOM shape.
+  //    Multiple Import Maps support (required for this strategy) handles
+  //    the document-level merge.
   if (data.templateStyles) {
-    for (const styleMarkup of data.templateStyles) {
-      const trimmed = styleMarkup.trim();
-      if (!trimmed.startsWith('<style')) continue;
+    for (const scriptMarkup of data.templateStyles) {
+      const trimmed = scriptMarkup.trim();
+      if (!trimmed.startsWith('<script')) continue;
 
       const openTagEnd = trimmed.indexOf('>');
-      const closeTagStart = trimmed.lastIndexOf('</style>');
+      const closeTagStart = trimmed.lastIndexOf('</script>');
       if (openTagEnd < 0 || closeTagStart <= openTagEnd) continue;
 
-      const specifierToken = 'specifier="';
-      const specStart = trimmed.indexOf(specifierToken);
-      let specifier: string | null = null;
-      if (specStart >= 0) {
-        const valStart = specStart + specifierToken.length;
-        const valEnd = trimmed.indexOf('"', valStart);
-        if (valEnd > valStart) specifier = trimmed.substring(valStart, valEnd);
-      }
-
-      if (specifier && injectedStyles.has(specifier)) {
+      const jsonBody = trimmed.substring(openTagEnd + 1, closeTagStart);
+      let parsed: { imports?: Record<string, unknown> };
+      try {
+        parsed = JSON.parse(jsonBody) as { imports?: Record<string, unknown> };
+      } catch {
         continue;
       }
+      if (!parsed.imports || typeof parsed.imports !== 'object') continue;
 
-      const style = document.createElement('style');
-      style.type = 'module';
-      if (nonce) style.nonce = nonce;
-      if (specifier) {
-        style.setAttribute('specifier', specifier);
+      const newImports: Record<string, string> = {};
+      let hasNew = false;
+      for (const [specifier, uri] of Object.entries(parsed.imports)) {
+        if (typeof uri !== 'string' || !uri.startsWith('data:text/css,')) continue;
+        if (injectedStyles.has(specifier)) continue;
+        newImports[specifier] = uri;
         injectedStyles.add(specifier);
+        hasNew = true;
       }
-      style.textContent = trimmed.substring(openTagEnd + 1, closeTagStart);
-      document.head.appendChild(style);
+      if (!hasNew) continue;
+
+      const script = document.createElement('script');
+      script.type = 'importmap';
+      if (nonce) script.nonce = nonce;
+      script.textContent = JSON.stringify({ imports: newImports });
+      document.head.appendChild(script);
     }
   }
 

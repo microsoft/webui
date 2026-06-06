@@ -860,10 +860,14 @@ mod tests {
         let (_, html) = &templates[0];
 
         // f-template should NOT contain the CSS module — that is added
-        // by the handler (SSR) or prepend_css_module (partials).
+        // by the handler at SSR (inline) and SPA-partial time.
         assert!(
             !html.contains(r#"<style type="module""#),
-            "CSS module should not be baked into f-template: {html}"
+            "Legacy CSS module shape should not be baked into f-template: {html}"
+        );
+        assert!(
+            !html.contains(r#"<script type="importmap""#),
+            "CSS module importmap should not be baked into f-template: {html}"
         );
         // shadowrootadoptedstylesheets on the inner template
         assert!(
