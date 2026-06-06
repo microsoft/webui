@@ -216,6 +216,7 @@ export class WebUIElement extends HTMLElement {
 
     let root: Node;
     let isSSR: boolean;
+    let clientRoot: HTMLElement | null = null;
 
     if (hasShadow) {
       // Shadow DOM SSR — declarative shadow root already has content
@@ -233,13 +234,9 @@ export class WebUIElement extends HTMLElement {
       // Existing children are slot content — they stay in light DOM
       // and project through the template's <slot>.
       root = this.attachShadow({ mode: 'open' });
-      const fragment = this.$parseTemplate(meta);
-      root.appendChild(fragment);
       isSSR = false;
     } else {
       // Light DOM client-created — populate from template (no shadow = no link issue)
-      const fragment = this.$parseTemplate(meta);
-      this.appendChild(fragment);
       root = this;
       isSSR = false;
     }
@@ -254,7 +251,8 @@ export class WebUIElement extends HTMLElement {
       this.$root = this.$hydrate(root, meta, getTemplateDom(meta));
 
     } else {
-      this.$root = this.$wire(root, meta);
+      clientRoot = this.$createStagingRoot(meta);
+      this.$root = this.$wire(clientRoot, meta);
     }
 
     this.$meta = meta;
@@ -266,8 +264,13 @@ export class WebUIElement extends HTMLElement {
     // into the freshly-wired template DOM. Call $updateInstance directly
     // to avoid the $update() path-index build — it will be lazy-built
     // on the first reactive change instead.
-    if (!isSSR) {
+    if (!isSSR && clientRoot) {
       this.$updateInstance(this.$root);
+      if (this.$root.repeats.length !== 0 || this.$root.conds.length !== 0) {
+        this.$root.nodes = childNodesArray(clientRoot);
+        this.$releaseStagingRepeatContainers(this.$root, clientRoot);
+      }
+      this.$appendStagedChildren(root, clientRoot);
     }
 
     hydrationEnd();
@@ -529,6 +532,49 @@ export class WebUIElement extends HTMLElement {
     tpl.innerHTML = meta.h;
     templateCache.set(meta, tpl.content);
     return tpl.content.cloneNode(true) as DocumentFragment;
+  }
+
+  private $createStagingRoot(meta: TemplateBlockMeta): HTMLElement {
+    const wrapper = document.createElement('div');
+    const fragment = this.$parseTemplate(meta);
+    wrapper.appendChild(fragment);
+    customElements.upgrade(wrapper);
+    return wrapper;
+  }
+
+  private $appendStagedChildren(root: Node, stagingRoot: Node): void {
+    const first = stagingRoot.firstChild;
+    if (!first) return;
+    if (!first.nextSibling) {
+      root.appendChild(first);
+      return;
+    }
+    const fragment = document.createDocumentFragment();
+    while (stagingRoot.firstChild) {
+      fragment.appendChild(stagingRoot.firstChild);
+    }
+    root.appendChild(fragment);
+  }
+
+  private $releaseStagingRepeatContainers(instance: TemplateInstance | null, stagingRoot: Node | null): void {
+    if (!instance || !stagingRoot) return;
+    if (instance.repeats.length === 0 && instance.conds.length === 0) return;
+    const stack: TemplateInstance[] = [instance];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (!current) continue;
+      for (let i = 0; i < current.repeats.length; i++) {
+        const repeat = current.repeats[i];
+        if (repeat.container === stagingRoot) repeat.container = null;
+        for (let j = 0; j < repeat.instances.length; j++) {
+          stack.push(repeat.instances[j].instance);
+        }
+      }
+      for (let i = 0; i < current.conds.length; i++) {
+        const child = current.conds[i].instance;
+        if (child) stack.push(child);
+      }
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1399,8 +1445,9 @@ export class WebUIElement extends HTMLElement {
           for (const n of c.instance.nodes) frag.appendChild(n);
           c.anchor.parentNode?.insertBefore(frag, c.anchor.nextSibling);
         }
+      } else {
+        this.$updateInstance(c.instance);
       }
-      if (c.instance) this.$updateInstance(c.instance);
     } else if (c.instance) {
       this.$removeInstance(c.instance);
       c.instance = null;
@@ -1445,11 +1492,14 @@ export class WebUIElement extends HTMLElement {
   $createBlockInstance(blockIndex: number, scope?: ScopeFrame): TemplateInstance | null {
     const bm = this.$block(blockIndex);
     if (!bm) return null;
-    const frag = this.$parseTemplate(bm);
-    const wrapper = document.createElement('div');
-    wrapper.appendChild(frag);
+    const wrapper = this.$createStagingRoot(bm);
     const inst = this.$wire(wrapper, bm, scope);
     inst.nodes = childNodesArray(wrapper);
+    this.$updateInstance(inst);
+    if (inst.repeats.length !== 0 || inst.conds.length !== 0) {
+      inst.nodes = childNodesArray(wrapper);
+      this.$releaseStagingRepeatContainers(inst, wrapper);
+    }
     return inst;
   }
 

@@ -182,6 +182,12 @@ Supported operators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`, `!`
 <my-widget :config="{{settings}}"></my-widget>
 ```
 
+Property bindings use `:` to write directly to DOM properties. For
+client-created component trees, initial property bindings are applied before a
+child component's `connectedCallback` runs. Children can read parent-provided
+values during setup, initialize their own fallback when a value is missing, and
+still receive later parent updates through the live binding.
+
 ### Events (client-side only)
 
 ```html

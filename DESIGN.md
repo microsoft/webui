@@ -1341,7 +1341,12 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
 `@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, and only interactive Web Components hydrate on the client — leaving static content untouched.
 
 - SSR hydration uses one DOM walk to discover `<!--wr-->`, `<!--wi-->`, and `<!--wc-->` comment markers, wire the relevant bindings using compiled metadata path indices, then remove SSR-only markers.
-- Client-created DOM never reparses template syntax; it clones marker-free `h` and resolves `tx`, `ag`, `cl`, `rl`, and event target paths directly.
+- Client-created DOM never reparses template syntax; it clones marker-free `h`,
+  upgrades the detached custom-element subtree, resolves `tx`, `ag`, `cl`, `rl`,
+  and event target paths directly, then applies the first binding pass before
+  appending nodes to the connected DOM. Child components therefore observe
+  initial parent `:` property bindings in `connectedCallback`, while later parent
+  updates remain live.
 - Events are resolved from compiled `e[]` metadata entries using path indices. The runtime installs listeners on target elements and resolves handler arguments against the scope captured when that block was rendered. Root events from `re[]` attach directly to the host element.
 - The full package entrypoint supports repeat metadata (`r[]` / `rl[]`). The additive `@microsoft/webui-framework/element-no-repeat` entrypoint preserves the same public `WebUIElement` API but must reject compiled templates that contain repeat metadata.
 

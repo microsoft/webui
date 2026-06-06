@@ -39,7 +39,7 @@ Compile metadata        Inject SSR markers         existing DOM,
 1. **Server renders HTML.** The handler walks compiled template metadata and application state and emits Declarative Shadow DOM (or light DOM) with five comment markers around structural blocks, plus a `<script>` tag carrying `window.__webui.state` and the per-component template metadata.
 2. **Browser parses HTML.** The parser creates shadow roots inline. The user sees a fully painted page before any framework code runs.
 3. **JavaScript loads.** The component class registers via `customElements.define`. The browser upgrades pre-existing tags and fires `connectedCallback`.
-4. **`$mount` decides client-or-SSR.** If a shadow root exists or the element already has children, the framework treats the DOM as SSR. Otherwise it parses the static template HTML (`meta.h`) and clones it into the element.
+4. **`$mount` decides client-or-SSR.** If a shadow root exists or the element already has children, the framework treats the DOM as SSR. Otherwise it parses the static template HTML (`meta.h`) into a detached staging root, upgrades custom elements, wires bindings, applies the first binding pass, and only then appends the nodes. Child `connectedCallback` methods see initial parent `:` property bindings.
 5. **`$applySSRState` seeds observables.** Backing fields (`_count`, `_title`, ...) are written directly from `window.__webui.state` so reactive bindings observe values that match the painted DOM.
 6. **`$hydrate` walks the DOM once.** Text, attribute, conditional, repeat, and event bindings are resolved by a single in-order pass that uses path indices plus marker-aware ordinal traversal.
 7. **Stale markers are removed.** Item markers (`<!--wi-->`) and closing markers (`<!--/wc-->`, `<!--/wr-->`) are deleted; start markers (`<!--wc-->`, `<!--wr-->`) stay as anchors for runtime updates.
@@ -151,7 +151,7 @@ The compiler emits one `TemplateMeta` per component, delivered as a JS IIFE insi
 The same metadata serves both paths:
 
 - **SSR hydration** reads paths to compute ordinals, which are then translated against the live SSR DOM.
-- **Client-created creation** clones `h` and walks paths directly, since the cloned DOM matches `h` exactly.
+- **Client-created creation** clones `h` into a detached staging root, upgrades custom elements, walks paths directly, and applies initial bindings before the staged nodes are appended to the connected DOM.
 
 ### Condition AST
 

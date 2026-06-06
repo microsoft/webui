@@ -115,9 +115,9 @@ export interface RepeatItemInstance {
  */
 export interface RepeatHost {
   $resolveValue(path: string, scope?: ScopeFrame): unknown;
+  /** Create, wire, and perform the first binding pass while detached. */
   $createBlockInstance(blockIndex: number, scope?: ScopeFrame): TemplateInstance | null;
   $updateInstance(instance: TemplateInstance): void;
   $removeInstance(instance: TemplateInstance): void;
   $insertInstanceAfter(cursor: Node | null, container: ParentNode & Node, instance: TemplateInstance): Node | null;
 }
-

@@ -132,12 +132,11 @@ export function syncRepeat(
 
     rep.instances = next;
 
-    // Reorder + update
     let cursor: Node | null = rep.start;
     for (let i = 0; i < next.length; i += 1) {
       cursor = host.$insertInstanceAfter(cursor, container, next[i].instance);
     }
-    for (let i = 0; i < next.length; i += 1) {
+    for (let i = 0; i < reuseCount; i += 1) {
       host.$updateInstance(next[i].instance);
     }
     return;
@@ -182,14 +181,15 @@ export function syncRepeat(
   rep.instances = next;
 
   // ── Reorder DOM (forward pass) ──────────────────────────────────
-  // Walk forward, skip nodes already in position.
+  // Newly-created instances were patched while detached. Reused instances
+  // update after moving so nested structural nodes stay with the item.
   let cursor: Node | null = rep.start;
   for (let i = 0; i < next.length; i += 1) {
     cursor = host.$insertInstanceAfter(cursor, container, next[i].instance);
   }
-
-  // ── Update bindings ─────────────────────────────────────────────
-  for (let i = 0; i < next.length; i += 1) {
-    host.$updateInstance(next[i].instance);
+  for (let i = 0; i < oldInstances.length; i += 1) {
+    const entry = oldInstances[i];
+    const k = entry.key;
+    if (k != null && !oldByKey.has(k)) host.$updateInstance(entry.instance);
   }
 }

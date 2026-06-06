@@ -230,6 +230,16 @@ Toggle HTML attributes with the `?` prefix:
 <details ?open="{{isExpanded}}">...</details>
 ```
 
+### Property Bindings
+
+Use the `:` prefix to pass rich values directly to child DOM properties:
+
+```html
+<profile-card :config="{{settings}}"></profile-card>
+```
+
+For client-created component trees, WebUI applies initial property bindings before child `connectedCallback` methods run. This lets a child read a parent-provided property during setup. If the parent has not provided a value, the child can initialize a fallback in `connectedCallback`; later parent updates still flow through the live binding.
+
 ### List Rendering
 
 Iterate over arrays with `<for>`:

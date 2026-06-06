@@ -95,6 +95,16 @@ cargo run -p microsoft-webui-cli -- build ./src --out ./dist --plugin=webui
 
 The compiler/plugin generates the template metadata consumed by the runtime. In normal app code, you should not need to hand-author `window.__webui.templates`.
 
+### Property binding lifecycle
+
+Property bindings use the `:` prefix to pass values directly to child DOM properties:
+
+```html
+<profile-card :config="{{settings}}"></profile-card>
+```
+
+For client-created component trees, the runtime upgrades the cloned child elements while they are still detached, wires bindings, and applies the first binding pass before appending them to the connected DOM. A child can read an initial parent-provided property in `connectedCallback`. If the parent value is not set, the child may initialize its own fallback there, and later parent updates still flow through the live binding.
+
 ### DOM strategy (`--dom`)
 
 The `--dom` flag controls how the server renders component content:
