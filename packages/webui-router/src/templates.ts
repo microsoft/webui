@@ -49,6 +49,7 @@ export function registerTemplatesAndStyles(
 
       const style = document.createElement('style');
       style.type = 'module';
+      if (nonce) style.nonce = nonce;
       if (specifier) {
         style.setAttribute('specifier', specifier);
         injectedStyles.add(specifier);

@@ -193,6 +193,7 @@ describe('WebUIRouter', () => {
       const order: string[] = [];
       const scriptBodies: string[] = [];
       const scriptNonces: string[] = [];
+      const styleNonces: string[] = [];
 
       (globalThis as any).fetch = async () => ({
         ok: true,
@@ -228,6 +229,7 @@ describe('WebUIRouter', () => {
         appendChild(el: Record<string, unknown>) {
           if (el.tagName === 'style') {
             order.push(`style:${(el.attributes as Record<string, string>).specifier}`);
+            styleNonces.push(el.nonce as string);
             return el;
           }
           order.push('script');
@@ -262,6 +264,11 @@ describe('WebUIRouter', () => {
         assert.ok(scriptBodies[0].includes('w["beta"]'), 'batch should include beta IIFE');
         // CSP nonce preserved
         assert.deepEqual(scriptNonces, ['test-nonce'], 'batched script should carry the nonce');
+        assert.deepEqual(
+          styleNonces,
+          ['test-nonce', 'test-nonce'],
+          '<style type="module"> elements must carry the CSP nonce (required since Chromium gates module-style insertion under script-src)',
+        );
         // Templates actually registered
         assert.ok(globals().__webui?.templates?.['alpha'], 'alpha template should register');
         assert.ok(globals().__webui?.templates?.['beta'], 'beta template should register');
