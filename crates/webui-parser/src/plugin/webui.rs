@@ -1052,36 +1052,14 @@ fn compile_style_content(input: &str, meta: &mut TemplateSectionMeta) {
 }
 
 fn compile_css_signal_comment(comment: &str, meta: &mut TemplateSectionMeta) -> bool {
-    let Some(inner) = comment
-        .strip_prefix("/*")
-        .and_then(|value| value.strip_suffix("*/"))
-        .map(str::trim)
-    else {
-        return false;
-    };
-
-    if let Some((path, raw)) = parse_single_handlebars_binding(inner) {
+    if let Some(signal) = comment_policy::parse_css_signal_comment(comment) {
         let idx = meta.text_bindings.len();
-        meta.text_bindings.push((path, raw));
+        meta.text_bindings.push((signal.path, signal.raw));
         let _ = write!(meta.html, "<!--t:{idx}-->");
         return true;
     }
 
     false
-}
-
-fn parse_single_handlebars_binding(value: &str) -> Option<(String, bool)> {
-    if let Some(inner) = value
-        .strip_prefix("{{{")
-        .and_then(|inner| inner.strip_suffix("}}}"))
-    {
-        return Some((inner.trim().to_string(), true));
-    }
-
-    let inner = value
-        .strip_prefix("{{")
-        .and_then(|inner| inner.strip_suffix("}}"))?;
-    Some((inner.trim().to_string(), false))
 }
 
 fn find_style_element_bounds(input: &str, index: usize) -> Option<(usize, usize, usize)> {

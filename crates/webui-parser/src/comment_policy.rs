@@ -6,6 +6,12 @@
 use crate::LegalComments;
 use std::borrow::Cow;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CssSignalComment {
+    pub path: String,
+    pub raw: bool,
+}
+
 pub(crate) fn is_css_comment_node(kind: &str) -> bool {
     matches!(kind, "comment" | "js_comment")
 }
@@ -34,6 +40,31 @@ pub(crate) fn find_css_line_comment_end(input: &str, start: usize) -> usize {
     input[start..]
         .find('\n')
         .map_or(input.len(), |offset| start + offset)
+}
+
+pub(crate) fn parse_css_signal_comment(comment: &str) -> Option<CssSignalComment> {
+    let inner = comment.strip_prefix("/*")?.strip_suffix("*/")?.trim();
+    parse_single_handlebars_binding(inner).map(|(path, raw)| CssSignalComment { path, raw })
+}
+
+fn parse_single_handlebars_binding(value: &str) -> Option<(String, bool)> {
+    if let Some(inner) = value
+        .strip_prefix("{{{")
+        .and_then(|inner| inner.strip_suffix("}}}"))
+    {
+        let path = inner.trim();
+        return is_plain_handlebars_path(path).then(|| (path.to_string(), true));
+    }
+
+    let inner = value
+        .strip_prefix("{{")
+        .and_then(|inner| inner.strip_suffix("}}"))?;
+    let path = inner.trim();
+    is_plain_handlebars_path(path).then(|| (path.to_string(), false))
+}
+
+fn is_plain_handlebars_path(path: &str) -> bool {
+    !path.is_empty() && !path.contains("{{") && !path.contains("}}")
 }
 
 pub(crate) fn strip_ranges<'a>(source: &'a str, ranges: &mut [(usize, usize)]) -> Cow<'a, str> {
@@ -78,5 +109,30 @@ mod tests {
         let stripped = strip_ranges("0123456789", &mut ranges);
 
         assert_eq!(stripped.as_ref(), "019");
+    }
+
+    #[test]
+    fn parse_css_signal_comment_accepts_exact_double_and_triple_braces() {
+        assert_eq!(
+            parse_css_signal_comment("/*{{tokens}}*/"),
+            Some(CssSignalComment {
+                path: "tokens".to_string(),
+                raw: false,
+            })
+        );
+        assert_eq!(
+            parse_css_signal_comment("/* {{{ tokens.light }}} */"),
+            Some(CssSignalComment {
+                path: "tokens.light".to_string(),
+                raw: true,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_css_signal_comment_rejects_non_exact_comment_body() {
+        assert_eq!(parse_css_signal_comment("/* prose {{tokens}} */"), None);
+        assert_eq!(parse_css_signal_comment("/*{{a}}{{b}}*/"), None);
+        assert_eq!(parse_css_signal_comment("//! {{tokens}}"), None);
     }
 }

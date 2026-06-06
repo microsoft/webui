@@ -750,20 +750,8 @@ impl HtmlParser {
     }
 
     fn css_signal_comment_fragment(&self, comment: &str) -> Option<WebUIFragment> {
-        let inner = comment.strip_prefix("/*")?.strip_suffix("*/")?.trim();
-        if inner.is_empty() {
-            return None;
-        }
-
-        let parsed = self.handlebars_parser.parse(inner).ok()?;
-        if parsed.len() != 1 {
-            return None;
-        }
-
-        parsed
-            .into_iter()
-            .next()
-            .filter(|fragment| matches!(fragment.fragment.as_ref(), Some(Fragment::Signal(_))))
+        let signal = comment_policy::parse_css_signal_comment(comment)?;
+        Some(WebUIFragment::signal(signal.path, signal.raw))
     }
 
     /// Get the tag name of an element.
