@@ -33,10 +33,17 @@ pub(crate) fn generate_nonce() -> String {
 /// Build a CSP header value that allows inline scripts matching `nonce`.
 #[must_use]
 pub(crate) fn csp_header(nonce: &str) -> String {
+    // `style-src` includes `data:` so that CSS modules delivered via the
+    // `<script type="importmap">` data-URI shape (CssStrategy::Module)
+    // can be imported. Without `data:` the browser blocks the
+    // `import "…"` of a `data:text/css,…` specifier under
+    // `style-src`/`style-src-elem`. Keep `'unsafe-inline'` for the
+    // small number of legitimate inline `<style>` tags emitted by the
+    // renderer; tighten with hashes if/when those are eliminated.
     format!(
         "default-src 'self'; \
          script-src 'self' 'nonce-{nonce}'; \
-         style-src 'self' 'unsafe-inline'; \
+         style-src 'self' 'unsafe-inline' data:; \
          img-src 'self'; \
          font-src 'self'; \
          frame-ancestors 'self'"

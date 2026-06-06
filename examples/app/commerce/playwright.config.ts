@@ -11,6 +11,13 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:3004',
     screenshot: 'only-on-failure',
+    launchOptions: {
+      // The Module CSS strategy emits `<style type="module" specifier="…">`
+      // pairs with `shadowrootadoptedstylesheets` on declarative shadow roots.
+      // This relies on the Declarative CSS Modules proposal, which is currently
+      // behind a Blink feature flag.
+      args: ['--enable-blink-features=DeclarativeCSSModules'],
+    },
   },
   projects: [
     {

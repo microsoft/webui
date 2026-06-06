@@ -196,12 +196,11 @@ pub fn generate_f_template_with_css_options(
 
     if trimmed.starts_with("<template") {
         if let Some(close_pos) = trimmed.find('>') {
+            // Dev owns the wrapper — preserve attributes verbatim.
+            // For `CssStrategy::Module` the parser pass enforces
+            // `shadowrootadoptedstylesheets`, so by the time we get here
+            // either the dev wrote it or the build already failed.
             output.push_str(&trimmed[..close_pos]);
-            if css_strategy == CssStrategy::Module && css_content.is_some() {
-                output.push_str(" shadowrootadoptedstylesheets=\"");
-                output.push_str(tag_name);
-                output.push('"');
-            }
             output.push('>');
             if let Some(ref injection) = css_injection {
                 output.push_str(injection);
