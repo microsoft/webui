@@ -70,9 +70,9 @@ WebUI is still in active development. We are not accepting unsolicited pull requ
 
 | Need | Where to go |
 |------|-------------|
-| Report a bug | [`CONTRIBUTING.md#bugs`](CONTRIBUTING.md#bugs) |
-| Request a feature | [`CONTRIBUTING.md#feature-requests`](CONTRIBUTING.md#feature-requests) |
-| Report a documentation need | [`CONTRIBUTING.md#documentation-issues`](CONTRIBUTING.md#documentation-issues) |
+| Report a bug | [Choose an issue template](https://github.com/microsoft/webui/issues/new/choose) |
+| Request a feature | [Choose an issue template](https://github.com/microsoft/webui/issues/new/choose) |
+| Report a documentation need | [Choose an issue template](https://github.com/microsoft/webui/issues/new/choose) |
 | Get support guidance | [`SUPPORT.md`](SUPPORT.md) |
 | Report a security issue | [`SECURITY.md`](SECURITY.md) |
 
