@@ -660,22 +660,22 @@ impl HtmlParser {
                 }
             }
             "style_element" => {
-                // Process inline CSS: extract tokens and strip comments in one
-                // tree-sitter pass.
+                // Process inline CSS: extract tokens and classify comments in one
+                // tree-sitter pass. Exact `/*{{...}}*/` comments are CSS signal
+                // placeholders; all other non-legal comments are stripped.
                 self.add_raw_fragment("<style>");
                 for child in node.named_children(&mut node.walk()) {
                     if child.kind() == "raw_text" {
                         let style_content = &source[child.start_byte()..child.end_byte()];
 
-                        let (tokens, defs, stripped) = self
-                            .css_parser
-                            .extract_tokens_definitions_and_strip_comments(
+                        let (tokens, defs, comments) =
+                            self.css_parser.extract_tokens_definitions_and_comments(
                                 style_content,
                                 self.options.legal_comments,
                             )?;
                         self.token_store.extend(tokens);
                         self.token_definitions.extend(defs);
-                        self.add_raw_fragment(&stripped);
+                        self.process_style_content(style_content, &comments, fragments);
                     }
                 }
                 self.add_raw_fragment("</style>");
@@ -718,6 +718,52 @@ impl HtmlParser {
         }
 
         Ok(())
+    }
+
+    fn process_style_content(
+        &mut self,
+        css: &str,
+        comments: &[crate::css_parser::CssComment],
+        fragments: &mut Vec<WebUIFragment>,
+    ) {
+        let mut last_end = 0usize;
+
+        for comment in comments {
+            if comment.start_byte < last_end {
+                if comment.end_byte > last_end {
+                    last_end = comment.end_byte;
+                }
+                continue;
+            }
+
+            self.add_raw_fragment(&css[last_end..comment.start_byte]);
+            let comment_text = &css[comment.start_byte..comment.end_byte];
+            if let Some(fragment) = self.css_signal_comment_fragment(comment_text) {
+                self.add_fragment(fragment, fragments);
+            } else if comment.preserve {
+                self.add_raw_fragment(comment_text);
+            }
+            last_end = comment.end_byte;
+        }
+
+        self.add_raw_fragment(&css[last_end..]);
+    }
+
+    fn css_signal_comment_fragment(&self, comment: &str) -> Option<WebUIFragment> {
+        let inner = comment.strip_prefix("/*")?.strip_suffix("*/")?.trim();
+        if inner.is_empty() {
+            return None;
+        }
+
+        let parsed = self.handlebars_parser.parse(inner).ok()?;
+        if parsed.len() != 1 {
+            return None;
+        }
+
+        parsed
+            .into_iter()
+            .next()
+            .filter(|fragment| matches!(fragment.fragment.as_ref(), Some(Fragment::Signal(_))))
     }
 
     /// Get the tag name of an element.
@@ -1982,11 +2028,18 @@ impl HtmlParser {
             if !css.contains("/*") && !css.contains("//") {
                 continue;
             }
-            let css_ranges = self
+            let (_tokens, _defs, comments) = self
                 .css_parser
-                .removable_comment_ranges(css, self.options.legal_comments)?;
-            for (start, end) in css_ranges {
-                ranges.push((style_start + start, style_start + end));
+                .extract_tokens_definitions_and_comments(css, self.options.legal_comments)?;
+            for comment in comments {
+                let comment_text = &css[comment.start_byte..comment.end_byte];
+                if comment.preserve || self.css_signal_comment_fragment(comment_text).is_some() {
+                    continue;
+                }
+                ranges.push((
+                    style_start + comment.start_byte,
+                    style_start + comment.end_byte,
+                ));
             }
         }
 
@@ -4968,7 +5021,7 @@ mod tests {
     }
 
     #[test]
-    fn test_style_element_with_handlebars_signal_comment_is_stripped() {
+    fn test_style_element_with_handlebars_signal_comment_emits_signal() {
         let mut parser = HtmlParser::new();
         let html = r#"<html><head><style>
 :root {
@@ -4984,7 +5037,9 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>\n:root {\n    \n}\n</style>"),
+                raw("<html><head><style>\n:root {\n    "),
+                signal_raw("tokens.light"),
+                raw("\n}\n</style>"),
                 signal_raw("head_end"),
                 raw("</head><body>"),
                 signal_raw("body_start"),
@@ -4995,7 +5050,7 @@ mod tests {
     }
 
     #[test]
-    fn test_style_comment_signal_with_spaces_is_stripped() {
+    fn test_style_comment_signal_with_spaces_emits_signal() {
         let mut parser = HtmlParser::new();
         let html = r#"<html><head><style>
 :root {
@@ -5011,7 +5066,9 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>\n:root {\n    \n}\n</style>"),
+                raw("<html><head><style>\n:root {\n    "),
+                signal_raw("tokens.light"),
+                raw("\n}\n</style>"),
                 signal_raw("head_end"),
                 raw("</head><body>"),
                 signal_raw("body_start"),
@@ -5022,7 +5079,7 @@ mod tests {
     }
 
     #[test]
-    fn test_style_comment_signal_double_brace_is_stripped() {
+    fn test_style_comment_signal_double_brace_emits_signal() {
         let mut parser = HtmlParser::new();
         let html = "<html><head><style>/*{{themeCss}}*/</style></head><body></body></html>";
 
@@ -5034,7 +5091,9 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style></style>"),
+                raw("<html><head><style>"),
+                signal("themeCss"),
+                raw("</style>"),
                 signal_raw("head_end"),
                 raw("</head><body>"),
                 signal_raw("body_start"),
@@ -5116,7 +5175,7 @@ mod tests {
     }
 
     #[test]
-    fn test_style_mixed_css_and_comment_signal_is_stripped() {
+    fn test_style_mixed_css_and_comment_signal_emits_signal() {
         let mut parser = HtmlParser::new();
         let html = r#"<html><head><style>
   .a { color: red; }
@@ -5132,7 +5191,9 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>\n  .a { color: red; }\n  \n  .b { color: blue; }\n</style>"),
+                raw("<html><head><style>\n  .a { color: red; }\n  "),
+                signal("themeCss"),
+                raw("\n  .b { color: blue; }\n</style>"),
                 signal_raw("head_end"),
                 raw("</head><body>"),
                 signal_raw("body_start"),

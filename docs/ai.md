@@ -529,10 +529,10 @@ characters. The CSS files are still written to `--out`; `--css-public-base`
 changes only the href compiled into `protocol.bin` and emitted in stylesheet
 `<link>` tags.
 
-HTML and CSS comments are stripped at build time. Bindings inside HTML comments
-are ignored. Legal CSS comments containing `@license` or `@preserve`, or
-starting with `/*!` or `//!`, are preserved only when `--legal-comments inline`
-is active.
+HTML comments are stripped at build time and bindings inside them are ignored.
+CSS comments are stripped except legal comments and `<style>` signal fragments.
+Legal CSS comments containing `@license` or `@preserve`, or starting with `/*!`
+or `//!`, are preserved only when `--legal-comments inline` is active.
 
 ### Serve (dev server)
 
@@ -666,11 +666,11 @@ property declarations into the render state. Only available on `webui serve`.
 }
 ```
 
-**Template usage** - use a raw state binding to inject tokens:
+**Template usage** - wrap dynamic CSS fragments in a CSS block comment:
 ```html
 <style>
   :root {
-    {{{tokens.light}}}
+    /*{{{tokens.light}}}*/
   }
 </style>
 ```

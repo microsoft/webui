@@ -61,9 +61,11 @@ in `<link>` tags.
 
 WebUI strips HTML comments and CSS comments at build time. Bindings or
 directives inside HTML comments are ignored and never produce fragments or
-hydration metadata. With the default `--legal-comments inline`, CSS comments
-that contain `@license` or `@preserve`, or start with `/*!` or `//!`, are
-preserved inline. Use `--legal-comments none` to strip all comments.
+hydration metadata. Inside `<style>` tags, dynamic CSS fragments are valid only
+when wrapped as exact CSS block comments, such as `/*{{{tokens.light}}}*/`.
+With the default `--legal-comments inline`, CSS comments that contain
+`@license` or `@preserve`, or start with `/*!` or `//!`, are preserved inline.
+Use `--legal-comments none` to strip all non-signal comments.
 
 **DOM Strategies:**
 

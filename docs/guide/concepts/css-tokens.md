@@ -60,12 +60,13 @@ HTML and CSS comments are stripped at build time. Bindings inside HTML comments
 are ignored, so comments cannot be used as token placeholders. CSS legal
 comments are preserved only when `--legal-comments inline` is active.
 
-Inject resolved token declarations through normal state bindings instead:
+Inside `<style>` tags, dynamic CSS fragments are valid only when wrapped in a
+CSS block comment. The comment must contain exactly one handlebars expression:
 
 ```html
 <style>
   :root {
-    {{{tokens.light}}}
+    /*{{{tokens.light}}}*/
   }
 </style>
 ```

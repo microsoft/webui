@@ -1162,8 +1162,18 @@ After parsing completes, `HtmlParser::take_tokens()` returns the sorted, dedupli
 
 HTML comments are stripped from parser output. Comment contents are never parsed
 for signals, directives, attributes, or plugin metadata. CSS comments are
-stripped from inline `<style>` elements and component CSS, except legal comments
-when `LegalComments::Inline` is active.
+stripped from inline `<style>` elements and component CSS, except for two cases:
+legal comments when `LegalComments::Inline` is active, and CSS signal fragments
+in inline `<style>` elements. A CSS signal fragment is a block comment whose
+trimmed body is exactly one handlebars expression:
+
+```css
+/*{{tokens}}*/        → Signal { value: "tokens", raw: false }
+/*{{{tokens.light}}}*/ → Signal { value: "tokens.light", raw: true }
+```
+
+Bare handlebars expressions in CSS are raw text. Dynamic CSS fragments must use
+the comment wrapper so the CSS parser can distinguish them from invalid CSS.
 
 ### Design Token Resolution (`webui-tokens`)
 

@@ -1016,6 +1016,10 @@ fn compile_style_content(input: &str, meta: &mut TemplateSectionMeta) {
             if let Some(close) = input[index + 2..].find("*/") {
                 let end = index + 2 + close + 2;
                 let comment = &input[index..end];
+                if compile_css_signal_comment(comment, meta) {
+                    index = end;
+                    continue;
+                }
                 if comment_policy::is_legal_css_comment(comment) {
                     meta.html.push_str(comment);
                 }
@@ -1045,6 +1049,39 @@ fn compile_style_content(input: &str, meta: &mut TemplateSectionMeta) {
         meta.html.push(ch);
         index += ch.len_utf8();
     }
+}
+
+fn compile_css_signal_comment(comment: &str, meta: &mut TemplateSectionMeta) -> bool {
+    let Some(inner) = comment
+        .strip_prefix("/*")
+        .and_then(|value| value.strip_suffix("*/"))
+        .map(str::trim)
+    else {
+        return false;
+    };
+
+    if let Some((path, raw)) = parse_single_handlebars_binding(inner) {
+        let idx = meta.text_bindings.len();
+        meta.text_bindings.push((path, raw));
+        let _ = write!(meta.html, "<!--t:{idx}-->");
+        return true;
+    }
+
+    false
+}
+
+fn parse_single_handlebars_binding(value: &str) -> Option<(String, bool)> {
+    if let Some(inner) = value
+        .strip_prefix("{{{")
+        .and_then(|inner| inner.strip_suffix("}}}"))
+    {
+        return Some((inner.trim().to_string(), true));
+    }
+
+    let inner = value
+        .strip_prefix("{{")
+        .and_then(|inner| inner.strip_suffix("}}"))?;
+    Some((inner.trim().to_string(), false))
 }
 
 fn find_style_element_bounds(input: &str, index: usize) -> Option<(usize, usize, usize)> {
@@ -2474,7 +2511,7 @@ mod tests {
     fn test_metadata_strips_style_comments_without_processing_bindings() {
         let result = generate_compiled_template(
             "my-comp",
-            r#"<style>/* {{ignored}} */ .x { color: {{color}}; } /*! @license {{kept}} */</style>"#,
+            r#"<style>/* prose {{ignored}} */ .x { color: {{color}}; } /*! @license {{kept}} */</style>"#,
         );
 
         assert_no_client_markers(&result);
@@ -2482,6 +2519,19 @@ mod tests {
         assert!(result.contains(r#"["color"]"#));
         assert!(!result.contains(r#"[["kept"]]"#));
         assert!(result.contains("/*! @license {{kept}} */"));
+    }
+
+    #[test]
+    fn test_metadata_processes_style_signal_comments() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<style>:root{/*{{{tokens.light}}}*/}</style>"#,
+        );
+
+        assert_no_client_markers(&result);
+        assert!(result.contains(r#"["tokens.light"]"#));
+        assert!(!result.contains("/*"));
+        assert!(!result.contains("*/"));
     }
 
     #[test]

@@ -24,8 +24,15 @@ pub struct CssParser {
 struct CssWalkContext<'a> {
     tokens: &'a mut HashSet<String>,
     definitions: &'a mut HashSet<String>,
-    comment_ranges: Option<&'a mut Vec<(usize, usize)>>,
+    comments: Option<&'a mut Vec<CssComment>>,
     legal_comments: LegalComments,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CssComment {
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub preserve: bool,
 }
 
 impl fmt::Debug for CssParser {
@@ -126,7 +133,7 @@ impl CssParser {
         let mut context = CssWalkContext {
             tokens: &mut tokens,
             definitions: &mut definitions,
-            comment_ranges: None,
+            comments: None,
             legal_comments: LegalComments::Inline,
         };
         Self::walk_css_tree(tree.root_node(), css_content, &mut context);
@@ -154,7 +161,7 @@ impl CssParser {
         let mut context = CssWalkContext {
             tokens: &mut tokens,
             definitions: &mut definitions,
-            comment_ranges: None,
+            comments: None,
             legal_comments: LegalComments::Inline,
         };
         Self::walk_css_tree(tree.root_node(), css_content, &mut context);
@@ -185,7 +192,7 @@ impl CssParser {
         let mut context = CssWalkContext {
             tokens: &mut tokens,
             definitions: &mut definitions,
-            comment_ranges: None,
+            comments: None,
             legal_comments: LegalComments::Inline,
         };
         Self::walk_css_tree(tree.root_node(), css_content, &mut context);
@@ -208,40 +215,48 @@ impl CssParser {
 
         let mut tokens = HashSet::new();
         let mut definitions = HashSet::new();
-        let mut comment_ranges = Vec::new();
+        let mut comments = Vec::new();
 
         let mut context = CssWalkContext {
             tokens: &mut tokens,
             definitions: &mut definitions,
-            comment_ranges: Some(&mut comment_ranges),
+            comments: Some(&mut comments),
             legal_comments,
         };
         Self::walk_css_tree(tree.root_node(), css_content, &mut context);
 
         tokens.retain(|t| !definitions.contains(t));
+        let mut comment_ranges = removable_ranges(&comments);
         let stripped = comment_policy::strip_ranges(css_content, comment_ranges.as_mut_slice());
         Ok((tokens, definitions, stripped))
     }
 
-    /// Return CSS comment byte ranges that should be removed for the policy.
-    pub(crate) fn removable_comment_ranges(
+    /// Extract tokens, definitions, and CSS comments in one parse.
+    pub(crate) fn extract_tokens_definitions_and_comments(
         &mut self,
         css_content: &str,
         legal_comments: LegalComments,
-    ) -> Result<Vec<(usize, usize)>> {
+    ) -> Result<(HashSet<String>, HashSet<String>, Vec<CssComment>)> {
         let tree = self
             .parser
             .parse(css_content, None)
             .ok_or_else(|| ParserError::Css("Failed to parse CSS".into()))?;
 
-        let mut comment_ranges = Vec::new();
-        Self::collect_comment_ranges(
-            tree.root_node(),
-            css_content,
+        let mut tokens = HashSet::new();
+        let mut definitions = HashSet::new();
+        let mut comments = Vec::new();
+
+        let mut context = CssWalkContext {
+            tokens: &mut tokens,
+            definitions: &mut definitions,
+            comments: Some(&mut comments),
             legal_comments,
-            &mut comment_ranges,
-        );
-        Ok(comment_ranges)
+        };
+        Self::walk_css_tree(tree.root_node(), css_content, &mut context);
+
+        tokens.retain(|t| !definitions.contains(t));
+        comments.sort_unstable_by_key(|comment| comment.start_byte);
+        Ok((tokens, definitions, comments))
     }
 
     /// Iteratively walk the CSS tree to collect var() usages and custom
@@ -259,13 +274,8 @@ impl CssParser {
                     Self::collect_custom_property_definition(node, source, context.definitions);
                 }
                 kind if comment_policy::is_css_comment_node(kind) => {
-                    if let Some(ranges) = context.comment_ranges.as_deref_mut() {
-                        Self::push_removable_comment_range(
-                            source,
-                            node,
-                            context.legal_comments,
-                            ranges,
-                        );
+                    if let Some(comments) = context.comments.as_deref_mut() {
+                        Self::push_comment(source, node, context.legal_comments, comments);
                     }
                 }
                 _ => {}
@@ -281,41 +291,18 @@ impl CssParser {
         }
     }
 
-    /// Iteratively walk the CSS tree to collect removable comment ranges only.
-    #[allow(clippy::cast_possible_truncation)] // tree-sitter child indices are u32
-    fn collect_comment_ranges(
-        root: Node<'_>,
-        source: &str,
-        legal_comments: LegalComments,
-        ranges: &mut Vec<(usize, usize)>,
-    ) {
-        let mut stack = vec![root];
-
-        while let Some(node) = stack.pop() {
-            if comment_policy::is_css_comment_node(node.kind()) {
-                Self::push_removable_comment_range(source, node, legal_comments, ranges);
-            }
-
-            let count = node.child_count();
-            for i in (0..count).rev() {
-                if let Some(child) = node.child(i as u32) {
-                    stack.push(child);
-                }
-            }
-        }
-    }
-
-    fn push_removable_comment_range(
+    fn push_comment(
         source: &str,
         node: Node<'_>,
         legal_comments: LegalComments,
-        ranges: &mut Vec<(usize, usize)>,
+        comments: &mut Vec<CssComment>,
     ) {
         let comment = &source[node.start_byte()..node.end_byte()];
-        if comment_policy::should_preserve_css_comment(comment, legal_comments) {
-            return;
-        }
-        ranges.push((node.start_byte(), node.end_byte()));
+        comments.push(CssComment {
+            start_byte: node.start_byte(),
+            end_byte: node.end_byte(),
+            preserve: comment_policy::should_preserve_css_comment(comment, legal_comments),
+        });
     }
 
     /// If `node` is a `var()` call expression, extract its `plain_value`
@@ -368,6 +355,16 @@ impl CssParser {
             }
         }
     }
+}
+
+fn removable_ranges(comments: &[CssComment]) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::with_capacity(comments.len());
+    for comment in comments {
+        if !comment.preserve {
+            ranges.push((comment.start_byte, comment.end_byte));
+        }
+    }
+    ranges
 }
 
 impl Default for CssParser {
