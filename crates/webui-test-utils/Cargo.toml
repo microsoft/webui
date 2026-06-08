@@ -17,7 +17,7 @@ name = "webui_test_utils"
 [dependencies]
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.14" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.15" }
 
 [lints]
 workspace = true
