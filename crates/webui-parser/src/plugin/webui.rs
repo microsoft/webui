@@ -219,6 +219,13 @@ impl ParserPlugin for WebUIParserPlugin {
 
 // ── Compiled template generation ───────────────────────────────────
 
+const TEXT_MARKER_PREFIX: &str = "<!--t:";
+const TEXT_MARKER_SUFFIX: &str = "-->";
+const MIN_TEXT_MARKER_DIGITS: usize = 1;
+const MIN_TEXT_MARKER_LEN: usize =
+    TEXT_MARKER_PREFIX.len() + MIN_TEXT_MARKER_DIGITS + TEXT_MARKER_SUFFIX.len();
+const TEXT_MARKER_INDEX_RADIX: usize = 10;
+
 /// A compiled template section.
 ///
 /// Used for the root template and for nested block-table entries.
@@ -234,6 +241,9 @@ struct TemplateSectionMeta {
     /// These are resolved into `text_runs` during finalization.
     /// Each entry is `(path, raw)` where raw indicates triple-brace `{{{...}}}`.
     text_bindings: Vec<(String, bool)>,
+    /// Byte offsets in `html` where compiler-generated text markers start.
+    /// Authored CSS may contain marker-like text; only these offsets are metadata.
+    text_marker_offsets: Vec<usize>,
     /// Client text-run metadata: `(slot, parts, raw)`.
     /// `raw` is true when the binding uses triple-brace `{{{...}}}` syntax.
     text_runs: Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
@@ -856,6 +866,7 @@ fn compile_section(input: &str, blocks: &mut Vec<TemplateSectionMeta>) -> Templa
     let mut meta = TemplateSectionMeta {
         html: String::with_capacity(input.len()),
         text_bindings: Vec::new(),
+        text_marker_offsets: Vec::new(),
         text_runs: Vec::new(),
         attr_bindings: Vec::new(),
         attr_groups: Vec::new(),
@@ -988,7 +999,7 @@ fn compile_text_binding_at(
             let expr = input[index + 3..end].trim();
             let idx = meta.text_bindings.len();
             meta.text_bindings.push((expr.to_string(), true));
-            let _ = write!(meta.html, "<!--t:{idx}-->");
+            emit_text_marker(meta, idx);
             return Some(end + 3);
         }
     }
@@ -998,12 +1009,19 @@ fn compile_text_binding_at(
             let expr = input[index + 2..end].trim();
             let idx = meta.text_bindings.len();
             meta.text_bindings.push((expr.to_string(), false));
-            let _ = write!(meta.html, "<!--t:{idx}-->");
+            emit_text_marker(meta, idx);
             return Some(end + 2);
         }
     }
 
     None
+}
+
+fn emit_text_marker(meta: &mut TemplateSectionMeta, index: usize) {
+    meta.text_marker_offsets.push(meta.html.len());
+    meta.html.push_str(TEXT_MARKER_PREFIX);
+    let _ = write!(meta.html, "{index}");
+    meta.html.push_str(TEXT_MARKER_SUFFIX);
 }
 
 fn compile_style_content(input: &str, meta: &mut TemplateSectionMeta) {
@@ -1055,7 +1073,7 @@ fn compile_css_signal_comment(comment: &str, meta: &mut TemplateSectionMeta) -> 
     if let Some(signal) = comment_policy::parse_css_signal_comment(comment) {
         let idx = meta.text_bindings.len();
         meta.text_bindings.push((signal.path, signal.raw));
-        let _ = write!(meta.html, "<!--t:{idx}-->");
+        emit_text_marker(meta, idx);
         return true;
     }
 
@@ -1116,6 +1134,7 @@ fn ascii_starts_with_ignore_case(input: &[u8], prefix: &[u8]) -> bool {
 enum FragmentNode {
     Element(FragmentElement),
     Text(String),
+    TextMarker(usize),
     Comment(String),
 }
 
@@ -1135,7 +1154,8 @@ struct FragmentAttr {
 
 fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     let raw_html = std::mem::take(&mut meta.html);
-    let nodes = parse_fragment_nodes(&raw_html);
+    let text_marker_offsets = std::mem::take(&mut meta.text_marker_offsets);
+    let nodes = parse_fragment_nodes(&raw_html, &text_marker_offsets);
     let text_bindings = meta.text_bindings.clone();
     let mut finalized_html = String::with_capacity(raw_html.len());
     let mut text_runs = Vec::new();
@@ -1233,6 +1253,7 @@ fn process_fragment_children(
         }
 
         match &nodes[index] {
+            FragmentNode::TextMarker(_) => {}
             FragmentNode::Comment(data) => {
                 if let Some(idx) = parse_marker_index(data, "c:") {
                     if let Some(slot) = condition_slots.get_mut(idx) {
@@ -1377,14 +1398,13 @@ fn collect_text_run(
                 }
                 consumed += 1;
             }
-            FragmentNode::Comment(data) => {
-                if let Some(index) = parse_marker_index(data, "t:") {
-                    if let Some((path, raw)) = text_bindings.get(index) {
-                        parts.push(CompiledAttrPart::Dynamic(path.clone()));
-                        has_dynamic = true;
-                        if *raw {
-                            is_raw = true;
-                        }
+            FragmentNode::Comment(_) => break,
+            FragmentNode::TextMarker(index) => {
+                if let Some((path, raw)) = text_bindings.get(*index) {
+                    parts.push(CompiledAttrPart::Dynamic(path.clone()));
+                    has_dynamic = true;
+                    if *raw {
+                        is_raw = true;
                     }
                     consumed += 1;
                 } else {
@@ -1442,7 +1462,7 @@ fn emit_html_attr_value(value: &str, out: &mut String) {
     }
 }
 
-fn parse_fragment_nodes(input: &str) -> Vec<FragmentNode> {
+fn parse_fragment_nodes(input: &str, text_marker_offsets: &[usize]) -> Vec<FragmentNode> {
     let mut roots = Vec::new();
     let mut stack: Vec<FragmentElement> = Vec::new();
     let bytes = input.as_bytes();
@@ -1451,6 +1471,18 @@ fn parse_fragment_nodes(input: &str) -> Vec<FragmentNode> {
 
     while index < len {
         let remaining = &input[index..];
+        if let Some((marker_index, marker_end)) =
+            find_text_marker_comment(input, index, 0, text_marker_offsets)
+        {
+            push_fragment_node(
+                &mut roots,
+                &mut stack,
+                FragmentNode::TextMarker(marker_index),
+            );
+            index = marker_end;
+            continue;
+        }
+
         if remaining.starts_with("<!--") {
             if let Some(close) = remaining.find("-->") {
                 push_fragment_node(
@@ -1474,9 +1506,33 @@ fn parse_fragment_nodes(input: &str) -> Vec<FragmentNode> {
         }
 
         if remaining.starts_with('<') {
-            if let Some((element, consumed)) = parse_fragment_start_tag(remaining) {
+            if let Some((mut element, consumed)) = parse_fragment_start_tag(remaining) {
                 if element.self_closing {
                     push_fragment_node(&mut roots, &mut stack, FragmentNode::Element(element));
+                } else if element.tag_name.eq_ignore_ascii_case("style") {
+                    let content_start = index + consumed;
+                    if let Some((close_start, close_end)) = find_style_end_tag(input, content_start)
+                    {
+                        push_style_raw_text_nodes(
+                            &mut element.children,
+                            &input[content_start..close_start],
+                            content_start,
+                            text_marker_offsets,
+                        );
+                        push_fragment_node(&mut roots, &mut stack, FragmentNode::Element(element));
+                        index = close_end;
+                        continue;
+                    }
+
+                    push_style_raw_text_nodes(
+                        &mut element.children,
+                        &input[content_start..],
+                        content_start,
+                        text_marker_offsets,
+                    );
+                    push_fragment_node(&mut roots, &mut stack, FragmentNode::Element(element));
+                    index = len;
+                    continue;
                 } else {
                     stack.push(element);
                 }
@@ -1498,6 +1554,73 @@ fn parse_fragment_nodes(input: &str) -> Vec<FragmentNode> {
     }
 
     roots
+}
+
+fn push_style_raw_text_nodes(
+    children: &mut Vec<FragmentNode>,
+    input: &str,
+    base_offset: usize,
+    text_marker_offsets: &[usize],
+) {
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+    let mut index = 0usize;
+    let mut text_start = 0usize;
+
+    while index + MIN_TEXT_MARKER_LEN <= len {
+        if let Some((marker_index, marker_end)) =
+            find_text_marker_comment(input, index, base_offset, text_marker_offsets)
+        {
+            if text_start < index {
+                children.push(FragmentNode::Text(input[text_start..index].to_string()));
+            }
+            children.push(FragmentNode::TextMarker(marker_index));
+            index = marker_end;
+            text_start = marker_end;
+            continue;
+        }
+        index += 1;
+    }
+
+    if text_start < len {
+        children.push(FragmentNode::Text(input[text_start..].to_string()));
+    }
+}
+
+fn find_text_marker_comment(
+    input: &str,
+    index: usize,
+    base_offset: usize,
+    text_marker_offsets: &[usize],
+) -> Option<(usize, usize)> {
+    let bytes = input.as_bytes();
+    if bytes.get(index..index + TEXT_MARKER_PREFIX.len()) != Some(TEXT_MARKER_PREFIX.as_bytes()) {
+        return None;
+    }
+    if text_marker_offsets
+        .binary_search(&(base_offset + index))
+        .is_err()
+    {
+        return None;
+    }
+
+    let mut cursor = index + TEXT_MARKER_PREFIX.len();
+    let digit_start = cursor;
+    let mut marker_index = 0usize;
+    while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+        marker_index = marker_index
+            .checked_mul(TEXT_MARKER_INDEX_RADIX)?
+            .checked_add((bytes[cursor] - b'0') as usize)?;
+        cursor += 1;
+    }
+    if cursor == digit_start
+        || bytes.get(cursor..cursor + TEXT_MARKER_SUFFIX.len())
+            != Some(TEXT_MARKER_SUFFIX.as_bytes())
+    {
+        return None;
+    }
+
+    Some((marker_index, cursor + TEXT_MARKER_SUFFIX.len()))
 }
 
 fn push_fragment_node(
@@ -2510,6 +2633,47 @@ mod tests {
         assert!(result.contains(r#"["tokens.light"]"#));
         assert!(!result.contains("/*"));
         assert!(!result.contains("*/"));
+    }
+
+    #[test]
+    fn test_metadata_keeps_legal_style_comment_with_html_like_tag_as_raw_text() {
+        let result = generate_compiled_template(
+            "my-component",
+            r#"<style>:host { display: block; }/*! @license The <my-component> element. */.container { padding: 16px; }</style><div>hello</div>"#,
+        );
+
+        assert_no_client_markers(&result);
+        assert!(result.contains("@license The <my-component> element."));
+        assert!(!result.contains("</my-component>"));
+        assert!(result.contains("</style><div>hello</div>"));
+    }
+
+    #[test]
+    fn test_metadata_keeps_marker_like_text_in_legal_style_comment_literal() {
+        let result = generate_compiled_template(
+            "my-component",
+            r#"<p>{{title}}</p><style>/*! @license <!--t:0--> */.x { color: red; }</style>"#,
+        );
+
+        assert!(result.contains("<!--t:0-->"));
+        assert!(result
+            .contains(r#"h:"<p></p><style>/*! @license <!--t:0--> */.x { color: red; }</style>""#));
+        assert!(result.contains(r#",tx:[[[[0],0],[["title"]]]]"#));
+        assert!(!result.contains(r#"[[[1],0],[["title"]]]"#));
+    }
+
+    #[test]
+    fn test_metadata_keeps_marker_like_style_text_between_real_signal_markers() {
+        let result = generate_compiled_template(
+            "my-component",
+            r#"<style>/*{{first}}*/📚/*! @license <!--t:0--> <my-component> *//*{{{second}}}*/</style><div>done</div>"#,
+        );
+
+        assert!(result.contains(r#"["first"]"#));
+        assert!(result.contains(r#"["second"]"#));
+        assert!(result.contains("📚/*! @license <!--t:0--> <my-component> */"));
+        assert!(!result.contains("</my-component>"));
+        assert!(result.contains("</style><div>done</div>"));
     }
 
     #[test]
