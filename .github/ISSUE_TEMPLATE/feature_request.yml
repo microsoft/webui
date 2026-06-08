@@ -1,0 +1,68 @@
+name: Feature request
+description: Request a WebUI capability, API, CLI behavior, or workflow improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping shape WebUI. Before opening a feature request, please read the [feature request guidance](https://github.com/microsoft/webui/blob/main/CONTRIBUTING.md#feature-requests).
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before filing
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of WebUI would this improve?
+      options:
+        - CLI
+        - Parser
+        - Handler
+        - Protocol
+        - FFI
+        - WebUI Framework package
+        - WebUI Router package
+        - Documentation
+        - Examples
+        - Integrations
+        - Performance
+        - Not sure / other
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or need
+      description: What are you trying to solve, and why does it matter?
+      placeholder: I want to...
+    validations:
+      required: true
+  - type: textarea
+    id: audience
+    attributes:
+      label: Who would benefit?
+      description: Describe the users, projects, or workflows this would help.
+  - type: textarea
+    id: desired-outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the API, CLI behavior, runtime behavior, or workflow you would like.
+  - type: textarea
+    id: example
+    attributes:
+      label: Concrete example
+      description: Show the desired API, CLI command, template, or workflow.
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: Note any performance, security, compatibility, migration, or ecosystem constraints.
+      placeholder: Performance, security, compatibility, migration, or other constraints.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds
+      description: What alternatives or workarounds have you considered?

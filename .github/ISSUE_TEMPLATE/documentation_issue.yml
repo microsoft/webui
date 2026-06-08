@@ -1,0 +1,62 @@
+name: Documentation need
+description: Report missing, confusing, or incorrect WebUI documentation.
+title: "[Docs]: "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve WebUI documentation. Before opening an issue, please read the [documentation issue guidance](https://github.com/microsoft/webui/blob/main/CONTRIBUTING.md#documentation-issues).
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before filing
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which documentation area needs attention?
+      options:
+        - Getting started
+        - CLI
+        - Template syntax
+        - Components and interactivity
+        - Routing
+        - State management
+        - Handlers and integrations
+        - Plugins
+        - Performance
+        - Examples
+        - API reference
+        - Not sure / other
+  - type: input
+    id: location
+    attributes:
+      label: Page, section, or workflow
+      description: Link to the page or name the workflow, if you know it.
+      placeholder: https://microsoft.github.io/webui/guide/...
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is the documentation issue?
+      description: Describe what was confusing, missing, incorrect, or hard to find.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to find?
+      description: Describe the information or example you expected.
+  - type: textarea
+    id: helpful-information
+    attributes:
+      label: What information would help?
+      description: Include any details that would make the documentation clearer.
+  - type: textarea
+    id: suggested-wording
+    attributes:
+      label: Suggested wording or examples
+      description: If you have a suggested fix, paste it here.

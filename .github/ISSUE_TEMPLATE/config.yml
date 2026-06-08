@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support guidance
+    url: https://github.com/microsoft/webui/blob/main/SUPPORT.md
+    about: Read the support policy before opening a support request.
+  - name: Security vulnerability
+    url: https://github.com/microsoft/webui/security/policy
+    about: Report suspected vulnerabilities privately through the security policy.

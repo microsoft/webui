@@ -14,7 +14,13 @@ If a maintainer invites a pull request for a focused change, most contributions 
 - Feature requests that explain the need and expected outcome.
 - Documentation issues that identify confusing, missing, or incorrect guidance.
 
-Before opening an issue, search the [existing issues](https://github.com/microsoft/webui/issues) to avoid duplicates. Use one issue per bug, feature, or documentation need.
+Before opening an issue, search the [existing issues](https://github.com/microsoft/webui/issues) to avoid duplicates. Use one issue per bug, feature, or documentation need. Provide as much detail as you can, but do not let a missing version number or code sample stop you from reporting a useful issue.
+
+Start from the [GitHub issue template chooser](https://github.com/microsoft/webui/issues/new/choose), or use a matching form directly:
+
+- [Report a bug](https://github.com/microsoft/webui/issues/new?template=bug_report.yml)
+- [Request a feature](https://github.com/microsoft/webui/issues/new?template=feature_request.yml)
+- [Report a documentation need](https://github.com/microsoft/webui/issues/new?template=documentation_issue.yml)
 
 ## Bugs
 

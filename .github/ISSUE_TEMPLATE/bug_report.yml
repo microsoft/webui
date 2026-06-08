@@ -1,0 +1,90 @@
+name: Bug report
+description: Report a reproducible problem in WebUI.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve WebUI. Before opening a bug, please read the [bug reporting guidance](https://github.com/microsoft/webui/blob/main/CONTRIBUTING.md#bugs).
+
+        Do not report security vulnerabilities here. Follow the [security policy](https://github.com/microsoft/webui/security/policy) instead.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before filing
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of WebUI does this affect?
+      options:
+        - CLI
+        - Parser
+        - Handler
+        - Protocol
+        - FFI
+        - WebUI Framework package
+        - WebUI Router package
+        - Documentation
+        - Examples
+        - Integrations
+        - Performance
+        - Not sure / other
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: Briefly describe the problem.
+      placeholder: WebUI fails to render nested route content when...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: If available, provide a sample repository, small code snippet, or minimal template that reproduces the issue.
+      placeholder: Paste the smallest example that reproduces the problem.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the exact commands or actions needed to reproduce the problem.
+      placeholder: |
+        1. Run `...`
+        2. Open `...`
+        3. Observe `...`
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead?
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include relevant versions and the command you ran.
+      value: |
+        - OS:
+        - Rust version:
+        - Node.js version:
+        - WebUI package or CLI version:
+        - Command:
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or terminal output
+      description: Paste relevant logs, stack traces, or terminal output.
+      render: shell
