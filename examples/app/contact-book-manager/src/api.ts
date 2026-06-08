@@ -44,13 +44,16 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   contacts: {
-    list: (params?: { q?: string; group?: string; favorites?: boolean }) => {
+    list: (
+      params?: { q?: string; group?: string; favorites?: boolean },
+      opts?: { signal?: AbortSignal },
+    ) => {
       const qs = new URLSearchParams();
       if (params?.q) qs.set('q', params.q);
       if (params?.group) qs.set('group', params.group);
       if (params?.favorites) qs.set('favorites', 'true');
       const query = qs.toString();
-      return request<Contact[]>(`/contacts${query ? `?${query}` : ''}`);
+      return request<Contact[]>(`/contacts${query ? `?${query}` : ''}`, { signal: opts?.signal });
     },
     get: (id: string) => request<Contact>(`/contacts/${id}`),
     create: (data: Partial<Contact>) =>

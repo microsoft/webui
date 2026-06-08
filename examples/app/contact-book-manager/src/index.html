@@ -37,12 +37,12 @@
 <body>
   <route path="/" component="cb-app">
     <route path="" component="cb-page-dashboard" exact />
-    <route path="contacts" component="cb-page-contacts" exact keep-alive />
+    <route path="contacts" component="cb-page-contacts" exact keep-alive query="q" />
     <route path="contacts/add" component="cb-contact-form" exact />
     <route path="contacts/:id" component="cb-contact-detail" exact />
     <route path="contacts/:id/edit" component="cb-contact-form" exact />
-    <route path="favorites" component="cb-page-favorites" exact keep-alive />
-    <route path="groups/:group" component="cb-page-group" exact keep-alive />
+    <route path="favorites" component="cb-page-favorites" exact keep-alive query="q" />
+    <route path="groups/:group" component="cb-page-group" exact keep-alive query="q" />
   </route>
 
   <script type="module" src="./index.js"></script>

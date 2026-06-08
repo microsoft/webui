@@ -2,8 +2,9 @@
 // Licensed under the MIT license.
 
 import { WebUIElement, observable } from '@microsoft/webui-framework';
-import { Router, isStateful } from '@microsoft/webui-router';
-import { api, type Contact } from '#api';
+import { Router } from '@microsoft/webui-router';
+import type { NavigationEvent } from '@microsoft/webui-router';
+import { api } from '#api';
 
 // Child components used in cb-app.html
 import '#organisms/cb-header/cb-header.js';
@@ -21,10 +22,12 @@ export class CbApp extends WebUIElement {
   @observable totalFavorites = '0';
   @observable groups: string[] = [];
 
-  private searchGen = 0;
-
-  private readonly onNavigated = (): void => {
-    if (this.searchQuery) void this.applySearch(this.searchQuery);
+  // Mirror the `q` route query param into the search box so the input stays in
+  // sync on direct loads, back/forward, and when navigating to an unfiltered
+  // route. Filtering itself is owned by each list route's loader.
+  private readonly onNavigated = (e: Event): void => {
+    const { query } = (e as CustomEvent<NavigationEvent>).detail;
+    this.searchQuery = query.q ?? '';
   };
 
   override connectedCallback(): void {
@@ -37,47 +40,21 @@ export class CbApp extends WebUIElement {
     window.removeEventListener('webui:route:navigated', this.onNavigated);
   }
 
+  // Model search as route query state: write `q` to the URL and let the active
+  // list route's loader fetch the filtered contacts. The shell no longer reads
+  // the active page, calls the contacts API, or pushes state into pages.
   onSearch(e: SearchChangeEvent): void {
     this.searchQuery = e.detail.value;
-    void this.applySearch(e.detail.value);
-  }
 
-  private async applySearch(query: string): Promise<void> {
-    const gen = ++this.searchGen;
-    const root = this.shadowRoot;
-    if (!root) return;
-
-    const activeRoute = root.querySelector('webui-route[active]');
-    if (!activeRoute) return;
-
-    const contactsPage = activeRoute.querySelector('cb-page-contacts');
-    const favoritesPage = activeRoute.querySelector('cb-page-favorites');
-    const groupPage = activeRoute.querySelector('cb-page-group');
-
-    let pageEl: Element | null = null;
-    let favorites = false;
-    let group = '';
-
-    if (contactsPage) {
-      pageEl = contactsPage;
-    } else if (favoritesPage) {
-      pageEl = favoritesPage;
-      favorites = true;
-    } else if (groupPage) {
-      pageEl = groupPage;
-      group = this.activeGroup;
+    const next = new URL(window.location.href);
+    const query = e.detail.value.trim();
+    if (query) {
+      next.searchParams.set('q', query);
+    } else {
+      next.searchParams.delete('q');
     }
 
-    if (!pageEl) return;
-
-    const contacts: Contact[] = await api.contacts.list({
-      q: query || undefined,
-      favorites: favorites || undefined,
-      group: group || undefined,
-    });
-
-    if (gen !== this.searchGen) return;
-    if (isStateful(pageEl)) pageEl.setState({ contacts });
+    Router.navigate(`${next.pathname}${next.search}`);
   }
 
   onSelectContact(e: ContactEvent): void {
@@ -113,7 +90,7 @@ export class CbApp extends WebUIElement {
     Router.back();
   }
 
-  async onFormSaveEvent(e: FormSaveEvent): void {
+  async onFormSaveEvent(e: FormSaveEvent): Promise<void> {
     const data = e.detail;
     try {
       let saved;

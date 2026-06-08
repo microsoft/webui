@@ -292,19 +292,21 @@ test.describe('search', () => {
     await expect(page.locator('cb-page-favorites cb-contact-card')).toContainText('Sarah');
   });
 
-  test('search persists when navigating back to contacts page', async ({ page }) => {
+  test('search persists in the URL across back navigation', async ({ page }) => {
     await page.goto('/contacts');
     const searchInput = page.locator('cb-header .search-input');
     await searchInput.fill('Sarah');
+    await expect(page).toHaveURL(/\/contacts\?q=Sarah$/);
     await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(1);
 
-    // Navigate to a contact detail
+    // Open a contact detail, then return via browser back.
     await page.locator('cb-page-contacts cb-contact-card').click();
     await expect(page.locator('cb-contact-detail')).toBeVisible();
 
-    // Navigate back — search box still shows query, contacts page should re-filter
-    await page.locator('cb-sidebar').getByRole('link', { name: /All Contacts/ }).click();
-    await expect(page).toHaveURL('/contacts');
+    // The query lives in the URL, so back restores the filtered list and the
+    // search box stays populated.
+    await page.goBack();
+    await expect(page).toHaveURL(/\/contacts\?q=Sarah$/);
     await expect(page.locator('cb-header .search-input')).toHaveValue('Sarah');
     await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(1);
   });
