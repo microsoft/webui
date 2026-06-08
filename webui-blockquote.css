@@ -10,7 +10,7 @@
   background: var(--bq-bg, var(--docs-color-brand-bg, #eef2ff));
 }
 
-/* Appearance variants */
+
 .tip    { --bq-accent: #10b981; --bq-bg: rgba(16, 185, 129, 0.08); }
 .warning { --bq-accent: #f59e0b; --bq-bg: rgba(245, 158, 11, 0.08); }
 .danger  { --bq-accent: #ef4444; --bq-bg: rgba(239, 68, 68, 0.08); }

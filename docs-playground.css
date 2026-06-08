@@ -18,7 +18,7 @@
   background: var(--docs-color-border);
 }
 
-/* ── Editor pane ──────────────────────────────── */
+
 
 .editor-pane {
   display: flex;
@@ -80,7 +80,7 @@
   font-family: inherit;
 }
 
-/* Protected files cannot be removed: hide their close button entirely. */
+
 .tab[data-name="index.html"] .tab-close-btn,
 .tab[data-name="state.json"] .tab-close-btn {
   display: none;
@@ -163,7 +163,7 @@
 .editor-wrap .cm-content { font-family: var(--docs-font-mono); }
 .editor-wrap .cm-focused { outline: none; }
 
-/* ── Preview pane ─────────────────────────────── */
+
 
 .preview-pane {
   display: flex;
