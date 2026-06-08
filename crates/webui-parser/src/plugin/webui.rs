@@ -219,6 +219,13 @@ impl ParserPlugin for WebUIParserPlugin {
 
 // ── Compiled template generation ───────────────────────────────────
 
+const TEXT_MARKER_PREFIX: &str = "<!--t:";
+const TEXT_MARKER_SUFFIX: &str = "-->";
+const MIN_TEXT_MARKER_DIGITS: usize = 1;
+const MIN_TEXT_MARKER_LEN: usize =
+    TEXT_MARKER_PREFIX.len() + MIN_TEXT_MARKER_DIGITS + TEXT_MARKER_SUFFIX.len();
+const TEXT_MARKER_INDEX_RADIX: usize = 10;
+
 /// A compiled template section.
 ///
 /// Used for the root template and for nested block-table entries.
@@ -1012,9 +1019,9 @@ fn compile_text_binding_at(
 
 fn emit_text_marker(meta: &mut TemplateSectionMeta, index: usize) {
     meta.text_marker_offsets.push(meta.html.len());
-    meta.html.push_str("<!--t:");
+    meta.html.push_str(TEXT_MARKER_PREFIX);
     let _ = write!(meta.html, "{index}");
-    meta.html.push_str("-->");
+    meta.html.push_str(TEXT_MARKER_SUFFIX);
 }
 
 fn compile_style_content(input: &str, meta: &mut TemplateSectionMeta) {
@@ -1560,7 +1567,7 @@ fn push_style_raw_text_nodes(
     let mut index = 0usize;
     let mut text_start = 0usize;
 
-    while index + 10 <= len {
+    while index + MIN_TEXT_MARKER_LEN <= len {
         if let Some((marker_index, marker_end)) =
             find_text_marker_comment(input, index, base_offset, text_marker_offsets)
         {
@@ -1587,7 +1594,7 @@ fn find_text_marker_comment(
     text_marker_offsets: &[usize],
 ) -> Option<(usize, usize)> {
     let bytes = input.as_bytes();
-    if bytes.get(index..index + 6) != Some(b"<!--t:") {
+    if bytes.get(index..index + TEXT_MARKER_PREFIX.len()) != Some(TEXT_MARKER_PREFIX.as_bytes()) {
         return None;
     }
     if text_marker_offsets
@@ -1597,20 +1604,23 @@ fn find_text_marker_comment(
         return None;
     }
 
-    let mut cursor = index + 6;
+    let mut cursor = index + TEXT_MARKER_PREFIX.len();
     let digit_start = cursor;
     let mut marker_index = 0usize;
     while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
         marker_index = marker_index
-            .checked_mul(10)?
+            .checked_mul(TEXT_MARKER_INDEX_RADIX)?
             .checked_add((bytes[cursor] - b'0') as usize)?;
         cursor += 1;
     }
-    if cursor == digit_start || bytes.get(cursor..cursor + 3) != Some(b"-->") {
+    if cursor == digit_start
+        || bytes.get(cursor..cursor + TEXT_MARKER_SUFFIX.len())
+            != Some(TEXT_MARKER_SUFFIX.as_bytes())
+    {
         return None;
     }
 
-    Some((marker_index, cursor + 3))
+    Some((marker_index, cursor + TEXT_MARKER_SUFFIX.len()))
 }
 
 fn push_fragment_node(
