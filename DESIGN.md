@@ -757,10 +757,22 @@ completion work such as rendered-component template emission stays in handler co
 
 ```rust
 pub trait HandlerPlugin {
+    /// Enter a structural scope, such as a loop item or active if body.
     fn push_scope(&mut self);
+
+    /// Enter a component scope.
+    /// Defaults to push_scope for plugins that do not distinguish scopes.
+    fn push_component_scope(&mut self) {
+        self.push_scope();
+    }
+
     fn pop_scope(&mut self);
     fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_for_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_for_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_if_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_if_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_start(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_end(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
@@ -772,11 +784,17 @@ pub trait HandlerPlugin {
 }
 ```
 
+`push_scope` is reserved for structural scopes and `push_component_scope` is used
+for component bodies and `handle_as_component`. The default implementation keeps
+existing plugins compatible, while FAST v2/v3 override it so normal structural
+scopes do not automatically activate component hydration markers.
+
 **Hook invocation points:**
 - **Signal**: `on_binding_start` before, `on_binding_end` after (same scope)
-- **For loop**: `on_binding_start/end` around entire loop; `on_repeat_item_start/end` + `push_scope/pop_scope` per item
-- **If condition**: `on_binding_start/end` around condition; `push_scope/pop_scope` if condition is true
-- **Component**: `push_scope/pop_scope` around component body
+- **For loop**: `on_for_start/end` around entire loop; `on_repeat_item_start/end` + `push_scope/pop_scope` per item
+- **If condition**: `on_if_start/end` around condition; `push_scope/pop_scope` around the body when the condition is true
+- **Component**: `push_component_scope/pop_scope` around component body
+- **Component-only render**: `handle_as_component` wraps the entry fragment in `push_component_scope/pop_scope`
 - **Plugin fragment**: `on_element_data` with parser-produced hydration bytes from protocol
 - **Matched route component**: `write_route_component_state` before the opening tag closes
 
@@ -1334,6 +1352,15 @@ Nested `<if>` / `<for>` blocks are recursively compiled into the shared `b[]` bl
 The private workspace package `packages/webui-test-support` (`@microsoft/webui-test-support`) exists to build this metadata shape in JS-side tests without duplicating tuple encodings or fixture infrastructure across `webui-framework` and `webui-router`. It centralizes fixture builders such as `buildTemplate`, `registerCompiledTemplate`, and the condition AST helpers, and it also provides shared Node-side fixture bundling/server helpers so browser fixture apps and Playwright servers stay aligned with the runtime/compiler contract as that contract evolves.
 
 ### Plugin data and SSR hydration markers
+
+SSR hydration markers are framework/plugin-specific. The WebUI Framework plugin
+uses the marker format below. FAST v2/v3 use separate FAST marker formats, and
+their handler plugins emit those markers only inside custom element component
+scopes entered through `push_component_scope`. A normal entry page light DOM
+remains marker-free for FAST v2/v3, even when it contains signals, for-loops,
+if-conditions, or plugin element data. Structural scopes nested inside a rendered
+component inherit the component-active state, so nested for/if scopes and element
+data attributes still emit within that component.
 
 The current WebUI parser emits a 12-byte `Plugin` fragment (`WebUIElementData`) for each element that has attribute bindings or `@event` handlers:
 

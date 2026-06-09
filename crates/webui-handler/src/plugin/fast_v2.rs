@@ -31,6 +31,28 @@ const V2_REPEAT_SUFFIX: &str = "$$fe-repeat-->";
 const V2_ATTR_SINGLE_PREFIX: &str = " data-fe-b-";
 const V2_ATTR_MULTI_PREFIX: &str = " data-fe-c-";
 
+#[derive(Clone, Copy)]
+struct HydrationScope {
+    binding_count: usize,
+    in_component: bool,
+}
+
+impl HydrationScope {
+    const fn root() -> Self {
+        Self {
+            binding_count: 0,
+            in_component: false,
+        }
+    }
+
+    const fn child(in_component: bool) -> Self {
+        Self {
+            binding_count: 0,
+            in_component,
+        }
+    }
+}
+
 /// Deprecated FAST 2 hydration handler plugin.
 ///
 /// Emits the legacy FAST 2 marker format used by the `fast` and `fast-v2`
@@ -39,7 +61,7 @@ const V2_ATTR_MULTI_PREFIX: &str = " data-fe-c-";
 pub struct FastV2HydrationPlugin {
     /// Stack of local binding counters (one per scope).
     /// The bottom of the stack is the root scope (disabled).
-    scopes: Vec<usize>,
+    scopes: Vec<HydrationScope>,
     /// Stack of binding indices for matching start/end pairs.
     binding_stack: Vec<usize>,
     /// Reusable buffer for formatting markers without allocation.
@@ -48,27 +70,27 @@ pub struct FastV2HydrationPlugin {
 
 impl FastV2HydrationPlugin {
     /// Create a new deprecated FAST 2 hydration plugin.
-    /// The initial root scope is disabled — markers only emit in child scopes.
+    /// The initial root scope is disabled — markers only emit inside components.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            // Root scope (index 0) is disabled — only scopes.len() > 1 are active.
-            scopes: vec![0],
+            // Root scope (index 0) is disabled.
+            scopes: vec![HydrationScope::root()],
             binding_stack: Vec::with_capacity(8),
             buffer: String::with_capacity(64),
         }
     }
 
-    /// Whether the current scope is active (not the root scope).
+    /// Whether the current scope is inside a custom element component.
     fn is_active(&self) -> bool {
-        self.scopes.len() > 1
+        matches!(self.scopes.last(), Some(scope) if scope.in_component)
     }
 
     /// Get the next binding index in the current scope, advancing the counter.
     fn next_index(&mut self) -> usize {
-        if let Some(counter) = self.scopes.last_mut() {
-            let index = *counter;
-            *counter += 1;
+        if let Some(scope) = self.scopes.last_mut() {
+            let index = scope.binding_count;
+            scope.binding_count += 1;
             index
         } else {
             0
@@ -77,9 +99,9 @@ impl FastV2HydrationPlugin {
 
     /// Get the next binding index, advancing the counter by `count`.
     fn next_index_n(&mut self, count: u32) -> usize {
-        if let Some(counter) = self.scopes.last_mut() {
-            let index = *counter;
-            *counter += count as usize;
+        if let Some(scope) = self.scopes.last_mut() {
+            let index = scope.binding_count;
+            scope.binding_count += count as usize;
             index
         } else {
             0
@@ -125,11 +147,17 @@ impl Default for FastV2HydrationPlugin {
 
 impl HandlerPlugin for FastV2HydrationPlugin {
     fn push_scope(&mut self) {
-        self.scopes.push(0);
+        self.scopes.push(HydrationScope::child(self.is_active()));
+    }
+
+    fn push_component_scope(&mut self) {
+        self.scopes.push(HydrationScope::child(true));
     }
 
     fn pop_scope(&mut self) {
-        self.scopes.pop();
+        if self.scopes.len() > 1 {
+            self.scopes.pop();
+        }
     }
 
     fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
@@ -239,6 +267,10 @@ mod tests {
     #![allow(clippy::disallowed_methods)]
 
     use super::*;
+    use crate::{RenderOptions, WebUIHandler};
+    use std::collections::HashMap;
+    use webui_protocol::{ConditionExpr, FragmentList, WebUIFragment, WebUIProtocol};
+    use webui_test_utils::test_json;
 
     struct TestWriter {
         output: String,
@@ -265,7 +297,7 @@ mod tests {
     #[test]
     fn test_fast_v2_binding_marker_format() {
         let mut plugin = FastV2HydrationPlugin::new();
-        plugin.push_scope();
+        plugin.push_component_scope();
         let mut writer = TestWriter::new();
         plugin.on_binding_start("userName", &mut writer).unwrap();
         plugin.on_binding_end("userName", &mut writer).unwrap();
@@ -278,7 +310,7 @@ mod tests {
     #[test]
     fn test_fast_v2_binding_sequence_uses_indexes() {
         let mut plugin = FastV2HydrationPlugin::new();
-        plugin.push_scope();
+        plugin.push_component_scope();
         let mut writer = TestWriter::new();
         plugin.on_binding_start("a", &mut writer).unwrap();
         plugin.on_binding_end("a", &mut writer).unwrap();
@@ -290,7 +322,7 @@ mod tests {
     #[test]
     fn test_fast_v2_repeat_marker_format() {
         let mut plugin = FastV2HydrationPlugin::new();
-        plugin.push_scope();
+        plugin.push_component_scope();
         let mut writer = TestWriter::new();
         plugin.on_repeat_item_start(2, &mut writer).unwrap();
         plugin.on_repeat_item_end(2, &mut writer).unwrap();
@@ -303,14 +335,14 @@ mod tests {
     #[test]
     fn test_fast_v2_attribute_marker_formats() {
         let mut single = FastV2HydrationPlugin::new();
-        single.push_scope();
+        single.push_component_scope();
         let mut writer = TestWriter::new();
         let one = 1u32.to_le_bytes();
         single.on_element_data(&one, &mut writer).unwrap();
         assert_eq!(writer.output, " data-fe-b-0");
 
         let mut multi = FastV2HydrationPlugin::new();
-        multi.push_scope();
+        multi.push_component_scope();
         writer.output.clear();
         let three = 3u32.to_le_bytes();
         multi.on_element_data(&three, &mut writer).unwrap();
@@ -320,7 +352,7 @@ mod tests {
     #[test]
     fn test_fast_v2_attribute_count_advances_binding_index() {
         let mut plugin = FastV2HydrationPlugin::new();
-        plugin.push_scope();
+        plugin.push_component_scope();
         let mut writer = TestWriter::new();
         let three = 3u32.to_le_bytes();
         plugin.on_element_data(&three, &mut writer).unwrap();
@@ -333,6 +365,20 @@ mod tests {
     #[test]
     fn test_fast_v2_root_scope_disabled() {
         let mut plugin = FastV2HydrationPlugin::new();
+        let mut writer = TestWriter::new();
+        plugin.on_binding_start("x", &mut writer).unwrap();
+        plugin.on_binding_end("x", &mut writer).unwrap();
+        plugin.on_repeat_item_start(0, &mut writer).unwrap();
+        plugin.on_repeat_item_end(0, &mut writer).unwrap();
+        let data = 3u32.to_le_bytes();
+        plugin.on_element_data(&data, &mut writer).unwrap();
+        assert_eq!(writer.output, "");
+    }
+
+    #[test]
+    fn test_fast_v2_structural_scope_disabled_outside_component() {
+        let mut plugin = FastV2HydrationPlugin::new();
+        plugin.push_scope();
         let mut writer = TestWriter::new();
         plugin.on_binding_start("x", &mut writer).unwrap();
         plugin.on_binding_end("x", &mut writer).unwrap();
@@ -366,5 +412,193 @@ mod tests {
             "FAST v2 handler plugin should still emit scalar attrs: {}",
             writer.output
         );
+    }
+
+    fn render_with_fast_v2(protocol: &WebUIProtocol, state: &serde_json::Value) -> String {
+        let mut writer = TestWriter::new();
+        let handler = WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()));
+        handler
+            .handle(
+                protocol,
+                state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        writer.output
+    }
+
+    fn assert_no_fast_v2_markers(output: &str) {
+        assert!(
+            !output.contains("<!--fe-b"),
+            "entry light DOM must not contain FAST v2 binding markers: {output}"
+        );
+        assert!(
+            !output.contains("<!--fe-repeat"),
+            "entry light DOM must not contain FAST v2 repeat markers: {output}"
+        );
+        assert!(
+            !output.contains("data-fe-"),
+            "entry light DOM must not contain FAST v2 attribute markers: {output}"
+        );
+    }
+
+    #[test]
+    fn test_fast_v2_full_render_root_for_skips_hydration_markers() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<main>"),
+                    WebUIFragment::for_loop("item", "items", "row"),
+                    WebUIFragment::raw("</main>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "row".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<p"),
+                    WebUIFragment::attribute("class", "item.name"),
+                    WebUIFragment::plugin(1u32.to_le_bytes().to_vec()),
+                    WebUIFragment::raw(">"),
+                    WebUIFragment::signal("item.name", false),
+                    WebUIFragment::raw("</p>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({"items": [{"name": "A"}, {"name": "B"}]});
+        let output = render_with_fast_v2(&protocol, &state);
+
+        assert_eq!(
+            output,
+            r#"<main><p class="A">A</p><p class="B">B</p></main>"#
+        );
+        assert_no_fast_v2_markers(&output);
+    }
+
+    #[test]
+    fn test_fast_v2_full_render_root_if_skips_hydration_markers() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<section>"),
+                    WebUIFragment::if_cond(ConditionExpr::identifier("show"), "visible"),
+                    WebUIFragment::raw("</section>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "visible".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<span"),
+                    WebUIFragment::attribute("title", "title"),
+                    WebUIFragment::plugin(1u32.to_le_bytes().to_vec()),
+                    WebUIFragment::raw(">"),
+                    WebUIFragment::signal("title", false),
+                    WebUIFragment::raw("</span>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({"show": true, "title": "Hello"});
+        let output = render_with_fast_v2(&protocol, &state);
+
+        assert_eq!(
+            output,
+            r#"<section><span title="Hello">Hello</span></section>"#
+        );
+        assert_no_fast_v2_markers(&output);
+    }
+
+    #[test]
+    fn test_fast_v2_full_render_component_for_keeps_hydration_markers() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("my-comp")],
+            },
+        );
+        fragments.insert(
+            "my-comp".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<ul>"),
+                    WebUIFragment::for_loop("item", "items", "row"),
+                    WebUIFragment::raw("</ul>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "row".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<li"),
+                    WebUIFragment::attribute("data-name", "item"),
+                    WebUIFragment::plugin(1u32.to_le_bytes().to_vec()),
+                    WebUIFragment::raw(">"),
+                    WebUIFragment::signal("item", false),
+                    WebUIFragment::raw("</li>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({"items": ["A", "B"]});
+        let output = render_with_fast_v2(&protocol, &state);
+
+        assert!(output.contains("<!--fe-b$$start$$0$$row$$fe-b-->"));
+        assert!(output.contains("<!--fe-repeat$$start$$0$$fe-repeat-->"));
+        assert!(output.contains(r#"<li data-name="A" data-fe-b-0>"#));
+        assert!(output.contains("<!--fe-b$$start$$1$$item$$fe-b-->A"));
+        assert!(output.contains("<!--fe-repeat$$end$$1$$fe-repeat-->"));
+        assert!(output.contains("<!--fe-b$$end$$0$$row$$fe-b-->"));
+    }
+
+    #[test]
+    fn test_fast_v2_full_render_component_if_keeps_hydration_markers() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("my-comp")],
+            },
+        );
+        fragments.insert(
+            "my-comp".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::if_cond(
+                    ConditionExpr::identifier("show"),
+                    "if-body",
+                )],
+            },
+        );
+        fragments.insert(
+            "if-body".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<span"),
+                    WebUIFragment::attribute("title", "title"),
+                    WebUIFragment::plugin(1u32.to_le_bytes().to_vec()),
+                    WebUIFragment::raw(">"),
+                    WebUIFragment::signal("title", false),
+                    WebUIFragment::raw("</span>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({"show": true, "title": "Hello"});
+        let output = render_with_fast_v2(&protocol, &state);
+
+        assert!(output.contains("<!--fe-b$$start$$0$$if-body$$fe-b-->"));
+        assert!(output.contains(r#"<span title="Hello" data-fe-b-0>"#));
+        assert!(output.contains("<!--fe-b$$start$$1$$title$$fe-b-->Hello"));
+        assert!(output.contains("<!--fe-b$$end$$0$$if-body$$fe-b-->"));
     }
 }

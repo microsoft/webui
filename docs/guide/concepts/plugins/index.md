@@ -121,8 +121,15 @@ pub trait ParserPlugin {
 
 ```rust
 pub trait HandlerPlugin {
-    /// Enter a new scope (component or loop item).
+    /// Enter a structural scope, such as a loop item or active if body.
     fn push_scope(&mut self);
+
+    /// Enter a component scope.
+    /// Defaults to push_scope for plugins that do not distinguish scopes.
+    fn push_component_scope(&mut self) {
+        self.push_scope();
+    }
+
     /// Leave the current scope.
     fn pop_scope(&mut self);
 
@@ -151,6 +158,14 @@ pub trait HandlerPlugin {
     ) -> Result<()>;
 }
 ```
+
+`push_component_scope` is used for component bodies and `handle_as_component`;
+`push_scope` is used for structural scopes such as loop items and active
+if-condition bodies. Plugins that need island-only markers can activate only
+inside component scopes. FAST v2/v3 use this behavior to keep normal entry page
+light DOM marker-free, including root signals, for-loops, if-conditions, and
+element metadata, while still emitting markers and data attributes inside custom
+element components and their nested structural scopes.
 
 ## Next Steps
 

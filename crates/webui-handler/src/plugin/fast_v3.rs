@@ -28,44 +28,67 @@ const REPEAT_END_MARKER: &str = "<!--fe:/r-->";
 const ATTR_PREFIX: &str = " data-fe=\"";
 const ATTR_SUFFIX: &str = "\"";
 
+#[derive(Clone, Copy)]
+struct HydrationScope {
+    binding_count: usize,
+    in_component: bool,
+}
+
+impl HydrationScope {
+    const fn root() -> Self {
+        Self {
+            binding_count: 0,
+            in_component: false,
+        }
+    }
+
+    const fn child(in_component: bool) -> Self {
+        Self {
+            binding_count: 0,
+            in_component,
+        }
+    }
+}
+
 /// FAST 3 hydration handler plugin.
 ///
 /// Emits HTML comment markers around dynamic bindings so that FAST
 /// can re-hydrate server-rendered content on the client side.
 ///
-/// The root scope is disabled (no markers) — hydration only activates in
-/// child scopes (components, for-loop items, if-condition bodies).
-/// This matches the C++ and JS prototype behavior.
+/// The root scope is disabled (no markers) — hydration only activates inside
+/// custom element component scopes. Structural scopes nested under the entry
+/// point remain disabled until a component scope is entered.
 pub struct FastV3HydrationPlugin {
     /// Stack of local binding counters (one per scope).
     /// The bottom of the stack is the root scope (disabled).
-    scopes: Vec<usize>,
+    scopes: Vec<HydrationScope>,
     /// Reusable buffer for formatting markers without allocation.
     buffer: String,
 }
 
 impl FastV3HydrationPlugin {
     /// Create a new FAST 3 hydration plugin.
-    /// The initial root scope is disabled — markers only emitted in child scopes.
+    /// The initial root scope is disabled — markers only emit inside
+    /// component scopes.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            // Root scope (index 0) is disabled — only scopes.len() > 1 are active
-            scopes: vec![0],
+            // Root scope (index 0) is disabled.
+            scopes: vec![HydrationScope::root()],
             buffer: String::with_capacity(64),
         }
     }
 
-    /// Whether the current scope is active (not the root scope).
+    /// Whether the current scope is inside a custom element component.
     fn is_active(&self) -> bool {
-        self.scopes.len() > 1
+        matches!(self.scopes.last(), Some(scope) if scope.in_component)
     }
 
     /// Get the next binding index in the current scope, advancing the counter.
     fn next_index(&mut self) -> usize {
-        if let Some(counter) = self.scopes.last_mut() {
-            let index = *counter;
-            *counter += 1;
+        if let Some(scope) = self.scopes.last_mut() {
+            let index = scope.binding_count;
+            scope.binding_count += 1;
             index
         } else {
             0
@@ -74,9 +97,9 @@ impl FastV3HydrationPlugin {
 
     /// Get the next binding index, advancing the counter by `count`.
     fn next_index_n(&mut self, count: u32) -> usize {
-        if let Some(counter) = self.scopes.last_mut() {
-            let index = *counter;
-            *counter += count as usize;
+        if let Some(scope) = self.scopes.last_mut() {
+            let index = scope.binding_count;
+            scope.binding_count += count as usize;
             index
         } else {
             0
@@ -100,11 +123,18 @@ impl Default for FastV3HydrationPlugin {
 
 impl HandlerPlugin for FastV3HydrationPlugin {
     fn push_scope(&mut self) {
-        self.scopes.push(0);
+        let in_component = self.is_active();
+        self.scopes.push(HydrationScope::child(in_component));
+    }
+
+    fn push_component_scope(&mut self) {
+        self.scopes.push(HydrationScope::child(true));
     }
 
     fn pop_scope(&mut self) {
-        self.scopes.pop();
+        if self.scopes.len() > 1 {
+            self.scopes.pop();
+        }
     }
 
     fn on_binding_start(&mut self, _name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
@@ -248,7 +278,7 @@ mod tests {
     #[test]
     fn test_binding_start_format() {
         let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
+        plugin.push_component_scope();
         let mut writer = TestWriter::new();
         plugin.on_binding_start("userName", &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
@@ -257,7 +287,7 @@ mod tests {
     #[test]
     fn test_binding_end_format() {
         let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
+        plugin.push_component_scope();
         let mut writer = TestWriter::new();
         plugin.on_binding_start("userName", &mut writer).unwrap();
         writer.output.clear();
@@ -268,7 +298,7 @@ mod tests {
     #[test]
     fn test_binding_sequence_uses_compact_markers() {
         let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
+        plugin.push_component_scope();
         let mut writer = TestWriter::new();
         plugin.on_binding_start("a", &mut writer).unwrap();
         plugin.on_binding_end("a", &mut writer).unwrap();
@@ -281,12 +311,11 @@ mod tests {
     fn test_scopes_emit_compact_markers() {
         let mut plugin = FastV3HydrationPlugin::new();
         let mut writer = TestWriter::new();
-        // Push first active scope (root is disabled)
-        plugin.push_scope();
-        // Active scope emits compact markers.
+        // Component scope activates markers.
+        plugin.push_component_scope();
         plugin.on_binding_start("a", &mut writer).unwrap();
         plugin.on_binding_end("a", &mut writer).unwrap();
-        // Push child scope: markers are still emitted.
+        // Push child structural scope: markers are still emitted.
         plugin.push_scope();
         writer.output.clear();
         plugin.on_binding_start("b", &mut writer).unwrap();
@@ -302,7 +331,7 @@ mod tests {
     #[test]
     fn test_repeat_item_markers() {
         let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
+        plugin.push_component_scope();
         let mut writer = TestWriter::new();
         plugin.on_repeat_item_start(0, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe:r-->");
@@ -314,7 +343,7 @@ mod tests {
     #[test]
     fn test_attribute_binding_single() {
         let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
+        plugin.push_component_scope();
         let mut writer = TestWriter::new();
         let data = 1u32.to_le_bytes();
         plugin.on_element_data(&data, &mut writer).unwrap();
@@ -324,7 +353,7 @@ mod tests {
     #[test]
     fn test_attribute_binding_multi() {
         let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
+        plugin.push_component_scope();
         let mut writer = TestWriter::new();
         let data = 3u32.to_le_bytes();
         plugin.on_element_data(&data, &mut writer).unwrap();
@@ -334,7 +363,7 @@ mod tests {
     #[test]
     fn test_attribute_binding_zero_count_no_output() {
         let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
+        plugin.push_component_scope();
         let mut writer = TestWriter::new();
         let data = 0u32.to_le_bytes();
         plugin.on_element_data(&data, &mut writer).unwrap();
@@ -344,7 +373,7 @@ mod tests {
     #[test]
     fn test_attribute_binding_count_allows_following_binding() {
         let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
+        plugin.push_component_scope();
         let mut writer = TestWriter::new();
         let data = 3u32.to_le_bytes();
         plugin.on_element_data(&data, &mut writer).unwrap();
@@ -360,12 +389,11 @@ mod tests {
     fn test_nested_scopes_emit_compact_markers() {
         let mut plugin = FastV3HydrationPlugin::new();
         let mut writer = TestWriter::new();
-        // Push first active scope (root is disabled)
-        plugin.push_scope();
-        // Active scope emits binding markers.
+        // Component scope activates markers.
+        plugin.push_component_scope();
         plugin.on_binding_start("root", &mut writer).unwrap();
         plugin.on_binding_end("root", &mut writer).unwrap();
-        // Component scope
+        // Structural child scope inherits component activation.
         plugin.push_scope();
         // For-loop binding in component emits compact markers.
         writer.output.clear();
@@ -389,7 +417,7 @@ mod tests {
     #[test]
     fn test_empty_element_data_returns_error() {
         let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
+        plugin.push_component_scope();
         let mut writer = TestWriter::new();
         let result = plugin.on_element_data(&[], &mut writer);
         assert!(
@@ -402,7 +430,7 @@ mod tests {
     #[test]
     fn test_short_element_data_returns_error() {
         let mut plugin = FastV3HydrationPlugin::new();
-        plugin.push_scope();
+        plugin.push_component_scope();
         let mut writer = TestWriter::new();
         let result = plugin.on_element_data(&[1, 2], &mut writer);
         assert!(
@@ -540,11 +568,8 @@ mod tests {
         let state = test_json!({"items": ["a", "b"]});
         let output =
             render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
-        // Root scope disabled — no for-loop binding or repeat item markers
-        assert!(!output.contains("<!--fe:r-->"));
-        assert!(!output.contains("<!--fe:/r-->"));
-        // Signal bindings inside each item ARE emitted (for-loop items push scope)
-        assert_eq!(output, "<!--fe:b-->a<!--fe:/b--><!--fe:b-->b<!--fe:/b-->");
+        assert_eq!(output, "ab");
+        assert!(!output.contains("<!--fe:"));
     }
 
     #[test]
@@ -562,16 +587,20 @@ mod tests {
         fragments.insert(
             "if-1".to_string(),
             FragmentList {
-                fragments: vec![WebUIFragment::raw("<p>Visible</p>")],
+                fragments: vec![
+                    WebUIFragment::raw("<p>"),
+                    WebUIFragment::signal("message", false),
+                    WebUIFragment::raw("</p>"),
+                ],
             },
         );
         let protocol = WebUIProtocol::new(fragments);
 
-        // True case — root scope disabled, no markers; content still rendered
-        let state = test_json!({"show": true});
+        // True case — root structural scope disabled, no markers; content still rendered.
+        let state = test_json!({"show": true, "message": "Visible"});
         let output =
             render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
-        assert!(output.contains("<p>Visible</p>"));
+        assert_eq!(output, "<p>Visible</p>");
         assert!(!output.contains("<!--fe:"));
 
         // False case — no content, no markers
@@ -1028,13 +1057,13 @@ mod tests {
         // on_binding_start/on_binding_end because the trait defaults delegate.
         {
             let mut plugin_for = FastV3HydrationPlugin::new();
-            plugin_for.push_scope();
+            plugin_for.push_component_scope();
             let mut writer_for = TestWriter::new();
             plugin_for.on_for_start("items", &mut writer_for).unwrap();
             plugin_for.on_for_end("items", &mut writer_for).unwrap();
 
             let mut plugin_bind = FastV3HydrationPlugin::new();
-            plugin_bind.push_scope();
+            plugin_bind.push_component_scope();
             let mut writer_bind = TestWriter::new();
             plugin_bind
                 .on_binding_start("items", &mut writer_bind)
@@ -1053,13 +1082,13 @@ mod tests {
         // on_binding_start/on_binding_end.
         {
             let mut plugin_if = FastV3HydrationPlugin::new();
-            plugin_if.push_scope();
+            plugin_if.push_component_scope();
             let mut writer_if = TestWriter::new();
             plugin_if.on_if_start("visible", &mut writer_if).unwrap();
             plugin_if.on_if_end("visible", &mut writer_if).unwrap();
 
             let mut plugin_bind = FastV3HydrationPlugin::new();
-            plugin_bind.push_scope();
+            plugin_bind.push_component_scope();
             let mut writer_bind = TestWriter::new();
             plugin_bind
                 .on_binding_start("visible", &mut writer_bind)

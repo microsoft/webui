@@ -514,7 +514,7 @@ impl WebUIHandler {
         };
 
         if let Some(p) = &mut context.plugin {
-            p.push_scope();
+            p.push_component_scope();
         }
 
         self.process_fragment_id(entry_id, &mut context)?;
@@ -877,7 +877,7 @@ impl WebUIHandler {
         context.local_vars = saved_component_attrs;
 
         if let Some(p) = &mut context.plugin {
-            p.push_scope();
+            p.push_component_scope();
         }
 
         self.process_fragment_id(&component.fragment_id, context)?;

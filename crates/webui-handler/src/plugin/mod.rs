@@ -18,7 +18,8 @@ use webui_protocol::WebUIProtocol;
 /// A handler plugin that can inject additional content during rendering.
 ///
 /// Plugins receive callbacks at key points in the rendering lifecycle:
-/// - **Scope management**: `push_scope` / `pop_scope` for component and loop boundaries
+/// - **Scope management**: `push_component_scope` for components,
+///   `push_scope` / `pop_scope` for nested boundaries
 /// - **Binding lifecycle**: `on_binding_start` / `on_binding_end` around signals
 /// - **For-loop lifecycle**: `on_for_start` / `on_for_end` around for-loop blocks
 /// - **If-condition lifecycle**: `on_if_start` / `on_if_end` around if-condition blocks
@@ -29,9 +30,16 @@ use webui_protocol::WebUIProtocol;
 /// WebUI does not interpret what plugins write — it just calls the hooks.
 /// Each framework defines its own marker format.
 pub trait HandlerPlugin {
-    /// Enter a new scope (component or for-loop item boundary).
+    /// Enter a new non-component scope (for-loop item or if-condition boundary).
     /// Typically resets per-scope counters.
     fn push_scope(&mut self);
+
+    /// Enter a new component scope.
+    /// Defaults to [`push_scope`](HandlerPlugin::push_scope) for plugins that
+    /// do not distinguish custom elements from structural scopes.
+    fn push_component_scope(&mut self) {
+        self.push_scope();
+    }
 
     /// Exit the current scope, restoring the parent scope state.
     fn pop_scope(&mut self);
