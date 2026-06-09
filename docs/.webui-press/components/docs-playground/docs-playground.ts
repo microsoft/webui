@@ -270,6 +270,8 @@ export class DocsPlayground extends WebUIElement {
   @observable errorMessage = "";
   @observable previewSrcdoc = "";
   @observable toastMessage = "";
+  @observable previewBadge = "Loading WASM";
+  @observable previewBadgeState = "loading";
 
   private active: string = ENTRY_FILE;
   private entry: string = ENTRY_FILE;
@@ -293,6 +295,7 @@ export class DocsPlayground extends WebUIElement {
         active: ENTRY_FILE,
         stateFile: STATE_FILE,
       };
+      this.setPreviewStatus("Failed", "failed");
       this.errorMessage = `Unable to load shared playground: ${String(e)}`;
     }
     this.files = initial.files;
@@ -757,14 +760,25 @@ export class DocsPlayground extends WebUIElement {
 
   // ── WASM render ─────────────────────────────────────────────────
 
+  private setPreviewStatus(label: string, state: string): void {
+    this.previewBadge = label;
+    this.previewBadgeState = state;
+  }
+
   private scheduleRender(): void {
     if (this.renderTimer) clearTimeout(this.renderTimer);
+    if (!this.wasm) {
+      this.setPreviewStatus("Loading WASM", "loading");
+      return;
+    }
+    this.setPreviewStatus("Compiling", "compiling");
     this.renderTimer = setTimeout(() => this.doRender(), 150);
   }
 
   private doRender(): void {
     if (!this.wasm) return;
     try {
+      this.setPreviewStatus("Compiling", "compiling");
       this.errorMessage = "";
       const filesObj: Record<string, string> = {};
       for (const f of this.files) {
@@ -797,7 +811,9 @@ export class DocsPlayground extends WebUIElement {
         "</style></head><body>" +
         html +
         "</body></html>";
+      this.setPreviewStatus("WASM Live", "live");
     } catch (e) {
+      this.setPreviewStatus("Failed", "failed");
       this.errorMessage = String(e);
     }
   }
@@ -828,6 +844,7 @@ export class DocsPlayground extends WebUIElement {
 
   private async loadWasm(): Promise<void> {
     try {
+      this.setPreviewStatus("Loading WASM", "loading");
       const baseMeta = document.querySelector('meta[name="base"]');
       const base = baseMeta?.getAttribute("content") || "/";
       const mod = await import(/* @vite-ignore */ base + "wasm/webui_wasm.js");
@@ -835,6 +852,7 @@ export class DocsPlayground extends WebUIElement {
       this.wasm = mod;
       this.doRender();
     } catch (e) {
+      this.setPreviewStatus("Failed", "failed");
       this.errorMessage =
         'WASM not available. Run "cargo xtask build-wasm" to enable the playground.\n\n' +
         String(e);

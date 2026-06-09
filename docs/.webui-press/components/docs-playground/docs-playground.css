@@ -265,9 +265,21 @@
   font-weight: 600;
   letter-spacing: 0.02em;
 }
+.preview-badge.loading {
+  background: var(--docs-color-bg-alt);
+  color: var(--docs-color-text-2);
+}
+.preview-badge.compiling {
+  background: rgba(234, 179, 8, 0.14);
+  color: #b77900;
+}
 .preview-badge.live {
   background: var(--docs-color-brand-bg);
   color: var(--docs-color-brand);
+}
+.preview-badge.failed {
+  background: rgba(208, 72, 72, 0.1);
+  color: #d04848;
 }
 
 .preview-stats {
