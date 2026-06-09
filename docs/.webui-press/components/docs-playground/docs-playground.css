@@ -51,6 +51,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  box-sizing: border-box;
+  position: relative;
   padding: 0 16px;
   font-size: 12px;
   color: var(--docs-color-text-2);
@@ -62,25 +64,101 @@
   white-space: nowrap;
   font-family: var(--docs-font-mono);
   transition: color 0.12s, background 0.12s, border-color 0.12s;
+  user-select: none;
 }
 .tab:hover {
   color: var(--docs-color-text);
   background: var(--docs-color-bg-alt);
+}
+.tab:focus-visible {
+  outline: 1px solid var(--docs-color-brand);
+  outline-offset: -2px;
 }
 .tab[active] {
   color: var(--docs-color-text);
   background: var(--docs-color-bg);
   border-bottom-color: var(--docs-color-brand);
 }
+.tab[data-editing] {
+  padding: 0 8px;
+}
 
 .tab-icon {
   display: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+.tab[data-name$=".html" i] .tab-icon-html,
+.tab[data-name$=".css" i] .tab-icon-css,
+.tab[data-name$=".json" i] .tab-icon-json {
+  display: flex;
+}
+.tab-icon svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  overflow: visible;
+}
+.tab-icon-bg {
+  stroke-width: 1;
+}
+.tab-icon-mark {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
+}
+.tab-icon-html .tab-icon-bg {
+  fill: rgba(249, 115, 22, 0.13);
+  stroke: rgba(249, 115, 22, 0.7);
+}
+.tab-icon-html .tab-icon-mark {
+  stroke: #f97316;
+}
+.tab-icon-css .tab-icon-bg {
+  fill: rgba(59, 130, 246, 0.13);
+  stroke: rgba(59, 130, 246, 0.72);
+}
+.tab-icon-css .tab-icon-mark {
+  stroke: #3b82f6;
+}
+.tab-icon-json .tab-icon-bg {
+  fill: rgba(234, 179, 8, 0.14);
+  stroke: rgba(234, 179, 8, 0.72);
+}
+.tab-icon-json .tab-icon-mark {
+  stroke: #d97706;
 }
 .tab-name {
   font-family: inherit;
 }
+.tab-rename-sizer {
+  visibility: hidden;
+  font-family: inherit;
+}
+.tab-rename-input {
+  position: absolute;
+  left: 30px;
+  right: 8px;
+  width: auto;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 3px 6px;
+  border: 1px solid var(--docs-color-brand);
+  border-radius: 4px;
+  background: var(--docs-color-bg);
+  color: var(--docs-color-text);
+  outline: none;
+  font: inherit;
+}
+.tab-rename-input::placeholder {
+  color: var(--docs-color-text-3);
+}
 
-/* Protected files cannot be removed: hide their close button entirely. */
+/* Default locked files are hidden before hydration computes dynamic locks. */
 .tab[data-name="index.html"] .tab-close-btn,
 .tab[data-name="state.json"] .tab-close-btn {
   display: none;
@@ -126,23 +204,6 @@
 .tab-add-btn:hover {
   color: var(--docs-color-text);
   background: var(--docs-color-bg-alt);
-}
-
-.new-file-row {
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--docs-color-border);
-  background: var(--docs-color-bg-alt);
-}
-.new-file-row input {
-  width: 220px;
-  padding: 4px 8px;
-  font-size: 12px;
-  border: 1px solid var(--docs-color-brand);
-  border-radius: 4px;
-  background: var(--docs-color-bg);
-  color: var(--docs-color-text);
-  outline: none;
-  font-family: var(--docs-font-mono);
 }
 
 .editor-wrap {
@@ -215,6 +276,12 @@
   gap: 6px;
 }
 
+.preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .stat-badge {
   font-size: 10px;
   padding: 2px 8px;
@@ -230,6 +297,22 @@
 .stat-badge.render {
   background: var(--docs-color-bg-alt);
   color: var(--docs-color-text-2);
+}
+
+.share-btn {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--docs-color-border);
+  border-radius: 999px;
+  background: var(--docs-color-bg);
+  color: var(--docs-color-text-2);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+.share-btn:hover {
+  color: var(--docs-color-text);
+  border-color: var(--docs-color-brand);
 }
 
 .error-bar {
@@ -251,6 +334,23 @@
   border: none;
   background: var(--docs-color-bg);
   width: 100%;
+}
+
+.clipboard-toast {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 1000;
+  transform: translate(-50%, -50%);
+  padding: 10px 16px;
+  border: 1px solid var(--docs-color-border);
+  border-radius: 999px;
+  background: var(--docs-color-bg);
+  color: var(--docs-color-text);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none;
 }
 
 @media (max-width: 1024px) {
