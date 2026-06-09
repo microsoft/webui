@@ -20,7 +20,7 @@ WebUI is in active development. Support is provided through GitHub Issues for ac
 
 ## What to include
 
-For bugs, include a minimal reproduction, exact steps, expected behavior, actual behavior, environment details, and relevant logs. For feature or documentation requests, describe the need, who is affected, and what outcome would solve it.
+For bugs, include a minimal reproduction, exact steps, expected behavior, actual behavior, environment details, and relevant logs. Prefer a WebUI Playground share link from <https://microsoft.github.io/webui/playground/> when the issue can be reproduced there. For feature or documentation requests, describe the need, who is affected, and what outcome would solve it.
 
 ## Microsoft Support Policy
 

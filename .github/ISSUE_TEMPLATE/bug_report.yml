@@ -48,8 +48,8 @@ body:
     id: reproduction
     attributes:
       label: Minimal reproduction
-      description: If available, provide a sample repository, small code snippet, or minimal template that reproduces the issue.
-      placeholder: Paste the smallest example that reproduces the problem.
+      description: If possible, reproduce the issue in the WebUI Playground and paste the share link from https://microsoft.github.io/webui/playground/. Otherwise, provide a sample repository, small code snippet, or minimal template.
+      placeholder: Paste a WebUI Playground share link or the smallest example that reproduces the problem.
   - type: textarea
     id: steps
     attributes:
