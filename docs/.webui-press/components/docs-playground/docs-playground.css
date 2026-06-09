@@ -178,6 +178,8 @@
   padding: 0;
   margin-left: 2px;
   opacity: 0;
+  font: inherit;
+  line-height: 1;
   transition: opacity 0.12s;
 }
 .tab:hover .tab-close-btn { opacity: 1; }

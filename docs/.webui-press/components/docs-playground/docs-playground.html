@@ -52,7 +52,16 @@
             <if condition="!file.editing">
               <span class="tab-name">{{file.name}}</span>
               <if condition="!file.locked">
-                <span class="tab-close-btn" role="button" title="Close file" data-name="{{file.name}}" @click="{closeFile(e)}" @dblclick="{stopTabEvent(e)}">×</span>
+                <button
+                  class="tab-close-btn"
+                  type="button"
+                  title="Close file"
+                  data-name="{{file.name}}"
+                  @click="{closeFile(e)}"
+                  @dblclick="{stopTabEvent(e)}"
+                >
+                  ×
+                </button>
               </if>
             </if>
           </div>
@@ -85,6 +94,13 @@
     <iframe sandbox="allow-scripts" class="preview-frame" srcdoc="{{previewSrcdoc}}"></iframe>
   </div>
   <if condition="toastMessage">
-    <div class="clipboard-toast">{{toastMessage}}</div>
+    <div
+      class="clipboard-toast"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      {{toastMessage}}
+    </div>
   </if>
 </div>

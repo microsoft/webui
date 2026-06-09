@@ -58,6 +58,7 @@ const DEFAULT_NEW_FILE_STEM = "new-component";
 const DEFAULT_NEW_FILE = `${DEFAULT_NEW_FILE_STEM}-1.html`;
 const COMPANION_EXTENSIONS = ["html", "css"];
 const EDITABLE_EXTENSIONS = new Set(COMPANION_EXTENSIONS);
+const BASE64_CHUNK_SIZE = 0x8000;
 
 interface PlaygroundData {
   entry?: string;
@@ -126,11 +127,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function encodeBase64Url(value: unknown): string {
   const bytes = new TextEncoder().encode(JSON.stringify(value));
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 1) {
-    binary += String.fromCharCode(bytes[i]);
+  const chunks: string[] = [];
+  for (let i = 0; i < bytes.length; i += BASE64_CHUNK_SIZE) {
+    chunks.push(
+      String.fromCharCode(...bytes.subarray(i, i + BASE64_CHUNK_SIZE)),
+    );
   }
-  return btoa(binary)
+  return btoa(chunks.join(""))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
@@ -178,18 +181,16 @@ function normalizeSharedFiles(value: unknown): LoadedPlayground | null {
     files.push(createFileEntry(name, item.content, false));
   }
 
-  const entry =
-    typeof value.entry === "string" && seen.has(value.entry)
+  const hasEntryFile = seen.has(ENTRY_FILE);
+  const hasStateFile = seen.has(STATE_FILE);
+  const entry = hasEntryFile
+    ? ENTRY_FILE
+    : typeof value.entry === "string" && seen.has(value.entry)
       ? value.entry
-      : seen.has(ENTRY_FILE)
-        ? ENTRY_FILE
-        : files[0].name;
-  let stateFile = STATE_FILE;
-  if (typeof value.stateFile === "string") {
-    stateFile =
-      value.stateFile === "" || seen.has(value.stateFile)
-        ? value.stateFile
-        : STATE_FILE;
+      : files[0].name;
+  let stateFile = hasStateFile ? STATE_FILE : "";
+  if (!hasStateFile && typeof value.stateFile === "string") {
+    stateFile = seen.has(value.stateFile) ? value.stateFile : "";
   }
   const active =
     typeof value.active === "string" && seen.has(value.active)
@@ -199,7 +200,12 @@ function normalizeSharedFiles(value: unknown): LoadedPlayground | null {
     file.active = file.name === active;
     file.locked = file.name === entry || file.name === stateFile;
   }
-  return { files: orderFiles(files, entry, stateFile), entry, active, stateFile };
+  return {
+    files: orderFiles(files, entry, stateFile),
+    entry,
+    active,
+    stateFile,
+  };
 }
 
 function loadSharedPlayground(): LoadedPlayground | null {
