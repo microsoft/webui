@@ -783,7 +783,10 @@ fn bundle_components(
     Ok(ts_files.len())
 }
 
-/// Replace `<pre …>…</pre>` blocks with placeholder comments so the WebUI
+const PRE_BLOCK_MARKER_PREFIX: &str = "<span data-webui-press-pre-block=\"";
+const PRE_BLOCK_MARKER_SUFFIX: &str = "\"></span>";
+
+/// Replace `<pre …>…</pre>` blocks with placeholder elements so the WebUI
 /// HTML parser does not normalize whitespace inside them. Returns the
 /// modified string and the original blocks (in order) for restoration
 /// after rendering.
@@ -797,10 +800,10 @@ fn protect_pre_blocks(content: &str) -> (String, Vec<String>) {
         if let Some(rel_end) = content[start..].find("</pre>") {
             let end = start + rel_end + "</pre>".len();
             out.push_str(&content[cursor..start]);
-            out.push_str("<!--PRE_BLOCK_");
+            out.push_str(PRE_BLOCK_MARKER_PREFIX);
             // write! into existing buffer — avoids `format!` allocation per block.
             let _ = write!(&mut out, "{}", blocks.len());
-            out.push_str("-->");
+            out.push_str(PRE_BLOCK_MARKER_SUFFIX);
             blocks.push(content[start..end].to_string());
             cursor = end;
         } else {
@@ -827,32 +830,31 @@ fn find_pre_open(s: &str) -> Option<usize> {
     None
 }
 
-/// Single-pass restoration of `<!--PRE_BLOCK_N-->` placeholders to their
+/// Single-pass restoration of pre-block placeholder elements to their
 /// original content. Faster than calling `String::replace` once per block.
 fn restore_pre_blocks(html: &str, blocks: &[String]) -> String {
     if blocks.is_empty() {
         return html.to_string();
     }
-    const PREFIX: &str = "<!--PRE_BLOCK_";
     let extra: usize = blocks.iter().map(|b| b.len()).sum();
     let mut out = String::with_capacity(html.len() + extra);
     let mut cursor = 0;
-    while let Some(rel) = html[cursor..].find(PREFIX) {
+    while let Some(rel) = html[cursor..].find(PRE_BLOCK_MARKER_PREFIX) {
         let p = cursor + rel;
         out.push_str(&html[cursor..p]);
-        let after = p + PREFIX.len();
-        if let Some(end_rel) = html[after..].find("-->") {
+        let after = p + PRE_BLOCK_MARKER_PREFIX.len();
+        if let Some(end_rel) = html[after..].find(PRE_BLOCK_MARKER_SUFFIX) {
             let num_str = &html[after..after + end_rel];
             if let Ok(idx) = num_str.parse::<usize>() {
                 if let Some(block) = blocks.get(idx) {
                     out.push_str(block);
-                    cursor = after + end_rel + 3;
+                    cursor = after + end_rel + PRE_BLOCK_MARKER_SUFFIX.len();
                     continue;
                 }
             }
             // Unknown placeholder — keep verbatim.
-            out.push_str(&html[p..after + end_rel + 3]);
-            cursor = after + end_rel + 3;
+            out.push_str(&html[p..after + end_rel + PRE_BLOCK_MARKER_SUFFIX.len()]);
+            cursor = after + end_rel + PRE_BLOCK_MARKER_SUFFIX.len();
         } else {
             out.push_str(&html[p..]);
             return out;
@@ -875,6 +877,8 @@ fn fxhash(s: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
 
     // --- truncate_utf8 ---------------------------------------------------
 
@@ -911,7 +915,7 @@ mod tests {
         let input = r#"<p>before</p><pre class="hljs">code</pre><p>after</p>"#;
         let (out, blocks) = protect_pre_blocks(input);
         assert_eq!(blocks.len(), 1);
-        assert!(out.contains("<!--PRE_BLOCK_0-->"));
+        assert!(out.contains(r#"<span data-webui-press-pre-block="0"></span>"#));
         assert!(!out.contains("<pre"));
         assert_eq!(blocks[0], r#"<pre class="hljs">code</pre>"#);
     }
@@ -944,6 +948,61 @@ mod tests {
     #[test]
     fn restore_pre_blocks_no_blocks_returns_input() {
         assert_eq!(restore_pre_blocks("plain html", &[]), "plain html");
+    }
+
+    #[test]
+    fn pre_block_placeholder_survives_webui_component_slot_render() -> TestResult {
+        let input = "<code-block><pre><code>let x = 1;\n</code></pre></code-block>";
+        let (protected, blocks) = protect_pre_blocks(input);
+        let page_html = format!("<!DOCTYPE html><html><body>{protected}</body></html>");
+
+        let tmp = std::env::temp_dir().join(format!(
+            "webui-press-slot-test-{}-{:x}",
+            std::process::id(),
+            fxhash(input)
+        ));
+        if tmp.exists() {
+            fs::remove_dir_all(&tmp)?;
+        }
+        fs::create_dir_all(&tmp)?;
+        fs::write(tmp.join("index.html"), page_html)?;
+
+        let components = vec![Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("components")
+            .to_string_lossy()
+            .into_owned()];
+        let build_result = webui::build(BuildOptions {
+            app_dir: tmp.clone(),
+            entry: "index.html".to_string(),
+            plugin: Some(webui::Plugin::WebUI),
+            components,
+            ..BuildOptions::default()
+        })?;
+
+        let mut writer = StringWriter::with_capacity(4096);
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(webui_handler::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        handler.render(
+            &build_result.protocol,
+            &Value::Object(Map::new()),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )?;
+
+        fs::remove_dir_all(&tmp)?;
+
+        let html = restore_pre_blocks(&writer.buf, &blocks);
+        assert!(
+            html.contains("<pre><code>let x = 1;\n</code></pre>"),
+            "slotted pre block should be restored after WebUI render: {html}"
+        );
+        assert!(
+            !html.contains(PRE_BLOCK_MARKER_PREFIX),
+            "placeholder marker must not survive output: {html}"
+        );
+
+        Ok(())
     }
 
     // --- fxhash ----------------------------------------------------------
