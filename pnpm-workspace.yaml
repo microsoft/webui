@@ -6,6 +6,10 @@ packages:
   - '!**/bin/**'
   - '!**/obj/**'
 
+allowBuilds:
+  electron: true
+  esbuild: true
+
 catalog:
   '@codemirror/commands': ^6.10.2
   '@codemirror/lang-css': ^6.3.1
@@ -25,7 +29,3 @@ catalog:
   esbuild: ^0.27.3
   tslib: ^2.8.0
   typescript: ^5.9.3
-
-onlyBuiltDependencies:
-  - electron
-  - esbuild
