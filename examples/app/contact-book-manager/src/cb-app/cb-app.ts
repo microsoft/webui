@@ -26,6 +26,12 @@ export class CbApp extends WebUIElement {
   // sync on direct loads, back/forward, and when navigating to an unfiltered
   // route. Filtering itself is owned by each list route's loader.
   private readonly onNavigated = (e: Event): void => {
+    // While a search debounce is pending the user is actively typing, so a
+    // navigation settling mid-keystroke (for example the list route's own
+    // navigated event arriving just after the first character) must not
+    // overwrite the in-progress query. The pending debounce will write the
+    // final `q` to the URL, and the resulting navigation mirrors it back.
+    if (this.searchTimer !== null) return;
     const { query } = (e as CustomEvent<NavigationEvent>).detail;
     this.searchQuery = query.q ?? '';
   };
