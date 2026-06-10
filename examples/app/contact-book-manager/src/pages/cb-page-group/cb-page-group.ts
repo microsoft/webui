@@ -15,11 +15,11 @@ export class CbPageGroup extends WebUIElement {
   static async loader(
     { params, query, signal }: RouteLoaderContext,
   ): Promise<{ contacts: Contact[]; groupName: string }> {
-    const contacts = await api.contacts.list(
-      { q: query.q || undefined, group: params.group },
-      { signal },
-    );
-    return { contacts, groupName: params.group };
+    // Fetch the group as a server resource. The endpoint canonicalizes the
+    // case-insensitive slug (e.g. `/groups/work` -> `Work`) and applies the
+    // `q` search filter, matching the SSR path, so the display name stays
+    // canonical even when the search narrows the list to nothing.
+    return api.groups.get(params.group, { q: query.q || undefined }, { signal });
   }
 }
 

@@ -310,6 +310,48 @@ test.describe('search', () => {
     await expect(page.locator('cb-header .search-input')).toHaveValue('Sarah');
     await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(1);
   });
+
+  test('typing does not stack a history entry per keystroke', async ({ page }) => {
+    // Search updates replace the current history entry, so a single back step
+    // returns to the page that preceded the search rather than walking through
+    // each intermediate query.
+    await page.goto('/');
+    await page.locator('cb-sidebar').getByRole('link', { name: /All Contacts/ }).click();
+    await expect(page).toHaveURL('/contacts');
+
+    const searchInput = page.locator('cb-header .search-input');
+    await searchInput.pressSequentially('Sarah', { delay: 80 });
+    await expect(page).toHaveURL(/\/contacts\?q=Sarah$/);
+    await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(1);
+
+    // One back step lands on the unfiltered contacts page, not on `?q=Sara`,
+    // `?q=Sar`, etc.
+    await page.goBack();
+    await expect(page).toHaveURL('/contacts');
+    await expect(page.locator('cb-header .search-input')).toHaveValue('');
+    await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(15);
+  });
+});
+
+// ── Group canonicalization (issue #191 review) ───────────────────
+
+test.describe('group route canonicalization', () => {
+  test('lowercase group slug renders the canonical group name', async ({ page }) => {
+    // Direct load of a lowercase slug must hydrate to the canonical "Work"
+    // title and keep the group's contacts (the loader mirrors the SSR path).
+    await page.goto('/groups/work');
+    await expect(page.locator('cb-page-group .page-title')).toHaveText('Work');
+    await expect(page.locator('cb-page-group cb-contact-card').first()).toBeVisible();
+  });
+
+  test('group title stays canonical when a search filters out every contact', async ({ page }) => {
+    // Even when `q` narrows the group to zero matches, the canonical title
+    // must remain and the empty state must show.
+    await page.goto('/groups/work?q=zzz_no_match_zzz');
+    await expect(page.locator('cb-page-group .page-title')).toHaveText('Work');
+    await expect(page.locator('cb-page-group cb-contact-card')).toHaveCount(0);
+    await expect(page.locator('cb-page-group cb-empty-state')).toBeVisible();
+  });
 });
 
 // ── Visual regression tests ──────────────────────────────────────

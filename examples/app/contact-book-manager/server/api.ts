@@ -103,6 +103,24 @@ function computeInitials(firstName: string, lastName: string): string {
   return first + last;
 }
 
+/** Case-insensitive substring search across the user-visible text fields. */
+function searchContacts(list: Contact[], query: string): Contact[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return list;
+  return list.filter(c =>
+    c.firstName.toLowerCase().indexOf(q) !== -1 ||
+    c.lastName.toLowerCase().indexOf(q) !== -1 ||
+    c.email.toLowerCase().indexOf(q) !== -1 ||
+    c.company.toLowerCase().indexOf(q) !== -1
+  );
+}
+
+/** Contacts in a group, matched case-insensitively (mirrors the SSR route). */
+function contactsInGroup(groupSlug: string): Contact[] {
+  const slug = groupSlug.toLowerCase();
+  return contacts.filter(c => c.group.toLowerCase() === slug);
+}
+
 function pickAvatarColor(): string {
   return AVATAR_COLORS[contacts.length % AVATAR_COLORS.length];
 }
@@ -204,7 +222,7 @@ ssr.get('/favorites', (_req: Request, res: Response) => {
 // Group-filtered contacts
 ssr.get('/groups/:group', (req: Request, res: Response) => {
   const groupSlug = req.params.group;
-  const filtered = contacts.filter(c => c.group.toLowerCase() === groupSlug.toLowerCase());
+  const filtered = contactsInGroup(groupSlug);
   const displayName = filtered[0]?.group ?? groupSlug;
   res.json({
     state: {
@@ -227,20 +245,12 @@ ssr.get('/groups/:group', (req: Request, res: Response) => {
 app.get('/api/contacts', (_req: Request, res: Response) => {
   let result = contacts;
 
-  const query = String(_req.query.q || '');
-  if (query) {
-    const q = query.toLowerCase();
-    result = result.filter(c =>
-      c.firstName.toLowerCase().indexOf(q) !== -1 ||
-      c.lastName.toLowerCase().indexOf(q) !== -1 ||
-      c.email.toLowerCase().indexOf(q) !== -1 ||
-      c.company.toLowerCase().indexOf(q) !== -1
-    );
-  }
+  result = searchContacts(result, String(_req.query.q || ''));
 
   const group = String(_req.query.group || '');
   if (group) {
-    result = result.filter(c => c.group === group);
+    const slug = group.toLowerCase();
+    result = result.filter(c => c.group.toLowerCase() === slug);
   }
 
   if (_req.query.favorites === 'true') {
@@ -248,6 +258,16 @@ app.get('/api/contacts', (_req: Request, res: Response) => {
   }
 
   res.json(result);
+});
+
+// Group resource: canonical name plus (optionally search-filtered) contacts.
+// Mirrors the SSR `/groups/:group` route so client loaders get the same
+// case-insensitive canonicalization, including when a `q` filter is applied.
+app.get('/api/groups/:group', (req: Request, res: Response) => {
+  const members = contactsInGroup(req.params.group);
+  const groupName = members[0]?.group ?? req.params.group;
+  const result = searchContacts(members, String(req.query.q || ''));
+  res.json({ groupName, contacts: result });
 });
 
 // Get single contact

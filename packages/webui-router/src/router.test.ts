@@ -1153,6 +1153,49 @@ describe('WebUIRouter', () => {
   });
 });
 
+// ── navigate() history behavior ──────────────────────────────────
+
+describe('navigate', () => {
+  interface NavCall { url: string; options: unknown }
+  let calls: NavCall[];
+  let original: ((url: string, options?: unknown) => void) | undefined;
+
+  beforeEach(() => {
+    calls = [];
+    const nav = (globalThis as { navigation?: Record<string, unknown> }).navigation!;
+    original = nav.navigate as ((url: string, options?: unknown) => void) | undefined;
+    nav.navigate = (url: string, options?: unknown) => { calls.push({ url, options }); };
+  });
+
+  afterEach(() => {
+    const nav = (globalThis as { navigation?: Record<string, unknown> }).navigation!;
+    nav.navigate = original;
+  });
+
+  test('pushes a new history entry by default (no options)', () => {
+    const router = new WebUIRouter();
+    router.navigate('/contacts?q=Sarah');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, '/contacts?q=Sarah');
+    assert.equal(calls[0].options, undefined, 'default navigate must not request replace');
+  });
+
+  test('replaces the current history entry when replace is true', () => {
+    const router = new WebUIRouter();
+    router.navigate('/contacts?q=Sarah', { replace: true });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, '/contacts?q=Sarah');
+    assert.deepEqual(calls[0].options, { history: 'replace' }, 'replace must map to history: replace');
+  });
+
+  test('replace: false behaves like a default push', () => {
+    const router = new WebUIRouter();
+    router.navigate('/contacts', { replace: false });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options, undefined);
+  });
+});
+
 // ── parseQuery unit tests ────────────────────────────────────────
 
 describe('parseQuery', () => {

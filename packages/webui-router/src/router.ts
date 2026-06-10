@@ -190,10 +190,17 @@ export class WebUIRouter {
     this.handleNavigation(this.currentTarget());
   }
 
-  /** Navigate to a new path. */
-  navigate(path: string): void {
+  /**
+   * Navigate to a new path.
+   *
+   * Pass `{ replace: true }` to replace the current history entry instead of
+   * pushing a new one. This is useful for high-frequency updates such as
+   * search-as-you-type, where each intermediate query should not become its
+   * own back-button stop.
+   */
+  navigate(path: string, options?: { replace?: boolean }): void {
     const fullPath = prependBasePath(path, this.basePath);
-    window.navigation.navigate(fullPath);
+    window.navigation.navigate(fullPath, options?.replace ? { history: 'replace' } : undefined);
   }
 
   /** Navigate back. */

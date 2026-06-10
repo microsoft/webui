@@ -30,6 +30,11 @@ export interface Stats {
   recentContacts: Contact[];
 }
 
+export interface GroupResult {
+  groupName: string;
+  contacts: Contact[];
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const resp = await fetch(`${API_BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
@@ -68,6 +73,24 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify({ ...contact, favorite: !contact.favorite }),
       });
+    },
+  },
+  groups: {
+    // Resolve a group by its (case-insensitive) slug. The server canonicalizes
+    // the display name and applies the optional `q` search filter, returning
+    // both the canonical name and the filtered contacts in one response.
+    get: (
+      slug: string,
+      params?: { q?: string },
+      opts?: { signal?: AbortSignal },
+    ) => {
+      const qs = new URLSearchParams();
+      if (params?.q) qs.set('q', params.q);
+      const query = qs.toString();
+      return request<GroupResult>(
+        `/groups/${encodeURIComponent(slug)}${query ? `?${query}` : ''}`,
+        { signal: opts?.signal },
+      );
     },
   },
   stats: () => request<Stats>('/stats'),

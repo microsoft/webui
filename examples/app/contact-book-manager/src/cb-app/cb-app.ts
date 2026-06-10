@@ -30,6 +30,11 @@ export class CbApp extends WebUIElement {
     this.searchQuery = query.q ?? '';
   };
 
+  // Trailing-debounce handle for search-as-you-type. Coalesces rapid keystrokes
+  // into a single navigation so the history stack does not gain one entry per
+  // character.
+  private searchTimer: ReturnType<typeof setTimeout> | null = null;
+
   override connectedCallback(): void {
     super.connectedCallback();
     window.addEventListener('webui:route:navigated', this.onNavigated);
@@ -38,23 +43,45 @@ export class CbApp extends WebUIElement {
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     window.removeEventListener('webui:route:navigated', this.onNavigated);
+    if (this.searchTimer !== null) {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = null;
+    }
   }
 
   // Model search as route query state: write `q` to the URL and let the active
   // list route's loader fetch the filtered contacts. The shell no longer reads
   // the active page, calls the contacts API, or pushes state into pages.
+  //
+  // Navigation is debounced so typing does not fire a route load per keystroke.
+  // Entering or leaving a search (adding/removing `q`) pushes a history entry,
+  // so one Back returns to the pre-search list; refining an existing query
+  // replaces the entry instead, so the intermediate keystrokes do not stack.
   onSearch(e: SearchChangeEvent): void {
     this.searchQuery = e.detail.value;
+    const value = e.detail.value;
 
-    const next = new URL(window.location.href);
-    const query = e.detail.value.trim();
-    if (query) {
-      next.searchParams.set('q', query);
-    } else {
-      next.searchParams.delete('q');
-    }
+    if (this.searchTimer !== null) clearTimeout(this.searchTimer);
+    this.searchTimer = setTimeout(() => {
+      this.searchTimer = null;
 
-    Router.navigate(`${next.pathname}${next.search}`);
+      const current = new URL(window.location.href);
+      const hadQuery = current.searchParams.has('q');
+
+      const next = new URL(current.href);
+      const query = value.trim();
+      if (query) {
+        next.searchParams.set('q', query);
+      } else {
+        next.searchParams.delete('q');
+      }
+
+      // No-op if the URL would not change (e.g. clearing an already-empty box).
+      if (next.search === current.search) return;
+
+      const hasQuery = next.searchParams.has('q');
+      Router.navigate(`${next.pathname}${next.search}`, { replace: hadQuery && hasQuery });
+    }, 200);
   }
 
   onSelectContact(e: ContactEvent): void {
