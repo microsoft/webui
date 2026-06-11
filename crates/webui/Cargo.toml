@@ -44,6 +44,9 @@ libc = { workspace = true }
 microsoft-webui-handler = { path = "../webui-handler", version = "0.0.17" }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.17" }
 
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { workspace = true }
+
 [[bench]]
 name = "contact_book_bench"
 harness = false

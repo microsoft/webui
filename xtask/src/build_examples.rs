@@ -103,11 +103,18 @@ pub fn run_integration_builds() -> Result<(), String> {
 
 // ── App builds ──────────────────────────────────────────────────────────
 
+fn is_example_app_dir(app_dir: &Path) -> bool {
+    app_dir.join("demo.toml").is_file() || app_dir.join("package.json").is_file()
+}
+
 pub fn run_app_builds() -> Result<(), String> {
     use std::thread;
 
     let apps_root = Path::new("examples/app");
-    let app_dirs = collect_child_dirs(apps_root)?;
+    let app_dirs: Vec<_> = collect_child_dirs(apps_root)?
+        .into_iter()
+        .filter(|app_dir| is_example_app_dir(app_dir))
+        .collect();
 
     if app_dirs.is_empty() {
         eprintln!(
@@ -269,6 +276,39 @@ fn available_integrations() -> String {
 
 fn available_apps() -> Result<String, String> {
     let dirs = collect_child_dirs(Path::new("examples/app"))?;
-    let names: Vec<String> = dirs.iter().map(|d| display_name(d)).collect();
+    let names: Vec<String> = dirs
+        .iter()
+        .filter(|d| is_example_app_dir(d))
+        .map(|d| display_name(d))
+        .collect();
     Ok(names.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_example_app_dir;
+    use std::fs;
+
+    #[test]
+    fn ignores_generated_directories_without_app_manifest() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let app_dir = temp.path().join("routes-advanced");
+        fs::create_dir(&app_dir)?;
+        fs::create_dir(app_dir.join("dist"))?;
+
+        assert!(!is_example_app_dir(&app_dir));
+        Ok(())
+    }
+
+    #[test]
+    fn treats_manifest_directories_as_apps() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let app_dir = temp.path().join("calculator");
+        fs::create_dir(&app_dir)?;
+        fs::write(app_dir.join("demo.toml"), "name = \"Calculator\"\n")?;
+
+        assert!(is_example_app_dir(&app_dir));
+        Ok(())
+    }
 }

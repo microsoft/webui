@@ -1806,6 +1806,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1947,6 +1948,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "syntect",
+ "tempfile",
  "thiserror",
  "tokio",
 ]
