@@ -3,8 +3,8 @@
 
 //! WASM playground build task.
 //!
-//! Builds the `webui-wasm` crate to WebAssembly via `wasm-pack` and patches
-//! the generated JS glue for browser compatibility.
+//! Builds the `webui-wasm` crate to WebAssembly via `wasm-pack` and writes the
+//! generated bundle into the documentation playground's public assets.
 
 use crate::util::{ensure_cargo_install, ensure_rustup_target};
 use std::fs;

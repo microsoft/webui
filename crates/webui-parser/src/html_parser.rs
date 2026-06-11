@@ -396,24 +396,40 @@ pub(crate) fn find_declaration_close(input: &str) -> Option<usize> {
 }
 
 /// Return true for HTML void elements that do not require end tags.
+///
+/// Tag names are compared ASCII-case-insensitively, matching the HTML
+/// specification and the rest of the scanner (e.g. [`find_matching_end`] and
+/// [`style_element_bounds`]), so `<BR>` and `<img>` are both recognized as
+/// void. Without this, an uppercase void tag would be treated as an open
+/// element and swallow the remainder of the document as its body.
 #[inline]
 pub(crate) fn is_void_element(tag_name: &str) -> bool {
+    let bytes = tag_name.as_bytes();
+    // The longest void tag name ("source") is six bytes; anything longer or
+    // empty cannot be a void element, so skip the case-folding work entirely.
+    if bytes.is_empty() || bytes.len() > 6 {
+        return false;
+    }
+    let mut buf = [0u8; 6];
+    let name = &mut buf[..bytes.len()];
+    name.copy_from_slice(bytes);
+    name.make_ascii_lowercase();
     matches!(
-        tag_name,
-        "area"
-            | "base"
-            | "br"
-            | "col"
-            | "embed"
-            | "hr"
-            | "img"
-            | "input"
-            | "link"
-            | "meta"
-            | "param"
-            | "source"
-            | "track"
-            | "wbr"
+        &*name,
+        b"area"
+            | b"base"
+            | b"br"
+            | b"col"
+            | b"embed"
+            | b"hr"
+            | b"img"
+            | b"input"
+            | b"link"
+            | b"meta"
+            | b"param"
+            | b"source"
+            | b"track"
+            | b"wbr"
     )
 }
 
@@ -589,5 +605,34 @@ mod tests {
         </for>"#;
         let open = find_tag_close(html).unwrap() + 1;
         assert_eq!(find_matching_end(html, "for", open), Some((218, 224)));
+    }
+
+    #[test]
+    fn is_void_element_matches_case_insensitively() {
+        for name in [
+            "br", "BR", "Img", "IMG", "input", "INPUT", "source", "SOURCE",
+        ] {
+            assert!(is_void_element(name), "{name} should be void");
+        }
+        for name in ["div", "style", "Section", "", "sourcex", "embedded"] {
+            assert!(!is_void_element(name), "{name} should not be void");
+        }
+    }
+
+    #[test]
+    fn walker_treats_uppercase_void_element_as_void() {
+        let mut walker = Walker::new("<BR><span>after</span>");
+        let Some(Event::Element(br)) = walker.next() else {
+            panic!("expected void element");
+        };
+        assert_eq!(br.name(), "BR");
+        // The void element must not swallow its siblings as body content.
+        assert_eq!(br.inner(), 4..4);
+
+        let Some(Event::Element(span)) = walker.next() else {
+            panic!("expected sibling element");
+        };
+        assert_eq!(span.name(), "span");
+        assert!(walker.next().is_none());
     }
 }

@@ -1150,6 +1150,11 @@ child range pushes an explicit parse operation, and directive bodies (`<for>`,
   actionable directive error instead of recursing through parser calls.
 - The scanner is quote-aware for opening tags, so `>` inside `'...'` or `"..."`
   attribute values never terminates a tag.
+- HTML tag names are matched ASCII-case-insensitively where the HTML
+  specification requires it: void elements (`<BR>`), closing-tag matching, and
+  `<style>`/`<STYLE>` are recognized regardless of case. WebUI directives
+  (`<for>`, `<if>`, `<route>`, `<outlet>`) and component names remain
+  case-sensitive.
 - This is not a browser HTML parser. It supports the WebUI template subset used
   at build time and should not be used for arbitrary browser DOM conformance.
 

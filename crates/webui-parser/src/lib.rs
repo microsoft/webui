@@ -671,7 +671,7 @@ impl HtmlParser {
                                         self.flush_raw_buffer(fragments);
                                         fragments.push(WebUIFragment::outlet());
                                     }
-                                    "style" => {
+                                    name if name.eq_ignore_ascii_case("style") => {
                                         self.process_style_element(&element, fragments)?;
                                     }
                                     _ if self.component_registry.contains(element.name()) => {
@@ -1322,7 +1322,12 @@ impl HtmlParser {
         self.token_store.extend(tokens);
         self.token_definitions.extend(defs);
         self.process_style_content(style_content, &comments, fragments);
-        self.add_raw_fragment("</style>");
+        // Reconstruct the closing tag from the parsed name so the emitted case
+        // mirrors the source (e.g. `<STYLE>` closes with `</STYLE>`), matching
+        // how regular elements are closed via `ParseOp::EmitClose`.
+        self.add_raw_fragment("</");
+        self.add_raw_fragment(element.name());
+        self.add_raw_fragment(">");
         Ok(())
     }
 
@@ -3482,6 +3487,34 @@ mod tests {
             raw_text.contains(r#"<link rel="stylesheet" href="my-card.css">"#),
             "Expected external <link> tag in: {}",
             raw_text
+        );
+    }
+
+    #[test]
+    fn test_uppercase_style_element_is_processed_as_css() {
+        // HTML tag names are ASCII case-insensitive: an uppercase `<STYLE>`
+        // block must be CSS-processed exactly like `<style>`, so a CSS signal
+        // comment becomes a Signal fragment (not inert raw text) and the
+        // reconstructed closing tag mirrors the source case.
+        let (fragments, _) = parse_and_get_fragments("<STYLE>/*{{tokens}}*/.a{color:red}</STYLE>");
+        assert!(
+            fragments.iter().any(|f| matches!(
+                f.fragment.as_ref(),
+                Some(Fragment::Signal(s)) if s.value == "tokens" && !s.raw
+            )),
+            "uppercase <STYLE> should be CSS-processed, got: {:?}",
+            fragments
+        );
+        let raw: String = fragments
+            .iter()
+            .filter_map(|f| match f.fragment.as_ref() {
+                Some(Fragment::Raw(r)) => Some(r.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            raw.contains("</STYLE>"),
+            "closing tag should preserve source case, got: {raw}"
         );
     }
 
