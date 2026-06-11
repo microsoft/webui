@@ -346,28 +346,19 @@ fn collect_inventoryable_components(
                             route_base: child_route_base.clone(),
                         });
 
-                        // Include pending/error components in the inventory
-                        // so their templates are available on the client.
-                        if !route_frag.pending_component.is_empty() {
-                            stack.push(QueuedFragment {
-                                id: route_frag.pending_component.clone(),
-                                inventoryable: protocol
-                                    .components
-                                    .get(&route_frag.pending_component)
-                                    .is_some_and(|c| !c.template.is_empty()),
-                                route_base: child_route_base.clone(),
-                            });
-                        }
-                        if !route_frag.error_component.is_empty() {
-                            stack.push(QueuedFragment {
-                                id: route_frag.error_component.clone(),
-                                inventoryable: protocol
-                                    .components
-                                    .get(&route_frag.error_component)
-                                    .is_some_and(|c| !c.template.is_empty()),
-                                route_base: child_route_base.clone(),
-                            });
-                        }
+                        // Inventory pending/error components for the entire
+                        // route subtree, not just the matched chain. Pending UI
+                        // renders while a (possibly unmatched) sibling route's
+                        // partial is in flight, and error UI renders if that
+                        // fetch fails, so the client must already hold these
+                        // templates before — or without — a successful fetch for
+                        // the target route.
+                        collect_route_boundary_components(
+                            std::slice::from_ref(route_frag),
+                            &child_route_base,
+                            protocol,
+                            &mut stack,
+                        );
 
                         // Walk nested child routes to find the next matched level.
                         // This mirrors the handler's outlet rendering: match children
@@ -489,6 +480,39 @@ fn walk_route_children(
         }
         current = &matched.children;
         base = child_base;
+    }
+}
+
+/// Inventory the pending/error boundary components for an entire route subtree.
+///
+/// Unlike [`walk_route_children`], which follows only the best-matching chain,
+/// this collects boundary components for *every* route reachable from `routes`.
+/// Pending UI renders while a route's partial fetch is in flight and error UI
+/// renders if that fetch fails, so the client must already hold these templates
+/// for any navigable sibling — not only the currently active route. The walk is
+/// iterative because the framework forbids recursion in core paths.
+fn collect_route_boundary_components(
+    routes: &[WebUIFragmentRoute],
+    route_base: &str,
+    protocol: &WebUIProtocol,
+    stack: &mut Vec<QueuedFragment>,
+) {
+    let mut remaining: Vec<&WebUIFragmentRoute> = routes.iter().collect();
+    while let Some(route) = remaining.pop() {
+        for component in [&route.pending_component, &route.error_component] {
+            if component.is_empty() {
+                continue;
+            }
+            stack.push(QueuedFragment {
+                id: component.clone(),
+                inventoryable: protocol
+                    .components
+                    .get(component)
+                    .is_some_and(|c| !c.template.is_empty()),
+                route_base: route_base.to_string(),
+            });
+        }
+        remaining.extend(route.children.iter());
     }
 }
 
@@ -1775,6 +1799,87 @@ mod tests {
         )
         .unwrap();
         assert!(needed_again.is_empty());
+    }
+
+    #[test]
+    fn test_inventory_includes_boundary_components_for_unmatched_sibling_routes() {
+        // Regression: pending/error components for routes that are NOT in the
+        // matched chain at the current request path must still be inventoried.
+        // The client renders pending UI before a sibling route's partial
+        // resolves and error UI when it fails, so neither can be delivered by
+        // the target route's own fetch — both must already be on the client.
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/".into(),
+                    fragment_id: "route-shell".into(),
+                    children: vec![
+                        WebUiFragmentRoute {
+                            path: "slow".into(),
+                            fragment_id: "page-slow".into(),
+                            exact: true,
+                            pending_component: "loading-skeleton".into(),
+                            ..Default::default()
+                        },
+                        WebUiFragmentRoute {
+                            path: "failing".into(),
+                            fragment_id: "page-failing".into(),
+                            exact: true,
+                            error_component: "error-display".into(),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                })],
+            },
+        );
+        for id in [
+            "route-shell",
+            "page-slow",
+            "page-failing",
+            "loading-skeleton",
+            "error-display",
+        ] {
+            fragments.insert(
+                id.to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<x></x>")],
+                },
+            );
+        }
+
+        let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        for id in [
+            "route-shell",
+            "page-slow",
+            "page-failing",
+            "loading-skeleton",
+            "error-display",
+        ] {
+            protocol
+                .components
+                .entry(id.to_string())
+                .or_default()
+                .template = format!("<f-template id=\"{id}\"></f-template>");
+        }
+
+        // Request the root path: neither "slow" nor "failing" is in the matched chain.
+        let reachable = collect_reachable_components_for_request(
+            &protocol,
+            "index.html",
+            "/",
+            &mut CompiledRouteCache::new(),
+        );
+        assert!(
+            reachable.contains("loading-skeleton"),
+            "pending component of an unmatched sibling route must be inventoried: {reachable:?}"
+        );
+        assert!(
+            reachable.contains("error-display"),
+            "error component of an unmatched sibling route must be inventoried: {reachable:?}"
+        );
     }
 
     #[test]
