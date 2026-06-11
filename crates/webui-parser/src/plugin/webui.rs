@@ -62,7 +62,7 @@
 use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use crate::comment_policy;
 use crate::component_registry::Component;
-use crate::tag_scan::find_tag_close;
+use crate::html_parser::{find_tag_close, style_element_bounds};
 use crate::{ConditionParser, DomStrategy, ParserOptions, Result};
 use std::cell::Cell;
 use std::fmt::Write;
@@ -1081,53 +1081,12 @@ fn compile_css_signal_comment(comment: &str, meta: &mut TemplateSectionMeta) -> 
 }
 
 fn find_style_element_bounds(input: &str, index: usize) -> Option<(usize, usize, usize)> {
-    let remaining = &input[index..];
-    if !starts_with_style_start_tag(remaining) {
-        return None;
-    }
-
-    let open_close = find_tag_close(remaining)?;
-    let content_start = index + open_close + 1;
-    let (close_start, close_end) = find_style_end_tag(input, content_start)?;
-    Some((content_start, close_start, close_end))
-}
-
-fn starts_with_style_start_tag(input: &str) -> bool {
-    let bytes = input.as_bytes();
-    if bytes.len() < 6 || bytes[0] != b'<' || bytes.get(1) == Some(&b'/') {
-        return false;
-    }
-    ascii_starts_with_ignore_case(&bytes[1..], b"style")
-        && bytes
-            .get(6)
-            .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>')
-}
-
-fn find_style_end_tag(input: &str, start: usize) -> Option<(usize, usize)> {
-    let bytes = input.as_bytes();
-    let mut index = start;
-
-    while index + 8 <= bytes.len() {
-        if bytes[index] == b'<'
-            && bytes[index + 1] == b'/'
-            && ascii_starts_with_ignore_case(&bytes[index + 2..], b"style")
-            && bytes
-                .get(index + 7)
-                .is_some_and(|b| b.is_ascii_whitespace() || *b == b'>')
-        {
-            let close = find_tag_close(&input[index..])?;
-            return Some((index, index + close + 1));
-        }
-        index += 1;
-    }
-
-    None
-}
-
-fn ascii_starts_with_ignore_case(input: &[u8], prefix: &[u8]) -> bool {
-    input
-        .get(..prefix.len())
-        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+    let (content_start, close_start, close_end) = style_element_bounds(&input[index..])?;
+    Some((
+        index + content_start,
+        index + close_start,
+        index + close_end,
+    ))
 }
 
 #[derive(Clone)]
@@ -1496,7 +1455,7 @@ fn parse_fragment_nodes(input: &str, text_marker_offsets: &[usize]) -> Vec<Fragm
         }
 
         if remaining.starts_with("</") {
-            if let Some(close) = remaining.find('>') {
+            if let Some(close) = find_tag_close(remaining) {
                 if let Some(element) = stack.pop() {
                     push_fragment_node(&mut roots, &mut stack, FragmentNode::Element(element));
                 }
@@ -1510,9 +1469,11 @@ fn parse_fragment_nodes(input: &str, text_marker_offsets: &[usize]) -> Vec<Fragm
                 if element.self_closing {
                     push_fragment_node(&mut roots, &mut stack, FragmentNode::Element(element));
                 } else if element.tag_name.eq_ignore_ascii_case("style") {
-                    let content_start = index + consumed;
-                    if let Some((close_start, close_end)) = find_style_end_tag(input, content_start)
+                    if let Some((content_offset, close_offset, close_end)) =
+                        style_element_bounds(remaining)
                     {
+                        let content_start = index + content_offset;
+                        let close_start = index + close_offset;
                         push_style_raw_text_nodes(
                             &mut element.children,
                             &input[content_start..close_start],
@@ -1520,10 +1481,11 @@ fn parse_fragment_nodes(input: &str, text_marker_offsets: &[usize]) -> Vec<Fragm
                             text_marker_offsets,
                         );
                         push_fragment_node(&mut roots, &mut stack, FragmentNode::Element(element));
-                        index = close_end;
+                        index += close_end;
                         continue;
                     }
 
+                    let content_start = index + consumed;
                     push_style_raw_text_nodes(
                         &mut element.children,
                         &input[content_start..],

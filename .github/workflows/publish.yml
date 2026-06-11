@@ -212,18 +212,6 @@ jobs:
           path: .
           merge-multiple: true
 
-      - name: Setup WASM C headers
-        shell: bash
-        run: |
-          cargo fetch
-          WASM_HEADERS=$(find $HOME/.cargo/registry/src -path "*/tree-sitter-language-*/wasm/include" -type d | head -1)
-          if [ -n "$WASM_HEADERS" ]; then
-            echo "WASI_INCLUDE=$WASM_HEADERS" >> $GITHUB_ENV
-          else
-            echo "::error::Could not find tree-sitter-language WASM headers after cargo fetch"
-            exit 1
-          fi
-
       - name: Pack unified release artifacts
         run: cargo xtask publish-stage --pack-only --profile release
 

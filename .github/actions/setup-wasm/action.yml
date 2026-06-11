@@ -19,20 +19,6 @@ runs:
         cargo install wasm-pack
         sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
 
-    - name: Setup WASM C headers
-      shell: bash
-      run: |
-        # tree-sitter-language 0.1.7 ships minimal WASM C stdlib headers
-        # sufficient for compiling tree-sitter's C code to wasm32-unknown-unknown
-        cargo fetch
-        WASM_HEADERS=$(find $HOME/.cargo/registry/src -path "*/tree-sitter-language-*/wasm/include" -type d | head -1)
-        if [ -n "$WASM_HEADERS" ]; then
-          echo "WASI_INCLUDE=$WASM_HEADERS" >> $GITHUB_ENV
-        else
-          echo "::error::Could not find tree-sitter-language WASM headers after cargo fetch"
-          exit 1
-        fi
-
     - name: Build WASM
       shell: bash
       run: cargo xtask build-wasm

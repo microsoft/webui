@@ -12,10 +12,6 @@ pub(crate) struct CssSignalComment {
     pub raw: bool,
 }
 
-pub(crate) fn is_css_comment_node(kind: &str) -> bool {
-    matches!(kind, "comment" | "js_comment")
-}
-
 pub(crate) fn should_preserve_css_comment(comment: &str, legal_comments: LegalComments) -> bool {
     legal_comments == LegalComments::Inline && is_legal_css_comment(comment)
 }

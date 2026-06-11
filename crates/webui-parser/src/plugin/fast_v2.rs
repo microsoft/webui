@@ -9,7 +9,7 @@
 
 use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use crate::component_registry::Component;
-use crate::tag_scan::find_tag_close;
+use crate::html_parser::{find_tag_close, opening_tag_name};
 use crate::{CssLinkOptions, CssStrategy, Result};
 use webui_protocol::FastElementData;
 
@@ -195,7 +195,7 @@ pub fn generate_f_template_with_css_options(
     };
 
     if trimmed.starts_with("<template") {
-        if let Some(close_pos) = trimmed.find('>') {
+        if let Some(close_pos) = find_tag_close(&trimmed) {
             // Dev owns the wrapper — preserve attributes verbatim.
             // For `CssStrategy::Module` the parser pass enforces
             // `shadowrootadoptedstylesheets`, so by the time we get here
@@ -285,7 +285,7 @@ fn try_convert_tag(input: &str, pos: usize, result: &mut String) -> Option<usize
     // <outlet /> is kept as a marker element in f-templates.
     // The client router finds it and replaces it with <webui-route> stubs.
     if starts_with_tag_name(remaining, "outlet") {
-        if let Some(close) = remaining.find('>') {
+        if let Some(close) = find_tag_close(remaining) {
             result.push_str("<outlet></outlet>");
             return Some(close + 1);
         }
@@ -330,19 +330,7 @@ fn try_convert_tag(input: &str, pos: usize, result: &mut String) -> Option<usize
 
 /// Check if `s` starts with `<name` followed by whitespace or `>`.
 fn starts_with_tag_name(s: &str, name: &str) -> bool {
-    if !s.starts_with('<') {
-        return false;
-    }
-    let after_bracket = &s[1..];
-    if !after_bracket.starts_with(name) {
-        return false;
-    }
-    let after_name = &after_bracket[name.len()..];
-    if after_name.is_empty() {
-        return false;
-    }
-    let next = after_name.as_bytes()[0];
-    next == b' ' || next == b'\t' || next == b'\n' || next == b'\r' || next == b'>'
+    opening_tag_name(s).is_some_and(|tag_name| tag_name == name)
 }
 
 /// Convert `<if condition="EXPR">` to `<f-when value="{{EXPR}}">`.

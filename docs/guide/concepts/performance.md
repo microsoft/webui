@@ -11,8 +11,8 @@ Five architectural choices keep WebUI fast without any tuning:
 
 - **No recursion** - all algorithms are iterative, making them stack-safe even
   for large documents with deeply nested components.
-- **No regular expressions** - tree-sitter handles parsing and iterative
-  matchers handle route resolution, avoiding backtracking overhead entirely.
+- **No regular expressions** - deterministic scanners handle parsing and
+  iterative matchers handle route resolution, avoiding backtracking overhead entirely.
 - **Minimal runtime computation** - templates are compiled to a binary protocol
   at build time. The server never parses template syntax on a live request.
 - **Buffer consolidation** - adjacent static content is merged into single

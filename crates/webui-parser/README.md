@@ -4,7 +4,7 @@ HTML/CSS template parser for the [WebUI](https://github.com/microsoft/webui) fra
 
 ## Overview
 
-`microsoft-webui-parser` uses tree-sitter to parse HTML and CSS, extracting static and dynamic fragments, component slots, directives (`<for>`, `<if>`), and CSS token bindings into a compact protobuf protocol.
+`microsoft-webui-parser` uses deterministic HTML and CSS scanners to extract static and dynamic fragments, component slots, directives (`<for>`, `<if>`), and CSS token bindings into a compact protobuf protocol.
 
 ## Documentation
 

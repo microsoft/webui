@@ -11,9 +11,9 @@ mod css_link;
 mod css_parser;
 mod error;
 mod handlebars_parser;
+mod html_parser;
 pub mod plugin;
 mod route_parser;
-mod tag_scan;
 
 pub use component_registry::{Component, ComponentRegistry};
 pub use condition_parser::ConditionParser;
@@ -22,14 +22,28 @@ pub use css_parser::CssParser;
 pub use error::{ParserError, Result};
 pub use handlebars_parser::HandlebarsParser;
 
+use crate::html_parser::{self as html, Attrs, Element, Event, Walker};
 use crate::plugin::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use std::collections::{HashMap, HashSet};
-use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIteratorMut};
-use tree_sitter_html::LANGUAGE;
+use std::ops::Range;
 use webui_protocol::{
     web_ui_fragment, web_ui_fragment::Fragment, ConditionExpr, FragmentList, WebUIFragment,
     WebUIFragmentAttribute, WebUIFragmentRecords, WebUiFragmentRoute,
 };
+
+/// Maximum template size accepted by the parser.
+///
+/// Build-time parsing should never need to ingest arbitrarily large single
+/// templates. This cap prevents accidental or malicious OOM-scale inputs while
+/// staying far above normal component/page sizes.
+const MAX_TEMPLATE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Maximum nested HTML element depth accepted by semantic parsing.
+///
+/// The scanner itself is iterative, but semantic fragment construction still
+/// enters child ranges. This limit keeps pathological nesting from exhausting
+/// the Rust call stack while preserving generous headroom for real templates.
+const MAX_TEMPLATE_DEPTH: usize = 512;
 
 /// Strategy for how component CSS is delivered in rendered output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -278,6 +292,33 @@ impl FragmentIdCounter {
     }
 }
 
+struct ParseContext {
+    fragments: Vec<WebUIFragment>,
+    raw_buffer: String,
+}
+
+enum ParseOp<'a> {
+    Parse {
+        range: Range<usize>,
+        depth: usize,
+    },
+    EmitClose(&'a str),
+    EndHead,
+    EndBody,
+    CompleteFor {
+        parent: ParseContext,
+        item: String,
+        collection: String,
+        fragment_id: String,
+        keep_empty: bool,
+    },
+    CompleteIf {
+        parent: ParseContext,
+        condition: ConditionExpr,
+        fragment_id: String,
+    },
+}
+
 impl Default for HtmlParser {
     fn default() -> Self {
         Self::new()
@@ -288,9 +329,6 @@ impl Default for HtmlParser {
 pub struct HtmlParser {
     /// CSS parser.
     css_parser: CssParser,
-
-    /// Tree-sitter parser for HTML.
-    parser: Parser,
 
     /// Fragment ID counter.
     id_counter: FragmentIdCounter,
@@ -324,6 +362,10 @@ pub struct HtmlParser {
     /// (e.g., `:root { --color-primary: #0078d4; }`). These are excluded
     /// from the final token set since the app already provides their values.
     token_definitions: HashSet<String>,
+
+    /// Fragment IDs currently being parsed, used to reject recursive component
+    /// references before they can recurse through template parsing.
+    in_progress_fragments: HashSet<String>,
 }
 
 impl HtmlParser {
@@ -337,12 +379,6 @@ impl HtmlParser {
     #[must_use]
     pub fn with_options(options: impl Into<ParserOptions>) -> Self {
         let options = options.into();
-        let mut parser = Parser::new();
-        // Grammar is statically linked — set_language cannot fail at runtime.
-        #[allow(clippy::disallowed_methods)]
-        parser
-            .set_language(&LANGUAGE.into())
-            .expect("Error loading HTML grammar");
 
         Self {
             component_registry: ComponentRegistry::with_legal_comments(options.legal_comments),
@@ -356,7 +392,7 @@ impl HtmlParser {
             plugin: None,
             token_store: HashSet::new(),
             token_definitions: HashSet::new(),
-            parser,
+            in_progress_fragments: HashSet::new(),
         }
     }
 
@@ -434,26 +470,37 @@ impl HtmlParser {
 
     /// Parse HTML content to generate WebUI fragments.
     pub fn parse(&mut self, fragment_id: &str, html_content: &str) -> Result<()> {
+        let fragment_key = fragment_id.to_string();
+        if !self.in_progress_fragments.insert(fragment_key.clone()) {
+            return Err(ParserError::Directive(format!(
+                "Recursive template reference detected while parsing '{fragment_id}'. Move the recursive usage behind runtime data or split the component graph so templates do not reference themselves at build time."
+            )));
+        }
+
+        let result = self.parse_inner(fragment_id, html_content);
+        self.in_progress_fragments.remove(&fragment_key);
+        result
+    }
+
+    fn parse_inner(&mut self, fragment_id: &str, html_content: &str) -> Result<()> {
+        if html_content.len() > MAX_TEMPLATE_BYTES {
+            return Err(ParserError::Html(format!(
+                "Template '{fragment_id}' is {} bytes, which exceeds the {MAX_TEMPLATE_BYTES} byte parser limit. Split very large templates into components or reduce generated markup before build.",
+                html_content.len()
+            )));
+        }
+
         // Reset sub-fragments for new parse
         self.raw_buffer.clear();
         if let Some(ref mut plugin) = self.plugin {
             plugin.start_fragment(fragment_id);
         }
 
-        // Parse HTML
-        let tree = self
-            .parser
-            .parse(html_content, None)
-            .ok_or_else(|| ParserError::Html("Failed to parse HTML".to_string()))?;
-
         let mut entry_fragment: Vec<WebUIFragment> = Vec::new();
-
-        // Start processing the HTML node.
-        self.process_html_node(tree.root_node(), html_content, &mut entry_fragment)?;
+        self.parse_range(html_content, 0..html_content.len(), &mut entry_fragment, 0)?;
 
         self.flush_raw_buffer(&mut entry_fragment);
 
-        // Insert the entry record.
         self.fragment_records.insert(
             fragment_id.to_string(),
             FragmentList {
@@ -461,7 +508,6 @@ impl HtmlParser {
             },
         );
 
-        // Return all fragments including generated sub-fragments
         Ok(())
     }
 
@@ -510,10 +556,9 @@ impl HtmlParser {
 
     /// Returns true when a text node should be emitted into the fragment stream.
     ///
-    /// Pure formatting nodes that contain line breaks are still dropped, but
+    /// Pure formatting runs that contain line breaks are still dropped, but
     /// inline whitespace-only separators such as the spaces around `&gt;` in
-    /// `{{sectionName}} &gt; {{topicName}}` must be preserved. Tree-sitter can
-    /// split those separators into standalone text nodes.
+    /// `{{sectionName}} &gt; {{topicName}}` must be preserved.
     fn should_emit_text_content(content: &str) -> bool {
         if content.is_empty() {
             return false;
@@ -528,175 +573,453 @@ impl HtmlParser {
             && !content.contains('\r')
     }
 
-    /// Process child nodes while preserving raw source gaps between them.
-    ///
-    /// Tree-sitter HTML treats some authored whitespace as extras rather than
-    /// concrete child nodes. Reconstructing the byte gaps between children keeps
-    /// inline separators like `{{a}} &gt; {{b}}` intact.
-    fn process_children_with_source_gaps(
+    fn parse_range(
         &mut self,
-        node: Node,
         source: &str,
+        range: Range<usize>,
         fragments: &mut Vec<WebUIFragment>,
-        skip_structural_tags: bool,
+        depth: usize,
     ) -> Result<()> {
-        let mut cursor = node.walk();
-        let mut last_end = node.start_byte();
+        let mut ops = vec![ParseOp::Parse { range, depth }];
 
-        for child in node.children(&mut cursor) {
-            if child.start_byte() > last_end {
-                let gap = &source[last_end..child.start_byte()];
-                if Self::should_emit_text_content(gap) {
-                    self.add_raw_fragment(gap);
-                }
-            }
-
-            let kind = child.kind();
-            if !skip_structural_tags || (kind != "start_tag" && kind != "end_tag") {
-                self.process_child_node(child, source, fragments)?;
-            }
-
-            last_end = child.end_byte();
-        }
-
-        if node.end_byte() > last_end {
-            let gap = &source[last_end..node.end_byte()];
-            if Self::should_emit_text_content(gap) {
-                self.add_raw_fragment(gap);
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Process all non-structural child nodes inside an element-like container.
-    fn process_content_children(
-        &mut self,
-        node: Node,
-        source: &str,
-        fragments: &mut Vec<WebUIFragment>,
-    ) -> Result<()> {
-        self.process_children_with_source_gaps(node, source, fragments, true)
-    }
-    /// Process an HTML node to generate WebUI fragments.
-    fn process_html_node(
-        &mut self,
-        node: Node,
-        source: &str,
-        fragments: &mut Vec<WebUIFragment>,
-    ) -> Result<()> {
-        if node.kind() == "document" || node.kind() == "fragment" || node.kind() == "element" {
-            self.process_children_with_source_gaps(node, source, fragments, false)?;
-        } else {
-            // Add text content as raw fragment
-            let content = &source[node.start_byte()..node.end_byte()];
-            if Self::should_emit_text_content(content) {
-                self.add_raw_fragment(content);
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Process a child HTML node.
-    fn process_child_node(
-        &mut self,
-        node: Node,
-        source: &str,
-        fragments: &mut Vec<WebUIFragment>,
-    ) -> Result<()> {
-        match node.kind() {
-            "element" => {
-                // Get the tag name
-                let tag_name = self.get_element_tag_name(node, source)?;
-
-                // Handle WebUI directives
-                match tag_name.as_str() {
-                    "for" => return self.process_for_directive(node, source, fragments),
-                    "if" => return self.process_if_directive(node, source, fragments),
-                    "body" => return self.process_body_element(node, source, fragments),
-                    "head" => return self.process_head_element(node, source, fragments),
-                    "route" => return self.process_route_directive(node, source, fragments),
-                    "outlet" => {
-                        self.flush_raw_buffer(fragments);
-                        fragments.push(WebUIFragment::outlet());
-                        return Ok(());
+        while let Some(op) = ops.pop() {
+            match op {
+                ParseOp::Parse { range, depth } => {
+                    if depth > MAX_TEMPLATE_DEPTH {
+                        return Err(ParserError::Html(format!(
+                            "Template nesting exceeds the {MAX_TEMPLATE_DEPTH} level parser limit near byte {}. Split deeply nested markup into components or reduce generated nesting before build.",
+                            range.start
+                        )));
                     }
-                    _ => {
-                        if self.component_registry.contains(tag_name.as_str()) {
-                            return self.process_component_directive(
-                                node,
-                                source,
-                                fragments,
-                                tag_name.as_str(),
-                            );
+
+                    let end = range.end;
+                    let mut index = range.start;
+                    while index < end {
+                        let remaining = &source[index..end];
+                        if remaining.starts_with("<!--") {
+                            index += html::find_comment_close(remaining).unwrap_or(remaining.len());
+                            continue;
                         }
 
-                        // Process regular HTML element with attribute-aware parsing
-                        self.process_regular_element(node, source, fragments, &tag_name)?;
+                        if remaining.starts_with("<!") {
+                            let close =
+                                html::find_declaration_close(remaining).unwrap_or(remaining.len());
+                            self.add_raw_fragment(&remaining[..close]);
+                            index += close;
+                            continue;
+                        }
 
-                        return Ok(());
-                    }
-                }
-            }
-            "style_element" => {
-                // Process inline CSS: extract tokens and classify comments in one
-                // tree-sitter pass. Exact `/*{{...}}*/` comments are CSS signal
-                // placeholders; all other non-legal comments are stripped.
-                self.add_raw_fragment("<style>");
-                for child in node.named_children(&mut node.walk()) {
-                    if child.kind() == "raw_text" {
-                        let style_content = &source[child.start_byte()..child.end_byte()];
-
-                        let (tokens, defs, comments) =
-                            self.css_parser.extract_tokens_definitions_and_comments(
-                                style_content,
-                                self.options.legal_comments,
-                            )?;
-                        self.token_store.extend(tokens);
-                        self.token_definitions.extend(defs);
-                        self.process_style_content(style_content, &comments, fragments);
-                    }
-                }
-                self.add_raw_fragment("</style>");
-            }
-            "text" | "raw_text" => {
-                let content = &source[node.start_byte()..node.end_byte()];
-                if Self::should_emit_text_content(content) {
-                    let handlebars_result = self.handlebars_parser.parse(content);
-                    match handlebars_result {
-                        Ok(parsed_fragments) => {
-                            for fragment in parsed_fragments {
-                                if matches!(fragment.fragment.as_ref(), Some(Fragment::Raw(_))) {
-                                    if let Some(Fragment::Raw(raw)) = fragment.fragment.as_ref() {
-                                        self.add_raw_fragment(&raw.value);
-                                    }
-                                } else {
-                                    self.add_fragment(fragment, fragments);
+                        if remaining.starts_with('<') {
+                            if let Some(tag) = html::parse_tag(remaining) {
+                                if tag.closing {
+                                    self.add_raw_fragment(&remaining[..=tag.close]);
+                                    index += tag.close + 1;
+                                    continue;
                                 }
+
+                                let content_start = index + tag.close + 1;
+                                let (content_end, close_end) =
+                                    if tag.self_closing || html::is_void_element(tag.name) {
+                                        (content_start, content_start)
+                                    } else if let Some((close_start, close_end)) =
+                                        html::find_matching_end(remaining, tag.name, tag.close + 1)
+                                    {
+                                        (index + close_start, index + close_end)
+                                    } else {
+                                        (end, end)
+                                    };
+
+                                let element = Element {
+                                    source,
+                                    start: index,
+                                    tag,
+                                    content_start,
+                                    content_end,
+                                    close_end,
+                                };
+
+                                if close_end < end {
+                                    ops.push(ParseOp::Parse {
+                                        range: close_end..end,
+                                        depth,
+                                    });
+                                }
+
+                                match element.name() {
+                                    "for" => {
+                                        self.enter_for_directive(
+                                            &element, fragments, depth, &mut ops,
+                                        )?;
+                                    }
+                                    "if" => {
+                                        self.enter_if_directive(
+                                            &element, fragments, depth, &mut ops,
+                                        )?;
+                                    }
+                                    "body" => {
+                                        self.enter_body_element(
+                                            &element, fragments, depth, &mut ops,
+                                        )?;
+                                    }
+                                    "head" => {
+                                        self.enter_head_element(&element, depth, &mut ops);
+                                    }
+                                    "route" => {
+                                        self.process_route_directive(&element, fragments)?;
+                                    }
+                                    "outlet" => {
+                                        self.flush_raw_buffer(fragments);
+                                        fragments.push(WebUIFragment::outlet());
+                                    }
+                                    "style" => {
+                                        self.process_style_element(&element, fragments)?;
+                                    }
+                                    _ if self.component_registry.contains(element.name()) => {
+                                        self.enter_component_directive(
+                                            &element, fragments, depth, &mut ops,
+                                        )?;
+                                    }
+                                    _ => {
+                                        self.enter_regular_element(
+                                            &element, fragments, depth, &mut ops,
+                                        )?;
+                                    }
+                                }
+
+                                break;
                             }
                         }
-                        Err(error) => return Err(error),
+
+                        let next = remaining.find('<').unwrap_or(remaining.len());
+                        self.process_text(&remaining[..next], fragments)?;
+                        index += next.max(1);
                     }
                 }
-            }
-            // Preserve <!DOCTYPE ...> as raw content. Tree-sitter parses it as a
-            // "doctype" node whose children are tokens (< ! DOCTYPE etc.), so we
-            // grab the original source text verbatim to ensure full-page HTML
-            // templates round-trip correctly.
-            "doctype" => {
-                let content = &source[node.start_byte()..node.end_byte()];
-                self.add_raw_fragment(content);
-            }
-            // HTML comments are build-time-only authoring notes. They never
-            // produce fragments and bindings inside them are ignored.
-            "comment" => {}
-            // For other node types (like head, body), traverse their children
-            _ => {
-                self.process_html_node(node, source, fragments)?;
+                ParseOp::EmitClose(name) => {
+                    self.add_raw_fragment("</");
+                    self.add_raw_fragment(name);
+                    self.add_raw_fragment(">");
+                }
+                ParseOp::EndHead => {
+                    self.flush_raw_buffer(fragments);
+                    fragments.push(WebUIFragment::signal("head_end", true));
+                    self.add_raw_fragment("</head>");
+                }
+                ParseOp::EndBody => {
+                    self.flush_raw_buffer(fragments);
+                    fragments.push(WebUIFragment::signal("body_end", true));
+                    self.add_raw_fragment("</body>");
+                }
+                ParseOp::CompleteFor {
+                    parent,
+                    item,
+                    collection,
+                    fragment_id,
+                    keep_empty,
+                } => {
+                    self.flush_raw_buffer(fragments);
+                    let for_fragment = std::mem::take(fragments);
+                    *fragments = parent.fragments;
+                    self.raw_buffer = parent.raw_buffer;
+
+                    if !for_fragment.is_empty() {
+                        self.fragment_records.insert(
+                            fragment_id.clone(),
+                            FragmentList {
+                                fragments: for_fragment,
+                            },
+                        );
+                    } else if !keep_empty {
+                        continue;
+                    }
+
+                    self.add_for_fragment(item, collection, fragment_id, fragments);
+                }
+                ParseOp::CompleteIf {
+                    parent,
+                    condition,
+                    fragment_id,
+                } => {
+                    self.flush_raw_buffer(fragments);
+                    let if_fragment = std::mem::take(fragments);
+                    *fragments = parent.fragments;
+                    self.raw_buffer = parent.raw_buffer;
+
+                    self.fragment_records.insert(
+                        fragment_id.clone(),
+                        FragmentList {
+                            fragments: if_fragment,
+                        },
+                    );
+                    self.add_if_fragment(condition, fragment_id, fragments);
+                }
             }
         }
 
+        Ok(())
+    }
+
+    fn enter_regular_element<'a>(
+        &mut self,
+        element: &Element<'a>,
+        fragments: &mut Vec<WebUIFragment>,
+        depth: usize,
+        ops: &mut Vec<ParseOp<'a>>,
+    ) -> Result<()> {
+        self.add_raw_fragment("<");
+        self.add_raw_fragment(element.name());
+
+        let binding_count = self.process_tag_attributes(element.attrs(), fragments, false)?;
+        if let Some(ref mut p) = self.plugin {
+            if let Some(data) = p.finish_element(binding_count) {
+                self.add_fragment(WebUIFragment::plugin(data), fragments);
+            }
+        }
+
+        if element.self_closing() {
+            self.add_raw_fragment("/>");
+            return Ok(());
+        }
+
+        self.add_raw_fragment(">");
+        if !element.is_void() {
+            if element.close_end() > element.content_end() {
+                ops.push(ParseOp::EmitClose(element.name()));
+            }
+            ops.push(ParseOp::Parse {
+                range: element.inner(),
+                depth: depth + 1,
+            });
+        }
+        Ok(())
+    }
+
+    fn enter_head_element<'a>(
+        &mut self,
+        element: &Element<'a>,
+        depth: usize,
+        ops: &mut Vec<ParseOp<'a>>,
+    ) {
+        self.add_raw_fragment("<head>");
+        ops.push(ParseOp::EndHead);
+        ops.push(ParseOp::Parse {
+            range: element.inner(),
+            depth: depth + 1,
+        });
+    }
+
+    fn enter_body_element<'a>(
+        &mut self,
+        element: &Element<'a>,
+        fragments: &mut Vec<WebUIFragment>,
+        depth: usize,
+        ops: &mut Vec<ParseOp<'a>>,
+    ) -> Result<()> {
+        self.add_raw_fragment("<body");
+        let binding_count = self.process_tag_attributes(element.attrs(), fragments, false)?;
+        if let Some(ref mut p) = self.plugin {
+            if let Some(data) = p.finish_element(binding_count) {
+                self.add_fragment(WebUIFragment::plugin(data), fragments);
+            }
+        }
+        self.add_raw_fragment(">");
+        self.flush_raw_buffer(fragments);
+        fragments.push(WebUIFragment::signal("body_start", true));
+        ops.push(ParseOp::EndBody);
+        ops.push(ParseOp::Parse {
+            range: element.inner(),
+            depth: depth + 1,
+        });
+        Ok(())
+    }
+
+    fn enter_for_directive<'a>(
+        &mut self,
+        element: &Element<'a>,
+        fragments: &mut Vec<WebUIFragment>,
+        depth: usize,
+        ops: &mut Vec<ParseOp<'a>>,
+    ) -> Result<()> {
+        let each = element
+            .attr("each")
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                ParserError::Directive("Missing 'each' attribute on <for>".to_string())
+            })?;
+
+        let mut parts = each.split_whitespace();
+        let (Some(item), Some(in_kw), Some(collection), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Err(ParserError::Directive(format!(
+                "Invalid for each: {}",
+                each
+            )));
+        };
+        if in_kw != "in" {
+            return Err(ParserError::Directive(format!(
+                "Invalid for each: {}",
+                each
+            )));
+        }
+
+        let allowed = |s: &str| {
+            s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+        };
+        if !allowed(item) || !allowed(collection) {
+            return Err(ParserError::Directive(format!(
+                "Invalid identifier in for each: {}",
+                each
+            )));
+        }
+
+        let custom_fragment_id = element.attr("template").map(ToString::to_string);
+        let keep_empty = custom_fragment_id.is_some();
+        let fragment_id = custom_fragment_id.unwrap_or_else(|| self.id_counter.next_id("for"));
+        let parent = ParseContext {
+            fragments: std::mem::take(fragments),
+            raw_buffer: std::mem::take(&mut self.raw_buffer),
+        };
+
+        ops.push(ParseOp::CompleteFor {
+            parent,
+            item: item.to_string(),
+            collection: collection.to_string(),
+            fragment_id,
+            keep_empty,
+        });
+        ops.push(ParseOp::Parse {
+            range: element.inner(),
+            depth: depth + 1,
+        });
+        Ok(())
+    }
+
+    fn enter_if_directive<'a>(
+        &mut self,
+        element: &Element<'a>,
+        fragments: &mut Vec<WebUIFragment>,
+        depth: usize,
+        ops: &mut Vec<ParseOp<'a>>,
+    ) -> Result<()> {
+        let condition_str = element
+            .attr("condition")
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                ParserError::Directive("Missing 'condition' attribute on <if>".to_string())
+            })?;
+
+        let condition = self.condition_parser.parse(&condition_str).map_err(|_| {
+            ParserError::Directive(format!("Invalid condition expression: {condition_str}"))
+        })?;
+
+        self.flush_raw_buffer(fragments);
+        let parent = ParseContext {
+            fragments: std::mem::take(fragments),
+            raw_buffer: std::mem::take(&mut self.raw_buffer),
+        };
+        let fragment_id = self.id_counter.next_id("if");
+
+        ops.push(ParseOp::CompleteIf {
+            parent,
+            condition,
+            fragment_id,
+        });
+        ops.push(ParseOp::Parse {
+            range: element.inner(),
+            depth: depth + 1,
+        });
+        Ok(())
+    }
+
+    fn enter_component_directive<'a>(
+        &mut self,
+        element: &Element<'a>,
+        fragments: &mut Vec<WebUIFragment>,
+        depth: usize,
+        ops: &mut Vec<ParseOp<'a>>,
+    ) -> Result<()> {
+        self.add_raw_fragment("<");
+        self.add_raw_fragment(element.name());
+
+        let binding_count = self.process_tag_attributes(element.attrs(), fragments, true)?;
+        if let Some(ref mut p) = self.plugin {
+            if let Some(data) = p.finish_element(binding_count) {
+                self.add_fragment(WebUIFragment::plugin(data), fragments);
+            }
+        }
+
+        if element.self_closing() {
+            self.add_raw_fragment("/>");
+        } else {
+            self.add_raw_fragment(">");
+        }
+
+        self.flush_raw_buffer(fragments);
+
+        let (html_content, css_content, css_tokens) = {
+            let component = self.component_registry.get(element.name()).ok_or_else(|| {
+                ParserError::Directive(format!("Component not found: {}", element.name()))
+            })?;
+            (
+                component.html_content.clone(),
+                component.css_content.clone(),
+                component.css_tokens.clone(),
+            )
+        };
+
+        self.token_store.extend(css_tokens);
+
+        if !self.fragment_records.contains_key(element.name()) {
+            let component_data = self
+                .component_registry
+                .get(element.name())
+                .ok_or_else(|| {
+                    ParserError::Directive(format!("Component not found: {}", element.name()))
+                })?
+                .clone();
+            let processed = self.build_component_template(
+                element.name(),
+                &html_content,
+                css_content.as_deref(),
+            )?;
+
+            if let Some(ref mut p) = self.plugin {
+                p.register_component_template(element.name(), &component_data, &processed)?;
+            }
+
+            self.parse(element.name(), &processed)?;
+        }
+
+        fragments.push(WebUIFragment::component(element.name().to_string()));
+
+        if !element.self_closing() {
+            ops.push(ParseOp::EmitClose(element.name()));
+            ops.push(ParseOp::Parse {
+                range: element.inner(),
+                depth: depth + 1,
+            });
+        }
+
+        Ok(())
+    }
+
+    fn process_text(&mut self, content: &str, fragments: &mut Vec<WebUIFragment>) -> Result<()> {
+        if !Self::should_emit_text_content(content) {
+            return Ok(());
+        }
+
+        let parsed_fragments = self.handlebars_parser.parse(content)?;
+        for fragment in parsed_fragments {
+            if let Some(Fragment::Raw(raw)) = fragment.fragment.as_ref() {
+                if Self::should_emit_text_content(&raw.value) {
+                    self.add_raw_fragment(&raw.value);
+                }
+            } else {
+                self.add_fragment(fragment, fragments);
+            }
+        }
         Ok(())
     }
 
@@ -734,165 +1057,15 @@ impl HtmlParser {
         Some(WebUIFragment::signal(signal.path, signal.raw))
     }
 
-    /// Get the tag name of an element.
-    fn get_element_tag_name(&self, node: Node, source: &str) -> Result<String> {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if child.kind() == "start_tag" || child.kind() == "self_closing_tag" {
-                let mut tag_cursor = child.walk();
-                for tag_name_node in child.named_children(&mut tag_cursor) {
-                    if tag_name_node.kind() == "tag_name" {
-                        let tag_name = source[tag_name_node.start_byte()..tag_name_node.end_byte()]
-                            .to_string();
-                        return Ok(tag_name);
-                    }
-                }
-            }
-        }
-
-        Err(ParserError::Html("Failed to extract tag name".to_string()))
-    }
-
-    fn get_element_attribute(
-        &self,
-        node: Node,
-        attr_name: &str,
-        source: &str,
-    ) -> Result<Option<String>> {
-        let query_str = r#"
-            (element
-              [
-                (start_tag
-                  (attribute
-                    (attribute_name) @name
-                    [(quoted_attribute_value (attribute_value) @value)
-                     (attribute_value) @value]))
-                (self_closing_tag
-                  (attribute
-                    (attribute_name) @name
-                    [(quoted_attribute_value (attribute_value) @value)
-                     (attribute_value) @value]))
-              ]
-            )
-        "#;
-
-        let query = Query::new(&LANGUAGE.into(), query_str)
-            .map_err(|e| ParserError::Html(format!("Failed to create attribute query: {:?}", e)))?;
-
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, node, source.as_bytes());
-        while let Some(m) = matches.next_mut() {
-            let mut found_name = false;
-            let mut found_value: Option<String> = None;
-
-            for capture in m.captures.iter() {
-                let node = capture.node;
-                let capture_name = query.capture_names()[capture.index as usize];
-
-                if capture_name == "name" {
-                    let name_text = node.utf8_text(source.as_bytes()).map_err(|_| {
-                        ParserError::Html("Invalid UTF-8 for attribute name".to_string())
-                    })?;
-                    if name_text == attr_name {
-                        found_name = true;
-                    }
-                } else if capture_name == "value" {
-                    let value_text = node.utf8_text(source.as_bytes()).map_err(|_| {
-                        ParserError::Html("Invalid UTF-8 for attribute value".to_string())
-                    })?;
-                    found_value = Some(value_text.to_string());
-                }
-            }
-
-            if found_name {
-                return Ok(found_value);
-            }
-        }
-
-        Ok(None)
-    }
-
-    /// Check whether a boolean attribute (no value) exists on an element.
-    /// Returns `true` for `<el attr>` or `<el attr="...">`.
-    fn has_element_attribute(&self, node: Node, attr_name: &str, source: &str) -> Result<bool> {
-        // First check for valued attributes
-        if self
-            .get_element_attribute(node, attr_name, source)?
-            .is_some()
-        {
-            return Ok(true);
-        }
-
-        // Check for boolean (valueless) attributes via tree-sitter query.
-        // Only match attributes directly on this element's start_tag/self_closing_tag,
-        // not on nested child elements (cursor.matches descends into subtrees).
-        let query_str = r#"
-            (element
-              [
-                (start_tag
-                  (attribute
-                    (attribute_name) @name))
-                (self_closing_tag
-                  (attribute
-                    (attribute_name) @name))
-              ]
-            )
-        "#;
-
-        let query = Query::new(&LANGUAGE.into(), query_str)
-            .map_err(|e| ParserError::Html(format!("Failed to create attribute query: {:?}", e)))?;
-
-        // Find the start_tag or self_closing_tag node for this element
-        let tag_node_id = node
-            .named_children(&mut node.walk())
-            .find(|c| c.kind() == "start_tag" || c.kind() == "self_closing_tag")
-            .map(|c| c.id());
-
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, node, source.as_bytes());
-        while let Some(m) = matches.next_mut() {
-            for capture in m.captures.iter() {
-                let capture_name = query.capture_names()[capture.index as usize];
-                if capture_name == "name" {
-                    // Only accept attributes whose parent tag belongs to THIS element
-                    let attr_parent = capture.node.parent().and_then(|a| a.parent());
-                    if attr_parent
-                        .map(|p| Some(p.id()) == tag_node_id)
-                        .unwrap_or(false)
-                    {
-                        let name_text =
-                            capture.node.utf8_text(source.as_bytes()).map_err(|_| {
-                                ParserError::Html("Invalid UTF-8 for attribute name".to_string())
-                            })?;
-                        if name_text == attr_name {
-                            return Ok(true);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(false)
-    }
-
-    /// Find the start_tag or self_closing_tag child of an element node.
-    fn find_tag_node<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
-        let mut cursor = node.walk();
-        let result = node
-            .named_children(&mut cursor)
-            .find(|child| child.kind() == "start_tag" || child.kind() == "self_closing_tag");
-        result
-    }
-
     /// Check if an attribute value is a pure handlebars expression (e.g., "{{name}}" or
-    /// "{{name}}" with quotes). Returns the inner signal name if so.
-    fn extract_single_handlebars(value: &str) -> Option<String> {
+    /// "{{name}}" with quotes). Returns the inner signal name (borrowed) if so.
+    fn extract_single_handlebars(value: &str) -> Option<&str> {
         let trimmed = value.trim();
         if trimmed.starts_with("{{") && trimmed.ends_with("}}") && !trimmed.starts_with("{{{") {
             let inner = trimmed[2..trimmed.len() - 2].trim();
             // Verify there's no other {{ in the middle (i.e., it's truly a single expression)
             if !inner.contains("{{") && !inner.is_empty() {
-                return Some(inner.to_string());
+                return Some(inner);
             }
         }
         None
@@ -903,95 +1076,19 @@ impl HtmlParser {
         value.contains("{{")
     }
 
-    /// Check if an element node has an end_tag child.
-    fn has_end_tag(&self, node: Node) -> bool {
-        let mut cursor = node.walk();
-        let result = node
-            .named_children(&mut cursor)
-            .any(|child| child.kind() == "end_tag");
-        result
-    }
-
-    /// Process a regular HTML element with attribute-aware parsing.
-    fn process_regular_element(
-        &mut self,
-        node: Node,
-        source: &str,
-        fragments: &mut Vec<WebUIFragment>,
-        tag_name: &str,
-    ) -> Result<()> {
-        let tag_node = self.find_tag_node(node);
-        let is_self_closing = tag_node
-            .map(|n| n.kind() == "self_closing_tag")
-            .unwrap_or(false);
-        let has_end = self.has_end_tag(node);
-
-        if let Some(tag_node) = tag_node {
-            // Emit "<tagname" as the start of raw content
-            self.add_raw_fragment(&format!("<{}", tag_name));
-
-            // Process attributes on the tag
-            let binding_count = self.process_tag_attributes(tag_node, source, fragments, false)?;
-            if let Some(ref mut p) = self.plugin {
-                if let Some(data) = p.finish_element(binding_count) {
-                    self.add_fragment(WebUIFragment::plugin(data), fragments);
-                }
-            }
-
-            if is_self_closing {
-                // Find the /> at the end of the self-closing tag
-                let tag_text = &source[tag_node.start_byte()..tag_node.end_byte()];
-                if tag_text.ends_with("/>") {
-                    self.add_raw_fragment("/>");
-                } else {
-                    self.add_raw_fragment(">");
-                }
-            } else if !has_end {
-                // Void element (no end tag from parser) — just close the opening tag.
-                // Tree-sitter HTML may still attach following content as children
-                // of the void element (e.g., `<br>text {{binding}}`), so we must
-                // process those children to avoid dropping text and bindings.
-                self.add_raw_fragment(">");
-                self.process_content_children(node, source, fragments)?;
-            } else {
-                self.add_raw_fragment(">");
-
-                self.process_content_children(node, source, fragments)?;
-
-                // Add closing tag
-                self.add_raw_fragment(&format!("</{}>", tag_name));
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Process all attributes on a start_tag or self_closing_tag node.
-    /// For component elements (`is_component = true`), all attributes become
-    /// fragments and the first non-skipped attribute is marked with `attr_start`.
-    /// For regular elements, only dynamic attributes become fragments while
-    /// static attributes are accumulated into the raw buffer.
-    /// Returns the number of binding (dynamic) attributes found.
     fn process_tag_attributes(
         &mut self,
-        tag_node: Node,
-        source: &str,
+        attrs: Attrs<'_>,
         fragments: &mut Vec<WebUIFragment>,
         is_component: bool,
     ) -> Result<u32> {
         let mut first_dynamic_emitted = false;
         let mut binding_count: u32 = 0;
-        let mut cursor = tag_node.walk();
-
-        for child in tag_node.named_children(&mut cursor) {
-            if child.kind() != "attribute" {
-                continue;
-            }
-
-            let attr_name = self.get_attr_name(child, source)?;
+        for attr in attrs {
+            let attr_name = attr.name;
 
             if let Some(ref mut p) = self.plugin {
-                match p.classify_attribute(&attr_name) {
+                match p.classify_attribute(attr_name) {
                     AttributeAction::Keep => {}
                     AttributeAction::Skip => continue,
                     AttributeAction::SkipAndCountBinding => {
@@ -1001,12 +1098,11 @@ impl HtmlParser {
                 }
             }
 
-            let attr_value = self.get_attr_value(child, source);
+            let attr_value = attr.value;
 
             if let Some(bool_name) = attr_name.strip_prefix('?') {
-                // Boolean attribute: ?disabled={{isDisabled}}
                 if is_component {
-                    if let Some(condition) = self.parse_boolean_condition(attr_value.as_deref()) {
+                    if let Some(condition) = self.parse_boolean_condition(attr_value) {
                         let frag = Self::maybe_mark_attr_start(
                             WebUIFragment::attribute_boolean(bool_name, condition),
                             &mut first_dynamic_emitted,
@@ -1014,19 +1110,10 @@ impl HtmlParser {
                         self.add_fragment(frag, fragments);
                         binding_count += 1;
                     }
-                } else if self.process_boolean_attribute(
-                    bool_name,
-                    attr_value.as_deref(),
-                    fragments,
-                )? {
+                } else if self.process_boolean_attribute(bool_name, attr_value, fragments)? {
                     binding_count += 1;
                 }
             } else if let Some(prop_name) = attr_name.strip_prefix(':') {
-                // Complex attribute: :config="{{settings}}"
-                // Only valid on custom elements — passes JS values by
-                // reference (objects, arrays). Native HTML elements should
-                // use regular attribute bindings (the framework already
-                // handles value, checked, selected as DOM properties).
                 if !is_component {
                     return Err(ParserError::Parse(format!(
                         ":{prop_name} complex binding is only allowed on custom elements. \
@@ -1040,26 +1127,24 @@ impl HtmlParser {
                          Use {{{{{{expr}}}}}} (triple-brace) syntax for raw HTML."
                     )));
                 }
-                if let Some(val) = &attr_value {
+                if let Some(val) = attr_value {
                     if let Some(signal_name) = Self::extract_single_handlebars(val) {
                         let frag = Self::maybe_mark_attr_start(
-                            WebUIFragment::attribute_complex(&attr_name, signal_name),
+                            WebUIFragment::attribute_complex(attr_name, signal_name),
                             &mut first_dynamic_emitted,
                         );
                         self.add_fragment(frag, fragments);
                         binding_count += 1;
                     }
                 }
-            } else if is_component && Self::is_skipped_attribute(&attr_name) {
-                // Skipped component attribute (class, style, role, data-*, aria-*)
-                if let Some(val) = &attr_value {
+            } else if is_component && Self::is_skipped_attribute(attr_name) {
+                if let Some(val) = attr_value {
                     if let Some(signal_name) = Self::extract_single_handlebars(val) {
-                        // Pure binding: role="{{dynamicRole}}"
                         let frag = WebUIFragment {
                             fragment: Some(web_ui_fragment::Fragment::Attribute(
                                 WebUIFragmentAttribute {
-                                    name: attr_name,
-                                    value: signal_name,
+                                    name: attr_name.to_string(),
+                                    value: signal_name.to_string(),
                                     attr_skip: true,
                                     ..Default::default()
                                 },
@@ -1068,7 +1153,6 @@ impl HtmlParser {
                         self.add_fragment(frag, fragments);
                         binding_count += 1;
                     } else if Self::contains_handlebars(val) {
-                        // Embedded binding: aria-labelledby="prefix-{{group.id}}"
                         let template_id = self.id_counter.next_id("attr");
                         let parsed = self.handlebars_parser.parse(val)?;
                         self.fragment_records
@@ -1076,7 +1160,7 @@ impl HtmlParser {
                         let frag = WebUIFragment {
                             fragment: Some(web_ui_fragment::Fragment::Attribute(
                                 WebUIFragmentAttribute {
-                                    name: attr_name,
+                                    name: attr_name.to_string(),
                                     template: template_id,
                                     attr_skip: true,
                                     ..Default::default()
@@ -1086,12 +1170,11 @@ impl HtmlParser {
                         self.add_fragment(frag, fragments);
                         binding_count += 1;
                     } else {
-                        // Static value: role="list"
                         let frag = WebUIFragment {
                             fragment: Some(web_ui_fragment::Fragment::Attribute(
                                 WebUIFragmentAttribute {
-                                    name: attr_name,
-                                    value: val.clone(),
+                                    name: attr_name.to_string(),
+                                    value: val.to_string(),
                                     raw_value: true,
                                     attr_skip: true,
                                     ..Default::default()
@@ -1101,12 +1184,12 @@ impl HtmlParser {
                         self.add_fragment(frag, fragments);
                     }
                 }
-            } else if let Some(ref val) = attr_value {
+            } else if let Some(val) = attr_value {
                 if Self::contains_handlebars(val) {
                     if is_component {
                         if let Some(signal_name) = Self::extract_single_handlebars(val) {
                             let frag = Self::maybe_mark_attr_start(
-                                WebUIFragment::attribute(&attr_name, signal_name),
+                                WebUIFragment::attribute(attr_name, signal_name),
                                 &mut first_dynamic_emitted,
                             );
                             self.add_fragment(frag, fragments);
@@ -1117,25 +1200,23 @@ impl HtmlParser {
                             self.fragment_records
                                 .insert(template_id.clone(), FragmentList { fragments: parsed });
                             let frag = Self::maybe_mark_attr_start(
-                                WebUIFragment::attribute_template(&attr_name, template_id),
+                                WebUIFragment::attribute_template(attr_name, template_id),
                                 &mut first_dynamic_emitted,
                             );
                             self.add_fragment(frag, fragments);
                             binding_count += 1;
                         }
                     } else {
-                        self.process_dynamic_attribute(&attr_name, val, fragments)?;
+                        self.process_dynamic_attribute(attr_name, val, fragments)?;
                         binding_count += 1;
                     }
                 } else if is_component {
-                    // Static attribute on component → rawValue fragment.
-                    // Not counted as a binding attribute.
                     let frag = Self::maybe_mark_attr_start(
                         WebUIFragment {
                             fragment: Some(web_ui_fragment::Fragment::Attribute(
                                 WebUIFragmentAttribute {
-                                    name: attr_name,
-                                    value: val.clone(),
+                                    name: attr_name.to_string(),
+                                    value: val.to_string(),
                                     raw_value: true,
                                     ..Default::default()
                                 },
@@ -1145,13 +1226,12 @@ impl HtmlParser {
                     );
                     self.add_fragment(frag, fragments);
                 } else {
-                    // Static attribute on regular element → raw text
-                    let attr_text = &source[child.start_byte()..child.end_byte()];
-                    self.add_raw_fragment(&format!(" {}", attr_text));
+                    self.add_raw_fragment(" ");
+                    self.add_raw_fragment(attr.raw);
                 }
             } else {
-                // Attribute without value (e.g., "disabled") — emit as raw
-                self.add_raw_fragment(&format!(" {}", attr_name));
+                self.add_raw_fragment(" ");
+                self.add_raw_fragment(attr_name);
             }
         }
         Ok(binding_count)
@@ -1172,45 +1252,6 @@ impl HtmlParser {
         frag
     }
 
-    /// Extract the attribute name from an attribute node.
-    fn get_attr_name(&self, attr_node: Node, source: &str) -> Result<String> {
-        let mut cursor = attr_node.walk();
-        for child in attr_node.children(&mut cursor) {
-            if child.kind() == "attribute_name" {
-                return Ok(source[child.start_byte()..child.end_byte()].to_string());
-            }
-        }
-        Err(ParserError::Html(
-            "Attribute node missing attribute_name".to_string(),
-        ))
-    }
-
-    /// Extract the attribute value from an attribute node (handles both quoted and
-    /// unquoted forms). Returns None if there is no value.
-    fn get_attr_value(&self, attr_node: Node, source: &str) -> Option<String> {
-        let mut cursor = attr_node.walk();
-        for child in attr_node.children(&mut cursor) {
-            match child.kind() {
-                "quoted_attribute_value" => {
-                    // Find the inner attribute_value node
-                    let mut inner_cursor = child.walk();
-                    for inner in child.children(&mut inner_cursor) {
-                        if inner.kind() == "attribute_value" {
-                            return Some(source[inner.start_byte()..inner.end_byte()].to_string());
-                        }
-                    }
-                    // Quoted but empty value — return empty string
-                    return Some(String::new());
-                }
-                "attribute_value" => {
-                    return Some(source[child.start_byte()..child.end_byte()].to_string());
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
     /// Process a boolean attribute (?prefix). Silently drops if value is not a
     /// pure handlebars expression.
     fn parse_boolean_condition(&self, value: Option<&str>) -> Option<ConditionExpr> {
@@ -1218,8 +1259,8 @@ impl HtmlParser {
             if let Some(expr_str) = Self::extract_single_handlebars(val) {
                 return Some(
                     self.condition_parser
-                        .parse(&expr_str)
-                        .unwrap_or_else(|_| ConditionExpr::identifier(&expr_str)),
+                        .parse(expr_str)
+                        .unwrap_or_else(|_| ConditionExpr::identifier(expr_str)),
                 );
             }
         }
@@ -1267,189 +1308,21 @@ impl HtmlParser {
         Ok(())
     }
 
-    /// Process a `<head>` element, injecting a head_end signal before `</head>`.
-    fn process_head_element(
+    fn process_style_element(
         &mut self,
-        node: Node,
-        source: &str,
+        element: &Element<'_>,
         fragments: &mut Vec<WebUIFragment>,
     ) -> Result<()> {
-        self.add_raw_fragment("<head>");
-        self.process_content_children(node, source, fragments)?;
-        self.flush_raw_buffer(fragments);
-        fragments.push(WebUIFragment::signal("head_end", true));
-        self.add_raw_fragment("</head>");
-        Ok(())
-    }
-
-    /// Process a `<body>` element, injecting body_start/body_end signals.
-    fn process_body_element(
-        &mut self,
-        node: Node,
-        source: &str,
-        fragments: &mut Vec<WebUIFragment>,
-    ) -> Result<()> {
-        let tag_node = self.find_tag_node(node);
-        if let Some(tag_node) = tag_node {
-            self.add_raw_fragment("<body");
-            let binding_count = self.process_tag_attributes(tag_node, source, fragments, false)?;
-            if let Some(ref mut p) = self.plugin {
-                if let Some(data) = p.finish_element(binding_count) {
-                    self.add_fragment(WebUIFragment::plugin(data), fragments);
-                }
-            }
-            self.add_raw_fragment(">");
-        } else {
-            self.add_raw_fragment("<body>");
-        }
-        self.flush_raw_buffer(fragments);
-        fragments.push(WebUIFragment::signal("body_start", true));
-        self.process_content_children(node, source, fragments)?;
-        self.flush_raw_buffer(fragments);
-        fragments.push(WebUIFragment::signal("body_end", true));
-        self.add_raw_fragment("</body>");
-        Ok(())
-    }
-
-    /// Process a <for> directive.
-    fn process_for_directive(
-        &mut self,
-        node: Node,
-        source: &str,
-        fragments: &mut Vec<WebUIFragment>,
-    ) -> Result<()> {
-        // Extract each attribute
-        let each = self
-            .get_element_attribute(node, "each", source)?
-            .ok_or_else(|| {
-                ParserError::Directive("Missing 'each' attribute on <for>".to_string())
-            })?;
-
-        // Split the each by whitespace.
-        let parts: Vec<&str> = each.split_whitespace().collect();
-        if parts.len() != 3 || parts[1] != "in" {
-            return Err(ParserError::Directive(format!(
-                "Invalid for each: {}",
-                each
-            )));
-        }
-
-        // Check that the first and third part contain only allowed characters.
-        let allowed = |s: &str| {
-            s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
-        };
-        if !allowed(parts[0]) || !allowed(parts[2]) {
-            return Err(ParserError::Directive(format!(
-                "Invalid identifier in for each: {}",
-                each
-            )));
-        }
-
-        let item = parts[0];
-        let collection = parts[2];
-
-        // Use custom template attribute if provided, otherwise auto-generate
-        let fragment_id = self
-            .get_element_attribute(node, "template", source)?
-            .unwrap_or_else(|| self.id_counter.next_id("for"));
-        let mut for_fragment: Vec<WebUIFragment> = Vec::new();
-
-        // Create a temporary buffer for for loop content
-        let mut temp_buffer = String::new();
-        std::mem::swap(&mut self.raw_buffer, &mut temp_buffer);
-
-        // Process the for loop body
-        self.process_content_children(node, source, &mut for_fragment)?;
-
-        // Ensure any remaining content is flushed to the for loop's fragment
-        self.flush_raw_buffer(&mut for_fragment);
-
-        // Restore the original buffer
-        std::mem::swap(&mut self.raw_buffer, &mut temp_buffer);
-
-        // Skip the for fragment entirely if the body is empty
-        if for_fragment.is_empty() {
-            return Ok(());
-        }
-
-        // Store the record
-        self.fragment_records.insert(
-            fragment_id.clone(),
-            FragmentList {
-                fragments: for_fragment,
-            },
-        );
-
-        // Add the for directive fragment to the parent fragment
-        self.add_for_fragment(
-            item.to_string(),
-            collection.to_string(),
-            fragment_id,
-            fragments,
-        );
-
-        Ok(())
-    }
-
-    /// Process an <if> directive.
-    fn process_if_directive(
-        &mut self,
-        node: Node,
-        source: &str,
-        fragments: &mut Vec<WebUIFragment>,
-    ) -> Result<()> {
-        // Extract condition attribute
-        let condition_str = self
-            .get_element_attribute(node, "condition", source)?
-            .ok_or_else(|| {
-                ParserError::Directive("Missing 'condition' attribute on <if>".to_string())
-            })?;
-
-        // Parse condition into a ConditionExpr
-        let condition_result = self.condition_parser.parse(&condition_str);
-        let condition = match condition_result {
-            Ok(cond) => cond,
-            Err(_) => {
-                return Err(ParserError::Directive(format!(
-                    "Invalid condition expression: {}",
-                    condition_str
-                )))
-            }
-        };
-
-        // Generate a unique fragment ID for the if content
-        let fragment_id = self.id_counter.next_id("if");
-
-        // Flush any existing content in the parent fragment before switching context
-        self.flush_raw_buffer(fragments);
-
-        // Create a separate fragment for the if condition content
-        let mut if_fragment: Vec<WebUIFragment> = Vec::new();
-
-        // Save the current raw buffer and create a new one for the if condition
-        let parent_buffer = std::mem::take(&mut self.raw_buffer);
-
-        // Process the if body - capture all content including closing tags
-        self.process_content_children(node, source, &mut if_fragment)?;
-
-        // Make sure all content in the if buffer is flushed to the if fragment
-        self.flush_raw_buffer(&mut if_fragment);
-
-        // Store the if fragment in the records
-        self.fragment_records.insert(
-            fragment_id.clone(),
-            FragmentList {
-                fragments: if_fragment,
-            },
-        );
-
-        // Restore the parent buffer - only after we've processed all if content
-        self.raw_buffer = parent_buffer;
-
-        // Add the if directive to the parent fragment
-        self.add_if_fragment(condition, fragment_id, fragments);
-
+        self.add_raw_fragment(element.opening());
+        let inner = element.inner();
+        let style_content = &element.source()[inner.start..inner.end];
+        let (tokens, defs, comments) = self
+            .css_parser
+            .extract_tokens_definitions_and_comments(style_content, self.options.legal_comments)?;
+        self.token_store.extend(tokens);
+        self.token_definitions.extend(defs);
+        self.process_style_content(style_content, &comments, fragments);
+        self.add_raw_fragment("</style>");
         Ok(())
     }
 
@@ -1460,51 +1333,14 @@ impl HtmlParser {
     /// routes get `active` + component content, non-matched get `display:none`.
     fn process_route_directive(
         &mut self,
-        node: Node,
-        source: &str,
+        element: &Element<'_>,
         fragments: &mut Vec<WebUIFragment>,
     ) -> Result<()> {
-        // Extract route attributes
-        let path = self
-            .get_element_attribute(node, "path", source)?
-            .unwrap_or_default();
-
-        let component = self
-            .get_element_attribute(node, "component", source)?
-            .unwrap_or_default();
-
-        let exact = self.has_element_attribute(node, "exact", source)?;
-
-        let query = self
-            .get_element_attribute(node, "query", source)?
-            .unwrap_or_default();
-
-        let attrs = route_parser::RouteAttributes {
-            path: path.clone(),
-            component: component.clone(),
-            exact,
-            query,
-            keep_alive: self.has_element_attribute(node, "keep-alive", source)?,
-            cache_tags: self
-                .get_element_attribute(node, "cache-tags", source)?
-                .map(|v| route_parser::parse_tag_list(&v))
-                .unwrap_or_default(),
-            invalidates: self
-                .get_element_attribute(node, "invalidates", source)?
-                .map(|v| route_parser::parse_tag_list(&v))
-                .unwrap_or_default(),
-            pending_component: self
-                .get_element_attribute(node, "pending", source)?
-                .unwrap_or_default(),
-            error_component: self
-                .get_element_attribute(node, "error", source)?
-                .unwrap_or_default(),
-        };
-
-        // Validate attributes (component is required)
+        let attrs = Self::route_attrs_from_element(element);
+        let path = attrs.path.clone();
+        let component = attrs.component.clone();
         route_parser::validate_attributes(&attrs)?;
 
-        // Extract params from path template and validate
         let route_params: std::collections::HashSet<String> =
             route_parser::extract_params(&path)?.into_iter().collect();
         if !attrs.cache_tags.is_empty() {
@@ -1524,54 +1360,61 @@ impl HtmlParser {
             )?;
         }
 
-        // Validate pending component exists in the registry
         if !attrs.pending_component.is_empty() {
             self.ensure_route_component_parsed(&attrs.pending_component)?;
         }
-        // Validate error component exists in the registry
         if !attrs.error_component.is_empty() {
             self.ensure_route_component_parsed(&attrs.error_component)?;
         }
-
-        // Ensure the component's template is parsed and registered
         self.ensure_route_component_parsed(&component)?;
 
-        // Recursively parse nested <route> children, passing accumulated params
         let mut all_params = std::collections::HashSet::new();
         all_params.extend(route_params);
-        let children = self.parse_child_routes(node, source, &all_params)?;
+        let children = self.parse_child_routes(element.children(), &all_params, 1)?;
 
-        // Flush any pending raw content before the route fragment
         self.flush_raw_buffer(fragments);
-
-        // Build route fragment with children
         let route_fragment =
             route_parser::build_route_fragment(&attrs, component.clone(), children);
-
-        // Emit Fragment::Route — the handler renders it as <webui-route>
         fragments.push(WebUIFragment::route_from(route_fragment));
 
         Ok(())
     }
 
-    /// Parse nested `<route>` children of a route element.
+    /// Parse nested `<route>` children into route fragments.
+    ///
+    /// `depth` is the nesting level of the routes produced here (top-level
+    /// `<route>` children are depth 1). Nested routes are validated against
+    /// [`MAX_TEMPLATE_DEPTH`] so pathological route trees cannot exhaust the
+    /// call stack via `parse_route_as_fragment` recursion.
     fn parse_child_routes(
         &mut self,
-        node: Node,
-        source: &str,
+        walker: Walker<'_>,
         ancestor_params: &std::collections::HashSet<String>,
+        depth: usize,
     ) -> Result<Vec<WebUiFragmentRoute>> {
-        let mut children = Vec::new();
-        let mut cursor = node.walk();
+        if depth > MAX_TEMPLATE_DEPTH {
+            return Err(ParserError::Directive(format!(
+                "Route nesting exceeds the {MAX_TEMPLATE_DEPTH} level parser limit. Flatten deeply nested <route> trees before build."
+            )));
+        }
 
-        for child in node.named_children(&mut cursor) {
-            if child.kind() == "element" {
-                if let Ok(tag) = self.get_element_tag_name(child, source) {
-                    if tag == "route" {
-                        let child_route =
-                            self.parse_route_as_fragment(child, source, ancestor_params)?;
-                        children.push(child_route);
+        let mut children = Vec::new();
+        for event in walker {
+            match event {
+                Event::Element(element) => {
+                    if element.name() == "route" {
+                        children.push(self.parse_route_as_fragment(
+                            &element,
+                            ancestor_params,
+                            depth,
+                        )?);
                     }
+                }
+                Event::Text(text) => {
+                    let _ = text;
+                }
+                Event::Comment(range) | Event::Declaration(range) | Event::ClosingTag(range) => {
+                    let _ = range;
                 }
             }
         }
@@ -1579,51 +1422,38 @@ impl HtmlParser {
         Ok(children)
     }
 
-    /// Parse a `<route>` element into a `WebUiFragmentRoute` (for nesting).
+    fn route_attrs_from_element(element: &Element<'_>) -> route_parser::RouteAttributes {
+        route_parser::RouteAttributes {
+            path: element.attr("path").unwrap_or_default().to_string(),
+            component: element.attr("component").unwrap_or_default().to_string(),
+            exact: element.has_attr("exact"),
+            query: element.attr("query").unwrap_or_default().to_string(),
+            keep_alive: element.has_attr("keep-alive"),
+            cache_tags: element
+                .attr("cache-tags")
+                .map(route_parser::parse_tag_list)
+                .unwrap_or_default(),
+            invalidates: element
+                .attr("invalidates")
+                .map(route_parser::parse_tag_list)
+                .unwrap_or_default(),
+            pending_component: element.attr("pending").unwrap_or_default().to_string(),
+            error_component: element.attr("error").unwrap_or_default().to_string(),
+        }
+    }
+
     fn parse_route_as_fragment(
         &mut self,
-        node: Node,
-        source: &str,
+        element: &Element<'_>,
         ancestor_params: &std::collections::HashSet<String>,
+        depth: usize,
     ) -> Result<WebUiFragmentRoute> {
-        let path = self
-            .get_element_attribute(node, "path", source)?
-            .unwrap_or_default();
-        let component = self
-            .get_element_attribute(node, "component", source)?
-            .unwrap_or_default();
-        let exact = self.has_element_attribute(node, "exact", source)?;
-
-        let query = self
-            .get_element_attribute(node, "query", source)?
-            .unwrap_or_default();
-
-        let attrs = route_parser::RouteAttributes {
-            path: path.clone(),
-            component: component.clone(),
-            exact,
-            query,
-            keep_alive: self.has_element_attribute(node, "keep-alive", source)?,
-            cache_tags: self
-                .get_element_attribute(node, "cache-tags", source)?
-                .map(|v| route_parser::parse_tag_list(&v))
-                .unwrap_or_default(),
-            invalidates: self
-                .get_element_attribute(node, "invalidates", source)?
-                .map(|v| route_parser::parse_tag_list(&v))
-                .unwrap_or_default(),
-            pending_component: self
-                .get_element_attribute(node, "pending", source)?
-                .unwrap_or_default(),
-            error_component: self
-                .get_element_attribute(node, "error", source)?
-                .unwrap_or_default(),
-        };
+        let attrs = Self::route_attrs_from_element(element);
+        let path = attrs.path.clone();
+        let component = attrs.component.clone();
 
         route_parser::validate_attributes(&attrs)?;
 
-        // Extract params from path template and validate placeholders
-        // against both this route's own params AND ancestor params
         let own_params: std::collections::HashSet<String> =
             route_parser::extract_params(&path)?.into_iter().collect();
         let mut all_params = ancestor_params.clone();
@@ -1645,7 +1475,6 @@ impl HtmlParser {
             )?;
         }
 
-        // Validate pending/error components exist
         if !attrs.pending_component.is_empty() {
             self.ensure_route_component_parsed(&attrs.pending_component)?;
         }
@@ -1653,11 +1482,8 @@ impl HtmlParser {
             self.ensure_route_component_parsed(&attrs.error_component)?;
         }
 
-        // Ensure the component's template is parsed
         self.ensure_route_component_parsed(&component)?;
-
-        // Recursively parse nested children, passing accumulated params
-        let children = self.parse_child_routes(node, source, &all_params)?;
+        let children = self.parse_child_routes(element.children(), &all_params, depth + 1)?;
 
         Ok(route_parser::build_route_fragment(
             &attrs, component, children,
@@ -1717,98 +1543,6 @@ impl HtmlParser {
     /// These enable XSS (HTML injection) or arbitrary code execution.
     fn is_blocked_complex_property(name: &str) -> bool {
         matches!(name, "innerHTML" | "outerHTML" | "srcdoc" | "content") || name.starts_with("on")
-    }
-
-    fn process_component_directive(
-        &mut self,
-        node: Node,
-        source: &str,
-        fragments: &mut Vec<WebUIFragment>,
-        tag_name: &str,
-    ) -> Result<()> {
-        let tag_node = self.find_tag_node(node);
-        let is_self_closing = tag_node
-            .map(|n| n.kind() == "self_closing_tag")
-            .unwrap_or(false);
-
-        // Emit "<tagname"
-        self.add_raw_fragment(&format!("<{}", tag_name));
-
-        // Process attributes — component-aware
-        if let Some(tag_node) = tag_node {
-            let binding_count = self.process_tag_attributes(tag_node, source, fragments, true)?;
-            if let Some(ref mut p) = self.plugin {
-                if let Some(data) = p.finish_element(binding_count) {
-                    self.add_fragment(WebUIFragment::plugin(data), fragments);
-                }
-            }
-        }
-
-        if is_self_closing {
-            let tag_text = tag_node
-                .map(|n| &source[n.start_byte()..n.end_byte()])
-                .unwrap_or("");
-            if tag_text.ends_with("/>") {
-                self.add_raw_fragment("/>");
-            } else {
-                self.add_raw_fragment(">");
-            }
-        } else {
-            self.add_raw_fragment(">");
-        }
-
-        // Flush before component fragment
-        self.flush_raw_buffer(fragments);
-
-        // Get component data
-        let (html_content, css_content, css_tokens) = {
-            let component = self.component_registry.get(tag_name).ok_or_else(|| {
-                ParserError::Directive(format!("Component not found: {}", tag_name))
-            })?;
-            (
-                component.html_content.clone(),
-                component.css_content.clone(),
-                component.css_tokens.clone(),
-            )
-        };
-
-        // Merge component CSS tokens into the global token store
-        self.token_store.extend(css_tokens);
-
-        // Parse and register component template if not already done
-        if !self.fragment_records.contains_key(tag_name) {
-            let component_data = self
-                .component_registry
-                .get(tag_name)
-                .ok_or_else(|| {
-                    ParserError::Directive(format!("Component not found: {}", tag_name))
-                })?
-                .clone();
-            let processed =
-                self.build_component_template(tag_name, &html_content, css_content.as_deref())?;
-
-            // Notify plugin about the final component template (only on first encounter)
-            if let Some(ref mut p) = self.plugin {
-                p.register_component_template(tag_name, &component_data, &processed)?;
-            }
-
-            self.parse(tag_name, &processed)?;
-        }
-
-        // Emit component fragment
-        fragments.push(WebUIFragment::component(tag_name.to_string()));
-
-        // Process slot content (skip start_tag/end_tag/self_closing_tag)
-        if !is_self_closing {
-            self.process_content_children(node, source, fragments)?;
-        }
-
-        // Emit closing tag
-        if !is_self_closing {
-            self.add_raw_fragment(&format!("</{}>", tag_name));
-        }
-
-        Ok(())
     }
 
     /// Process component template HTML: wrap in shadow DOM template if needed,
@@ -1882,10 +1616,9 @@ impl HtmlParser {
     ///   - `DomStrategy::Light` emits the content as-is (with the CSS snippet
     ///     prepended, if any).
     ///
-    /// Performance: zero recursion, zero regex. The dev-template path runs a
-    /// fast single-pass byte scan to skip tree-sitter entirely when the
-    /// opening tag has no runtime-attribute prefixes. The output buffer is
-    /// pre-sized to avoid reallocation in the hot path.
+    /// Performance: zero recursion, zero regex. The dev-template path uses
+    /// quote-aware scanners for opening-tag queries and pre-sizes the output
+    /// buffer to avoid reallocation in the hot path.
     fn process_component_template(
         &mut self,
         html: &str,
@@ -1902,7 +1635,7 @@ impl HtmlParser {
             // `shadowrootadoptedstylesheets` themselves on their wrapper.
             // Validate at build time so adoption can never silently fail.
             if let Some(tag) = adopted_specifier {
-                let opening = match tag_scan::find_tag_close(&stripped) {
+                let opening = match html::find_tag_close(&stripped) {
                     Some(end) => &stripped[..=end],
                     None => stripped.as_str(),
                 };
@@ -1917,9 +1650,9 @@ impl HtmlParser {
                 stripped
             } else {
                 // Splice the CSS snippet right after the opening `<template …>` tag.
-                // Quote-aware scan avoids matching a `>` inside an attribute value
+                // The quote-aware scanner avoids matching a `>` inside an attribute value
                 // (e.g., `data-x="a>b"`).
-                match tag_scan::find_tag_close(&stripped) {
+                match html::find_tag_close(&stripped) {
                     Some(open_end) => {
                         let mut result = String::with_capacity(stripped.len() + snippet.len());
                         result.push_str(&stripped[..=open_end]);
@@ -1972,30 +1705,12 @@ impl HtmlParser {
     }
 
     fn strip_template_comments(&mut self, html: String) -> Result<String> {
-        if !html.contains("<!--")
-            && !html.contains("/*")
-            && !Self::may_contain_style_line_comment(&html)
-        {
-            return Ok(html);
-        }
-
-        let tree = self.parser.parse(&html, None).ok_or_else(|| {
-            ParserError::Html("Failed to parse HTML for comment stripping".into())
-        })?;
-
         let mut ranges = Vec::new();
         let mut style_ranges = Vec::new();
-        Self::collect_html_comment_and_style_ranges(
-            tree.root_node(),
-            &mut ranges,
-            &mut style_ranges,
-        );
+        Self::collect_html_comment_and_style_ranges(&html, &mut ranges, &mut style_ranges);
 
         for (style_start, style_end) in style_ranges {
             let css = &html[style_start..style_end];
-            if !css.contains("/*") && !css.contains("//") {
-                continue;
-            }
             let (_tokens, _defs, comments) = self
                 .css_parser
                 .extract_tokens_definitions_and_comments(css, self.options.legal_comments)?;
@@ -2018,110 +1733,64 @@ impl HtmlParser {
         Ok(comment_policy::strip_ranges(&html, ranges.as_mut_slice()).into_owned())
     }
 
-    fn may_contain_style_line_comment(html: &str) -> bool {
-        if !html.contains("//") {
-            return false;
-        }
-
-        let bytes = html.as_bytes();
-        let mut index = 0usize;
-        while index + 6 <= bytes.len() {
-            if bytes[index] == b'<'
-                && bytes.get(index + 1) != Some(&b'/')
-                && bytes[index + 1..]
-                    .get(..5)
-                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(b"style"))
-            {
-                return true;
-            }
-            index += 1;
-        }
-        false
-    }
-
-    /// Collect HTML comment ranges and `<style>` raw-text ranges in one
-    /// iterative walk. CSS comments are stripped by `CssParser` from each
-    /// collected style range so CSS grammar rules decide comment boundaries.
-    #[allow(clippy::cast_possible_truncation)] // tree-sitter child indices are u32
+    /// Collect HTML comment ranges and `<style>` raw-text ranges in one scan.
     fn collect_html_comment_and_style_ranges(
-        root: Node<'_>,
+        html: &str,
         comment_ranges: &mut Vec<(usize, usize)>,
         style_ranges: &mut Vec<(usize, usize)>,
     ) {
-        let mut stack = vec![root];
-
-        while let Some(node) = stack.pop() {
-            match node.kind() {
-                "comment" => comment_ranges.push((node.start_byte(), node.end_byte())),
-                "style_element" => {
-                    let count = node.child_count();
-                    for i in 0..count {
-                        if let Some(child) = node.child(i as u32) {
-                            if child.kind() == "raw_text" {
-                                style_ranges.push((child.start_byte(), child.end_byte()));
-                            }
-                        }
-                    }
-                }
-                _ => {}
+        let mut index = 0usize;
+        while index < html.len() {
+            let remaining = &html[index..];
+            if remaining.starts_with("<!--") {
+                let end = html::find_comment_close(remaining).unwrap_or(remaining.len());
+                comment_ranges.push((index, index + end));
+                index += end;
+                continue;
             }
 
-            let count = node.child_count();
-            for i in (0..count).rev() {
-                if let Some(child) = node.child(i as u32) {
-                    stack.push(child);
+            if remaining.starts_with('<') {
+                if let Some((style_start, style_end, close_end)) =
+                    html::style_element_bounds(remaining)
+                {
+                    style_ranges.push((index + style_start, index + style_end));
+                    index += close_end;
+                    continue;
+                }
+
+                if let Some(tag) = html::parse_tag(remaining) {
+                    index += tag.close + 1;
+                    continue;
                 }
             }
+
+            let Some(ch) = remaining.chars().next() else {
+                break;
+            };
+            index += ch.len_utf8();
         }
     }
 
     /// Strip attributes starting with `@`, `:`, or `?` from the opening
     /// `<template>` tag.
     ///
-    /// Performance: a fast-path quote-aware byte scan checks whether any
-    /// runtime-prefixed attribute exists. If not, we return the original
-    /// HTML unchanged without invoking tree-sitter — the common case for
-    /// most components.
+    /// Uses the same quote-aware tag scanner as the main HTML pipeline.
     fn strip_runtime_attrs_from_template(&mut self, html: &str) -> String {
-        // Fast path: skip tree-sitter when the opening tag has no runtime
-        // attribute prefixes. Bounded to the opening tag (stops at the
-        // first unquoted `>`), so cost is O(tag-size) bytes.
-        if !tag_scan::opening_tag_has_runtime_prefix(html) {
-            return html.to_string();
-        }
-
-        let tree = match self.parser.parse(html, None) {
-            Some(t) => t,
-            None => return html.to_string(),
-        };
-
-        // Find the first start_tag in the tree
-        let root = tree.root_node();
-        let start_tag = Self::find_first_node(root, "start_tag");
-        let Some(tag) = start_tag else {
+        let Some(tag) = html::parse_tag(html) else {
             return html.to_string();
         };
 
-        // Collect byte ranges of runtime attributes to remove
         let mut removals: Vec<(usize, usize)> = Vec::new();
-        let mut cursor = tag.walk();
-        for child in tag.named_children(&mut cursor) {
-            if child.kind() == "attribute" {
-                let name_node = child.child(0);
-                if let Some(name) = name_node {
-                    let attr_name = &html[name.start_byte()..name.end_byte()];
-                    if attr_name.starts_with('@')
-                        || attr_name.starts_with(':')
-                        || attr_name.starts_with('?')
-                    {
-                        // Remove the attribute and any leading whitespace
-                        let mut start = child.start_byte();
-                        while start > 0 && html.as_bytes()[start - 1] == b' ' {
-                            start -= 1;
-                        }
-                        removals.push((start, child.end_byte()));
-                    }
+        for attr in tag.attrs() {
+            if attr.name.starts_with('@')
+                || attr.name.starts_with(':')
+                || attr.name.starts_with('?')
+            {
+                let mut start = attr.raw_range.start;
+                while start > 0 && html.as_bytes()[start - 1].is_ascii_whitespace() {
+                    start -= 1;
                 }
+                removals.push((start, attr.raw_range.end));
             }
         }
 
@@ -2138,25 +1807,6 @@ impl HtmlParser {
         }
         result.push_str(&html[pos..]);
         result
-    }
-
-    /// Find the first node of a given kind in the tree (iterative BFS).
-    fn find_first_node<'a>(root: Node<'a>, kind: &str) -> Option<Node<'a>> {
-        let mut stack = vec![root];
-        while let Some(node) = stack.pop() {
-            if node.kind() == kind {
-                return Some(node);
-            }
-            let mut cursor = node.walk();
-            // Collect is required: cursor is mutably borrowed by the iterator,
-            // so we must collect before reversing to push children in DFS order.
-            #[allow(clippy::needless_collect)]
-            let children: Vec<_> = node.children(&mut cursor).collect();
-            for child in children.into_iter().rev() {
-                stack.push(child);
-            }
-        }
-        None
     }
 }
 
@@ -2258,7 +1908,6 @@ mod tests {
         let result = parser.parse("test.html", html);
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
-        println!("Fragment records: {:#?}", fragment_records);
 
         assert_stream!(
             fragment_records,
@@ -2284,10 +1933,8 @@ mod tests {
         let html = r#"<if condition="isLoggedIn"><div>Welcome back, {{username}}!</div></if>"#;
 
         let result = parser.parse("test.html", html);
-
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
         let fragment_records = parser.into_fragment_records();
-        println!("Fragment records: {:#?}", fragment_records);
 
         assert_stream!(fragment_records, "test.html", [if_cond("if-1"),]);
 
@@ -2521,6 +2168,52 @@ mod tests {
             .register_component(
                 "custom-element",
                 r#"<template @click={foo} :bar="baz" ?bool="true"><slot></slot></template>"#,
+                None,
+            )
+            .expect("register");
+        let result = parser.parse("index.html", "<custom-element>Hello</custom-element>");
+        assert!(result.is_ok());
+        let records = parser.into_fragment_records();
+
+        assert_stream!(
+            records,
+            "custom-element",
+            [raw("<template><slot></slot></template>"),]
+        );
+    }
+
+    #[test]
+    fn test_component_strip_runtime_attrs_does_not_match_attr_value_text() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry
+            .register_component(
+                "custom-element",
+                r#"<template data-note="@click={foo}" @click={foo}><slot></slot></template>"#,
+                None,
+            )
+            .expect("register");
+        let result = parser.parse("index.html", "<custom-element>Hello</custom-element>");
+        assert!(result.is_ok());
+        let records = parser.into_fragment_records();
+
+        assert_stream!(
+            records,
+            "custom-element",
+            [raw(
+                r#"<template data-note="@click={foo}"><slot></slot></template>"#
+            ),]
+        );
+    }
+
+    #[test]
+    fn test_component_strip_runtime_attrs_handles_duplicate_runtime_attrs() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry
+            .register_component(
+                "custom-element",
+                r#"<template @click={foo} @click={bar}><slot></slot></template>"#,
                 None,
             )
             .expect("register");
@@ -3654,10 +3347,78 @@ mod tests {
     #[test]
     fn test_invalid_markup_returns_error() {
         // Port of: 'should fail with invalid markup'
-        // tree-sitter is lenient — it recovers from unclosed tags
+        // The scanner is lenient — it preserves recoverable unclosed markup.
         let mut parser = HtmlParser::new();
         let result = parser.parse("index.html", "<div><span>Unclosed div");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_rejects_templates_over_size_limit() {
+        let mut parser = HtmlParser::new();
+        let html = "x".repeat(MAX_TEMPLATE_BYTES + 1);
+        let result = parser.parse("index.html", &html);
+
+        assert!(matches!(result, Err(ParserError::Html(message)) if
+            message.contains("exceeds") && message.contains("parser limit")
+        ));
+    }
+
+    #[test]
+    fn test_rejects_templates_over_depth_limit() {
+        let mut parser = HtmlParser::new();
+        let mut html = String::with_capacity((MAX_TEMPLATE_DEPTH + 2) * 11);
+        for _ in 0..=MAX_TEMPLATE_DEPTH {
+            html.push_str("<div>");
+        }
+        for _ in 0..=MAX_TEMPLATE_DEPTH {
+            html.push_str("</div>");
+        }
+
+        let result = parser.parse("index.html", &html);
+
+        assert!(matches!(result, Err(ParserError::Html(message)) if
+            message.contains("nesting exceeds") && message.contains("parser limit")
+        ));
+    }
+
+    #[test]
+    fn test_rejects_routes_over_depth_limit() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component("route-page", "<slot></slot>", None)
+            .expect("register");
+
+        let depth = MAX_TEMPLATE_DEPTH + 2;
+        let mut html = String::with_capacity(depth * 48);
+        for _ in 0..depth {
+            html.push_str(r#"<route path="x" component="route-page">"#);
+        }
+        for _ in 0..depth {
+            html.push_str("</route>");
+        }
+
+        let result = parser.parse("index.html", &html);
+
+        assert!(matches!(result, Err(ParserError::Directive(message)) if
+            message.contains("Route nesting exceeds") && message.contains("parser limit")
+        ));
+    }
+
+    #[test]
+    fn test_rejects_recursive_component_templates() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component("self-card", "<self-card></self-card>", None)
+            .expect("register");
+
+        let result = parser.parse("index.html", "<self-card></self-card>");
+
+        assert!(matches!(result, Err(ParserError::Directive(message)) if
+            message.contains("Recursive template reference")
+        ));
     }
 
     // ── Integration tests ─────────────────────────────────────────────
@@ -4184,17 +3945,15 @@ mod tests {
     #[test]
     fn test_fail_with_invalid_markup() {
         // Port of: 'should fail with invalid markup'
-        // tree-sitter HTML grammar is lenient — it recovers from overlapping /
-        // misnested tags rather than returning a parse error. This test
-        // documents that behavior: deliberately overlapping tags do NOT
-        // produce an error.
+        // The scanner is lenient — it recovers from overlapping / misnested
+        // tags rather than returning a parse error. This test documents that
+        // behavior: deliberately overlapping tags do NOT produce an error.
         let mut parser = HtmlParser::new();
         let result = parser.parse("index.html", "<div><span></div></span>");
 
-        // tree-sitter recovers gracefully; the parse succeeds
         assert!(
             result.is_ok(),
-            "tree-sitter is lenient and recovers from overlapping tags"
+            "scanner is lenient and recovers from overlapping tags"
         );
     }
 
@@ -4894,22 +4653,6 @@ mod tests {
         let records = parser.into_fragment_records();
         let frags = &records["comp.html"].fragments;
 
-        // Print fragment types for debugging
-        let frag_types: Vec<String> = frags
-            .iter()
-            .map(|f| match f.fragment.as_ref() {
-                Some(web_ui_fragment::Fragment::Raw(r)) => {
-                    format!("Raw({:?})", &r.value[..r.value.len().min(40)])
-                }
-                Some(web_ui_fragment::Fragment::ForLoop(fl)) => {
-                    format!("ForLoop({})", fl.fragment_id)
-                }
-                Some(web_ui_fragment::Fragment::Outlet(_)) => "Outlet".to_string(),
-                other => format!("{:?}", other),
-            })
-            .collect();
-        eprintln!("Fragment order: {:#?}", frag_types);
-
         // The outlet should be a top-level fragment, NOT inside the for-loop's body
         let outlet_count = frags
             .iter()
@@ -4922,7 +4665,7 @@ mod tests {
             .count();
         assert_eq!(
             outlet_count, 1,
-            "expected exactly 1 outlet in top-level fragments, got {outlet_count}. Fragments: {frag_types:?}"
+            "expected exactly 1 outlet in top-level fragments, got {outlet_count}"
         );
 
         // Verify outlet comes AFTER the raw "</ul>" text
@@ -4942,7 +4685,7 @@ mod tests {
         if let Some(ul_idx) = close_ul_idx {
             assert!(
                 outlet_idx > ul_idx,
-                "outlet (at {outlet_idx}) should come after </ul> (at {ul_idx}). Fragments: {frag_types:?}"
+                "outlet (at {outlet_idx}) should come after </ul> (at {ul_idx})"
             );
         }
     }

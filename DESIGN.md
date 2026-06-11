@@ -1111,15 +1111,12 @@ impl ConditionParser {
 
 ### CSS Parser
 ```rust
-pub struct CssParser {
-    parser: Parser,
-}
+pub struct CssParser;
 
 impl CssParser {
-    pub fn parse(&mut self, css_content: &str) -> Result<WebUIFragmentRecords, ParserError>
-    pub fn process_css(&mut self, css_content: &str, fragments: &mut WebUIFragmentRecords) -> Result<(), ParserError>
-    pub fn parse_inline_css(&mut self, style_content: &str) -> Result<String, ParserError>
     pub fn extract_tokens(&mut self, css_content: &str) -> Result<HashSet<String>, ParserError>
+    pub fn extract_definitions(&mut self, css_content: &str) -> Result<HashSet<String>, ParserError>
+    pub fn extract_tokens_and_definitions(&mut self, css_content: &str) -> Result<(HashSet<String>, HashSet<String>), ParserError>
 }
 ```
 
@@ -1131,13 +1128,46 @@ impl CssParser {
 - Process inline and external CSS
 - Strip CSS comments during parsing, preserving only legal comments when `LegalComments::Inline` is active
 
+### HTML Scanner
+
+The parser uses a deterministic, quote-aware HTML scanner (`html_parser`) rather
+than a browser-complete DOM parser. It intentionally exposes a zero-copy,
+DOM-like event API (`Walker`, `Event`, `Element`, `Attr`) over borrowed source
+ranges. The semantic parser may use the same primitives directly in hot paths to
+avoid iterator overhead.
+
+Semantic template traversal is stack-driven rather than recursive. Entering a
+child range pushes an explicit parse operation, and directive bodies (`<for>`,
+`<if>`) swap to isolated fragment contexts until their body parse completes.
+
+#### Recovery semantics
+
+- HTML comments are build-time-only and stripped.
+- Declarations/DOCTYPE are preserved as raw content.
+- Unterminated or overlapping tags are treated leniently: recoverable source is
+  preserved rather than rejected.
+- Recursive component template references are rejected at build time with an
+  actionable directive error instead of recursing through parser calls.
+- The scanner is quote-aware for opening tags, so `>` inside `'...'` or `"..."`
+  attribute values never terminates a tag.
+- This is not a browser HTML parser. It supports the WebUI template subset used
+  at build time and should not be used for arbitrary browser DOM conformance.
+
+#### Guardrails
+
+- A single template is capped at 16 MiB. Larger generated templates must be
+  split into components before build.
+- Semantic template nesting and nested `<route>` trees are each capped at 512
+  levels to prevent stack exhaustion on pathological input.
+- Core scanner loops are iterative and do not use regular expressions.
+
 ### CSS Token Hoisting
 
 CSS Token Hoisting extracts the set of CSS custom properties (tokens) that are **used** across all components and entry page styles at build time. The sorted, deduplicated list is included in the protocol's `tokens` field, enabling host runtimes to resolve only the design tokens the application actually needs.
 
 #### Token Extraction (`CssParser::extract_tokens`)
 
-The `extract_tokens` method uses tree-sitter-css to iteratively walk the CSS AST and extract custom property **usages** from `var()` calls, while **excluding** locally-defined custom properties.
+The `extract_tokens` method uses a deterministic CSS scanner to extract custom property **usages** from `var()` calls, while **excluding** locally-defined custom properties.
 
 **Extracted (hoisted):**
 - `var(--colorPrimary)` → token `"colorPrimary"`
@@ -1148,14 +1178,14 @@ The `extract_tokens` method uses tree-sitter-css to iteratively walk the CSS AST
 - `--bar: 12px` — local custom property definitions
 - `var(--bar)` when `--bar` is defined in the same CSS file
 
-The iterative walker visits each `call_expression` node independently, so nested `var()` fallbacks (which are separate `call_expression` nodes in the tree-sitter AST) are naturally handled.
+The scanner tracks nested `var()` fallback expressions, so nested fallbacks are naturally handled.
 
 #### Token Collection During Parsing
 
 The `HtmlParser` maintains a `token_store: HashSet<String>` that accumulates tokens from two sources:
 
 1. **Component CSS** — when a component is first encountered during parsing, its pre-extracted `css_tokens` (stored in the `Component` struct at registration time) are merged into the token store.
-2. **Inline `<style>` tags** — when the parser processes a `style_element` node, it extracts token usages and definitions while stripping removable CSS comments in the same tree-sitter walk.
+2. **Inline `<style>` tags** — when the parser processes a `<style>` tag, it extracts token usages and definitions while stripping removable CSS comments in the same scanner pass.
 
 After parsing completes, `HtmlParser::take_tokens()` returns the sorted, deduplicated token list for inclusion in the protocol.
 

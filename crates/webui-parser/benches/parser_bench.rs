@@ -258,6 +258,61 @@ fn build_dashboard_template() -> String {
     html
 }
 
+fn build_deeply_nested_template(depth: usize) -> String {
+    let mut html = String::with_capacity(depth * 11 + 16);
+    for _ in 0..depth {
+        html.push_str("<div>");
+    }
+    html.push_str("leaf");
+    for _ in 0..depth {
+        html.push_str("</div>");
+    }
+    html
+}
+
+fn build_many_siblings_template(count: usize) -> String {
+    let mut html = String::with_capacity(count * 32 + 16);
+    html.push_str("<section>");
+    for idx in 0..count {
+        html.push_str("<span data-i=\"");
+        html.push_str(&idx.to_string());
+        html.push_str("\">item</span>");
+    }
+    html.push_str("</section>");
+    html
+}
+
+fn build_large_text_template(bytes: usize) -> String {
+    let mut html = String::with_capacity(bytes + 32);
+    html.push_str("<article>");
+    while html.len() < bytes {
+        html.push_str("Lorem ipsum dolor sit amet. ");
+    }
+    html.push_str("</article>");
+    html
+}
+
+fn build_large_style_template(rules: usize) -> String {
+    let mut html = String::with_capacity(rules * 72 + 32);
+    html.push_str("<style>");
+    for idx in 0..rules {
+        html.push_str(".c");
+        html.push_str(&idx.to_string());
+        html.push_str("{color:var(--color);padding:4px;margin:2px}");
+    }
+    html.push_str("</style>");
+    html
+}
+
+fn build_recoverable_unclosed_template(depth: usize) -> String {
+    let mut html = String::with_capacity(depth * 5 + 16);
+    for _ in 0..depth {
+        html.push_str("<div>");
+    }
+    html.push_str("unclosed");
+    html
+}
+
 fn parser_with_bench_components() -> HtmlParser {
     let mut parser = HtmlParser::new();
     register_bench_components(&mut parser);
@@ -480,6 +535,35 @@ fn parser_text_vs_directive_bench(c: &mut Criterion) {
     group.finish();
 }
 
+fn parser_adversarial_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parser_adversarial");
+
+    let scenarios = [
+        ("deep_nesting_128", build_deeply_nested_template(128)),
+        ("many_siblings_1000", build_many_siblings_template(1000)),
+        ("large_text_64k", build_large_text_template(64 * 1024)),
+        ("large_style_1000", build_large_style_template(1000)),
+        (
+            "recoverable_unclosed_128",
+            build_recoverable_unclosed_template(128),
+        ),
+    ];
+
+    for (name, input) in scenarios {
+        group.throughput(Throughput::Bytes(input.len() as u64));
+        group.bench_with_input(BenchmarkId::new("parse", name), &input, |b, html| {
+            let mut parser = parser_with_bench_components();
+            b.iter(|| {
+                parser
+                    .parse("index.html", black_box(html))
+                    .unwrap_or_else(|error| panic!("adversarial parse failed for {name}: {error}"));
+            });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     parser_parse_reuse_bench,
@@ -488,6 +572,7 @@ criterion_group!(
     parser_css_strategy_bench,
     parser_size_sweep_bench,
     parser_realistic_bench,
-    parser_text_vs_directive_bench
+    parser_text_vs_directive_bench,
+    parser_adversarial_bench
 );
 criterion_main!(benches);
