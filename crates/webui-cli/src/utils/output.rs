@@ -120,9 +120,16 @@ fn error_json(err: &anyhow::Error) -> serde_json::Value {
             map.insert("help".into(), str_or_null(diag.help_text()));
         }
         None => {
+            // Keep the same key set as the structured branch so `--format json`
+            // has one stable shape; fields that don't apply are null.
             map.insert("severity".into(), Value::from("error"));
             map.insert("code".into(), Value::Null);
             map.insert("message".into(), Value::from(err.to_string()));
+            map.insert("file".into(), Value::Null);
+            map.insert("line".into(), Value::Null);
+            map.insert("column".into(), Value::Null);
+            map.insert("snippet".into(), Value::Null);
+            map.insert("help".into(), Value::Null);
         }
     }
     map.insert("chain".into(), Value::Array(chain));
@@ -334,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn error_json_without_diagnostic_is_minimal() {
+    fn error_json_without_diagnostic_has_consistent_shape() {
         let err: anyhow::Error = WebUIError::Serialization("bad state json".to_owned()).into();
         let value = error_json(&err);
         assert_eq!(value["severity"], "error");
@@ -343,5 +350,13 @@ mod tests {
             .as_str()
             .is_some_and(|m| m.contains("bad state json")));
         assert!(value["chain"].is_array());
+        // Non-applicable fields are present as null, not omitted, so tools see
+        // one stable object shape regardless of error kind.
+        for key in ["file", "line", "column", "snippet", "help"] {
+            assert!(
+                value.get(key).is_some_and(serde_json::Value::is_null),
+                "expected `{key}` to be present and null"
+            );
+        }
     }
 }

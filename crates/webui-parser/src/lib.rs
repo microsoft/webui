@@ -484,9 +484,15 @@ impl HtmlParser {
     /// Parse HTML content to generate WebUI fragments.
     pub fn parse(&mut self, fragment_id: &str, html_content: &str) -> Result<()> {
         let fragment_key = fragment_id.to_string();
-        self.current_fragment_id = fragment_key.clone();
+        // Save the caller's fragment id and restore it before returning. A
+        // component parse recurses through `enter_component_directive`
+        // (`self.parse(child, …)`); without restoring, the parent would keep
+        // parsing with `current_fragment_id` pointing at the child, so a later
+        // diagnostic in the parent would be attributed to the wrong owner.
+        let previous_fragment_id =
+            std::mem::replace(&mut self.current_fragment_id, fragment_key.clone());
         if !self.in_progress_fragments.insert(fragment_key.clone()) {
-            return Err(self
+            let err = self
                 .authoring_error(
                     codes::RECURSIVE_TEMPLATE,
                     format!("recursive template reference while parsing <{fragment_id}>"),
@@ -495,11 +501,14 @@ impl HtmlParser {
                     "move the recursive usage behind runtime data, or split the component graph \
                      so templates do not reference themselves at build time",
                 )
-                .into());
+                .into();
+            self.current_fragment_id = previous_fragment_id;
+            return Err(err);
         }
 
         let result = self.parse_inner(fragment_id, html_content);
         self.in_progress_fragments.remove(&fragment_key);
+        self.current_fragment_id = previous_fragment_id;
         result
     }
 
@@ -2588,6 +2597,34 @@ mod tests {
         assert!(
             help.contains("found `eahc`") && help.contains("did you mean"),
             "expected an attribute-typo suggestion, got: {help}"
+        );
+    }
+
+    #[test]
+    fn parent_diagnostic_owner_survives_nested_component_parse() {
+        // Regression: a component parse recurses through `self.parse(child, …)`,
+        // which used to leave `current_fragment_id` pointing at the child. A
+        // later error in the PARENT template must still be attributed to the
+        // parent (here `index.html`), not the nested component.
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry
+            .register_component("my-card", "<div>card</div>", None)
+            .expect("register");
+
+        // A registered component first, then a broken <for> in the same template.
+        let html = r#"<my-card></my-card><for each="bad inval"></for>"#;
+        let err = parser
+            .parse("index.html", html)
+            .expect_err("the malformed <for> should error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FOR_EACH));
+        assert_eq!(
+            diag.component_name(),
+            Some("index.html"),
+            "parent diagnostic must be owned by index.html, not the nested component"
         );
     }
 
