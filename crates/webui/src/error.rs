@@ -9,7 +9,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum WebUIError {
     /// I/O error (file read/write failures).
-    #[error("I/O error: {context}: {source}")]
+    #[error("I/O error: {context}")]
     Io {
         /// What operation failed.
         context: String,
@@ -27,7 +27,7 @@ pub enum WebUIError {
     ComponentDiscovery(String),
 
     /// HTML/CSS parsing failure with context about which file failed.
-    #[error("{context}: {source}")]
+    #[error("{context}")]
     Parse {
         /// What was being parsed.
         context: String,
@@ -37,7 +37,7 @@ pub enum WebUIError {
     },
 
     /// Protocol serialization or deserialization failure.
-    #[error("{0}")]
+    #[error("protocol error")]
     Protocol(#[from] webui_protocol::ProtocolError),
 
     /// JSON serialization failure.
@@ -45,10 +45,32 @@ pub enum WebUIError {
     Serialization(String),
 
     /// Handler rendering error.
-    #[error("{0}")]
+    #[error("rendering error")]
     Rendering(#[from] webui_handler::HandlerError),
 
     /// Invalid build-option configuration.
     #[error("Invalid build options: {0}")]
     InvalidBuildOptions(String),
+}
+
+impl WebUIError {
+    /// The full, single-line message including the source chain, e.g.
+    /// `Failed to parse index.html: Directive error: Invalid for each: x`.
+    ///
+    /// Each error layer's [`std::fmt::Display`] describes only its own level
+    /// (the `#[source]` chain carries the rest), so the CLI and dev server can
+    /// use anyhow's `{:#}` formatting without repetition. Hosts that surface a
+    /// flat string instead of walking the chain — Node, FFI — use this helper
+    /// to get the same complete message.
+    #[must_use]
+    pub fn chain_message(&self) -> String {
+        let mut message = self.to_string();
+        let mut source = std::error::Error::source(self);
+        while let Some(err) = source {
+            message.push_str(": ");
+            message.push_str(&err.to_string());
+            source = err.source();
+        }
+        message
+    }
 }

@@ -37,8 +37,10 @@ pub use webui_handler::{
     plugin::HandlerPlugin, HandlerError, RenderOptions, ResponseWriter, WebUIHandler,
 };
 pub use webui_parser::CssStrategy;
+pub use webui_parser::Diagnostic;
 pub use webui_parser::DomStrategy;
 pub use webui_parser::LegalComments;
+pub use webui_parser::ParserError;
 pub use webui_parser::ParserOptions;
 pub use webui_parser::Plugin;
 pub use webui_parser::DEFAULT_CSS_FILE_NAME_TEMPLATE;
@@ -315,10 +317,19 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     let tokens = parser.take_tokens();
     let token_count = tokens.len();
 
-    let component_templates = match parser.take_plugin_artifacts() {
-        ParserPluginArtifacts::None => Vec::new(),
-        ParserPluginArtifacts::ComponentTemplates(templates) => templates,
-    };
+    let component_templates =
+        match parser
+            .take_plugin_artifacts()
+            .map_err(|source| WebUIError::Parse {
+                context: format!(
+                    "Failed to compile component templates for {}",
+                    options.entry
+                ),
+                source,
+            })? {
+            ParserPluginArtifacts::None => Vec::new(),
+            ParserPluginArtifacts::ComponentTemplates(templates) => templates,
+        };
 
     // Build protocol (consumes parser)
     let fragment_records = parser.into_fragment_records();
@@ -430,6 +441,68 @@ mod tests {
         assert!(result.stats.fragment_count > 0);
         assert!(result.stats.protocol_size_bytes > 0);
         assert!(!result.stats.duration.is_zero());
+    }
+
+    #[test]
+    fn test_build_returns_actionable_error_for_invalid_w_ref() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>Hello</my-card>"),
+            ("my-card.html", r#"<div><input w-ref="myInput" /></div>"#),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+
+        // Authoring mistakes are returned (not panicked) so every consumer —
+        // CLI, Node, FFI, WASM — can surface the message its own way.
+        let Err(err) = build(options) else {
+            panic!("non-braced w-ref must fail the build");
+        };
+        let msg = err.chain_message();
+        assert!(msg.contains("invalid w-ref binding"), "msg: {msg}");
+        assert!(
+            msg.contains("component <my-card> · element <input>"),
+            "msg: {msg}"
+        );
+        assert!(msg.contains("help:"), "msg: {msg}");
+    }
+
+    #[test]
+    fn test_build_returns_actionable_error_for_invalid_event_handler() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-btn>x</my-btn>"),
+            (
+                "my-btn.html",
+                r#"<div><button @click="e.preventDefault()">x</button></div>"#,
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+
+        let Err(err) = build(options) else {
+            panic!("invalid @event handler must fail the build");
+        };
+        let msg = err.chain_message();
+        assert!(msg.contains("invalid @click handler"), "msg: {msg}");
+        assert!(
+            msg.contains("component <my-btn> · element <button>"),
+            "msg: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_error_chain_message_has_no_duplicate_source() {
+        let err = WebUIError::Parse {
+            context: "Failed to parse index.html".to_string(),
+            source: webui_parser::ParserError::Directive("Invalid for each: x".to_string()),
+        };
+        // Each layer's Display describes only its own level — the source is not
+        // embedded — so anyhow's `{:#}` / chain walks never repeat it.
+        assert_eq!(err.to_string(), "Failed to parse index.html");
+        // The flat message includes the source exactly once (no repetition).
+        assert_eq!(
+            err.chain_message(),
+            "Failed to parse index.html: Directive error: Invalid for each: x"
+        );
     }
 
     #[test]

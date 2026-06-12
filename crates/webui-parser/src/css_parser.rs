@@ -11,6 +11,16 @@ use std::fmt;
 /// Parser for CSS files.
 pub struct CssParser;
 
+/// Format a byte `offset` into CSS `source` as `at line L, column C`.
+///
+/// CSS is parsed as an extracted chunk (a component `.css` file or inline
+/// `<style>` body) with no enclosing-file context, so the position is relative
+/// to that chunk — still far more actionable than a raw byte offset.
+fn css_loc(source: &str, offset: usize) -> String {
+    let (line, column) = crate::diagnostic::line_column(source, offset);
+    format!("at line {line}, column {column}")
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CssComment {
     pub start_byte: usize,
@@ -118,7 +128,8 @@ fn scan_css(
             b'/' if index + 1 < bytes.len() && bytes[index + 1] == b'*' => {
                 let Some(offset) = source[index + 2..].find("*/") else {
                     return Err(ParserError::Css(format!(
-                        "Unterminated CSS block comment near byte {index}. Close the comment with `*/` before building."
+                        "Unterminated CSS block comment {}. Close the comment with `*/` before building.",
+                        css_loc(source, index)
                     )));
                 };
                 let end = index + 2 + offset + 2;
@@ -170,7 +181,8 @@ fn scan_css(
             b'}' => {
                 if brace_depth == 0 {
                     return Err(ParserError::Css(format!(
-                        "Unexpected CSS closing brace near byte {index}. Remove the extra `}}` or add a matching opening `{{`."
+                        "Unexpected CSS closing brace {}. Remove the extra `}}` or add a matching opening `{{`.",
+                        css_loc(source, index)
                     )));
                 }
                 brace_depth -= 1;
@@ -183,7 +195,8 @@ fn scan_css(
             b')' => {
                 if paren_depth == 0 {
                     return Err(ParserError::Css(format!(
-                        "Unexpected CSS closing parenthesis near byte {index}. Remove the extra `)` or add a matching opening `(`."
+                        "Unexpected CSS closing parenthesis {}. Remove the extra `)` or add a matching opening `(`.",
+                        css_loc(source, index)
                     )));
                 }
                 paren_depth -= 1;
@@ -196,7 +209,8 @@ fn scan_css(
             b']' => {
                 if bracket_depth == 0 {
                     return Err(ParserError::Css(format!(
-                        "Unexpected CSS closing bracket near byte {index}. Remove the extra `]` or add a matching opening `[`."
+                        "Unexpected CSS closing bracket {}. Remove the extra `]` or add a matching opening `[`.",
+                        css_loc(source, index)
                     )));
                 }
                 bracket_depth -= 1;
@@ -262,7 +276,8 @@ fn scan_var_call(source: &str, start: usize, tokens: &mut HashSet<String>) -> Re
             b'/' if index + 1 < bytes.len() && bytes[index + 1] == b'*' => {
                 let Some(offset) = source[index + 2..].find("*/") else {
                     return Err(ParserError::Css(format!(
-                        "Unterminated CSS block comment inside var() near byte {index}. Close the comment with `*/` before building."
+                        "Unterminated CSS block comment inside var() {}. Close the comment with `*/` before building.",
+                        css_loc(source, index)
                     )));
                 };
                 index += 2 + offset + 2;
@@ -280,12 +295,14 @@ fn scan_var_call(source: &str, start: usize, tokens: &mut HashSet<String>) -> Re
                 if depth == 0 {
                     if brace_depth != 0 {
                         return Err(ParserError::Css(format!(
-                            "Unterminated CSS brace expression inside var() near byte {start}. Add the missing `}}` before building."
+                            "Unterminated CSS brace expression inside var() {}. Add the missing `}}` before building.",
+                            css_loc(source, start)
                         )));
                     }
                     if bracket_depth != 0 {
                         return Err(ParserError::Css(format!(
-                            "Unterminated CSS bracket expression inside var() near byte {start}. Add the missing `]` before building."
+                            "Unterminated CSS bracket expression inside var() {}. Add the missing `]` before building.",
+                            css_loc(source, start)
                         )));
                     }
                     for token in pending_tokens {
@@ -301,7 +318,8 @@ fn scan_var_call(source: &str, start: usize, tokens: &mut HashSet<String>) -> Re
             b'}' => {
                 if brace_depth == 0 {
                     return Err(ParserError::Css(format!(
-                        "Unterminated CSS var() call near byte {start}. Add the missing `)` before the closing `}}`."
+                        "Unterminated CSS var() call {}. Add the missing `)` before the closing `}}`.",
+                        css_loc(source, start)
                     )));
                 }
                 brace_depth -= 1;
@@ -314,7 +332,8 @@ fn scan_var_call(source: &str, start: usize, tokens: &mut HashSet<String>) -> Re
             b']' => {
                 if bracket_depth == 0 {
                     return Err(ParserError::Css(format!(
-                        "Unexpected CSS closing bracket inside var() near byte {index}. Remove the extra `]` or add a matching opening `[`."
+                        "Unexpected CSS closing bracket inside var() {}. Remove the extra `]` or add a matching opening `[`.",
+                        css_loc(source, index)
                     )));
                 }
                 bracket_depth -= 1;
@@ -334,13 +353,15 @@ fn scan_var_call(source: &str, start: usize, tokens: &mut HashSet<String>) -> Re
 
     if quote != 0 {
         return Err(ParserError::Css(format!(
-            "Unterminated CSS string literal inside var() near byte {start}. Close the `{}` quote before building.",
+            "Unterminated CSS string literal inside var() {}. Close the `{}` quote before building.",
+            css_loc(source, start),
             char::from(quote)
         )));
     }
 
     Err(ParserError::Css(format!(
-        "Unterminated CSS var() call near byte {start}. Add the missing `)` before building."
+        "Unterminated CSS var() call {}. Add the missing `)` before building.",
+        css_loc(source, start)
     )))
 }
 

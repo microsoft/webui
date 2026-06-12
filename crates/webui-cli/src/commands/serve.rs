@@ -25,6 +25,7 @@ use webui_handler::{RenderOptions, ResponseWriter};
 use webui_protocol::WebUIProtocol;
 
 use super::common::*;
+use crate::utils::error::CliError;
 use crate::utils::output;
 
 #[derive(Args)]
@@ -81,7 +82,9 @@ impl ServePaths {
 
         let app_dir = app_input
             .canonicalize()
-            .with_context(|| format!("App folder not found: {}", args.app_args.app.display()))?;
+            .map_err(|_| CliError::AppFolderNotFound {
+                path: args.app_args.app.display().to_string(),
+            })?;
 
         let state_file = match &args.state {
             Some(state_path) => {
@@ -91,9 +94,12 @@ impl ServePaths {
                     })?
                     .into_owned();
 
-                let canonical = state_input
-                    .canonicalize()
-                    .with_context(|| format!("State file not found: {}", state_path.display()))?;
+                let canonical =
+                    state_input
+                        .canonicalize()
+                        .map_err(|_| CliError::StateFileNotFound {
+                            path: state_path.display().to_string(),
+                        })?;
 
                 if !canonical.is_file() {
                     return Err(anyhow::anyhow!(
@@ -117,9 +123,12 @@ impl ServePaths {
                     })?
                     .into_owned();
 
-                let canonical = serve_input.canonicalize().with_context(|| {
-                    format!("Serve directory not found: {}", serve_arg.display())
-                })?;
+                let canonical =
+                    serve_input
+                        .canonicalize()
+                        .map_err(|_| CliError::ServeDirNotFound {
+                            path: serve_arg.display().to_string(),
+                        })?;
 
                 if !canonical.is_dir() {
                     return Err(anyhow::anyhow!(
@@ -218,23 +227,12 @@ fn watch_disabled_by_env() -> bool {
 }
 
 pub fn execute(args: &ServeArgs) -> Result<()> {
-    run(args).map_err(|err| {
-        output::error(&err);
-
-        let err_msg = format!("{:#}", err);
-        if err_msg.contains("App folder not found") {
-            output::hint("Check that the app folder path exists");
-        } else if err_msg.contains("State file not found") {
-            output::hint("Pass a valid --state path to a JSON file");
-        } else if err_msg.contains("Serve directory not found") {
-            output::hint("Pass a valid --servedir path for static assets");
-        } else if err_msg.contains("already in use") {
-            output::hint(
-                "Stop the process using that port, or rerun with --port <free-port>. Previous dev sessions may have left a server running.",
-            );
+    run(args).inspect_err(|err| {
+        output::error(err);
+        if let Some(cli_err) = err.chain().find_map(|c| c.downcast_ref::<CliError>()) {
+            output::hint(cli_err.hint());
         }
         eprintln!();
-        err
     })
 }
 
@@ -423,7 +421,7 @@ fn ensure_local_port_available(port: u16) -> Result<()> {
 
 fn map_bind_error(port: u16, bind_addr: &str, error: std::io::Error) -> anyhow::Error {
     if error.kind() == ErrorKind::AddrInUse {
-        return anyhow::anyhow!("Port {port} on 127.0.0.1 is already in use");
+        return CliError::PortInUse { port }.into();
     }
 
     anyhow::anyhow!("Failed to bind to {bind_addr}: {error}")
@@ -1072,8 +1070,10 @@ fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::Watcher
     // The closure here is just the cli-specific render-and-update step.
     let lr_for_inject = livereload.clone();
     let tick_tx = webui_dev_server::spawn_rebuild_worker(livereload, move || {
-        let result = build_and_render(&render_config, Some(&lr_for_inject))
-            .map_err(|err| format!("{err:#}"))?;
+        let result = build_and_render(&render_config, Some(&lr_for_inject)).map_err(|err| {
+            let (display, message) = crate::utils::output::build_error_renderings(&err);
+            webui_dev_server::RebuildError::new(display, message)
+        })?;
         match state.lock() {
             Ok(mut s) => {
                 s.rendered_html = result.html;
@@ -1082,7 +1082,9 @@ fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::Watcher
                 s.state_data = Some(result.state_data);
                 Ok(())
             }
-            Err(_) => Err("shared state mutex poisoned".to_string()),
+            Err(_) => Err(webui_dev_server::RebuildError::plain(
+                "shared state mutex poisoned".to_owned(),
+            )),
         }
     });
 

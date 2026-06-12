@@ -204,6 +204,20 @@ Choose the structure that matches the access pattern. A wrong choice is a design
 | Accepting invalid inputs that pass through | If a `<route>` element is missing `path` or references an unknown component, the parser must reject it with an actionable error. |
 | `bytes[i] as char` on UTF-8 strings | This silently corrupts multi-byte characters. Use `str` slicing or `char_indices()` to preserve UTF-8 correctness. |
 
+### Rust - diagnostics & error presentation
+
+See `skills/diagnostics/SKILL.md` for the full workflow. On review, check:
+
+| Pattern | Preference |
+|---------|-----------|
+| `panic!`/`unwrap` on recoverable (template/CLI/state) input | **Banned.** Return `Result` - `panic = "abort"` kills FFI/WASM/Node hosts. Authoring mistakes return `ParserError::Template(Box<Diagnostic>)`. |
+| Authoring error without a stable `code`, location, or `help:` | A `Diagnostic` must carry a `diagnostic::codes` constant, `--> owner:line:column`, snippet, and an actionable `help:`. Codes are a **stable API** - flag renames. |
+| Color/ANSI in a library, host, browser, or JSON channel | Color belongs **only** in `webui-cli` (`console::style()`). Libraries emit plain data; FFI/WASM/Node/browser get plain `Display`. Split terminal-vs-machine renderings (e.g. `RebuildError { display, message }`) rather than leaking ANSI. |
+| A single SGR span wrapping newlines | Style each line independently - a span across `\n` bleeds when lines are re-prefixed (`[server]`). |
+| Error construction inlined into a hot function | Mark error builders `#[cold]`/`#[inline(never)]`; keep the hot fast-path inlinable. Layout perturbation from cold error code is a real regression - confirm with `cargo bench` vs the base branch. |
+| `serde_json::json!` macro in CLI output | Use the `serde_json::Map` API; the macro `unwrap`s internally and trips `disallowed_methods`. |
+| Tests asserting on error prose | Assert on the stable `code` (and that JSON output contains no `\x1b`), not the human message. |
+
 ### TypeScript
 
 | Pattern | Preference |

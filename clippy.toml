@@ -7,6 +7,11 @@ disallowed-methods = [
 disallowed-types = [
   { path = "std::collections::LinkedList", reason = "poor cache locality; use Vec or VecDeque" },
 ]
+disallowed-macros = [
+  { path = "std::todo", reason = "unfinished code must not ship; implement it or return a typed error" },
+  { path = "std::unimplemented", reason = "unfinished code must not ship; implement it or return a typed error" },
+  { path = "std::dbg", reason = "debug-only macro; remove before committing" },
+]
 cognitive-complexity-threshold = 20
 too-many-arguments-threshold = 5
 large-error-threshold = 128

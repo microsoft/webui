@@ -107,10 +107,15 @@ impl RebuildReporter {
     /// so it isn't overwritten.
     pub fn error(&mut self, msg: &str) {
         self.commit_pending();
+        // Color only the leading marker here. The body (`msg`) arrives
+        // pre-rendered from the caller — either plain, or per-line colorized
+        // with self-contained SGR spans. We must never wrap it in one span
+        // that straddles newlines: that bleeds when each line is later
+        // re-emitted with a process prefix (e.g. `[server]`).
         eprintln!(
-            "  {} {}",
+            "  {} {} {msg}",
             style("✘").red().bold(),
-            style(format!("build error: {msg}")).red()
+            style("build error:").red().bold(),
         );
     }
 

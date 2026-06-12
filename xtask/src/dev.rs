@@ -116,11 +116,26 @@ pub fn run(app: Option<&str>) -> ExitCode {
         }
     }
 
-    // Start client bundler (watch mode)
+    // Start client bundler (watch mode).
+    //
+    // esbuild only emits color when its stderr is a TTY and ignores the
+    // `FORCE_COLOR`/`CLICOLOR_FORCE` env vars; under our output pipe it would
+    // print plain text. Forward esbuild's `--color=true` flag (via pnpm) when
+    // we are attached to a terminal so its build errors stay colored, matching
+    // the server's behavior. All example `start:client` scripts use esbuild.
+    //
+    // The flag is appended WITHOUT a `--` separator: pnpm forwards extra args
+    // verbatim (it does not consume `--`), so a `--` would reach esbuild and be
+    // rejected as an invalid build flag.
+    let client_args: &[&str] = if console::colors_enabled_stderr() {
+        &["start:client", "--color=true"]
+    } else {
+        &["start:client"]
+    };
     match process::spawn_child_prefixed(
         "client",
         "pnpm",
-        &["start:client"],
+        client_args,
         &app_dir,
         console::Color::Green,
     ) {

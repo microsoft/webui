@@ -23,6 +23,7 @@ These apply to `webui-handler`, `webui-state`, `webui-expressions`, `webui-parse
 6. **No `format!` in hex parsing.** Use direct arithmetic (`(hi_nibble << 4) | lo_nibble`) instead of `u8::from_str_radix(&format!(...))`.
 7. **No per-request template re-parsing.** Pre-parse at protocol load time and reuse.
 8. **No silent `unwrap_or` defaults.** If `binding_stack.pop()` returns `None`, that's a protocol error - propagate it, don't mask it.
+9. **Keep cold error/diagnostic construction off the hot path.** Mark error builders `#[cold]`/`#[inline(never)]` so they don't inline into hot functions and perturb their code layout. Adding cold error code with **no** hot-path work has regressed parse benches ~4-5% purely via layout - keep per-element fast-paths inlinable and push the cold fallback out-of-line. See `skills/diagnostics/SKILL.md` §7.
 
 ## Rust - memory rules
 

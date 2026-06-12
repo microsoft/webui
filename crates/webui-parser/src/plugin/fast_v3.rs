@@ -109,8 +109,10 @@ impl ParserPlugin for FastV3ParserPlugin {
         }
     }
 
-    fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts {
-        ParserPluginArtifacts::ComponentTemplates(self.take_component_templates())
+    fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts> {
+        Ok(ParserPluginArtifacts::ComponentTemplates(
+            self.take_component_templates(),
+        ))
     }
 }
 

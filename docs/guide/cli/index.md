@@ -18,6 +18,16 @@ cargo install microsoft-webui-cli
 
 ## Commands
 
+### Global options
+
+These flags work with any command:
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--format <FORMAT>` | Output format: `human` (colorized terminal) or `json` (machine-readable diagnostics on stdout) | `human` |
+
+Use `--format json` in editors, CI, or AI/agent tooling that needs to parse build errors programmatically instead of scraping colorized terminal text. See [Error output and exit codes](#error-output-and-exit-codes).
+
 ### `webui build`
 
 Build a WebUI application from an app folder.
@@ -217,6 +227,57 @@ webui serve ./my-app --state ./state.json --theme ./themes/dark.json --watch
 | `/` or `/index.html` | Rendered HTML with live-reload script |
 | `/*` | Static files from `--servedir` (when provided) |
 | `/hmr` | HMR version endpoint (polling backend, only when `--watch`) |
+
+## Error output and exit codes
+
+When a template has an authoring mistake, the CLI prints a structured diagnostic with a stable error code, the source location, the offending snippet, and an actionable `help:` line:
+
+```
+✘ error: invalid <for> each expression [invalid-for-each]
+  --> index.html:67:5
+    each="person inpeople"
+  help: use the form each="item in collection", e.g. each="todo in todos"
+```
+
+Where the mistake is likely a typo, the `help:` line suggests the intended name — a misspelled directive attribute (`eahc` → `each`) or an unregistered custom-element tag that closely matches a registered component **in the same namespace** (`<mp-buton>` → `<mp-button>`). A custom element in a different namespace (e.g. a third-party `<md-button>`) is left untouched and passes through to the browser.
+
+### JSON diagnostics
+
+With `--format json`, each error is emitted as a single JSON object on **stdout** (the colorized terminal output is suppressed), so editors, CI, and AI assistants can consume it directly:
+
+```bash
+webui build ./my-app --out ./dist --format json
+```
+
+```json
+{
+  "severity": "error",
+  "code": "invalid-for-each",
+  "message": "invalid <for> each expression",
+  "file": "index.html",
+  "line": 67,
+  "column": 5,
+  "snippet": "each=\"person inpeople\"",
+  "help": "use the form each=\"item in collection\", e.g. each=\"todo in todos\"",
+  "chain": ["Build failed", "Failed to parse index.html", "..."]
+}
+```
+
+Fields that don't apply to a given error are `null`. The `code` is stable across releases — branch on it rather than on the human-readable `message`.
+
+### Exit codes
+
+The process exit code follows the BSD `sysexits.h` conventions so scripts and CI can branch on the cause:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | Generic failure |
+| `2` | Invalid arguments / usage |
+| `65` | Template or authoring error (`EX_DATAERR`) |
+| `66` | Missing input: app folder, `--state` file, `--servedir`, or entry file (`EX_NOINPUT`) |
+| `69` | Requested `--port` is already in use (`EX_UNAVAILABLE`) |
+| `74` | I/O error reading or writing files (`EX_IOERR`) |
 
 ## App Folder Structure
 

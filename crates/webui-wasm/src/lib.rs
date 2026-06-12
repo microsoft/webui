@@ -18,6 +18,7 @@ use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
+use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::{CssStrategy, HtmlParser, Plugin};
 use webui_protocol::WebUIProtocol;
 
@@ -264,18 +265,14 @@ pub(crate) fn build_and_render_inner(
     Ok(writer.content)
 }
 
-/// Parse virtual files into a `WebUIProtocol` using the real `webui-parser`.
-fn parse_to_protocol(
+/// Register all component `.html` files (and their optional `.css`) from the
+/// virtual file map, skipping the entry. Shared by protocol generation and
+/// authoring validation.
+fn register_components(
+    parser: &mut HtmlParser,
     files: &HashMap<String, String>,
     entry: &str,
-) -> Result<WebUIProtocol, BuildError> {
-    let entry_html = files
-        .get(entry)
-        .ok_or_else(|| BuildError::MissingEntry(entry.to_string()))?;
-
-    let mut parser = HtmlParser::with_options(CssStrategy::Style);
-
-    // Register components from virtual files (no filesystem needed)
+) -> Result<(), BuildError> {
     for (filename, content) in files {
         if filename != entry && filename.ends_with(".html") {
             let tag_name = filename.trim_end_matches(".html");
@@ -288,8 +285,29 @@ fn parse_to_protocol(
             }
         }
     }
+    Ok(())
+}
 
+/// Parse virtual files into a `WebUIProtocol` using the real `webui-parser`
+/// with the WebUI plugin. Compiling the tracked component templates also
+/// validates them, so authoring mistakes — an invalid `@event` handler or a
+/// non-braced `w-ref` — surface as a `ParserError::Template` error (and thus a
+/// catchable JS error) instead of passing silently.
+fn parse_to_protocol(
+    files: &HashMap<String, String>,
+    entry: &str,
+) -> Result<WebUIProtocol, BuildError> {
+    let entry_html = files
+        .get(entry)
+        .ok_or_else(|| BuildError::MissingEntry(entry.to_string()))?;
+
+    let mut parser =
+        HtmlParser::with_plugin_options(Box::new(WebUIParserPlugin::new()), CssStrategy::Style);
+    register_components(&mut parser, files, entry)?;
     parser.parse(entry, entry_html)?;
+    // Compile tracked component templates; this is where @event / w-ref
+    // authoring mistakes are reported.
+    parser.take_plugin_artifacts()?;
 
     Ok(WebUIProtocol::new(parser.into_fragment_records()))
 }
@@ -336,6 +354,53 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found"), "Unexpected error: {}", err);
+    }
+
+    #[test]
+    fn test_build_protocol_surfaces_invalid_w_ref() {
+        let mut files = HashMap::new();
+        files.insert(
+            "index.html".to_string(),
+            "<my-card>Hi</my-card>".to_string(),
+        );
+        files.insert(
+            "my-card.html".to_string(),
+            r#"<div><input w-ref="myInput" /></div>"#.to_string(),
+        );
+
+        let result = build_protocol_inner(&files, "index.html");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid w-ref binding"),
+            "Unexpected error: {err}"
+        );
+        assert!(
+            err.contains("component <my-card> · element <input>"),
+            "Unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_build_and_render_surfaces_invalid_event_handler() {
+        let mut files = HashMap::new();
+        files.insert("index.html".to_string(), "<my-btn>x</my-btn>".to_string());
+        files.insert(
+            "my-btn.html".to_string(),
+            r#"<div><button @click="e.preventDefault()">x</button></div>"#.to_string(),
+        );
+
+        let result = build_and_render_inner(&files, "{}", "index.html", "/");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid @click handler"),
+            "Unexpected error: {err}"
+        );
+        assert!(
+            err.contains("component <my-btn> · element <button>"),
+            "Unexpected error: {err}"
+        );
     }
 
     #[test]

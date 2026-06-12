@@ -245,6 +245,14 @@ impl ComponentRegistry {
         self.components.values()
     }
 
+    /// Iterate the registered component tag names (e.g. `mp-button`).
+    ///
+    /// Used to offer "did you mean …?" suggestions when an unknown component
+    /// tag is encountered during parsing.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.components.keys().map(String::as_str)
+    }
+
     /// Get the number of registered components.
     pub fn len(&self) -> usize {
         self.components.len()
