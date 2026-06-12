@@ -88,8 +88,51 @@
         <button class="share-btn" type="button" @click="{sharePlayground()}">Share</button>
       </div>
     </div>
-    <if condition="errorMessage">
-      <div class="error-bar">{{errorMessage}}</div>
+    <if condition="hasError">
+      <div
+        class="error-panel"
+        data-severity="{{errorSeverity}}"
+        ?data-expanded="{{errorExpanded}}"
+      >
+        <button
+          class="error-panel-header"
+          type="button"
+          aria-expanded="{{errorExpanded}}"
+          @click="{toggleError()}"
+        >
+          <span class="error-panel-icon" aria-hidden="true"></span>
+          <span class="error-panel-summary">
+            <span class="error-panel-title">{{errorTitle}}</span>
+            <if condition="errorCode">
+              <span class="error-code-chip">{{errorCode}}</span>
+            </if>
+          </span>
+          <if condition="errorLocation">
+            <span class="error-loc">{{errorLocation}}</span>
+          </if>
+          <span class="error-chevron" aria-hidden="true">
+            <svg viewBox="0 0 16 16" focusable="false">
+              <path d="M4.5 6.5 8 10l3.5-3.5"></path>
+            </svg>
+          </span>
+        </button>
+        <div class="error-panel-body-wrap">
+          <div class="error-panel-body">
+            <if condition="errorSnippet">
+              <pre class="error-snippet">{{errorSnippet}}</pre>
+            </if>
+            <if condition="errorHelp">
+              <div class="error-help">
+                <span class="error-help-label">help</span>
+                <span class="error-help-text">{{errorHelp}}</span>
+              </div>
+            </if>
+            <if condition="errorRaw">
+              <pre class="error-raw">{{errorRaw}}</pre>
+            </if>
+          </div>
+        </div>
+      </div>
     </if>
     <iframe sandbox="allow-scripts" class="preview-frame" srcdoc="{{previewSrcdoc}}"></iframe>
   </div>
