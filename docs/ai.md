@@ -426,7 +426,10 @@ CSS is scoped per component via Shadow DOM. No CSS-in-JS.
 - `:host` styles the component root element
 - `:host([attr])` styles based on attribute presence/value
 - Internal selectors are scoped to the shadow root
-- Use CSS custom properties (`var(--name)`) for theming
+- Use CSS custom properties (`var(--name)`) for theming. Nested fallbacks like
+  `var(--primary, var(--fallback))` are also discovered as tokens.
+- Malformed CSS fails the build, including unterminated `var()` calls, comments,
+  strings, and unmatched delimiters.
 - No styles leak in or out
 
 ## Entry Template
@@ -539,6 +542,8 @@ HTML comments are stripped at build time and bindings inside them are ignored.
 CSS comments are stripped except legal comments and `<style>` signal fragments.
 Legal CSS comments containing `@license` or `@preserve`, or starting with `/*!`
 or `//!`, are preserved only when `--legal-comments inline` is active.
+Malformed HTML or CSS fails `webui build`; escape literal `<` as `&lt;` and
+close all tags, comments, declarations, `var()` calls, and CSS delimiters.
 
 ### Serve (dev server)
 
@@ -643,7 +648,8 @@ property declarations into the render state. Only available on `webui serve`.
 **How it works:**
 
 1. Loads the JSON file (multi-theme or flat single-theme format)
-2. Filters tokens to only those actually used in your CSS (`var(--name)`)
+2. Filters tokens to only those actually used in your CSS (`var(--name)`,
+   including nested `var()` fallbacks)
 3. Expands transitive `var()` references and detects cycles
 4. Generates CSS declaration strings per theme
 5. Injects into state as `state.tokens.light`, `state.tokens.dark`, etc.

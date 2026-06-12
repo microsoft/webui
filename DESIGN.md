@@ -1127,6 +1127,9 @@ impl CssParser {
 - Handle nested variable references
 - Process inline and external CSS
 - Strip CSS comments during parsing, preserving only legal comments when `LegalComments::Inline` is active
+- Reject malformed CSS at build time with `ParserError::Css`, including
+  unterminated `var()` calls, block comments, strings, and unmatched braces,
+  parentheses, or brackets.
 
 ### HTML Scanner
 
@@ -1140,12 +1143,13 @@ Semantic template traversal is stack-driven rather than recursive. Entering a
 child range pushes an explicit parse operation, and directive bodies (`<for>`,
 `<if>`) swap to isolated fragment contexts until their body parse completes.
 
-#### Recovery semantics
+#### Validation semantics
 
 - HTML comments are build-time-only and stripped.
 - Declarations/DOCTYPE are preserved as raw content.
-- Unterminated or overlapping tags are treated leniently: recoverable source is
-  preserved rather than rejected.
+- Unterminated opening tags, missing closing tags, overlapping/misnested tags,
+  unexpected closing tags, and unterminated comments or declarations are rejected
+  at build time with `ParserError::Html`.
 - Recursive component template references are rejected at build time with an
   actionable directive error instead of recursing through parser calls.
 - The scanner is quote-aware for opening tags, so `>` inside `'...'` or `"..."`

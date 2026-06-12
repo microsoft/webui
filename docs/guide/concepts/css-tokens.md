@@ -40,6 +40,7 @@ Fallback variables in `var()` calls are also extracted:
 ```
 
 Literal fallback values (like `16px`) are ignored - only variable references are extracted.
+Malformed `var()` calls fail the build instead of hoisting partial token names.
 
 ### Local Definition Exclusion
 
@@ -59,6 +60,7 @@ If a custom property is both **defined** and **used** in the same CSS file, it i
 HTML and CSS comments are stripped at build time. Bindings inside HTML comments
 are ignored, so comments cannot be used as token placeholders. CSS legal
 comments are preserved only when `--legal-comments inline` is active.
+Unterminated HTML or CSS comments fail the build.
 
 Inside `<style>` tags, dynamic CSS fragments are valid only when wrapped in a
 CSS block comment. The comment must contain exactly one handlebars expression:

@@ -597,102 +597,120 @@ impl HtmlParser {
                     while index < end {
                         let remaining = &source[index..end];
                         if remaining.starts_with("<!--") {
-                            index += html::find_comment_close(remaining).unwrap_or(remaining.len());
+                            let Some(close) = html::find_comment_close(remaining) else {
+                                return Err(ParserError::Html(format!(
+                                    "Unterminated HTML comment near byte {index}. Close the comment with `-->` before building."
+                                )));
+                            };
+                            index += close;
                             continue;
                         }
 
                         if remaining.starts_with("<!") {
-                            let close =
-                                html::find_declaration_close(remaining).unwrap_or(remaining.len());
+                            let Some(close) = html::find_declaration_close(remaining) else {
+                                return Err(ParserError::Html(format!(
+                                    "Unterminated HTML declaration near byte {index}. Close the declaration with `>` before building."
+                                )));
+                            };
                             self.add_raw_fragment(&remaining[..close]);
                             index += close;
                             continue;
                         }
 
                         if remaining.starts_with('<') {
-                            if let Some(tag) = html::parse_tag(remaining) {
-                                if tag.closing {
-                                    self.add_raw_fragment(&remaining[..=tag.close]);
-                                    index += tag.close + 1;
-                                    continue;
-                                }
-
-                                let content_start = index + tag.close + 1;
-                                let (content_end, close_end) =
-                                    if tag.self_closing || html::is_void_element(tag.name) {
-                                        (content_start, content_start)
-                                    } else if let Some((close_start, close_end)) =
-                                        html::find_matching_end(remaining, tag.name, tag.close + 1)
-                                    {
-                                        (index + close_start, index + close_end)
-                                    } else {
-                                        (end, end)
-                                    };
-
-                                let element = Element {
-                                    source,
-                                    start: index,
-                                    tag,
-                                    content_start,
-                                    content_end,
-                                    close_end,
-                                };
-
-                                if close_end < end {
-                                    ops.push(ParseOp::Parse {
-                                        range: close_end..end,
-                                        depth,
-                                    });
-                                }
-
-                                match element.name() {
-                                    "for" => {
-                                        self.enter_for_directive(
-                                            &element, fragments, depth, &mut ops,
-                                        )?;
-                                    }
-                                    "if" => {
-                                        self.enter_if_directive(
-                                            &element, fragments, depth, &mut ops,
-                                        )?;
-                                    }
-                                    "body" => {
-                                        self.enter_body_element(
-                                            &element, fragments, depth, &mut ops,
-                                        )?;
-                                    }
-                                    "head" => {
-                                        self.enter_head_element(&element, depth, &mut ops);
-                                    }
-                                    "route" => {
-                                        self.process_route_directive(&element, fragments)?;
-                                    }
-                                    "outlet" => {
-                                        self.flush_raw_buffer(fragments);
-                                        fragments.push(WebUIFragment::outlet());
-                                    }
-                                    name if name.eq_ignore_ascii_case("style") => {
-                                        self.process_style_element(&element, fragments)?;
-                                    }
-                                    _ if self.component_registry.contains(element.name()) => {
-                                        self.enter_component_directive(
-                                            &element, fragments, depth, &mut ops,
-                                        )?;
-                                    }
-                                    _ => {
-                                        self.enter_regular_element(
-                                            &element, fragments, depth, &mut ops,
-                                        )?;
-                                    }
-                                }
-
-                                break;
+                            let Some(tag) = html::parse_tag(remaining) else {
+                                return Err(ParserError::Html(format!(
+                                    "Malformed HTML tag near byte {index}. Close the tag with `>` or escape a literal `<` as `&lt;`."
+                                )));
+                            };
+                            if tag.closing {
+                                return Err(ParserError::Html(format!(
+                                    "Unexpected closing HTML tag </{}> near byte {index}. Remove it or add the matching opening tag before it.",
+                                    tag.name
+                                )));
                             }
+
+                            let content_start = index + tag.close + 1;
+                            let (content_end, close_end) = if tag.self_closing
+                                || html::is_void_element(tag.name)
+                            {
+                                (content_start, content_start)
+                            } else if let Some((close_start, close_end)) =
+                                html::find_matching_end(remaining, tag.name, tag.close + 1)
+                            {
+                                (index + close_start, index + close_end)
+                            } else {
+                                return Err(ParserError::Html(format!(
+                                        "Unclosed HTML tag <{}> near byte {index}. Add the matching </{}> closing tag or make the element self-closing.",
+                                        tag.name, tag.name
+                                    )));
+                            };
+
+                            let element = Element {
+                                source,
+                                start: index,
+                                tag,
+                                content_start,
+                                content_end,
+                                close_end,
+                            };
+
+                            if close_end < end {
+                                ops.push(ParseOp::Parse {
+                                    range: close_end..end,
+                                    depth,
+                                });
+                            }
+
+                            match element.name() {
+                                "for" => {
+                                    self.enter_for_directive(&element, fragments, depth, &mut ops)?;
+                                }
+                                "if" => {
+                                    self.enter_if_directive(&element, fragments, depth, &mut ops)?;
+                                }
+                                "body" => {
+                                    self.enter_body_element(&element, fragments, depth, &mut ops)?;
+                                }
+                                "head" => {
+                                    self.enter_head_element(&element, depth, &mut ops);
+                                }
+                                "route" => {
+                                    self.process_route_directive(&element, fragments)?;
+                                }
+                                "outlet" => {
+                                    self.flush_raw_buffer(fragments);
+                                    fragments.push(WebUIFragment::outlet());
+                                }
+                                name if name.eq_ignore_ascii_case("style") => {
+                                    self.process_style_element(&element, fragments)?;
+                                }
+                                _ if self.component_registry.contains(element.name()) => {
+                                    self.enter_component_directive(
+                                        &element, fragments, depth, &mut ops,
+                                    )?;
+                                }
+                                _ => {
+                                    self.enter_regular_element(
+                                        &element, fragments, depth, &mut ops,
+                                    )?;
+                                }
+                            }
+
+                            break;
                         }
 
                         let next = remaining.find('<').unwrap_or(remaining.len());
-                        self.process_text(&remaining[..next], fragments)?;
-                        index += next.max(1);
+                        let text_end = if next == 0 {
+                            remaining
+                                .chars()
+                                .next()
+                                .map_or(remaining.len(), char::len_utf8)
+                        } else {
+                            next
+                        };
+                        self.process_text(&remaining[..text_end], fragments)?;
+                        index += text_end;
                     }
                 }
                 ParseOp::EmitClose(name) => {
@@ -1322,12 +1340,14 @@ impl HtmlParser {
         self.token_store.extend(tokens);
         self.token_definitions.extend(defs);
         self.process_style_content(style_content, &comments, fragments);
-        // Reconstruct the closing tag from the parsed name so the emitted case
-        // mirrors the source (e.g. `<STYLE>` closes with `</STYLE>`), matching
-        // how regular elements are closed via `ParseOp::EmitClose`.
-        self.add_raw_fragment("</");
-        self.add_raw_fragment(element.name());
-        self.add_raw_fragment(">");
+        if element.close_end() > element.content_end() {
+            // Reconstruct the closing tag from the parsed name so the emitted
+            // case mirrors the source (e.g. `<STYLE>` closes with `</STYLE>`),
+            // matching how regular elements are closed via `ParseOp::EmitClose`.
+            self.add_raw_fragment("</");
+            self.add_raw_fragment(element.name());
+            self.add_raw_fragment(">");
+        }
         Ok(())
     }
 
@@ -1375,7 +1395,9 @@ impl HtmlParser {
 
         let mut all_params = std::collections::HashSet::new();
         all_params.extend(route_params);
-        let children = self.parse_child_routes(element.children(), &all_params, 1)?;
+        Self::validate_route_nesting_depth(element.source(), element.inner(), 1)?;
+        let children =
+            self.parse_child_routes(element.source(), element.inner(), &all_params, 1)?;
 
         self.flush_raw_buffer(fragments);
         let route_fragment =
@@ -1393,7 +1415,8 @@ impl HtmlParser {
     /// call stack via `parse_route_as_fragment` recursion.
     fn parse_child_routes(
         &mut self,
-        walker: Walker<'_>,
+        source: &str,
+        range: Range<usize>,
         ancestor_params: &std::collections::HashSet<String>,
         depth: usize,
     ) -> Result<Vec<WebUiFragmentRoute>> {
@@ -1404,27 +1427,168 @@ impl HtmlParser {
         }
 
         let mut children = Vec::new();
-        for event in walker {
+        for event in Walker::new_range(source, range.start, range.end) {
             match event {
                 Event::Element(element) => {
+                    Self::validate_closed_element(&element)?;
                     if element.name() == "route" {
                         children.push(self.parse_route_as_fragment(
                             &element,
                             ancestor_params,
                             depth,
                         )?);
+                    } else if element.name().eq_ignore_ascii_case("style") {
+                        self.validate_style_element(&element)?;
+                    } else if !element.self_closing() && !element.is_void() {
+                        self.validate_ignored_route_html(element.source(), element.inner(), depth)?;
                     }
                 }
                 Event::Text(text) => {
-                    let _ = text;
+                    if text.contains('<') {
+                        return Err(ParserError::Html(
+                            "Malformed HTML tag inside <route>. Close the tag with `>` or escape a literal `<` as `&lt;`."
+                                .to_string(),
+                        ));
+                    }
                 }
-                Event::Comment(range) | Event::Declaration(range) | Event::ClosingTag(range) => {
-                    let _ = range;
+                Event::Comment(comment_range) => {
+                    Self::validate_comment_range(source, comment_range)?;
+                }
+                Event::Declaration(declaration_range) => {
+                    Self::validate_declaration_range(source, declaration_range)?;
+                }
+                Event::ClosingTag(closing_range) => {
+                    return Err(Self::unexpected_closing_tag_error(source, closing_range));
                 }
             }
         }
 
         Ok(children)
+    }
+
+    fn validate_route_nesting_depth(source: &str, range: Range<usize>, depth: usize) -> Result<()> {
+        let mut stack = vec![(range, depth)];
+        while let Some((range, depth)) = stack.pop() {
+            if depth > MAX_TEMPLATE_DEPTH {
+                return Err(ParserError::Directive(format!(
+                    "Route nesting exceeds the {MAX_TEMPLATE_DEPTH} level parser limit. Flatten deeply nested <route> trees before build."
+                )));
+            }
+
+            for event in Walker::new_range(source, range.start, range.end) {
+                if let Event::Element(element) = event {
+                    Self::validate_closed_element(&element)?;
+                    if element.name() == "route" && !element.self_closing() {
+                        stack.push((element.inner(), depth + 1));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_ignored_route_html(
+        &mut self,
+        source: &str,
+        range: Range<usize>,
+        depth: usize,
+    ) -> Result<()> {
+        let mut stack = vec![(range, depth)];
+        while let Some((range, depth)) = stack.pop() {
+            if depth > MAX_TEMPLATE_DEPTH {
+                return Err(ParserError::Html(format!(
+                    "Template nesting exceeds the {MAX_TEMPLATE_DEPTH} level parser limit near byte {}. Split deeply nested markup into components or reduce generated nesting before build.",
+                    range.start
+                )));
+            }
+
+            for event in Walker::new_range(source, range.start, range.end) {
+                match event {
+                    Event::Element(element) => {
+                        Self::validate_closed_element(&element)?;
+                        if element.name().eq_ignore_ascii_case("style") {
+                            self.validate_style_element(&element)?;
+                        } else if !element.self_closing() && !element.is_void() {
+                            stack.push((element.inner(), depth + 1));
+                        }
+                    }
+                    Event::Text(text) => {
+                        if text.contains('<') {
+                            return Err(ParserError::Html(
+                                "Malformed HTML tag inside <route>. Close the tag with `>` or escape a literal `<` as `&lt;`."
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                    Event::Comment(comment_range) => {
+                        Self::validate_comment_range(source, comment_range)?;
+                    }
+                    Event::Declaration(declaration_range) => {
+                        Self::validate_declaration_range(source, declaration_range)?;
+                    }
+                    Event::ClosingTag(closing_range) => {
+                        return Err(Self::unexpected_closing_tag_error(source, closing_range));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_closed_element(element: &Element<'_>) -> Result<()> {
+        if !element.self_closing()
+            && !element.is_void()
+            && element.close_end() == element.content_end()
+        {
+            return Err(ParserError::Html(format!(
+                "Unclosed HTML tag <{}> near byte {}. Add the matching </{}> closing tag or make the element self-closing.",
+                element.name(),
+                element.inner().start.saturating_sub(element.opening().len()),
+                element.name()
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_style_element(&mut self, element: &Element<'_>) -> Result<()> {
+        let inner = element.inner();
+        let style_content = &element.source()[inner.start..inner.end];
+        self.css_parser
+            .extract_tokens_definitions_and_comments(style_content, self.options.legal_comments)?;
+        Ok(())
+    }
+
+    fn validate_comment_range(source: &str, range: Range<usize>) -> Result<()> {
+        if source[range].ends_with("-->") {
+            return Ok(());
+        }
+        Err(ParserError::Html(
+            "Unterminated HTML comment inside <route>. Close the comment with `-->` before building."
+                .to_string(),
+        ))
+    }
+
+    fn validate_declaration_range(source: &str, range: Range<usize>) -> Result<()> {
+        if source[range].ends_with('>') {
+            return Ok(());
+        }
+        Err(ParserError::Html(
+            "Unterminated HTML declaration inside <route>. Close the declaration with `>` before building."
+                .to_string(),
+        ))
+    }
+
+    fn unexpected_closing_tag_error(source: &str, range: Range<usize>) -> ParserError {
+        if let Some(tag) = html::parse_tag(&source[range]) {
+            return ParserError::Html(format!(
+                "Unexpected closing HTML tag </{}> inside <route>. Remove it or add the matching opening tag before it.",
+                tag.name
+            ));
+        }
+        ParserError::Html(
+            "Unexpected closing HTML tag inside <route>. Remove it or add the matching opening tag before it."
+                .to_string(),
+        )
     }
 
     fn route_attrs_from_element(element: &Element<'_>) -> route_parser::RouteAttributes {
@@ -1488,7 +1652,8 @@ impl HtmlParser {
         }
 
         self.ensure_route_component_parsed(&component)?;
-        let children = self.parse_child_routes(element.children(), &all_params, depth + 1)?;
+        let children =
+            self.parse_child_routes(element.source(), element.inner(), &all_params, depth + 1)?;
 
         Ok(route_parser::build_route_fragment(
             &attrs, component, children,
@@ -1712,7 +1877,7 @@ impl HtmlParser {
     fn strip_template_comments(&mut self, html: String) -> Result<String> {
         let mut ranges = Vec::new();
         let mut style_ranges = Vec::new();
-        Self::collect_html_comment_and_style_ranges(&html, &mut ranges, &mut style_ranges);
+        Self::collect_html_comment_and_style_ranges(&html, &mut ranges, &mut style_ranges)?;
 
         for (style_start, style_end) in style_ranges {
             let css = &html[style_start..style_end];
@@ -1743,12 +1908,16 @@ impl HtmlParser {
         html: &str,
         comment_ranges: &mut Vec<(usize, usize)>,
         style_ranges: &mut Vec<(usize, usize)>,
-    ) {
+    ) -> Result<()> {
         let mut index = 0usize;
         while index < html.len() {
             let remaining = &html[index..];
             if remaining.starts_with("<!--") {
-                let end = html::find_comment_close(remaining).unwrap_or(remaining.len());
+                let Some(end) = html::find_comment_close(remaining) else {
+                    return Err(ParserError::Html(format!(
+                        "Unterminated HTML comment near byte {index}. Close the comment with `-->` before building."
+                    )));
+                };
                 comment_ranges.push((index, index + end));
                 index += end;
                 continue;
@@ -1774,6 +1943,7 @@ impl HtmlParser {
             };
             index += ch.len_utf8();
         }
+        Ok(())
     }
 
     /// Strip attributes starting with `@`, `:`, or `?` from the opening
@@ -2604,17 +2774,17 @@ mod tests {
     #[test]
     fn test_attribute_boolean_and_regular_together() {
         // Port of: 'should process a boolean attribute and a regular attribute together'
-        // <input ?checked="{{isChecked}}" type="checkbox">Hi</input>
+        // <button ?disabled="{{isDisabled}}" type="button">Hi</button>
         let (fragments, _) = parse_and_get_fragments(
-            r#"<input ?checked="{{isChecked}}" type="checkbox">Hi</input>"#,
+            r#"<button ?disabled="{{isDisabled}}" type="button">Hi</button>"#,
         );
 
         assert_fragments!(
             fragments,
             [
-                raw("<input"),
-                bool_attr("checked", "isChecked"),
-                raw(" type=\"checkbox\">Hi</input>"),
+                raw("<button"),
+                bool_attr("disabled", "isDisabled"),
+                raw(" type=\"button\">Hi</button>"),
             ]
         );
     }
@@ -2622,18 +2792,18 @@ mod tests {
     #[test]
     fn test_attribute_boolean_sandwiched() {
         // Port of: 'should process a boolean attribute sandwiched between regular attributes'
-        // <input version={{edition}} ?checked="{{isChecked}}" type="checkbox">Hi</input>
+        // <button version={{edition}} ?disabled="{{isDisabled}}" type="button">Hi</button>
         let (fragments, _) = parse_and_get_fragments(
-            r#"<input version={{edition}} ?checked="{{isChecked}}" type="checkbox">Hi</input>"#,
+            r#"<button version={{edition}} ?disabled="{{isDisabled}}" type="button">Hi</button>"#,
         );
 
         assert_fragments!(
             fragments,
             [
-                raw("<input"),
+                raw("<button"),
                 attr("version", "edition"),
-                bool_attr("checked", "isChecked"),
-                raw(" type=\"checkbox\">Hi</input>"),
+                bool_attr("disabled", "isDisabled"),
+                raw(" type=\"button\">Hi</button>"),
             ]
         );
     }
@@ -2641,18 +2811,18 @@ mod tests {
     #[test]
     fn test_attribute_boolean_ending() {
         // Port of: 'should process html ending with boolean attribute correctly'
-        // <input version={{edition}} ?checked="{{isChecked}}">Hi</input>
+        // <button version={{edition}} ?disabled="{{isDisabled}}">Hi</button>
         let (fragments, _) = parse_and_get_fragments(
-            r#"<input version={{edition}} ?checked="{{isChecked}}">Hi</input>"#,
+            r#"<button version={{edition}} ?disabled="{{isDisabled}}">Hi</button>"#,
         );
 
         assert_fragments!(
             fragments,
             [
-                raw("<input"),
+                raw("<button"),
                 attr("version", "edition"),
-                bool_attr("checked", "isChecked"),
-                raw(">Hi</input>"),
+                bool_attr("disabled", "isDisabled"),
+                raw(">Hi</button>"),
             ]
         );
     }
@@ -2811,22 +2981,22 @@ mod tests {
     #[test]
     fn test_attribute_reject_boolean_without_handlebars() {
         // Port of: 'should reject boolean attribute without handlebars'
-        // <input ?checked="name"></input>
-        let (fragments, _) = parse_and_get_fragments(r#"<input ?checked="name"></input>"#);
+        // <button ?checked="name"></button>
+        let (fragments, _) = parse_and_get_fragments(r#"<button ?checked="name"></button>"#);
 
         // Boolean attribute is silently dropped
-        assert_fragments!(fragments, [raw("<input></input>"),]);
+        assert_fragments!(fragments, [raw("<button></button>"),]);
     }
 
     #[test]
     fn test_attribute_reject_boolean_with_partial_handlebars() {
         // Port of: 'should reject boolean attribute with partial handlebars'
-        // <input ?checked="Hello {{name}}"></input>
+        // <button ?checked="Hello {{name}}"></button>
         let (fragments, _) =
-            parse_and_get_fragments(r#"<input ?checked="Hello {{name}}"></input>"#);
+            parse_and_get_fragments(r#"<button ?checked="Hello {{name}}"></button>"#);
 
         // Boolean attribute is silently dropped
-        assert_fragments!(fragments, [raw("<input></input>"),]);
+        assert_fragments!(fragments, [raw("<button></button>"),]);
     }
 
     #[test]
@@ -2901,16 +3071,16 @@ mod tests {
     #[test]
     fn test_attribute_mixed_static_dynamic() {
         // Port of: 'should process mixed attributes correctly'
-        // <input value="hello {{world}}">Hi</input>
+        // <textarea value="hello {{world}}">Hi</textarea>
         let (fragments, records) =
-            parse_and_get_fragments(r#"<input value="hello {{world}}">Hi</input>"#);
+            parse_and_get_fragments(r#"<textarea value="hello {{world}}">Hi</textarea>"#);
 
         assert_fragments!(
             fragments,
             [
-                raw("<input"),
+                raw("<textarea"),
                 attr_template("value", "attr-1"),
-                raw(">Hi</input>"),
+                raw(">Hi</textarea>"),
             ]
         );
 
@@ -3352,10 +3522,39 @@ mod tests {
     #[test]
     fn test_invalid_markup_returns_error() {
         // Port of: 'should fail with invalid markup'
-        // The scanner is lenient — it preserves recoverable unclosed markup.
         let mut parser = HtmlParser::new();
         let result = parser.parse("index.html", "<div><span>Unclosed div");
-        assert!(result.is_ok());
+        assert!(matches!(result, Err(ParserError::Html(message)) if
+            message.contains("Unclosed HTML tag <div>")
+        ));
+    }
+
+    #[test]
+    fn test_unterminated_opening_tag_returns_error() {
+        let mut parser = HtmlParser::new();
+        let result = parser.parse("index.html", "before <div");
+        assert!(matches!(result, Err(ParserError::Html(message)) if
+            message.contains("Malformed HTML tag")
+        ));
+    }
+
+    #[test]
+    fn test_unterminated_html_comment_returns_error() {
+        let mut parser = HtmlParser::new();
+        let result = parser.parse("index.html", "<div><!-- missing close</div>");
+        assert!(matches!(result, Err(ParserError::Html(message)) if
+            message.contains("Unclosed HTML tag <div>")
+                || message.contains("Unterminated HTML comment")
+        ));
+    }
+
+    #[test]
+    fn test_unexpected_closing_tag_returns_error() {
+        let mut parser = HtmlParser::new();
+        let result = parser.parse("index.html", "</span>");
+        assert!(matches!(result, Err(ParserError::Html(message)) if
+            message.contains("Unexpected closing HTML tag </span>")
+        ));
     }
 
     #[test]
@@ -3978,16 +4177,12 @@ mod tests {
     #[test]
     fn test_fail_with_invalid_markup() {
         // Port of: 'should fail with invalid markup'
-        // The scanner is lenient — it recovers from overlapping / misnested
-        // tags rather than returning a parse error. This test documents that
-        // behavior: deliberately overlapping tags do NOT produce an error.
         let mut parser = HtmlParser::new();
         let result = parser.parse("index.html", "<div><span></div></span>");
 
-        assert!(
-            result.is_ok(),
-            "scanner is lenient and recovers from overlapping tags"
-        );
+        assert!(matches!(result, Err(ParserError::Html(message)) if
+            message.contains("Unclosed HTML tag <span>")
+        ));
     }
 
     #[test]
@@ -4316,6 +4511,21 @@ mod tests {
     }
 
     #[test]
+    fn test_component_template_unterminated_comment_returns_error() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component("x-bad", "<span>ok</span><!-- missing close", None)
+            .expect("register failed");
+
+        let result = parser.parse("index.html", "<x-bad></x-bad>");
+
+        assert!(matches!(result, Err(ParserError::Html(message)) if
+            message.contains("Unterminated HTML comment")
+        ));
+    }
+
+    #[test]
     fn test_webui_plugin_strips_component_comments_before_metadata() {
         let mut parser =
             HtmlParser::with_plugin(Box::new(crate::plugin::webui::WebUIParserPlugin::new()));
@@ -4386,6 +4596,20 @@ mod tests {
     }
 
     #[test]
+    fn test_tokens_from_malformed_style_error_on_unclosed_var() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<style>
+            .bad { color: var(--dangling; }
+            .ok { color: var(--valid); }
+        </style>"#;
+        let result = parser.parse("test.html", html);
+
+        assert!(matches!(result, Err(ParserError::Css(message)) if
+            message.contains("Unterminated CSS var() call")
+        ));
+    }
+
+    #[test]
     fn test_tokens_from_component_css() {
         let mut parser = HtmlParser::new();
         parser
@@ -4402,6 +4626,20 @@ mod tests {
         let tokens = parser.take_tokens();
 
         assert_eq!(tokens, vec!["borderWidth", "textColor"]);
+    }
+
+    #[test]
+    fn test_tokens_from_malformed_component_css_error_on_unclosed_var() {
+        let mut parser = HtmlParser::new();
+        let result = parser.component_registry_mut().register_component(
+            "my-card",
+            "<div>Card</div>",
+            Some(".bad { color: var(--dangling; } .ok { color: var(--valid); }"),
+        );
+
+        assert!(matches!(result, Err(ParserError::Css(message)) if
+            message.contains("Unterminated CSS var() call")
+        ));
     }
 
     #[test]
@@ -4666,6 +4904,28 @@ mod tests {
             }
             other => panic!("expected Fragment::Route, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_route_body_rejects_malformed_non_route_html() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<route path="/" component="home-page"><div><span></div></route>"#;
+        let result = parser.parse("test.html", html);
+
+        assert!(matches!(result, Err(ParserError::Html(message)) if
+            message.contains("Unclosed HTML tag <span>")
+        ));
+    }
+
+    #[test]
+    fn test_route_body_rejects_malformed_style_css() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<route path="/" component="home-page"><style>.bad { color: var(--x; }</style></route>"#;
+        let result = parser.parse("test.html", html);
+
+        assert!(matches!(result, Err(ParserError::Css(message)) if
+            message.contains("Unterminated CSS var() call")
+        ));
     }
 
     #[test]
@@ -5016,6 +5276,15 @@ mod tests {
                 raw("</body></html>"),
             ]
         );
+    }
+
+    #[test]
+    fn test_unclosed_style_element_returns_error() {
+        let mut parser = HtmlParser::new();
+        let result = parser.parse("index.html", "<style>.x { color: red; ");
+        assert!(matches!(result, Err(ParserError::Html(message)) if
+            message.contains("Unclosed HTML tag <style>")
+        ));
     }
 
     #[test]

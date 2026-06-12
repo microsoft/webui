@@ -6,8 +6,8 @@
 //! This module intentionally does not build a DOM tree. It exposes borrowed
 //! element/comment/text ranges so callers get a clean traversal API without
 //! giving up the single-pass scanner performance.
-//! It is not a browser-conformance parser; it is a lenient scanner for WebUI's
-//! build-time template subset.
+//! It is not a browser-conformance parser; semantic validation in `HtmlParser`
+//! rejects malformed input for WebUI's build-time template subset.
 
 use std::ops::Range;
 
@@ -131,6 +131,7 @@ impl<'a> Element<'a> {
         is_void_element(self.tag.name)
     }
 
+    #[cfg(test)]
     #[inline]
     pub(crate) fn children(&self) -> Walker<'a> {
         Walker::new_range(self.source, self.content_start, self.content_end)
@@ -176,7 +177,7 @@ impl<'a> Iterator for Walker<'a> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        while self.cursor < self.end {
+        if self.cursor < self.end {
             let start = self.cursor;
             let remaining = &self.source[start..self.end];
 
@@ -224,14 +225,14 @@ impl<'a> Iterator for Walker<'a> {
             }
 
             let next = remaining.find('<').unwrap_or(remaining.len());
-            if next == 0 {
-                let ch = remaining.chars().next()?;
-                self.cursor += ch.len_utf8();
-                continue;
-            }
+            let text_end = if next == 0 {
+                remaining.chars().next()?.len_utf8()
+            } else {
+                next
+            };
 
-            self.cursor += next;
-            return Some(Event::Text(&remaining[..next]));
+            self.cursor += text_end;
+            return Some(Event::Text(&remaining[..text_end]));
         }
 
         None
@@ -538,6 +539,12 @@ mod tests {
     }
 
     #[test]
+    fn find_tag_close_returns_none_for_unterminated_tag() {
+        assert_eq!(find_tag_close("<div"), None);
+        assert_eq!(find_tag_close(r#"<a href="unterminated>"#), None);
+    }
+
+    #[test]
     fn parse_tag_reads_attributes() {
         let tag = parse_tag(r#"<button class="a b" disabled data-x='1'>"#).unwrap();
         assert_eq!(tag.name, "button");
@@ -569,6 +576,15 @@ mod tests {
         assert!(children.next().is_none());
 
         assert!(matches!(walker.next(), Some(Event::Comment(range)) if range == (20..28)));
+        assert!(walker.next().is_none());
+    }
+
+    #[test]
+    fn walker_preserves_unterminated_tag_as_text() {
+        let mut walker = Walker::new("before <div");
+        assert!(matches!(walker.next(), Some(Event::Text("before "))));
+        assert!(matches!(walker.next(), Some(Event::Text("<"))));
+        assert!(matches!(walker.next(), Some(Event::Text("div"))));
         assert!(walker.next().is_none());
     }
 

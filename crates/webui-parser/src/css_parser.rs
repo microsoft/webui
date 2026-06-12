@@ -3,7 +3,7 @@
 
 //! CSS scanner for WebUI components.
 
-use crate::{comment_policy, LegalComments, Result};
+use crate::{comment_policy, LegalComments, ParserError, Result};
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
@@ -33,14 +33,15 @@ impl CssParser {
     /// Extract CSS custom property token names used via `var()` in the given CSS.
     pub fn extract_tokens(&mut self, css_content: &str) -> Result<HashSet<String>> {
         let (mut tokens, definitions, _comments) =
-            scan_css(css_content, LegalComments::Inline, false);
+            scan_css(css_content, LegalComments::Inline, false)?;
         tokens.retain(|t| !definitions.contains(t));
         Ok(tokens)
     }
 
     /// Extract CSS custom property definitions from the given CSS.
     pub fn extract_definitions(&mut self, css_content: &str) -> Result<HashSet<String>> {
-        let (_tokens, definitions, _comments) = scan_css(css_content, LegalComments::Inline, false);
+        let (_tokens, definitions, _comments) =
+            scan_css(css_content, LegalComments::Inline, false)?;
         Ok(definitions)
     }
 
@@ -50,7 +51,7 @@ impl CssParser {
         css_content: &str,
     ) -> Result<(HashSet<String>, HashSet<String>)> {
         let (mut tokens, definitions, _comments) =
-            scan_css(css_content, LegalComments::Inline, false);
+            scan_css(css_content, LegalComments::Inline, false)?;
         tokens.retain(|t| !definitions.contains(t));
         Ok((tokens, definitions))
     }
@@ -61,7 +62,7 @@ impl CssParser {
         css_content: &'a str,
         legal_comments: LegalComments,
     ) -> Result<(HashSet<String>, HashSet<String>, Cow<'a, str>)> {
-        let (mut tokens, definitions, comments) = scan_css(css_content, legal_comments, true);
+        let (mut tokens, definitions, comments) = scan_css(css_content, legal_comments, true)?;
         tokens.retain(|t| !definitions.contains(t));
         let mut comment_ranges = removable_ranges(&comments);
         let stripped = comment_policy::strip_ranges(css_content, comment_ranges.as_mut_slice());
@@ -74,7 +75,7 @@ impl CssParser {
         css_content: &str,
         legal_comments: LegalComments,
     ) -> Result<(HashSet<String>, HashSet<String>, Vec<CssComment>)> {
-        let (mut tokens, definitions, mut comments) = scan_css(css_content, legal_comments, true);
+        let (mut tokens, definitions, mut comments) = scan_css(css_content, legal_comments, true)?;
         tokens.retain(|t| !definitions.contains(t));
         comments.sort_unstable_by_key(|comment| comment.start_byte);
         Ok((tokens, definitions, comments))
@@ -85,13 +86,16 @@ fn scan_css(
     source: &str,
     legal_comments: LegalComments,
     collect_comments: bool,
-) -> (HashSet<String>, HashSet<String>, Vec<CssComment>) {
+) -> Result<(HashSet<String>, HashSet<String>, Vec<CssComment>)> {
     let bytes = source.as_bytes();
     let mut tokens = HashSet::new();
     let mut definitions = HashSet::new();
     let mut comments = Vec::new();
     let mut index = 0usize;
     let mut quote: u8 = 0;
+    let mut brace_depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
 
     while index < bytes.len() {
         if quote != 0 {
@@ -112,9 +116,12 @@ fn scan_css(
                 index += 1;
             }
             b'/' if index + 1 < bytes.len() && bytes[index + 1] == b'*' => {
-                let end = source[index + 2..]
-                    .find("*/")
-                    .map_or(bytes.len(), |offset| index + 2 + offset + 2);
+                let Some(offset) = source[index + 2..].find("*/") else {
+                    return Err(ParserError::Css(format!(
+                        "Unterminated CSS block comment near byte {index}. Close the comment with `*/` before building."
+                    )));
+                };
+                let end = index + 2 + offset + 2;
                 if collect_comments {
                     let comment = &source[index..end];
                     comments.push(CssComment {
@@ -154,23 +161,85 @@ fn scan_css(
                 }
             }
             b'v' if source[index..].starts_with("var(") => {
-                if let Some(end) = scan_var_call(source, index + 4, &mut tokens) {
-                    index = end;
-                } else {
-                    index += 1;
+                index = scan_var_call(source, index, &mut tokens)?;
+            }
+            b'{' => {
+                brace_depth += 1;
+                index += 1;
+            }
+            b'}' => {
+                if brace_depth == 0 {
+                    return Err(ParserError::Css(format!(
+                        "Unexpected CSS closing brace near byte {index}. Remove the extra `}}` or add a matching opening `{{`."
+                    )));
                 }
+                brace_depth -= 1;
+                index += 1;
+            }
+            b'(' => {
+                paren_depth += 1;
+                index += 1;
+            }
+            b')' => {
+                if paren_depth == 0 {
+                    return Err(ParserError::Css(format!(
+                        "Unexpected CSS closing parenthesis near byte {index}. Remove the extra `)` or add a matching opening `(`."
+                    )));
+                }
+                paren_depth -= 1;
+                index += 1;
+            }
+            b'[' => {
+                bracket_depth += 1;
+                index += 1;
+            }
+            b']' => {
+                if bracket_depth == 0 {
+                    return Err(ParserError::Css(format!(
+                        "Unexpected CSS closing bracket near byte {index}. Remove the extra `]` or add a matching opening `[`."
+                    )));
+                }
+                bracket_depth -= 1;
+                index += 1;
             }
             _ => index += 1,
         }
     }
 
-    (tokens, definitions, comments)
+    if quote != 0 {
+        return Err(ParserError::Css(format!(
+            "Unterminated CSS string literal. Close the `{}` quote before building.",
+            char::from(quote)
+        )));
+    }
+    if brace_depth != 0 {
+        return Err(ParserError::Css(
+            "Unterminated CSS rule block. Add the missing `}` before building.".to_string(),
+        ));
+    }
+    if paren_depth != 0 {
+        return Err(ParserError::Css(
+            "Unterminated CSS parenthesized expression. Add the missing `)` before building."
+                .to_string(),
+        ));
+    }
+    if bracket_depth != 0 {
+        return Err(ParserError::Css(
+            "Unterminated CSS bracket expression. Add the missing `]` before building.".to_string(),
+        ));
+    }
+
+    Ok((tokens, definitions, comments))
 }
 
-fn scan_var_call(source: &str, mut index: usize, tokens: &mut HashSet<String>) -> Option<usize> {
+fn scan_var_call(source: &str, start: usize, tokens: &mut HashSet<String>) -> Result<usize> {
     let bytes = source.as_bytes();
+    let mut index = start + 4;
     let mut depth = 1usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
     let mut quote: u8 = 0;
+    let mut pending_tokens: Vec<&str> = Vec::new();
 
     while index < bytes.len() {
         if quote != 0 {
@@ -191,9 +260,12 @@ fn scan_var_call(source: &str, mut index: usize, tokens: &mut HashSet<String>) -
                 index += 1;
             }
             b'/' if index + 1 < bytes.len() && bytes[index + 1] == b'*' => {
-                index = source[index + 2..]
-                    .find("*/")
-                    .map_or(bytes.len(), |offset| index + 2 + offset + 2);
+                let Some(offset) = source[index + 2..].find("*/") else {
+                    return Err(ParserError::Css(format!(
+                        "Unterminated CSS block comment inside var() near byte {index}. Close the comment with `*/` before building."
+                    )));
+                };
+                index += 2 + offset + 2;
             }
             b'/' if comment_policy::is_css_line_comment_start(source, index) => {
                 index = comment_policy::find_css_line_comment_end(source, index + 2);
@@ -206,12 +278,51 @@ fn scan_var_call(source: &str, mut index: usize, tokens: &mut HashSet<String>) -
                 depth = depth.saturating_sub(1);
                 index += 1;
                 if depth == 0 {
-                    return Some(index);
+                    if brace_depth != 0 {
+                        return Err(ParserError::Css(format!(
+                            "Unterminated CSS brace expression inside var() near byte {start}. Add the missing `}}` before building."
+                        )));
+                    }
+                    if bracket_depth != 0 {
+                        return Err(ParserError::Css(format!(
+                            "Unterminated CSS bracket expression inside var() near byte {start}. Add the missing `]` before building."
+                        )));
+                    }
+                    for token in pending_tokens {
+                        tokens.insert(token.to_string());
+                    }
+                    return Ok(index);
                 }
+            }
+            b'{' => {
+                brace_depth += 1;
+                index += 1;
+            }
+            b'}' => {
+                if brace_depth == 0 {
+                    return Err(ParserError::Css(format!(
+                        "Unterminated CSS var() call near byte {start}. Add the missing `)` before the closing `}}`."
+                    )));
+                }
+                brace_depth -= 1;
+                index += 1;
+            }
+            b'[' => {
+                bracket_depth += 1;
+                index += 1;
+            }
+            b']' => {
+                if bracket_depth == 0 {
+                    return Err(ParserError::Css(format!(
+                        "Unexpected CSS closing bracket inside var() near byte {index}. Remove the extra `]` or add a matching opening `[`."
+                    )));
+                }
+                bracket_depth -= 1;
+                index += 1;
             }
             b'-' if bytes.get(index + 1) == Some(&b'-') => {
                 if let Some((name, end)) = parse_custom_property_name(source, index) {
-                    tokens.insert(name.to_string());
+                    pending_tokens.push(name);
                     index = end;
                 } else {
                     index += 1;
@@ -221,7 +332,16 @@ fn scan_var_call(source: &str, mut index: usize, tokens: &mut HashSet<String>) -
         }
     }
 
-    None
+    if quote != 0 {
+        return Err(ParserError::Css(format!(
+            "Unterminated CSS string literal inside var() near byte {start}. Close the `{}` quote before building.",
+            char::from(quote)
+        )));
+    }
+
+    Err(ParserError::Css(format!(
+        "Unterminated CSS var() call near byte {start}. Add the missing `)` before building."
+    )))
 }
 
 fn parse_custom_property_name(source: &str, start: usize) -> Option<(&str, usize)> {
@@ -412,6 +532,62 @@ mod tests {
         let mut parser = CssParser::new();
         let tokens = parser.extract_tokens(css).expect("extract_tokens failed");
         assert_eq!(tokens, HashSet::from(["shared".to_string()]));
+    }
+
+    #[test]
+    fn test_unterminated_var_call_returns_error() {
+        let css = ".bad { color: var(--dangling; } .ok { color: var(--valid); }";
+        let mut parser = CssParser::new();
+        let err = parser
+            .extract_tokens(css)
+            .expect_err("unterminated var() should fail");
+        assert!(matches!(err, ParserError::Css(message) if
+            message.contains("Unterminated CSS var() call")
+        ));
+    }
+
+    #[test]
+    fn test_unmatched_var_fallback_delimiter_returns_error() {
+        let css = ".bad { color: var(--accent, [red); }";
+        let mut parser = CssParser::new();
+        let err = parser
+            .extract_tokens(css)
+            .expect_err("unmatched var() fallback delimiter should fail");
+        assert!(matches!(err, ParserError::Css(message) if
+            message.contains("Unterminated CSS bracket expression inside var()")
+        ));
+    }
+
+    #[test]
+    fn test_balanced_var_fallback_delimiters_extract_tokens() {
+        let css = ".ok { color: var(--accent, color(display-p3 1 0 0 / 1)); }";
+        let mut parser = CssParser::new();
+        let tokens = parser.extract_tokens(css).expect("extract_tokens failed");
+        assert_eq!(tokens, HashSet::from(["accent".to_string()]));
+    }
+
+    #[test]
+    fn test_unterminated_comment_returns_error() {
+        let css = ".ok { color: var(--valid); } /* .bad { color: var(--ignored); }";
+        let mut parser = CssParser::new();
+        let err = parser
+            .extract_tokens(css)
+            .expect_err("unterminated comment should fail");
+        assert!(matches!(err, ParserError::Css(message) if
+            message.contains("Unterminated CSS block comment")
+        ));
+    }
+
+    #[test]
+    fn test_unterminated_string_returns_error() {
+        let css = r#".bad { content: "dangling; }"#;
+        let mut parser = CssParser::new();
+        let err = parser
+            .extract_tokens(css)
+            .expect_err("unterminated string should fail");
+        assert!(matches!(err, ParserError::Css(message) if
+            message.contains("Unterminated CSS string literal")
+        ));
     }
 
     #[test]

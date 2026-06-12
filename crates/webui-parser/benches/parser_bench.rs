@@ -304,12 +304,15 @@ fn build_large_style_template(rules: usize) -> String {
     html
 }
 
-fn build_recoverable_unclosed_template(depth: usize) -> String {
-    let mut html = String::with_capacity(depth * 5 + 16);
+fn build_nested_article_template(depth: usize) -> String {
+    let mut html = String::with_capacity(depth * 11 + 16);
     for _ in 0..depth {
         html.push_str("<div>");
     }
-    html.push_str("unclosed");
+    html.push_str("nested");
+    for _ in 0..depth {
+        html.push_str("</div>");
+    }
     html
 }
 
@@ -543,10 +546,7 @@ fn parser_adversarial_bench(c: &mut Criterion) {
         ("many_siblings_1000", build_many_siblings_template(1000)),
         ("large_text_64k", build_large_text_template(64 * 1024)),
         ("large_style_1000", build_large_style_template(1000)),
-        (
-            "recoverable_unclosed_128",
-            build_recoverable_unclosed_template(128),
-        ),
+        ("nested_closed_128", build_nested_article_template(128)),
     ];
 
     for (name, input) in scenarios {
