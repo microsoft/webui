@@ -1,6 +1,13 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
+ * Extract the CSS token name list from a protocol JSON string.
+ *
+ * Returns a JavaScript array of token name strings, preserving the original
+ * order from the build step.
+ */
+export function protocol_tokens(protocol_json: string): any;
+/**
  * Render a pre-built WebUI protocol with state data.
  *
  * # Arguments
@@ -14,12 +21,6 @@
  * The rendered HTML string, or throws a JS error on failure.
  */
 export function render(protocol_json: string, state_json: string, entry: string, request_path: string, plugin?: string | null): string;
-/**
- * Build the protocol JSON from virtual files without rendering.
- *
- * Returns the serialized `WebUIProtocol` as a JSON string.
- */
-export function build_protocol(files: any, entry: string): string;
 export function render_component_templates(protocol_json: string, component_tags_json: string, inventory_hex: string): string;
 /**
  * Produce a complete JSON partial response for client-side navigation.
@@ -32,12 +33,11 @@ export function render_component_templates(protocol_json: string, component_tags
  */
 export function render_partial(protocol_json: string, state_json: string, entry_id: string, request_path: string, inventory_hex: string): string;
 /**
- * Extract the CSS token name list from a protocol JSON string.
+ * Build the protocol JSON from virtual files without rendering.
  *
- * Returns a JavaScript array of token name strings, preserving the original
- * order from the build step.
+ * Returns the serialized `WebUIProtocol` as a JSON string.
  */
-export function protocol_tokens(protocol_json: string): any;
+export function build_protocol(files: any, entry: string): string;
 /**
  * Build and render a WebUI application from virtual files.
  *
