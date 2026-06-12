@@ -338,11 +338,11 @@
   flex-shrink: 0;
   font-size: 12px;
   background: rgba(208, 72, 72, 0.06);
-  border-bottom: 1px solid rgba(208, 72, 72, 0.28);
+  border-top: 1px solid rgba(208, 72, 72, 0.28);
 }
 .error-panel[data-severity="warning"] {
   background: rgba(234, 179, 8, 0.08);
-  border-bottom-color: rgba(234, 179, 8, 0.3);
+  border-top-color: rgba(234, 179, 8, 0.3);
 }
 
 .error-panel-header {
@@ -428,6 +428,9 @@
   display: inline-flex;
   color: var(--docs-color-text-3);
   transition: transform 0.2s ease;
+  /* Bottom drawer: the down-caret SVG points up while collapsed (toward where
+     the body opens), then rotates back to point down when expanded. */
+  transform: rotate(180deg);
 }
 .error-chevron svg {
   width: 16px;
@@ -439,7 +442,7 @@
   stroke-linejoin: round;
 }
 .error-panel[data-expanded] .error-chevron {
-  transform: rotate(180deg);
+  transform: rotate(0deg);
 }
 
 /* Collapsible body: animate the grid row from 0fr to 1fr for a smooth,

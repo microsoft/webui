@@ -88,6 +88,7 @@
         <button class="share-btn" type="button" @click="{sharePlayground()}">Share</button>
       </div>
     </div>
+    <iframe sandbox="allow-scripts" class="preview-frame" srcdoc="{{previewSrcdoc}}"></iframe>
     <if condition="hasError">
       <div
         class="error-panel"
@@ -134,7 +135,6 @@
         </div>
       </div>
     </if>
-    <iframe sandbox="allow-scripts" class="preview-frame" srcdoc="{{previewSrcdoc}}"></iframe>
   </div>
   <if condition="toastMessage">
     <div
