@@ -7,7 +7,7 @@
 //! then assembles a consolidated `publish/` folder with:
 //! - `publish/native/`  — CLI binaries per platform
 //! - `publish/npm/`     — `.tgz` tarballs from `pnpm pack`
-//! - `publish/nuget/`   — `.nupkg` files from `dotnet pack`
+//! - `publish/nuget/`   — `.nupkg` and `.snupkg` files from `dotnet pack`
 //! - `publish/crates/`  — `.crate` files from `cargo package`
 //! - `publish/wasm/`    — WASM module + JS glue
 
@@ -622,7 +622,7 @@ fn is_private_package(pkg_dir: &Path) -> bool {
 
 // ── Phase 3: NuGet packaging ────────────────────────────────────────────
 
-/// Run `dotnet pack` and move `.nupkg` files to `publish/nuget/`.
+/// Run `dotnet pack` and move `.nupkg`/`.snupkg` files to `publish/nuget/`.
 fn pack_nuget_packages(root: &Path) -> Result<(), String> {
     let dotnet_dir = root.join("dotnet");
     let nuget_out = root.join("publish").join("nuget");
@@ -635,27 +635,37 @@ fn pack_nuget_packages(root: &Path) -> Result<(), String> {
         return Ok(());
     }
 
+    let solution = dotnet_dir.join("Microsoft.WebUI.sln");
+    if !solution.exists() {
+        return Err("dotnet/Microsoft.WebUI.sln not found".to_string());
+    }
+
+    let solution_arg = solution.to_string_lossy();
+    let nuget_out_arg = nuget_out.to_string_lossy();
+
     // Pack all packable projects (Directory.Build.props controls versioning)
     run_command_quiet(
         "dotnet",
         &[
             "pack",
-            &dotnet_dir.to_string_lossy(),
+            solution_arg.as_ref(),
             "--configuration",
             "Release",
             "--output",
-            &nuget_out.to_string_lossy(),
+            nuget_out_arg.as_ref(),
         ],
         None,
     )
     .map_err(|e| format!("dotnet pack failed: {e}"))?;
 
     // Count produced packages
-    let count = count_files_with_extension(&nuget_out, "nupkg");
+    let package_count = count_files_with_extension(&nuget_out, "nupkg");
+    let symbol_count = count_files_with_extension(&nuget_out, "snupkg");
     eprintln!(
-        "  {} Packed {} NuGet package(s)",
+        "  {} Packed {} NuGet package(s) and {} symbol package(s)",
         console::style("✔").green(),
-        console::style(count).bold(),
+        console::style(package_count).bold(),
+        console::style(symbol_count).bold(),
     );
     Ok(())
 }
@@ -1039,8 +1049,10 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         fs::write(dir.path().join("a.crate"), "").unwrap();
         fs::write(dir.path().join("b.crate"), "").unwrap();
+        fs::write(dir.path().join("a.snupkg"), "").unwrap();
         fs::write(dir.path().join("c.txt"), "").unwrap();
         assert_eq!(count_files_with_extension(dir.path(), "crate"), 2);
+        assert_eq!(count_files_with_extension(dir.path(), "snupkg"), 1);
         assert_eq!(count_files_with_extension(dir.path(), "txt"), 1);
         assert_eq!(count_files_with_extension(dir.path(), "nupkg"), 0);
     }

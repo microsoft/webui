@@ -24,6 +24,14 @@ Or install the Rust CLI:
 cargo install microsoft-webui-cli
 ```
 
+For .NET server-side bindings:
+
+```bash
+dotnet add package Microsoft.WebUI
+```
+
+The NuGet package restores platform-specific `Microsoft.WebUI.Runtime.*` native assets transitively. Release builds stage `.nupkg` and `.snupkg` artifacts with repository metadata and Source Link; nuget.org publishing is manual until ESRP automation supports this project.
+
 ## Learn
 
 | Resource | Link |
@@ -60,6 +68,7 @@ For contribution policy, issue guidelines, and the current pull request policy, 
 ```text
 crates/      Rust crates for the CLI, parser, handler, protocol, FFI, and integrations
 packages/    npm packages for the CLI, WebUI Framework, router, and platform binaries
+dotnet/      .NET bindings, runtime packages, and global tool packaging
 docs/        VitePress documentation site
 examples/    Example applications and integration samples
 ```

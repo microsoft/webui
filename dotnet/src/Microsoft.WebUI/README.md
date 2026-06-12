@@ -67,7 +67,7 @@ The response is a JSON string — pipe it directly to the HTTP response. No dese
 dotnet add package Microsoft.WebUI
 ```
 
-The correct native runtime package for your platform is automatically resolved by NuGet.
+The managed package depends on all supported `Microsoft.WebUI.Runtime.<rid>` packages. NuGet restores those native runtime packages transitively, and .NET selects the matching `runtimes/<rid>/native` asset for your platform.
 
 ### Supported Platforms
 
@@ -79,6 +79,10 @@ The correct native runtime package for your platform is automatically resolved b
 | Linux ARM64 | `Microsoft.WebUI.Runtime.linux-arm64` |
 | macOS x64 | `Microsoft.WebUI.Runtime.osx-x64` |
 | macOS ARM64 | `Microsoft.WebUI.Runtime.osx-arm64` |
+
+### Package Metadata
+
+Packed NuGet artifacts include this README, repository metadata, Source Link, and `.snupkg` symbol packages. Release workflows stage `.nupkg` and `.snupkg` files; nuget.org publishing remains manual/externally tracked until ESRP supports automated NuGet publishing for this project.
 
 ### Manual Native Library Path
 

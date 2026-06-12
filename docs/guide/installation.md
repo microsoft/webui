@@ -78,6 +78,16 @@ webui build ./my-app --out ./dist
 
 See the [CLI Reference](/guide/cli/) for full usage details.
 
+## .NET
+
+The managed .NET binding is packaged as `Microsoft.WebUI`:
+
+```bash
+dotnet add package Microsoft.WebUI
+```
+
+It targets .NET 8 and .NET 9. The package restores platform-specific `Microsoft.WebUI.Runtime.*` packages transitively, and .NET selects the matching native asset. Release builds stage `.nupkg` and `.snupkg` artifacts with Source Link and repository metadata; nuget.org publishing is manual until ESRP automation supports this project.
+
 ---
 
 The packages below are client-side runtime libraries. They are installed from npm regardless of whether your build toolchain is npm or Rust, since they ship as JavaScript that runs in the browser.

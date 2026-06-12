@@ -1456,6 +1456,10 @@ webui/
 │   ├── webui-framework/      # WebUI Framework client runtime (@microsoft/webui-framework)
 │   ├── webui-router/         # SPA router for WebUI Framework (@microsoft/webui-router)
 │   └── webui-test-support/   # Private shared JS test metadata helpers (@microsoft/webui-test-support)
+├── dotnet/
+│   ├── src/Microsoft.WebUI/  # Managed .NET bindings for webui-ffi
+│   ├── runtime/              # RID-specific native runtime NuGet packages
+│   └── tool/Microsoft.WebUI.Tool/ # .NET global tool package
 ├── examples/                 # Example applications (todo-fast, todo-webui, routes, …)
 ├── docs/                     # Documentation (VitePress)
 ├── tests/                    # Integration tests
@@ -1488,6 +1492,17 @@ The `@microsoft/webui` npm package follows the esbuild single-package model:
 - `bin: { "webui": "bin/webui" }` — CLI binary via platform-specific `optionalDependencies`
 - `main: "lib/main.js"` — Programmatic API that loads the `.node` native addon directly
 - WASM fallback for render when native addon is unavailable (one-time warning logged)
+
+### .NET / NuGet Distribution
+
+The `Microsoft.WebUI` package is the managed .NET binding for `webui-ffi`. It targets `net8.0` and `net9.0`, packs `dotnet/src/Microsoft.WebUI/README.md`, and publishes XML documentation generated from public API comments.
+
+Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each supported RID. The managed package references every runtime package so NuGet restores them transitively; .NET then resolves `webui_ffi` from the matching `runtimes/<rid>/native` asset. `WEBUI_LIB_PATH` remains the override for custom local native builds.
+
+`dotnet/Directory.Build.props` applies repository metadata, Source Link, and `.snupkg` symbol package generation to packable .NET projects. `cargo xtask publish` runs `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
+
+NuGet publishing is not automated by ESRP today. Release workflows attach staged NuGet artifacts to GitHub Releases for manual/externally tracked nuget.org publishing with the approved owner and signing process.
+
 ### Documentation Guidelines
 - Using `vitepress` in `docs/`
 - API documentation for all public interfaces

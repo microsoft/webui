@@ -8,6 +8,8 @@ CLI tool for building and inspecting WebUI templates.
 dotnet tool install -g Microsoft.WebUI.Tool
 ```
 
+NuGet artifacts for this tool include repository metadata, Source Link, and `.snupkg` symbols. Release workflows stage the artifacts for manual nuget.org publishing until ESRP supports automated NuGet publishing for this project.
+
 ## Usage
 
 ```bash

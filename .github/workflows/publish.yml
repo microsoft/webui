@@ -42,7 +42,7 @@ jobs:
   #
   # Each runner builds native + cross targets, then stages only the native files
   # for its platforms into package/runtime directories. The release job later
-  # merges those staged files and packs npm/NuGet/crates/WASM once on Linux.
+  # merges those staged files and packs npm/NuGet (.nupkg + .snupkg)/crates/WASM once on Linux.
   #
   #   ubuntu-latest  (x64) → linux-x64    + linux-arm64
   #   macos-latest-large   (arm) → darwin-arm64 + darwin-x64
@@ -234,7 +234,10 @@ jobs:
             git push origin "v${VERSION}"
           fi
 
-      # Create GitHub Release with all artifacts
+      # Create GitHub Release with all artifacts. NuGet artifacts are staged
+      # here for manual nuget.org publishing until ESRP supports automated
+      # NuGet publishing for this project. Manual publish still requires the
+      # approved NuGet owner account and signing/certificate process.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

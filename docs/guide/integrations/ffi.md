@@ -1,6 +1,6 @@
 # C API
 
-The WebUI FFI (Foreign Function Interface) handler exposes the rendering pipeline as a C-compatible shared library. Any language with C interop, Go, C#, Python, Ruby, PHP, Lua, and more, can load the library and render WebUI templates without a JavaScript runtime.
+The WebUI FFI (Foreign Function Interface) handler exposes the rendering pipeline as a C-compatible shared library. Any language with C interop, Go, Python, Ruby, PHP, Lua, and more, can load the library and render WebUI templates without a JavaScript runtime. .NET applications should prefer the managed `Microsoft.WebUI` NuGet package, which restores native runtime packages transitively.
 
 ## Building the Shared Library
 
@@ -314,6 +314,8 @@ func main() {
 > **Memory note:** `C.GoString(ptr)` copies the string into Go-managed memory, so it's safe to call `webui_free` immediately after.
 
 ## C\#
+
+For most .NET applications, prefer the managed `Microsoft.WebUI` NuGet package. The P/Invoke pattern below documents the underlying ABI for custom bindings or manual native loading.
 
 Use `DllImport` (P/Invoke) to call the C API. Strings going *in* can be marshalled automatically with `LPUTF8Str`; strings coming *out* require manual marshalling via `IntPtr` to control when the native memory is freed.
 

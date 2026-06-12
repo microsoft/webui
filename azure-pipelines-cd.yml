@@ -118,7 +118,11 @@ extends:
               downloadPath: '$(System.ArtifactsDirectory)'
 
           # Separate the downloaded files into the directories expected by the
-          # release pipeline template. .tgz → npm, .crate → crates. NuGet skipped.
+          # release pipeline template. .tgz → npm, .crate → crates.
+          # NuGet (.nupkg/.snupkg) is intentionally skipped here: artifacts
+          # stay on the GitHub Release for manual nuget.org publishing until
+          # ESRP supports automated NuGet publishing for this project. Manual
+          # publish still requires the approved owner account and signing/cert.
           - script: |
               mkdir -p publish_artifacts_npm publish_artifacts_crates
               find "$(System.ArtifactsDirectory)" -name "*.tgz"   -exec cp {} publish_artifacts_npm/   \;

@@ -9,7 +9,7 @@
     <IsPackable>true</IsPackable>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>webui</ToolCommandName>
-    <PackageReadme>README.md</PackageReadme>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <Description>WebUI CLI tool for building and inspecting WebUI templates.</Description>
   </PropertyGroup>
 </Project>

@@ -7,8 +7,17 @@
     <PackageProjectUrl>https://github.com/microsoft/webui</PackageProjectUrl>
     <RepositoryUrl>https://github.com/microsoft/webui</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true' or '$(TF_BUILD)' == 'true'">true</ContinuousIntegrationBuild>
     <Copyright>Copyright (c) Microsoft Corporation</Copyright>
     <Description>WebUI — high-performance server-side rendering without JavaScript runtimes.</Description>
     <PackageTags>webui</PackageTags>
+    <!-- TODO: set PackageIcon after an approved 128x128 transparent PNG is available. -->
   </PropertyGroup>
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Microsoft.WebUI.Tests'">
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+  </ItemGroup>
 </Project>

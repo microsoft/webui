@@ -1,4 +1,3 @@
-
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
@@ -8,6 +7,20 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Microsoft.WebUI.Tests", "test\Microsoft.WebUI.Tests\Microsoft.WebUI.Tests.csproj", "{A1B2C3D4-0002-0002-0002-000000000002}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Microsoft.WebUI.Tool", "tool\Microsoft.WebUI.Tool\Microsoft.WebUI.Tool.csproj", "{A1B2C3D4-0003-0003-0003-000000000003}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "runtime", "runtime", "{B9B45A75-0C0F-0D50-E9F8-ABF69D9594D8}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Microsoft.WebUI.Runtime.linux-arm64", "runtime\Microsoft.WebUI.Runtime.linux-arm64\Microsoft.WebUI.Runtime.linux-arm64.csproj", "{77331337-2269-48D8-98AD-687C7EB96C5A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Microsoft.WebUI.Runtime.linux-x64", "runtime\Microsoft.WebUI.Runtime.linux-x64\Microsoft.WebUI.Runtime.linux-x64.csproj", "{7C805D6B-162C-4FB4-A282-EF9B1DBD7D08}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Microsoft.WebUI.Runtime.osx-arm64", "runtime\Microsoft.WebUI.Runtime.osx-arm64\Microsoft.WebUI.Runtime.osx-arm64.csproj", "{176CF5E3-7ADC-43D6-AE32-8840E19204B3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Microsoft.WebUI.Runtime.osx-x64", "runtime\Microsoft.WebUI.Runtime.osx-x64\Microsoft.WebUI.Runtime.osx-x64.csproj", "{75413606-ECAE-4159-82F3-CDA3E6DD431A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Microsoft.WebUI.Runtime.win-arm64", "runtime\Microsoft.WebUI.Runtime.win-arm64\Microsoft.WebUI.Runtime.win-arm64.csproj", "{B68F4C51-5D33-4FAE-B989-2CBB33FD3B07}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Microsoft.WebUI.Runtime.win-x64", "runtime\Microsoft.WebUI.Runtime.win-x64\Microsoft.WebUI.Runtime.win-x64.csproj", "{C63D0997-0E3B-4C47-A0AE-EFAD2AE596CF}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -27,5 +40,37 @@ Global
 		{A1B2C3D4-0003-0003-0003-000000000003}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A1B2C3D4-0003-0003-0003-000000000003}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A1B2C3D4-0003-0003-0003-000000000003}.Release|Any CPU.Build.0 = Release|Any CPU
+		{77331337-2269-48D8-98AD-687C7EB96C5A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{77331337-2269-48D8-98AD-687C7EB96C5A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{77331337-2269-48D8-98AD-687C7EB96C5A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{77331337-2269-48D8-98AD-687C7EB96C5A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7C805D6B-162C-4FB4-A282-EF9B1DBD7D08}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7C805D6B-162C-4FB4-A282-EF9B1DBD7D08}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7C805D6B-162C-4FB4-A282-EF9B1DBD7D08}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7C805D6B-162C-4FB4-A282-EF9B1DBD7D08}.Release|Any CPU.Build.0 = Release|Any CPU
+		{176CF5E3-7ADC-43D6-AE32-8840E19204B3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{176CF5E3-7ADC-43D6-AE32-8840E19204B3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{176CF5E3-7ADC-43D6-AE32-8840E19204B3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{176CF5E3-7ADC-43D6-AE32-8840E19204B3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{75413606-ECAE-4159-82F3-CDA3E6DD431A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{75413606-ECAE-4159-82F3-CDA3E6DD431A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{75413606-ECAE-4159-82F3-CDA3E6DD431A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{75413606-ECAE-4159-82F3-CDA3E6DD431A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B68F4C51-5D33-4FAE-B989-2CBB33FD3B07}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B68F4C51-5D33-4FAE-B989-2CBB33FD3B07}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B68F4C51-5D33-4FAE-B989-2CBB33FD3B07}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B68F4C51-5D33-4FAE-B989-2CBB33FD3B07}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C63D0997-0E3B-4C47-A0AE-EFAD2AE596CF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C63D0997-0E3B-4C47-A0AE-EFAD2AE596CF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C63D0997-0E3B-4C47-A0AE-EFAD2AE596CF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C63D0997-0E3B-4C47-A0AE-EFAD2AE596CF}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{77331337-2269-48D8-98AD-687C7EB96C5A} = {B9B45A75-0C0F-0D50-E9F8-ABF69D9594D8}
+		{7C805D6B-162C-4FB4-A282-EF9B1DBD7D08} = {B9B45A75-0C0F-0D50-E9F8-ABF69D9594D8}
+		{176CF5E3-7ADC-43D6-AE32-8840E19204B3} = {B9B45A75-0C0F-0D50-E9F8-ABF69D9594D8}
+		{75413606-ECAE-4159-82F3-CDA3E6DD431A} = {B9B45A75-0C0F-0D50-E9F8-ABF69D9594D8}
+		{B68F4C51-5D33-4FAE-B989-2CBB33FD3B07} = {B9B45A75-0C0F-0D50-E9F8-ABF69D9594D8}
+		{C63D0997-0E3B-4C47-A0AE-EFAD2AE596CF} = {B9B45A75-0C0F-0D50-E9F8-ABF69D9594D8}
 	EndGlobalSection
 EndGlobal

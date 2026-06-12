@@ -1,0 +1,5 @@
+<Project>
+  <ItemGroup Condition="'$(PackageReadmeFile)' != '' and Exists('$(MSBuildProjectDirectory)\$(PackageReadmeFile)')">
+    <None Include="$(MSBuildProjectDirectory)\$(PackageReadmeFile)" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>
