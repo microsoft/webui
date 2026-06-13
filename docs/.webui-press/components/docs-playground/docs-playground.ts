@@ -273,11 +273,22 @@ export class DocsPlayground extends WebUIElement {
   @observable hasStats = false;
   @observable buildMs = "";
   @observable renderMs = "";
-  @observable errorMessage = "";
   @observable previewSrcdoc = "";
   @observable toastMessage = "";
   @observable previewBadge = "Loading WASM";
   @observable previewBadgeState = "loading";
+
+  // Error panel state. `hasError` toggles the collapsible panel; the rest are
+  // the parsed pieces of a build/compile diagnostic (see `setError`).
+  @observable hasError = false;
+  @observable errorExpanded = true;
+  @observable errorSeverity = "error";
+  @observable errorTitle = "";
+  @observable errorCode = "";
+  @observable errorLocation = "";
+  @observable errorSnippet = "";
+  @observable errorHelp = "";
+  @observable errorRaw = "";
 
   private active: string = ENTRY_FILE;
   private entry: string = ENTRY_FILE;
@@ -302,7 +313,7 @@ export class DocsPlayground extends WebUIElement {
         stateFile: STATE_FILE,
       };
       this.setPreviewStatus("Failed", "failed");
-      this.errorMessage = `Unable to load shared playground: ${String(e)}`;
+      this.setError(`Unable to load shared playground: ${String(e)}`);
     }
     this.files = initial.files;
     this.entry = initial.entry;
@@ -724,8 +735,9 @@ export class DocsPlayground extends WebUIElement {
     try {
       await this.copyToClipboard(url.toString());
       this.showToast("URL copied to clipboard");
-    } catch (e) {
-      this.errorMessage = `Unable to copy share URL: ${String(e)}`;
+    } catch {
+      // A clipboard failure is transient UX noise, not a build error - keep it
+      // to a toast rather than the error panel.
       this.showToast("Unable to copy URL");
     }
   }
@@ -771,6 +783,74 @@ export class DocsPlayground extends WebUIElement {
     this.previewBadgeState = state;
   }
 
+  /** Reset the error panel to hidden/empty. */
+  private clearError(): void {
+    this.hasError = false;
+    this.errorSeverity = "error";
+    this.errorTitle = "";
+    this.errorCode = "";
+    this.errorLocation = "";
+    this.errorSnippet = "";
+    this.errorHelp = "";
+    this.errorRaw = "";
+  }
+
+  /**
+   * Parse a build/compile error string into the structured fields the error
+   * panel renders. WebUI surfaces authoring diagnostics in a stable shape:
+   *
+   *   error: <title> [<code>]
+   *     --> <file>:<line>:<col>
+   *       <offending snippet>
+   *     help: <fix>
+   *
+   * Unstructured failures (e.g. WASM unavailable) fall back to a raw message.
+   */
+  private setError(raw: string): void {
+    this.clearError();
+    const text = raw.trim();
+    const lines = text.split("\n");
+    const first = (lines[0] ?? "").trim();
+    const head = /^(error|warning)\b:?\s*(.*)$/i.exec(first);
+
+    if (head) {
+      this.errorSeverity =
+        head[1].toLowerCase() === "warning" ? "warning" : "error";
+      let title = head[2].trim();
+      const code = /\[([a-z0-9][a-z0-9-]*)\]\s*$/i.exec(title);
+      if (code) {
+        this.errorCode = code[1];
+        title = title.slice(0, code.index).trim();
+      }
+      this.errorTitle = title || "Build error";
+      for (let i = 1; i < lines.length; i++) {
+        const t = lines[i].trim();
+        if (!t) continue;
+        if (t.startsWith("-->")) {
+          this.errorLocation = t.replace(/^-->\s*/, "");
+        } else if (/^help:/i.test(t)) {
+          this.errorHelp = t.replace(/^help:\s*/i, "");
+        } else if (!this.errorSnippet) {
+          this.errorSnippet = t;
+        }
+      }
+    } else {
+      // Unstructured (e.g. infra) error: show the first line as the summary
+      // and any remaining detail in the expandable body.
+      this.errorTitle = first || "Error";
+      const rest = lines.slice(1).join("\n").trim();
+      this.errorRaw = rest;
+    }
+
+    this.errorExpanded = true;
+    this.hasError = true;
+  }
+
+  /** Toggle the expand/collapse state of the error panel. */
+  toggleError(): void {
+    this.errorExpanded = !this.errorExpanded;
+  }
+
   private scheduleRender(): void {
     if (this.renderTimer) clearTimeout(this.renderTimer);
     if (!this.wasm) {
@@ -785,7 +865,7 @@ export class DocsPlayground extends WebUIElement {
     if (!this.wasm) return;
     try {
       this.setPreviewStatus("Compiling", "compiling");
-      this.errorMessage = "";
+      this.clearError();
       const filesObj: Record<string, string> = {};
       for (const f of this.files) {
         if (f.name !== this.stateFile) filesObj[f.name] = f.content;
@@ -819,8 +899,8 @@ export class DocsPlayground extends WebUIElement {
         "</body></html>";
       this.setPreviewStatus("WASM Live", "live");
     } catch (e) {
-      this.setPreviewStatus("Failed", "failed");
-      this.errorMessage = String(e);
+      this.setPreviewStatus("Error", "error");
+      this.setError(String(e));
     }
   }
 
@@ -859,9 +939,10 @@ export class DocsPlayground extends WebUIElement {
       this.doRender();
     } catch (e) {
       this.setPreviewStatus("Failed", "failed");
-      this.errorMessage =
+      this.setError(
         'WASM not available. Run "cargo xtask build-wasm" to enable the playground.\n\n' +
-        String(e);
+          String(e),
+      );
     }
   }
 }
