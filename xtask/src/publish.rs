@@ -9,7 +9,7 @@
 //! - `publish/npm/`     — `.tgz` tarballs from `pnpm pack`
 //! - `publish/nuget/`   — `.nupkg` files from `dotnet pack`
 //! - `publish/crates/`  — `.crate` files from `cargo package`
-//! - `publish/wasm/`    — WASM module + JS glue
+//! - `publish/wasm/`    — WASM modules + JS glue
 
 use crate::util::{build_command, run_command_quiet};
 use crate::version;
@@ -766,35 +766,20 @@ fn pack_rust_crates(root: &Path) -> Result<(), String> {
 
 // ── Phase 5: WASM artifacts ─────────────────────────────────────────────
 
-/// Build WASM and copy artifacts to `publish/wasm/`.
+/// Build WASM variants and copy artifacts to `publish/wasm/`.
 fn stage_wasm_artifacts(root: &Path) -> Result<(), String> {
     let wasm_out = root.join("publish").join("wasm");
 
     // Build WASM using the existing build_wasm module
     crate::build_wasm::run()?;
 
-    // Copy the built WASM files to publish/wasm/
-    let wasm_source = root.join("docs").join("public").join("wasm");
-    for filename in &["webui_wasm_bg.wasm", "webui_wasm.js"] {
-        let src = wasm_source.join(filename);
-        if src.exists() {
-            let dest = wasm_out.join(filename);
-            fs::copy(&src, &dest)
-                .map_err(|e| format!("failed to copy {} to publish/wasm/: {e}", filename))?;
-            eprintln!(
-                "  {} [wasm] {}",
-                console::style("✔").green(),
-                console::style(filename).bold(),
-            );
-        } else {
-            eprintln!(
-                "  {} [wasm] {} not found at {}",
-                console::style("⚠").yellow(),
-                filename,
-                wasm_source.display(),
-            );
-        }
-    }
+    let wasm_source = root.join(crate::build_wasm::WASM_OUTPUT_DIR);
+    let copied = copy_directory_contents(&wasm_source, &wasm_out)?;
+    eprintln!(
+        "  {} [wasm] staged {} file(s)",
+        console::style("✔").green(),
+        console::style(copied).bold(),
+    );
 
     Ok(())
 }
@@ -919,6 +904,45 @@ fn copy_files_with_extension(src_dir: &Path, dest_dir: &Path, ext: &str) -> Resu
         }
     }
     Ok(())
+}
+
+/// Copy all files under `src_dir` into `dest_dir`, preserving subdirectories.
+fn copy_directory_contents(src_dir: &Path, dest_dir: &Path) -> Result<u32, String> {
+    if !src_dir.exists() {
+        return Err(format!("WASM output not found at {}", src_dir.display()));
+    }
+
+    let mut copied = 0;
+    let mut stack = Vec::with_capacity(4);
+    stack.push((src_dir.to_path_buf(), dest_dir.to_path_buf()));
+
+    while let Some((current_src, current_dest)) = stack.pop() {
+        fs::create_dir_all(&current_dest)
+            .map_err(|e| format!("failed to create {}: {e}", current_dest.display()))?;
+        let entries = fs::read_dir(&current_src)
+            .map_err(|e| format!("failed to read {}: {e}", current_src.display()))?;
+
+        for entry in entries {
+            let entry = entry
+                .map_err(|e| format!("failed to read {} entry: {e}", current_src.display()))?;
+            let path = entry.path();
+            let dest = current_dest.join(entry.file_name());
+            if path.is_dir() {
+                stack.push((path, dest));
+            } else if path.is_file() {
+                fs::copy(&path, &dest).map_err(|e| {
+                    format!(
+                        "failed to copy {} → {}: {e}",
+                        path.display(),
+                        dest.display()
+                    )
+                })?;
+                copied += 1;
+            }
+        }
+    }
+
+    Ok(copied)
 }
 
 #[cfg(test)]
@@ -1056,6 +1080,39 @@ mod tests {
 
         assert!(dest.path().join("pkg.crate").exists());
         assert!(!dest.path().join("other.txt").exists());
+    }
+
+    #[test]
+    fn test_copy_directory_contents_preserves_subdirectories() {
+        let src = tempfile::TempDir::new().unwrap();
+        let dest = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(src.path().join("handler")).unwrap();
+        fs::write(
+            src.path().join("handler").join("webui_wasm_handler.js"),
+            "js",
+        )
+        .unwrap();
+        fs::write(
+            src.path()
+                .join("handler")
+                .join("webui_wasm_handler_bg.wasm"),
+            "wasm",
+        )
+        .unwrap();
+
+        let copied = copy_directory_contents(src.path(), dest.path()).unwrap();
+
+        assert_eq!(copied, 2);
+        assert!(dest
+            .path()
+            .join("handler")
+            .join("webui_wasm_handler.js")
+            .exists());
+        assert!(dest
+            .path()
+            .join("handler")
+            .join("webui_wasm_handler_bg.wasm")
+            .exists());
     }
 
     #[test]

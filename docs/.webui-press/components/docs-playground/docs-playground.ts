@@ -23,8 +23,13 @@ import { json as jsonLang } from "@codemirror/lang-json";
 import { css as cssLang } from "@codemirror/lang-css";
 
 interface WasmModule {
-  build_protocol(files: Record<string, string>, entry: string): string;
-  render(protocol: string, state: string, entry: string, path: string): string;
+  build_protocol(files: Record<string, string>, entry: string): Uint8Array;
+  render(
+    protocol: Uint8Array,
+    state: string,
+    onChunk: (chunk: string) => void,
+    options?: { entry?: string; requestPath?: string; plugin?: string },
+  ): void;
 }
 
 interface FileEntry {
@@ -862,7 +867,9 @@ export class DocsPlayground extends WebUIElement {
   }
 
   private doRender(): void {
-    if (!this.wasm) return;
+    if (!this.wasm) {
+      return;
+    }
     try {
       this.setPreviewStatus("Compiling", "compiling");
       this.clearError();
@@ -875,7 +882,12 @@ export class DocsPlayground extends WebUIElement {
       const proto = this.wasm.build_protocol(filesObj, this.entry);
       const t1 = performance.now();
       const stateJson = this.fileByName(this.stateFile)?.content || "{}";
-      const html = this.wasm.render(proto, stateJson, this.entry, "/");
+      let html = "";
+      let chunks = 0;
+      this.wasm.render(proto, stateJson, (chunk) => {
+        chunks += 1;
+        html += chunk;
+      }, { entry: this.entry, requestPath: "/" });
       const t2 = performance.now();
 
       this.buildMs = (t1 - t0).toFixed(1);
@@ -933,14 +945,15 @@ export class DocsPlayground extends WebUIElement {
       this.setPreviewStatus("Loading WASM", "loading");
       const baseMeta = document.querySelector('meta[name="base"]');
       const base = baseMeta?.getAttribute("content") || "/";
-      const mod = await import(/* @vite-ignore */ base + "wasm/webui_wasm.js");
+      const wasmUrl = base + "wasm/all/webui_wasm_all.js";
+      const mod = await import(/* @vite-ignore */ wasmUrl);
       await mod.default();
       this.wasm = mod;
       this.doRender();
     } catch (e) {
       this.setPreviewStatus("Failed", "failed");
       this.setError(
-        'WASM not available. Run "cargo xtask build-wasm" to enable the playground.\n\n' +
+        'WASM not available at "wasm/all/webui_wasm_all.js". Run "cargo xtask build-wasm" to enable the playground.\n\n' +
           String(e),
       );
     }

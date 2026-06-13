@@ -35,6 +35,7 @@ prost = "0.14.3"
 napi = { version = "3.8.5", features = ["napi4"] }
 napi-derive = "3.5.4"
 wasm-bindgen = "=0.2.100"
+js-sys = "0.3.77"
 serde-wasm-bindgen = "0.6"
 actix-web = "4.11.0"
 rustls = "0.23.39"

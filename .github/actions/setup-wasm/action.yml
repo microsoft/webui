@@ -26,6 +26,8 @@ runs:
     - name: Verify WASM output
       shell: bash
       run: |
-        test -f docs/.webui-press/public/wasm/webui_wasm_bg.wasm
-        test -f docs/.webui-press/public/wasm/webui_wasm.js
-        ! grep -q "from 'env'" docs/.webui-press/public/wasm/webui_wasm.js
+        for variant in all handler parser; do
+          test -f "docs/.webui-press/public/wasm/${variant}/webui_wasm_${variant}_bg.wasm"
+          test -f "docs/.webui-press/public/wasm/${variant}/webui_wasm_${variant}.js"
+          ! grep -q "from 'env'" "docs/.webui-press/public/wasm/${variant}/webui_wasm_${variant}.js"
+        done

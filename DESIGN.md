@@ -1476,15 +1476,38 @@ webui-cli ──────► webui (library) ◄────── webui-node
                     ├── webui-protocol        └── serde_json
                     └── webui-discovery
 
-webui-ffi ──────► webui-handler ◄────── webui-wasm
-                  webui-parser              webui-parser
-                  webui-protocol            webui-protocol
+webui-ffi ──────► webui-handler ◄────── webui-wasm (handler feature)
+                  webui-parser       ┌──── webui-wasm (parser feature)
+                  webui-protocol     └──── webui-wasm (all/default feature)
 ```
 
 The `webui` library crate is the primary API surface for programmatic use.
 It re-exports `WebUIHandler`, `ResponseWriter`, and `WebUIProtocol` from their
 respective crates and provides `build()`, `build_to_disk()`, and `inspect()`
 functions with `BuildStats` (duration, fragment/component/CSS counts, protocol size).
+
+### WASM Distribution
+
+The `microsoft-webui-wasm` crate exposes feature-gated browser bindings so
+consumers only ship the parser and/or handler code they need:
+
+- `handler` builds `webui_wasm_handler.js` and exports `render`,
+  `render_partial`, `protocol_tokens`, and `render_component_templates`. It
+  accepts protobuf protocol bytes and depends on `webui-handler` and
+  `webui-protocol`, not `webui-parser`. `render(protocolBytes, stateJson,
+  onChunk, options)` uses the same `ResponseWriter` callback shape as the
+  Node binding: each handler write calls `onChunk(html)`, while callers that
+  need a full string concatenate chunks in JavaScript.
+- `parser` builds `webui_wasm_parser.js` and exports `build_protocol`. It
+  returns protobuf protocol bytes and depends on `webui-parser` and
+  `webui-protocol`, not `webui-handler`.
+- `all` is the default feature, builds `webui_wasm_all.js`, and exports the
+  parser plus handler surfaces for playground-style live preview. Callers
+  compose `build_protocol()` and callback-based `render()` explicitly.
+
+`cargo xtask build-wasm` builds all three variants into
+`docs/.webui-press/public/wasm/{all,handler,parser}/` with stable `wasm-pack`
+output names.
 
 ### npm Distribution
 
