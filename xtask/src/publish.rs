@@ -622,7 +622,7 @@ fn is_private_package(pkg_dir: &Path) -> bool {
 
 // ── Phase 3: NuGet packaging ────────────────────────────────────────────
 
-/// Run `dotnet pack` and move `.nupkg`/`.snupkg` files to `publish/nuget/`.
+/// Run `dotnet pack` and write `.nupkg`/`.snupkg` files to `publish/nuget/`.
 fn pack_nuget_packages(root: &Path) -> Result<(), String> {
     let dotnet_dir = root.join("dotnet");
     let nuget_out = root.join("publish").join("nuget");
