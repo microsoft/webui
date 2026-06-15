@@ -1941,6 +1941,7 @@ dependencies = [
  "microsoft-webui",
  "microsoft-webui-dev-server",
  "microsoft-webui-handler",
+ "microsoft-webui-tokens",
  "rayon",
  "serde",
  "serde_json",

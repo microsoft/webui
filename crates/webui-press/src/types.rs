@@ -15,6 +15,7 @@ pub struct DocsConfig {
     #[serde(default = "default_public_dir")]
     pub public_dir: String,
     pub css: Option<String>,
+    pub theme: Option<String>,
     pub components: Option<Vec<String>>,
     #[serde(default)]
     pub head: Vec<HeadTag>,
