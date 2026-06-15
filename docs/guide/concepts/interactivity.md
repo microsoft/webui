@@ -189,12 +189,16 @@ Event handlers use method-call syntax only. Arguments can be:
 General JavaScript expressions and nested function calls are not parsed in
 templates. Compute those values in the component class or pass a supported path.
 
+Invalid handler syntax — a general expression such as `@click="e.preventDefault()"`,
+or a bare name like `@click="{closeMenu}"` — fails the build with an actionable
+error that names the offending component and element.
+
 ### DOM References
 
 Use `w-ref` to get a direct reference to a DOM element:
 
 ```html
-<input w-ref="inputEl" type="text" />
+<input w-ref="{inputEl}" type="text" />
 <button @click="{focusInput()}">Focus</button>
 ```
 
@@ -205,6 +209,10 @@ focusInput(): void {
   this.inputEl.focus();
 }
 ```
+
+`w-ref` must use braces to bind to a component property — `w-ref="{inputEl}"`
+(or the unquoted `w-ref={inputEl}`), never `w-ref="inputEl"`. The build fails
+with an actionable error otherwise.
 
 ### Conditional Rendering
 

@@ -163,6 +163,18 @@ pub fn spawn_child_prefixed(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    // Children write through our pipes, not a TTY, so their own `console`
+    // color auto-detection disables ANSI and their output arrives plain.
+    // Propagate the parent's terminal color decision: force color when we are
+    // attached to an interactive terminal (so prefixed child output stays
+    // colored), and leave it off when redirected / in CI (so logs stay clean).
+    // `CLICOLOR_FORCE` covers the Rust/`console` server; `FORCE_COLOR` covers
+    // pnpm and other Node/chalk-based tooling.
+    if console::colors_enabled_stderr() {
+        command.env("CLICOLOR_FORCE", "1");
+        command.env("FORCE_COLOR", "1");
+    }
+
     match spawn_managed(&mut command) {
         Ok(mut managed) => {
             fn pipe_reader<R: std::io::Read + Send + 'static>(

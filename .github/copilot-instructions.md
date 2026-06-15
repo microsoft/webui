@@ -71,7 +71,11 @@ Every decision - API design, data structure choice, algorithm, error path - must
 - Library crates (`webui-parser`, `webui-handler`, `webui-expressions`, `webui-state`, `webui-protocol`, `webui-ffi`) use **custom error enums** via `thiserror`.
 - Binary crates (`webui-cli`, `xtask`) may use `anyhow`.
 - **No `unwrap()` or `expect()`** in library code - `clippy.toml` enforces this.
-- Errors must be **actionable**: tell the caller what went wrong *and* what they can do about it.
+- **Never `panic!` on recoverable input.** Bad template/CLI/state input must return `Result` - `panic = "abort"` in release would kill any FFI/WASM/Node host. Build-time authoring mistakes are returned as a structured `ParserError::Template(Box<Diagnostic>)`.
+- Errors must be **actionable**: tell the caller what went wrong *and* what they can do about it (a `help:` line, plus a "did you mean …?" suggestion for typos).
+- Diagnostics are **plain, color-free data** carrying a stable machine-readable `code`, source location (`--> owner:line:column`), snippet, and `help:`. **Color belongs only in `webui-cli`** (via `console::style()`); FFI/WASM/Node and the browser get the plain `Display` text. `webui-cli --format json` emits each error as a machine-readable object on stdout for tools/agents.
+- **Error construction is a cold path:** mark error builders `#[cold]`/`#[inline(never)]` and keep hot fast-paths inlinable - cold error code inlined into a hot function perturbs its layout and regresses performance.
+- For the full error-handling and diagnostics workflow, use the skill: `skills/diagnostics/SKILL.md`.
 
 ### Public API surface
 - Expose the minimum necessary. Use `pub(crate)` for internal helpers.
@@ -155,6 +159,7 @@ The `docs/` directory is a VitePress site for external developers consuming WebU
 
 - **Pull request** - `skills/pr/SKILL.md`
 - **Code review** - `skills/code-review/SKILL.md` (includes FFI safety and protobuf hygiene)
+- **Error handling & diagnostics** - `skills/diagnostics/SKILL.md`
 - **Quality gate** - `skills/quality-gate/SKILL.md`
 - **Docs synchronization** - `skills/docs-sync/SKILL.md`
 - **Performance (speed + memory)** - `skills/perf/SKILL.md`

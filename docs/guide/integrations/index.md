@@ -8,8 +8,8 @@ Pick the handler that matches your stack:
 - [**Node**](./node), Streaming SSR via a native addon built with napi-rs for Node, Bun, and Deno.
 - [**.NET**](/guide/installation#net), Managed `Microsoft.WebUI` NuGet bindings with transitive native runtime packages
 - [**Electron**](./electron), Desktop apps via Electron with custom `webui://` protocol
-- [**WebAssembly**](./wasm), In-browser rendering for playgrounds and client-side use
-- [**C / FFI**](./ffi), Shared library for Go, Python, and any language with C interop
+- [**WebAssembly**](./wasm), Split parser, handler, and combined browser bundles
+- [**C / FFI**](./ffi), Shared library for Go, C#, Python, and any language with C interop
 
 ## How Handlers Work
 

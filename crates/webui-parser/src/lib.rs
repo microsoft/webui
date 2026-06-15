@@ -9,16 +9,20 @@ mod component_registry;
 mod condition_parser;
 mod css_link;
 mod css_parser;
+mod diagnostic;
 mod error;
 mod handlebars_parser;
 mod html_parser;
 pub mod plugin;
 mod route_parser;
+mod suggest;
 
 pub use component_registry::{Component, ComponentRegistry};
 pub use condition_parser::ConditionParser;
 pub use css_link::{CssLinkHref, CssLinkOptions, DEFAULT_CSS_FILE_NAME_TEMPLATE};
 pub use css_parser::CssParser;
+use diagnostic::codes;
+pub use diagnostic::{Diagnostic, Severity};
 pub use error::{ParserError, Result};
 pub use handlebars_parser::HandlebarsParser;
 
@@ -366,6 +370,10 @@ pub struct HtmlParser {
     /// Fragment IDs currently being parsed, used to reject recursive component
     /// references before they can recurse through template parsing.
     in_progress_fragments: HashSet<String>,
+
+    /// The fragment ID (entry file or component tag) currently being parsed.
+    /// Used to name the owning template in authoring [`Diagnostic`]s.
+    current_fragment_id: String,
 }
 
 impl HtmlParser {
@@ -393,6 +401,7 @@ impl HtmlParser {
             token_store: HashSet::new(),
             token_definitions: HashSet::new(),
             in_progress_fragments: HashSet::new(),
+            current_fragment_id: String::new(),
         }
     }
 
@@ -441,11 +450,15 @@ impl HtmlParser {
     }
 
     /// Take any post-parse artifacts captured by the parser plugin.
-    #[must_use]
-    pub fn take_plugin_artifacts(&mut self) -> ParserPluginArtifacts {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParserError::Template`] if a tracked component contains an
+    /// invalid `@event` handler or a non-braced `w-ref` binding.
+    pub fn take_plugin_artifacts(&mut self) -> Result<ParserPluginArtifacts> {
         self.plugin
             .take()
-            .map_or(ParserPluginArtifacts::None, |plugin| {
+            .map_or(Ok(ParserPluginArtifacts::None), |plugin| {
                 plugin.into_artifacts()
             })
     }
@@ -471,14 +484,31 @@ impl HtmlParser {
     /// Parse HTML content to generate WebUI fragments.
     pub fn parse(&mut self, fragment_id: &str, html_content: &str) -> Result<()> {
         let fragment_key = fragment_id.to_string();
+        // Save the caller's fragment id and restore it before returning. A
+        // component parse recurses through `enter_component_directive`
+        // (`self.parse(child, …)`); without restoring, the parent would keep
+        // parsing with `current_fragment_id` pointing at the child, so a later
+        // diagnostic in the parent would be attributed to the wrong owner.
+        let previous_fragment_id =
+            std::mem::replace(&mut self.current_fragment_id, fragment_key.clone());
         if !self.in_progress_fragments.insert(fragment_key.clone()) {
-            return Err(ParserError::Directive(format!(
-                "Recursive template reference detected while parsing '{fragment_id}'. Move the recursive usage behind runtime data or split the component graph so templates do not reference themselves at build time."
-            )));
+            let err = self
+                .authoring_error(
+                    codes::RECURSIVE_TEMPLATE,
+                    format!("recursive template reference while parsing <{fragment_id}>"),
+                )
+                .help(
+                    "move the recursive usage behind runtime data, or split the component graph \
+                     so templates do not reference themselves at build time",
+                )
+                .into();
+            self.current_fragment_id = previous_fragment_id;
+            return Err(err);
         }
 
         let result = self.parse_inner(fragment_id, html_content);
         self.in_progress_fragments.remove(&fragment_key);
+        self.current_fragment_id = previous_fragment_id;
         result
     }
 
@@ -586,10 +616,19 @@ impl HtmlParser {
             match op {
                 ParseOp::Parse { range, depth } => {
                     if depth > MAX_TEMPLATE_DEPTH {
-                        return Err(ParserError::Html(format!(
-                            "Template nesting exceeds the {MAX_TEMPLATE_DEPTH} level parser limit near byte {}. Split deeply nested markup into components or reduce generated nesting before build.",
-                            range.start
-                        )));
+                        return Err(self
+                            .html_error(
+                                codes::EXCESSIVE_NESTING,
+                                format!(
+                                    "template nesting exceeds the {MAX_TEMPLATE_DEPTH}-level limit"
+                                ),
+                                source,
+                                range.start,
+                            )
+                            .help(
+                                "split deeply nested markup into components, or reduce generated nesting",
+                            )
+                            .into());
                     }
 
                     let end = range.end;
@@ -598,9 +637,15 @@ impl HtmlParser {
                         let remaining = &source[index..end];
                         if remaining.starts_with("<!--") {
                             let Some(close) = html::find_comment_close(remaining) else {
-                                return Err(ParserError::Html(format!(
-                                    "Unterminated HTML comment near byte {index}. Close the comment with `-->` before building."
-                                )));
+                                return Err(self
+                                    .html_error(
+                                        codes::UNTERMINATED_HTML_COMMENT,
+                                        "unterminated HTML comment",
+                                        source,
+                                        index,
+                                    )
+                                    .help("close the comment with `-->`")
+                                    .into());
                             };
                             index += close;
                             continue;
@@ -608,9 +653,15 @@ impl HtmlParser {
 
                         if remaining.starts_with("<!") {
                             let Some(close) = html::find_declaration_close(remaining) else {
-                                return Err(ParserError::Html(format!(
-                                    "Unterminated HTML declaration near byte {index}. Close the declaration with `>` before building."
-                                )));
+                                return Err(self
+                                    .html_error(
+                                        codes::UNTERMINATED_HTML_DECLARATION,
+                                        "unterminated HTML declaration",
+                                        source,
+                                        index,
+                                    )
+                                    .help("close the declaration with `>`")
+                                    .into());
                             };
                             self.add_raw_fragment(&remaining[..close]);
                             index += close;
@@ -619,15 +670,28 @@ impl HtmlParser {
 
                         if remaining.starts_with('<') {
                             let Some(tag) = html::parse_tag(remaining) else {
-                                return Err(ParserError::Html(format!(
-                                    "Malformed HTML tag near byte {index}. Close the tag with `>` or escape a literal `<` as `&lt;`."
-                                )));
+                                return Err(self
+                                    .html_error(
+                                        codes::MALFORMED_HTML_TAG,
+                                        "malformed HTML tag",
+                                        source,
+                                        index,
+                                    )
+                                    .help(
+                                        "close the tag with `>`, or escape a literal `<` as `&lt;`",
+                                    )
+                                    .into());
                             };
                             if tag.closing {
-                                return Err(ParserError::Html(format!(
-                                    "Unexpected closing HTML tag </{}> near byte {index}. Remove it or add the matching opening tag before it.",
-                                    tag.name
-                                )));
+                                return Err(self
+                                    .html_error(
+                                        codes::UNEXPECTED_CLOSING_TAG,
+                                        format!("unexpected closing tag </{}>", tag.name),
+                                        source,
+                                        index,
+                                    )
+                                    .help("remove it, or add the matching opening tag before it")
+                                    .into());
                             }
 
                             let content_start = index + tag.close + 1;
@@ -640,10 +704,18 @@ impl HtmlParser {
                             {
                                 (index + close_start, index + close_end)
                             } else {
-                                return Err(ParserError::Html(format!(
-                                        "Unclosed HTML tag <{}> near byte {index}. Add the matching </{}> closing tag or make the element self-closing.",
-                                        tag.name, tag.name
-                                    )));
+                                return Err(self
+                                    .html_error(
+                                        codes::UNCLOSED_HTML_TAG,
+                                        format!("unclosed <{}> tag", tag.name),
+                                        source,
+                                        index,
+                                    )
+                                    .help(format!(
+                                        "add the matching </{}> closing tag, or make the element self-closing",
+                                        tag.name
+                                    ))
+                                    .into());
                             };
 
                             let element = Element {
@@ -691,6 +763,7 @@ impl HtmlParser {
                                     )?;
                                 }
                                 _ => {
+                                    self.check_component_typo(&element)?;
                                     self.enter_regular_element(
                                         &element, fragments, depth, &mut ops,
                                     )?;
@@ -851,6 +924,186 @@ impl HtmlParser {
         Ok(())
     }
 
+    /// Start an authoring [`Diagnostic`] for the template currently being
+    /// parsed, naming the owning fragment (entry file or component tag) when
+    /// known. `code` is the stable machine-readable [`code`](crate::diagnostic::codes).
+    ///
+    /// Marked `#[cold]`/`#[inline(never)]`: this only runs while *building* a
+    /// build error, so keeping it out-of-line preserves hot parse-path layout.
+    #[cold]
+    #[inline(never)]
+    fn authoring_error(&self, code: &'static str, title: impl Into<String>) -> Diagnostic {
+        let diag = Diagnostic::error(title).code(code);
+        if self.current_fragment_id.is_empty() {
+            diag
+        } else {
+            diag.component(self.current_fragment_id.clone())
+        }
+    }
+
+    /// Like [`HtmlParser::authoring_error`], but also records the source
+    /// position (line/column) of `element` so the diagnostic can point at the
+    /// exact spot in the template.
+    #[cold]
+    #[inline(never)]
+    fn authoring_error_at(
+        &self,
+        code: &'static str,
+        title: impl Into<String>,
+        element: &Element<'_>,
+    ) -> Diagnostic {
+        self.authoring_error(code, title)
+            .at_offset(element.source(), element.start)
+    }
+
+    /// Build a positioned [`Diagnostic`] for a structural HTML well-formedness
+    /// error (unclosed/malformed tag, unterminated comment, …), naming the
+    /// owning fragment and the source position from a byte `offset`.
+    #[cold]
+    #[inline(never)]
+    fn html_error(
+        &self,
+        code: &'static str,
+        title: impl Into<String>,
+        source: &str,
+        offset: usize,
+    ) -> Diagnostic {
+        self.authoring_error(code, title).at_offset(source, offset)
+    }
+
+    /// Build the `help:` line for an unknown component `<name>`.
+    ///
+    /// Offers the closest registered component as a "did you mean …?" fix when
+    /// one is a near typo; otherwise falls back to the generic registration
+    /// hint.
+    #[cold]
+    #[inline(never)]
+    fn unknown_component_help(&self, name: &str) -> String {
+        match suggest::closest_match(name, self.component_registry.names()) {
+            Some(suggestion) => format!(
+                "did you mean <{suggestion}>? otherwise register the component by adding a \
+                 matching .html file"
+            ),
+            None => "register the component (add a matching .html file) or check the tag name \
+                     for a typo"
+                .to_string(),
+        }
+    }
+
+    /// Suggest a registered component that an unregistered custom-element `tag`
+    /// likely mistypes.
+    ///
+    /// Only same-namespace candidates are considered — the text before the
+    /// first `-` must match exactly — so a genuine third-party custom element
+    /// (`<md-button>` when `<mp-button>` is registered) is never flagged, while
+    /// an in-namespace slip (`<mp-buton>` → `<mp-button>`) is. Returns `None`
+    /// for non-hyphenated (native) tags and when no near match exists.
+    fn suggest_component(&self, tag: &str) -> Option<&str> {
+        let (prefix, _) = tag.split_once('-')?;
+        let same_namespace = self
+            .component_registry
+            .names()
+            .filter(|name| name.split_once('-').map(|(p, _)| p) == Some(prefix));
+        suggest::closest_match(tag, same_namespace)
+    }
+
+    /// Error with a "did you mean …?" hint when `element` is an unregistered
+    /// custom-element tag that closely matches a registered component in the
+    /// same namespace. Genuine external custom elements pass through as raw
+    /// HTML (returns `Ok`).
+    fn check_component_typo(&self, element: &Element<'_>) -> Result<()> {
+        if let Some(suggestion) = self.suggest_component(element.name()) {
+            return Err(self
+                .authoring_error_at(
+                    codes::UNKNOWN_COMPONENT,
+                    format!("unknown component <{}>", element.name()),
+                    element,
+                )
+                .help(format!(
+                    "did you mean <{suggestion}>? otherwise register <{}> by adding a matching \
+                     .html file",
+                    element.name()
+                ))
+                .into());
+        }
+        Ok(())
+    }
+
+    /// Name of an attribute on `element` that looks like a typo of `expected`
+    /// (close edit distance, not an exact match), if any. Used to suggest the
+    /// intended directive attribute (e.g. `eahc` → `each`).
+    #[cold]
+    #[inline(never)]
+    fn attr_typo_suggestion<'a>(element: &Element<'a>, expected: &str) -> Option<&'a str> {
+        suggest::closest_match(expected, element.attrs().map(|attr| attr.name))
+            .filter(|&name| name != expected)
+    }
+
+    /// Promote a standalone [`ParserError::Css`] into a structured authoring
+    /// [`Diagnostic`] (code [`codes::INVALID_CSS`], owning fragment), so CSS
+    /// mistakes render and serialize like every other authoring error. The
+    /// message already carries the in-`<style>` line/column. Non-CSS errors
+    /// pass through unchanged.
+    #[cold]
+    #[inline(never)]
+    fn css_diagnostic(&self, err: ParserError) -> ParserError {
+        match err {
+            ParserError::Css(message) => self.authoring_error(codes::INVALID_CSS, message).into(),
+            other => other,
+        }
+    }
+
+    /// Build the error for a `<for>` missing its `each` attribute (cold path).
+    #[cold]
+    #[inline(never)]
+    fn for_each_missing_error(&self, element: &Element<'_>) -> ParserError {
+        let diag = self
+            .authoring_error_at(
+                codes::MISSING_FOR_EACH,
+                "missing each attribute on <for>",
+                element,
+            )
+            .element("for");
+        match Self::attr_typo_suggestion(element, "each") {
+            Some(typo) => diag.help(format!(
+                "found `{typo}` \u{2014} did you mean each=\"item in collection\"?"
+            )),
+            None => diag.help("add each=\"item in collection\", e.g. <for each=\"todo in todos\">"),
+        }
+        .into()
+    }
+
+    /// Build the error for a malformed `<for each>` expression (cold path).
+    #[cold]
+    #[inline(never)]
+    fn for_each_invalid_error(&self, element: &Element<'_>, each: &str) -> ParserError {
+        self.authoring_error_at(
+            codes::INVALID_FOR_EACH,
+            "invalid <for> each expression",
+            element,
+        )
+        .element("for")
+        .snippet(format!("each=\"{each}\""))
+        .help("use the form each=\"item in collection\", e.g. each=\"todo in todos\"")
+        .into()
+    }
+
+    /// Build the error for a `<for each>` with disallowed identifier characters
+    /// (cold path).
+    #[cold]
+    #[inline(never)]
+    fn for_identifier_error(&self, element: &Element<'_>, each: &str) -> ParserError {
+        self.authoring_error_at(
+            codes::INVALID_FOR_IDENTIFIER,
+            "invalid identifier in <for> each expression",
+            element,
+        )
+        .element("for")
+        .snippet(format!("each=\"{each}\""))
+        .help("item and collection names may use only letters, digits, '_', '-', and '.'")
+        .into()
+    }
+
     fn enter_for_directive<'a>(
         &mut self,
         element: &Element<'a>,
@@ -861,24 +1114,16 @@ impl HtmlParser {
         let each = element
             .attr("each")
             .map(ToString::to_string)
-            .ok_or_else(|| {
-                ParserError::Directive("Missing 'each' attribute on <for>".to_string())
-            })?;
+            .ok_or_else(|| self.for_each_missing_error(element))?;
 
         let mut parts = each.split_whitespace();
         let (Some(item), Some(in_kw), Some(collection), None) =
             (parts.next(), parts.next(), parts.next(), parts.next())
         else {
-            return Err(ParserError::Directive(format!(
-                "Invalid for each: {}",
-                each
-            )));
+            return Err(self.for_each_invalid_error(element, &each));
         };
         if in_kw != "in" {
-            return Err(ParserError::Directive(format!(
-                "Invalid for each: {}",
-                each
-            )));
+            return Err(self.for_each_invalid_error(element, &each));
         }
 
         let allowed = |s: &str| {
@@ -886,10 +1131,7 @@ impl HtmlParser {
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
         };
         if !allowed(item) || !allowed(collection) {
-            return Err(ParserError::Directive(format!(
-                "Invalid identifier in for each: {}",
-                each
-            )));
+            return Err(self.for_identifier_error(element, &each));
         }
 
         let custom_fragment_id = element.attr("template").map(ToString::to_string);
@@ -914,6 +1156,42 @@ impl HtmlParser {
         Ok(())
     }
 
+    /// Build the error for an `<if>` missing its `condition` attribute (cold
+    /// path).
+    #[cold]
+    #[inline(never)]
+    fn if_condition_missing_error(&self, element: &Element<'_>) -> ParserError {
+        let diag = self
+            .authoring_error_at(
+                codes::MISSING_IF_CONDITION,
+                "missing condition attribute on <if>",
+                element,
+            )
+            .element("if");
+        match Self::attr_typo_suggestion(element, "condition") {
+            Some(typo) => diag.help(format!(
+                "found `{typo}` \u{2014} did you mean condition=\"expression\"?"
+            )),
+            None => diag.help("add condition=\"expression\", e.g. <if condition=\"isActive\">"),
+        }
+        .into()
+    }
+
+    /// Build the error for a malformed `<if condition>` expression (cold path).
+    #[cold]
+    #[inline(never)]
+    fn if_condition_invalid_error(&self, element: &Element<'_>, condition: &str) -> ParserError {
+        self.authoring_error_at(
+            codes::INVALID_IF_CONDITION,
+            "invalid <if> condition expression",
+            element,
+        )
+        .element("if")
+        .snippet(format!("condition=\"{condition}\""))
+        .help("use a simple expression like \"isActive\", \"count > 0\", or \"!hidden\"")
+        .into()
+    }
+
     fn enter_if_directive<'a>(
         &mut self,
         element: &Element<'a>,
@@ -924,13 +1202,12 @@ impl HtmlParser {
         let condition_str = element
             .attr("condition")
             .map(ToString::to_string)
-            .ok_or_else(|| {
-                ParserError::Directive("Missing 'condition' attribute on <if>".to_string())
-            })?;
+            .ok_or_else(|| self.if_condition_missing_error(element))?;
 
-        let condition = self.condition_parser.parse(&condition_str).map_err(|_| {
-            ParserError::Directive(format!("Invalid condition expression: {condition_str}"))
-        })?;
+        let condition = self
+            .condition_parser
+            .parse(&condition_str)
+            .map_err(|_| self.if_condition_invalid_error(element, &condition_str))?;
 
         self.flush_raw_buffer(fragments);
         let parent = ParseContext {
@@ -978,7 +1255,12 @@ impl HtmlParser {
 
         let (html_content, css_content, css_tokens) = {
             let component = self.component_registry.get(element.name()).ok_or_else(|| {
-                ParserError::Directive(format!("Component not found: {}", element.name()))
+                self.authoring_error_at(
+                    codes::UNKNOWN_COMPONENT,
+                    format!("unknown component <{}>", element.name()),
+                    element,
+                )
+                .help(self.unknown_component_help(element.name()))
             })?;
             (
                 component.html_content.clone(),
@@ -994,7 +1276,12 @@ impl HtmlParser {
                 .component_registry
                 .get(element.name())
                 .ok_or_else(|| {
-                    ParserError::Directive(format!("Component not found: {}", element.name()))
+                    self.authoring_error_at(
+                        codes::UNKNOWN_COMPONENT,
+                        format!("unknown component <{}>", element.name()),
+                        element,
+                    )
+                    .help(self.unknown_component_help(element.name()))
                 })?
                 .clone();
             let processed = self.build_component_template(
@@ -1336,7 +1623,8 @@ impl HtmlParser {
         let style_content = &element.source()[inner.start..inner.end];
         let (tokens, defs, comments) = self
             .css_parser
-            .extract_tokens_definitions_and_comments(style_content, self.options.legal_comments)?;
+            .extract_tokens_definitions_and_comments(style_content, self.options.legal_comments)
+            .map_err(|e| self.css_diagnostic(e))?;
         self.token_store.extend(tokens);
         self.token_definitions.extend(defs);
         self.process_style_content(style_content, &comments, fragments);
@@ -1395,7 +1683,7 @@ impl HtmlParser {
 
         let mut all_params = std::collections::HashSet::new();
         all_params.extend(route_params);
-        Self::validate_route_nesting_depth(element.source(), element.inner(), 1)?;
+        self.validate_route_nesting_depth(element.source(), element.inner(), 1)?;
         let children =
             self.parse_child_routes(element.source(), element.inner(), &all_params, 1)?;
 
@@ -1421,16 +1709,22 @@ impl HtmlParser {
         depth: usize,
     ) -> Result<Vec<WebUiFragmentRoute>> {
         if depth > MAX_TEMPLATE_DEPTH {
-            return Err(ParserError::Directive(format!(
-                "Route nesting exceeds the {MAX_TEMPLATE_DEPTH} level parser limit. Flatten deeply nested <route> trees before build."
-            )));
+            return Err(self
+                .html_error(
+                    codes::EXCESSIVE_NESTING,
+                    format!("route nesting exceeds the {MAX_TEMPLATE_DEPTH}-level limit"),
+                    source,
+                    range.start,
+                )
+                .help("flatten deeply nested <route> trees before building")
+                .into());
         }
 
         let mut children = Vec::new();
         for event in Walker::new_range(source, range.start, range.end) {
             match event {
                 Event::Element(element) => {
-                    Self::validate_closed_element(&element)?;
+                    self.validate_closed_element(&element)?;
                     if element.name() == "route" {
                         children.push(self.parse_route_as_fragment(
                             &element,
@@ -1445,20 +1739,23 @@ impl HtmlParser {
                 }
                 Event::Text(text) => {
                     if text.contains('<') {
-                        return Err(ParserError::Html(
-                            "Malformed HTML tag inside <route>. Close the tag with `>` or escape a literal `<` as `&lt;`."
-                                .to_string(),
-                        ));
+                        return Err(self
+                            .authoring_error(
+                                codes::MALFORMED_HTML_TAG,
+                                "malformed HTML tag in <route>",
+                            )
+                            .help("close the tag with `>`, or escape a literal `<` as `&lt;`")
+                            .into());
                     }
                 }
                 Event::Comment(comment_range) => {
-                    Self::validate_comment_range(source, comment_range)?;
+                    self.validate_comment_range(source, comment_range)?;
                 }
                 Event::Declaration(declaration_range) => {
-                    Self::validate_declaration_range(source, declaration_range)?;
+                    self.validate_declaration_range(source, declaration_range)?;
                 }
                 Event::ClosingTag(closing_range) => {
-                    return Err(Self::unexpected_closing_tag_error(source, closing_range));
+                    return Err(self.unexpected_closing_tag_error(source, closing_range));
                 }
             }
         }
@@ -1466,18 +1763,29 @@ impl HtmlParser {
         Ok(children)
     }
 
-    fn validate_route_nesting_depth(source: &str, range: Range<usize>, depth: usize) -> Result<()> {
+    fn validate_route_nesting_depth(
+        &self,
+        source: &str,
+        range: Range<usize>,
+        depth: usize,
+    ) -> Result<()> {
         let mut stack = vec![(range, depth)];
         while let Some((range, depth)) = stack.pop() {
             if depth > MAX_TEMPLATE_DEPTH {
-                return Err(ParserError::Directive(format!(
-                    "Route nesting exceeds the {MAX_TEMPLATE_DEPTH} level parser limit. Flatten deeply nested <route> trees before build."
-                )));
+                return Err(self
+                    .html_error(
+                        codes::EXCESSIVE_NESTING,
+                        format!("route nesting exceeds the {MAX_TEMPLATE_DEPTH}-level limit"),
+                        source,
+                        range.start,
+                    )
+                    .help("flatten deeply nested <route> trees before building")
+                    .into());
             }
 
             for event in Walker::new_range(source, range.start, range.end) {
                 if let Event::Element(element) = event {
-                    Self::validate_closed_element(&element)?;
+                    self.validate_closed_element(&element)?;
                     if element.name() == "route" && !element.self_closing() {
                         stack.push((element.inner(), depth + 1));
                     }
@@ -1496,16 +1804,21 @@ impl HtmlParser {
         let mut stack = vec![(range, depth)];
         while let Some((range, depth)) = stack.pop() {
             if depth > MAX_TEMPLATE_DEPTH {
-                return Err(ParserError::Html(format!(
-                    "Template nesting exceeds the {MAX_TEMPLATE_DEPTH} level parser limit near byte {}. Split deeply nested markup into components or reduce generated nesting before build.",
-                    range.start
-                )));
+                return Err(self
+                    .html_error(
+                        codes::EXCESSIVE_NESTING,
+                        format!("template nesting exceeds the {MAX_TEMPLATE_DEPTH}-level limit"),
+                        source,
+                        range.start,
+                    )
+                    .help("split deeply nested markup into components, or reduce generated nesting")
+                    .into());
             }
 
             for event in Walker::new_range(source, range.start, range.end) {
                 match event {
                     Event::Element(element) => {
-                        Self::validate_closed_element(&element)?;
+                        self.validate_closed_element(&element)?;
                         if element.name().eq_ignore_ascii_case("style") {
                             self.validate_style_element(&element)?;
                         } else if !element.self_closing() && !element.is_void() {
@@ -1514,20 +1827,23 @@ impl HtmlParser {
                     }
                     Event::Text(text) => {
                         if text.contains('<') {
-                            return Err(ParserError::Html(
-                                "Malformed HTML tag inside <route>. Close the tag with `>` or escape a literal `<` as `&lt;`."
-                                    .to_string(),
-                            ));
+                            return Err(self
+                                .authoring_error(
+                                    codes::MALFORMED_HTML_TAG,
+                                    "malformed HTML tag in <route>",
+                                )
+                                .help("close the tag with `>`, or escape a literal `<` as `&lt;`")
+                                .into());
                         }
                     }
                     Event::Comment(comment_range) => {
-                        Self::validate_comment_range(source, comment_range)?;
+                        self.validate_comment_range(source, comment_range)?;
                     }
                     Event::Declaration(declaration_range) => {
-                        Self::validate_declaration_range(source, declaration_range)?;
+                        self.validate_declaration_range(source, declaration_range)?;
                     }
                     Event::ClosingTag(closing_range) => {
-                        return Err(Self::unexpected_closing_tag_error(source, closing_range));
+                        return Err(self.unexpected_closing_tag_error(source, closing_range));
                     }
                 }
             }
@@ -1535,17 +1851,23 @@ impl HtmlParser {
         Ok(())
     }
 
-    fn validate_closed_element(element: &Element<'_>) -> Result<()> {
+    fn validate_closed_element(&self, element: &Element<'_>) -> Result<()> {
         if !element.self_closing()
             && !element.is_void()
             && element.close_end() == element.content_end()
         {
-            return Err(ParserError::Html(format!(
-                "Unclosed HTML tag <{}> near byte {}. Add the matching </{}> closing tag or make the element self-closing.",
-                element.name(),
-                element.inner().start.saturating_sub(element.opening().len()),
-                element.name()
-            )));
+            return Err(self
+                .html_error(
+                    codes::UNCLOSED_HTML_TAG,
+                    format!("unclosed <{}> tag", element.name()),
+                    element.source(),
+                    element.start,
+                )
+                .help(format!(
+                    "add the matching </{}> closing tag, or make the element self-closing",
+                    element.name()
+                ))
+                .into());
         }
         Ok(())
     }
@@ -1554,41 +1876,52 @@ impl HtmlParser {
         let inner = element.inner();
         let style_content = &element.source()[inner.start..inner.end];
         self.css_parser
-            .extract_tokens_definitions_and_comments(style_content, self.options.legal_comments)?;
+            .extract_tokens_definitions_and_comments(style_content, self.options.legal_comments)
+            .map_err(|e| self.css_diagnostic(e))?;
         Ok(())
     }
 
-    fn validate_comment_range(source: &str, range: Range<usize>) -> Result<()> {
+    fn validate_comment_range(&self, source: &str, range: Range<usize>) -> Result<()> {
+        let start = range.start;
         if source[range].ends_with("-->") {
             return Ok(());
         }
-        Err(ParserError::Html(
-            "Unterminated HTML comment inside <route>. Close the comment with `-->` before building."
-                .to_string(),
-        ))
+        Err(self
+            .html_error(
+                codes::UNTERMINATED_HTML_COMMENT,
+                "unterminated HTML comment in <route>",
+                source,
+                start,
+            )
+            .help("close the comment with `-->`")
+            .into())
     }
 
-    fn validate_declaration_range(source: &str, range: Range<usize>) -> Result<()> {
+    fn validate_declaration_range(&self, source: &str, range: Range<usize>) -> Result<()> {
+        let start = range.start;
         if source[range].ends_with('>') {
             return Ok(());
         }
-        Err(ParserError::Html(
-            "Unterminated HTML declaration inside <route>. Close the declaration with `>` before building."
-                .to_string(),
-        ))
+        Err(self
+            .html_error(
+                codes::UNTERMINATED_HTML_DECLARATION,
+                "unterminated HTML declaration in <route>",
+                source,
+                start,
+            )
+            .help("close the declaration with `>`")
+            .into())
     }
 
-    fn unexpected_closing_tag_error(source: &str, range: Range<usize>) -> ParserError {
-        if let Some(tag) = html::parse_tag(&source[range]) {
-            return ParserError::Html(format!(
-                "Unexpected closing HTML tag </{}> inside <route>. Remove it or add the matching opening tag before it.",
-                tag.name
-            ));
-        }
-        ParserError::Html(
-            "Unexpected closing HTML tag inside <route>. Remove it or add the matching opening tag before it."
-                .to_string(),
-        )
+    fn unexpected_closing_tag_error(&self, source: &str, range: Range<usize>) -> ParserError {
+        let start = range.start;
+        let title = match html::parse_tag(&source[range]) {
+            Some(tag) => format!("unexpected closing tag </{}> in <route>", tag.name),
+            None => "unexpected closing tag in <route>".to_string(),
+        };
+        self.html_error(codes::UNEXPECTED_CLOSING_TAG, title, source, start)
+            .help("remove it, or add the matching opening tag before it")
+            .into()
     }
 
     fn route_attrs_from_element(element: &Element<'_>) -> route_parser::RouteAttributes {
@@ -1673,7 +2006,11 @@ impl HtmlParser {
             .component_registry
             .get(component)
             .ok_or_else(|| {
-                crate::error::ParserError::Directive(format!("Component not found: {component}"))
+                self.authoring_error(
+                    codes::UNKNOWN_COMPONENT,
+                    format!("unknown component <{component}>"),
+                )
+                .help(self.unknown_component_help(component))
             })?
             .clone();
 
@@ -1883,7 +2220,8 @@ impl HtmlParser {
             let css = &html[style_start..style_end];
             let (_tokens, _defs, comments) = self
                 .css_parser
-                .extract_tokens_definitions_and_comments(css, self.options.legal_comments)?;
+                .extract_tokens_definitions_and_comments(css, self.options.legal_comments)
+                .map_err(|e| self.css_diagnostic(e))?;
             for comment in comments {
                 let comment_text = &css[comment.start_byte..comment.end_byte];
                 if comment.preserve || self.css_signal_comment_fragment(comment_text).is_some() {
@@ -1914,9 +2252,11 @@ impl HtmlParser {
             let remaining = &html[index..];
             if remaining.starts_with("<!--") {
                 let Some(end) = html::find_comment_close(remaining) else {
-                    return Err(ParserError::Html(format!(
-                        "Unterminated HTML comment near byte {index}. Close the comment with `-->` before building."
-                    )));
+                    return Err(Diagnostic::error("unterminated HTML comment")
+                        .code(codes::UNTERMINATED_HTML_COMMENT)
+                        .at_offset(html, index)
+                        .help("close the comment with `-->`")
+                        .into());
                 };
                 comment_ranges.push((index, index + end));
                 index += end;
@@ -2076,6 +2416,43 @@ mod tests {
     }
 
     #[test]
+    fn test_invalid_for_each_is_template_diagnostic() {
+        let mut parser = HtmlParser::new();
+        let err = parser
+            .parse(
+                "index.html",
+                "<div>\n  <for each=\"person inpeople\"><p>x</p></for>\n</div>",
+            )
+            .expect_err("invalid for-each must error");
+        assert!(matches!(err, ParserError::Template(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("invalid <for> each expression"), "{msg}");
+        assert!(msg.contains(r#"each="person inpeople""#), "{msg}");
+        // The <for> sits on line 2, column 3 (after the two-space indent),
+        // reported rustc-style as `--> index.html:2:3`.
+        assert!(
+            msg.contains("--> index.html:2:3"),
+            "missing line:column — {msg}"
+        );
+        assert!(msg.contains("help:"), "{msg}");
+    }
+
+    #[test]
+    fn test_invalid_if_condition_is_template_diagnostic() {
+        let mut parser = HtmlParser::new();
+        let err = parser
+            .parse("index.html", r#"<if condition="a +"><p>x</p></if>"#)
+            .expect_err("invalid condition must error");
+        assert!(matches!(err, ParserError::Template(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("invalid <if> condition expression"), "{msg}");
+        assert!(
+            msg.contains("--> index.html:1:1"),
+            "missing line:column — {msg}"
+        );
+    }
+
+    #[test]
     fn test_parse_for_directive() {
         let mut parser = HtmlParser::new();
         let html = r#"<for each="item in items"><div class="item">{{item.name}}</div></for>"#;
@@ -2157,6 +2534,97 @@ mod tests {
         assert!(
             matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
                 !raw.value.contains("<template shadowrootmode") && raw.value.contains("<div>My Component</div>"))
+        );
+    }
+
+    #[test]
+    fn unknown_component_typo_in_same_namespace_errors_with_suggestion() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry
+            .register_component("mp-button", "<button>b</button>", None)
+            .expect("Failed to register component");
+
+        // `<mp-buton>` is a same-namespace one-character typo of `mp-button`.
+        let err = parser
+            .parse("test.html", "<mp-buton></mp-buton>")
+            .expect_err("a near-typo component tag should error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::UNKNOWN_COMPONENT));
+        let help = diag
+            .help_text()
+            .expect("diagnostic should carry a help line");
+        assert!(
+            help.contains("did you mean <mp-button>?"),
+            "expected a suggestion, got: {help}"
+        );
+    }
+
+    #[test]
+    fn external_custom_element_in_other_namespace_passes_through() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry
+            .register_component("mp-button", "<button>b</button>", None)
+            .expect("Failed to register component");
+
+        // `<md-button>` is a different namespace (md- vs mp-): a genuine
+        // third-party custom element must pass through as raw HTML, not error.
+        let result = parser.parse("test.html", "<md-button></md-button>");
+        assert!(
+            result.is_ok(),
+            "external custom element should pass through, got: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn for_missing_each_suggests_typoed_attribute() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        // `eahc` is a transposition of the required `each` attribute.
+        let err = parser
+            .parse("test.html", "<for eahc=\"todo in todos\"></for>")
+            .expect_err("a <for> without `each` should error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::MISSING_FOR_EACH));
+        let help = diag
+            .help_text()
+            .expect("diagnostic should carry a help line");
+        assert!(
+            help.contains("found `eahc`") && help.contains("did you mean"),
+            "expected an attribute-typo suggestion, got: {help}"
+        );
+    }
+
+    #[test]
+    fn parent_diagnostic_owner_survives_nested_component_parse() {
+        // Regression: a component parse recurses through `self.parse(child, …)`,
+        // which used to leave `current_fragment_id` pointing at the child. A
+        // later error in the PARENT template must still be attributed to the
+        // parent (here `index.html`), not the nested component.
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry
+            .register_component("my-card", "<div>card</div>", None)
+            .expect("register");
+
+        // A registered component first, then a broken <for> in the same template.
+        let html = r#"<my-card></my-card><for each="bad inval"></for>"#;
+        let err = parser
+            .parse("index.html", html)
+            .expect_err("the malformed <for> should error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FOR_EACH));
+        assert_eq!(
+            diag.component_name(),
+            Some("index.html"),
+            "parent diagnostic must be owned by index.html, not the nested component"
         );
     }
 
@@ -3524,8 +3992,8 @@ mod tests {
         // Port of: 'should fail with invalid markup'
         let mut parser = HtmlParser::new();
         let result = parser.parse("index.html", "<div><span>Unclosed div");
-        assert!(matches!(result, Err(ParserError::Html(message)) if
-            message.contains("Unclosed HTML tag <div>")
+        assert!(matches!(result, Err(ParserError::Template(diag)) if
+            diag.to_string().contains("unclosed <div> tag")
         ));
     }
 
@@ -3533,8 +4001,8 @@ mod tests {
     fn test_unterminated_opening_tag_returns_error() {
         let mut parser = HtmlParser::new();
         let result = parser.parse("index.html", "before <div");
-        assert!(matches!(result, Err(ParserError::Html(message)) if
-            message.contains("Malformed HTML tag")
+        assert!(matches!(result, Err(ParserError::Template(diag)) if
+            diag.to_string().contains("malformed HTML tag")
         ));
     }
 
@@ -3542,9 +4010,9 @@ mod tests {
     fn test_unterminated_html_comment_returns_error() {
         let mut parser = HtmlParser::new();
         let result = parser.parse("index.html", "<div><!-- missing close</div>");
-        assert!(matches!(result, Err(ParserError::Html(message)) if
-            message.contains("Unclosed HTML tag <div>")
-                || message.contains("Unterminated HTML comment")
+        assert!(matches!(result, Err(ParserError::Template(diag)) if
+            diag.to_string().contains("unclosed <div> tag")
+                || diag.to_string().contains("unterminated HTML comment")
         ));
     }
 
@@ -3552,8 +4020,8 @@ mod tests {
     fn test_unexpected_closing_tag_returns_error() {
         let mut parser = HtmlParser::new();
         let result = parser.parse("index.html", "</span>");
-        assert!(matches!(result, Err(ParserError::Html(message)) if
-            message.contains("Unexpected closing HTML tag </span>")
+        assert!(matches!(result, Err(ParserError::Template(diag)) if
+            diag.to_string().contains("unexpected closing tag </span>")
         ));
     }
 
@@ -3581,8 +4049,8 @@ mod tests {
 
         let result = parser.parse("index.html", &html);
 
-        assert!(matches!(result, Err(ParserError::Html(message)) if
-            message.contains("nesting exceeds") && message.contains("parser limit")
+        assert!(matches!(result, Err(ParserError::Template(diag)) if
+            diag.to_string().contains("nesting exceeds")
         ));
     }
 
@@ -3605,8 +4073,9 @@ mod tests {
 
         let result = parser.parse("index.html", &html);
 
-        assert!(matches!(result, Err(ParserError::Directive(message)) if
-            message.contains("Route nesting exceeds") && message.contains("parser limit")
+        assert!(matches!(result, Err(ParserError::Template(diag)) if
+            diag.error_code() == Some(codes::EXCESSIVE_NESTING)
+                && diag.to_string().contains("route nesting exceeds")
         ));
     }
 
@@ -3620,8 +4089,9 @@ mod tests {
 
         let result = parser.parse("index.html", "<self-card></self-card>");
 
-        assert!(matches!(result, Err(ParserError::Directive(message)) if
-            message.contains("Recursive template reference")
+        assert!(matches!(result, Err(ParserError::Template(diag)) if
+            diag.error_code() == Some(codes::RECURSIVE_TEMPLATE)
+                && diag.to_string().contains("recursive template reference")
         ));
     }
 
@@ -4180,8 +4650,8 @@ mod tests {
         let mut parser = HtmlParser::new();
         let result = parser.parse("index.html", "<div><span></div></span>");
 
-        assert!(matches!(result, Err(ParserError::Html(message)) if
-            message.contains("Unclosed HTML tag <span>")
+        assert!(matches!(result, Err(ParserError::Template(diag)) if
+            diag.to_string().contains("unclosed <span> tag")
         ));
     }
 
@@ -4520,8 +4990,8 @@ mod tests {
 
         let result = parser.parse("index.html", "<x-bad></x-bad>");
 
-        assert!(matches!(result, Err(ParserError::Html(message)) if
-            message.contains("Unterminated HTML comment")
+        assert!(matches!(result, Err(ParserError::Template(diag)) if
+            diag.to_string().contains("unterminated HTML comment")
         ));
     }
 
@@ -4542,7 +5012,7 @@ mod tests {
             .parse("index.html", "<x-bleed></x-bleed>")
             .expect("parse failed");
 
-        let artifacts = parser.take_plugin_artifacts();
+        let artifacts = parser.take_plugin_artifacts().unwrap();
         let ParserPluginArtifacts::ComponentTemplates(templates) = artifacts else {
             panic!("expected component templates");
         };
@@ -4571,7 +5041,7 @@ mod tests {
             .parse("index.html", "<x-style></x-style>")
             .expect("parse failed");
 
-        let artifacts = parser.take_plugin_artifacts();
+        let artifacts = parser.take_plugin_artifacts().unwrap();
         let ParserPluginArtifacts::ComponentTemplates(templates) = artifacts else {
             panic!("expected component templates");
         };
@@ -4604,8 +5074,9 @@ mod tests {
         </style>"#;
         let result = parser.parse("test.html", html);
 
-        assert!(matches!(result, Err(ParserError::Css(message)) if
-            message.contains("Unterminated CSS var() call")
+        assert!(matches!(result, Err(ParserError::Template(diag)) if
+            diag.error_code() == Some(codes::INVALID_CSS)
+                && diag.to_string().contains("Unterminated CSS var() call")
         ));
     }
 
@@ -4912,8 +5383,8 @@ mod tests {
         let html = r#"<route path="/" component="home-page"><div><span></div></route>"#;
         let result = parser.parse("test.html", html);
 
-        assert!(matches!(result, Err(ParserError::Html(message)) if
-            message.contains("Unclosed HTML tag <span>")
+        assert!(matches!(result, Err(ParserError::Template(diag)) if
+            diag.to_string().contains("unclosed <span> tag")
         ));
     }
 
@@ -4923,8 +5394,9 @@ mod tests {
         let html = r#"<route path="/" component="home-page"><style>.bad { color: var(--x; }</style></route>"#;
         let result = parser.parse("test.html", html);
 
-        assert!(matches!(result, Err(ParserError::Css(message)) if
-            message.contains("Unterminated CSS var() call")
+        assert!(matches!(result, Err(ParserError::Template(diag)) if
+            diag.error_code() == Some(codes::INVALID_CSS)
+                && diag.to_string().contains("Unterminated CSS var() call")
         ));
     }
 
@@ -5282,8 +5754,8 @@ mod tests {
     fn test_unclosed_style_element_returns_error() {
         let mut parser = HtmlParser::new();
         let result = parser.parse("index.html", "<style>.x { color: red; ");
-        assert!(matches!(result, Err(ParserError::Html(message)) if
-            message.contains("Unclosed HTML tag <style>")
+        assert!(matches!(result, Err(ParserError::Template(diag)) if
+            diag.to_string().contains("unclosed <style> tag")
         ));
     }
 

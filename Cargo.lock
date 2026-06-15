@@ -1993,6 +1993,7 @@ dependencies = [
 name = "microsoft-webui-wasm"
 version = "0.0.15"
 dependencies = [
+ "js-sys",
  "microsoft-webui-handler",
  "microsoft-webui-parser",
  "microsoft-webui-protocol",

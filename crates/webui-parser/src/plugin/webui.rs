@@ -62,6 +62,7 @@
 use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use crate::comment_policy;
 use crate::component_registry::Component;
+use crate::diagnostic::Diagnostic;
 use crate::html_parser::{find_tag_close, style_element_bounds};
 use crate::{ConditionParser, DomStrategy, ParserOptions, Result};
 use std::cell::Cell;
@@ -115,21 +116,24 @@ impl WebUIParserPlugin {
     /// Each script block is a self-executing IIFE that registers a metadata
     /// object into `window.__webui.templates[tagName]`. Call this after all
     /// HTML parsing is complete.
-    #[must_use]
-    pub fn take_component_templates(&self) -> Vec<(String, String)> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::ParserError::Template`] if any tracked component
+    /// contains an invalid `@event` handler or a non-braced `w-ref` binding.
+    pub fn take_component_templates(&self) -> Result<Vec<(String, String)>> {
         let use_shadow = matches!(self.dom_strategy, DomStrategy::Shadow);
-        self.components
-            .iter()
-            .map(|c| {
-                let script = generate_compiled_template_with_root_source(
-                    &c.tag_name,
-                    &c.template_html,
-                    &c.root_event_source,
-                    use_shadow,
-                );
-                (c.tag_name.clone(), script)
-            })
-            .collect()
+        let mut out = Vec::with_capacity(self.components.len());
+        for c in &self.components {
+            let script = generate_compiled_template_with_root_source(
+                &c.tag_name,
+                &c.template_html,
+                &c.root_event_source,
+                use_shadow,
+            )?;
+            out.push((c.tag_name.clone(), script));
+        }
+        Ok(out)
     }
 
     fn store_component_template(
@@ -212,8 +216,10 @@ impl ParserPlugin for WebUIParserPlugin {
         )
     }
 
-    fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts {
-        ParserPluginArtifacts::ComponentTemplates(self.take_component_templates())
+    fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts> {
+        Ok(ParserPluginArtifacts::ComponentTemplates(
+            self.take_component_templates()?,
+        ))
     }
 }
 
@@ -286,6 +292,10 @@ struct TemplateMeta {
 
 type EventBinding = (String, String, Vec<EventArg>);
 
+/// Result of parsing one `@event` attribute: the event binding
+/// (`event_name`, `handler_name`, `args`) plus the number of bytes consumed.
+type ParsedEventAttr = (String, String, Vec<EventArg>, usize);
+
 #[derive(Clone, Debug, PartialEq)]
 enum EventArg {
     Event,
@@ -350,7 +360,12 @@ enum CompiledAttrPart {
 /// | `@event="{handler(e)}"`               | `e[]`                      | element kept marker-free          |
 /// | `w-ref="name"` / `w-ref={name}`       | *(stays in HTML)*          | *(unchanged)*                     |
 /// | `<outlet />` / `<outlet>`             | *(stays in HTML)*          | `<outlet></outlet>`               |
-pub fn generate_compiled_template(tag_name: &str, html_content: &str) -> String {
+///
+/// # Errors
+///
+/// Returns [`crate::ParserError::Template`] if the template contains an invalid
+/// `@event` handler or a non-braced `w-ref` binding.
+pub fn generate_compiled_template(tag_name: &str, html_content: &str) -> Result<String> {
     generate_compiled_template_with_root_source(tag_name, html_content, html_content, false)
 }
 
@@ -359,12 +374,12 @@ fn generate_compiled_template_with_root_source(
     html_content: &str,
     root_event_source: &str,
     shadow_dom: bool,
-) -> String {
+) -> Result<String> {
     let trimmed = html_content.trim();
-    let root_events = extract_root_events(root_event_source.trim());
+    let root_events = extract_root_events(tag_name, root_event_source.trim())?;
     let adopted_stylesheet = extract_adopted_stylesheet_specifier(trimmed);
     let body = strip_template_wrapper(trimmed);
-    let meta = compile_to_metadata(body, root_events);
+    let meta = compile_to_metadata(tag_name, body, root_events)?;
 
     let mut out = String::with_capacity(512 + html_content.len());
     out.push_str("(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w['");
@@ -416,7 +431,7 @@ fn generate_compiled_template_with_root_source(
     }
 
     out.push_str("};})();\n");
-    out
+    Ok(out)
 }
 
 fn emit_js_string(s: &str, out: &mut String) {
@@ -848,21 +863,29 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
 ///   SSR `data-ev="COUNT"` markers that are later replaced by client locators.
 /// - **Everything else** — copied verbatim to the intermediate static HTML.
 ///
-fn compile_to_metadata(input: &str, root_events: Vec<EventBinding>) -> TemplateMeta {
+fn compile_to_metadata(
+    component: &str,
+    input: &str,
+    root_events: Vec<EventBinding>,
+) -> Result<TemplateMeta> {
     let mut blocks = Vec::new();
-    let mut root = compile_section(input, &mut blocks);
+    let mut root = compile_section(component, input, &mut blocks)?;
     finalize_template_section(&mut root);
     for block in &mut blocks {
         finalize_template_section(block);
     }
-    TemplateMeta {
+    Ok(TemplateMeta {
         root,
         blocks,
         root_events,
-    }
+    })
 }
 
-fn compile_section(input: &str, blocks: &mut Vec<TemplateSectionMeta>) -> TemplateSectionMeta {
+fn compile_section(
+    component: &str,
+    input: &str,
+    blocks: &mut Vec<TemplateSectionMeta>,
+) -> Result<TemplateSectionMeta> {
     let mut meta = TemplateSectionMeta {
         html: String::with_capacity(input.len()),
         text_bindings: Vec::new(),
@@ -908,7 +931,7 @@ fn compile_section(input: &str, blocks: &mut Vec<TemplateSectionMeta>) -> Templa
                 if let Some((cond, body, consumed)) = parse_if_block(remaining) {
                     let block_index = blocks.len();
                     blocks.push(TemplateSectionMeta::default());
-                    let block = compile_section(&body, blocks);
+                    let block = compile_section(component, &body, blocks)?;
                     blocks[block_index] = block;
                     let idx = meta.conditionals.len();
                     meta.conditionals.push((cond, block_index));
@@ -923,7 +946,7 @@ fn compile_section(input: &str, blocks: &mut Vec<TemplateSectionMeta>) -> Templa
                 if let Some((collection, item_var, body, consumed)) = parse_for_block(remaining) {
                     let block_index = blocks.len();
                     blocks.push(TemplateSectionMeta::default());
-                    let block = compile_section(&body, blocks);
+                    let block = compile_section(component, &body, blocks)?;
                     blocks[block_index] = block;
                     let idx = meta.repeats.len();
                     meta.repeats.push((collection, item_var, block_index));
@@ -950,7 +973,8 @@ fn compile_section(input: &str, blocks: &mut Vec<TemplateSectionMeta>) -> Templa
                 }
             }
 
-            if let Some((tag_html, consumed)) = parse_regular_tag(remaining, &mut meta) {
+            if let Some((tag_html, consumed)) = parse_regular_tag(component, remaining, &mut meta)?
+            {
                 meta.html.push_str(&tag_html);
                 i += consumed;
                 continue;
@@ -959,7 +983,9 @@ fn compile_section(input: &str, blocks: &mut Vec<TemplateSectionMeta>) -> Templa
 
         // @event attributes → replace with a per-element event-count marker
         if bytes[i] == b'@' && is_inside_tag(input, i) {
-            if let Some((event_name, handler, args, consumed)) = parse_event_attr(input, i) {
+            if let Some((event_name, handler, args, consumed)) =
+                parse_event_attr(component, input, i)?
+            {
                 meta.events.push((event_name, handler, args));
                 meta.html.push_str("data-ev=\"1\"");
                 i += consumed;
@@ -980,7 +1006,7 @@ fn compile_section(input: &str, blocks: &mut Vec<TemplateSectionMeta>) -> Templa
         }
     }
 
-    meta
+    Ok(meta)
 }
 
 fn compile_text_binding_at(
@@ -1938,6 +1964,30 @@ fn parse_for_block(input: &str) -> Option<(String, String, String, usize)> {
     Some((collection, item_var, body, end_pos + close_tag.len()))
 }
 
+/// Build a [`Diagnostic`] for an invalid `@event` handler.
+///
+/// Names the owning component (and element, when known) so the build error
+/// points at the exact template to fix instead of only echoing the expression.
+fn invalid_event_handler(
+    component: &str,
+    element: Option<&str>,
+    event_name: &str,
+    raw: &str,
+) -> Diagnostic {
+    let mut diag = Diagnostic::error(format!("invalid @{event_name} handler"))
+        .code(crate::diagnostic::codes::INVALID_EVENT_HANDLER)
+        .component(component)
+        .snippet(format!("@{event_name}=\"{raw}\""))
+        .help(format!(
+            "use @{event_name}=\"{{handler()}}\" or @{event_name}=\"{{handler(e)}}\" \
+             to pass the event"
+        ));
+    if let Some(tag) = element {
+        diag = diag.element(tag);
+    }
+    diag
+}
+
 /// Parse `@event="{handler()}"` or `@event={handler()}` into event metadata.
 ///
 /// Supports three value quoting styles:
@@ -1946,33 +1996,40 @@ fn parse_for_block(input: &str) -> Option<(String, String, String, usize)> {
 /// - `@click='onClick()'` — single-quoted
 ///
 /// The handler name and full argument list are extracted from the function call syntax.
-fn parse_event_attr(input: &str, pos: usize) -> Option<(String, String, Vec<EventArg>, usize)> {
+/// `component` is the owning component tag, used only for error messages.
+fn parse_event_attr(component: &str, input: &str, pos: usize) -> Result<Option<ParsedEventAttr>> {
     let remaining = &input[pos..];
-    let eq_pos = remaining.find('=')?;
+    let Some(eq_pos) = remaining.find('=') else {
+        return Ok(None);
+    };
     let event_name = remaining[1..eq_pos].to_string(); // skip @
 
     let after_eq = &remaining[eq_pos + 1..];
     if after_eq.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let first = after_eq.as_bytes()[0];
     let (raw_value, total_consumed) = if first == b'"' || first == b'\'' {
         let value_start = eq_pos + 2;
-        let close = remaining[value_start..].find(first as char)?;
+        let Some(close) = remaining[value_start..].find(first as char) else {
+            return Ok(None);
+        };
         (
             &remaining[value_start..value_start + close],
             value_start + close + 1,
         )
     } else if first == b'{' {
         let value_start = eq_pos + 2;
-        let close = remaining[value_start..].find('}')?;
+        let Some(close) = remaining[value_start..].find('}') else {
+            return Ok(None);
+        };
         (
             &remaining[value_start..value_start + close],
             value_start + close + 1,
         )
     } else {
-        return None;
+        return Ok(None);
     };
 
     let inner = raw_value
@@ -1984,32 +2041,36 @@ fn parse_event_attr(input: &str, pos: usize) -> Option<(String, String, Vec<Even
 
     // Extract method name and argument specs from "handler(...)".
     if inner.is_empty() {
-        return None;
+        return Ok(None);
     }
     match parse_event_handler(inner) {
         EventHandler::Valid(handler_name, args) => {
-            Some((event_name, handler_name, args, total_consumed))
+            Ok(Some((event_name, handler_name, args, total_consumed)))
         }
-        EventHandler::Empty => None,
-        EventHandler::Invalid(_raw) => panic!(
-            "Invalid @{event_name} handler: \"{inner}\". \
-             Use @{event_name}=\"{{handler()}}\" or \
-             @{event_name}=\"{{handler(e)}}\" to pass the event.",
-        ),
+        EventHandler::Empty => Ok(None),
+        EventHandler::Invalid(_raw) => {
+            Err(invalid_event_handler(component, None, &event_name, inner).into())
+        }
     }
 }
 
-fn parse_regular_tag(input: &str, meta: &mut TemplateSectionMeta) -> Option<(String, usize)> {
+fn parse_regular_tag(
+    component: &str,
+    input: &str,
+    meta: &mut TemplateSectionMeta,
+) -> Result<Option<(String, usize)>> {
     if !input.starts_with('<') || input.starts_with("</") || input.starts_with("<!") {
-        return None;
+        return Ok(None);
     }
 
     let bytes = input.as_bytes();
     if bytes.len() < 2 || !bytes[1].is_ascii_alphabetic() {
-        return None;
+        return Ok(None);
     }
 
-    let end = find_tag_close(input)?;
+    let Some(end) = find_tag_close(input) else {
+        return Ok(None);
+    };
     let tag_content = &input[1..end];
     let tag_body = tag_content.trim_end();
     let self_closing = tag_body.ends_with('/');
@@ -2027,7 +2088,7 @@ fn parse_regular_tag(input: &str, meta: &mut TemplateSectionMeta) -> Option<(Str
 
     let tag_name = &tag_body[..cursor];
     if tag_name.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let mut out = String::with_capacity(tag_body.len() + 24);
@@ -2108,10 +2169,8 @@ fn parse_regular_tag(input: &str, meta: &mut TemplateSectionMeta) -> Option<(Str
                         .push((event_name.to_string(), handler_name, args));
                 }
                 EventHandler::Invalid(raw) => {
-                    panic!(
-                        "Invalid @{event_name} handler: \"{raw}\". \
-                         Use @{event_name}=\"{{handler()}}\" or \
-                         @{event_name}=\"{{handler(e)}}\" to pass the event.",
+                    return Err(
+                        invalid_event_handler(component, Some(tag_name), event_name, &raw).into(),
                     );
                 }
                 EventHandler::Empty => {}
@@ -2121,14 +2180,18 @@ fn parse_regular_tag(input: &str, meta: &mut TemplateSectionMeta) -> Option<(Str
 
         if name == "w-ref" {
             // Validate: w-ref must use {braces} to bind to a component property.
-            // This is a build-time check — the runtime also validates.
+            // This is a fatal build-time check — the runtime also validates.
             if let Some(val) = value {
                 if !val.starts_with('{') || !val.ends_with('}') {
-                    eprintln!(
-                        "\x1b[1;31merror\x1b[0m: invalid w-ref=\"{}\" in <{}> — \
-                         use w-ref={{{}}} with braces to bind to a component property",
-                        val, tag_name, val
-                    );
+                    return Err(Diagnostic::error("invalid w-ref binding")
+                        .code(crate::diagnostic::codes::INVALID_W_REF)
+                        .component(component)
+                        .element(tag_name)
+                        .snippet(format!("w-ref=\"{val}\""))
+                        .help(format!(
+                            "use w-ref={{{val}}} with braces to bind to a component property"
+                        ))
+                        .into());
                 }
             }
             out.push(' ');
@@ -2212,7 +2275,7 @@ fn parse_regular_tag(input: &str, meta: &mut TemplateSectionMeta) -> Option<(Str
         out.push('>');
     }
 
-    Some((out, end + 1))
+    Ok(Some((out, end + 1)))
 }
 
 enum EventHandler {
@@ -2468,12 +2531,12 @@ fn parse_attr_parts(value: &str) -> Option<Vec<CompiledAttrPart>> {
 ///
 /// These become "root events" (`re` array) attached to the host element
 /// rather than to an element inside the shadow DOM.
-fn extract_root_events(html: &str) -> Vec<EventBinding> {
+fn extract_root_events(component: &str, html: &str) -> Result<Vec<EventBinding>> {
     if !html.starts_with("<template") {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let Some(close) = find_tag_close(html) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let tag = &html[..close];
     let mut events = Vec::new();
@@ -2483,7 +2546,7 @@ fn extract_root_events(html: &str) -> Vec<EventBinding> {
 
     while i < len {
         if bytes[i] == b'@' {
-            if let Some((name, handler, args, consumed)) = parse_event_attr(tag, i) {
+            if let Some((name, handler, args, consumed)) = parse_event_attr(component, tag, i)? {
                 events.push((name, handler, args));
                 i += consumed;
                 continue;
@@ -2492,7 +2555,7 @@ fn extract_root_events(html: &str) -> Vec<EventBinding> {
         i += 1;
     }
 
-    events
+    Ok(events)
 }
 
 fn extract_adopted_stylesheet_specifier(html: &str) -> Option<String> {
@@ -2512,6 +2575,14 @@ fn extract_adopted_stylesheet_specifier(html: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test helper: compile a template and unwrap. The vast majority of tests
+    /// exercise valid templates; tests that assert on authoring errors call
+    /// [`super::generate_compiled_template`] directly and inspect the `Result`.
+    #[allow(clippy::disallowed_methods)]
+    fn generate_compiled_template(tag_name: &str, html_content: &str) -> String {
+        super::generate_compiled_template(tag_name, html_content).expect("valid template compiles")
+    }
 
     fn assert_no_client_markers(result: &str) {
         assert!(!result.contains("<!--t:"), "text markers should be removed");
@@ -2833,6 +2904,24 @@ mod tests {
     }
 
     #[test]
+    fn test_w_ref_without_braces_is_fatal() {
+        let err =
+            super::generate_compiled_template("mail-inbox-page", r#"<input w-ref="myInput" />"#)
+                .expect_err("non-braced w-ref must fail the build");
+        assert!(err.to_string().contains("invalid w-ref binding"));
+    }
+
+    #[test]
+    fn test_w_ref_error_names_component_and_element() {
+        let err =
+            super::generate_compiled_template("mail-inbox-page", r#"<input w-ref="myInput" />"#)
+                .expect_err("non-braced w-ref must fail the build");
+        assert!(err
+            .to_string()
+            .contains("component <mail-inbox-page> · element <input>"));
+    }
+
+    #[test]
     fn test_metadata_has_root_events() {
         let result = generate_compiled_template(
             "my-comp",
@@ -2907,7 +2996,7 @@ mod tests {
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();
-        assert_eq!(plugin.take_component_templates().len(), 1);
+        assert_eq!(plugin.take_component_templates().unwrap().len(), 1);
     }
 
     #[test]
@@ -2960,7 +3049,7 @@ mod tests {
                 r#"<template shadowrootmode="open"><link rel="stylesheet" href="test-el.css"><p>hi</p></template>"#,
             )
             .unwrap();
-        let templates = plugin.take_component_templates();
+        let templates = plugin.take_component_templates().unwrap();
         assert_eq!(templates.len(), 1);
         assert!(templates[0].1.contains(r#"rel=\"stylesheet\""#));
         assert!(templates[0].1.contains(r#"href=\"test-el.css\""#));
@@ -2989,7 +3078,7 @@ mod tests {
                 r#"<template shadowrootmode="open"><link rel="stylesheet" href="test-el.css"><p>hi</p></template>"#,
             )
             .unwrap();
-        let templates = plugin.take_component_templates();
+        let templates = plugin.take_component_templates().unwrap();
         assert_eq!(templates.len(), 1);
         assert!(templates[0]
             .1
@@ -3016,7 +3105,7 @@ mod tests {
                 r#"<template shadowrootmode="open" shadowrootadoptedstylesheets="test-el"><p>hi</p></template>"#,
             )
             .unwrap();
-        let templates = plugin.take_component_templates();
+        let templates = plugin.take_component_templates().unwrap();
         assert_eq!(templates.len(), 1);
         assert!(templates[0].1.contains(r#",sa:"test-el""#));
     }
@@ -3107,10 +3196,12 @@ mod tests {
     fn test_regular_tag_uses_single_event_marker_per_element() {
         let mut meta = TemplateSectionMeta::default();
         let (tag_html, _) = parse_regular_tag(
+            "test-input",
             r#"<input @keydown="{onKey(e)}" @focus="{onFocus()}" />"#,
             &mut meta,
         )
-        .expect("regular tag should parse");
+        .expect("regular tag parse should succeed")
+        .expect("regular tag should produce output");
 
         assert_eq!(tag_html, r#"<input data-ev="2" />"#);
     }
@@ -3413,6 +3504,28 @@ mod tests {
     }
 
     #[test]
+    fn test_invalid_event_handler_error_names_component_and_element() {
+        let err = super::generate_compiled_template(
+            "mail-inbox-page",
+            r#"<button @pointerdown="e.preventDefault()">x</button>"#,
+        )
+        .expect_err("invalid @event handler must fail the build");
+        assert!(err
+            .to_string()
+            .contains("component <mail-inbox-page> · element <button>"));
+    }
+
+    #[test]
+    fn test_invalid_root_event_handler_error_names_component() {
+        let err = super::generate_compiled_template(
+            "my-card",
+            r#"<template shadowrootmode="open" @click="e.stopPropagation()"><slot></slot></template>"#,
+        )
+        .expect_err("invalid root @event handler must fail the build");
+        assert!(err.to_string().contains("in component <my-card>"));
+    }
+
+    #[test]
     fn test_parse_event_handler_bare_name_is_invalid() {
         assert!(matches!(
             parse_event_handler("{closeMenu}"),
@@ -3421,10 +3534,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Invalid @click handler")]
-    fn test_parse_event_attr_bare_name_panics() {
+    fn test_parse_event_attr_bare_name_errors() {
         let input = r#"<button @click="{closeMenu}">Click</button>"#;
-        parse_event_attr(input, 8);
+        let err = parse_event_attr("test-button", input, 8)
+            .expect_err("bare handler name must be rejected");
+        assert!(err.to_string().contains("invalid @click handler"));
     }
 
     #[test]

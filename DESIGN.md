@@ -1003,7 +1003,7 @@ pub trait ParserPlugin {
     ) -> Result<()>;
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
     fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
-    fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts;
+    fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts>;
 }
 ```
 
@@ -1012,7 +1012,7 @@ pub trait ParserPlugin {
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
 - **Component registration**: `register_component_template` receives the final processed component template HTML after HTML/CSS comment stripping
-- **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts
+- **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts. It is **fallible**: template-authoring mistakes found while compiling component templates (an invalid `@event` handler or a non-braced `w-ref`) surface as `ParserError::Template` instead of panicking, so every host (CLI, Node, FFI, WASM) can handle them.
 
 **Selecting parser plugins**
 
@@ -1361,8 +1361,12 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 | `<for each="v in coll">body</for>`   | `r[]` + `rl[]` + `b[]` | block removed; anchor slot stored |
 | `@event="{handler(item.id, e)}"`     | `e[]`                  | element kept marker-free          |
 | `@event` on `<template>` wrapper     | `re[N]`                | *(stripped)*                      |
-| `w-ref="name"`                       | *(stays)*              | *(unchanged)*                     |
+| `w-ref="{name}"`                     | *(stays)*              | *(unchanged)*                     |
 | `<outlet />`                         | *(stays)*              | `<outlet></outlet>`               |
+
+**Authoring validation.** Build-time authoring mistakes are returned as a structured `ParserError::Template(Box<Diagnostic>)`, never panicked. This covers invalid `@event` handlers (e.g. `@click="e.preventDefault()"`, or a bare `@click="{closeMenu}"`), non-braced `w-ref` (`w-ref="name"` instead of `w-ref="{name}"`), core-parser mistakes — an invalid `<for each>` expression, a missing/invalid `<if condition>`, an unknown component tag, a recursive template reference — malformed CSS in a `<style>` block, and structural HTML well-formedness errors (unclosed/malformed tags, unterminated comments/declarations, unexpected closing tags, excessive nesting), so every build error renders identically. The `Diagnostic` is plain, actionable data — a **stable machine-readable `code`** (e.g. `invalid-for-each`; see `diagnostic::codes`), title, source location (rendered rustc-style as `--> owner:line:column` when the offending byte offset is known, otherwise `in component <c> · element <e>`), offending snippet, and a `help:` fix — and carries **no color**: `webui-cli` styles it with `console`, while Node/FFI/WASM forward the plain `Display` text through their native error channel. Where a fix is likely a typo, the `help:` offers a **"did you mean …?" suggestion** via an iterative Levenshtein match (`suggest::closest_match`): a misspelled directive attribute (`eahc` → `each`), or an unregistered custom-element tag that closely matches a registered component **in the same namespace** (`<mp-buton>` → `<mp-button>`; cross-namespace tags like `<md-button>` still pass through as genuine custom elements). This mirrors `ParserError::MissingAdoptedStylesheets`: authoring errors are returned so consumers can recover instead of aborting (`panic = "abort"` in release would otherwise kill the process).
+
+**Machine-readable diagnostics.** `webui-cli` accepts a global `--format <human|json>` flag. In `json` mode the colorized terminal output is suppressed and each error is emitted as a single JSON object on **stdout** (`{severity, code, message, file, line, column, snippet, help, chain}`), so editors, CI, and AI assistants consume diagnostics without scraping ANSI text. The process exit code follows BSD `sysexits.h` so callers can branch on the cause: `65` (`EX_DATAERR`) for a template/authoring error, `66` (`EX_NOINPUT`) for a missing app folder / state file / serve dir / entry, `69` (`EX_UNAVAILABLE`) for an occupied port, `74` (`EX_IOERR`) for other I/O failures, `2` for argument/usage errors (clap), and `1` otherwise.
 
 `tx[]` stores text runs as `[slot, parts]`, where `parts` reuse the compact attribute-part encoding (`string` for static text, `[path]` for dynamic text). Client-created DOM inserts one runtime `Text` node per run instead of scanning compiled marker comments.
 
@@ -1476,15 +1480,38 @@ webui-cli ──────► webui (library) ◄────── webui-node
                     ├── webui-protocol        └── serde_json
                     └── webui-discovery
 
-webui-ffi ──────► webui-handler ◄────── webui-wasm
-                  webui-parser              webui-parser
-                  webui-protocol            webui-protocol
+webui-ffi ──────► webui-handler ◄────── webui-wasm (handler feature)
+                  webui-parser       ┌──── webui-wasm (parser feature)
+                  webui-protocol     └──── webui-wasm (all/default feature)
 ```
 
 The `webui` library crate is the primary API surface for programmatic use.
 It re-exports `WebUIHandler`, `ResponseWriter`, and `WebUIProtocol` from their
 respective crates and provides `build()`, `build_to_disk()`, and `inspect()`
 functions with `BuildStats` (duration, fragment/component/CSS counts, protocol size).
+
+### WASM Distribution
+
+The `microsoft-webui-wasm` crate exposes feature-gated browser bindings so
+consumers only ship the parser and/or handler code they need:
+
+- `handler` builds `webui_wasm_handler.js` and exports `render`,
+  `render_partial`, `protocol_tokens`, and `render_component_templates`. It
+  accepts protobuf protocol bytes and depends on `webui-handler` and
+  `webui-protocol`, not `webui-parser`. `render(protocolBytes, stateJson,
+  onChunk, options)` uses the same `ResponseWriter` callback shape as the
+  Node binding: each handler write calls `onChunk(html)`, while callers that
+  need a full string concatenate chunks in JavaScript.
+- `parser` builds `webui_wasm_parser.js` and exports `build_protocol`. It
+  returns protobuf protocol bytes and depends on `webui-parser` and
+  `webui-protocol`, not `webui-handler`.
+- `all` is the default feature, builds `webui_wasm_all.js`, and exports the
+  parser plus handler surfaces for playground-style live preview. Callers
+  compose `build_protocol()` and callback-based `render()` explicitly.
+
+`cargo xtask build-wasm` builds all three variants into
+`docs/.webui-press/public/wasm/{all,handler,parser}/` with stable `wasm-pack`
+output names.
 
 ### npm Distribution
 

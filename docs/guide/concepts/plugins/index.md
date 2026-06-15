@@ -111,8 +111,11 @@ pub trait ParserPlugin {
     fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
 
     /// Consume the plugin and return captured build artifacts.
-    fn into_artifacts(self: Box<Self>) -> ParserPluginArtifacts {
-        ParserPluginArtifacts::None
+    ///
+    /// Returns an error if the plugin captured an invalid template construct
+    /// (e.g. a malformed `@event` handler) while producing its artifacts.
+    fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts> {
+        Ok(ParserPluginArtifacts::None)
     }
 }
 ```

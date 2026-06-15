@@ -137,7 +137,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
     };
 
     let result = webui::build(build_options)
-        .map_err(|e| NapiError::from_reason(format!("Build error: {e}")))?;
+        .map_err(|e| NapiError::from_reason(format!("Build error: {}", e.chain_message())))?;
 
     // Flatten css_files into alternating [filename, content, ...] for JS interop
     let css_files: Vec<String> = result

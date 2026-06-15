@@ -524,6 +524,7 @@ webui build ./src --out ./dist --plugin=webui
 | `--css-file-name-template <TEMPLATE>` | `[name].[ext]` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
 | `--legal-comments <MODE>` | `inline` | `inline` preserves legal CSS comments, `none` strips all comments |
+| `--format <FORMAT>` | `human` | `human` (colorized) or `json` (machine-readable diagnostics on stdout) |
 
 For CDN/browser caching in `link` mode, prefer:
 
@@ -568,6 +569,7 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 | `--css-file-name-template <TEMPLATE>` | `[name].[ext]` | Link-mode CSS filename template |
 | `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
 | `--legal-comments <MODE>` | `inline` | `inline` preserves legal CSS comments, `none` strips all comments |
+| `--format <FORMAT>` | `human` | `human` (colorized) or `json` (machine-readable diagnostics on stdout) |
 
 ### Inspect
 
@@ -575,6 +577,68 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 webui inspect ./dist/protocol.bin
 webui inspect ./dist/protocol.bin | jq '.fragments | keys'
 ```
+
+## Build Diagnostics & Error Output
+
+Authoring mistakes fail `webui build` with a structured, actionable diagnostic
+(never a stack trace). Each one has a **stable error code**, the source
+location, the offending snippet, and a `help:` fix:
+
+```
+✘ error: invalid <for> each expression [invalid-for-each]
+  --> index.html:67:5
+    each="person inpeople"
+  help: use the form each="item in collection", e.g. each="todo in todos"
+```
+
+When a mistake looks like a typo, `help:` suggests the intended name — a
+misspelled directive attribute (`eahc` → `each`) or an unregistered
+custom-element tag that closely matches a registered component **in the same
+namespace** (`<mp-buton>` → `<mp-button>`). A different-namespace tag (e.g. a
+third-party `<md-button>`) passes through as a genuine custom element.
+
+### Machine-readable output (`--format json`)
+
+For editors, CI, and AI tooling, pass the global `--format json` flag. Each
+error is emitted as a single JSON object on **stdout** (no ANSI), so it can be
+parsed directly instead of scraping terminal text:
+
+```bash
+webui build ./src --out ./dist --format json
+```
+
+```json
+{
+  "severity": "error",
+  "code": "invalid-for-each",
+  "message": "invalid <for> each expression",
+  "file": "index.html",
+  "line": 67,
+  "column": 5,
+  "snippet": "each=\"person inpeople\"",
+  "help": "use the form each=\"item in collection\", e.g. each=\"todo in todos\"",
+  "chain": ["Build failed", "Failed to parse index.html", "..."]
+}
+```
+
+Branch on the stable `code`, not the human-readable `message`. Fields that don't
+apply to a given error are `null`.
+
+### Error codes
+
+`invalid-for-each`, `invalid-for-identifier`, `missing-for-each`,
+`invalid-if-condition`, `missing-if-condition`, `unknown-component`,
+`invalid-event-handler`, `invalid-w-ref`, `unclosed-html-tag`,
+`malformed-html-tag`, `unexpected-closing-tag`, `unterminated-html-comment`,
+`unterminated-html-declaration`, `excessive-nesting`, `recursive-template`,
+`invalid-css`.
+
+### Exit codes
+
+Following `sysexits.h`: `0` success, `2` argument/usage error, `65`
+template/authoring error, `66` missing input (app folder, `--state`,
+`--servedir`, or entry file), `69` port already in use, `74` I/O error, `1`
+otherwise.
 
 ## `--components` - External Component Sources
 
@@ -926,6 +990,28 @@ import { render } from '@microsoft/webui';
 const protocol = readFileSync('./dist/protocol.bin');
 const html = render(protocol, JSON.stringify(state), 'index.html', req.url);
 ```
+
+### WebAssembly
+
+Use the split WASM bundles when rendering or parsing in the browser:
+
+```javascript
+import initHandler, { render } from './wasm/handler/webui_wasm_handler.js';
+await initHandler();
+const protocolBytes = new Uint8Array(await (await fetch('/protocol.bin')).arrayBuffer());
+let html = '';
+render(protocolBytes, JSON.stringify(state), (chunk) => {
+  html += chunk;
+}, { entry: 'index.html', requestPath: '/', plugin: 'webui' });
+```
+
+```javascript
+import initParser, { build_protocol } from './wasm/parser/webui_wasm_parser.js';
+await initParser();
+const protocolBytes = build_protocol({ 'index.html': '<h1>{{title}}</h1>' }, 'index.html');
+```
+
+Use `wasm/all/webui_wasm_all.js` when both parser and handler exports are needed in one module, such as a playground.
 
 ### Python (FFI)
 

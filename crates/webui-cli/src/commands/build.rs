@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::common::*;
+use crate::utils::error::CliError;
 use crate::utils::output;
 
 #[derive(Args)]
@@ -48,17 +49,12 @@ fn resolve_out(out: &Path) -> (PathBuf, OsString) {
 }
 
 pub fn execute(args: &BuildArgs) -> Result<()> {
-    run(args).map_err(|err| {
-        output::error(&err);
-
-        let err_msg = format!("{:#}", err);
-        if err_msg.contains("App folder not found") {
-            output::hint("Check that the app folder path exists");
-        } else if err_msg.contains("Failed to read") && args.app_args.entry == "index.html" {
-            output::hint("Try using --entry <file> to specify a different entry file");
+    run(args).inspect_err(|err| {
+        output::error(err);
+        if let Some(cli_err) = err.chain().find_map(|c| c.downcast_ref::<CliError>()) {
+            output::hint(cli_err.hint());
         }
         eprintln!();
-        err
     })
 }
 
@@ -72,7 +68,17 @@ fn run(args: &BuildArgs) -> Result<()> {
 
     let app = app_input
         .canonicalize()
-        .with_context(|| format!("App folder not found: {}", args.app_args.app.display()))?;
+        .map_err(|_| CliError::AppFolderNotFound {
+            path: args.app_args.app.display().to_string(),
+        })?;
+
+    let entry_path = app.join(&args.app_args.entry);
+    if !entry_path.is_file() {
+        return Err(CliError::EntryReadFailed {
+            path: entry_path.display().to_string(),
+        }
+        .into());
+    }
 
     let (out_dir, protocol_name) = resolve_out(&out);
     let protocol_path = out_dir.join(&protocol_name);
