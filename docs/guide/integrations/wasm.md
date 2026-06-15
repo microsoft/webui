@@ -1,135 +1,121 @@
-# WebUI WebAssembly Handler
+# WebUI WebAssembly
 
-The WebUI WASM handler compiles the full rendering pipeline to WebAssembly via `wasm-bindgen`, enabling client-side rendering directly in the browser. It powers the interactive [Playground](/playground/) in the documentation site.
+WebUI provides browser-ready WebAssembly bindings through `wasm-bindgen`. The bindings are built as three variants so you can choose only the parser, only the handler, or the combined playground bundle.
 
-## How It Works
+## Variants
 
-The WASM module includes the real `webui-parser` and `webui-handler` - the same code used by the CLI and the Rust handler. This means templates parsed in the browser produce identical output to server-side rendering.
+| Variant | Import path | Exports | Use when |
+|---------|-------------|---------|----------|
+| Handler | `wasm/handler/webui_wasm_handler.js` | `render`, `render_partial`, `protocol_tokens`, `render_component_templates` | You already have protocol bytes and only need rendering |
+| Parser | `wasm/parser/webui_wasm_parser.js` | `build_protocol` | You need to compile virtual browser files into protocol bytes |
+| All | `wasm/all/webui_wasm_all.js` | Parser and handler exports | You need both sides in one module, such as the docs playground |
 
-Two modes of operation are available:
+The handler-only bundle excludes `webui-parser`, and the parser-only bundle excludes `webui-handler`. The combined bundle keeps the previous playground behavior.
 
-1. **`render`** - Takes a pre-built protocol (JSON) + state and renders HTML
-2. **`build_and_render`** - Takes virtual files + state, parses and renders in one call
-
-## Building the WASM Module
+## Building the WASM bundles
 
 ```bash
 cargo xtask build-wasm
 ```
 
-The output is committed to the repository under `docs/` for use by the playground. Most developers don't need to rebuild it - only rebuild when you change Rust code in the core crates.
+The output is generated under `docs/.webui-press/public/wasm/` for the documentation playground and release staging. Rebuild it when Rust code in `webui-wasm`, `webui-parser`, `webui-handler`, or `webui-protocol` changes.
 
-## API Reference
+## Handler-only API
 
-### `render(protocolJson, stateJson, plugin?)`
+Use the handler bundle when the protocol was built elsewhere and loaded as protobuf bytes in the browser.
+
+```js
+import init, { render } from './wasm/handler/webui_wasm_handler.js';
+
+await init();
+
+const protocolBytes = new Uint8Array(await (await fetch('/protocol.bin')).arrayBuffer());
+const stateJson = '{"title": "Hello"}';
+let html = '';
+
+render(protocolBytes, stateJson, (chunk) => {
+  html += chunk;
+}, { entry: 'index.html', requestPath: '/', plugin: 'webui' });
+```
+
+### `render(protocolBytes, stateJson, onChunk, options?)`
 
 Render a pre-built WebUI protocol with state data.
 
-```js
-import init, { render } from './webui_wasm.js';
-
-await init();
-
-const protocolJson = '{"fragments": {...}}';
-const stateJson = '{"title": "Hello"}';
-
-const html = render(protocolJson, stateJson);
-```
-
-**Parameters:**
-
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `protocolJson` | `string` | JSON-serialized `WebUIProtocol` |
-| `stateJson` | `string` | JSON string with the render state |
-| `plugin` | `string \| undefined` | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
+| `protocolBytes` | `Uint8Array` | Protobuf-serialized `WebUIProtocol`, such as `protocol.bin` |
+| `stateJson` | `string` | JSON string with render state |
+| `onChunk` | `(html: string) => void` | Callback invoked with each rendered HTML fragment |
+| `options.entry` | `string \| undefined` | Entry fragment ID, defaults to `index.html` |
+| `options.requestPath` | `string \| undefined` | Request path used for route matching, defaults to `/` |
+| `options.plugin` | `string \| undefined` | Handler plugin name, such as `webui`, `fast-v3`, `fast-v2`, or `fast` |
 
-**Returns:** Rendered HTML string. Throws on error.
+Returns nothing on success. Throws on protocol, state, plugin, callback, or render errors.
 
-### `build_and_render(files, stateJson, entry)`
+### Additional handler exports
 
-Parse virtual files and render in a single call. This is the primary API for the playground, where no filesystem is available.
+| Export | Description |
+|--------|-------------|
+| `render_partial(protocolBytes, stateJson, entry, requestPath, inventoryHex)` | Returns the JSON partial-navigation response with `state` included |
+| `protocol_tokens(protocolBytes)` | Returns the protocol CSS token names as a JavaScript array |
+| `render_component_templates(protocolBytes, componentTagsJson, inventoryHex)` | Returns template and style payloads for requested components |
+
+## Parser-only API
+
+Use the parser bundle when browser code needs to compile an in-memory file map into protocol bytes.
 
 ```js
-import init, { build_and_render } from './webui_wasm.js';
+import init, { build_protocol } from './wasm/parser/webui_wasm_parser.js';
 
 await init();
 
 const files = {
-  'index.html': '<h1>Hello, {{name}}!</h1>',
-  'my-card.html': '<div class="card"><slot></slot></div>',
-  'my-card.css': '.card { border: 1px solid #ccc; }'
+  'index.html': '<h1>{{title}}</h1>',
+  'my-card.html': '<p><slot></slot></p>',
+  'my-card.css': 'p { color: red; }',
 };
-const stateJson = '{"name": "WebUI"}';
 
-const html = build_and_render(files, stateJson, 'index.html');
-// → '<h1>Hello, WebUI!</h1>'
+const protocolBytes = build_protocol(files, 'index.html');
 ```
-
-**Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `files` | `Record<string, string>` | Map of filenames to content |
-| `stateJson` | `string` | JSON string with the render state |
-| `entry` | `string` | Entry HTML filename (e.g., `"index.html"`) |
-
-**Returns:** Rendered HTML string. Throws on error.
-
-**Component discovery:** HTML files with a hyphen in the name are automatically registered as components (e.g., `my-card.html` → `<my-card>`). Matching `.css` files are paired and inlined via `<style>` tags.
 
 ### `build_protocol(files, entry)`
 
-Parse virtual files into a WebUI protocol without rendering. Returns the serialized protocol as a JSON string.
-
-```js
-import init, { build_protocol } from './webui_wasm.js';
-
-await init();
-
-const files = {
-  'index.html': '<h1>{{title}}</h1>'
-};
-
-const protocolJson = build_protocol(files, 'index.html');
-// Use with render() later
-```
-
-**Parameters:**
+Parse virtual files into a WebUI protocol without rendering.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `files` | `Record<string, string>` | Map of filenames to content |
 | `entry` | `string` | Entry HTML filename |
 
-**Returns:** JSON string of the `WebUIProtocol`.
+Returns protobuf-serialized `WebUIProtocol` as a `Uint8Array`. Throws on missing entry files, invalid templates, invalid component authoring, or protocol serialization errors.
 
-## Using Plugins
+Component discovery follows the virtual file map convention: HTML files with a hyphen in the name are registered as components, such as `my-card.html` for `<my-card>`. Matching `.css` files are paired and inlined with `CssStrategy::Style`.
 
-Pass a plugin identifier (see [Plugins](/guide/concepts/plugins/)) as the `plugin` parameter to enable hydration markers:
+## Combined API
+
+Use the combined bundle when you want parser and handler exports from one module.
 
 ```js
-const html = render(protocolJson, stateJson, 'webui');
+import init, { build_protocol, render } from './wasm/all/webui_wasm_all.js';
+
+await init();
+
+const protocolBytes = build_protocol(files, 'index.html');
+let html = '';
+render(protocolBytes, stateJson, (chunk) => {
+  html += chunk;
+}, { entry: 'index.html', requestPath: '/' });
 ```
 
-The plugin runs the same parser/handler code used by the CLI; output is byte-identical to a server-side render with the same plugin selected.
+The documentation playground imports this combined bundle and currently uses `build_protocol` followed by `render` so it can measure compile and render time separately.
 
-## Playground Integration
-
-The documentation playground uses `build_and_render` to provide a live editing experience:
-
-1. User edits template HTML, component files, and state JSON in the browser
-2. On each change, `build_and_render` is called with the virtual files
-3. The rendered HTML is displayed in a preview pane
-
-This provides instant feedback with the exact same parser and handler used in production builds.
-
-## Differences from Server-Side Rendering
+## Differences from server-side rendering
 
 | Aspect | Server (CLI / Rust / Node) | WASM (Browser) |
 |--------|---------------------------|----------------|
-| Protocol format | Protobuf binary | JSON |
-| CSS strategy | Link (default) or style | Always inline |
-| File I/O | Filesystem | Virtual file map |
-| Streaming | Yes (callback-based) | No (returns full string) |
-| Plugin support | Yes | Yes |
+| Protocol format | Protobuf binary | Protobuf bytes |
+| CSS strategy | Link by default, Style or Module when configured | Style for virtual file builds |
+| File I/O | Filesystem and component discovery sources | Virtual file map |
+| Streaming | Supported by native handlers | `render()` calls a JavaScript chunk callback |
+| Bundle choice | Native crates/addons | Handler-only, parser-only, or combined WASM |

@@ -246,6 +246,6 @@ jobs:
             publish/npm/*
             publish/nuget/*
             publish/crates/*
-            publish/wasm/*
+            publish/wasm/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

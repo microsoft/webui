@@ -991,6 +991,28 @@ const protocol = readFileSync('./dist/protocol.bin');
 const html = render(protocol, JSON.stringify(state), 'index.html', req.url);
 ```
 
+### WebAssembly
+
+Use the split WASM bundles when rendering or parsing in the browser:
+
+```javascript
+import initHandler, { render } from './wasm/handler/webui_wasm_handler.js';
+await initHandler();
+const protocolBytes = new Uint8Array(await (await fetch('/protocol.bin')).arrayBuffer());
+let html = '';
+render(protocolBytes, JSON.stringify(state), (chunk) => {
+  html += chunk;
+}, { entry: 'index.html', requestPath: '/', plugin: 'webui' });
+```
+
+```javascript
+import initParser, { build_protocol } from './wasm/parser/webui_wasm_parser.js';
+await initParser();
+const protocolBytes = build_protocol({ 'index.html': '<h1>{{title}}</h1>' }, 'index.html');
+```
+
+Use `wasm/all/webui_wasm_all.js` when both parser and handler exports are needed in one module, such as a playground.
+
 ### Python (FFI)
 
 ```python
