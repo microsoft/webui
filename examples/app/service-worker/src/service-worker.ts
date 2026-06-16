@@ -98,7 +98,7 @@ async function loadProtocol(): Promise<Uint8Array> {
 
 function loadWasm(): Promise<unknown> {
   if (!wasmReady) {
-    const ready = initWasm().catch((error: unknown) => {
+    const ready = Promise.resolve(initWasm()).catch((error: unknown) => {
       wasmReady = undefined;
       throw error;
     });
