@@ -738,7 +738,17 @@ pub(crate) fn build_search_entry(title: &str, path: &str, html: &str) -> Value {
     ])
 }
 
-/// Collect all `.ts` files from a directory tree (iterative).
+fn is_component_ts_file(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    path.extension().is_some_and(|extension| extension == "ts")
+        && !file_name.ends_with(".spec.ts")
+        && !file_name.ends_with(".test.ts")
+        && !file_name.ends_with(".d.ts")
+}
+
+/// Collect component `.ts` files from a directory tree (iterative).
 fn collect_ts_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -750,7 +760,7 @@ fn collect_ts_files(dir: &Path) -> Vec<std::path::PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "ts") {
+            } else if is_component_ts_file(&path) {
                 files.push(path);
             }
         }
@@ -1048,6 +1058,34 @@ mod tests {
             "placeholder marker must not survive output: {html}"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn collect_ts_files_skips_tests_and_declarations() -> TestResult {
+        let root = std::env::temp_dir().join(format!(
+            "webui-press-ts-collect-test-{}-{:x}",
+            std::process::id(),
+            fxhash("ts-collect")
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root)?;
+        }
+        fs::create_dir_all(root.join("my-widget"))?;
+        fs::write(root.join("my-widget/my-widget.ts"), "")?;
+        fs::write(root.join("my-widget/my-widget.spec.ts"), "")?;
+        fs::write(root.join("my-widget/my-widget.test.ts"), "")?;
+        fs::write(root.join("my-widget/my-widget.d.ts"), "")?;
+
+        let files = collect_ts_files(&root);
+
+        fs::remove_dir_all(&root)?;
+
+        assert_eq!(
+            files,
+            vec![root.join("my-widget/my-widget.ts")],
+            "only hydration entry files should be bundled"
+        );
         Ok(())
     }
 
