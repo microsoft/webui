@@ -79,12 +79,9 @@ fn load_theme(theme: &str, config_dir: &Path) -> Result<TokenFile> {
 
 fn inject_theme_tokens(
     state: &mut Value,
-    token_file: Option<&TokenFile>,
+    token_file: &TokenFile,
     protocol_tokens: &[String],
 ) -> Result<()> {
-    let Some(token_file) = token_file else {
-        return Ok(());
-    };
     let resolved = webui_tokens::resolve_tokens(protocol_tokens, token_file)
         .map_err(|e| Error::Build(format!("Failed to resolve theme tokens: {e}")))?;
     webui_tokens::inject_into_state(state, &resolved);
@@ -419,18 +416,20 @@ pub fn build_docs_with_cache(
             }
         }
 
-        let mut page_state = page.state.clone();
-        inject_theme_tokens(
-            &mut page_state,
-            token_file.as_ref(),
-            &build_result.protocol.tokens,
-        )?;
+        let mut themed_state;
+        let render_state = if let Some(token_file) = token_file.as_ref() {
+            themed_state = page.state.clone();
+            inject_theme_tokens(&mut themed_state, token_file, &build_result.protocol.tokens)?;
+            &themed_state
+        } else {
+            &page.state
+        };
 
         let mut writer = StringWriter::with_capacity(8192);
         handler
             .render(
                 &build_result.protocol,
-                &page_state,
+                render_state,
                 &RenderOptions::new("index.html", &page.path),
                 &mut writer,
             )
@@ -548,11 +547,9 @@ pub fn build_docs_with_cache(
     })
     .map_err(|e| Error::Build(format!("404 build failed: {e}")))?;
 
-    inject_theme_tokens(
-        &mut not_found_state,
-        token_file.as_ref(),
-        &nf_build.protocol.tokens,
-    )?;
+    if let Some(token_file) = token_file.as_ref() {
+        inject_theme_tokens(&mut not_found_state, token_file, &nf_build.protocol.tokens)?;
+    }
 
     // Fold the 404 page's component CSS into the shared map, then write
     // all per-component stylesheets at site root in one pass. The handler
