@@ -1,0 +1,11 @@
+{
+  "entry": "hero-panel",
+  "delayMs": 420,
+  "state": {
+    "region": "Public API: /api/hero.json",
+    "headline": "Serverless HTML without an app server",
+    "detail": "A service worker loads protocol.bin from the CDN, fetches JSON state, renders a WebUI fragment in WASM, and streams it into the navigation response.",
+    "ctaHref": "https://github.com/microsoft/webui",
+    "ctaLabel": "View WebUI on GitHub"
+  }
+}

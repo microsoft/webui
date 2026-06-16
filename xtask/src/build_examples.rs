@@ -3,9 +3,13 @@
 
 //! Examples build tasks.
 
-use crate::util::{collect_child_dirs, display_name, run_command, run_command_quiet};
+use crate::util::{
+    build_command, collect_child_dirs, display_name, run_command, run_command_quiet,
+};
+use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
+use std::process::Stdio;
 
 // ── Integration builds ──────────────────────────────────────────────────
 
@@ -119,36 +123,15 @@ pub fn run_app_builds() -> Result<(), String> {
         .map(|app_dir| {
             thread::spawn(move || {
                 let app_name = display_name(&app_dir);
-                let src_dir = app_dir.join("src");
-                if !src_dir.is_dir() {
+                if !has_script(&app_dir, "build") {
                     return Err(format!(
-                        "app '{}' is missing src directory at {}",
+                        "app '{}' is missing a package.json build script at {}",
                         app_name,
-                        src_dir.display()
+                        app_dir.join("package.json").display()
                     ));
                 }
 
-                let output_dir = app_dir.join("dist");
-                let src_str = src_dir.to_string_lossy().to_string();
-                let output_str = output_dir.to_string_lossy().to_string();
-
-                let mut args: Vec<&str> = vec![
-                    "run",
-                    "-p",
-                    "microsoft-webui-cli",
-                    "--",
-                    "build",
-                    &src_str,
-                    "--out",
-                    &output_str,
-                ];
-
-                if app_name.ends_with("-fast") {
-                    args.push("--plugin");
-                    args.push("fast-v3");
-                }
-
-                run_command_quiet("cargo", &args, None)
+                run_app_build_script(&app_dir)
                     .map_err(|message| format!("app '{}' build failed: {}", app_name, message))?;
 
                 eprintln!("  {} app: {}", console::style("•").dim(), app_name);
@@ -176,6 +159,48 @@ pub fn run_app_builds() -> Result<(), String> {
 pub fn run_example_builds() -> Result<(), String> {
     run_integration_builds()?;
     run_app_builds()
+}
+
+fn run_app_build_script(app_dir: &Path) -> Result<(), String> {
+    let mut command = build_command("pnpm", &["run", "build"]);
+    command
+        .current_dir(app_dir)
+        .env("CARGO_INCREMENTAL", "0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    match command.output() {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let mut msg = String::new();
+            if let Ok(s) = String::from_utf8(output.stdout) {
+                msg.push_str(&s);
+            }
+            if let Ok(s) = String::from_utf8(output.stderr) {
+                msg.push_str(&s);
+            }
+            if msg.is_empty() {
+                msg = format!("exit code {}", output.status.code().unwrap_or(1));
+            }
+            Err(msg)
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Check whether an app package declares a non-empty npm script.
+fn has_script(app_dir: &Path, script: &str) -> bool {
+    let Ok(content) = fs::read_to_string(app_dir.join("package.json")) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+    value
+        .get("scripts")
+        .and_then(|scripts| scripts.get(script))
+        .and_then(|script_value| script_value.as_str())
+        .is_some_and(|script_text| !script_text.is_empty())
 }
 
 // ── Run integration with app ────────────────────────────────────────────

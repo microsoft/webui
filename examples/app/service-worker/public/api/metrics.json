@@ -1,0 +1,22 @@
+{
+  "entry": "metrics-panel",
+  "delayMs": 160,
+  "state": {
+    "label": "Public API: /api/metrics.json",
+    "title": "Chunks render as async state resolves",
+    "metrics": [
+      {
+        "value": "1",
+        "label": "protocol.bin file"
+      },
+      {
+        "value": "3",
+        "label": "WASM bundle variants"
+      },
+      {
+        "value": "0",
+        "label": "application servers"
+      }
+    ]
+  }
+}

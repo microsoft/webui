@@ -53,6 +53,10 @@ Render a pre-built WebUI protocol with state data.
 
 Returns nothing on success. Throws on protocol, state, plugin, callback, or render errors.
 
+For a complete static/CDN service worker example using this callback to write a
+`ReadableStream` and mirror `--theme` token injection in the browser, see
+[Serverless Architecture](/guide/serverless-architecture).
+
 ### Additional handler exports
 
 | Export | Description |

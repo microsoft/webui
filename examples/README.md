@@ -18,6 +18,7 @@ Current entries:
 | `app/contact-book-manager` | Full CRUD contact manager with WebUI Framework + router + Node API |
 | `app/commerce` | WebUI Framework hydration app with a Rust backend for commerce demo app, dozens of controls |
 | `app/routes` | Nested declarative routing demo showing 4-level deep routes, full server side and client handoff |
+| `app/service-worker` | Static/CDN service worker app using `webui_wasm_handler` to stream WASM-rendered chunks from public API state |
 | `integration/node` | Node.js integration via native addon |
 | `integration/rust` | Rust integration via `webui-handler` |
 
@@ -47,3 +48,4 @@ See integration-specific READMEs:
 
 - [integration/node/README.md](integration/node/README.md)
 - [integration/rust/README.md](integration/rust/README.md)
+- [app/service-worker/README.md](app/service-worker/README.md)

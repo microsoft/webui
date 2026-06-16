@@ -1,0 +1,9 @@
+{
+  "entry": "shell-panel",
+  "delayMs": 0,
+  "state": {
+    "eyebrow": "Static CDN shell",
+    "title": "WebUI rendered in a service worker",
+    "summary": "The shell starts streaming immediately. Each section below is rendered by the handler-only WASM bundle after its public API state arrives."
+  }
+}

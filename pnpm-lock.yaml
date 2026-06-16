@@ -230,6 +230,24 @@ importers:
         specifier: 'catalog:'
         version: 5.9.3
 
+  examples/app/service-worker:
+    devDependencies:
+      '@microsoft/webui-examples-theme':
+        specifier: workspace:*
+        version: link:../../../packages/webui-examples-theme
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.2
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.3.5
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.28.1
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   examples/app/todo-fast:
     devDependencies:
       '@microsoft/fast-element':
