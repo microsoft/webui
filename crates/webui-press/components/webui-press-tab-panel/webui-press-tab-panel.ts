@@ -3,6 +3,6 @@
 
 import { WebUIElement } from "@microsoft/webui-framework";
 
-export class WebUITabPanel extends WebUIElement {}
+export class WebUIPressTabPanel extends WebUIElement {}
 
-WebUITabPanel.define("webui-tab-panel");
+WebUIPressTabPanel.define("webui-press-tab-panel");

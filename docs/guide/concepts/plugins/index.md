@@ -35,11 +35,11 @@ implementations are loaded.
 
 ## Using Plugins with Handlers
 
-<webui-tabs>
-<webui-tab slot="tab" active>Rust</webui-tab>
-<webui-tab slot="tab">Node.js</webui-tab>
-<webui-tab slot="tab">FFI (C API)</webui-tab>
-<webui-tab-panel active>
+<webui-press-tabs>
+<webui-press-tab slot="tab" active>Rust</webui-press-tab>
+<webui-press-tab slot="tab">Node.js</webui-press-tab>
+<webui-press-tab slot="tab">FFI (C API)</webui-press-tab>
+<webui-press-tab-panel active>
 
 ```rust
 use webui::WebUIHandler;
@@ -48,8 +48,8 @@ let handler = WebUIHandler::with_plugin(|| Box::new(MyHydrationPlugin::new()));
 handler.handle(&protocol, &state, &options, &mut writer)?;
 ```
 
-</webui-tab-panel>
-<webui-tab-panel>
+</webui-press-tab-panel>
+<webui-press-tab-panel>
 
 ```js
 import { renderStream } from '@microsoft/webui';
@@ -57,16 +57,16 @@ import { renderStream } from '@microsoft/webui';
 renderStream(protocolData, state, (chunk) => res.write(chunk), { plugin: '<name>' });
 ```
 
-</webui-tab-panel>
-<webui-tab-panel>
+</webui-press-tab-panel>
+<webui-press-tab-panel>
 
 ```c
 void *handler = webui_handler_create_with_plugin("<name>");
 char *html = webui_handler_render(handler, protocol_data, protocol_len, state_json, "index.html", "/");
 ```
 
-</webui-tab-panel>
-</webui-tabs>
+</webui-press-tab-panel>
+</webui-press-tabs>
 
 ### Using the WebUI Plugin
 

@@ -25,6 +25,21 @@
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary" />
   <link rel="icon" href="{{site.base}}logo.svg" />
+  <style>
+    :root {
+      /*{{{tokens.light}}}*/
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        /*{{{tokens.dark}}}*/
+      }
+    }
+
+    :root[data-theme="dark"] {
+      /*{{{tokens.dark}}}*/
+    }
+  </style>
   {{{headTags}}}
   <script>
     /* Preserve sidebar scroll across cross-document navigations.

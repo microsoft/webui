@@ -14,11 +14,11 @@ The crate is published as `microsoft-webui` on crates.io; the bare `webui` name 
 
 ## Examples
 
-<webui-tabs>
-<webui-tab slot="tab" active>Actix Web</webui-tab>
-<webui-tab slot="tab">Axum</webui-tab>
-<webui-tab slot="tab">Hyper</webui-tab>
-<webui-tab-panel active>
+<webui-press-tabs>
+<webui-press-tab slot="tab" active>Actix Web</webui-press-tab>
+<webui-press-tab slot="tab">Axum</webui-press-tab>
+<webui-press-tab slot="tab">Hyper</webui-press-tab>
+<webui-press-tab-panel active>
 
 ```rust
 use actix_web::{web, App, HttpServer, HttpRequest, HttpResponse};
@@ -60,8 +60,8 @@ async fn main() -> std::io::Result<()> {
 }
 ```
 
-</webui-tab-panel>
-<webui-tab-panel>
+</webui-press-tab-panel>
+<webui-press-tab-panel>
 
 ```rust
 use axum::{routing::get, Router, extract::{State, Request}};
@@ -100,8 +100,8 @@ async fn main() {
 }
 ```
 
-</webui-tab-panel>
-<webui-tab-panel>
+</webui-press-tab-panel>
+<webui-press-tab-panel>
 
 ```rust
 use hyper::{server::conn::http1, service::service_fn, body::Bytes, Request, Response};
@@ -150,8 +150,8 @@ async fn main() {
 }
 ```
 
-</webui-tab-panel>
-</webui-tabs>
+</webui-press-tab-panel>
+</webui-press-tabs>
 
 ## Streaming SSR
 

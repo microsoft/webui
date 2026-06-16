@@ -189,6 +189,7 @@ Shadow DOM components can react to the layout via `:host-context([data-layout="f
   "contentDir": ".",
   "outDir": "./dist",
   "publicDir": "./.webui-press/public",
+  "theme": "@my-org/design-tokens",
   "css": "./.webui-press/theme.css",
   "components": ["./.webui-press/components"],
 
@@ -263,15 +264,23 @@ Every entry in `head[]` is rendered into `<head>` with attributes sorted alphabe
 
 ---
 
-## Theme override
+## Theme and CSS overrides
 
-The bundled `docs.css` is built around CSS custom properties. To restyle the entire site, drop a `theme.css` next to `config.json` inside `.webui-press/` and reference it via the `"css"` field. The path is resolved relative to `config.json`'s directory:
+The bundled `docs.css` is built around CSS custom properties. For design-token packages, set `"theme"` to the same kind of value accepted by `webui serve --theme`: a local JSON file, an npm package that exports `tokens.json`, or a package subpath.
+
+```json
+{ "theme": "@my-org/design-tokens" }
+```
+
+During each page build, webui-press reads the WebUI protocol token inventory emitted by the parser, resolves only those used tokens from the configured theme package, and injects the resolved CSS declarations into render state as `tokens.light`, `tokens.dark`, etc. Templates can inline them with raw CSS placeholders such as `/*{{{tokens.light}}}*/`.
+
+Use `"css"` for site-specific chrome overrides that should stay outside the reusable theme package. The path is resolved relative to `config.json`'s directory:
 
 ```json
 { "css": "./.webui-press/theme.css" }
 ```
 
-So the conventional layout is `.webui-press/config.json` + `.webui-press/theme.css` side by side.
+So the conventional layout is `.webui-press/config.json` + `.webui-press/theme.css` side by side, optionally with `"theme"` pointing at a shared token package.
 
 Override the design tokens you care about:
 
@@ -339,13 +348,13 @@ See the [WebUI Framework component guide](https://microsoft.github.io/webui/guid
 
 `webui-press` ships with these components pre-registered for content use:
 
-| Tag                  | Purpose                                                |
-| -------------------- | ------------------------------------------------------ |
-| `<code-block>`       | Syntax-highlighted code with a copy button (auto-injected around code fences) |
-| `<webui-blockquote>` | Styled quotes / callouts                               |
-| `<webui-tabs>`       | Tabbed content groups                                  |
-| `<webui-tab>`        | Tab triggers                                           |
-| `<webui-tab-panel>`  | Tab content panels                                     |
+| Tag                         | Purpose                                                |
+| --------------------------- | ------------------------------------------------------ |
+| `<code-block>`              | Syntax-highlighted code with a copy button (auto-injected around code fences) |
+| `<webui-blockquote>`        | Styled quotes / callouts                               |
+| `<webui-press-tabs>`        | Tabbed content groups                                  |
+| `<webui-press-tab>`         | Tab triggers                                           |
+| `<webui-press-tab-panel>`   | Tab content panels                                     |
 
 Plus shadow components used by the chrome itself: `<docs-search>`, `<docs-theme-toggle>`.
 

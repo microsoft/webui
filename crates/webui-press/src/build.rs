@@ -14,6 +14,7 @@ use rayon::prelude::*;
 use serde_json::{Map, Value};
 use webui::BuildOptions;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
+use webui_tokens::TokenFile;
 
 use crate::content::process_content;
 use crate::error::{Error, Result};
@@ -60,6 +61,31 @@ impl BuildCache {
         self.quiet = true;
         self.skip_clean = true;
     }
+}
+
+fn load_theme(theme: &str, config_dir: &Path) -> Result<TokenFile> {
+    let config_relative = config_dir.join(theme);
+    let resolved = if config_relative.exists() {
+        config_relative
+            .canonicalize()
+            .map_err(|e| Error::Build(format!("Failed to canonicalize {theme}: {e}")))?
+    } else {
+        webui_tokens::resolve_theme_path(theme, config_dir)
+            .map_err(|e| Error::Build(format!("Failed to resolve theme {theme}: {e}")))?
+    };
+    webui_tokens::load_token_file(&resolved)
+        .map_err(|e| Error::Build(format!("Failed to load theme {}: {e}", resolved.display())))
+}
+
+fn inject_theme_tokens(
+    state: &mut Value,
+    token_file: &TokenFile,
+    protocol_tokens: &[String],
+) -> Result<()> {
+    let resolved = webui_tokens::resolve_tokens(protocol_tokens, token_file)
+        .map_err(|e| Error::Build(format!("Failed to resolve theme tokens: {e}")))?;
+    webui_tokens::inject_into_state(state, &resolved);
+    Ok(())
 }
 
 // ── Output helpers ──────────────────────────────────────────────
@@ -185,6 +211,10 @@ pub fn build_docs_with_cache(
         .as_ref()
         .and_then(|p| fs::read_to_string(p).ok())
         .unwrap_or_default();
+    let token_file = match &config.theme {
+        Some(theme) => Some(load_theme(theme, config_dir)?),
+        None => None,
+    };
 
     print_header(cache, &config.site.title);
     eprintln!();
@@ -386,11 +416,20 @@ pub fn build_docs_with_cache(
             }
         }
 
+        let mut themed_state;
+        let render_state = if let Some(token_file) = token_file.as_ref() {
+            themed_state = page.state.clone();
+            inject_theme_tokens(&mut themed_state, token_file, &build_result.protocol.tokens)?;
+            &themed_state
+        } else {
+            &page.state
+        };
+
         let mut writer = StringWriter::with_capacity(8192);
         handler
             .render(
                 &build_result.protocol,
-                &page.state,
+                render_state,
                 &RenderOptions::new("index.html", &page.path),
                 &mut writer,
             )
@@ -507,6 +546,10 @@ pub fn build_docs_with_cache(
         ..BuildOptions::default()
     })
     .map_err(|e| Error::Build(format!("404 build failed: {e}")))?;
+
+    if let Some(token_file) = token_file.as_ref() {
+        inject_theme_tokens(&mut not_found_state, token_file, &nf_build.protocol.tokens)?;
+    }
 
     // Fold the 404 page's component CSS into the shared map, then write
     // all per-component stylesheets at site root in one pass. The handler
@@ -692,7 +735,17 @@ pub(crate) fn build_search_entry(title: &str, path: &str, html: &str) -> Value {
     ])
 }
 
-/// Collect all `.ts` files from a directory tree (iterative).
+fn is_component_ts_file(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    path.extension().is_some_and(|extension| extension == "ts")
+        && !file_name.ends_with(".spec.ts")
+        && !file_name.ends_with(".test.ts")
+        && !file_name.ends_with(".d.ts")
+}
+
+/// Collect component `.ts` files from a directory tree (iterative).
 fn collect_ts_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -704,7 +757,7 @@ fn collect_ts_files(dir: &Path) -> Vec<std::path::PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "ts") {
+            } else if is_component_ts_file(&path) {
                 files.push(path);
             }
         }
@@ -1002,6 +1055,34 @@ mod tests {
             "placeholder marker must not survive output: {html}"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn collect_ts_files_skips_tests_and_declarations() -> TestResult {
+        let root = std::env::temp_dir().join(format!(
+            "webui-press-ts-collect-test-{}-{:x}",
+            std::process::id(),
+            fxhash("ts-collect")
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root)?;
+        }
+        fs::create_dir_all(root.join("my-widget"))?;
+        fs::write(root.join("my-widget/my-widget.ts"), "")?;
+        fs::write(root.join("my-widget/my-widget.spec.ts"), "")?;
+        fs::write(root.join("my-widget/my-widget.test.ts"), "")?;
+        fs::write(root.join("my-widget/my-widget.d.ts"), "")?;
+
+        let files = collect_ts_files(&root);
+
+        fs::remove_dir_all(&root)?;
+
+        assert_eq!(
+            files,
+            vec![root.join("my-widget/my-widget.ts")],
+            "only hydration entry files should be bundled"
+        );
         Ok(())
     }
 
