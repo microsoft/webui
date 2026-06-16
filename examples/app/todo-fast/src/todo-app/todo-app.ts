@@ -13,18 +13,20 @@ interface TodoItemData {
 
 export class TodoApp extends FASTElement {
   @attr title = '';
-  @observable items!: TodoItemData[];
-  @observable remainingCount!: number;
+  @observable items: TodoItemData[] = [];
+  @observable remainingCount = 0;
 
   addInput!: HTMLInputElement;
+
+  private prepared = false;
 
   private nextId = 100;
 
   connectedCallback(): void {
-    this.prepareFromDom();
+    this.prepareOnce();
     super.connectedCallback();
     void this.$fastController.isPrerendered.then(() => {
-      this.prepareFromDom();
+      this.prepareOnce();
     });
     console.log('TodoApp connected');
   }
@@ -34,9 +36,14 @@ export class TodoApp extends FASTElement {
     console.log('TodoApp disconnected');
   }
 
-  private prepareFromDom(): void {
+  private prepareOnce(): void {
+    if (this.prepared) return;
+    this.prepareFromDom();
+  }
+
+  private prepareFromDom(): boolean {
     const root = this.shadowRoot;
-    if (!root) return;
+    if (!root) return false;
 
     const items: TodoItemData[] = [];
     for (const el of root.querySelectorAll('todo-item')) {
@@ -46,18 +53,31 @@ export class TodoApp extends FASTElement {
         state: el.getAttribute('state') || 'pending',
       });
     }
+    this.setItems(items);
+    return true;
+  }
+
+  private setItems(items: TodoItemData[]): void {
     this.items = items;
     if (items.length > 0) {
-      this.nextId = Math.max(...items.map(i => Number(i.id) || 0)) + 1;
+      let maxId = 0;
+      for (const item of items) {
+        maxId = Math.max(maxId, Number(item.id) || 0);
+      }
+      this.nextId = maxId + 1;
     }
     this.updateCount();
+    this.prepared = true;
   }
 
   onToggleItem(e: CustomEvent<{id: string}>): void {
-    const item = this.items.find(i => i.id === e.detail.id);
-    if (item) {
-      item.state = item.state === 'done' ? 'pending' : 'done';
-    }
+    this.items = this.items.map(item => item.id === e.detail.id
+      ? {
+          id: item.id,
+          title: item.title,
+          state: item.state === 'done' ? 'pending' : 'done',
+        }
+      : item);
     this.updateCount();
   }
 
@@ -66,7 +86,7 @@ export class TodoApp extends FASTElement {
     this.updateCount();
   }
 
-  onAddKeydown(e: KeyboardEvent) {
+  onAddKeydown(e: KeyboardEvent): boolean {
     if (e.key === 'Enter') {
       this.addTodo();
     }

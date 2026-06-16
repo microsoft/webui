@@ -166,6 +166,10 @@ impl HandlerPlugin for FastV3HydrationPlugin {
     ) -> Result<()> {
         write_fast_route_component_state(state, writer)
     }
+
+    fn needs_webui_bootstrap(&self) -> bool {
+        false
+    }
 }
 
 fn write_fast_route_component_state(state: &Value, writer: &mut dyn ResponseWriter) -> Result<()> {
@@ -519,6 +523,60 @@ mod tests {
             render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
         // Root scope is disabled — no markers at root level
         assert_eq!(output, "<p>Alice</p>");
+    }
+
+    #[test]
+    fn test_fast_state_only_bootstrap_skips_webui_metadata_script() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><body><my-page>".to_string()),
+                    WebUIFragment::component("my-page"),
+                    WebUIFragment::raw("</my-page>".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        fragments.insert(
+            "my-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Hello</p>".to_string())],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol
+            .components
+            .entry("my-page".to_string())
+            .or_default()
+            .template = "<f-template name=\"my-page\"><p>Hello</p></f-template>".to_string();
+
+        let state = test_json!({"items": [{"name": "A"}]});
+        let output =
+            render_with_plugin(&protocol, &state, || Box::new(FastV3HydrationPlugin::new()));
+
+        assert!(
+            output.contains("<script type=\"application/json\" id=\"__webui_state\">"),
+            "FAST should keep the state data block: {output}"
+        );
+        assert!(
+            output.contains("<f-template name=\"my-page\">"),
+            "FAST should keep f-template emission: {output}"
+        );
+        assert!(
+            !output.contains("window.__webui"),
+            "FAST should not emit the WebUI bootstrap script: {output}"
+        );
+        assert!(
+            !output.contains("\"chain\""),
+            "FAST should not serialize WebUI router chain metadata: {output}"
+        );
+        assert!(
+            !output.contains("\"inventory\""),
+            "FAST should not serialize WebUI inventory metadata: {output}"
+        );
     }
 
     #[test]

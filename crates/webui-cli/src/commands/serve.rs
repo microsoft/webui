@@ -1185,7 +1185,10 @@ mod tests {
     #[test]
     fn test_build_and_render_selects_fast_plugin_versions() {
         let app = create_app_dir(&[
-            ("index.html", "<my-card></my-card>"),
+            (
+                "index.html",
+                "<html><body><my-card></my-card></body></html>",
+            ),
             ("my-card.html", "<span>{{name}}</span>"),
             ("state.json", r#"{"name":"Alice"}"#),
         ]);
@@ -1214,14 +1217,26 @@ mod tests {
         let fast = render(Some(Plugin::Fast));
         assert!(fast.contains("<!--fe-b$$start$$0$$name$$fe-b-->"));
         assert!(!fast.contains("<!--fe:b-->"));
+        assert!(fast.contains("<script type=\"application/json\" id=\"__webui_state\">"));
+        assert!(!fast.contains("window.__webui"));
+        assert!(!fast.contains("\"chain\""));
+        assert!(!fast.contains("\"inventory\""));
 
         let fast_v2 = render(Some(Plugin::FastV2));
         assert!(fast_v2.contains("<!--fe-b$$start$$0$$name$$fe-b-->"));
         assert!(!fast_v2.contains("<!--fe:b-->"));
+        assert!(fast_v2.contains("<script type=\"application/json\" id=\"__webui_state\">"));
+        assert!(!fast_v2.contains("window.__webui"));
+        assert!(!fast_v2.contains("\"chain\""));
+        assert!(!fast_v2.contains("\"inventory\""));
 
         let fast_v3 = render(Some(Plugin::FastV3));
         assert!(fast_v3.contains("<!--fe:b-->"));
         assert!(!fast_v3.contains("<!--fe-b$$start$$"));
+        assert!(fast_v3.contains("<script type=\"application/json\" id=\"__webui_state\">"));
+        assert!(!fast_v3.contains("window.__webui"));
+        assert!(!fast_v3.contains("\"chain\""));
+        assert!(!fast_v3.contains("\"inventory\""));
     }
 
     #[test]

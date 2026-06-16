@@ -402,9 +402,10 @@ The server renders `<webui-route>` elements with these DOM attributes:
 
 Build-time attributes like `query`, `keep-alive`, `cache-tags`, and `invalidates` are **not** emitted as DOM attributes on `<webui-route>` elements. They are compiled into the binary protocol and delivered to the client via `window.__webui.chain` JSON data. The `<route>` source attributes remain valid and unchanged - the compiler just delivers them through JSON instead of the DOM.
 
-The server also emits a `window.__webui` script containing the SSR chain, template inventory, and CSS metadata. This replaces the previous `<meta name="webui-inventory">` tag (which is still supported as a fallback for older servers).
+The server emits a JSON state data block plus a `window.__webui` script containing the SSR chain, template inventory, and CSS metadata. This replaces the previous `<meta name="webui-inventory">` tag (which is still supported as a fallback for older servers).
 
 ```html
+<script type="application/json" id="__webui_state">{/* initial SSR state */}</script>
 <script>window.__webui = {
   chain: [
     { "component": "app-shell", "path": "/", "keepAlive": false },
@@ -414,8 +415,13 @@ The server also emits a `window.__webui` script containing the SSR chain, templa
   nonce: "abc123",
   css: ["/styles/main.css"],
   styles: ["app-shell", "topic-page"]
-};</script>
+};
+Object.defineProperty(window.__webui, "state", { /* lazy getter */ });
+</script>
 ```
+
+The lazy getter parses `__webui_state` on first read, so router consumers still
+read `window.__webui.state`.
 
 #### Client Hydration
 

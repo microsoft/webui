@@ -197,6 +197,10 @@ impl HandlerPlugin for FastV2HydrationPlugin {
     ) -> Result<()> {
         write_fast_route_component_state(state, writer)
     }
+
+    fn needs_webui_bootstrap(&self) -> bool {
+        false
+    }
 }
 
 fn write_fast_route_component_state(state: &Value, writer: &mut dyn ResponseWriter) -> Result<()> {

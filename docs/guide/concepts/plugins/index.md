@@ -152,8 +152,15 @@ pub trait HandlerPlugin {
         state: &serde_json::Value,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()>;
+
+    /// Skip route/template metadata when the plugin only needs state.
+    fn needs_webui_bootstrap(&self) -> bool { true }
 }
 ```
+
+When metadata is emitted, SSR state is exposed through `window.__webui.state`,
+backed by the `__webui_state` JSON data block. FAST v2/v3 skip WebUI
+route/template metadata and emit only the data block.
 
 ## Next Steps
 

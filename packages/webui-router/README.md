@@ -524,7 +524,8 @@ The router is organized into 13 internal modules, each handling a single concern
 
 ## SSR Bootstrap (`window.__webui`)
 
-On first load, the server emits a `window.__webui` script containing SSR metadata:
+On first load, the server emits a JSON state data block plus a `window.__webui`
+script containing SSR metadata:
 
 ```typescript
 window.__webui = {
@@ -533,10 +534,11 @@ window.__webui = {
   nonce: "abc123",           // CSP nonce for injected scripts
   css: ["/styles/main.css"], // already-injected stylesheets
   styles: ["app-shell"],     // already-injected module styles
+  state: {/* lazy getter backed by __webui_state */},
 };
 ```
 
-The router reads this at startup, eliminating DOM walking and URLPattern usage. Older servers that emit `<meta name="webui-inventory">` are still supported as a fallback.
+The router reads this at startup, eliminating DOM walking and URLPattern usage. State is stored in `<script type="application/json" id="__webui_state">` and exposed through a lazy `window.__webui.state` getter. Older servers that emit `<meta name="webui-inventory">` are still supported as a fallback.
 
 ## Exports
 

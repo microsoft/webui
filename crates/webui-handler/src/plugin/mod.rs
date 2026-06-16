@@ -114,6 +114,14 @@ pub trait HandlerPlugin {
     ) -> Option<Vec<String>> {
         None
     }
+
+    /// Whether this plugin needs the `window.__webui` metadata bootstrap
+    /// (`chain`, `inventory`, `nonce`, `css`, `styles`, `templates`).
+    ///
+    /// Plugins that only need the state data block can opt out.
+    fn needs_webui_bootstrap(&self) -> bool {
+        true
+    }
 }
 
 /// Default template emission: write each non-empty template verbatim.

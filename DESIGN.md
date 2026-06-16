@@ -281,7 +281,20 @@ When the handler encounters `Fragment::Outlet`:
 3. Emit `<webui-outlet>` containing matched child `<webui-route>` with component, and hidden stubs for siblings.
 
 The handler also emits a `<meta name="webui-nonce">` tag in `<head>` for backward compatibility,
-and a nonce'd inline `<script>` containing a `window.__webui` object with the SSR metadata:
+and body-end bootstrap tags for the active handler plugin:
+
+1. **State data block** - `<script type="application/json" id="__webui_state">{state JSON}</script>`.
+   This block is written before any executable bootstrap script.
+2. **Metadata initializer** - a nonce'd `<script>` that materializes `window.__webui`
+   with route chain, inventory, nonce, CSS metadata, `templates`, and a lazy
+   `state` getter backed by the data block.
+3. **Template IIFEs** - appended to the same executable `<script>` when the active
+   plugin provides executable template JS.
+   The getter parses the data block on first read and replaces itself with the parsed value.
+   FAST v2/v3 opt out of route/template metadata and emit only the data block.
+
+The data block avoids parsing the state payload as executable JavaScript. When
+metadata is emitted, the getter preserves the same field-access shape:
 
 ```js
 window.__webui = {
@@ -292,7 +305,7 @@ window.__webui = {
   nonce: string,              // CSP nonce value
   css: string[],              // CSS link hrefs emitted during SSR
   styles: string[],           // module CSS specifiers emitted during SSR
-  state: object,              // SSR state for hydration (consumed by framework on load)
+  state: object,              // SSR state, exposed by a lazy data-block-backed getter when metadata is emitted
   templates: Record<string, TemplateMetadata>,  // component template metadata (populated by IIFEs)
 };
 ```
@@ -764,6 +777,12 @@ pub trait HandlerPlugin {
     fn on_repeat_item_start(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_end(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn collect_template_js(
+        &self,
+        protocol: &WebUIProtocol,
+        components: &HashSet<String>,
+    ) -> Option<Vec<String>>;
+    fn needs_webui_bootstrap(&self) -> bool;
     fn write_route_component_state(
         &self,
         state: &serde_json::Value,

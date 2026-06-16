@@ -1,7 +1,4 @@
-<template shadowrootmode="open"
-  @toggle-item="{onToggleItem($e)}"
-  @delete-item="{onDeleteItem($e)}"
->
+<template shadowrootmode="open">
   <h1>{{title}}</h1>
 
   <div class="add-form">
@@ -14,7 +11,11 @@
     <button class="add-button" @click="{onAddClick()}">Add</button>
   </div>
 
-  <div class="todo-list">
+  <div
+    class="todo-list"
+    @toggle-item="{onToggleItem($e)}"
+    @delete-item="{onDeleteItem($e)}"
+  >
     <for each="item in items">
       <todo-item
         id="{{item.id}}"

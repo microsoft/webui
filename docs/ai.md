@@ -571,6 +571,11 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 | `--legal-comments <MODE>` | `inline` | `inline` preserves legal CSS comments, `none` strips all comments |
 | `--format <FORMAT>` | `human` | `human` (colorized) or `json` (machine-readable diagnostics on stdout) |
 
+SSR state is emitted as `<script type="application/json" id="__webui_state">`.
+When WebUI metadata is emitted, `window.__webui.state` is a lazy getter backed
+by that block. FAST v2/v3 skip WebUI route/template metadata and emit only the
+data block.
+
 ### Inspect
 
 ```bash

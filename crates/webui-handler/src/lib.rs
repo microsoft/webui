@@ -259,13 +259,14 @@ struct WebUIProcessContext<'a> {
 }
 
 struct WebUiBootstrap<'a> {
-    state: &'a Value,
     chain: &'a [Value],
     inventory: &'a str,
     nonce: Option<&'a str>,
     css_hrefs: &'a [&'a str],
     style_specs: &'a [&'a str],
 }
+
+const STATE_DATA_BLOCK_ID: &str = "__webui_state";
 
 /// Get the component attribute name, stripping `:` prefix and converting to camelCase.
 ///
@@ -357,7 +358,7 @@ where
     write_script_safe_json(writer, value)
 }
 
-fn write_webui_bootstrap(
+fn write_webui_metadata_init(
     writer: &mut dyn ResponseWriter,
     bootstrap: WebUiBootstrap<'_>,
 ) -> Result<()> {
@@ -374,13 +375,41 @@ fn write_webui_bootstrap(
     if let Some(nonce) = bootstrap.nonce {
         write_json_field(writer, &mut wrote_field, "nonce", nonce)?;
     }
-    write_json_field(writer, &mut wrote_field, "state", bootstrap.state)?;
     if !bootstrap.style_specs.is_empty() {
         write_json_field(writer, &mut wrote_field, "styles", bootstrap.style_specs)?;
     }
     write_json_field_name(writer, &mut wrote_field, "templates")?;
     writer.write("{}")?;
     writer.write("}")
+}
+
+fn write_state_data_block(
+    writer: &mut dyn ResponseWriter,
+    state: &Value,
+    nonce: Option<&str>,
+) -> Result<()> {
+    writer.write("<script type=\"application/json\" id=\"")?;
+    writer.write(STATE_DATA_BLOCK_ID)?;
+    writer.write("\"")?;
+    if let Some(nonce) = nonce {
+        writer.write(" nonce=\"")?;
+        writer.write(nonce)?;
+        writer.write("\"")?;
+    }
+    writer.write(">")?;
+    write_script_safe_json(writer, state)?;
+    writer.write("</script>")
+}
+
+fn write_lazy_state_getter(writer: &mut dyn ResponseWriter) -> Result<()> {
+    writer.write(
+        "Object.defineProperty(window.__webui,\"state\",{configurable:true,enumerable:true,",
+    )?;
+    writer.write("get:function(){var e=document.getElementById(\"")?;
+    writer.write(STATE_DATA_BLOCK_ID)?;
+    writer.write("\");var v=e?JSON.parse(e.textContent):null;if(e)e.remove();")?;
+    writer.write("Object.defineProperty(this,\"state\",{value:v,configurable:true,")?;
+    writer.write("writable:true,enumerable:true});return v;}});")
 }
 
 fn resolve_value_from_sources<'ctx, 'state>(
@@ -1087,24 +1116,7 @@ impl WebUIHandler {
         if signal.raw && signal.value == "body_end" && !context.body_end_emitted {
             context.body_end_emitted = true;
             if context.plugin.is_some() {
-                // Build (or reuse cached) component → index map.
-                let comp_index = context.component_index_cache.get_or_insert_with(|| {
-                    crate::route_handler::build_component_index(context.protocol)
-                });
-
-                // Compute the inventory hex from actually rendered components.
-                let inventory_hex = crate::route_handler::encode_component_inventory(
-                    &context.rendered_components,
-                    comp_index,
-                );
-
-                // Emit templates for all REACHABLE components on the current route,
-                // not just those rendered in this SSR pass. Components inside false
-                // <if> blocks or empty <for> loops are reachable via client-side
-                // state changes and need their templates available without a server
-                // round-trip. The graph walker follows conditional and loop branches
-                // unconditionally, but only descends into the matched route chain —
-                // components on other routes are delivered via SPA partial navigation.
+                // Reachable templates are needed for client-side condition changes.
                 let reachable = crate::route_handler::collect_reachable_components_for_request(
                     context.protocol,
                     context.entry_id,
@@ -1112,33 +1124,12 @@ impl WebUIHandler {
                     &mut context.route_cache,
                 );
 
-                // Emit CSS module importmaps for reachable-but-unrendered
-                // components so the framework can adopt them when an `<if>`
-                // condition flips true client-side.
-                for name in &reachable {
-                    if !context.rendered_components.contains(name) {
-                        if let Some(css) = context
-                            .protocol
-                            .components
-                            .get(name)
-                            .map(|c| c.css.as_str())
-                            .filter(|s| !s.is_empty())
-                        {
-                            self.emit_css_module_importmap(name, css, context)?;
-                        }
-                    }
-                }
-
-                // Try to collect template JS sources for merging into the
-                // consolidated script block. If the plugin returns None
-                // (non-JS templates, e.g. FAST), fall back to separate emission.
                 let template_js = context
                     .plugin
                     .as_ref()
                     .and_then(|p| p.collect_template_js(context.protocol, &reachable));
 
                 if template_js.is_none() {
-                    // Non-JS templates (FAST plugins) - emit separately
                     if let Some(ref p) = context.plugin {
                         p.emit_templates(
                             context.protocol,
@@ -1149,93 +1140,112 @@ impl WebUIHandler {
                     }
                 }
 
-                // ── Consolidated SSR script block ──────────────────────────
-                //
-                // Merges all SSR metadata into a single <script> tag:
-                //   1. Bootstrap meta  (window.__webui: chain, inventory, nonce, css, styles, state, templates)
-                //   2. Template IIFEs  (write into window.__webui.templates)
-                //
-                // Single-script reduces HTML parse overhead and ensures all
-                // SSR metadata is available atomically before DOMContentLoaded.
+                let needs_webui_bootstrap = context
+                    .plugin
+                    .as_ref()
+                    .map(|p| p.needs_webui_bootstrap())
+                    .unwrap_or(true);
 
-                // Chain
-                let chain = crate::route_handler::collect_route_chain(
-                    context.protocol,
-                    context.entry_id,
-                    context.request_path,
-                    &mut context.route_cache,
-                );
-                let chain_json: Vec<Value> = chain
-                    .iter()
-                    .map(crate::route_handler::RouteChainEntry::to_json)
-                    .collect();
+                write_state_data_block(context.writer, context.state, context.nonce)?;
 
-                // CSS hrefs emitted during SSR (Link-strategy components)
-                let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
-                let mut css_hrefs: Vec<&str> = Vec::new();
-                if is_link {
+                if needs_webui_bootstrap {
+                    let comp_index = context.component_index_cache.get_or_insert_with(|| {
+                        crate::route_handler::build_component_index(context.protocol)
+                    });
+
+                    let inventory_hex = crate::route_handler::encode_component_inventory(
+                        &context.rendered_components,
+                        comp_index,
+                    );
+
                     for name in &reachable {
-                        if let Some(href) = context
+                        if !context.rendered_components.contains(name) {
+                            if let Some(css) = context
+                                .protocol
+                                .components
+                                .get(name)
+                                .map(|c| c.css.as_str())
+                                .filter(|s| !s.is_empty())
+                            {
+                                self.emit_css_module_importmap(name, css, context)?;
+                            }
+                        }
+                    }
+
+                    let chain = crate::route_handler::collect_route_chain(
+                        context.protocol,
+                        context.entry_id,
+                        context.request_path,
+                        &mut context.route_cache,
+                    );
+                    let chain_json: Vec<Value> = chain
+                        .iter()
+                        .map(crate::route_handler::RouteChainEntry::to_json)
+                        .collect();
+
+                    let is_link =
+                        context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
+                    let mut css_hrefs: Vec<&str> = Vec::new();
+                    if is_link {
+                        for name in &reachable {
+                            if let Some(href) = context
+                                .protocol
+                                .components
+                                .get(name)
+                                .map(|c| c.css_href.as_str())
+                                .filter(|h| !h.is_empty())
+                            {
+                                css_hrefs.push(href);
+                            }
+                        }
+                    }
+
+                    let mut style_specs: Vec<&str> = Vec::new();
+                    for name in &reachable {
+                        if context
                             .protocol
                             .components
                             .get(name)
-                            .map(|c| c.css_href.as_str())
-                            .filter(|h| !h.is_empty())
+                            .map(|c| !c.css.is_empty())
+                            .unwrap_or(false)
                         {
-                            css_hrefs.push(href);
+                            style_specs.push(name);
                         }
                     }
-                }
 
-                // Module style specifiers emitted during SSR
-                let mut style_specs: Vec<&str> = Vec::new();
-                for name in &reachable {
-                    if context
-                        .protocol
-                        .components
-                        .get(name)
-                        .map(|c| !c.css.is_empty())
-                        .unwrap_or(false)
-                    {
-                        style_specs.push(name);
+                    if let Some(nonce) = context.nonce {
+                        context.writer.write("<script nonce=\"")?;
+                        context.writer.write(nonce)?;
+                        context.writer.write("\">")?;
+                    } else {
+                        context.writer.write("<script>")?;
                     }
-                }
 
-                // Open the consolidated <script> tag
-                if let Some(nonce) = context.nonce {
-                    context.writer.write("<script nonce=\"")?;
-                    context.writer.write(nonce)?;
-                    context.writer.write("\">")?;
-                } else {
-                    context.writer.write("<script>")?;
-                }
+                    context.writer.write("window.__webui=")?;
+                    write_webui_metadata_init(
+                        context.writer,
+                        WebUiBootstrap {
+                            chain: &chain_json,
+                            inventory: &inventory_hex,
+                            nonce: context.nonce,
+                            css_hrefs: &css_hrefs,
+                            style_specs: &style_specs,
+                        },
+                    )?;
+                    context.writer.write(";")?;
 
-                // 1. Emit window.__webui bootstrap object (chain, inventory,
-                //    nonce, css, styles, state — all in one JSON assignment)
-                context.writer.write("window.__webui=")?;
-                write_webui_bootstrap(
-                    context.writer,
-                    WebUiBootstrap {
-                        state: context.state,
-                        chain: &chain_json,
-                        inventory: &inventory_hex,
-                        nonce: context.nonce,
-                        css_hrefs: &css_hrefs,
-                        style_specs: &style_specs,
-                    },
-                )?;
-                context.writer.write(";")?;
+                    write_lazy_state_getter(context.writer)?;
 
-                // 2. Template IIFEs — write into window.__webui.templates
-                //    (parser-generated IIFEs reference this object directly)
-                if let Some(ref tmpls) = template_js {
-                    context.writer.write("\n")?;
-                    for tmpl in tmpls {
-                        context.writer.write(tmpl)?;
+                    // Parser-generated IIFEs write into window.__webui.templates.
+                    if let Some(ref tmpls) = template_js {
+                        context.writer.write("\n")?;
+                        for tmpl in tmpls {
+                            context.writer.write(tmpl)?;
+                        }
                     }
-                }
 
-                context.writer.write("</script>\n")?;
+                    context.writer.write("</script>\n")?;
+                }
             }
 
             // Per-render `body_inject` HTML — dev livereload script,
@@ -7027,6 +7037,128 @@ mod tests {
             ),
             "Unrendered (body_end) CSS module importmap tag should include nonce attribute in canonical order: {html}"
         );
+    }
+
+    fn fixture_route_with_body_end() -> WebUIProtocol {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><body><my-page>".to_string()),
+                    WebUIFragment::component("my-page"),
+                    WebUIFragment::raw("</my-page>".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        fragments.insert(
+            "my-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Hello</p>".to_string())],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol
+            .components
+            .entry("my-page".to_string())
+            .or_default()
+            .template = "<f-template name=\"my-page\"><p>Hello</p></f-template>".to_string();
+        protocol
+    }
+
+    fn render_bootstrap_with_plugin(
+        protocol: &WebUIProtocol,
+        state: &Value,
+        plugin: fn() -> Box<dyn HandlerPlugin>,
+        options: &RenderOptions<'_>,
+    ) -> Result<String> {
+        let handler = WebUIHandler::with_plugin(plugin);
+        let mut writer = TestWriter::new();
+        handler.handle(protocol, state, options, &mut writer)?;
+        Ok(writer.get_content().to_string())
+    }
+
+    #[test]
+    fn fast_v2_emits_state_as_json_data_block() -> Result<()> {
+        let protocol = fixture_route_with_body_end();
+        let state = test_json!({"items": [{"title": "A"}]});
+        let output = render_bootstrap_with_plugin(
+            &protocol,
+            &state,
+            || Box::new(crate::plugin::fast_v2::FastV2HydrationPlugin::new()),
+            &RenderOptions::new("index.html", "/"),
+        )?;
+
+        assert!(output.contains("<script type=\"application/json\" id=\"__webui_state\">"));
+        assert!(output.contains(r#"{"items":[{"title":"A"}]}"#));
+        assert!(!output.contains("window.__webui"));
+        assert!(!output.contains("Object.defineProperty"));
+        assert!(!output.contains("\"state\":{\"items\""));
+        assert!(!output.contains("\"chain\""));
+        assert!(!output.contains("\"inventory\""));
+        Ok(())
+    }
+
+    #[test]
+    fn fast_v2_data_block_carries_nonce_when_csp_nonce_set() -> Result<()> {
+        let protocol = fixture_route_with_body_end();
+        let state = test_json!({"items": [{"title": "A"}]});
+        let output = render_bootstrap_with_plugin(
+            &protocol,
+            &state,
+            || Box::new(crate::plugin::fast_v2::FastV2HydrationPlugin::new()),
+            &RenderOptions::new("index.html", "/").with_nonce("test-nonce"),
+        )?;
+
+        assert!(output.contains(
+            "<script type=\"application/json\" id=\"__webui_state\" nonce=\"test-nonce\">"
+        ));
+        assert!(!output.contains("<script nonce=\"test-nonce\">window.__webui"));
+        Ok(())
+    }
+
+    #[test]
+    fn fast_v2_data_block_escapes_inner_closing_script_tag() -> Result<()> {
+        let protocol = fixture_route_with_body_end();
+        let state = test_json!({"payload": "</script><script>alert(1)</script>"});
+        let output = render_bootstrap_with_plugin(
+            &protocol,
+            &state,
+            || Box::new(crate::plugin::fast_v2::FastV2HydrationPlugin::new()),
+            &RenderOptions::new("index.html", "/"),
+        )?;
+
+        assert!(output.contains("<\\/script><script>alert(1)<\\/script>"));
+        assert!(!output.contains("</script><script>alert(1)</script>"));
+        Ok(())
+    }
+
+    #[test]
+    fn webui_plugin_uses_state_data_block() -> Result<()> {
+        let mut protocol = fixture_route_with_body_end();
+        protocol
+            .components
+            .entry("my-page".to_string())
+            .or_default()
+            .template =
+            "(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w['my-page']={h:'<p>Hello</p>'};})();\n".to_string();
+        let state = test_json!({"items": [{"title": "A"}]});
+        let output = render_bootstrap_with_plugin(
+            &protocol,
+            &state,
+            || Box::new(crate::plugin::webui::WebUIHydrationPlugin::new()),
+            &RenderOptions::new("index.html", "/"),
+        )?;
+
+        assert!(output.contains("<script type=\"application/json\" id=\"__webui_state\">"));
+        assert!(output.contains(r#"{"items":[{"title":"A"}]}"#));
+        assert!(output.contains("Object.defineProperty(window.__webui,\"state\""));
+        assert!(!output.contains("\"state\":{\"items\""));
+        assert!(output.contains("\"inventory\""));
+        assert!(output.contains("window.__webui="));
+        Ok(())
     }
 
     #[test]
