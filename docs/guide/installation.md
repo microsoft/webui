@@ -12,32 +12,32 @@ The `@microsoft/webui` npm package gives you:
 - **`import { build, render } from '@microsoft/webui'`** - a programmatic API for Node.js
 - **Native performance** via platform-specific binaries (no compilation required)
 
-<webui-tabs>
-<webui-tab slot="tab" active>npm</webui-tab>
-<webui-tab slot="tab">yarn</webui-tab>
-<webui-tab slot="tab">pnpm</webui-tab>
-<webui-tab-panel active>
+<webui-press-tabs>
+<webui-press-tab slot="tab" active>npm</webui-press-tab>
+<webui-press-tab slot="tab">yarn</webui-press-tab>
+<webui-press-tab slot="tab">pnpm</webui-press-tab>
+<webui-press-tab-panel active>
 
 ```bash
 npm install @microsoft/webui
 ```
 
-</webui-tab-panel>
-<webui-tab-panel>
+</webui-press-tab-panel>
+<webui-press-tab-panel>
 
 ```bash
 yarn add @microsoft/webui
 ```
 
-</webui-tab-panel>
-<webui-tab-panel>
+</webui-press-tab-panel>
+<webui-press-tab-panel>
 
 ```bash
 pnpm add @microsoft/webui
 ```
 
-</webui-tab-panel>
-</webui-tabs>
+</webui-press-tab-panel>
+</webui-press-tabs>
 
 ### Configure package.json
 
@@ -86,32 +86,32 @@ The packages below are client-side runtime libraries. They are installed from np
 
 For interactive Web Components with Islands Architecture, install the framework runtime:
 
-<webui-tabs>
-<webui-tab slot="tab" active>npm</webui-tab>
-<webui-tab slot="tab">yarn</webui-tab>
-<webui-tab slot="tab">pnpm</webui-tab>
-<webui-tab-panel active>
+<webui-press-tabs>
+<webui-press-tab slot="tab" active>npm</webui-press-tab>
+<webui-press-tab slot="tab">yarn</webui-press-tab>
+<webui-press-tab slot="tab">pnpm</webui-press-tab>
+<webui-press-tab-panel active>
 
 ```bash
 npm install @microsoft/webui-framework
 ```
 
-</webui-tab-panel>
-<webui-tab-panel>
+</webui-press-tab-panel>
+<webui-press-tab-panel>
 
 ```bash
 yarn add @microsoft/webui-framework
 ```
 
-</webui-tab-panel>
-<webui-tab-panel>
+</webui-press-tab-panel>
+<webui-press-tab-panel>
 
 ```bash
 pnpm add @microsoft/webui-framework
 ```
 
-</webui-tab-panel>
-</webui-tabs>
+</webui-press-tab-panel>
+</webui-press-tabs>
 
 This gives you:
 - **`WebUIElement`** base class for interactive Web Components
@@ -129,32 +129,32 @@ If your pages are purely informational with no client-side interactivity, you on
 
 For single-page navigation with client-side route transitions, install the router package:
 
-<webui-tabs>
-<webui-tab slot="tab" active>npm</webui-tab>
-<webui-tab slot="tab">yarn</webui-tab>
-<webui-tab slot="tab">pnpm</webui-tab>
-<webui-tab-panel active>
+<webui-press-tabs>
+<webui-press-tab slot="tab" active>npm</webui-press-tab>
+<webui-press-tab slot="tab">yarn</webui-press-tab>
+<webui-press-tab slot="tab">pnpm</webui-press-tab>
+<webui-press-tab-panel active>
 
 ```bash
 npm install @microsoft/webui-router
 ```
 
-</webui-tab-panel>
-<webui-tab-panel>
+</webui-press-tab-panel>
+<webui-press-tab-panel>
 
 ```bash
 yarn add @microsoft/webui-router
 ```
 
-</webui-tab-panel>
-<webui-tab-panel>
+</webui-press-tab-panel>
+<webui-press-tab-panel>
 
 ```bash
 pnpm add @microsoft/webui-router
 ```
 
-</webui-tab-panel>
-</webui-tabs>
+</webui-press-tab-panel>
+</webui-press-tabs>
 
 The router works with both WebUI Framework (`@microsoft/webui-framework`) and `@microsoft/fast-element` 3.x components. It's a separate package because it's only needed for apps with client-side navigation.
 

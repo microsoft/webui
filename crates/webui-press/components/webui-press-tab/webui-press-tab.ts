@@ -3,10 +3,10 @@
 
 import { WebUIElement } from "@microsoft/webui-framework";
 
-export class WebUITab extends WebUIElement {
+export class WebUIPressTab extends WebUIElement {
   select(): void {
     this.$emit("tab-select", { tab: this });
   }
 }
 
-WebUITab.define("webui-tab");
+WebUIPressTab.define("webui-press-tab");

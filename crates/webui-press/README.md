@@ -348,13 +348,13 @@ See the [WebUI Framework component guide](https://microsoft.github.io/webui/guid
 
 `webui-press` ships with these components pre-registered for content use:
 
-| Tag                  | Purpose                                                |
-| -------------------- | ------------------------------------------------------ |
-| `<code-block>`       | Syntax-highlighted code with a copy button (auto-injected around code fences) |
-| `<webui-blockquote>` | Styled quotes / callouts                               |
-| `<webui-tabs>`       | Tabbed content groups                                  |
-| `<webui-tab>`        | Tab triggers                                           |
-| `<webui-tab-panel>`  | Tab content panels                                     |
+| Tag                         | Purpose                                                |
+| --------------------------- | ------------------------------------------------------ |
+| `<code-block>`              | Syntax-highlighted code with a copy button (auto-injected around code fences) |
+| `<webui-blockquote>`        | Styled quotes / callouts                               |
+| `<webui-press-tabs>`        | Tabbed content groups                                  |
+| `<webui-press-tab>`         | Tab triggers                                           |
+| `<webui-press-tab-panel>`   | Tab content panels                                     |
 
 Plus shadow components used by the chrome itself: `<docs-search>`, `<docs-theme-toggle>`.
 
