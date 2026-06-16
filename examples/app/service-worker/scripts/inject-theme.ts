@@ -45,6 +45,15 @@ function resolveTheme(themeName: string, requiredTokens: string[]): string {
     throw new Error(`Theme '${themeName}' is missing from @microsoft/webui-examples-theme`);
   }
 
+  const missing = requiredTokens.filter(
+    (token) => !Object.prototype.hasOwnProperty.call(theme, token),
+  );
+  if (missing.length > 0) {
+    console.warn(
+      `Theme '${themeName}' is missing ${missing.length} protocol token(s): ${missing.join(", ")}`,
+    );
+  }
+
   return requiredTokens
     .filter((token) => Object.prototype.hasOwnProperty.call(theme, token))
     .sort((left, right) => left.localeCompare(right))
