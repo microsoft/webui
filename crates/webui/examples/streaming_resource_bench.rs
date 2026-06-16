@@ -20,13 +20,14 @@
 //!
 //! * **allocations**  — count of `alloc` calls (custom GlobalAlloc)
 //! * **bytes allocated** — total bytes requested
-//! * **CPU user time** — `getrusage(RUSAGE_SELF).ru_utime` delta
-//! * **peak RSS** — `ru_maxrss` high-water mark
+//! * **CPU user time** — `getrusage(RUSAGE_SELF).ru_utime` delta on Unix
+//! * **peak RSS** — `ru_maxrss` high-water mark on Unix
 //!
 //! Unlike criterion (which only reports wall-clock), this gives a
 //! direct allocator-level view useful for verifying that the streaming
 //! writer's "zero per-write allocation" claim actually holds in the
-//! production path.
+//! production path. On non-Unix targets, CPU and RSS counters are reported
+//! as zero because `getrusage` is unavailable.
 //!
 //! Usage:
 //!
@@ -118,6 +119,7 @@ struct Rusage {
 }
 
 impl Rusage {
+    #[cfg(unix)]
     fn now() -> Self {
         let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
         // SAFETY: `usage` is a valid mutable pointer to a fully-initialised
@@ -131,15 +133,27 @@ impl Rusage {
         }
     }
 
+    #[cfg(not(unix))]
+    fn now() -> Self {
+        Self {
+            user_cpu: Duration::ZERO,
+            sys_cpu: Duration::ZERO,
+            max_rss_raw: 0,
+        }
+    }
+
     fn max_rss_bytes(&self) -> i64 {
         if cfg!(target_os = "macos") {
             self.max_rss_raw
-        } else {
+        } else if cfg!(unix) {
             self.max_rss_raw * 1024
+        } else {
+            self.max_rss_raw
         }
     }
 }
 
+#[cfg(unix)]
 fn timeval_to_duration(tv: libc::timeval) -> Duration {
     let secs = tv.tv_sec as u64;
     let usecs = tv.tv_usec as u32;

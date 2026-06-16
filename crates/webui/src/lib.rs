@@ -27,15 +27,16 @@ pub mod streaming;
 pub use error::WebUIError;
 
 // Re-export core types from downstream crates
+pub use webui_handler::plugin::{
+    fast_v3::FastV3HydrationPlugin, webui::WebUIHydrationPlugin, HandlerPlugin,
+};
 pub use webui_handler::route_handler::{
     encode_inventory, get_needed_components, get_needed_components_for_request, parse_inventory,
     ProtocolIndex,
 };
 pub use webui_handler::route_matcher::CompiledRouteCache;
 pub use webui_handler::Result as HandlerResult;
-pub use webui_handler::{
-    plugin::HandlerPlugin, HandlerError, RenderOptions, ResponseWriter, WebUIHandler,
-};
+pub use webui_handler::{HandlerError, RenderOptions, ResponseWriter, WebUIHandler};
 pub use webui_parser::CssStrategy;
 pub use webui_parser::Diagnostic;
 pub use webui_parser::DomStrategy;
