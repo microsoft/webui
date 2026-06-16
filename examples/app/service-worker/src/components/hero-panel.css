@@ -1,0 +1,14 @@
+.button {
+  display: inline-flex;
+  margin-top: var(--spacing-xl);
+  padding: var(--spacing-m) var(--spacing-xl);
+  border-radius: var(--border-radius-pill);
+  color: var(--color-white);
+  background: var(--color-brand-primary);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.button:hover {
+  background: var(--color-brand-primary-hover);
+}

@@ -1,0 +1,22 @@
+{
+  "entry": "activity-panel",
+  "delayMs": 760,
+  "state": {
+    "label": "Public API: /api/activity.json",
+    "title": "Streaming timeline",
+    "events": [
+      {
+        "name": "Install",
+        "detail": "The browser installs the module service worker from the CDN."
+      },
+      {
+        "name": "Fetch",
+        "detail": "The service worker requests protocol.bin and public JSON state files."
+      },
+      {
+        "name": "Render",
+        "detail": "Each state response is rendered by webui_wasm_handler and enqueued into the stream."
+      }
+    ]
+  }
+}

@@ -1,0 +1,8 @@
+dist-scripts/
+public/protocol.bin
+public/wasm/
+public/app.js
+public/payload.js
+public/service-worker.js
+public/theme.css
+public/*.js.map

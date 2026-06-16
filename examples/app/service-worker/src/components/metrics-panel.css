@@ -1,0 +1,22 @@
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--spacing-m);
+  margin-top: var(--spacing-xl);
+}
+
+.metric {
+  padding: var(--spacing-l);
+  border-radius: var(--border-radius-xl);
+  background: var(--color-brand-light);
+}
+
+.metric strong {
+  display: block;
+  color: var(--color-brand-primary);
+  font-size: var(--font-size-3xl);
+}
+
+.metric span {
+  color: var(--color-neutral-700);
+}

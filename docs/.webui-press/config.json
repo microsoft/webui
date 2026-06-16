@@ -191,6 +191,10 @@
             "link": "/guide/concepts/css-tokens"
           },
           {
+            "text": "Serverless Architecture",
+            "link": "/guide/serverless-architecture"
+          },
+          {
             "text": "Plugins",
             "link": "/guide/concepts/plugins/"
           }
@@ -259,8 +263,8 @@
       },
       {
         "icon": "🔄",
-        "title": "Truly isomorphic",
-        "description": "Same Web Components run on the server and the client. The server renders dynamic, per-request HTML by filling compiled templates with live state, with no JavaScript runtime needed. The browser streams a fully-rendered page, then hydrates the same components against the existing DOM. Isomorphic apps without the Node.js dependency."
+        "title": "Isomorphic anywhere",
+        "description": "Same Web Components can render on a fast native server, at the edge, or in a service worker. Cache the compiled UI on a CDN, stream dynamic state through the lightweight handler, then hydrate against the existing DOM. Isomorphic apps without making Node.js the rendering boundary."
       },
       {
         "icon": "🧩",

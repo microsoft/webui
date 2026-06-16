@@ -4,6 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "build": "pnpm run build:deps && pnpm run build:server && pnpm run build:client",
+    "build:deps": "pnpm --filter @microsoft/webui-framework run build",
     "build:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --minify",
     "build:server": "cargo run -p microsoft-webui-cli -- build ./src --plugin=webui --out ./dist",
     "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",

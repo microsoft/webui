@@ -4,7 +4,10 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --metafile=dist/meta.json --minify",
+    "build": "pnpm run build:deps && pnpm run build:protocol && pnpm run build:client",
+    "build:deps": "pnpm --filter @microsoft/webui-framework run build",
+    "build:protocol": "cargo run -p microsoft-webui-cli -- build ./src --plugin=webui --out ./dist",
+    "build:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --metafile=dist/meta.json --minify",
     "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
     "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --servedir ./dist --port 3006 --watch",
     "start": "cargo xtask dev todo-webui",

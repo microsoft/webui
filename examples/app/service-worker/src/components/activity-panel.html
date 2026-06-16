@@ -1,0 +1,12 @@
+<section class="card activity-card">
+  <p class="eyebrow">{{label}}</p>
+  <h2>{{title}}</h2>
+  <ol class="activity">
+    <for each="event in events">
+      <li>
+        <strong>{{event.name}}</strong>
+        <span>{{event.detail}}</span>
+      </li>
+    </for>
+  </ol>
+</section>

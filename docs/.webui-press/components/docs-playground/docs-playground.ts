@@ -883,9 +883,7 @@ export class DocsPlayground extends WebUIElement {
       const t1 = performance.now();
       const stateJson = this.fileByName(this.stateFile)?.content || "{}";
       let html = "";
-      let chunks = 0;
       this.wasm.render(proto, stateJson, (chunk) => {
-        chunks += 1;
         html += chunk;
       }, { entry: this.entry, requestPath: "/" });
       const t2 = performance.now();

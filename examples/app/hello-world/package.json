@@ -4,6 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "build": "pnpm run build:protocol && pnpm run build:client",
+    "build:protocol": "cargo run -p microsoft-webui-cli -- build ./src --out ./dist",
+    "build:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap",
     "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
     "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --theme=@microsoft/webui-examples-theme --servedir ./dist --port 3000 --watch",
     "start": "cargo xtask dev hello-world",

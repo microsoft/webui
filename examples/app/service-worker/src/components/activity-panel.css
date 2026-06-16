@@ -1,0 +1,20 @@
+.activity {
+  display: grid;
+  gap: var(--spacing-m);
+  margin: var(--spacing-xl) 0 0;
+  padding-left: var(--spacing-xxl);
+}
+
+.activity li {
+  padding-left: var(--spacing-s);
+}
+
+.activity strong {
+  display: block;
+  margin-bottom: var(--spacing-xs);
+  color: var(--color-neutral-950);
+}
+
+.activity span {
+  color: var(--color-neutral-700);
+}
