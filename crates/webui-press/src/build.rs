@@ -753,7 +753,7 @@ fn bundle_components(
 
     let out_file = site_dir.join("components.js");
 
-    let status = std::process::Command::new("npx")
+    let status = std::process::Command::new(npx_command())
         .arg("esbuild")
         .arg("--bundle")
         .arg("--format=esm")
@@ -781,6 +781,16 @@ fn bundle_components(
     }
 
     Ok(ts_files.len())
+}
+
+#[cfg(windows)]
+fn npx_command() -> &'static str {
+    "npx.cmd"
+}
+
+#[cfg(not(windows))]
+fn npx_command() -> &'static str {
+    "npx"
 }
 
 const PRE_BLOCK_MARKER_PREFIX: &str = "<span data-webui-press-pre-block=\"";
@@ -1011,5 +1021,11 @@ mod tests {
     fn fxhash_deterministic() {
         assert_eq!(fxhash("abc"), fxhash("abc"));
         assert_ne!(fxhash("abc"), fxhash("abd"));
+    }
+
+    #[test]
+    fn npx_command_uses_platform_shim() {
+        let expected = if cfg!(windows) { "npx.cmd" } else { "npx" };
+        assert_eq!(npx_command(), expected);
     }
 }
