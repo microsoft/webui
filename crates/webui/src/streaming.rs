@@ -55,8 +55,8 @@
 //! zero scan cost and no risk of mis-firing on `</body>` literals
 //! appearing inside HTML comments, `<iframe srcdoc>`, or inline scripts.
 //!
-//! [`RenderOptions::with_head_inject`]: webui_handler::RenderOptions::with_head_inject
-//! [`RenderOptions::with_body_inject`]: webui_handler::RenderOptions::with_body_inject
+//! [`RenderOptions::with_head_inject`]: crate::RenderOptions::with_head_inject
+//! [`RenderOptions::with_body_inject`]: crate::RenderOptions::with_body_inject
 
 use bytes::Bytes;
 use crossbeam_queue::ArrayQueue;

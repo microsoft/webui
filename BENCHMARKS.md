@@ -90,11 +90,16 @@ Reports per (path × scale):
 - **bytes/run** — exact bytes requested from the allocator
 - **wall µs/run** — `Instant::elapsed()` per iteration
 - **user µs/run** — `getrusage(RUSAGE_SELF).ru_utime` delta
+- **sys µs/run** — `getrusage(RUSAGE_SELF).ru_stime` delta
 - **process RSS** — `ru_maxrss` high-water mark
 
 This is the **only** bench in the suite that gives you exact
 allocation numbers. Use it to verify "zero per-write allocation"
 claims and to detect allocation-pressure regressions.
+
+On non-Unix targets, `getrusage` is unavailable; the benchmark still runs and
+reports allocation and wall-clock data, while user/sys CPU and RSS counters are
+reported as zero.
 
 ### `streaming-e2e-ttfb` (HTTP-level)
 

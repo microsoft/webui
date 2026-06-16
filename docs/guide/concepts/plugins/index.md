@@ -42,7 +42,7 @@ implementations are loaded.
 <webui-press-tab-panel active>
 
 ```rust
-use webui::WebUIHandler;
+use webui::{HandlerPlugin, WebUIHandler};
 
 let handler = WebUIHandler::with_plugin(|| Box::new(MyHydrationPlugin::new()));
 handler.handle(&protocol, &state, &options, &mut writer)?;
@@ -80,9 +80,13 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 
 ```rust
 // Rust handler
-use webui_handler::plugin::webui::WebUIHydrationPlugin;
+use webui::{WebUIHandler, WebUIHydrationPlugin};
+
 let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
 ```
+
+Rust hosts can also import `FastV3HydrationPlugin` from the same `webui` crate
+root when rendering protocols built with `--plugin=fast-v3`.
 
 ## Writing Custom Plugins
 

@@ -489,7 +489,7 @@ pub enum ExpressionError {
 ### Core API
 ```rust
 pub struct WebUIHandler {
-    plugin: Option<Box<dyn HandlerPlugin>>,
+    plugin_factory: Option<fn() -> Box<dyn HandlerPlugin>>,
 }
 
 /// Options controlling how the handler renders a protocol.
@@ -519,10 +519,10 @@ impl<'a> RenderOptions<'a> {
 
 impl WebUIHandler {
     pub fn new() -> Self;
-    pub fn with_plugin(plugin: Box<dyn HandlerPlugin>) -> Self;
+    pub fn with_plugin(factory: fn() -> Box<dyn HandlerPlugin>) -> Self;
 
     pub fn handle(
-        &mut self,
+        &self,
         protocol: &WebUIProtocol,
         state: &Value,
         options: &RenderOptions<'_>,
@@ -530,6 +530,14 @@ impl WebUIHandler {
     ) -> Result<()>;
 }
 ```
+
+Programmatic Rust hosts should normally import the handler surface through the
+top-level `microsoft-webui` crate (library name `webui`). It re-exports
+`HandlerResult`, `RenderOptions`, `ResponseWriter`, `WebUIHandler`,
+`HandlerPlugin`, `FastV3HydrationPlugin`, `WebUIHydrationPlugin`, parser
+configuration types, and `WebUIProtocol` so applications do not need direct
+dependencies on the internal handler, parser, or protocol crates for common
+build/render use.
 
 #### ProtocolIndex
 
@@ -761,6 +769,10 @@ pub trait HandlerPlugin {
     fn pop_scope(&mut self);
     fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_for_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_for_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_if_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_if_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_start(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_end(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
@@ -769,29 +781,50 @@ pub trait HandlerPlugin {
         state: &serde_json::Value,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()>;
+    fn emit_templates(
+        &self,
+        protocol: &WebUIProtocol,
+        components: &HashSet<String>,
+        nonce: Option<&str>,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()>;
+    fn collect_template_js(
+        &self,
+        protocol: &WebUIProtocol,
+        components: &HashSet<String>,
+    ) -> Option<Vec<String>>;
 }
 ```
 
 **Hook invocation points:**
 - **Signal**: `on_binding_start` before, `on_binding_end` after (same scope)
-- **For loop**: `on_binding_start/end` around entire loop; `on_repeat_item_start/end` + `push_scope/pop_scope` per item
-- **If condition**: `on_binding_start/end` around condition; `push_scope/pop_scope` if condition is true
+- **For loop**: `on_for_start/end` around entire loop; `on_repeat_item_start/end` + `push_scope/pop_scope` per item
+- **If condition**: `on_if_start/end` around condition; `push_scope/pop_scope` if condition is true
 - **Component**: `push_scope/pop_scope` around component body
 - **Plugin fragment**: `on_element_data` with parser-produced hydration bytes from protocol
 - **Matched route component**: `write_route_component_state` before the opening tag closes
+- **Template emission**: `emit_templates` writes component templates during SSR;
+  `collect_template_js` lets plugins that store executable JS templates merge
+  them into the consolidated `window.__webui` script block.
 
 **Selecting handler plugins**
 
-The CLI and host APIs select handler plugins by name (passed as a string). No plugin
-is loaded by default; output is plain SSR HTML unless a plugin is selected.
+The CLI selects parser/handler plugin pairs by name. Rust hosts pass a
+zero-capture plugin factory to `WebUIHandler::with_plugin`; each render creates
+a fresh plugin instance from the factory so the handler remains shareable. No
+plugin is loaded by default; output is plain SSR HTML unless a plugin is
+selected.
 
-The set of available plugin names is implementation-defined; refer to the CLI and
-crate documentation for the current list. Each plugin emits its own framework-specific
-hydration markers and attributes; WebUI itself does not interpret them.
+The top-level `webui` library re-exports the built-in handler plugin types used
+by Rust hosts, including `FastV3HydrationPlugin` and `WebUIHydrationPlugin`.
+Each plugin emits its own framework-specific hydration markers and attributes;
+WebUI itself does not interpret them.
 
 **Usage:**
 ```rust
-let handler = WebUIHandler::with_plugin(|| Box::new(MyHydrationPlugin::new()));
+use webui::{FastV3HydrationPlugin, WebUIHandler};
+
+let handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
 handler.handle(&protocol, &state, &options, &mut writer)?;
 ```
 ### Fragment Processing
@@ -1486,9 +1519,11 @@ webui-ffi ──────► webui-handler ◄────── webui-wasm (
 ```
 
 The `webui` library crate is the primary API surface for programmatic use.
-It re-exports `WebUIHandler`, `ResponseWriter`, and `WebUIProtocol` from their
-respective crates and provides `build()`, `build_to_disk()`, and `inspect()`
-functions with `BuildStats` (duration, fragment/component/CSS counts, protocol size).
+It re-exports `WebUIHandler`, `RenderOptions`, `ResponseWriter`, `HandlerResult`,
+`HandlerPlugin`, `FastV3HydrationPlugin`, `WebUIHydrationPlugin`,
+`WebUIProtocol`, and parser configuration types from their respective crates and
+provides `build()`, `build_to_disk()`, and `inspect()` functions with
+`BuildStats` (duration, fragment/component/CSS counts, protocol size).
 
 ### WASM Distribution
 
