@@ -68,7 +68,12 @@ function readDelay(value: unknown): number {
 }
 
 function sanitizeHref(value: string, sourcePath: string, baseUrl: URL): string {
-  const parsed = new URL(value, baseUrl);
+  let parsed: URL;
+  try {
+    parsed = new URL(value, baseUrl);
+  } catch {
+    throw new Error(`Invalid API payload from ${sourcePath}: invalid url`);
+  }
   if (parsed.protocol === 'https:' || parsed.origin === baseUrl.origin) {
     return parsed.href;
   }
