@@ -7105,17 +7105,18 @@ mod tests {
     fn fast_v2_data_block_carries_nonce_when_csp_nonce_set() -> Result<()> {
         let protocol = fixture_route_with_body_end();
         let state = test_json!({"items": [{"title": "A"}]});
+        let nonce = std::process::id().to_string();
         let output = render_bootstrap_with_plugin(
             &protocol,
             &state,
             || Box::new(crate::plugin::fast_v2::FastV2HydrationPlugin::new()),
-            &RenderOptions::new("index.html", "/").with_nonce("test-nonce"),
+            &RenderOptions::new("index.html", "/").with_nonce(&nonce),
         )?;
 
-        assert!(output.contains(
-            "<script type=\"application/json\" id=\"__webui_state\" nonce=\"test-nonce\">"
-        ));
-        assert!(!output.contains("<script nonce=\"test-nonce\">window.__webui"));
+        assert!(output.contains(&format!(
+            "<script type=\"application/json\" id=\"__webui_state\" nonce=\"{nonce}\">"
+        )));
+        assert!(!output.contains(&format!("<script nonce=\"{nonce}\">window.__webui")));
         Ok(())
     }
 
