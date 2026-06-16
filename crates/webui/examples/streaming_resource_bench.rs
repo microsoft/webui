@@ -21,13 +21,15 @@
 //! * **allocations**  — count of `alloc` calls (custom GlobalAlloc)
 //! * **bytes allocated** — total bytes requested
 //! * **CPU user time** — `getrusage(RUSAGE_SELF).ru_utime` delta on Unix
+//! * **CPU system time** — `getrusage(RUSAGE_SELF).ru_stime` delta on Unix
 //! * **peak RSS** — `ru_maxrss` high-water mark on Unix
 //!
 //! Unlike criterion (which only reports wall-clock), this gives a
 //! direct allocator-level view useful for verifying that the streaming
 //! writer's "zero per-write allocation" claim actually holds in the
 //! production path. On non-Unix targets, CPU and RSS counters are reported
-//! as zero because `getrusage` is unavailable.
+//! as zero because `getrusage` is unavailable; allocation counts and wall-clock
+//! time are still reported.
 //!
 //! Usage:
 //!
@@ -805,6 +807,8 @@ fn main() {
     println!("Notes:");
     println!("  * `allocs/run` and `bytes/run` are exact (custom GlobalAlloc).");
     println!("  * `user µs/run` is `getrusage(RUSAGE_SELF).ru_utime` delta / iters.");
+    println!("  * `sys µs/run` is `getrusage(RUSAGE_SELF).ru_stime` delta / iters.");
+    println!("  * On non-Unix targets, getrusage-backed user/sys/RSS values are zero.");
     println!("  * `process RSS` is the high-water mark for the whole process at");
     println!("    phase end. Per-iteration RSS is not directly observable; use");
     println!("    `bytes/run` to compare per-render heap pressure across paths.");

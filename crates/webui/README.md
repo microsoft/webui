@@ -5,8 +5,10 @@ Programmatic Rust API for the [WebUI](https://github.com/microsoft/webui) build-
 ## Install
 
 ```bash
-cargo add webui
+cargo add microsoft-webui
 ```
+
+The package is imported as `webui` in Rust code.
 
 ## Quick Start
 
@@ -83,9 +85,9 @@ handler.handle(&protocol, &state, &RenderOptions::new("index.html", "/"), &mut w
 With a hydration plugin enabled (the `webui` plugin shown here; see the WebUI documentation for the available plugin identifiers):
 
 ```rust
-use webui::{WebUIHandler, HandlerPlugin};
-use webui_handler::plugin::webui::WebUIHydrationPlugin;
+use webui::{FastV3HydrationPlugin, WebUIHandler, WebUIHydrationPlugin};
 
+let fast_handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
 let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
 ```
 
@@ -125,6 +127,8 @@ let partial = route_handler::render_partial(
 | `WebUIHandler` | Rendering engine (stateless, thread-safe) |
 | `RenderOptions` | Render configuration (entry_id, request_path) |
 | `ResponseWriter` | Trait for streaming rendered output |
+| `HandlerPlugin` | Trait for custom handler-side hydration plugins |
+| `FastV3HydrationPlugin` / `WebUIHydrationPlugin` | Built-in handler plugins re-exported by this crate |
 | `CssStrategy` | CSS delivery mode (Link or Style) |
 | `WebUIError` | Error type for build/inspect operations |
 

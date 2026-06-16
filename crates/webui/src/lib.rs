@@ -5,6 +5,9 @@
 //!
 //! This crate provides the core build, render, and inspection APIs
 //! that power the `webui` CLI, Node.js bindings, and WASM module.
+//! It also re-exports the primary handler, parser, protocol, and built-in
+//! handler plugin types so Rust hosts can depend on `microsoft-webui` alone for
+//! common build/render integration.
 //!
 //! # Example
 //!
@@ -19,6 +22,16 @@
 //!
 //! println!("Built {} fragments in {:?}", result.stats.fragment_count, result.stats.duration);
 //! ```
+//!
+//! # Hydration plugins
+//!
+//! Built-in handler plugins are available from this crate root:
+//!
+//! ```rust,no_run
+//! use webui::{FastV3HydrationPlugin, WebUIHandler};
+//!
+//! let _handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
+//! ```
 
 mod error;
 pub mod server;
@@ -26,7 +39,7 @@ pub mod streaming;
 
 pub use error::WebUIError;
 
-// Re-export core types from downstream crates
+// Re-export core types from downstream crates.
 pub use webui_handler::plugin::{
     fast_v3::FastV3HydrationPlugin, webui::WebUIHydrationPlugin, HandlerPlugin,
 };

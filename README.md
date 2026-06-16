@@ -24,6 +24,17 @@ Or install the Rust CLI:
 cargo install microsoft-webui-cli
 ```
 
+For the Rust library API:
+
+```bash
+cargo add microsoft-webui
+```
+
+Cargo imports the library as `webui`. The crate re-exports the core handler
+API (`WebUIHandler`, `RenderOptions`, `ResponseWriter`) and built-in hydration
+plugins (`FastV3HydrationPlugin`, `WebUIHydrationPlugin`) so Rust hosts can
+build and render through one dependency.
+
 For .NET server-side bindings:
 
 ```bash

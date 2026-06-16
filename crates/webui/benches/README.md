@@ -16,9 +16,10 @@ Two criterion benches in this directory:
 Two **examples** (in `crates/webui/examples/`) round out the suite:
 
 * **`streaming_resource_bench.rs`** — exact allocation count, bytes
-  allocated, getrusage CPU time, and peak RSS via a custom
+  allocated, getrusage user/system CPU time, and peak RSS via a custom
   `GlobalAlloc`. The only bench in the workspace that gives exact
-  allocation numbers.
+  allocation numbers. On non-Unix targets, getrusage-backed CPU/RSS
+  counters report zero while allocation and wall-clock measurements still run.
 * **`streaming_e2e_ttfb_bench.rs`** — HTTP-level TTFB through a real
   actix-web server.
 

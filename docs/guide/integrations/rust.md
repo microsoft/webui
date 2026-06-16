@@ -12,6 +12,10 @@ serde_json = "1"
 
 The crate is published as `microsoft-webui` on crates.io; the bare `webui` name is owned by an unrelated project. Cargo's default rename rules mean items remain importable as `use webui::...` because the crate sets `[lib] name = "webui"` internally.
 
+The top-level crate re-exports the common handler, parser, protocol, and built-in
+handler plugin types needed by Rust hosts, including `FastV3HydrationPlugin` and
+`WebUIHydrationPlugin`.
+
 ## Examples
 
 <webui-tabs>
@@ -208,6 +212,22 @@ HttpResponse::Ok()
 
 `StreamingWriter` returns `HandlerError::ClientDisconnected` (receiver dropped) or `HandlerError::StreamTimeout` (flush deadline exceeded) from both `write()` and `end()`, so callers can distinguish "fully delivered" from "client cancelled" for correct telemetry.
 
+## Hydration plugins
+
+Rust hosts can configure built-in handler plugins from the `webui` crate root
+without adding a direct `microsoft-webui-handler` dependency:
+
+```rust
+use webui::{FastV3HydrationPlugin, WebUIHandler, WebUIHydrationPlugin};
+
+let fast_handler = WebUIHandler::with_plugin(|| Box::new(FastV3HydrationPlugin::new()));
+let webui_handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+```
+
+Use the matching parser plugin at build time (`Plugin::FastV3` or
+`Plugin::WebUI`) so the protocol metadata and handler hydration markers share
+the same contract.
+
 ## API Reference
 
 ### Build
@@ -226,7 +246,7 @@ HttpResponse::Ok()
 | `app_dir` | `PathBuf` | - | Path to app folder |
 | `entry` | `String` | `"index.html"` | Entry file |
 | `css` | `CssStrategy` | `Link` | CSS delivery: `Link`, `Style`, or `Module` |
-| `plugin` | `Option<String>` | `None` | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
+| `plugin` | `Option<Plugin>` | `None` | Parser plugin enum (for example, `Plugin::FastV3` or `Plugin::WebUI`; see [Plugins](/guide/concepts/plugins/)) |
 | `components` | `Vec<String>` | `[]` | External component sources |
 | `css_file_name_template` | `String` | `"[name].[ext]"` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `css_public_base` | `Option<String>` | `None` | Public URL/path prefix for Link-mode CSS hrefs |
@@ -250,6 +270,14 @@ HttpResponse::Ok()
 | `with_nonce(&str)` | builder | CSP nonce reflected onto inline `<script>` tags (including the `<script type="importmap">` tags that register Module-strategy CSS). Empty string normalises to `None`. |
 | `with_head_inject(&str)` | builder | Raw HTML emitted immediately before `</head>` at the parser's structural boundary (see [Streaming SSR](#streaming-ssr)). |
 | `with_body_inject(&str)` | builder | Raw HTML emitted immediately before `</body>`. Same structural-boundary contract. |
+
+### Handler plugins
+
+| Type | Description |
+|---|---|
+| `HandlerPlugin` | Trait for custom handler-side hydration plugins |
+| `FastV3HydrationPlugin` | Built-in FAST 3 handler hydration plugin |
+| `WebUIHydrationPlugin` | Built-in WebUI Framework handler hydration plugin |
 
 ### HandlerError variants
 
