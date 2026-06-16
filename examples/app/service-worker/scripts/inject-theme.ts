@@ -32,7 +32,7 @@ const themed = html
   .replace("<!--WEBUI_THEME_DARK-->", darkCss);
 
 if (themed === html) {
-  throw new Error("Theme placeholders were not replaced in public/index.html");
+  throw new Error("Theme placeholders were not replaced in src/bootstrap.html");
 }
 
 await writeFile(indexPath, themed);
