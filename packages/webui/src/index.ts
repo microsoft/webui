@@ -71,8 +71,10 @@ export interface RenderOptions {
 export interface ComponentTemplatesResponse {
   /** Module CSS `<style>` strings for the requested components. */
   templateStyles: string[];
-  /** Component template payload strings for the requested components. */
-  templates: string[];
+  /** JSON-safe component template metadata keyed by tag name. */
+  templates: Record<string, unknown>;
+  /** JavaScript condition closure arrays keyed by tag name. */
+  templateFunctions: Record<string, string>;
   /** Updated hex bitmask of loaded component templates. */
   inventory: string;
 }
@@ -81,8 +83,10 @@ export interface ComponentTemplatesResponse {
 export interface PartialResponse {
   /** Application state for the matched route. */
   state: Record<string, unknown>;
-  /** Component template payload strings the client doesn't already have. */
-  templates: string[];
+  /** JSON-safe component template metadata keyed by tag name. */
+  templates: Record<string, unknown>;
+  /** JavaScript condition closure arrays keyed by tag name. */
+  templateFunctions?: Record<string, string>;
   /** Updated hex bitmask of loaded component templates. */
   inventory: string;
   /** The request path. */

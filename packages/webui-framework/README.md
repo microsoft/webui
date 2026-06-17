@@ -32,7 +32,7 @@ Outside the workspace:
 pnpm add @microsoft/webui-framework
 ```
 
-TypeScript must use legacy decorators:
+TypeScript must enable decorator emit:
 
 ```json
 {
@@ -93,7 +93,7 @@ Build with `--dom=shadow` (default) to wrap in a declarative shadow root, or `--
 cargo run -p microsoft-webui-cli -- build ./src --out ./dist --plugin=webui
 ```
 
-The compiler/plugin generates the template metadata consumed by the runtime. In normal app code, you should not need to hand-author `window.__webui.templates`.
+The compiler/plugin generates the template metadata and condition closure arrays consumed by the runtime. In normal app code, you should not need to hand-author `window.__webui.templates` or `window.__webui.templateFns`.
 
 ### Property binding lifecycle
 
@@ -311,7 +311,7 @@ When contributing to the runtime, avoid these patterns:
 │                      │     │   (Rust/Go/C#/…)      │      │                      │
 │  HTML template       │     │                       │      │  SSR HTML (light or  │
 │  + expressions       │────▶│  TemplateMeta (JSON)  │────▶│  shadow DOM) +       │
-│  + @if / @for        │     │  + state data         │      │  __webui.state JSON  │
+│  + @if / @for        │     │  + state data         │      │  webui-data JSON     │
 │                      │     │                       │      │                      │
 │  Outputs:            │     │  Renders:             │      │  Hydrates:           │
 │  • TemplateMeta      │     │  • Full HTML page     │      │  • Path-based DOM    │
@@ -340,7 +340,7 @@ flowchart LR
     subgraph Serve ["Server (Any Language)"]
         M --> R[Route Handler]
         S[State Data] --> R
-        R --> HTML["Full SSR HTML<br/>(shadow or light DOM)<br/>+ TemplateMeta &lt;script&gt;<br/>+ __webui.state &lt;script&gt;"]
+        R --> HTML["Full SSR HTML<br/>(shadow or light DOM)<br/>+ inert #webui-data"]
     end
 
     subgraph Browser ["Browser"]
@@ -366,7 +366,7 @@ graph TD
 
     TYPES["element/types.ts<br/><i>Shared Types</i><br/>TemplateInstance, TextBinding,<br/>AttrBinding, CondBinding,<br/>RepeatBinding, ScopeFrame,<br/>RepeatHost"]
 
-    TMPL["template.ts<br/><i>Metadata Types + Registry</i><br/>TemplateMeta, getTemplate"]
+    TMPL["template.ts<br/><i>Metadata Types + Registry</i><br/>TemplateMeta, getTemplate,<br/>registerTemplateData"]
 
     DEC["decorators.ts<br/><i>Reactive Properties</i><br/>@observable, @attr, @volatile"]
 
@@ -388,7 +388,7 @@ graph TD
 ### SSR Hydration Path
 
 When the server renders a component, it emits HTML content (as a declarative
-shadow root or as light DOM children) along with a `window.__webui.state`
+shadow root or as light DOM children) along with an inert `#webui-data`
 JSON payload.  The browser parses this DOM before any JavaScript runs.
 When the component's JS loads and `connectedCallback` fires, the framework
 uses compiled template paths to resolve SSR DOM nodes without any marker
@@ -401,7 +401,7 @@ sequenceDiagram
     participant CE as Custom Element
     participant FW as Framework
 
-    Server->>Browser: HTML (shadow or light DOM)<br/>+ __webui.state JSON
+    Server->>Browser: HTML (shadow or light DOM)<br/>+ inert #webui-data JSON
     Browser->>Browser: Parse HTML → DOM exists
     Browser->>CE: Custom element upgrade
     CE->>CE: attributeChangedCallback (pre-existing attrs)
@@ -486,19 +486,16 @@ Compiled metadata:
 }
 ```
 
-### Condition AST
+### Condition references
 
-Conditions are emitted as compact tuples:
+Conditions are emitted as `[functionIndex, paths]` references. The index points
+to a component-local closure in `window.__webui.templateFns[tagName]`, while
+`paths` lets the runtime build targeted reactive indexes without parsing
+function source.
 
-| Tuple | Meaning | Example |
-|-------|---------|---------|
-| `[0, path]` | Identifier (truthy check) | `@if(visible)` |
-| `[1, left, op, right]` | Comparison predicate | `@if(count > 0)` |
-| `[2, inner]` | Logical NOT | `@if(!visible)` |
-| `[3, left, op, right]` | Compound AND/OR | `@if(a && b)` |
-
-The runtime evaluates these iteratively (stack-based, no recursion) to avoid
-call-stack depth in hot update paths.
+The runtime normalizes each condition reference into `[fn, paths]` once before
+hydration or client-created wiring, so hot update paths call the closure
+directly.
 
 ---
 
@@ -561,15 +558,15 @@ browser sees `42` in the DOM but the JavaScript property `this.count` is still
 `0` (the class default).  Without seeding, the first `$update()` would
 overwrite the SSR content with the wrong value.
 
-State seeding uses `window.__webui.state` — a JSON object emitted by the
-server handler as a `<script>` tag.  Like Preact's props, this delivers the
+State seeding uses `window.__webui.state` — a JSON object loaded from the
+server-emitted `#webui-data` block.  Like Preact's props, this delivers the
 same data used for SSR rendering to the client.  During `$mount()`,
 `$applySSRState()` writes matching keys directly to observable backing fields
 before any bindings are wired:
 
 ```mermaid
 flowchart LR
-    SCRIPT["&lt;script&gt;<br/>window.__webui.state = {<br/>  count: 42,<br/>  title: 'Hello'<br/>}"] --> APPLY["$applySSRState()"]
+    SCRIPT["&lt;script type='application/json' id='webui-data'&gt;<br/>{ state: { count: 42, title: 'Hello' } }"] --> APPLY["$applySSRState()"]
     APPLY --> SEED["Write to backing fields:<br/>this._count = 42<br/>this._title = 'Hello'"]
     SEED --> HYDRATE["$hydrate() — bindings match<br/>server-rendered DOM"]
 ```

@@ -34,7 +34,7 @@ pub struct WebUIProtocol {
     /// Sorted, deduplicated CSS custom property names used across all
     /// components and entry page styles (without `--` prefix).
     pub tokens: Vec<String>,
-    /// Per-component data keyed by tag name (client template + CSS).
+    /// Per-component data keyed by tag name (client template metadata + CSS).
     pub components: HashMap<String, ComponentData>,
     /// Build-wide CSS delivery strategy (Link, Style, or Module).
     pub css_strategy: CssStrategy,
@@ -46,8 +46,7 @@ pub struct WebUIProtocol {
 /// Framework-neutral: each plugin populates the fields it needs.
 /// Generated from protobuf `message ComponentData`.
 pub struct ComponentData {
-    /// Client-side template string for hydration. Populated by the active
-    /// parser plugin in whatever format that plugin's runtime expects.
+    /// Non-WebUI client-side template payload, such as FAST `<f-template>` HTML.
     pub template: String,
     /// Component CSS content for the Module strategy.
     pub css: String,
@@ -62,6 +61,10 @@ pub struct ComponentData {
     ///   Link + Shadow → `<link rel="preload">` (shadow root has the stylesheet)
     ///   Link + Light  → `<link rel="stylesheet">` (no shadow root to host it)
     pub css_href: String,
+    /// WebUI plugin JSON-safe component metadata.
+    pub template_json: String,
+    /// WebUI plugin component-local JavaScript condition closure array.
+    pub template_functions: String,
 }
 
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
@@ -280,29 +283,35 @@ When the handler encounters `Fragment::Outlet`:
 2. Match children against the request path (relative to route base).
 3. Emit `<webui-outlet>` containing matched child `<webui-route>` with component, and hidden stubs for siblings.
 
-The handler also emits a `<meta name="webui-nonce">` tag in `<head>` for backward compatibility,
-and a nonce'd inline `<script>` containing a `window.__webui` object with the SSR metadata:
+For plugins that participate in client routing, the handler also emits a
+`<meta name="webui-nonce">` tag in `<head>` for backward compatibility, an inert
+`<script type="application/json" id="webui-data">` data block containing shared
+non-executable SSR metadata:
 
-```js
-window.__webui = {
-  chain: RouteChainEntry[],  // matched route chain with component, path, params, exact,
-                              // allowedQuery, keepAlive, pendingComponent, errorComponent,
-                              // invalidates
-  inventory: string,          // hex-encoded component bitmask (rendered components only)
-  nonce: string,              // CSP nonce value
-  css: string[],              // CSS link hrefs emitted during SSR
-  styles: string[],           // module CSS specifiers emitted during SSR
-  state: object,              // SSR state for hydration (consumed by framework on load)
-  templates: Record<string, TemplateMetadata>,  // component template metadata (populated by IIFEs)
-};
+```html
+<script type="application/json" id="webui-data">
+{
+  "chain": [{ "component": "app-shell", "path": "/" }],
+  "inventory": "0c",
+  "nonce": "abc123",
+  "css": ["todo-app.css"],
+  "styles": ["todo-app"],
+  "state": { "title": "Todo List" }
+}
+</script>
 ```
 
-This replaces the previous `<meta name="webui-inventory">` and `<script id="webui-chain">` tags
-with a single consolidated object. The client router reads `window.__webui` at startup instead
-of querying the DOM for metadata elements. Note that **templates** and
+This is the single metadata startup contract. The client packages first read any existing `window.__webui`, then
+lazily parse and remove `#webui-data` into `window.__webui` when metadata is needed. Note that
 **CSS module definitions** are emitted for all **reachable** components (including those in false
-`<if>` blocks), not just rendered ones — this ensures client-side conditional activation works
-without a server round-trip.
+`<if>` blocks), not just rendered ones.
+
+Plugins can still emit executable side-channel data after the inert block. The WebUI framework
+plugin uses that extension point to install component-local
+`window.__webui.templateFns[tagName]` closure arrays, paired with JSON-safe `templates` in
+`webui-data`. FAST plugins emit their own `<f-template>` payloads and hydration markers, so they
+use the shared router metadata (`chain`, `inventory`, `nonce`, `css`, `styles`, `state`) but do not
+emit WebUI `templates` or `templateFns`.
 
 **Key elements:**
 - `<webui-route>` — light DOM custom element, structural routing wrapper with no shadow DOM
@@ -317,10 +326,11 @@ without a server round-trip.
 6. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
 7. Parent components and their state are preserved.
 
-**Partial response:** `render_partial()` returns `{ templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }`. The caller adds application state to the response (e.g. as a top-level `state` field for non-streaming, or as an NDJSON Chunk 2 for streaming):
+**Partial response:** `render_partial()` returns `{ templateStyles, templates, templateFunctions, inventory, path, chain, cacheTags, cacheControl }`. The caller adds application state to the response (e.g. as a top-level `state` field for non-streaming, or as an NDJSON Chunk 2 for streaming):
 - `state`: (added by caller) route-scoped application data — the router applies it to components via `setState()`
-- `templateStyles`: CSS module definition tags (`<script type="importmap">{"imports":{"...":"data:text/css,..."}}</script>` strings - see [CssStrategy::Module](#css-strategy)) for newly shipped components. Empty array for Link/Style modes. The client appends these to `<head>` before evaluating template scripts so adopted stylesheets are available
-- `templates`: client template script/markup payloads the client doesn't already have (filtered by inventory bitmask). Format depends on the active parser plugin
+- `templateStyles`: CSS module definition tags (`<script type="importmap">{"imports":{"...":"data:text/css,..."}}</script>` strings - see [CssStrategy::Module](#css-strategy)) for newly shipped components. Empty array for Link/Style modes. The client appends these to `<head>` before installing template closure arrays so adopted stylesheets are available
+- `templates`: JSON-safe client template metadata keyed by component tag, filtered by inventory bitmask
+- `templateFunctions`: JavaScript condition closure array strings keyed by component tag, filtered alongside `templates`; omitted or empty for templates with no conditions
 - `inventory`: updated hex bitmask of loaded templates
 - `chain`: matched route chain array — each entry has `component`, `path`, optional `params`, `exact`, `allowedQuery`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`
 - `cacheTags`: resolved cache tags from the full route chain (union of all levels, deduplicated). The client tags its cache entry with these values for tag-based invalidation
@@ -589,14 +599,14 @@ pub fn render_action_response(
     inventory_hex: &str,
 ) -> Result<ActionResponse, HandlerError>;
 
-/// Emit client template scripts/markup for the given components.
+/// Emit client template metadata, closure arrays, styles, and inventory.
 /// `protocol_index` provides the component index for inventory tracking.
 pub fn render_component_templates(
     handler: &WebUIHandler,
     protocol: &WebUIProtocol,
     protocol_index: &ProtocolIndex,
     components: &[String],
-) -> Vec<String>;
+) -> serde_json::Value;
 ```
 
 #### Component Inventory Functions
@@ -956,7 +966,7 @@ pub enum CssStrategy {
 
 - **Link** (default): Emits `<link>` tags referencing external `.css` files only for components whose discovery/registration data included CSS. Used by the CLI for production builds where CSS files are served separately. Output filenames are configurable with a naming template (`[name]`, `[hash]`, `[ext]`), defaulting to `[name].[ext]`. `[hash]` is SHA-256 truncated to 8 hex chars. An optional public base prefix can be applied so protocol `css_href` values point to CDN URLs. The resolved href is used consistently for handler-emitted head links and parser/plugin-generated component template stylesheet links.
 - **Style**: Embeds the full CSS content in `<style>` tags inside the shadow DOM template. Used when all files are needed in-memory.
-- **Module**: Registers each component's CSS as a CSS Module via an [Import Map](https://html.spec.whatwg.org/multipage/webappapis.html#import-maps) entry whose value is a `data:text/css,...` URI. During SSR, the handler emits a `<script type="importmap">{"imports":{"component-name":"data:text/css,..."}}</script>` in each component's light DOM on first render (e.g., `<my-comp><script type="importmap">...</script><template ...>`) and adds `shadowrootadoptedstylesheets="component-name"` to each shadow root `<template>`. When the developer supplies their own `<template>` wrapper (e.g., to attach `@event` handlers), they MUST declare `shadowrootadoptedstylesheets="component-name"` on it — the parser returns `ParserError::MissingAdoptedStylesheets` at build time if the attribute is absent, so adoption can never silently fail. Multi-specifier values (`shadowrootadoptedstylesheets="component-name other-sheet"`) are honored verbatim. Components inside false `<if>` blocks or empty `<for>` loops that were not rendered during SSR get their importmap definitions emitted at `body_end`, so client-side activation can adopt them. CSS bytes are percent-encoded as needed to survive the `data:` URI parser (`%`, `#`, `"`, whitespace, and non-ASCII / control bytes); the importmap JSON object is built via `serde_json` so the specifier and URI value are correctly JSON-escaped. **Requires browser support for [Multiple Import Maps](https://github.com/WICG/import-maps/blob/main/proposals/multiple-import-maps.md) (Chrome 133+)** so each component's importmap can be emitted independently and merged into the document-level resolution table by the browser. When a CSP nonce is configured (via `RenderOptions::with_nonce` / `webui_handler_set_nonce`), the SSR-emitted `<script type="importmap">` tags include `nonce="VALUE"` (in `type`, `nonce` order) so strict `script-src 'nonce-...'` policies allow them, matching the existing nonce treatment of inline `<script>` tags. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. During SPA partial navigation, definitions for newly needed components are sent in the `templateStyles` array as `<script type="importmap">{"imports":{...}}</script>` strings (without a `nonce` attribute - the router materializes each tag client-side and applies the per-request nonce when appending to `<head>` before executing template scripts). WebUI Framework compiled metadata carries the adopted stylesheet specifier (`sa`) so client-created components can adopt the registered stylesheet on their shadow root.
+- **Module**: Registers each component's CSS as a CSS Module via an [Import Map](https://html.spec.whatwg.org/multipage/webappapis.html#import-maps) entry whose value is a `data:text/css,...` URI. During SSR, the handler emits a `<script type="importmap">{"imports":{"component-name":"data:text/css,..."}}</script>` in each component's light DOM on first render (e.g., `<my-comp><script type="importmap">...</script><template ...>`) and adds `shadowrootadoptedstylesheets="component-name"` to each shadow root `<template>`. When the developer supplies their own `<template>` wrapper (e.g., to attach `@event` handlers), they MUST declare `shadowrootadoptedstylesheets="component-name"` on it — the parser returns `ParserError::MissingAdoptedStylesheets` at build time if the attribute is absent, so adoption can never silently fail. Multi-specifier values (`shadowrootadoptedstylesheets="component-name other-sheet"`) are honored verbatim. Components inside false `<if>` blocks or empty `<for>` loops that were not rendered during SSR get their importmap definitions emitted at `body_end`, so client-side activation can adopt them. CSS bytes are percent-encoded as needed to survive the `data:` URI parser (`%`, `#`, `"`, whitespace, and non-ASCII / control bytes); the importmap JSON object is built via `serde_json` so the specifier and URI value are correctly JSON-escaped. **Requires browser support for [Multiple Import Maps](https://github.com/WICG/import-maps/blob/main/proposals/multiple-import-maps.md) (Chrome 133+)** so each component's importmap can be emitted independently and merged into the document-level resolution table by the browser. When a CSP nonce is configured (via `RenderOptions::with_nonce` / `webui_handler_set_nonce`), the SSR-emitted `<script type="importmap">` tags include `nonce="VALUE"` (in `type`, `nonce` order) so strict `script-src 'nonce-...'` policies allow them, matching the existing nonce treatment of inline `<script>` tags. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. During SPA partial navigation, definitions for newly needed components are sent in the `templateStyles` array as `<script type="importmap">{"imports":{...}}</script>` strings (without a `nonce` attribute - the router materializes each tag client-side and applies the per-request nonce when appending to `<head>` before installing component template closure arrays). WebUI Framework compiled metadata carries the adopted stylesheet specifier (`sa`) so client-created components can adopt the registered stylesheet on their shadow root.
 
 Set at construction time with
 `HtmlParser::with_options(ParserOptions::try_new(css, dom, css_file_name_template, css_public_base, legal_comments))`.
@@ -1291,7 +1301,13 @@ It intentionally does **not** duplicate package tutorials or framework API docs.
 
 ### Metadata object format
 
-Each component's compiled template is registered in `window.__webui.templates[tagName]` as a marker-free metadata object consumed by the browser runtime:
+Each component's compiled template metadata is emitted as JSON-safe data in
+`template_json` and registered in `window.__webui.templates[tagName]`. Condition
+expressions are the only executable part: the parser emits them into
+`template_functions` as a component-local JavaScript closure array, and metadata
+condition references link to that array by index. The framework normalizes
+`[functionIndex, paths]` into `[fn, paths]` once before hydration, so reactive
+update hot paths still call the function directly.
 
 | Field | Type                              | Description                                        |
 |-------|-----------------------------------|----------------------------------------------------|
@@ -1299,10 +1315,8 @@ Each component's compiled template is registered in `window.__webui.templates[ta
 | `tx`  | `[slot, parts][]`                 | Client text runs inserted at precompiled slots     |
 | `a`   | `CompiledAttrMeta[]`              | Attribute binding metadata                         |
 | `ag`  | `[elementPath, start, count][]`   | Attribute-target groups for `a[]`                  |
-| `c`   | `[ConditionExpr, blockIndex][]`   | Conditional blocks                                 |
-| `cl`  | `SlotPath[]`                      | Conditional anchor slots aligned to `c[]`          |
-| `r`   | `[collection, itemVar, blockIndex][]` | Repeat blocks                                  |
-| `rl`  | `SlotPath[]`                      | Repeat anchor slots aligned to `r[]`               |
+| `c`   | `[ConditionRef, blockIndex, slot][]` | Conditional blocks                              |
+| `r`   | `[collection, itemVar, blockIndex, slot][]` | Repeat blocks                            |
 | `e`   | `[event, handler, argSpecs, targetPath][]` | Body events                              |
 | `b`   | `TemplateBlockMeta[]`             | Nested compiled block table referenced by `c` / `r` |
 | `sa`  | `string`                          | Optional module-mode adopted stylesheet specifier copied from `shadowrootadoptedstylesheets` |
@@ -1310,19 +1324,14 @@ Each component's compiled template is registered in `window.__webui.templates[ta
 
 All arrays are optional — omitted from the output when empty to minimize payload.
 
-`ConditionExpr` in compiled framework metadata reuses the protocol condition AST in a compact tuple form:
+`ConditionRef` in JSON metadata is `[functionIndex, paths]`:
 
-- `[0, path]` — identifier / truthy path lookup
-- `[1, left, operator, right]` — predicate comparison
-- `[2, condition]` — logical NOT
-- `[3, left, operator, right]` — logical compound (`AND` / `OR`)
+- `functionIndex` indexes the component-local `window.__webui.templateFns[tagName]` array.
+- `paths` lists every state path referenced by the condition so the framework can build its targeted reactive path index without inspecting function source.
 
-Comparison operators match the protocol enum values:
-
-- `1` = `GREATER_THAN`
-- `2` = `LESS_THAN`
-- `3` = `EQUAL`
-- `4` = `NOT_EQUAL`
+The closure itself has the shape `(resolve, scope) => boolean`; generated source calls
+`resolve(path, scope)` for identifier lookups and preserves the existing WebUI condition
+semantics for truthiness, comparison, negation, and `&&` / `||` compounds.
 - `5` = `GREATER_THAN_OR_EQUAL`
 - `6` = `LESS_THAN_OR_EQUAL`
 
@@ -1391,8 +1400,6 @@ The handler decodes this in `on_element_data` and emits SSR-only markers:
 - `data-w-b-N` for one bound attribute, or `data-w-c-START-COUNT` for multiple `a[]` entries on the same element
 - `data-ev="COUNT"` once per element, where `COUNT` is the number of consecutive entries in the metadata `e[]` array that belong to that element
 
-For compatibility during mixed parser/handler rollouts, the handler also accepts the legacy 4-byte binding-only payload and upgrades it to `event_count = 0`.
-
 WebUI SSR marker formats are:
 
 | Marker | Format | Notes |
@@ -1413,8 +1420,8 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
 
 - SSR hydration uses one DOM walk to discover `<!--wr-->`, `<!--wi-->`, and `<!--wc-->` comment markers, wire the relevant bindings using compiled metadata path indices, then remove SSR-only markers.
 - Client-created DOM never reparses template syntax; it clones marker-free `h`,
-  upgrades the detached custom-element subtree, resolves `tx`, `ag`, `cl`, `rl`,
-  and event target paths directly, then applies the first binding pass before
+  upgrades the detached custom-element subtree, resolves `tx`, `ag`, the slots
+  embedded in `c` / `r`, and event target paths directly, then applies the first binding pass before
   appending nodes to the connected DOM. Child components therefore observe
   initial parent `:` property bindings in `connectedCallback`, while later parent
   updates remain live.

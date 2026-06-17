@@ -397,13 +397,13 @@ fn render_partial_returns_templates_inventory_and_chain() {
             "partial response should contain 'templates' field"
         );
         assert!(
-            value["templates"].is_array(),
-            "templates should be an array"
+            value["templates"].is_object(),
+            "templates should be an object"
         );
         assert!(
             !value["templates"]
-                .as_array()
-                .expect("templates is array")
+                .as_object()
+                .expect("templates is object")
                 .is_empty(),
             "templates should not be empty for an empty inventory"
         );

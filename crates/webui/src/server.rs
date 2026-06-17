@@ -171,8 +171,7 @@ mod tests {
             .components
             .entry("my-page".to_string())
             .or_default();
-        component.template =
-            "(function(){window.__webui.templates['my-page']={h:'<p>page</p>'};})();".to_string();
+        component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         component.css = ".page{color:red}".to_string();
 
         let handler = WebUIHandler::new();
@@ -198,11 +197,11 @@ mod tests {
         );
         // templates must not contain any style tags
         assert!(
-            !json["templates"][0]
+            !json["templates"]["my-page"]["h"]
                 .as_str()
                 .unwrap_or_default()
                 .contains("<style"),
-            "template scripts should not contain module style tags"
+            "template metadata should not contain module style tags"
         );
     }
 
@@ -227,7 +226,7 @@ mod tests {
             .components
             .entry("my-page".to_string())
             .or_default();
-        comp.template = "(function(){})();".to_string();
+        comp.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         comp.css_href = "my-page.css".to_string();
         // No css content — Link strategy
 
@@ -253,7 +252,7 @@ mod tests {
             "Link strategy should return empty templateStyles"
         );
         assert!(
-            json["templates"].as_array().is_some_and(|a| a.len() == 1),
+            json["templates"].as_object().is_some_and(|a| a.len() == 1),
             "Link strategy should still return templates"
         );
     }
@@ -279,8 +278,8 @@ mod tests {
             .components
             .entry("my-page".to_string())
             .or_default();
-        // Style strategy: CSS is inlined in the template IIFE
-        comp.template = "(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w['my-page']={h:'<style>.p{color:red}</style><p/>'};})();".to_string();
+        // Style strategy: CSS is inlined in the template metadata
+        comp.template_json = r#"{"h":"<style>.p{color:red}</style><p/>"}"#.to_string();
 
         let handler = WebUIHandler::new();
         let request = ServeRequest {
@@ -304,7 +303,7 @@ mod tests {
             "Style strategy should return empty templateStyles"
         );
         assert!(
-            json["templates"].as_array().is_some_and(|a| a.len() == 1),
+            json["templates"].as_object().is_some_and(|a| a.len() == 1),
             "Style strategy should still return templates"
         );
     }

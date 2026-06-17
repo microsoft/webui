@@ -4,7 +4,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
-import { getTemplate, type TemplateMeta } from './template.js';
+import { getTemplate, registerTemplateData, type TemplateMeta } from './template.js';
 
 describe('template registry helpers', () => {
   test('getTemplate returns registered metadata from window', () => {
@@ -31,6 +31,114 @@ describe('template registry helpers', () => {
         Object.defineProperty(globalThis, 'window', previousWindow);
       } else {
         Reflect.deleteProperty(globalThis, 'window');
+      }
+    }
+  });
+
+  test('registerTemplateData normalizes indexed conditions once', () => {
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const fn = (): boolean => true;
+    const template = {
+      h: '<p></p>',
+      c: [[[0, ['ready']], 0, [[], 0]]],
+    } as unknown as TemplateMeta;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { __webui: {} },
+        configurable: true,
+        writable: true,
+      });
+
+      registerTemplateData({ greeting: template }, { greeting: [fn] });
+      const registered = getTemplate('greeting')!;
+      assert.equal((registered.c![0][0][0] as unknown), fn);
+      assert.deepEqual(registered.c![0][0][1], ['ready']);
+    } finally {
+      if (previousWindow) {
+        Object.defineProperty(globalThis, 'window', previousWindow);
+      } else {
+        Reflect.deleteProperty(globalThis, 'window');
+      }
+    }
+  });
+
+  test('getTemplate normalizes bootstrapped SSR metadata from window', () => {
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const fn = (): boolean => false;
+    const template = {
+      h: '<p></p>',
+      c: [[[0, ['ready']], 0, [[], 0]]],
+    } as unknown as TemplateMeta;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: {
+          __webui: {
+            inventory: '0c',
+            state: { title: 'Hello' },
+            templates: { greeting: template },
+            templateFns: { greeting: [fn] },
+          },
+        },
+        configurable: true,
+        writable: true,
+      });
+
+      const registered = getTemplate('greeting')!;
+      assert.equal((registered.c![0][0][0] as unknown), fn);
+      assert.equal(window.__webui!.inventory, '0c');
+      assert.deepEqual(window.__webui!.state, { title: 'Hello' });
+    } finally {
+      if (previousWindow) {
+        Object.defineProperty(globalThis, 'window', previousWindow);
+      } else {
+        Reflect.deleteProperty(globalThis, 'window');
+      }
+    }
+  });
+
+  test('getTemplate lazily loads webui-data and preserves templateFns', () => {
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+    const fn = (): boolean => true;
+    let removed = false;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { __webui: { templateFns: { greeting: [fn] } } },
+        configurable: true,
+        writable: true,
+      });
+      Object.defineProperty(globalThis, 'document', {
+        value: {
+          getElementById(id: string) {
+            if (id !== 'webui-data') return null;
+            return {
+              textContent: '{"inventory":"0c","state":{"title":"Hello"},"templates":{"greeting":{"h":"<p></p>","c":[[[0,["ready"]],0,[[],0]]]}}}',
+              remove() { removed = true; },
+            };
+          },
+        },
+        configurable: true,
+        writable: true,
+      });
+
+      const registered = getTemplate('greeting')!;
+      assert.equal((registered.c![0][0][0] as unknown), fn);
+      assert.equal(window.__webui!.inventory, '0c');
+      assert.deepEqual(window.__webui!.state, { title: 'Hello' });
+      assert.equal(removed, true);
+    } finally {
+      if (previousWindow) {
+        Object.defineProperty(globalThis, 'window', previousWindow);
+      } else {
+        Reflect.deleteProperty(globalThis, 'window');
+      }
+      if (previousDocument) {
+        Object.defineProperty(globalThis, 'document', previousDocument);
+      } else {
+        Reflect.deleteProperty(globalThis, 'document');
       }
     }
   });

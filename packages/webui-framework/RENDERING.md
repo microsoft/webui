@@ -33,10 +33,10 @@ Parse templates   →     Render with state    →     Framework adopts
 Compile metadata        Inject SSR markers         existing DOM,
                         Emit Declarative           wires bindings,
                         Shadow DOM                 strips markers
-                        Emit __webui.state         O(affected) updates
+                        Emit webui-data            O(affected) updates
 ```
 
-1. **Server renders HTML.** The handler walks compiled template metadata and application state and emits Declarative Shadow DOM (or light DOM) with five comment markers around structural blocks, plus a `<script>` tag carrying `window.__webui.state` and the per-component template metadata.
+1. **Server renders HTML.** The handler walks compiled template metadata and application state and emits Declarative Shadow DOM (or light DOM) with five comment markers around structural blocks, plus an inert `#webui-data` block carrying state and per-component template metadata.
 2. **Browser parses HTML.** The parser creates shadow roots inline. The user sees a fully painted page before any framework code runs.
 3. **JavaScript loads.** The component class registers via `customElements.define`. The browser upgrades pre-existing tags and fires `connectedCallback`.
 4. **`$mount` decides client-or-SSR.** If a shadow root exists or the element already has children, the framework treats the DOM as SSR. Otherwise it parses the static template HTML (`meta.h`) into a detached staging root, upgrades custom elements, wires bindings, applies the first binding pass, and only then appends the nodes. Child `connectedCallback` methods see initial parent `:` property bindings.
@@ -112,36 +112,39 @@ Hydration assumes SSR DOM, marker comments, and compiled metadata come from the 
 
 ## Compiled template metadata
 
-The compiler emits one `TemplateMeta` per component, delivered as a JS IIFE inside a `<script>` tag (or evaluated directly during SPA partial navigation):
+The compiler emits one JSON-safe `TemplateMeta` per component plus a small component-local condition closure array. During SSR, all non-executable metadata is delivered in `<script type="application/json" id="webui-data">`; during SPA partial navigation, the router registers the metadata object directly and executes only the closure arrays.
 
-```javascript
-(function () {
-  var w = (window.__webui || (window.__webui = {})).templates || (window.__webui.templates = {});
-  w['todo-app'] = {
-    h:  '<div class="todo"><ul></ul></div>',
-    tx: [/* text binding runs */],
-    a:  [/* attribute bindings */],
-    ag: [/* attribute target groups */],
-    c:  [/* conditional blocks */],
-    cl: [/* conditional anchor slots */],
-    r:  [/* repeat blocks */],
-    rl: [/* repeat anchor slots */],
-    e:  [/* event bindings and target paths */],
-    b:  [/* nested block table */],
-    sa: 'todo-app',
-    sd: 0,
-    re: [/* root host events */],
-  };
-})();
+```json
+{
+  "inventory": "01",
+  "state": { "items": [] },
+  "templates": {
+    "todo-app": {
+      "h": "<div class=\"todo\"><ul></ul></div>",
+      "tx": [],
+      "a": [],
+      "ag": [],
+      "c": [[[0, ["items.length"]], 0, [[], 0]]],
+      "r": [["items", "item", 1, [[0], 0]]],
+      "e": [],
+      "b": [],
+      "sa": "todo-app",
+      "sd": 1,
+      "re": []
+    }
+  }
+}
 ```
+
+The matching executable payload is stored under `window.__webui.templateFns['todo-app']`, for example `[function(v,s){return !!v("items.length",s)}]`. The framework normalizes `[functionIndex, paths]` condition references into direct `[fn, paths]` tuples once before hydration.
 
 | Field | Purpose |
 |---|---|
 | `h` | Static HTML, marker-free, used for client-created cloning. **Never has SSR markers.** |
 | `tx` | Text-binding runs, slot path + parts. |
 | `a` / `ag` | Attribute bindings and the elements they target. |
-| `c` / `cl` | Conditional blocks and their anchor slot paths. |
-| `r` / `rl` | Repeat blocks and their anchor slot paths. |
+| `c` | Conditional blocks with `[conditionRef, blockIndex, slot]`. |
+| `r` | Repeat blocks with `[collection, itemVar, blockIndex, slot]`. |
 | `e` | Event bindings with handler argument specs and target paths. |
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
 | `sa` | Adopted-stylesheet specifier (CSS module). |
@@ -153,16 +156,20 @@ The same metadata serves both paths:
 - **SSR hydration** reads paths to compute ordinals, which are then translated against the live SSR DOM.
 - **Client-created creation** clones `h` into a detached staging root, upgrades custom elements, walks paths directly, and applies initial bindings before the staged nodes are appended to the connected DOM.
 
-### Condition AST
+### Condition references
 
-Conditions are compact tuples evaluated iteratively (no recursion):
+Conditions are stored in JSON as `[functionIndex, paths]`. `functionIndex`
+points into `window.__webui.templateFns[tagName]`, and `paths` drives the
+reactive path index. The framework normalizes this once to `[fn, paths]`
+before hydration or client-created wiring.
 
-| Tuple | Meaning | Example |
-|---|---|---|
-| `[0, path]` | Truthy check on a path | `<if condition="visible">` |
-| `[1, left, op, right]` | Comparison | `<if condition="count > 0">` |
-| `[2, inner]` | Logical NOT | `<if condition="!visible">` |
-| `[3, left, op, right]` | AND or OR | `<if condition="a && b">` |
+```javascript
+// Metadata
+[0, ['visible']]
+
+// Function table
+[function(v, s) { return !!v('visible', s); }]
+```
 
 ---
 
@@ -211,7 +218,7 @@ When the server renders `<span>42</span>` for `@observable count = 0`, the JS cl
 
 `$applySSRState` runs **before** any binding is wired:
 
-1. Read `window.__webui.state` (a JSON object emitted by the handler as a `<script>`).
+1. Read `window.__webui.state` (loaded lazily from the handler-emitted `#webui-data` block).
 2. Look up the component's `@observable` property names via the decorator registry.
 3. For each key in state that matches an observable name, write directly to the backing field: `this._count = 42`. **Not** through the setter, so no reactive update fires.
 
@@ -426,7 +433,7 @@ Everything else is internal and may change without notice.
 - Performance: `performance.getEntriesByName('webui:hydrate:total', 'measure')` after `webui:hydration-complete`.
 - Per-component lifecycle: instrument `connectedCallback` / `disconnectedCallback` on a subclass.
 - Marker layout: View Source on the SSR HTML. The five comment markers should be balanced; mismatched pairs almost always indicate a handler-plugin bug.
-- "Template metadata not found": the `<script>` tag carrying the IIFE is missing from the page. Check the build output.
+- "Template metadata not found": `window.__webui.templates` was not populated from `#webui-data` or partial-response template registration. Check the build output.
 - A binding that does not update: confirm the property is `@observable` (not just a class field) and the path appears in the template. Check `$pathIndex` after the first update if you can attach a debugger.
 
 ---

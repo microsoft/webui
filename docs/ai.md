@@ -1053,3 +1053,7 @@ const result = renderComponentTemplates(protocolBuf, JSON.stringify(tags), invHe
 import { renderComponentTemplates } from '@microsoft/webui';
 const result = renderComponentTemplates(protocolBuf, ['settings-dialog'], invHex);
 ```
+
+The JSON response contains `templates` as component-tag-keyed metadata, `templateFunctions`
+as component-tag-keyed condition closure arrays, `templateStyles` for CSS module importmaps,
+and `inventory` with the updated component bitmask.

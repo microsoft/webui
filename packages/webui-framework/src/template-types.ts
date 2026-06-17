@@ -21,23 +21,23 @@ export type CompiledAttrGroupMeta = [
 ];
 
 /**
- * Compiled condition — a pre-compiled JS function plus the paths it references.
- * The Rust compiler emits the function body at build time so the runtime
- * doesn't need a condition AST interpreter.
+ * Compiled condition — JSON metadata carries a function index plus the paths it
+ * references. The Rust compiler emits the actual function bodies in a separate
+ * closure array, and the runtime normalizes indexes to functions once.
  *
- * - `[0]` — evaluator function: `(resolve, scope) => boolean`
+ * - `[0]` — evaluator function or component-local function index
  * - `[1]` — referenced paths for the reactive path index
  */
-export type CompiledCondition = [
-  fn: (v: (path: string, s?: unknown) => unknown, s?: unknown) => boolean,
-  paths: string[],
-];
-export type CompiledConditionalMeta = [condition: CompiledCondition, blockIndex: number, slot: TemplateSlotPath];
+export type CompiledConditionFn = (v: (path: string, s?: unknown) => unknown, s?: unknown) => boolean;
+export type CompiledCondition = [fn: CompiledConditionFn, paths: string[]];
+export type SerializedCompiledCondition = [fnIndex: number, paths: string[]];
+export type TemplateCondition = CompiledCondition | SerializedCompiledCondition;
+export type CompiledConditionalMeta = [condition: TemplateCondition, blockIndex: number, slot: TemplateSlotPath];
 
 export type CompiledAttrMeta =
   | [name: string, kind: 0, value: string]
   | [name: string, kind: 1, value: string]
-  | [name: string, kind: 2, condition: CompiledCondition]
+  | [name: string, kind: 2, condition: TemplateCondition]
   | [name: string, kind: 3, parts: CompiledAttrPart[]];
 
 export type CompiledRepeatMeta = [collection: string, itemVar: string, blockIndex: number, slot: TemplateSlotPath];

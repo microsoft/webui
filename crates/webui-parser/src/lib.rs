@@ -5016,7 +5016,7 @@ mod tests {
         let ParserPluginArtifacts::ComponentTemplates(templates) = artifacts else {
             panic!("expected component templates");
         };
-        let template = &templates[0].1;
+        let template = &templates[0].template_json;
         assert!(template.contains("<div>hello</div>"));
         assert!(!template.contains("{{path}}"));
         assert!(!template.contains("@click"));
@@ -5045,7 +5045,7 @@ mod tests {
         let ParserPluginArtifacts::ComponentTemplates(templates) = artifacts else {
             panic!("expected component templates");
         };
-        let template = &templates[0].1;
+        let template = &templates[0].template_json;
         assert!(template.contains(".x { color: red; }"));
         assert!(!template.contains("ignored"));
         assert!(!template.contains("//"));

@@ -10,7 +10,7 @@ Uses the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navig
 
 1. **Server renders the full page** - the matched route chain is SSR'd with declarative shadow roots. The page is interactive before JavaScript loads.
 2. **Hydration completes** - WebUI Framework hydrates shell components.
-3. **Router starts** - reads the SSR chain and metadata from `window.__webui` (JSON bootstrap), then intercepts link clicks via the Navigation API. Falls back to DOM-based discovery for older servers.
+3. **Router starts** - lazily loads the SSR chain and metadata from `#webui-data` into `window.__webui`, then intercepts link clicks via the Navigation API.
 4. **Client-side navigation** - fetches a JSON partial from the server, which includes the matched route chain. The client diffs old vs new chain and mounts only the changed component. Parent components stay mounted.
 
 No full page reloads. The shell stays in place. Only route content changes.
@@ -399,15 +399,13 @@ Tear down the router and remove event listeners.
 
 ### `Router.gc(tags?)`
 
-Release cached component templates to free memory. Removes all entries from
-`window.__webui.templates` and clears their inventory bits so the server
-will re-send them on the next navigation that needs them.
-
-Active route components are always skipped — you cannot release a template
-that is currently rendered.
+Release cached component templates to free memory. Removes entries from
+`window.__webui.templates` and `window.__webui.templateFns`, then clears
+their inventory bits so the server will re-send them on the next navigation
+that needs them.
 
 ```typescript
-// Release all non-active templates
+// Release all cached templates
 Router.gc();
 ```
 
@@ -522,21 +520,26 @@ The router is organized into 13 internal modules, each handling a single concern
 | `browser-shim` | Navigation API type shims |
 | `types` | Public type definitions and type guards |
 
-## SSR Bootstrap (`window.__webui`)
+## SSR metadata (`window.__webui`)
 
-On first load, the server emits a `window.__webui` script containing SSR metadata:
+On first load, the server emits inert SSR metadata in `#webui-data`. The router first reads any existing `window.__webui`, then lazily parses and removes the data block into `window.__webui` during startup:
 
-```typescript
-window.__webui = {
-  chain: [/* matched route chain entries */],
-  inventory: "04000400...",  // hex bitmask of loaded templates
-  nonce: "abc123",           // CSP nonce for injected scripts
-  css: ["/styles/main.css"], // already-injected stylesheets
-  styles: ["app-shell"],     // already-injected module styles
-};
+```html
+<script type="application/json" id="webui-data">
+{
+  "chain": [],
+  "inventory": "04000400...",
+  "nonce": "abc123",
+  "css": ["/styles/main.css"],
+  "styles": ["app-shell"],
+  "state": {}
+}
+</script>
 ```
 
-The router reads this at startup, eliminating DOM walking and URLPattern usage. Older servers that emit `<meta name="webui-inventory">` are still supported as a fallback.
+With the WebUI framework plugin, the same data block can also include JSON-safe `templates`, and a small executable side-channel installs component-local condition closures in `window.__webui.templateFns`. FAST plugins use `<f-template>` tags instead and only need the shared router metadata.
+
+The router reads this at startup, eliminating DOM walking and URLPattern usage.
 
 ## Exports
 

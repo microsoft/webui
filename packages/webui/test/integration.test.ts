@@ -123,16 +123,18 @@ describe('renderComponentTemplates', () => {
     const result = build({ appDir, entry: 'index2.html' });
     const json = renderComponentTemplates(result.protocol, ['my-card'], '');
     const parsed: ComponentTemplatesResponse = JSON.parse(json);
-    assert.ok(Array.isArray(parsed.templates));
+    assert.equal(typeof parsed.templates, 'object');
     assert.ok(Array.isArray(parsed.templateStyles));
+    assert.equal(typeof parsed.templateFunctions, 'object');
     assert.equal(typeof parsed.inventory, 'string');
   });
 
-  test('returns empty arrays for unknown component', () => {
+  test('returns empty template maps for unknown component', () => {
     const result = build({ appDir });
     const json = renderComponentTemplates(result.protocol, ['nonexistent-widget'], '');
     const parsed: ComponentTemplatesResponse = JSON.parse(json);
-    assert.deepEqual(parsed.templates, []);
+    assert.deepEqual(parsed.templates, {});
+    assert.deepEqual(parsed.templateFunctions, {});
     assert.deepEqual(parsed.templateStyles, []);
   });
 });

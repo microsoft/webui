@@ -36,6 +36,7 @@ pub use webui_handler::Result as HandlerResult;
 pub use webui_handler::{
     plugin::HandlerPlugin, HandlerError, RenderOptions, ResponseWriter, WebUIHandler,
 };
+pub use webui_parser::plugin::ComponentTemplateArtifact;
 pub use webui_parser::CssStrategy;
 pub use webui_parser::Diagnostic;
 pub use webui_parser::DomStrategy;
@@ -123,10 +124,10 @@ pub struct BuildResult {
     pub protocol_bytes: Vec<u8>,
     /// Component CSS files: `(filename, content)` — only components referenced in the protocol.
     pub css_files: Vec<(String, String)>,
-    /// Component f-template strings: `(tag_name, f_template_html)`.
+    /// Component client template payloads.
     /// Includes templates for all components encountered during parsing,
     /// including route-referenced components.
-    pub component_templates: Vec<(String, String)>,
+    pub component_templates: Vec<ComponentTemplateArtifact>,
     /// Build statistics.
     pub stats: BuildStats,
 }
@@ -220,7 +221,7 @@ pub fn inspect_bytes(protocol_bytes: &[u8]) -> Result<String, WebUIError> {
 struct RawBuildOutput {
     protocol: WebUIProtocol,
     css_files: Vec<(String, String)>,
-    component_templates: Vec<(String, String)>,
+    component_templates: Vec<ComponentTemplateArtifact>,
     fragment_count: usize,
     component_count: usize,
     token_count: usize,
@@ -375,9 +376,15 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         // parser — nothing to store in the protocol or emit as files.
     }
 
-    // Store client templates in the protocol so any host server can query them
-    for (tag, tmpl) in &component_templates {
-        protocol.components.entry(tag.clone()).or_default().template = tmpl.clone();
+    // Store client templates in the protocol so any host server can query them.
+    for artifact in &component_templates {
+        let component = protocol
+            .components
+            .entry(artifact.tag_name.clone())
+            .or_default();
+        component.template = artifact.template.clone();
+        component.template_json = artifact.template_json.clone();
+        component.template_functions = artifact.template_functions.clone();
     }
 
     Ok(RawBuildOutput {
@@ -706,7 +713,7 @@ mod tests {
 
         let filename = &result.css_files[0].0;
         let expected_href = format!("https://cdn.example.com/assets/{filename}");
-        let template = &result.protocol.components["my-card"].template;
+        let template = &result.protocol.components["my-card"].template_json;
         assert!(
             template.contains(&format!(r#"href=\"{expected_href}\""#)),
             "plugin component template should use CDN href: {template}"

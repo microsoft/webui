@@ -709,10 +709,10 @@ pub unsafe extern "C" fn webui_render_component_templates(
         };
 
         // Per-request index — see ProtocolIndex doc for caching guidance.
-        let index = webui_handler::route_handler::ProtocolIndex::new(&protocol);
+        let mut index = webui_handler::route_handler::ProtocolIndex::new(&protocol);
 
         let result = match webui_handler::route_handler::render_component_templates(
-            &protocol, &tag_refs, inv_str, &index,
+            &protocol, &tag_refs, inv_str, &mut index,
         ) {
             Ok(v) => v,
             Err(e) => {

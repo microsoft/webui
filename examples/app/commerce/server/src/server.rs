@@ -480,18 +480,18 @@ mod tests {
             Some(template_styles) => template_styles,
             None => panic!("templateStyles should be an array"),
         };
-        let templates = match json["templates"].as_array() {
+        let templates = match json["templates"].as_object() {
             Some(templates) => templates,
-            None => panic!("templates should be an array"),
+            None => panic!("templates should be an object"),
         };
         let combined_styles = template_styles
             .iter()
             .filter_map(serde_json::Value::as_str)
             .collect::<String>();
-        let combined_templates = templates
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .collect::<String>();
+        let combined_templates = match serde_json::to_string(templates) {
+            Ok(value) => value,
+            Err(error) => panic!("{error}"),
+        };
 
         assert!(
             combined_styles.contains(r#""mp-product-grid":"data:text/css,"#),
@@ -499,7 +499,7 @@ mod tests {
         );
         assert!(
             !combined_templates.contains(r#""mp-product-grid":"data:text/css,"#),
-            "template scripts should not embed module CSS importmap entries: {combined_templates}"
+            "template metadata should not embed module CSS importmap entries: {combined_templates}"
         );
         assert!(
             !combined_templates.contains(r#"<link rel="stylesheet" href="/mp-product-grid.css""#),

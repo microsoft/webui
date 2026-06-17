@@ -23,6 +23,6 @@
 
 export { WebUIElement } from './element.js';
 export { observable, attr } from './decorators.js';
-export { getTemplate } from './template.js';
+export { getTemplate, registerTemplateData } from './template.js';
 export type { TemplateMeta } from './template.js';
 export { hydrationStart, hydrationEnd } from './lifecycle.js';

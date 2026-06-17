@@ -790,9 +790,9 @@ async fn handle_component_templates(
             .body(r#"{"error":"no protocol"}"#);
     };
     // Per-request index — see ProtocolIndex doc for caching guidance.
-    let index = webui_handler::route_handler::ProtocolIndex::new(protocol);
+    let mut index = webui_handler::route_handler::ProtocolIndex::new(protocol);
     let result = match webui_handler::route_handler::render_component_templates(
-        protocol, &tags, &inv, &index,
+        protocol, &tags, &inv, &mut index,
     ) {
         Ok(v) => v,
         Err(e) => {
@@ -1185,7 +1185,10 @@ mod tests {
     #[test]
     fn test_build_and_render_selects_fast_plugin_versions() {
         let app = create_app_dir(&[
-            ("index.html", "<my-card></my-card>"),
+            (
+                "index.html",
+                "<html><head></head><body><my-card></my-card></body></html>",
+            ),
             ("my-card.html", "<span>{{name}}</span>"),
             ("state.json", r#"{"name":"Alice"}"#),
         ]);
@@ -1214,14 +1217,26 @@ mod tests {
         let fast = render(Some(Plugin::Fast));
         assert!(fast.contains("<!--fe-b$$start$$0$$name$$fe-b-->"));
         assert!(!fast.contains("<!--fe:b-->"));
+        assert!(fast.contains("id=\"webui-data\""));
+        assert!(!fast.contains("window.__webui"));
+        assert!(!fast.contains(r#""templates""#));
+        assert!(!fast.contains("templateFns"));
 
         let fast_v2 = render(Some(Plugin::FastV2));
         assert!(fast_v2.contains("<!--fe-b$$start$$0$$name$$fe-b-->"));
         assert!(!fast_v2.contains("<!--fe:b-->"));
+        assert!(fast_v2.contains("id=\"webui-data\""));
+        assert!(!fast_v2.contains("window.__webui"));
+        assert!(!fast_v2.contains(r#""templates""#));
+        assert!(!fast_v2.contains("templateFns"));
 
         let fast_v3 = render(Some(Plugin::FastV3));
         assert!(fast_v3.contains("<!--fe:b-->"));
         assert!(!fast_v3.contains("<!--fe-b$$start$$"));
+        assert!(fast_v3.contains("id=\"webui-data\""));
+        assert!(!fast_v3.contains("window.__webui"));
+        assert!(!fast_v3.contains(r#""templates""#));
+        assert!(!fast_v3.contains("templateFns"));
     }
 
     #[test]
