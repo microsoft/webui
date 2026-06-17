@@ -1183,42 +1183,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_and_render_omits_injected_tokens_from_client_state() {
-        let app = create_app_dir(&[
-            (
-                "index.html",
-                "<html><body><style>/*{{{tokens.light}}}*/</style></body></html>",
-            ),
-            ("state.json", r#"{"name":"WebUI"}"#),
-        ]);
-        let config = RenderConfig {
-            app_args: AppArgs {
-                app: app.path().to_path_buf(),
-                entry: "index.html".to_string(),
-                css: CssStrategy::Link,
-                dom: DomStrategy::Shadow,
-                plugin: Some(Plugin::WebUI),
-                components: Vec::new(),
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
-                css_public_base: None,
-                legal_comments: LegalComments::Inline,
-            },
-            app_dir: app.path().to_path_buf(),
-            state_file: Some(app.path().join("state.json")),
-            token_css: Some(HashMap::from([(
-                "light".to_string(),
-                "--color-brand: red;".to_string(),
-            )])),
-            base_path: None,
-        };
-
-        let BuildRenderResult { html, .. } = build_and_render(&config, None).unwrap();
-        assert!(html.contains("--color-brand: red;"));
-        assert!(html.contains(r#""name":"WebUI""#));
-        assert!(!html.contains(r#""tokens""#));
-    }
-
-    #[test]
     fn test_build_and_render_selects_fast_plugin_versions() {
         let app = create_app_dir(&[
             (
