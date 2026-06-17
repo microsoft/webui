@@ -245,6 +245,40 @@ describe('WebUIRouter', () => {
       }
     });
 
+    test('template string payloads that are not HTML are rejected', () => {
+      const origCreateElement = (globalThis as any).document.createElement;
+      const origHead = (globalThis as any).document.head;
+      let executed = false;
+
+      (globalThis as any).document.createElement = (tag: string) => ({
+        tagName: tag,
+        nonce: '',
+        textContent: '',
+      });
+      (globalThis as any).document.head = {
+        appendChild(el: Record<string, unknown>) {
+          if ((el.textContent as string).includes('executed=true')) executed = true;
+          return el;
+        },
+        removeChild() { return undefined; },
+      };
+
+      try {
+        assert.throws(
+          () => registerTemplatesAndStyles({
+            templates: { 'old-executable': 'window.executed=true;' },
+          }, '', new Set(), () => {}),
+          /Unsupported executable template payload/,
+        );
+
+        assert.equal(executed, false, 'non-HTML string template payloads must not execute');
+        assert.equal(globals().__webui?.templates?.['old-executable'], undefined);
+      } finally {
+        (globalThis as any).document.createElement = origCreateElement;
+        (globalThis as any).document.head = origHead;
+      }
+    });
+
     test('fetchPartial appends module styles before one batched script execution', async () => {
       const origFetch = (globalThis as any).fetch;
       const origCreateElement = (globalThis as any).document.createElement;

@@ -32,7 +32,7 @@ Outside the workspace:
 pnpm add @microsoft/webui-framework
 ```
 
-TypeScript must use legacy decorators:
+TypeScript must enable decorator emit:
 
 ```json
 {

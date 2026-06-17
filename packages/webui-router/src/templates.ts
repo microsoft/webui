@@ -92,9 +92,9 @@ export function registerTemplatesAndStyles(
     }
   }
 
-  // 3. Template metadata: register JSON-safe data directly. Non-WebUI
-  //    string payloads (FAST f-template HTML or legacy executable payloads)
-  //    keep their materialization path.
+  // 3. Template metadata: register JSON-safe data directly. FAST
+  //    `<f-template>` HTML strings are materialized as DOM; executable
+  //    template strings are intentionally unsupported.
   if (data.templates) {
     const w = window as unknown as { __webui?: { templates?: Record<string, unknown>; [key: string]: unknown } };
     if (!w.__webui) w.__webui = {};
@@ -111,8 +111,7 @@ export function registerTemplatesAndStyles(
           while (temp.firstChild) container.appendChild(temp.firstChild);
           document.body.appendChild(container);
         } else {
-          executableTemplateBody += template;
-          executableTemplateBody += '\n';
+          throw new Error(`[Router] Unsupported executable template payload for ${tag}.`);
         }
       } else {
         w.__webui.templates[tag] = template;

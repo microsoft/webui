@@ -301,8 +301,7 @@ non-executable SSR metadata:
 </script>
 ```
 
-This replaces the previous `<meta name="webui-inventory">` and `<script id="webui-chain">` tags
-with one metadata data block. The client packages first read any existing `window.__webui`, then
+This is the single metadata startup contract. The client packages first read any existing `window.__webui`, then
 lazily parse and remove `#webui-data` into `window.__webui` when metadata is needed. Note that
 **CSS module definitions** are emitted for all **reachable** components (including those in false
 `<if>` blocks), not just rendered ones.
@@ -1400,8 +1399,6 @@ The handler decodes this in `on_element_data` and emits SSR-only markers:
 
 - `data-w-b-N` for one bound attribute, or `data-w-c-START-COUNT` for multiple `a[]` entries on the same element
 - `data-ev="COUNT"` once per element, where `COUNT` is the number of consecutive entries in the metadata `e[]` array that belong to that element
-
-For compatibility during mixed parser/handler rollouts, the handler also accepts the legacy 4-byte binding-only payload and upgrades it to `event_count = 0`.
 
 WebUI SSR marker formats are:
 

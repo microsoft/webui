@@ -4,8 +4,8 @@
 /**
  * Reactive decorators for WebUIElement properties.
  *
- * Uses legacy/experimental TypeScript decorators (`experimentalDecorators: true`)
- * for compatibility with the FAST ecosystem conventions.
+ * Uses TypeScript's `experimentalDecorators` emit, matching the FAST ecosystem
+ * conventions.
  */
 
 // ---------------------------------------------------------------------------
