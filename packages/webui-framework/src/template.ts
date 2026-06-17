@@ -44,13 +44,11 @@ import type {
   TemplateMeta,
 } from './template-types.js';
 
-const WEBUI_DATA_ID = 'webui-data';
 const normalizedTemplates = new WeakSet<TemplateMeta>();
-let templateDataLoaded = false;
 
 declare global {
   interface Window {
-    /** Consolidated SSR metadata parsed from the WebUI data block. */
+    /** Consolidated SSR metadata installed by the WebUI bootstrap. */
     __webui?: {
       state?: Record<string, unknown>;
       templates?: Record<string, TemplateMeta>;
@@ -61,7 +59,6 @@ declare global {
 }
 
 export function getTemplate(name: string): TemplateMeta | undefined {
-  loadWebUIDataBlock();
   const meta = window.__webui?.templates?.[name];
   if (meta) normalizeTemplate(name, meta);
   return meta;
@@ -88,59 +85,6 @@ export function registerTemplateData(
     const meta = templates[tag];
     w.__webui.templates[tag] = meta;
     normalizeTemplate(tag, meta);
-  }
-}
-
-function loadWebUIDataBlock(): void {
-  if (templateDataLoaded) return;
-  if (typeof document === 'undefined') return;
-  const el = document.getElementById(WEBUI_DATA_ID);
-  if (!el) {
-    if (window.__webui?.templates) templateDataLoaded = true;
-    return;
-  }
-  templateDataLoaded = true;
-  const text = el.textContent;
-  if (!text) {
-    el.remove();
-    return;
-  }
-  const parsed = JSON.parse(text) as NonNullable<Window['__webui']>;
-  if (!window.__webui) window.__webui = {};
-  mergeWebUIData(window.__webui, parsed);
-  el.remove();
-}
-
-function mergeWebUIData(
-  target: NonNullable<Window['__webui']>,
-  source: NonNullable<Window['__webui']>,
-): void {
-  const sourceRecord = source as Record<string, unknown>;
-  const targetRecord = target as Record<string, unknown>;
-  const keys = Object.keys(sourceRecord);
-  for (let i = 0; i < keys.length; i++) {
-    const key = keys[i];
-    if (key !== 'templates' && key !== 'templateFns') {
-      targetRecord[key] = sourceRecord[key];
-    }
-  }
-
-  if (source.templates) {
-    if (!target.templates) target.templates = {};
-    const names = Object.keys(source.templates);
-    for (let i = 0; i < names.length; i++) {
-      const tag = names[i];
-      target.templates[tag] = source.templates[tag];
-    }
-  }
-
-  if (source.templateFns) {
-    if (!target.templateFns) target.templateFns = {};
-    const names = Object.keys(source.templateFns);
-    for (let i = 0; i < names.length; i++) {
-      const tag = names[i];
-      target.templateFns[tag] = source.templateFns[tag];
-    }
   }
 }
 

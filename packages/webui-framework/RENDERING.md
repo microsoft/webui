@@ -433,7 +433,7 @@ Everything else is internal and may change without notice.
 - Performance: `performance.getEntriesByName('webui:hydrate:total', 'measure')` after `webui:hydration-complete`.
 - Per-component lifecycle: instrument `connectedCallback` / `disconnectedCallback` on a subclass.
 - Marker layout: View Source on the SSR HTML. The five comment markers should be balanced; mismatched pairs almost always indicate a handler-plugin bug.
-- "Template metadata not found": the `#webui-data` data block or partial-response template metadata is missing from the page. Check the build output.
+- "Template metadata not found": `window.__webui.templates` was not populated by the SSR bootstrap or partial-response template registration. Check the build output.
 - A binding that does not update: confirm the property is `@observable` (not just a class field) and the path appears in the template. Check `$pathIndex` after the first update if you can attach a debugger.
 
 ---
