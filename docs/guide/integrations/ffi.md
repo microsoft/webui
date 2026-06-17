@@ -169,6 +169,10 @@ Render a pre-compiled WebUI protocol (protobuf binary) with JSON state data. Thi
 - **Returns** a heap-allocated string on success, or `NULL` on error.
 - The caller **must** free the returned string with `webui_free()`.
 
+The full render state is available during SSR. If the output includes
+`__webui_state`, top-level `tokens` is treated as render-only token CSS and is
+omitted from the client bootstrap state.
+
 ## Error Handling
 
 The FFI uses thread-local error storage following the POSIX `dlerror()` pattern:

@@ -26,6 +26,7 @@ pub use html_encode::encode_safe;
 
 use plugin::HandlerPlugin;
 use route_matcher::CompiledRouteCache;
+use serde::ser::SerializeMap;
 use serde::Serialize;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -124,6 +125,9 @@ pub struct RenderOptions<'a> {
     /// snippets, OpenTelemetry trace IDs, etc.
     /// Same structural-boundary guarantee as [`head_inject`](Self::head_inject).
     pub body_inject: Option<&'a str>,
+    /// Top-level state keys available during SSR but omitted from
+    /// `__webui_state` client bootstrap serialization.
+    pub client_state_omit_keys: &'a [&'a str],
 }
 
 impl<'a> RenderOptions<'a> {
@@ -136,6 +140,7 @@ impl<'a> RenderOptions<'a> {
             nonce: None,
             head_inject: None,
             body_inject: None,
+            client_state_omit_keys: &[],
         }
     }
 
@@ -180,6 +185,16 @@ impl<'a> RenderOptions<'a> {
     #[must_use]
     pub fn with_body_inject(mut self, html: &'a str) -> Self {
         self.body_inject = if html.is_empty() { None } else { Some(html) };
+        self
+    }
+
+    /// Omit top-level state keys from the client-emitted `__webui_state` block.
+    ///
+    /// The full state remains available during SSR. This is for render-only
+    /// inputs such as injected design-token CSS.
+    #[must_use]
+    pub fn with_client_state_omit_keys(mut self, keys: &'a [&'a str]) -> Self {
+        self.client_state_omit_keys = keys;
         self
     }
 }
@@ -238,6 +253,8 @@ struct WebUIProcessContext<'a> {
     /// `</body>`), after the built-in template-IIFE emissions.
     /// Same zero-copy borrow as [`head_inject`](Self::head_inject).
     body_inject: Option<&'a str>,
+    /// Top-level state keys omitted from client bootstrap serialization.
+    client_state_omit_keys: &'a [&'a str],
     /// Tracks whether the `head_end` hook has already fired in this
     /// render. Defends against malformed protocols that emit the
     /// signal more than once (e.g., a template with multiple `<head>`
@@ -383,10 +400,40 @@ fn write_webui_metadata_init(
     writer.write("}")
 }
 
+struct ClientState<'a> {
+    value: &'a Value,
+    omit_keys: &'a [&'a str],
+}
+
+impl Serialize for ClientState<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let Value::Object(map) = self.value else {
+            return self.value.serialize(serializer);
+        };
+
+        if self.omit_keys.is_empty() {
+            return self.value.serialize(serializer);
+        }
+
+        let mut out = serializer.serialize_map(None)?;
+        for (key, value) in map {
+            if self.omit_keys.iter().any(|omit| *omit == key) {
+                continue;
+            }
+            out.serialize_entry(key, value)?;
+        }
+        out.end()
+    }
+}
+
 fn write_state_data_block(
     writer: &mut dyn ResponseWriter,
     state: &Value,
     nonce: Option<&str>,
+    omit_keys: &[&str],
 ) -> Result<()> {
     writer.write("<script type=\"application/json\" id=\"")?;
     writer.write(STATE_DATA_BLOCK_ID)?;
@@ -397,7 +444,13 @@ fn write_state_data_block(
         writer.write("\"")?;
     }
     writer.write(">")?;
-    write_script_safe_json(writer, state)?;
+    write_script_safe_json(
+        writer,
+        &ClientState {
+            value: state,
+            omit_keys,
+        },
+    )?;
     writer.write("</script>")
 }
 
@@ -492,6 +545,7 @@ impl WebUIHandler {
             nonce: options.nonce.filter(|s| !s.is_empty()),
             head_inject: options.head_inject.filter(|s| !s.is_empty()),
             body_inject: options.body_inject.filter(|s| !s.is_empty()),
+            client_state_omit_keys: options.client_state_omit_keys,
             head_end_emitted: false,
             component_index_cache: None,
             body_end_emitted: false,
@@ -535,6 +589,7 @@ impl WebUIHandler {
             nonce: None,
             head_inject: None,
             body_inject: None,
+            client_state_omit_keys: &[],
             head_end_emitted: false,
             component_index_cache: None,
             body_end_emitted: false,
@@ -1146,7 +1201,12 @@ impl WebUIHandler {
                     .map(|p| p.needs_webui_bootstrap())
                     .unwrap_or(true);
 
-                write_state_data_block(context.writer, context.state, context.nonce)?;
+                write_state_data_block(
+                    context.writer,
+                    context.state,
+                    context.nonce,
+                    context.client_state_omit_keys,
+                )?;
 
                 if needs_webui_bootstrap {
                     let comp_index = context.component_index_cache.get_or_insert_with(|| {
@@ -1490,6 +1550,7 @@ impl WebUIHandler {
             nonce: options.nonce.filter(|s| !s.is_empty()),
             head_inject: options.head_inject.filter(|s| !s.is_empty()),
             body_inject: options.body_inject.filter(|s| !s.is_empty()),
+            client_state_omit_keys: options.client_state_omit_keys,
             head_end_emitted: false,
             component_index_cache: None,
             body_end_emitted: false,
@@ -7159,6 +7220,41 @@ mod tests {
         assert!(!output.contains("\"state\":{\"items\""));
         assert!(output.contains("\"inventory\""));
         assert!(output.contains("window.__webui="));
+        Ok(())
+    }
+
+    #[test]
+    fn client_state_omit_keys_preserves_ssr_resolution() -> Result<()> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><body><style>".to_string()),
+                    WebUIFragment::signal("tokens.light", true),
+                    WebUIFragment::raw("</style>".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({
+            "name": "Alice",
+            "tokens": {
+                "light": "--color-brand: red;"
+            }
+        });
+        let output = render_bootstrap_with_plugin(
+            &protocol,
+            &state,
+            || Box::new(crate::plugin::webui::WebUIHydrationPlugin::new()),
+            &RenderOptions::new("index.html", "/").with_client_state_omit_keys(&["tokens"]),
+        )?;
+
+        assert!(output.contains("--color-brand: red;"));
+        assert!(output.contains(r#""name":"Alice""#));
+        assert!(!output.contains(r#""tokens""#));
         Ok(())
     }
 

@@ -211,6 +211,7 @@ impl ResponseWriter for MemoryWriter {
 /// SSE endpoint path. Root-relative so the script works under any
 /// `<base href>` and across sub-path deployments.
 const HMR_ENDPOINT: &str = "/__webui/livereload";
+const CLIENT_STATE_OMIT_TOKENS: &[&str] = &["tokens"];
 
 /// Environment variable that, when set to a non-empty / non-"0" value,
 /// suppresses `--watch` mode at runtime. Used by `xtask e2e` so that
@@ -491,12 +492,11 @@ fn build_and_render(
     // Render to memory
     let mut writer = MemoryWriter::with_capacity(4096);
     let handler = create_handler(config.app_args.plugin);
-    handler.handle(
-        &build_result.protocol,
-        &state,
-        &RenderOptions::new(&config.app_args.entry, "/"),
-        &mut writer,
-    )?;
+    let mut options = RenderOptions::new(&config.app_args.entry, "/");
+    if config.token_css.is_some() {
+        options = options.with_client_state_omit_keys(CLIENT_STATE_OMIT_TOKENS);
+    }
+    handler.handle(&build_result.protocol, &state, &options, &mut writer)?;
 
     let html = match livereload {
         Some(lr) => lr.inject(&writer.buf),
@@ -679,6 +679,7 @@ async fn render_page_response(
         context.livereload.as_ref().map(|lr| lr.client_script_arc());
     let route_path = route_path.to_string();
     let chunk_pool = Arc::clone(&context.chunk_pool);
+    let omit_tokens_from_client_state = context.token_css.is_some();
 
     // Bounded channel: backpressure when client is slow, no unbounded
     // memory growth. Capacity is in chunks (≈ 4 KB each).
@@ -698,7 +699,10 @@ async fn render_page_response(
         // body_end boundary identified by the parser — zero scan cost,
         // no risk of false-marker mis-firing on `</body>` literals
         // appearing inside HTML comments / srcdoc / inline scripts.
-        let opts_owner = RenderOptions::new(&entry, &route_path);
+        let mut opts_owner = RenderOptions::new(&entry, &route_path);
+        if omit_tokens_from_client_state {
+            opts_owner = opts_owner.with_client_state_omit_keys(CLIENT_STATE_OMIT_TOKENS);
+        }
         let opts = match livereload_script.as_deref() {
             Some(script) => opts_owner.with_body_inject(script),
             None => opts_owner,
@@ -1180,6 +1184,42 @@ mod tests {
         let hmr = LiveReload::new(HMR_ENDPOINT);
         let BuildRenderResult { html, .. } = build_and_render(&config, Some(&hmr)).unwrap();
         assert!(html.contains("<p>WebUI</p>"));
+    }
+
+    #[test]
+    fn test_build_and_render_omits_injected_tokens_from_client_state() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<html><body><style>/*{{{tokens.light}}}*/</style></body></html>",
+            ),
+            ("state.json", r#"{"name":"WebUI"}"#),
+        ]);
+        let config = RenderConfig {
+            app_args: AppArgs {
+                app: app.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            app_dir: app.path().to_path_buf(),
+            state_file: Some(app.path().join("state.json")),
+            token_css: Some(HashMap::from([(
+                "light".to_string(),
+                "--color-brand: red;".to_string(),
+            )])),
+            base_path: None,
+        };
+
+        let BuildRenderResult { html, .. } = build_and_render(&config, None).unwrap();
+        assert!(html.contains("--color-brand: red;"));
+        assert!(html.contains(r#""name":"WebUI""#));
+        assert!(!html.contains(r#""tokens""#));
     }
 
     #[test]

@@ -721,7 +721,8 @@ property declarations into the render state. Only available on `webui serve`.
    including nested `var()` fallbacks)
 3. Expands transitive `var()` references and detects cycles
 4. Generates CSS declaration strings per theme
-5. Injects into state as `state.tokens.light`, `state.tokens.dark`, etc.
+5. Injects into SSR state as `state.tokens.light`, `state.tokens.dark`, etc.
+   These render-only token strings are omitted from the emitted client state.
 
 **Multi-theme format:**
 ```json

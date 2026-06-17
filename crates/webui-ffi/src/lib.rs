@@ -42,6 +42,8 @@ use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
 use webui_parser::HtmlParser;
 use webui_protocol::WebUIProtocol;
 
+const CLIENT_STATE_OMIT_TOKENS: &[&str] = &["tokens"];
+
 // ---------------------------------------------------------------------------
 // Thread-local error storage (POSIX dlerror() pattern)
 // ---------------------------------------------------------------------------
@@ -105,6 +107,10 @@ impl ResponseWriter for StringResponseWriter {
     fn end(&mut self) -> webui_handler::Result<()> {
         Ok(())
     }
+}
+
+fn render_options<'a>(entry: &'a str, request_path: &'a str) -> RenderOptions<'a> {
+    RenderOptions::new(entry, request_path).with_client_state_omit_keys(CLIENT_STATE_OMIT_TOKENS)
 }
 
 // ---------------------------------------------------------------------------
@@ -361,7 +367,7 @@ pub unsafe extern "C" fn webui_handler_render(
     };
 
     // Render
-    let mut options = RenderOptions::new(entry_str, path_str);
+    let mut options = render_options(entry_str, path_str);
     if let Some(ref nonce) = context.nonce {
         options = options.with_nonce(nonce);
     }
@@ -491,7 +497,7 @@ unsafe fn webui_render_impl(html: *const c_char, data_json: *const c_char) -> *m
     match handler.render(
         &protocol,
         &data,
-        &RenderOptions::new(entry_key, "/"),
+        &render_options(entry_key, "/"),
         &mut writer,
     ) {
         Ok(_) => match CString::new(writer.content) {
@@ -805,5 +811,86 @@ pub unsafe extern "C" fn webui_protocol_tokens(
             set_last_error("panic in webui_protocol_tokens");
             std::ptr::null_mut()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::disallowed_methods)]
+
+    use super::*;
+    use webui_protocol::{FragmentList, WebUIFragment};
+
+    fn take_string(ptr: *mut c_char) -> String {
+        assert!(!ptr.is_null());
+        // SAFETY: FFI functions return a valid null-terminated string on success.
+        let output = unsafe { CStr::from_ptr(ptr) }
+            .to_str()
+            .expect("output should be UTF-8")
+            .to_string();
+        // SAFETY: `ptr` was returned by a WebUI FFI function.
+        unsafe { webui_free(ptr) };
+        output
+    }
+
+    #[test]
+    fn ffi_protocol_render_omits_tokens_from_client_state() {
+        let mut fragments = std::collections::HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><body><style>".to_string()),
+                    WebUIFragment::signal("tokens.light", true),
+                    WebUIFragment::raw("</style>".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let bytes = protocol.to_protobuf().expect("protocol should encode");
+        let state = CString::new(r#"{"name":"Alice","tokens":{"light":"--color-brand: red;"}}"#)
+            .expect("state CString");
+        let entry = CString::new("index.html").expect("entry CString");
+        let path = CString::new("/").expect("path CString");
+        let plugin = CString::new("webui").expect("plugin CString");
+        // SAFETY: `plugin` is a valid null-terminated string.
+        let handler = unsafe { webui_handler_create_with_plugin(plugin.as_ptr()) };
+        assert!(!handler.is_null());
+
+        // SAFETY: all pointers are valid for this call.
+        let ptr = unsafe {
+            webui_handler_render(
+                handler,
+                bytes.as_ptr(),
+                bytes.len(),
+                state.as_ptr(),
+                entry.as_ptr(),
+                path.as_ptr(),
+            )
+        };
+        // SAFETY: `handler` was returned by `webui_handler_create_with_plugin`.
+        unsafe { webui_handler_destroy(handler) };
+        let output = take_string(ptr);
+
+        assert!(output.contains("--color-brand: red;"));
+        assert!(output.contains(r#""name":"Alice""#));
+        assert!(!output.contains(r#""tokens""#));
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn ffi_html_render_resolves_tokens_for_ssr() {
+        let html = CString::new("<html><body><style>/*{{{tokens.light}}}*/</style></body></html>")
+            .expect("html CString");
+        let state = CString::new(r#"{"name":"Alice","tokens":{"light":"--color-brand: red;"}}"#)
+            .expect("state CString");
+
+        // SAFETY: all pointers are valid for this call.
+        let ptr = unsafe { webui_render(html.as_ptr(), state.as_ptr()) };
+        let output = take_string(ptr);
+
+        assert!(output.contains("--color-brand: red;"));
     }
 }
