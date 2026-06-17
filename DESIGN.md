@@ -1257,7 +1257,7 @@ inject_token_css(state, css) → state["tokens"]["light"] = "..."
 1. **Filter**: Only tokens in `protocol.tokens` are kept.
 2. **Dependency closure**: Token values referencing other tokens via `var(--x)` trigger transitive inclusion. Uses an iterative BFS expansion followed by DFS cycle detection.
 3. **CSS generation**: Sorted `--name: value;` declarations. Output is deterministic.
-4. **State injection**: Per-theme CSS strings are set on `state.tokens.<theme>`, where `/*{{{tokens.<theme>}}}*/` signals resolve them during rendering.
+4. **State injection**: Per-theme CSS strings are set on `state.tokens.<theme>`, where `/*{{{tokens.<theme>}}}*/` signals resolve them during rendering. These render-only token strings are omitted from the emitted `webui-data` client bootstrap.
 
 #### Package Resolution (`resolve_theme_path`)
 
