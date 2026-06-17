@@ -311,7 +311,7 @@ When contributing to the runtime, avoid these patterns:
 │                      │     │   (Rust/Go/C#/…)      │      │                      │
 │  HTML template       │     │                       │      │  SSR HTML (light or  │
 │  + expressions       │────▶│  TemplateMeta (JSON)  │────▶│  shadow DOM) +       │
-│  + @if / @for        │     │  + state data         │      │  __webui.state JSON  │
+│  + @if / @for        │     │  + state data         │      │  webui-data JSON     │
 │                      │     │                       │      │                      │
 │  Outputs:            │     │  Renders:             │      │  Hydrates:           │
 │  • TemplateMeta      │     │  • Full HTML page     │      │  • Path-based DOM    │
@@ -340,7 +340,7 @@ flowchart LR
     subgraph Serve ["Server (Any Language)"]
         M --> R[Route Handler]
         S[State Data] --> R
-        R --> HTML["Full SSR HTML<br/>(shadow or light DOM)<br/>+ TemplateMeta &lt;script&gt;<br/>+ __webui.state &lt;script&gt;"]
+        R --> HTML["Full SSR HTML<br/>(shadow or light DOM)<br/>+ inert #webui-data"]
     end
 
     subgraph Browser ["Browser"]
@@ -388,7 +388,7 @@ graph TD
 ### SSR Hydration Path
 
 When the server renders a component, it emits HTML content (as a declarative
-shadow root or as light DOM children) along with a `window.__webui.state`
+shadow root or as light DOM children) along with an inert `#webui-data`
 JSON payload.  The browser parses this DOM before any JavaScript runs.
 When the component's JS loads and `connectedCallback` fires, the framework
 uses compiled template paths to resolve SSR DOM nodes without any marker
@@ -401,7 +401,7 @@ sequenceDiagram
     participant CE as Custom Element
     participant FW as Framework
 
-    Server->>Browser: HTML (shadow or light DOM)<br/>+ __webui.state JSON
+    Server->>Browser: HTML (shadow or light DOM)<br/>+ inert #webui-data JSON
     Browser->>Browser: Parse HTML → DOM exists
     Browser->>CE: Custom element upgrade
     CE->>CE: attributeChangedCallback (pre-existing attrs)
