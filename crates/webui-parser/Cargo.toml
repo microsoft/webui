@@ -26,7 +26,7 @@ cli = ["clap"]
 ignored = ["clap"]
 
 [dependencies]
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.15" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.16" }
 thiserror = { workspace = true }
 html-escape = { workspace = true }
 walkdir = { workspace = true, optional = true }
@@ -34,7 +34,7 @@ clap = { workspace = true, optional = true }
 sha2 = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.15" }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.16" }
 criterion = { workspace = true }
 
 [[bench]]
