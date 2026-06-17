@@ -211,7 +211,6 @@ impl ResponseWriter for MemoryWriter {
 /// SSE endpoint path. Root-relative so the script works under any
 /// `<base href>` and across sub-path deployments.
 const HMR_ENDPOINT: &str = "/__webui/livereload";
-const CLIENT_STATE_OMIT_TOKENS: &[&str] = &["tokens"];
 
 /// Environment variable that, when set to a non-empty / non-"0" value,
 /// suppresses `--watch` mode at runtime. Used by `xtask e2e` so that
@@ -492,11 +491,12 @@ fn build_and_render(
     // Render to memory
     let mut writer = MemoryWriter::with_capacity(4096);
     let handler = create_handler(config.app_args.plugin);
-    let mut options = RenderOptions::new(&config.app_args.entry, "/");
-    if config.token_css.is_some() {
-        options = options.with_client_state_omit_keys(CLIENT_STATE_OMIT_TOKENS);
-    }
-    handler.handle(&build_result.protocol, &state, &options, &mut writer)?;
+    handler.handle(
+        &build_result.protocol,
+        &state,
+        &RenderOptions::new(&config.app_args.entry, "/"),
+        &mut writer,
+    )?;
 
     let html = match livereload {
         Some(lr) => lr.inject(&writer.buf),
@@ -679,7 +679,6 @@ async fn render_page_response(
         context.livereload.as_ref().map(|lr| lr.client_script_arc());
     let route_path = route_path.to_string();
     let chunk_pool = Arc::clone(&context.chunk_pool);
-    let omit_tokens_from_client_state = context.token_css.is_some();
 
     // Bounded channel: backpressure when client is slow, no unbounded
     // memory growth. Capacity is in chunks (≈ 4 KB each).
@@ -699,10 +698,7 @@ async fn render_page_response(
         // body_end boundary identified by the parser — zero scan cost,
         // no risk of false-marker mis-firing on `</body>` literals
         // appearing inside HTML comments / srcdoc / inline scripts.
-        let mut opts_owner = RenderOptions::new(&entry, &route_path);
-        if omit_tokens_from_client_state {
-            opts_owner = opts_owner.with_client_state_omit_keys(CLIENT_STATE_OMIT_TOKENS);
-        }
+        let opts_owner = RenderOptions::new(&entry, &route_path);
         let opts = match livereload_script.as_deref() {
             Some(script) => opts_owner.with_body_inject(script),
             None => opts_owner,

@@ -38,6 +38,8 @@ use webui_expressions::{evaluate_with_resolver, ExpressionError};
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUIProtocol};
 use webui_state::find_value_by_dotted_path_ref;
 
+const CLIENT_STATE_TOKEN_KEY: &str = "tokens";
+
 /// Error types for the WebUI handler.
 #[derive(Debug, Error)]
 pub enum HandlerError {
@@ -127,9 +129,6 @@ pub struct RenderOptions<'a> {
     /// snippets, OpenTelemetry trace IDs, etc.
     /// Same structural-boundary guarantee as [`head_inject`](Self::head_inject).
     pub body_inject: Option<&'a str>,
-    /// Top-level state keys available during SSR but omitted from
-    /// `webui-data` client bootstrap serialization.
-    pub client_state_omit_keys: &'a [&'a str],
 }
 
 impl<'a> RenderOptions<'a> {
@@ -142,7 +141,6 @@ impl<'a> RenderOptions<'a> {
             nonce: None,
             head_inject: None,
             body_inject: None,
-            client_state_omit_keys: &[],
         }
     }
 
@@ -187,16 +185,6 @@ impl<'a> RenderOptions<'a> {
     #[must_use]
     pub fn with_body_inject(mut self, html: &'a str) -> Self {
         self.body_inject = if html.is_empty() { None } else { Some(html) };
-        self
-    }
-
-    /// Omit top-level state keys from the client-emitted `webui-data` block.
-    ///
-    /// The full state remains available during SSR. This is for render-only
-    /// inputs such as injected design-token CSS.
-    #[must_use]
-    pub fn with_client_state_omit_keys(mut self, keys: &'a [&'a str]) -> Self {
-        self.client_state_omit_keys = keys;
         self
     }
 }
@@ -255,8 +243,6 @@ struct WebUIProcessContext<'a> {
     /// `</body>`), after the built-in template metadata emissions.
     /// Same zero-copy borrow as [`head_inject`](Self::head_inject).
     body_inject: Option<&'a str>,
-    /// Top-level state keys omitted from client bootstrap serialization.
-    client_state_omit_keys: &'a [&'a str],
     /// Tracks whether the `head_end` hook has already fired in this
     /// render. Defends against malformed protocols that emit the
     /// signal more than once (e.g., a template with multiple `<head>`
@@ -279,7 +265,6 @@ struct WebUIProcessContext<'a> {
 
 struct WebUiBootstrap<'a> {
     state: &'a Value,
-    state_omit_keys: &'a [&'a str],
     chain: &'a [Value],
     inventory: &'a str,
     nonce: Option<&'a str>,
@@ -380,7 +365,6 @@ where
 
 struct ClientState<'a> {
     value: &'a Value,
-    omit_keys: &'a [&'a str],
 }
 
 impl Serialize for ClientState<'_> {
@@ -392,13 +376,13 @@ impl Serialize for ClientState<'_> {
             return self.value.serialize(serializer);
         };
 
-        if self.omit_keys.is_empty() {
+        if !map.contains_key(CLIENT_STATE_TOKEN_KEY) {
             return self.value.serialize(serializer);
         }
 
         let mut out = serializer.serialize_map(None)?;
         for (key, value) in map {
-            if self.omit_keys.iter().any(|omit| *omit == key) {
+            if key == CLIENT_STATE_TOKEN_KEY {
                 continue;
             }
             out.serialize_entry(key, value)?;
@@ -430,7 +414,6 @@ fn write_webui_bootstrap(
         "state",
         &ClientState {
             value: bootstrap.state,
-            omit_keys: bootstrap.state_omit_keys,
         },
     )?;
     if !bootstrap.style_specs.is_empty() {
@@ -563,7 +546,6 @@ impl WebUIHandler {
             nonce: options.nonce.filter(|s| !s.is_empty()),
             head_inject: options.head_inject.filter(|s| !s.is_empty()),
             body_inject: options.body_inject.filter(|s| !s.is_empty()),
-            client_state_omit_keys: options.client_state_omit_keys,
             head_end_emitted: false,
             component_index_cache: None,
             body_end_emitted: false,
@@ -607,7 +589,6 @@ impl WebUIHandler {
             nonce: None,
             head_inject: None,
             body_inject: None,
-            client_state_omit_keys: &[],
             head_end_emitted: false,
             component_index_cache: None,
             body_end_emitted: false,
@@ -1300,7 +1281,6 @@ impl WebUIHandler {
                     context.writer,
                     WebUiBootstrap {
                         state: context.state,
-                        state_omit_keys: context.client_state_omit_keys,
                         chain: &chain_json,
                         inventory: &inventory_hex,
                         nonce: context.nonce,
@@ -1568,7 +1548,6 @@ impl WebUIHandler {
             nonce: options.nonce.filter(|s| !s.is_empty()),
             head_inject: options.head_inject.filter(|s| !s.is_empty()),
             body_inject: options.body_inject.filter(|s| !s.is_empty()),
-            client_state_omit_keys: options.client_state_omit_keys,
             head_end_emitted: false,
             component_index_cache: None,
             body_end_emitted: false,
@@ -7151,7 +7130,7 @@ mod tests {
     }
 
     #[test]
-    fn client_state_omit_keys_preserves_ssr_resolution() -> Result<()> {
+    fn client_state_strips_tokens_after_ssr_resolution() -> Result<()> {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -7179,7 +7158,7 @@ mod tests {
         handler.handle(
             &protocol,
             &state,
-            &RenderOptions::new("index.html", "/").with_client_state_omit_keys(&["tokens"]),
+            &RenderOptions::new("index.html", "/"),
             &mut writer,
         )?;
         let output = writer.get_content();
