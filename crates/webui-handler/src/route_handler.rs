@@ -26,6 +26,14 @@ pub struct ProtocolIndex {
     pub component_index: HashMap<String, u32>,
     /// Compiled route template patterns (lazily populated on first match).
     pub route_cache: CompiledRouteCache,
+    /// Parsed WebUI template metadata keyed by component tag.
+    template_metadata_cache: HashMap<String, Value>,
+}
+
+struct ComponentAssets {
+    styles: Vec<Value>,
+    templates: serde_json::Map<String, Value>,
+    functions: serde_json::Map<String, Value>,
 }
 
 impl ProtocolIndex {
@@ -35,6 +43,7 @@ impl ProtocolIndex {
         Self {
             component_index: build_component_index(protocol),
             route_cache: CompiledRouteCache::new(),
+            template_metadata_cache: HashMap::new(),
         }
     }
 }
@@ -225,6 +234,10 @@ pub fn filter_needed_components(
     Ok((needed, encode_inventory(&updated_inv)))
 }
 
+fn has_template_payload(component: &webui_protocol::ComponentData) -> bool {
+    !component.template_json.is_empty() || !component.template.is_empty()
+}
+
 #[derive(Debug)]
 struct QueuedFragment {
     id: String,
@@ -248,8 +261,8 @@ struct ChildWalkCtx<'a> {
 /// Without a request path, all route branches are followed conservatively.
 ///
 /// Components are marked `inventoryable` when they have a corresponding entry
-/// in `protocol.components` with a non-empty template — these are the components
-/// whose f-template HTML the client may need during navigation.
+/// in `protocol.components` with a non-empty template payload — these are the
+/// components whose client metadata the browser may need during navigation.
 fn collect_inventoryable_components(
     protocol: &WebUIProtocol,
     entry_id: &str,
@@ -342,7 +355,7 @@ fn collect_inventoryable_components(
                             inventoryable: protocol
                                 .components
                                 .get(&route_frag.fragment_id)
-                                .is_some_and(|c| !c.template.is_empty()),
+                                .is_some_and(has_template_payload),
                             route_base: child_route_base.clone(),
                         });
 
@@ -448,7 +461,7 @@ fn walk_route_children(
                 .protocol
                 .components
                 .get(&matched.fragment_id)
-                .is_some_and(|c| !c.template.is_empty()),
+                .is_some_and(has_template_payload),
             route_base: child_base.clone(),
         });
 
@@ -459,7 +472,7 @@ fn walk_route_children(
                     .protocol
                     .components
                     .get(&matched.pending_component)
-                    .is_some_and(|c| !c.template.is_empty()),
+                    .is_some_and(has_template_payload),
                 route_base: child_base.clone(),
             });
         }
@@ -470,7 +483,7 @@ fn walk_route_children(
                     .protocol
                     .components
                     .get(&matched.error_component)
-                    .is_some_and(|c| !c.template.is_empty()),
+                    .is_some_and(has_template_payload),
                 route_base: child_base.clone(),
             });
         }
@@ -508,7 +521,7 @@ fn collect_route_boundary_components(
                 inventoryable: protocol
                     .components
                     .get(component)
-                    .is_some_and(|c| !c.template.is_empty()),
+                    .is_some_and(has_template_payload),
                 route_base: route_base.to_string(),
             });
         }
@@ -766,34 +779,19 @@ fn collect_inventory_and_chain(
                             let is_inventoryable = protocol
                                 .components
                                 .get(&route_frag.fragment_id)
-                                .is_some_and(|c| !c.template.is_empty());
+                                .is_some_and(has_template_payload);
                             stack.push(QueuedFragment {
                                 id: route_frag.fragment_id.clone(),
                                 inventoryable: is_inventoryable,
                                 route_base: child_route_base.clone(),
                             });
 
-                            // Inventory: pending/error components
-                            if !route_frag.pending_component.is_empty() {
-                                stack.push(QueuedFragment {
-                                    id: route_frag.pending_component.clone(),
-                                    inventoryable: protocol
-                                        .components
-                                        .get(&route_frag.pending_component)
-                                        .is_some_and(|c| !c.template.is_empty()),
-                                    route_base: child_route_base.clone(),
-                                });
-                            }
-                            if !route_frag.error_component.is_empty() {
-                                stack.push(QueuedFragment {
-                                    id: route_frag.error_component.clone(),
-                                    inventoryable: protocol
-                                        .components
-                                        .get(&route_frag.error_component)
-                                        .is_some_and(|c| !c.template.is_empty()),
-                                    route_base: child_route_base.clone(),
-                                });
-                            }
+                            collect_route_boundary_components(
+                                std::slice::from_ref(route_frag),
+                                &child_route_base,
+                                protocol,
+                                &mut stack,
+                            );
 
                             // Both: walk nested child routes
                             if !route_frag.children.is_empty() {
@@ -863,32 +861,9 @@ fn walk_children_for_inventory_and_chain(
                 .protocol
                 .components
                 .get(&matched.fragment_id)
-                .is_some_and(|c| !c.template.is_empty()),
+                .is_some_and(has_template_payload),
             route_base: child_base.clone(),
         });
-
-        if !matched.pending_component.is_empty() {
-            stack.push(QueuedFragment {
-                id: matched.pending_component.clone(),
-                inventoryable: ctx
-                    .protocol
-                    .components
-                    .get(&matched.pending_component)
-                    .is_some_and(|c| !c.template.is_empty()),
-                route_base: child_base.clone(),
-            });
-        }
-        if !matched.error_component.is_empty() {
-            stack.push(QueuedFragment {
-                id: matched.error_component.clone(),
-                inventoryable: ctx
-                    .protocol
-                    .components
-                    .get(&matched.error_component)
-                    .is_some_and(|c| !c.template.is_empty()),
-                route_base: child_base.clone(),
-            });
-        }
 
         if matched.children.is_empty() {
             break;
@@ -907,7 +882,8 @@ fn walk_children_for_inventory_and_chain(
 ///
 /// Returns a `serde_json::Value` object with fields:
 /// - `templateStyles`: module CSS definition tags for inventory-new components (empty for Link/Style)
-/// - `templates`: client template payloads the client doesn't already have (inventory-filtered)
+/// - `templates`: client template metadata keyed by component tag (inventory-filtered)
+/// - `templateFunctions`: component-local condition closure arrays keyed by component tag
 /// - `inventory`: updated hex bitmask
 /// - `path`: the request path
 /// - `chain`: matched route chain array
@@ -940,13 +916,14 @@ pub fn render_partial(
     }
 
     let tag_refs: Vec<&str> = needed_names.iter().map(|s| s.as_str()).collect();
-    let (style_array, tmpl_array) = collect_component_assets(protocol, &tag_refs);
+    let assets = collect_component_assets(protocol, &tag_refs, index)?;
 
     let chain_array = Value::Array(chain.iter().map(RouteChainEntry::to_json).collect());
 
-    let mut result = serde_json::Map::with_capacity(6);
-    result.insert("templateStyles".into(), Value::Array(style_array));
-    result.insert("templates".into(), Value::Array(tmpl_array));
+    let mut result = serde_json::Map::with_capacity(7);
+    result.insert("templateStyles".into(), Value::Array(assets.styles));
+    result.insert("templates".into(), Value::Object(assets.templates));
+    result.insert("templateFunctions".into(), Value::Object(assets.functions));
     result.insert("inventory".into(), Value::String(updated_inv));
     result.insert("path".into(), Value::String(request_path.to_string()));
     result.insert("chain".into(), chain_array);
@@ -1020,26 +997,32 @@ pub fn render_component_templates(
     protocol: &WebUIProtocol,
     component_tags: &[&str],
     inventory_hex: &str,
-    index: &ProtocolIndex,
+    index: &mut ProtocolIndex,
 ) -> Result<Value, HandlerError> {
     let requested: HashSet<String> = component_tags.iter().map(|s| s.to_string()).collect();
     let (needed, updated_inv) =
         filter_needed_components(&requested, inventory_hex, &index.component_index)?;
 
     let tag_refs: Vec<&str> = needed.iter().map(|s| s.as_str()).collect();
-    let (style_array, tmpl_array) = collect_component_assets(protocol, &tag_refs);
+    let assets = collect_component_assets(protocol, &tag_refs, index)?;
 
-    let mut result = serde_json::Map::with_capacity(3);
-    result.insert("templateStyles".into(), Value::Array(style_array));
-    result.insert("templates".into(), Value::Array(tmpl_array));
+    let mut result = serde_json::Map::with_capacity(4);
+    result.insert("templateStyles".into(), Value::Array(assets.styles));
+    result.insert("templates".into(), Value::Object(assets.templates));
+    result.insert("templateFunctions".into(), Value::Object(assets.functions));
     result.insert("inventory".into(), Value::String(updated_inv));
     Ok(Value::Object(result))
 }
 
 /// Shared helper: collect templates and module CSS styles for a set of component tags.
-fn collect_component_assets(protocol: &WebUIProtocol, tags: &[&str]) -> (Vec<Value>, Vec<Value>) {
+fn collect_component_assets(
+    protocol: &WebUIProtocol,
+    tags: &[&str],
+    index: &mut ProtocolIndex,
+) -> Result<ComponentAssets, HandlerError> {
     let mut style_array = Vec::new();
-    let mut tmpl_array = Vec::new();
+    let mut tmpl_map = serde_json::Map::new();
+    let mut function_map = serde_json::Map::new();
 
     // Sort for deterministic output (reproducible responses, cache keys)
     let mut sorted_tags: Vec<&str> = tags.to_vec();
@@ -1049,7 +1032,7 @@ fn collect_component_assets(protocol: &WebUIProtocol, tags: &[&str]) -> (Vec<Val
         let Some(component) = protocol.components.get(tag) else {
             continue;
         };
-        if component.template.is_empty() {
+        if !has_template_payload(component) {
             continue;
         }
         if !component.css.is_empty() {
@@ -1059,10 +1042,45 @@ fn collect_component_assets(protocol: &WebUIProtocol, tags: &[&str]) -> (Vec<Val
             let tag_html = crate::css_module::build_importmap_tag(tag, &component.css, None);
             style_array.push(Value::String(tag_html));
         }
-        tmpl_array.push(Value::String(component.template.clone()));
+        if !component.template_json.is_empty() {
+            let template_value = cached_template_metadata(index, tag, &component.template_json)?;
+            tmpl_map.insert(tag.to_string(), template_value);
+            if !component.template_functions.is_empty() {
+                function_map.insert(
+                    tag.to_string(),
+                    Value::String(component.template_functions.clone()),
+                );
+            }
+        } else {
+            tmpl_map.insert(tag.to_string(), Value::String(component.template.clone()));
+        }
     }
 
-    (style_array, tmpl_array)
+    Ok(ComponentAssets {
+        styles: style_array,
+        templates: tmpl_map,
+        functions: function_map,
+    })
+}
+
+fn cached_template_metadata(
+    index: &mut ProtocolIndex,
+    tag: &str,
+    template_json: &str,
+) -> Result<Value, HandlerError> {
+    if let Some(value) = index.template_metadata_cache.get(tag) {
+        return Ok(value.clone());
+    }
+
+    let value: Value = serde_json::from_str(template_json).map_err(|error| {
+        HandlerError::Rendering(format!(
+            "failed to parse template metadata for {tag}: {error}"
+        ))
+    })?;
+    index
+        .template_metadata_cache
+        .insert(tag.to_string(), value.clone());
+    Ok(value)
 }
 
 // ── Route Chain ─────────────────────────────────────────────────────
@@ -1903,8 +1921,7 @@ mod tests {
             .components
             .entry("my-page".to_string())
             .or_default();
-        component.template =
-            "(function(){window.__webui.templates['my-page']={h:'<p>page</p>'};})();".to_string();
+        component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         component.css = ".page{color:red}".to_string();
 
         let mut index = ProtocolIndex::new(&protocol);
@@ -1924,28 +1941,19 @@ mod tests {
             "module style entry should contain the CSS content verbatim inside the data: URI: {style_html}"
         );
 
-        // templates should contain only the clean JS IIFE
+        // templates should contain only JSON-safe metadata
         let templates = partial["templates"]
-            .as_array()
-            .expect("templates should be an array");
+            .as_object()
+            .expect("templates should be an object");
         assert_eq!(templates.len(), 1);
-        assert!(
-            !templates[0].as_str().unwrap_or_default().contains("<style"),
-            "template should not contain any style tags"
-        );
-        assert!(
-            templates[0]
-                .as_str()
-                .unwrap_or_default()
-                .starts_with("(function()"),
-            "template should be a raw JS IIFE"
-        );
+        let template = templates.get("my-page").expect("my-page template");
+        assert_eq!(template["h"], "<p>page</p>");
     }
 
     #[test]
     fn test_render_partial_link_strategy_has_empty_template_styles() {
         // Link-strategy components have css_href but no css content.
-        // templateStyles should be empty; templates should contain the IIFE.
+        // templateStyles should be empty; templates should contain metadata.
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -1965,7 +1973,7 @@ mod tests {
             .components
             .entry("my-page".to_string())
             .or_default();
-        component.template = "(function(){})();".to_string();
+        component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         component.css_href = "my-page.css".to_string();
         // css is empty — Link strategy stores href, not content
 
@@ -1975,21 +1983,21 @@ mod tests {
             .as_array()
             .expect("templateStyles should be an array");
         let templates = partial["templates"]
-            .as_array()
-            .expect("templates should be an array");
+            .as_object()
+            .expect("templates should be an object");
 
         assert!(
             styles.is_empty(),
             "Link strategy should produce empty templateStyles: {styles:?}"
         );
-        assert_eq!(templates.len(), 1, "should include the template IIFE");
+        assert_eq!(templates.len(), 1, "should include template metadata");
     }
 
     #[test]
     fn test_render_partial_style_strategy_has_empty_template_styles() {
         // Style-strategy components have CSS embedded in the template HTML
         // (as <style>...</style>), not in component.css.
-        // templateStyles should be empty; templates should contain the IIFE.
+        // templateStyles should be empty; templates should contain metadata.
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -2010,9 +2018,7 @@ mod tests {
             .entry("my-page".to_string())
             .or_default();
         // Style strategy: CSS is inside the template HTML, not in component.css
-        component.template =
-            "(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w['my-page']={h:'<style>.p{color:red}</style><p>page</p>'};})();"
-                .to_string();
+        component.template_json = r#"{"h":"<style>.p{color:red}</style><p>page</p>"}"#.to_string();
         // css is empty for Style strategy
 
         let mut index = ProtocolIndex::new(&protocol);
@@ -2021,17 +2027,18 @@ mod tests {
             .as_array()
             .expect("templateStyles should be an array");
         let templates = partial["templates"]
-            .as_array()
-            .expect("templates should be an array");
+            .as_object()
+            .expect("templates should be an object");
 
         assert!(
             styles.is_empty(),
             "Style strategy should produce empty templateStyles: {styles:?}"
         );
-        assert_eq!(templates.len(), 1, "should include the template IIFE");
+        assert_eq!(templates.len(), 1, "should include template metadata");
         assert!(
-            templates[0]
-                .as_str()
+            templates
+                .get("my-page")
+                .and_then(|template| template["h"].as_str())
                 .unwrap_or_default()
                 .contains("<style>"),
             "Style strategy template should contain inline <style> tag"
@@ -2059,7 +2066,7 @@ mod tests {
             .components
             .entry("my-page".to_string())
             .or_default();
-        component.template = "(function(){})();".to_string();
+        component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         // No CSS — simulates Link or Style mode
 
         let mut index = ProtocolIndex::new(&protocol);
@@ -2094,7 +2101,7 @@ mod tests {
             .components
             .entry("my-page".to_string())
             .or_default();
-        component.template = "(function(){})();".to_string();
+        component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         component.css = ".page{color:red}".to_string();
 
         let mut index = ProtocolIndex::new(&protocol);
@@ -2112,8 +2119,8 @@ mod tests {
             .as_array()
             .expect("templateStyles should be an array");
         let templates = partial2["templates"]
-            .as_array()
-            .expect("templates should be an array");
+            .as_object()
+            .expect("templates should be an object");
 
         assert!(
             templates.is_empty(),
@@ -2182,7 +2189,7 @@ mod tests {
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
         for name in ["app-shell", "my-navbar", "page-about", "cart-panel"] {
             let comp = protocol.components.entry(name.to_string()).or_default();
-            comp.template = format!("(function(){{/* {name} */}})();");
+            comp.template_json = format!(r#"{{"h":"<div class=\"{name}\"></div>"}}"#);
             comp.css = format!(".{name}{{display:block}}");
         }
 
@@ -2314,17 +2321,17 @@ mod tests {
             .components
             .entry("settings-dialog".to_string())
             .or_default();
-        comp.template = "(function(){window.__webui.templates['settings-dialog']={h:'<div>Settings</div>'};})();".to_string();
+        comp.template_json = r#"{"h":"<div>Settings</div>"}"#.to_string();
         comp.css = ".dialog{position:fixed}".to_string();
 
-        let index = ProtocolIndex::new(&protocol);
+        let mut index = ProtocolIndex::new(&protocol);
         let result =
-            render_component_templates(&protocol, &["settings-dialog"], "", &index).unwrap();
-        let templates = result["templates"].as_array().expect("templates array");
+            render_component_templates(&protocol, &["settings-dialog"], "", &mut index).unwrap();
+        let templates = result["templates"].as_object().expect("templates object");
         let styles = result["templateStyles"].as_array().expect("styles array");
 
         assert_eq!(templates.len(), 1);
-        assert!(templates[0].as_str().unwrap().contains("settings-dialog"));
+        assert_eq!(templates["settings-dialog"]["h"], "<div>Settings</div>");
         assert_eq!(styles.len(), 1);
         let style_html = styles[0].as_str().unwrap();
         assert!(
@@ -2337,6 +2344,12 @@ mod tests {
         assert!(
             style_html.contains(".dialog{position:fixed}"),
             "templateStyles entry should contain the CSS content verbatim: {style_html}"
+        );
+        assert!(
+            index
+                .template_metadata_cache
+                .contains_key("settings-dialog"),
+            "parsed static template metadata should be cached in ProtocolIndex"
         );
     }
 
@@ -2354,18 +2367,20 @@ mod tests {
             .components
             .entry("my-dialog".to_string())
             .or_default();
-        comp.template = "(function(){})();".to_string();
+        comp.template_json = r#"{"h":"<div>Dialog</div>"}"#.to_string();
         comp.css = ".d{color:red}".to_string();
 
-        let index = ProtocolIndex::new(&protocol);
+        let mut index = ProtocolIndex::new(&protocol);
         // First call: no inventory → should return the component
-        let result1 = render_component_templates(&protocol, &["my-dialog"], "", &index).unwrap();
+        let result1 =
+            render_component_templates(&protocol, &["my-dialog"], "", &mut index).unwrap();
         let inv = result1["inventory"].as_str().expect("inventory string");
-        assert_eq!(result1["templates"].as_array().unwrap().len(), 1);
+        assert_eq!(result1["templates"].as_object().unwrap().len(), 1);
 
         // Second call with inventory → component already loaded, should skip
-        let result2 = render_component_templates(&protocol, &["my-dialog"], inv, &index).unwrap();
-        assert_eq!(result2["templates"].as_array().unwrap().len(), 0);
+        let result2 =
+            render_component_templates(&protocol, &["my-dialog"], inv, &mut index).unwrap();
+        assert_eq!(result2["templates"].as_object().unwrap().len(), 0);
         assert_eq!(result2["templateStyles"].as_array().unwrap().len(), 0);
     }
 
@@ -2374,11 +2389,93 @@ mod tests {
         let fragments = HashMap::new();
         let protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
 
-        let index = ProtocolIndex::new(&protocol);
+        let mut index = ProtocolIndex::new(&protocol);
         let result =
-            render_component_templates(&protocol, &["nonexistent-widget"], "", &index).unwrap();
-        assert_eq!(result["templates"].as_array().unwrap().len(), 0);
+            render_component_templates(&protocol, &["nonexistent-widget"], "", &mut index).unwrap();
+        assert_eq!(result["templates"].as_object().unwrap().len(), 0);
         assert_eq!(result["templateStyles"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_render_partial_includes_sibling_boundary_templates() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/".into(),
+                    fragment_id: "app-shell".into(),
+                    exact: false,
+                    children: vec![
+                        WebUiFragmentRoute {
+                            path: "inbox".into(),
+                            fragment_id: "inbox-page".into(),
+                            exact: true,
+                            pending_component: "inbox-loading".into(),
+                            ..Default::default()
+                        },
+                        WebUiFragmentRoute {
+                            path: "settings".into(),
+                            fragment_id: "settings-page".into(),
+                            exact: true,
+                            pending_component: "settings-loading".into(),
+                            error_component: "settings-error".into(),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                })],
+            },
+        );
+
+        for name in [
+            "app-shell",
+            "inbox-page",
+            "inbox-loading",
+            "settings-page",
+            "settings-loading",
+            "settings-error",
+        ] {
+            fragments.insert(
+                name.to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw(format!("<p>{name}</p>"))],
+                },
+            );
+        }
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        for name in [
+            "app-shell",
+            "inbox-page",
+            "inbox-loading",
+            "settings-page",
+            "settings-loading",
+            "settings-error",
+        ] {
+            protocol
+                .components
+                .entry(name.to_string())
+                .or_default()
+                .template_json = format!(r#"{{"h":"<p>{name}</p>"}}"#);
+        }
+
+        let mut index = ProtocolIndex::new(&protocol);
+        let partial = render_partial(&protocol, "index.html", "/inbox", "", &mut index).unwrap();
+        let templates = partial["templates"].as_object().unwrap();
+
+        assert!(
+            templates.contains_key("settings-loading"),
+            "sibling pending template should be preloaded for route transitions: {partial}"
+        );
+        assert!(
+            templates.contains_key("settings-error"),
+            "sibling error template should be preloaded for failed route transitions: {partial}"
+        );
+        let chain = partial["chain"].as_array().unwrap();
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0]["component"], "app-shell");
+        assert_eq!(chain[1]["component"], "inbox-page");
     }
 
     // ── resolve_tag_templates tests ──────────────────────────────────

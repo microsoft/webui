@@ -224,13 +224,13 @@ pub fn render_component_templates(
     let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
 
     // Per-request index — see ProtocolIndex doc for caching guidance.
-    let index = webui_handler::route_handler::ProtocolIndex::new(&protocol);
+    let mut index = webui_handler::route_handler::ProtocolIndex::new(&protocol);
 
     let result = webui_handler::route_handler::render_component_templates(
         &protocol,
         &tag_refs,
         &inventory_hex,
-        &index,
+        &mut index,
     )
     .map_err(|e| NapiError::from_reason(format!("render_component_templates failed: {e}")))?;
 

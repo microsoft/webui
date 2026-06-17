@@ -18,7 +18,7 @@ import { build, render } from '@microsoft/webui';
 export interface RenderedFixture {
   /** Fixture directory name (e.g. "counter"). */
   name: string;
-  /** Full rendered HTML including template IIFEs and hydration markers. */
+  /** Full rendered HTML including template metadata, condition closures, and hydration markers. */
   html: string;
 }
 
@@ -126,4 +126,3 @@ export function renderFixtures({
 
   return results;
 }
-

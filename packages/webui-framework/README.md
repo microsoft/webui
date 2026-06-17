@@ -93,7 +93,7 @@ Build with `--dom=shadow` (default) to wrap in a declarative shadow root, or `--
 cargo run -p microsoft-webui-cli -- build ./src --out ./dist --plugin=webui
 ```
 
-The compiler/plugin generates the template metadata consumed by the runtime. In normal app code, you should not need to hand-author `window.__webui.templates`.
+The compiler/plugin generates the template metadata and condition closure arrays consumed by the runtime. In normal app code, you should not need to hand-author `window.__webui.templates` or `window.__webui.templateFns`.
 
 ### Property binding lifecycle
 
@@ -366,7 +366,7 @@ graph TD
 
     TYPES["element/types.ts<br/><i>Shared Types</i><br/>TemplateInstance, TextBinding,<br/>AttrBinding, CondBinding,<br/>RepeatBinding, ScopeFrame,<br/>RepeatHost"]
 
-    TMPL["template.ts<br/><i>Metadata Types + Registry</i><br/>TemplateMeta, getTemplate"]
+    TMPL["template.ts<br/><i>Metadata Types + Registry</i><br/>TemplateMeta, getTemplate,<br/>registerTemplateData"]
 
     DEC["decorators.ts<br/><i>Reactive Properties</i><br/>@observable, @attr, @volatile"]
 
@@ -486,19 +486,16 @@ Compiled metadata:
 }
 ```
 
-### Condition AST
+### Condition references
 
-Conditions are emitted as compact tuples:
+Conditions are emitted as `[functionIndex, paths]` references. The index points
+to a component-local closure in `window.__webui.templateFns[tagName]`, while
+`paths` lets the runtime build targeted reactive indexes without parsing
+function source.
 
-| Tuple | Meaning | Example |
-|-------|---------|---------|
-| `[0, path]` | Identifier (truthy check) | `@if(visible)` |
-| `[1, left, op, right]` | Comparison predicate | `@if(count > 0)` |
-| `[2, inner]` | Logical NOT | `@if(!visible)` |
-| `[3, left, op, right]` | Compound AND/OR | `@if(a && b)` |
-
-The runtime evaluates these iteratively (stack-based, no recursion) to avoid
-call-stack depth in hot update paths.
+The runtime normalizes each condition reference into `[fn, paths]` once before
+hydration or client-created wiring, so hot update paths call the closure
+directly.
 
 ---
 

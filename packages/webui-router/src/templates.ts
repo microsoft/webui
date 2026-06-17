@@ -12,7 +12,8 @@
  */
 export function registerTemplatesAndStyles(
   data: {
-    templates?: string[];
+    templates?: Record<string, unknown>;
+    templateFunctions?: Record<string, string>;
     templateStyles?: string[];
     inventory?: string;
   },
@@ -67,32 +68,64 @@ export function registerTemplatesAndStyles(
     }
   }
 
-  // 2. Template registration: execute JS IIFEs / insert DOM templates.
-  //    TRUST BOUNDARY: template scripts come from the same-origin server
+  let executableTemplateBody = '';
+
+  // 2. Template closures: execute only the component-local condition arrays.
+  //    TRUST BOUNDARY: closure scripts come from the same-origin server
   //    that compiled the protocol. The CSP nonce gates script execution.
   //    If the server endpoint is compromised, this is an XSS vector —
   //    same risk as the existing fetchPartial pipeline.
+  if (data.templateFunctions) {
+    const tags = Object.keys(data.templateFunctions);
+    if (tags.length > 0) {
+      executableTemplateBody += 'var w=(window.__webui||(window.__webui={}));var f=w.templateFns||(w.templateFns={});';
+    }
+    for (let i = 0; i < tags.length; i++) {
+      const tag = tags[i];
+      const functions = data.templateFunctions[tag];
+      if (!functions) continue;
+      executableTemplateBody += 'f[';
+      executableTemplateBody += JSON.stringify(tag);
+      executableTemplateBody += ']=';
+      executableTemplateBody += functions;
+      executableTemplateBody += ';';
+    }
+  }
+
+  // 3. Template metadata: register JSON-safe data directly. Non-WebUI
+  //    string payloads (FAST f-template HTML or legacy executable payloads)
+  //    keep their materialization path.
   if (data.templates) {
-    let scriptBody = '';
-    for (const tmpl of data.templates) {
-      if (tmpl.startsWith('<')) {
-        const container = document.createDocumentFragment();
-        const temp = document.createElement('div');
-        temp.innerHTML = tmpl;
-        while (temp.firstChild) container.appendChild(temp.firstChild);
-        document.body.appendChild(container);
+    const w = window as unknown as { __webui?: { templates?: Record<string, unknown>; [key: string]: unknown } };
+    if (!w.__webui) w.__webui = {};
+    if (!w.__webui.templates) w.__webui.templates = {};
+    const tags = Object.keys(data.templates);
+    for (let i = 0; i < tags.length; i++) {
+      const tag = tags[i];
+      const template = data.templates[tag];
+      if (typeof template === 'string') {
+        if (template.startsWith('<')) {
+          const container = document.createDocumentFragment();
+          const temp = document.createElement('div');
+          temp.innerHTML = template;
+          while (temp.firstChild) container.appendChild(temp.firstChild);
+          document.body.appendChild(container);
+        } else {
+          executableTemplateBody += template;
+          executableTemplateBody += '\n';
+        }
       } else {
-        if (scriptBody) scriptBody += '\n';
-        scriptBody += tmpl;
+        w.__webui.templates[tag] = template;
       }
     }
-    if (scriptBody) {
-      const script = document.createElement('script');
-      if (nonce) script.nonce = nonce;
-      script.textContent = scriptBody;
-      document.head.appendChild(script);
-      document.head.removeChild(script);
-    }
+  }
+
+  if (executableTemplateBody) {
+    const script = document.createElement('script');
+    if (nonce) script.nonce = nonce;
+    script.textContent = `(function(){${executableTemplateBody}})();`;
+    document.head.appendChild(script);
+    document.head.removeChild(script);
   }
 }
 

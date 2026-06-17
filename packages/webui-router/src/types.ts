@@ -11,6 +11,7 @@ declare global {
       styles?: string[];
       state?: Record<string, unknown>;
       templates?: Record<string, unknown>;
+      templateFns?: Record<string, unknown>;
     };
   }
 }

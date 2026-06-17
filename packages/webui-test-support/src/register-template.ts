@@ -11,10 +11,11 @@
  */
 
 import type {
+  CompiledConditionFn,
   TemplateMeta,
 } from '../../webui-framework/src/template-types.js';
 
-export type { TemplateMeta };
+export type { CompiledConditionFn, TemplateMeta };
 
 /**
  * Register a compiled template so the framework can hydrate or mount
@@ -23,15 +24,25 @@ export type { TemplateMeta };
 export function registerCompiledTemplate(
   name: string,
   meta: TemplateMeta,
+  fns?: CompiledConditionFn[],
 ): void {
-  const w = window as unknown as { __webui?: { templates?: Record<string, TemplateMeta>; [k: string]: unknown } };
+  const w = window as unknown as {
+    __webui?: {
+      templates?: Record<string, TemplateMeta>;
+      templateFns?: Record<string, CompiledConditionFn[]>;
+      [k: string]: unknown;
+    };
+  };
   if (!w.__webui) w.__webui = {};
   if (!w.__webui.templates) w.__webui.templates = {};
   w.__webui.templates[name] = meta;
+  if (fns) {
+    if (!w.__webui.templateFns) w.__webui.templateFns = {};
+    w.__webui.templateFns[name] = fns;
+  }
 }
 
-/** Render a template registration as an inline `<script>` tag. */
+/** Render a static template registration as an inline `<script>` tag. */
 export function renderTemplateScript(name: string, meta: TemplateMeta): string {
-  return `<script>(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w[${JSON.stringify(name)}]=${JSON.stringify(meta)};})();</script>`;
+  return `<script>window.__webui=window.__webui||{};window.__webui.templates=window.__webui.templates||{};window.__webui.templates[${JSON.stringify(name)}]=${JSON.stringify(meta)};</script>`;
 }
-

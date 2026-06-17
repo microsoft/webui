@@ -91,16 +91,12 @@ impl HandlerPlugin for WebUIHydrationPlugin {
         Ok(())
     }
 
-    /// Emit all WebUI component templates inside a single `<script>` tag
-    /// for SSR.  Templates are raw JS IIFE strings (no `<script>` wrapper)
-    /// stored in the protocol — the `<script>` tag is only added here for
-    /// the SSR HTML output.  Partial SPA responses send the raw JS directly
-    /// and the router evaluates it client-side.
+    /// Emit legacy non-split WebUI component templates inside a single
+    /// `<script>` tag for fallback paths.
     ///
-    /// NOTE: When `collect_template_js` returns `Some(...)`, `lib.rs` merges
-    /// the templates into the consolidated `window.__webui` script block and
-    /// this method is **not** called.  It remains as a fallback for
-    /// non-consolidated code paths.
+    /// NOTE: When `collect_template_payloads` returns `Some(...)`, `lib.rs`
+    /// emits template metadata in an `application/json` block and this method
+    /// is **not** called. It remains for non-WebUI plugin fallback paths.
     fn emit_templates(
         &self,
         protocol: &WebUIProtocol,
@@ -140,23 +136,23 @@ impl HandlerPlugin for WebUIHydrationPlugin {
         Ok(())
     }
 
-    /// Collect raw JS template IIFE strings for embedding in the consolidated
-    /// `window.__webui` script block.  Returns `Some(vec)` with non-empty
-    /// template sources, or `None` if there are no templates to emit.
-    fn collect_template_js(
+    /// Collect split WebUI template payloads for SSR bootstrap emission.
+    fn collect_template_payloads<'a>(
         &self,
-        protocol: &WebUIProtocol,
+        protocol: &'a WebUIProtocol,
         components: &HashSet<String>,
-    ) -> Option<Vec<String>> {
-        let mut templates: Vec<String> = Vec::with_capacity(components.len());
+    ) -> Option<Vec<super::WebUiTemplatePayload<'a>>> {
+        let mut templates: Vec<super::WebUiTemplatePayload<'a>> =
+            Vec::with_capacity(components.len());
         for name in components {
-            if let Some(template) = protocol
-                .components
-                .get(name)
-                .map(|component| component.template.as_str())
-                .filter(|t| !t.is_empty())
-            {
-                templates.push(template.to_string());
+            if let Some((tag_name, component)) = protocol.components.get_key_value(name) {
+                if !component.template_json.is_empty() {
+                    templates.push(super::WebUiTemplatePayload {
+                        tag_name: tag_name.as_str(),
+                        template_json: component.template_json.as_str(),
+                        template_functions: component.template_functions.as_str(),
+                    });
+                }
             }
         }
         if templates.is_empty() {

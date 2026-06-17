@@ -9,10 +9,8 @@
  * - `tx` — text runs `[slot, parts]` for text binding positions
  * - `a`  — attribute binding metadata
  * - `ag` — attribute target groups `[path, startIndex, count]`
- * - `c`  — conditional blocks `[conditionAst, blockIndex]`
- * - `cl` — conditional anchor slots
- * - `r`  — repeat/for blocks `[collection, itemVar, blockIndex]`
- * - `rl` — repeat anchor slots
+ * - `c`  — conditional blocks `[conditionRef, blockIndex, slot]`
+ * - `r`  — repeat/for blocks `[collection, itemVar, blockIndex, slot]`
  * - `e`  — element events `[eventName, handlerName, argSpecs, targetPath]`
  * - `b`  — nested compiled block metadata
  * - `sa` — adopted stylesheet specifier for CSS module strategy
@@ -25,9 +23,12 @@ export type {
   CompiledAttrMeta,
   CompiledAttrPart,
   CompiledCondition,
+  CompiledConditionFn,
   CompiledConditionalMeta,
   CompiledEventArg,
   CompiledEventArgs,
+  SerializedCompiledCondition,
+  TemplateCondition,
   CompiledTextRunMeta,
   TemplateBlockMeta,
   TemplateMeta,
@@ -35,19 +36,150 @@ export type {
   TemplateSlotPath,
 } from './template-types.js';
 
-import type { TemplateMeta } from './template-types.js';
+import type {
+  CompiledConditionFn,
+  SerializedCompiledCondition,
+  TemplateBlockMeta,
+  TemplateCondition,
+  TemplateMeta,
+} from './template-types.js';
+
+const WEBUI_DATA_ID = 'webui-data';
+const normalizedTemplates = new WeakSet<TemplateMeta>();
+let templateDataLoaded = false;
 
 declare global {
   interface Window {
-    /** Consolidated SSR bootstrap object — single script block. */
+    /** Consolidated SSR metadata parsed from the WebUI data block. */
     __webui?: {
       state?: Record<string, unknown>;
       templates?: Record<string, TemplateMeta>;
+      templateFns?: Record<string, CompiledConditionFn[]>;
       [key: string]: unknown;
     };
   }
 }
 
 export function getTemplate(name: string): TemplateMeta | undefined {
-  return window.__webui?.templates?.[name];
+  loadWebUIDataBlock();
+  const meta = window.__webui?.templates?.[name];
+  if (meta) normalizeTemplate(name, meta);
+  return meta;
+}
+
+export function registerTemplateData(
+  templates: Record<string, TemplateMeta>,
+  templateFns?: Record<string, CompiledConditionFn[]>,
+): void {
+  const w = window as Window;
+  if (!w.__webui) w.__webui = {};
+  if (!w.__webui.templates) w.__webui.templates = {};
+  if (templateFns) {
+    if (!w.__webui.templateFns) w.__webui.templateFns = {};
+    const fnNames = Object.keys(templateFns);
+    for (let i = 0; i < fnNames.length; i++) {
+      const tag = fnNames[i];
+      w.__webui.templateFns[tag] = templateFns[tag];
+    }
+  }
+  const names = Object.keys(templates);
+  for (let i = 0; i < names.length; i++) {
+    const tag = names[i];
+    const meta = templates[tag];
+    w.__webui.templates[tag] = meta;
+    normalizeTemplate(tag, meta);
+  }
+}
+
+function loadWebUIDataBlock(): void {
+  if (templateDataLoaded) return;
+  if (typeof document === 'undefined') return;
+  const el = document.getElementById(WEBUI_DATA_ID);
+  if (!el) {
+    if (window.__webui?.templates) templateDataLoaded = true;
+    return;
+  }
+  templateDataLoaded = true;
+  const text = el.textContent;
+  if (!text) {
+    el.remove();
+    return;
+  }
+  const parsed = JSON.parse(text) as NonNullable<Window['__webui']>;
+  if (!window.__webui) window.__webui = {};
+  mergeWebUIData(window.__webui, parsed);
+  el.remove();
+}
+
+function mergeWebUIData(
+  target: NonNullable<Window['__webui']>,
+  source: NonNullable<Window['__webui']>,
+): void {
+  const sourceRecord = source as Record<string, unknown>;
+  const targetRecord = target as Record<string, unknown>;
+  const keys = Object.keys(sourceRecord);
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (key !== 'templates' && key !== 'templateFns') {
+      targetRecord[key] = sourceRecord[key];
+    }
+  }
+
+  if (source.templates) {
+    if (!target.templates) target.templates = {};
+    const names = Object.keys(source.templates);
+    for (let i = 0; i < names.length; i++) {
+      const tag = names[i];
+      target.templates[tag] = source.templates[tag];
+    }
+  }
+
+  if (source.templateFns) {
+    if (!target.templateFns) target.templateFns = {};
+    const names = Object.keys(source.templateFns);
+    for (let i = 0; i < names.length; i++) {
+      const tag = names[i];
+      target.templateFns[tag] = source.templateFns[tag];
+    }
+  }
+}
+
+function normalizeTemplate(name: string, meta: TemplateMeta): void {
+  if (normalizedTemplates.has(meta)) return;
+  const fns = window.__webui?.templateFns?.[name] ?? [];
+  const stack: TemplateBlockMeta[] = [meta];
+  while (stack.length > 0) {
+    const block = stack.pop();
+    if (!block) continue;
+    if (block.a) {
+      for (let i = 0; i < block.a.length; i++) {
+        const attr = block.a[i];
+        if (attr[1] === 2) normalizeCondition(name, attr[2], fns);
+      }
+    }
+    if (block.c) {
+      for (let i = 0; i < block.c.length; i++) {
+        normalizeCondition(name, block.c[i][0], fns);
+      }
+    }
+    const children = (block as TemplateMeta).b;
+    if (children) {
+      for (let i = 0; i < children.length; i++) stack.push(children[i]);
+    }
+  }
+  normalizedTemplates.add(meta);
+}
+
+function normalizeCondition(
+  tagName: string,
+  condition: TemplateCondition,
+  fns: CompiledConditionFn[],
+): void {
+  const first = condition[0];
+  if (typeof first === 'function') return;
+  const fn = fns[first];
+  if (typeof fn !== 'function') {
+    throw new Error(`[WebUI] Missing condition closure ${first} for <${tagName}>.`);
+  }
+  (condition as SerializedCompiledCondition as unknown as [CompiledConditionFn, string[]])[0] = fn;
 }

@@ -15,6 +15,16 @@ use crate::{ResponseWriter, Result};
 use std::collections::HashSet;
 use webui_protocol::WebUIProtocol;
 
+/// Split WebUI component template payload used by SSR bootstrap emission.
+pub struct WebUiTemplatePayload<'a> {
+    /// Component custom-element tag name.
+    pub tag_name: &'a str,
+    /// JSON-safe template metadata object.
+    pub template_json: &'a str,
+    /// Component-local JavaScript condition closure array.
+    pub template_functions: &'a str,
+}
+
 /// A handler plugin that can inject additional content during rendering.
 ///
 /// Plugins receive callbacks at key points in the rendering lifecycle:
@@ -89,8 +99,8 @@ pub trait HandlerPlugin {
 
     /// Emit component templates collected during SSR.  The default emits
     /// each template as-is (suitable for FAST `<f-template>` tags).  The
-    /// WebUI plugin overrides this to wrap all raw JS IIFE templates in a
-    /// single `<script>` tag.
+    /// WebUI split-payload path uses [`HandlerPlugin::collect_template_payloads`]
+    /// instead.
     fn emit_templates(
         &self,
         protocol: &WebUIProtocol,
@@ -101,17 +111,17 @@ pub trait HandlerPlugin {
         emit_component_templates(protocol, components, writer)
     }
 
-    /// Return raw JS template source strings for the given components.
+    /// Return split WebUI template payloads for the given components.
     ///
-    /// Plugins whose templates are executable JS (e.g. WebUI IIFEs) override
-    /// this so `lib.rs` can embed them in the consolidated `window.__webui`
-    /// script block — eliminating a separate `<script>` tag.  Returns `None`
-    /// when templates are non-JS (e.g. HTML `<f-template>` tags).
-    fn collect_template_js(
+    /// The WebUI plugin overrides this so `lib.rs` can emit JSON metadata in an
+    /// inert data block and only emit condition closures as executable JS.
+    /// Returns `None` when templates are non-WebUI payloads (e.g. FAST
+    /// `<f-template>` tags).
+    fn collect_template_payloads<'a>(
         &self,
-        _protocol: &WebUIProtocol,
+        _protocol: &'a WebUIProtocol,
         _components: &HashSet<String>,
-    ) -> Option<Vec<String>> {
+    ) -> Option<Vec<WebUiTemplatePayload<'a>>> {
         None
     }
 }

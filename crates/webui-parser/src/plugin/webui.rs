@@ -5,12 +5,14 @@
 //!
 //! # Overview
 //!
-//! Compiles HTML templates into structured metadata objects stored as raw
-//! JS IIFE strings in the protocol. During SSR the handler wraps them in
-//! a single `<script>` tag; during SPA navigation the router evaluates
-//! them directly. Each metadata object contains
+//! Compiles HTML templates into structured metadata objects stored as JSON
+//! data plus component-local condition closure arrays in the protocol.
+//! During SSR the handler emits metadata in an `application/json` data block
+//! and only emits the closures as JavaScript. During SPA navigation the
+//! router registers the JSON data directly and evaluates only the closures.
+//! Each metadata object contains
 //! **marker-free static HTML** plus locator arrays for client-created DOM
-//! (`tx`, `ag`, `cl`, `rl`) and semantic arrays (`a`, `c`, `r`, `e`,
+//! (`tx`, `ag`, `c`/`r` slots) and semantic arrays (`a`, `c`, `r`, `e`,
 //! `re`, `b`). The client runtime resolves those locators once and then
 //! patches direct node references — **no template string parsing, no regex,
 //! no DOM scanning** on the client-created path.
@@ -18,18 +20,17 @@
 //! # Metadata object format
 //!
 //! ```js
-//! window.__webui.templates['my-component'] = {
-//!   h: "<button class=\"item\"><span></span></button>",
-//!   tx: [[[[0, 0], 0], [["title"]]]],
-//!   a: [["title", 0, "title"]],
-//!   ag: [[[0], 0, 1]],
-//!   c: [[[1, "state", 3, "'done'"], 0]],
-//!   cl: [[[0], 1]],
-//!   e: [["click", "onClick", [], [0]]],
-//!   b: [{ h: "<span class=\"check\">✓</span>" }],
-//!   sa: "my-component",
-//!   re: [["submit", "onSubmit", [["e"]]]],
-//! };
+//! {
+//!   "h": "<button class=\"item\"><span></span></button>",
+//!   "tx": [[[[0, 0], 0], [["title"]]]],
+//!   "a": [["title", 0, "title"]],
+//!   "ag": [[[0], 0, 1]],
+//!   "c": [[[0, ["state"]], 0, [[0], 1]]],
+//!   "e": [["click", "onClick", [], [0]]],
+//!   "b": [{ "h": "<span class=\"check\">✓</span>" }],
+//!   "sa": "my-component",
+//!   "re": [["submit", "onSubmit", [["e"]]]]
+//! }
 //! ```
 //!
 //! # Plugin data protocol
@@ -57,9 +58,9 @@
 //! 3. **`register_component_template`** — caches the component's final template
 //!    HTML for later compilation (deduplicates by tag name).
 //! 4. **`take_component_templates`** — called after parsing is complete;
-//!    compiles each tracked component into a raw JS IIFE string.
+//!    compiles each tracked component into JSON metadata plus condition closures.
 
-use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
+use super::{AttributeAction, ComponentTemplateArtifact, ParserPlugin, ParserPluginArtifacts};
 use crate::comment_policy;
 use crate::component_registry::Component;
 use crate::diagnostic::Diagnostic;
@@ -81,7 +82,7 @@ struct TrackedComponent {
 /// WebUI Framework parser plugin.
 ///
 /// Intercepts `@event` attributes and component registrations during parsing,
-/// then compiles each component's HTML template into a metadata JS IIFE string.
+/// then compiles each component's HTML template into JSON metadata and JS closures.
 ///
 /// # Event tracking
 ///
@@ -111,27 +112,30 @@ impl WebUIParserPlugin {
         }
     }
 
-    /// Compile all tracked components and return `(tag_name, script_block)` pairs.
+    /// Compile all tracked components and return split template payloads.
     ///
-    /// Each script block is a self-executing IIFE that registers a metadata
-    /// object into `window.__webui.templates[tagName]`. Call this after all
-    /// HTML parsing is complete.
+    /// Each payload contains JSON-safe metadata plus a component-local closure
+    /// array for condition evaluation. Call this after all HTML parsing is complete.
     ///
     /// # Errors
     ///
     /// Returns [`crate::ParserError::Template`] if any tracked component
     /// contains an invalid `@event` handler or a non-braced `w-ref` binding.
-    pub fn take_component_templates(&self) -> Result<Vec<(String, String)>> {
+    pub fn take_component_templates(&self) -> Result<Vec<ComponentTemplateArtifact>> {
         let use_shadow = matches!(self.dom_strategy, DomStrategy::Shadow);
         let mut out = Vec::with_capacity(self.components.len());
         for c in &self.components {
-            let script = generate_compiled_template_with_root_source(
+            let payload = generate_compiled_template_with_root_source(
                 &c.tag_name,
                 &c.template_html,
                 &c.root_event_source,
                 use_shadow,
             )?;
-            out.push((c.tag_name.clone(), script));
+            out.push(ComponentTemplateArtifact::webui(
+                c.tag_name.clone(),
+                payload.template_json,
+                payload.template_functions,
+            ));
         }
         Ok(out)
     }
@@ -330,20 +334,57 @@ enum CompiledAttrPart {
     Dynamic(String),
 }
 
-/// Generate a compiled template as a raw JS IIFE string.
+struct CompiledTemplatePayload {
+    template_json: String,
+    template_functions: String,
+}
+
+struct ConditionFunctionEmitter {
+    functions: String,
+    count: usize,
+}
+
+impl ConditionFunctionEmitter {
+    fn new(capacity: usize) -> Self {
+        Self {
+            functions: String::with_capacity(capacity),
+            count: 0,
+        }
+    }
+
+    fn push(&mut self, condition: &ConditionExpr) -> usize {
+        if self.count == 0 {
+            self.functions.push('[');
+        } else {
+            self.functions.push(',');
+        }
+        emit_js_condition_function(condition, &mut self.functions);
+        let index = self.count;
+        self.count += 1;
+        index
+    }
+
+    fn finish(mut self) -> String {
+        if self.count == 0 {
+            String::new()
+        } else {
+            self.functions.push(']');
+            self.functions
+        }
+    }
+}
+
+/// Generate a compiled template as JSON-safe metadata.
 ///
-/// The output is a self-executing function that registers the component's
-/// metadata on `window.__webui.templates[tagName]`.  During SSR, the
-/// handler wraps one or more of these in a single `<script>` tag.  During
-/// SPA partial navigation, the router evaluates them directly.
+/// The returned string is the metadata data payload. Condition closures are
+/// emitted separately by [`generate_compiled_template_with_root_source`].
 ///
 /// # Flow
 ///
 /// 1. Extract `@event` bindings from the `<template>` wrapper (→ `root_events`).
 /// 2. Strip the `<template shadowrootmode="…">` wrapper if present.
 /// 3. Compile the inner body via [`compile_to_metadata`].
-/// 4. Serialize into a self-executing IIFE that registers the metadata
-///    on `window.__webui.templates[tagName]`.
+/// 4. Serialize into JSON metadata and component-local condition closures.
 ///
 /// # Compilation rules
 ///
@@ -366,7 +407,10 @@ enum CompiledAttrPart {
 /// Returns [`crate::ParserError::Template`] if the template contains an invalid
 /// `@event` handler or a non-braced `w-ref` binding.
 pub fn generate_compiled_template(tag_name: &str, html_content: &str) -> Result<String> {
-    generate_compiled_template_with_root_source(tag_name, html_content, html_content, false)
+    Ok(
+        generate_compiled_template_with_root_source(tag_name, html_content, html_content, false)?
+            .template_json,
+    )
 }
 
 fn generate_compiled_template_with_root_source(
@@ -374,33 +418,45 @@ fn generate_compiled_template_with_root_source(
     html_content: &str,
     root_event_source: &str,
     shadow_dom: bool,
-) -> Result<String> {
+) -> Result<CompiledTemplatePayload> {
     let trimmed = html_content.trim();
     let root_events = extract_root_events(tag_name, root_event_source.trim())?;
     let adopted_stylesheet = extract_adopted_stylesheet_specifier(trimmed);
     let body = strip_template_wrapper(trimmed);
     let meta = compile_to_metadata(tag_name, body, root_events)?;
+    Ok(emit_compiled_template_payload(
+        html_content,
+        &meta,
+        adopted_stylesheet.as_deref(),
+        shadow_dom,
+    ))
+}
 
+fn emit_compiled_template_payload(
+    html_content: &str,
+    meta: &TemplateMeta,
+    adopted_stylesheet: Option<&str>,
+    shadow_dom: bool,
+) -> CompiledTemplatePayload {
+    let mut conditions = ConditionFunctionEmitter::new(128);
     let mut out = String::with_capacity(512 + html_content.len());
-    out.push_str("(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w['");
-    out.push_str(tag_name);
-    out.push_str("']={");
+    out.push('{');
 
-    emit_js_template_section(&meta.root, &mut out);
+    emit_json_template_section(&meta.root, &mut out, &mut conditions);
 
-    if let Some(adopted_stylesheet) = adopted_stylesheet.as_deref() {
-        out.push_str(",sa:");
+    if let Some(adopted_stylesheet) = adopted_stylesheet {
+        out.push_str(",\"sa\":");
         emit_js_string(adopted_stylesheet, &mut out);
     }
 
     // sd: shadow DOM flag — tells the client runtime to use shadow root
     if shadow_dom {
-        out.push_str(",sd:1");
+        out.push_str(",\"sd\":1");
     }
 
     // re: root events
     if !meta.root_events.is_empty() {
-        out.push_str(",re:[");
+        out.push_str(",\"re\":[");
         for (i, (event, handler, args)) in meta.root_events.iter().enumerate() {
             if i > 0 {
                 out.push(',');
@@ -418,25 +474,29 @@ fn generate_compiled_template_with_root_source(
 
     // b: nested block table
     if !meta.blocks.is_empty() {
-        out.push_str(",b:[");
+        out.push_str(",\"b\":[");
         for (i, block) in meta.blocks.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
             out.push('{');
-            emit_js_template_section(block, &mut out);
+            emit_json_template_section(block, &mut out, &mut conditions);
             out.push('}');
         }
         out.push(']');
     }
 
-    out.push_str("};})();\n");
-    Ok(out)
+    out.push('}');
+    CompiledTemplatePayload {
+        template_json: out,
+        template_functions: conditions.finish(),
+    }
 }
 
 fn emit_js_string(s: &str, out: &mut String) {
     out.push('"');
     let mut index = 0usize;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     while index < s.len() {
         let remaining = &s[index..];
         if remaining.as_bytes().starts_with(b"</")
@@ -454,13 +514,20 @@ fn emit_js_string(s: &str, out: &mut String) {
             break;
         };
         match ch {
-            '\0' => out.push_str("\\0"),
+            '\0' => out.push_str("\\u0000"),
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
             '\u{2028}' => out.push_str("\\u2028"),
             '\u{2029}' => out.push_str("\\u2029"),
+            '\u{0001}'..='\u{001f}' => {
+                let code = ch as usize;
+                out.push_str("\\u00");
+                out.push(char::from(HEX[(code >> 4) & 0x0f]));
+                out.push(char::from(HEX[code & 0x0f]));
+            }
             _ => out.push(ch),
         }
         index += ch.len_utf8();
@@ -498,7 +565,11 @@ fn emit_js_event_args(args: &[EventArg], out: &mut String) {
     out.push(']');
 }
 
-fn emit_js_attr_binding(binding: &CompiledAttrBinding, out: &mut String) {
+fn emit_json_attr_binding(
+    binding: &CompiledAttrBinding,
+    out: &mut String,
+    functions: &mut ConditionFunctionEmitter,
+) {
     out.push('[');
     match binding {
         CompiledAttrBinding::Simple { name, value } => {
@@ -514,7 +585,7 @@ fn emit_js_attr_binding(binding: &CompiledAttrBinding, out: &mut String) {
         CompiledAttrBinding::Boolean { name, condition } => {
             emit_js_string(name, out);
             out.push_str(",2,");
-            emit_js_condition(condition, out);
+            emit_json_condition_ref(condition, out, functions);
         }
         CompiledAttrBinding::Template { name, parts } => {
             emit_js_string(name, out);
@@ -538,13 +609,25 @@ fn emit_js_attr_binding(binding: &CompiledAttrBinding, out: &mut String) {
     out.push(']');
 }
 
-/// Emit a compiled condition as `[function(v,s){return EXPR},["path1",...]]`.
+/// Emit a compiled condition function as `function(v,s){return EXPR}`.
 /// The function evaluates the condition using `v(path,s)` for value resolution.
-/// The paths array lists all referenced identifiers for the reactive path index.
-fn emit_js_condition(condition: &ConditionExpr, out: &mut String) {
-    out.push_str("[function(v,s){return ");
+fn emit_js_condition_function(condition: &ConditionExpr, out: &mut String) {
+    out.push_str("function(v,s){return ");
     emit_js_condition_expr(condition, out);
-    out.push_str("},[");
+    out.push('}');
+}
+
+/// Emit a JSON condition reference as `[functionIndex,["path1",...]]`.
+/// The paths array lists all referenced identifiers for the reactive path index.
+fn emit_json_condition_ref(
+    condition: &ConditionExpr,
+    out: &mut String,
+    functions: &mut ConditionFunctionEmitter,
+) {
+    let function_index = functions.push(condition);
+    out.push('[');
+    let _ = write!(out, "{}", function_index);
+    out.push_str(",[");
     let mut paths = Vec::new();
     collect_condition_paths(condition, &mut paths);
     for (i, path) in paths.iter().enumerate() {
@@ -724,12 +807,16 @@ fn emit_js_text_parts(parts: &[CompiledAttrPart], out: &mut String) {
     out.push(']');
 }
 
-fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
-    out.push_str("h:");
+fn emit_json_template_section(
+    meta: &TemplateSectionMeta,
+    out: &mut String,
+    functions: &mut ConditionFunctionEmitter,
+) {
+    out.push_str("\"h\":");
     emit_js_string(&meta.html, out);
 
     if !meta.text_runs.is_empty() {
-        out.push_str(",tx:[");
+        out.push_str(",\"tx\":[");
         for (i, (slot, parts, raw)) in meta.text_runs.iter().enumerate() {
             if i > 0 {
                 out.push(',');
@@ -747,18 +834,18 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
     }
 
     if !meta.attr_bindings.is_empty() {
-        out.push_str(",a:[");
+        out.push_str(",\"a\":[");
         for (i, binding) in meta.attr_bindings.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
-            emit_js_attr_binding(binding, out);
+            emit_json_attr_binding(binding, out, functions);
         }
         out.push(']');
     }
 
     if !meta.attr_groups.is_empty() {
-        out.push_str(",ag:[");
+        out.push_str(",\"ag\":[");
         for (i, (path, start, count)) in meta.attr_groups.iter().enumerate() {
             if i > 0 {
                 out.push(',');
@@ -775,7 +862,7 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
     }
 
     if !meta.conditionals.is_empty() {
-        out.push_str(",c:[");
+        out.push_str(",\"c\":[");
         for (i, ((cond, block_index), slot)) in meta
             .conditionals
             .iter()
@@ -786,7 +873,7 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
                 out.push(',');
             }
             out.push('[');
-            emit_js_condition(cond, out);
+            emit_json_condition_ref(cond, out, functions);
             out.push(',');
             let _ = write!(out, "{}", block_index);
             out.push(',');
@@ -797,7 +884,7 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
     }
 
     if !meta.repeats.is_empty() {
-        out.push_str(",r:[");
+        out.push_str(",\"r\":[");
         for (i, ((collection, item_var, block_index), slot)) in meta
             .repeats
             .iter()
@@ -821,7 +908,7 @@ fn emit_js_template_section(meta: &TemplateSectionMeta, out: &mut String) {
     }
 
     if !meta.events.is_empty() {
-        out.push_str(",e:[");
+        out.push_str(",\"e\":[");
         for (i, ((event, handler, args), target)) in meta
             .events
             .iter()
@@ -2584,6 +2671,20 @@ mod tests {
         super::generate_compiled_template(tag_name, html_content).expect("valid template compiles")
     }
 
+    #[allow(clippy::disallowed_methods)]
+    fn generate_compiled_template_payload(
+        tag_name: &str,
+        html_content: &str,
+    ) -> CompiledTemplatePayload {
+        super::generate_compiled_template_with_root_source(
+            tag_name,
+            html_content,
+            html_content,
+            false,
+        )
+        .expect("valid template compiles")
+    }
+
     fn assert_no_client_markers(result: &str) {
         assert!(!result.contains("<!--t:"), "text markers should be removed");
         assert!(
@@ -2621,9 +2722,9 @@ mod tests {
     fn test_metadata_has_text_bindings() {
         let result = generate_compiled_template("my-comp", "<h1>{{title}}</h1>");
         assert_no_client_markers(&result);
-        assert!(result.contains(r#"h:"<h1></h1>""#));
+        assert!(result.contains(r#""h":"<h1></h1>""#));
         assert!(result.contains("\"title\""));
-        assert!(result.contains(r#",tx:[[[[0],0],[["title"]]]]"#));
+        assert!(result.contains(r#","tx":[[[[0],0],[["title"]]]]"#));
         assert!(!result.contains("{{"));
     }
 
@@ -2635,7 +2736,7 @@ mod tests {
         );
 
         assert_no_client_markers(&result);
-        assert!(result.contains(r#"h:"<div>hello</div>""#));
+        assert!(result.contains(r#""h":"<div>hello</div>""#));
         assert!(!result.contains("title"));
         assert!(!result.contains("@click"));
         assert!(!result.contains("-->"));
@@ -2689,9 +2790,10 @@ mod tests {
         );
 
         assert!(result.contains("<!--t:0-->"));
-        assert!(result
-            .contains(r#"h:"<p></p><style>/*! @license <!--t:0--> */.x { color: red; }</style>""#));
-        assert!(result.contains(r#",tx:[[[[0],0],[["title"]]]]"#));
+        assert!(result.contains(
+            r#""h":"<p></p><style>/*! @license <!--t:0--> */.x { color: red; }</style>""#
+        ));
+        assert!(result.contains(r#","tx":[[[[0],0],[["title"]]]]"#));
         assert!(!result.contains(r#"[[[1],0],[["title"]]]"#));
     }
 
@@ -2725,13 +2827,16 @@ mod tests {
 
     #[test]
     fn test_metadata_has_conditionals() {
-        let result = generate_compiled_template(
+        let payload = generate_compiled_template_payload(
             "my-comp",
             r#"<if condition="state == 'done'"><span>yes</span></if>"#,
         );
+        let result = payload.template_json;
         assert_no_client_markers(&result);
-        assert!(result
-            .contains(r#"c:[[[function(v,s){return v("state",s)=="done"},["state"]],0,[[],0]]]"#));
+        assert!(result.contains(r#""c":[[[0,["state"]],0,[[],0]]]"#));
+        assert!(payload
+            .template_functions
+            .contains(r#"function(v,s){return v("state",s)=="done"}"#));
         assert!(result.contains("<span>yes</span>"));
         assert!(!result.contains("<if"));
     }
@@ -2743,7 +2848,10 @@ mod tests {
             r#"<if condition="count > 0"><span>yes</span></if>"#,
         );
         assert_no_client_markers(&result);
-        assert!(result.contains(",c:["), "conditional metadata expected");
+        assert!(
+            result.contains(r#","c":["#),
+            "conditional metadata expected"
+        );
         assert!(result.contains("<span>yes</span>"));
         assert!(!result.contains("<if"));
     }
@@ -2842,8 +2950,8 @@ mod tests {
     fn test_metadata_has_simple_attr_bindings() {
         let result = generate_compiled_template("my-comp", r#"<input title="{{title}}" />"#);
         assert_no_client_markers(&result);
-        assert!(result.contains(",a:["));
-        assert!(result.contains(",ag:[[[0],0,1]]"));
+        assert!(result.contains(r#","a":["#));
+        assert!(result.contains(r#","ag":[[[0],0,1]]"#));
         assert!(result.contains(r#"["title",0,"title"]"#));
         assert!(!result.contains(r#"title=\"<!--t:"#));
     }
@@ -2855,8 +2963,8 @@ mod tests {
             r#"<a href="/product/{{handle}}" class="card {{variant}}">Go</a>"#,
         );
         assert_no_client_markers(&result);
-        assert!(result.contains(",a:["));
-        assert!(result.contains(",ag:[[[0],0,2]]"));
+        assert!(result.contains(r#","a":["#));
+        assert!(result.contains(r#","ag":[[[0],0,2]]"#));
         assert!(result.contains(r#"["href",3,["/product/",["handle"]]]"#));
         assert!(result.contains(r#"["class",3,["card ",["variant"]]]"#));
         assert!(!result.contains(r#"/product/<!--t:"#));
@@ -2864,16 +2972,18 @@ mod tests {
 
     #[test]
     fn test_metadata_has_boolean_attr_bindings() {
-        let result = generate_compiled_template(
+        let payload = generate_compiled_template_payload(
             "my-comp",
             r#"<a ?data-active="{{page == 'dashboard'}}">Go</a>"#,
         );
+        let result = payload.template_json;
         assert_no_client_markers(&result);
-        assert!(result.contains(",a:["));
-        assert!(result.contains(",ag:[[[0],0,1]]"));
-        assert!(result.contains(
-            r#"["data-active",2,[function(v,s){return v("page",s)=="dashboard"},["page"]]]"#
-        ));
+        assert!(result.contains(r#","a":["#));
+        assert!(result.contains(r#","ag":[[[0],0,1]]"#));
+        assert!(result.contains(r#"["data-active",2,[0,["page"]]]"#));
+        assert!(payload
+            .template_functions
+            .contains(r#"function(v,s){return v("page",s)=="dashboard"}"#));
     }
 
     #[test]
@@ -2883,8 +2993,8 @@ mod tests {
             r#"<child-view :config="{{settings}}"></child-view>"#,
         );
         assert_no_client_markers(&result);
-        assert!(result.contains(",a:["));
-        assert!(result.contains(",ag:[[[0],0,1]]"));
+        assert!(result.contains(r#","a":["#));
+        assert!(result.contains(r#","ag":[[[0],0,1]]"#));
         assert!(result.contains(r#""config",1,"settings""#));
     }
 
@@ -2927,7 +3037,7 @@ mod tests {
             "my-comp",
             r#"<template shadowrootmode="open" @click="{onClick(e)}"><div>hi</div></template>"#,
         );
-        assert!(result.contains(",re:["));
+        assert!(result.contains(r#","re":["#));
         assert!(result.contains("\"click\""));
         assert!(result.contains("\"onClick\""));
     }
@@ -2940,7 +3050,7 @@ mod tests {
         );
         assert!(!result.contains("shadowrootmode"));
         assert_no_client_markers(&result);
-        assert!(result.contains(r#",tx:[[[[0],0],[["title"]]]]"#));
+        assert!(result.contains(r#","tx":[[[[0],0],[["title"]]]]"#));
     }
 
     #[test]
@@ -2950,8 +3060,8 @@ mod tests {
             r#"<template shadowrootmode="open" data-note="a > b" @click="{onClick()}"><p>hi</p></template>"#,
         );
         assert_no_client_markers(&result);
-        assert!(result.contains(r#"h:"<p>hi</p>""#));
-        assert!(result.contains(r#",re:[["click","onClick",[]]]"#));
+        assert!(result.contains(r#""h":"<p>hi</p>""#));
+        assert!(result.contains(r#","re":[["click","onClick",[]]]"#));
     }
 
     #[test]
@@ -2965,17 +3075,21 @@ mod tests {
         let result = generate_compiled_template("my-comp", r#"<span>📚 {{title}}</span>"#);
         assert!(result.contains("📚"));
         assert_no_client_markers(&result);
-        assert!(result.contains(r#",tx:[[[[0],0],["📚 ",["title"]]]]"#));
+        assert!(result.contains(r#","tx":[[[[0],0],["📚 ",["title"]]]]"#));
     }
 
     #[test]
     fn test_boolean_attr_in_for() {
-        let result = generate_compiled_template(
+        let payload = generate_compiled_template_payload(
             "my-comp",
             r#"<for each="s in sections"><a ?active="{{s.id == sectionId}}">{{s.name}}</a></for>"#,
         );
+        let result = payload.template_json;
         assert_no_client_markers(&result);
-        assert!(result.contains(r#"["active",2,[function(v,s){return v("s.id",s)==v("sectionId",s)},["s.id","sectionId"]]]"#));
+        assert!(result.contains(r#"["active",2,[0,["s.id","sectionId"]]]"#));
+        assert!(payload
+            .template_functions
+            .contains(r#"function(v,s){return v("s.id",s)==v("sectionId",s)}"#));
         assert!(!result.contains("?active"));
     }
 
@@ -3017,7 +3131,7 @@ mod tests {
             "my-comp",
             r#"<template shadowrootmode="open"><style>.root{color:red}</style><p>hi</p></template>"#,
         );
-        assert!(result.contains(r#"h:"<style>.root{color:red}</style><p>hi</p>""#));
+        assert!(result.contains(r#""h":"<style>.root{color:red}</style><p>hi</p>""#));
     }
 
     #[test]
@@ -3026,7 +3140,7 @@ mod tests {
             "my-comp",
             r#"<template shadowrootmode="open" shadowrootadoptedstylesheets="my-comp"><p>hi</p></template>"#,
         );
-        assert!(result.contains(r#",sa:"my-comp""#));
+        assert!(result.contains(r#","sa":"my-comp""#));
     }
 
     #[test]
@@ -3051,9 +3165,11 @@ mod tests {
             .unwrap();
         let templates = plugin.take_component_templates().unwrap();
         assert_eq!(templates.len(), 1);
-        assert!(templates[0].1.contains(r#"rel=\"stylesheet\""#));
-        assert!(templates[0].1.contains(r#"href=\"test-el.css\""#));
-        assert!(templates[0].1.contains(r#"<p>hi</p>"#));
+        assert!(templates[0].template_json.contains(r#"rel=\"stylesheet\""#));
+        assert!(templates[0]
+            .template_json
+            .contains(r#"href=\"test-el.css\""#));
+        assert!(templates[0].template_json.contains(r#"<p>hi</p>"#));
     }
 
     #[test]
@@ -3081,8 +3197,8 @@ mod tests {
         let templates = plugin.take_component_templates().unwrap();
         assert_eq!(templates.len(), 1);
         assert!(templates[0]
-            .1
-            .contains(r#",re:[["click","onClick",[["e"]]]]"#));
+            .template_json
+            .contains(r#","re":[["click","onClick",[["e"]]]]"#));
     }
 
     #[test]
@@ -3107,7 +3223,7 @@ mod tests {
             .unwrap();
         let templates = plugin.take_component_templates().unwrap();
         assert_eq!(templates.len(), 1);
-        assert!(templates[0].1.contains(r#",sa:"test-el""#));
+        assert!(templates[0].template_json.contains(r#","sa":"test-el""#));
     }
 
     #[test]
@@ -3118,15 +3234,16 @@ mod tests {
         );
 
         assert_no_client_markers(&result);
-        assert!(result.contains(",b:["), "compiled block table expected");
+        assert!(
+            result.contains(r#","b":["#),
+            "compiled block table expected"
+        );
         assert!(
             result.contains(r#"["items","item",0,[[],0]]"#),
             "repeat block index expected"
         );
         assert!(
-            result.contains(
-                r#"[[function(v,s){return !!v("item.active",s)},["item.active"]],1,[[],0]]"#
-            ),
+            result.contains(r#"[[0,["item.active"]],1,[[],0]]"#),
             "nested conditional block index expected"
         );
         assert!(!result.contains("<if"), "nested if should be compiled");
@@ -3141,9 +3258,12 @@ mod tests {
         );
 
         assert_no_client_markers(&result);
-        assert!(result.contains(",b:["), "compiled block table expected");
         assert!(
-            result.contains(r#"[[function(v,s){return !!v("showList",s)},["showList"]],0,[[],0]]"#),
+            result.contains(r#","b":["#),
+            "compiled block table expected"
+        );
+        assert!(
+            result.contains(r#"[[0,["showList"]],0,[[],0]]"#),
             "conditional block index expected"
         );
         assert!(
@@ -3162,7 +3282,10 @@ mod tests {
         );
 
         assert_no_client_markers(&result);
-        assert!(result.contains(",b:["), "compiled block table expected");
+        assert!(
+            result.contains(r#","b":["#),
+            "compiled block table expected"
+        );
         assert!(
             result.contains(r#"["groups","group",0,[[],0]]"#),
             "outer repeat block index expected"
@@ -3209,22 +3332,20 @@ mod tests {
     #[test]
     fn test_empty_template() {
         let result = generate_compiled_template("my-comp", "");
-        assert!(result.contains("__webui.templates"));
-        assert!(result.contains("h:\"\""), "empty html expected");
+        assert!(result.contains(r#""h":"""#), "empty html expected");
         // No optional arrays should be present
-        assert!(!result.contains(",t:"), "no text bindings");
-        assert!(!result.contains(",c:"), "no conditionals");
-        assert!(!result.contains(",r:"), "no repeats");
-        assert!(!result.contains(",e:"), "no events");
-        assert!(!result.contains(",re:"), "no root events");
+        assert!(!result.contains(r#","tx":"#), "no text bindings");
+        assert!(!result.contains(r#","c":"#), "no conditionals");
+        assert!(!result.contains(r#","r":"#), "no repeats");
+        assert!(!result.contains(r#","e":"#), "no events");
+        assert!(!result.contains(r#","re":"#), "no root events");
     }
 
     #[test]
     fn test_whitespace_only_template() {
         let result = generate_compiled_template("my-comp", "   \n  ");
-        assert!(result.contains("__webui.templates"));
         assert!(
-            result.contains("h:\"\""),
+            result.contains(r#""h":"""#),
             "whitespace-only should produce empty html"
         );
     }
@@ -3237,7 +3358,7 @@ mod tests {
         );
         assert_no_client_markers(&result);
         assert!(result.contains(
-            r#",tx:[[[[0],0],[["first"]]],[[[1],0],[["second"]]],[[[2],0],[["third"]]]]"#
+            r#","tx":[[[[0],0],[["first"]]],[[[1],0],[["second"]]],[[[2],0],[["third"]]]]"#
         ));
         assert!(result.contains("\"first\""));
         assert!(result.contains("\"second\""));
@@ -3296,7 +3417,7 @@ mod tests {
         assert!(result.contains("\"click\""));
         assert!(result.contains("\"onClick\""));
         // text binding compiled
-        assert!(result.contains(r#",tx:[[[[0],0],[["label"]]]]"#));
+        assert!(result.contains(r#","tx":[[[[0],0],[["label"]]]]"#));
         assert!(result.contains("\"label\""));
     }
 
@@ -3316,7 +3437,7 @@ mod tests {
             "my-comp",
             r#"<template shadowrootmode="open" @submit="{onSubmit()}"><form>hi</form></template>"#,
         );
-        assert!(result.contains(",re:["));
+        assert!(result.contains(r#","re":["#));
         assert!(result.contains("\"submit\""));
         assert!(result.contains("\"onSubmit\""));
         assert!(
@@ -3330,7 +3451,7 @@ mod tests {
         let result = generate_compiled_template("my-comp", r#"<div>{{{rawHtml}}}</div>"#);
         assert_no_client_markers(&result);
         assert!(
-            result.contains(r#",tx:[[[[0],0],[["rawHtml"]],1]]"#),
+            result.contains(r#","tx":[[[[0],0],[["rawHtml"]],1]]"#),
             "triple brace produces text locator with raw flag: {result}"
         );
         assert!(
@@ -3348,7 +3469,10 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains("\"users\""), "collection path");
         assert!(result.contains("\"user\""), "item variable");
-        assert!(result.contains(",b:["), "compiled block table expected");
+        assert!(
+            result.contains(r#","b":["#),
+            "compiled block table expected"
+        );
         assert!(
             !result.contains("{{user.name}}"),
             "bindings should be compiled"
@@ -3364,22 +3488,31 @@ mod tests {
         let result = generate_compiled_template("my-comp", r#"<p>Hello {{name}}!</p>"#);
 
         assert_no_client_markers(&result);
-        assert!(result.contains(r#"h:"<p></p>""#));
-        assert!(result.contains(r#",tx:[[[[0],0],["Hello ",["name"],"!"]]]"#));
+        assert!(result.contains(r#""h":"<p></p>""#));
+        assert!(result.contains(r#","tx":[[[[0],0],["Hello ",["name"],"!"]]]"#));
     }
 
     #[test]
     fn test_js_string_escaping() {
-        let result = generate_compiled_template(
+        let payload = generate_compiled_template_payload(
             "my-comp",
             r#"<if condition="name == &quot;test&quot;"><span>ok</span></if>"#,
         );
-        assert!(result.contains(",c:["), "conditional array present");
+        assert!(
+            payload.template_json.contains(r#","c":["#),
+            "conditional array present"
+        );
         // The right-side literal should remain properly escaped in the AST payload.
         assert!(
-            result.contains(r#"function(v,s){return v("name",s)==v("&quot;test&quot;",s)}"#),
+            payload
+                .template_functions
+                .contains(r#"function(v,s){return v("name",s)==v("&quot;test&quot;",s)}"#),
             "condition function with escaped quotes should be present: {}",
-            result
+            payload.template_functions
+        );
+        assert!(
+            !payload.template_json.contains("function(v,s)"),
+            "metadata JSON should not contain executable functions"
         );
     }
 

@@ -402,19 +402,22 @@ The server renders `<webui-route>` elements with these DOM attributes:
 
 Build-time attributes like `query`, `keep-alive`, `cache-tags`, and `invalidates` are **not** emitted as DOM attributes on `<webui-route>` elements. They are compiled into the binary protocol and delivered to the client via `window.__webui.chain` JSON data. The `<route>` source attributes remain valid and unchanged - the compiler just delivers them through JSON instead of the DOM.
 
-The server also emits a `window.__webui` script containing the SSR chain, template inventory, and CSS metadata. This replaces the previous `<meta name="webui-inventory">` tag (which is still supported as a fallback for older servers).
+The server also emits an inert `webui-data` JSON block containing the SSR chain, template inventory, CSS metadata, state, and templates. A tiny nonce'd script parses that block into `window.__webui` and installs condition closures. This replaces the previous `<meta name="webui-inventory">` tag (which is still supported as a fallback for older servers).
 
 ```html
-<script>window.__webui = {
-  chain: [
+<script type="application/json" id="webui-data">
+{
+  "chain": [
     { "component": "app-shell", "path": "/", "keepAlive": false },
     { "component": "topic-page", "path": "topics/:topicId", "params": { "topicId": "react" }, "exact": true }
   ],
-  inventory: "04000400...",
-  nonce: "abc123",
-  css: ["/styles/main.css"],
-  styles: ["app-shell", "topic-page"]
-};</script>
+  "inventory": "04000400...",
+  "nonce": "abc123",
+  "css": ["/styles/main.css"],
+  "styles": ["app-shell", "topic-page"],
+  "templates": {}
+}
+</script>
 ```
 
 #### Client Hydration
@@ -527,7 +530,7 @@ Tears down the router, removes event listeners, and clears the cache.
 
 ### `Router.gc()`
 
-Release all cached component templates to free memory. Removes all entries from `window.__webui.templates` and clears their inventory bits so the server will re-send them on the next navigation that needs them.
+Release all cached component templates to free memory. Removes all entries from `window.__webui.templates` and `window.__webui.templateFns`, then clears their inventory bits so the server will re-send them on the next navigation that needs them.
 
 ```typescript
 Router.gc();
@@ -623,7 +626,12 @@ When `Accept: application/json` or `application/x-ndjson`:
 {
   "state": { "name": "Alice", "email": "alice@example.com" },
   "templateStyles": ["<script type=\"importmap\">{\"imports\":{\"user-detail\":\"data:text/css,...\"}}</script>"],
-  "templates": ["(function(){var w=window.__webui.templates||...})();"],
+  "templates": {
+    "user-detail": { "h": "<section></section>" }
+  },
+  "templateFunctions": {
+    "user-detail": "[function(v,s){return !!v(\"ready\",s)}]"
+  },
   "inventory": "04000400...",
   "path": "/users/42",
   "chain": [

@@ -119,7 +119,7 @@ let partial = route_handler::render_partial(
 | Type | Description |
 |------|-------------|
 | `BuildOptions` | Build configuration (app_dir, entry, css, plugin, components, css_file_name_template, css_public_base) |
-| `BuildResult` | Build output (protocol, css_files, component_templates, stats) |
+| `BuildResult` | Build output (protocol, css_files, component_templates with metadata/closures, stats) |
 | `BuildStats` | Build metrics (duration, fragment_count, protocol_size_bytes) |
 | `WebUIProtocol` | Compiled protocol (from protobuf binary) |
 | `WebUIHandler` | Rendering engine (stateless, thread-safe) |

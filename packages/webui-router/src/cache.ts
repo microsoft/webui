@@ -12,9 +12,12 @@ import type { CacheConfig } from './types.js';
 export interface PartialResponse {
   /** Top-level application state (non-streaming responses). */
   state?: Record<string, unknown>;
-  /** Module CSS definitions to append before executing template scripts. */
+  /** Module CSS definitions to append before installing template closures. */
   templateStyles?: string[];
-  templates: string[];
+  /** JSON-safe template metadata keyed by component tag. */
+  templates: Record<string, unknown>;
+  /** JavaScript condition closure arrays keyed by component tag. */
+  templateFunctions?: Record<string, string>;
   path: string;
   chain?: RouteChainEntry[];
   /** CSS stylesheet URLs to inject into `<head>` for this route's components. */

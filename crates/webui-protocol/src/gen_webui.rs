@@ -9,9 +9,8 @@
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ComponentData {
-    /// Client-side template string for hydration.
-    /// Populated by the active parser plugin at build time.
-    /// Used by servers to send templates to the client during navigation.
+    /// Non-WebUI client-side template payload.
+    /// FAST plugins store complete <f-template> HTML here.
     #[prost(string, tag = "1")]
     pub template: ::prost::alloc::string::String,
     /// Component CSS content for the Module strategy.
@@ -30,6 +29,15 @@ pub struct ComponentData {
     ///    Link + Light  → <link rel="stylesheet"> (no shadow root to host it)
     #[prost(string, tag = "3")]
     pub css_href: ::prost::alloc::string::String,
+    /// WebUI plugin JSON-safe component metadata.
+    /// Stored separately from executable condition closures so handlers can emit
+    /// the static metadata in application/json data blocks.
+    #[prost(string, tag = "4")]
+    pub template_json: ::prost::alloc::string::String,
+    /// WebUI plugin component-local JavaScript condition closure array.
+    /// Empty when the component has no conditions or boolean attributes.
+    #[prost(string, tag = "5")]
+    pub template_functions: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -399,15 +399,13 @@ Tear down the router and remove event listeners.
 
 ### `Router.gc(tags?)`
 
-Release cached component templates to free memory. Removes all entries from
-`window.__webui.templates` and clears their inventory bits so the server
-will re-send them on the next navigation that needs them.
-
-Active route components are always skipped — you cannot release a template
-that is currently rendered.
+Release cached component templates to free memory. Removes entries from
+`window.__webui.templates` and `window.__webui.templateFns`, then clears
+their inventory bits so the server will re-send them on the next navigation
+that needs them.
 
 ```typescript
-// Release all non-active templates
+// Release all cached templates
 Router.gc();
 ```
 
@@ -524,16 +522,19 @@ The router is organized into 13 internal modules, each handling a single concern
 
 ## SSR Bootstrap (`window.__webui`)
 
-On first load, the server emits a `window.__webui` script containing SSR metadata:
+On first load, the server emits inert SSR metadata in `#webui-data`; a tiny bootstrap script parses it into `window.__webui` and installs condition closures:
 
-```typescript
-window.__webui = {
-  chain: [/* matched route chain entries */],
-  inventory: "04000400...",  // hex bitmask of loaded templates
-  nonce: "abc123",           // CSP nonce for injected scripts
-  css: ["/styles/main.css"], // already-injected stylesheets
-  styles: ["app-shell"],     // already-injected module styles
-};
+```html
+<script type="application/json" id="webui-data">
+{
+  "chain": [],
+  "inventory": "04000400...",
+  "nonce": "abc123",
+  "css": ["/styles/main.css"],
+  "styles": ["app-shell"],
+  "templates": {}
+}
+</script>
 ```
 
 The router reads this at startup, eliminating DOM walking and URLPattern usage. Older servers that emit `<meta name="webui-inventory">` are still supported as a fallback.

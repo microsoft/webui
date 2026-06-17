@@ -12,6 +12,7 @@ import { resolveLoaders } from './loaders.js';
 import { ensureComponentLoaded } from './loaders.js';
 import { NavigationCache } from './cache.js';
 import { setupPreloadListeners } from './preload.js';
+import { registerTemplatesAndStyles } from './templates.js';
 
 // ── Test-only type access ────────────────────────────────────────
 // The router's `inventory` and `activeChain` are private at compile
@@ -37,6 +38,7 @@ function internals(router: WebUIRouter): RouterInternals {
 interface TemplateRegistry {
   __webui?: {
     templates?: Record<string, unknown>;
+    templateFns?: Record<string, unknown>;
     [key: string]: unknown;
   };
 }
@@ -107,6 +109,10 @@ describe('WebUIRouter', () => {
       registry['shell'] = { h: '<div>Shell</div>' };
       registry['page-x'] = { h: '<div>X</div>' };
       registry['page-y'] = { h: '<div>Y</div>' };
+      globals().__webui!.templateFns = {
+        shell: [() => true],
+        'page-x': [() => true],
+      };
 
       globals().__webui!.inventory = inventoryWith('shell', 'page-x', 'page-y');
 
@@ -115,6 +121,8 @@ describe('WebUIRouter', () => {
       assert.equal(registry['shell'], undefined, 'shell should be cleared');
       assert.equal(registry['page-x'], undefined, 'page-x should be cleared');
       assert.equal(registry['page-y'], undefined, 'page-y should be cleared');
+      assert.equal(globals().__webui!.templateFns!.shell, undefined, 'shell functions should be cleared');
+      assert.equal(globals().__webui!.templateFns!['page-x'], undefined, 'page-x functions should be cleared');
       assert.equal(globals().__webui!.inventory, '', 'inventory should be reset to empty');
     });
 
@@ -153,35 +161,42 @@ describe('WebUIRouter', () => {
   });
 
   describe('template execution in fetchPartial', () => {
-    test('Function-based execution registers templates without DOM', () => {
-      // Simulate what fetchPartial does with the template script string
-      const tmpl =
-        '<script>(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});' +
-        "w['test-comp']={h:\"<div>hello</div>\"};" +
-        '})();</script>';
+    test('split template registration stores data and condition closures', () => {
+      const origCreateElement = (globalThis as any).document.createElement;
+      const origHead = (globalThis as any).document.head;
 
-      const start = tmpl.indexOf('>') + 1;
-      const end = tmpl.lastIndexOf('<');
-      // eslint-disable-next-line no-new-func
-      const run = Function(tmpl.substring(start, end));
-      run();
+      (globalThis as any).document.createElement = (tag: string) => ({
+        tagName: tag,
+        nonce: '',
+        textContent: '',
+      });
+      (globalThis as any).document.head = {
+        appendChild(el: Record<string, unknown>) {
+          // eslint-disable-next-line no-new-func
+          Function(el.textContent as string)();
+          return el;
+        },
+        removeChild() { return undefined; },
+      };
 
-      const registry = globals().__webui!.templates!;
-      assert.ok(registry['test-comp'], 'template should be registered');
-      assert.equal(
-        (registry['test-comp'] as Record<string, string>).h,
-        '<div>hello</div>',
-        'template HTML should match',
-      );
-    });
+      try {
+        registerTemplatesAndStyles({
+          templates: { 'test-comp': { h: '<div>hello</div>', c: [[[0, ['ready']], 0, [[], 0]]] } },
+          templateFunctions: { 'test-comp': '[function(){return true}]' },
+        }, '', new Set(), () => {});
 
-    test('malformed template (no script tags) is safely skipped', () => {
-      const tmpl = 'not a script tag at all';
-      const start = tmpl.indexOf('>') + 1;
-      const end = tmpl.lastIndexOf('<');
-      // start would be 0 (indexOf returns -1, +1 = 0), end would be -1
-      // The guard `start > 0 && end > start` should prevent execution
-      assert.equal(start > 0 && end > start, false, 'guard should reject malformed input');
+        const registry = globals().__webui!.templates!;
+        assert.ok(registry['test-comp'], 'template should be registered');
+        assert.equal(
+          (registry['test-comp'] as Record<string, string>).h,
+          '<div>hello</div>',
+          'template HTML should match',
+        );
+        assert.equal(typeof (globals().__webui as any).templateFns['test-comp'][0], 'function');
+      } finally {
+        (globalThis as any).document.createElement = origCreateElement;
+        (globalThis as any).document.head = origHead;
+      }
     });
 
     test('fetchPartial appends module styles before one batched script execution', async () => {
@@ -205,10 +220,14 @@ describe('WebUIRouter', () => {
             '<script type="importmap">{"imports":{"alpha":"data:text/css,.alpha{color:red}"}}</script>',
             '<script type="importmap">{"imports":{"beta":"data:text/css,.beta{color:blue}"}}</script>',
           ],
-          templates: [
-            '(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w["alpha"]={h:"<div>a</div>"};})();',
-            '(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w["beta"]={h:"<div>b</div>"};})();',
-          ],
+          templates: {
+            alpha: { h: '<div>a</div>', c: [[[0, ['ready']], 0, [[], 0]]] },
+            beta: { h: '<div>b</div>', c: [[[0, ['ready']], 0, [[], 0]]] },
+          },
+          templateFunctions: {
+            alpha: '[function(){return true}]',
+            beta: '[function(){return false}]',
+          },
           path: '/',
           chain: [],
           inventory: 'ff',
@@ -263,27 +282,31 @@ describe('WebUIRouter', () => {
         assert.ok(result, 'should return partial data');
         // SSR and SPA paths emit ONE <script type="importmap"> per component
         // (consistent 1:1 mapping); importmap scripts must be appended
-        // BEFORE the batched template script.
+        // BEFORE the batched closure script.
         assert.deepEqual(order, ['importmap:alpha', 'importmap:beta', 'script']);
-        // All JS IIFEs batched into one script tag
+        // All condition closure arrays are batched into one script tag
         assert.equal(
           templateScriptBodies.length,
           1,
-          'all JS templates should be batched into one script tag',
+          'all JS condition closures should be batched into one script tag',
         );
         assert.ok(
-          templateScriptBodies[0].includes('w["alpha"]'),
-          'batch should include alpha IIFE',
+          templateScriptBodies[0].includes('f["alpha"]'),
+          'batch should include alpha closure table',
         );
         assert.ok(
-          templateScriptBodies[0].includes('w["beta"]'),
-          'batch should include beta IIFE',
+          templateScriptBodies[0].startsWith('(function(){'),
+          'closure registration should be wrapped to avoid global name collisions',
         );
-        // CSP nonce preserved on every emitted script (importmaps + template batch).
+        assert.ok(
+          templateScriptBodies[0].includes('f["beta"]'),
+          'batch should include beta closure table',
+        );
+        // CSP nonce preserved on every emitted script (importmaps + closure batch).
         assert.deepEqual(
           templateScriptNonces,
           ['test-nonce'],
-          'batched template script should carry the nonce',
+          'batched closure script should carry the nonce',
         );
         assert.deepEqual(
           importmapNonces,
@@ -328,9 +351,9 @@ describe('WebUIRouter', () => {
         json: async () => ({
           state: {},
           templateStyles: [],
-          templates: [
-            '(function(){var w=(window.__webui||(window.__webui={})).templates||(window.__webui.templates={});w["link-comp"]={h:"<div/>"};})();',
-          ],
+          templates: {
+            'link-comp': { h: '<div></div>' },
+          },
           path: '/',
           chain: [],
           inventory: 'ff',
@@ -364,8 +387,8 @@ describe('WebUIRouter', () => {
 
         await fetchPartial('/test');
 
-        // No style tags should be appended — only the batched script
-        assert.deepEqual(appendedTags, ['script'], 'only a script tag should be appended');
+        // No style tags or scripts should be appended when there are no closures
+        assert.deepEqual(appendedTags, [], 'no DOM nodes should be appended');
         assert.ok(globals().__webui?.templates?.['link-comp'], 'template should register');
       } finally {
         (globalThis as any).fetch = origFetch;
@@ -382,7 +405,7 @@ describe('WebUIRouter', () => {
       let capturedSignal: AbortSignal | undefined;
       (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
         capturedSignal = opts?.signal as AbortSignal | undefined;
-        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: [], path: '/', chain: [] }) };
+        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: {}, path: '/', chain: [] }) };
       };
 
       try {
@@ -411,9 +434,9 @@ describe('WebUIRouter', () => {
           headers: { get: () => 'application/json' },
           json: async () => ({
             state: {},
-            templates: [
-              '<script>(function(){window.__webui.templates["abort-test"]={h:"<div/>"};})()</script>',
-            ],
+            templates: {
+              'abort-test': { h: '<div></div>' },
+            },
             path: '/',
             chain: [],
             inventory: 'ff',
@@ -445,7 +468,7 @@ describe('WebUIRouter', () => {
       const origFetch = (globalThis as any).fetch;
       (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
         assert.equal(opts?.signal, undefined, 'signal should be undefined');
-        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: [], path: '/', chain: [] }) };
+        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: {}, path: '/', chain: [] }) };
       };
 
       try {
@@ -756,7 +779,7 @@ describe('WebUIRouter', () => {
       const priv = router as any;
       priv.navCache = new NavigationCache({ staleTime: 30_000, gcTime: 300_000, maxEntries: 50 });
 
-      const cachedData = { state: { msg: 'preloaded' }, templates: [], path: '/about', chain: [{ component: 'about-page', path: '/about', params: {} }] };
+      const cachedData = { state: { msg: 'preloaded' }, templates: {}, path: '/about', chain: [{ component: 'about-page', path: '/about', params: {} }] };
       // Store in unified cache via navCache.store
       priv.navCache.store('/about', cachedData);
 
@@ -776,7 +799,7 @@ describe('WebUIRouter', () => {
       priv.navCache = new NavigationCache({ staleTime: 0, gcTime: 300_000, maxEntries: 50 });
 
       // Store a cache entry, then manipulate its timestamp to make it stale
-      priv.navCache.store('/about', { state: {}, templates: [], path: '/about' });
+      priv.navCache.store('/about', { state: {}, templates: {}, path: '/about' });
       const entry = priv.navCache.getEntry('/about');
       entry.ts = Date.now() - 10_000;
 
@@ -807,7 +830,7 @@ describe('WebUIRouter', () => {
       priv.navCache = new NavigationCache({ staleTime: 0, gcTime: 300_000, maxEntries: 50 });
 
       // Store an entry in the navigation cache
-      priv.navCache.store('/test', { state: {}, templates: [], path: '/test' });
+      priv.navCache.store('/test', { state: {}, templates: {}, path: '/test' });
 
       router.destroy();
 
@@ -1088,7 +1111,7 @@ describe('WebUIRouter', () => {
         return {
           ok: true,
           headers: { get: () => 'application/json' },
-          json: async () => ({ state: {}, templates: [], path: '/', chain: [] }),
+          json: async () => ({ state: {}, templates: {}, path: '/', chain: [] }),
         };
       };
 

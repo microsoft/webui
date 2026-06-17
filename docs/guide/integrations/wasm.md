@@ -63,7 +63,7 @@ For a complete static/CDN service worker example using this callback to write a
 |--------|-------------|
 | `render_partial(protocolBytes, stateJson, entry, requestPath, inventoryHex)` | Returns the JSON partial-navigation response with `state` included |
 | `protocol_tokens(protocolBytes)` | Returns the protocol CSS token names as a JavaScript array |
-| `render_component_templates(protocolBytes, componentTagsJson, inventoryHex)` | Returns template and style payloads for requested components |
+| `render_component_templates(protocolBytes, componentTagsJson, inventoryHex)` | Returns template metadata, condition closures, and style payloads for requested components |
 
 ## Parser-only API
 

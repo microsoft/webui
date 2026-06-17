@@ -273,6 +273,12 @@ export class WebUIRouter {
         delete registry[tag];
       }
     }
+    const functionRegistry = window.__webui?.templateFns;
+    if (functionRegistry) {
+      for (const tag of Object.keys(functionRegistry)) {
+        delete functionRegistry[tag];
+      }
+    }
     if (window.__webui) window.__webui.inventory = '';
   }
 

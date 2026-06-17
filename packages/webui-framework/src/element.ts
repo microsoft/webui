@@ -614,7 +614,7 @@ export class WebUIElement extends HTMLElement {
         const [parentPath, beforeIndex] = slotMeta;
         const parent = parentPath.length > 0 ? this.$resolve(root, parentPath) : root;
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
-        condRefs.push({ parent, ref: parent.childNodes[beforeIndex] || null, condition, blockIndex });
+        condRefs.push({ parent, ref: parent.childNodes[beforeIndex] || null, condition: condition as CompiledCondition, blockIndex });
       }
     }
 
@@ -765,7 +765,7 @@ export class WebUIElement extends HTMLElement {
         const [parentPath] = slotMeta;
         const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart) ?? ssrRoot;
         const blockMeta = this.$block(blockIndex);
-        const shown = condition[0](this.$resolver, scope);
+        const shown = (condition as CompiledCondition)[0](this.$resolver, scope);
         let condInstance: TemplateInstance | null = null;
 
         // Reset cursor when parent changes between iterations
@@ -814,7 +814,7 @@ export class WebUIElement extends HTMLElement {
         }
 
         instance.conds.push({
-          condition, blockIndex,
+          condition: condition as CompiledCondition, blockIndex,
           anchor: condAnchor,
           scope, instance: condInstance,
         });

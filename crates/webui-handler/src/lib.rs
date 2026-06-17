@@ -25,6 +25,7 @@ pub(crate) mod route_renderer;
 pub use html_encode::encode_safe;
 
 use plugin::HandlerPlugin;
+use plugin::WebUiTemplatePayload;
 use route_matcher::CompiledRouteCache;
 use serde::Serialize;
 use serde_json::Value;
@@ -235,7 +236,7 @@ struct WebUIProcessContext<'a> {
     /// a `&'static str` such as a dev livereload script).
     head_inject: Option<&'a str>,
     /// HTML emitted at the structural `body_end` boundary (before
-    /// `</body>`), after the built-in template-IIFE emissions.
+    /// `</body>`), after the built-in template metadata emissions.
     /// Same zero-copy borrow as [`head_inject`](Self::head_inject).
     body_inject: Option<&'a str>,
     /// Tracks whether the `head_end` hook has already fired in this
@@ -265,6 +266,7 @@ struct WebUiBootstrap<'a> {
     nonce: Option<&'a str>,
     css_hrefs: &'a [&'a str],
     style_specs: &'a [&'a str],
+    templates: &'a [WebUiTemplatePayload<'a>],
 }
 
 /// Get the component attribute name, stripping `:` prefix and converting to camelCase.
@@ -379,8 +381,79 @@ fn write_webui_bootstrap(
         write_json_field(writer, &mut wrote_field, "styles", bootstrap.style_specs)?;
     }
     write_json_field_name(writer, &mut wrote_field, "templates")?;
-    writer.write("{}")?;
+    write_webui_template_json_map(writer, bootstrap.templates)?;
     writer.write("}")
+}
+
+fn write_webui_data_block(
+    writer: &mut dyn ResponseWriter,
+    bootstrap: WebUiBootstrap<'_>,
+) -> Result<()> {
+    writer.write("<script type=\"application/json\" id=\"webui-data\"")?;
+    if let Some(nonce) = bootstrap.nonce {
+        writer.write(" nonce=\"")?;
+        writer.write(nonce)?;
+        writer.write("\"")?;
+    }
+    writer.write(">")?;
+    write_webui_bootstrap(writer, bootstrap)?;
+    writer.write("</script>\n")
+}
+
+fn write_webui_template_json_map(
+    writer: &mut dyn ResponseWriter,
+    templates: &[WebUiTemplatePayload<'_>],
+) -> Result<()> {
+    writer.write("{")?;
+    let mut wrote = false;
+    for template in templates {
+        if template.template_json.is_empty() {
+            continue;
+        }
+        if wrote {
+            writer.write(",")?;
+        }
+        wrote = true;
+        write_script_safe_json(writer, template.tag_name)?;
+        writer.write(":")?;
+        write_script_safe_json_str(writer, template.template_json)?;
+    }
+    writer.write("}")
+}
+
+fn write_webui_template_functions(
+    writer: &mut dyn ResponseWriter,
+    templates: &[WebUiTemplatePayload<'_>],
+) -> Result<()> {
+    let has_functions = templates
+        .iter()
+        .any(|template| !template.template_functions.is_empty());
+    if !has_functions {
+        return Ok(());
+    }
+
+    writer.write("var f=w.templateFns||(w.templateFns={});")?;
+    for template in templates {
+        if template.template_functions.is_empty() {
+            continue;
+        }
+        writer.write("f[")?;
+        write_script_safe_json(writer, template.tag_name)?;
+        writer.write("]=")?;
+        writer.write(template.template_functions)?;
+        writer.write(";")?;
+    }
+    Ok(())
+}
+
+fn write_webui_data_loader_start(writer: &mut dyn ResponseWriter) -> Result<()> {
+    writer.write(
+        r#"(function(){var e=document.getElementById("webui-data");var d=e?JSON.parse(e.textContent||"{}"):{},w=window.__webui||(window.__webui={}),ks=Object.keys(d),i,k;if(e){e.remove();}for(i=0;i<ks.length;i++){k=ks[i];if(k!=="templates"&&k!=="templateFns"){w[k]=d[k];}}if(d.templates){var t=w.templates||(w.templates={}),tk=Object.keys(d.templates);for(i=0;i<tk.length;i++){k=tk[i];t[k]=d.templates[k];}}if(d.templateFns){var f=w.templateFns||(w.templateFns={}),fk=Object.keys(d.templateFns);for(i=0;i<fk.length;i++){k=fk[i];f[k]=d.templateFns[k];}}"#,
+    )
+}
+
+fn write_webui_data_loader_end(writer: &mut dyn ResponseWriter) -> Result<()> {
+    writer.write("})();")
 }
 
 fn resolve_value_from_sources<'ctx, 'state>(
@@ -1129,15 +1202,15 @@ impl WebUIHandler {
                     }
                 }
 
-                // Try to collect template JS sources for merging into the
-                // consolidated script block. If the plugin returns None
-                // (non-JS templates, e.g. FAST), fall back to separate emission.
-                let template_js = context
+                // Try to collect split WebUI template payloads. If the plugin
+                // returns None (non-WebUI templates, e.g. FAST), fall back to
+                // separate emission.
+                let template_payloads = context
                     .plugin
                     .as_ref()
-                    .and_then(|p| p.collect_template_js(context.protocol, &reachable));
+                    .and_then(|p| p.collect_template_payloads(context.protocol, &reachable));
 
-                if template_js.is_none() {
+                if template_payloads.is_none() {
                     // Non-JS templates (FAST plugins) - emit separately
                     if let Some(ref p) = context.plugin {
                         p.emit_templates(
@@ -1149,14 +1222,17 @@ impl WebUIHandler {
                     }
                 }
 
-                // ── Consolidated SSR script block ──────────────────────────
+                // ── WebUI SSR metadata emission ────────────────────────────
                 //
-                // Merges all SSR metadata into a single <script> tag:
-                //   1. Bootstrap meta  (window.__webui: chain, inventory, nonce, css, styles, state, templates)
-                //   2. Template IIFEs  (write into window.__webui.templates)
+                // Emits every non-executable metadata field as inert JSON and
+                // keeps only expression closure arrays in executable JS:
+                //   1. Data block (<script type="application/json">) with
+                //      chain, inventory, nonce, css, styles, state, templates
+                //   2. Tiny bootstrap script that parses the data block
+                //   3. Template function arrays (window.__webui.templateFns)
                 //
-                // Single-script reduces HTML parse overhead and ensures all
-                // SSR metadata is available atomically before DOMContentLoaded.
+                // This minimizes JS parse cost while ensuring all SSR metadata
+                // is available before DOMContentLoaded.
 
                 // Chain
                 let chain = crate::route_handler::collect_route_chain(
@@ -1201,19 +1277,9 @@ impl WebUIHandler {
                     }
                 }
 
-                // Open the consolidated <script> tag
-                if let Some(nonce) = context.nonce {
-                    context.writer.write("<script nonce=\"")?;
-                    context.writer.write(nonce)?;
-                    context.writer.write("\">")?;
-                } else {
-                    context.writer.write("<script>")?;
-                }
-
-                // 1. Emit window.__webui bootstrap object (chain, inventory,
-                //    nonce, css, styles, state — all in one JSON assignment)
-                context.writer.write("window.__webui=")?;
-                write_webui_bootstrap(
+                let empty_payloads: [WebUiTemplatePayload<'_>; 0] = [];
+                let payloads = template_payloads.as_deref().unwrap_or(&empty_payloads);
+                write_webui_data_block(
                     context.writer,
                     WebUiBootstrap {
                         state: context.state,
@@ -1222,18 +1288,28 @@ impl WebUIHandler {
                         nonce: context.nonce,
                         css_hrefs: &css_hrefs,
                         style_specs: &style_specs,
+                        templates: payloads,
                     },
                 )?;
-                context.writer.write(";")?;
 
-                // 2. Template IIFEs — write into window.__webui.templates
-                //    (parser-generated IIFEs reference this object directly)
-                if let Some(ref tmpls) = template_js {
-                    context.writer.write("\n")?;
-                    for tmpl in tmpls {
-                        context.writer.write(tmpl)?;
-                    }
+                // Open the executable bootstrap <script> tag
+                if let Some(nonce) = context.nonce {
+                    context.writer.write("<script nonce=\"")?;
+                    context.writer.write(nonce)?;
+                    context.writer.write("\">")?;
+                } else {
+                    context.writer.write("<script>")?;
                 }
+
+                // 1. Parse the inert JSON data block into window.__webui.
+                write_webui_data_loader_start(context.writer)?;
+
+                // 2. Template closure arrays — condition indexes in the JSON
+                //    metadata reference these component-local function arrays.
+                if let Some(ref payloads) = template_payloads {
+                    write_webui_template_functions(context.writer, payloads)?;
+                }
+                write_webui_data_loader_end(context.writer)?;
 
                 context.writer.write("</script>\n")?;
             }
@@ -6464,7 +6540,7 @@ mod tests {
             .entry("my-card".to_string())
             .or_default();
         comp.css_href = "my-card.css".to_string();
-        comp.template = "(function(){})();".to_string();
+        comp.template_json = r#"{"h":"<div>card</div>"}"#.to_string();
 
         let state = test_json!({});
         let mut writer = TestWriter::new();
@@ -6543,14 +6619,14 @@ mod tests {
             .entry("o-loading-state".to_string())
             .or_default();
         comp1.css_href = "o-loading-state.css".to_string();
-        comp1.template = "(function(){})();".to_string();
+        comp1.template_json = r#"{"h":"<div>loading</div>"}"#.to_string();
 
         let comp2 = protocol
             .components
             .entry("my-card".to_string())
             .or_default();
         comp2.css_href = "my-card.css".to_string();
-        comp2.template = "(function(){})();".to_string();
+        comp2.template_json = r#"{"h":"<div>card</div>"}"#.to_string();
 
         let state = test_json!({});
         let mut writer = TestWriter::new();
@@ -6683,7 +6759,7 @@ mod tests {
             .entry("dash-page".to_string())
             .or_default();
         comp.css = "h1{font-size:2rem}".to_string();
-        comp.template = "(function(){})();".to_string();
+        comp.template_json = r#"{"h":"<h1>Dashboard</h1>"}"#.to_string();
         let state = test_json!({});
         let mut writer = TestWriter::new();
 
@@ -6781,7 +6857,7 @@ mod tests {
         // Simulates a page where app-shell renders cart-panel, but cart-panel
         // contains an <if> block with product-card inside. When the condition
         // is false (empty cart), product-card is NOT rendered — but it IS
-        // reachable from the fragment graph. Its template IIFE and CSS module
+        // reachable from the fragment graph. Its template metadata and CSS module
         // definition must be in the output so the client can mount it when
         // the <if> flips true. However, its bit must NOT be set in the
         // inventory — the inventory tracks what was actually rendered.
@@ -6838,10 +6914,11 @@ mod tests {
         let mut protocol = WebUIProtocol::new(fragments);
         for name in ["app-shell", "cart-panel", "product-card"] {
             let comp = protocol.components.entry(name.to_string()).or_default();
-            comp.template = format!(
-                "(function(){{var w=(window.__webui||(window.__webui={{}})).templates||(window.__webui.templates={{}});w['{name}']={{h:'<div/>'}};}})();\n"
-            );
+            comp.template_json = format!(r#"{{"h":"<div class=\"{name}\"></div>"}}"#);
             comp.css = format!(".{name}{{display:block}}");
+            if name == "product-card" {
+                comp.template_functions = r#"[function(v,s){return !!v("ready",s)}]"#.to_string();
+            }
         }
 
         // Render with hasItems=false — product-card should NOT be rendered
@@ -6862,10 +6939,43 @@ mod tests {
 
         let html = writer.get_content();
 
+        assert!(
+            html.contains(r#"<script type="application/json" id="webui-data">"#),
+            "non-executable SSR metadata should be emitted in the webui-data block: {html}"
+        );
+        assert!(
+            html.contains(r#""state":{"hasItems":false}"#),
+            "SSR state should live in the JSON data block: {html}"
+        );
+        assert!(
+            html.contains(r#""inventory":"#),
+            "SSR inventory should live in the JSON data block: {html}"
+        );
+        assert!(
+            !html.contains("window.__webui={\""),
+            "executable bootstrap must not embed the window.__webui JSON literal: {html}"
+        );
+        assert!(
+            html.contains("w=window.__webui||(window.__webui={})"),
+            "executable bootstrap should merge into an existing window.__webui object: {html}"
+        );
+        assert!(
+            !html.contains("window.__webui=w;"),
+            "executable bootstrap must not replace existing window.__webui registrations: {html}"
+        );
+        assert!(
+            !html.contains("w.templateFns={\""),
+            "template function emission must not replace existing templateFns registrations: {html}"
+        );
+        assert!(
+            html.contains(r#"var f=w.templateFns||(w.templateFns={});f["product-card"]=[function(v,s){return !!v("ready",s)}];"#),
+            "template functions should merge into the flat templateFns registry: {html}"
+        );
+
         // product-card template IS in the output — it's a known component
         // whose template must be available for client-side <if> activation.
         assert!(
-            html.contains("w['product-card']"),
+            html.contains(r#""product-card":{"h":"<div class=\"product-card\"><\/div>"}"#),
             "product-card template should be emitted even when unrendered: {html}"
         );
 
@@ -6878,11 +6988,11 @@ mod tests {
 
         // app-shell and cart-panel SHOULD be in the output (they were rendered)
         assert!(
-            html.contains("w['app-shell']"),
+            html.contains(r#""app-shell":{"h":"<div class=\"app-shell\"><\/div>"}"#),
             "rendered app-shell template should be emitted: {html}"
         );
         assert!(
-            html.contains("w['cart-panel']"),
+            html.contains(r#""cart-panel":{"h":"<div class=\"cart-panel\"><\/div>"}"#),
             "rendered cart-panel template should be emitted: {html}"
         );
     }
@@ -6928,7 +7038,7 @@ mod tests {
             .entry("dash-page".to_string())
             .or_default();
         comp.css = "h1{font-size:2rem}".to_string();
-        comp.template = "(function(){})();".to_string();
+        comp.template_json = r#"{"h":"<h1>Dashboard</h1>"}"#.to_string();
         let state = test_json!({});
         let mut writer = TestWriter::new();
 
@@ -6996,9 +7106,7 @@ mod tests {
         let mut protocol = WebUIProtocol::new(fragments);
         for name in ["app-shell", "product-card"] {
             let comp = protocol.components.entry(name.to_string()).or_default();
-            comp.template = format!(
-                "(function(){{var w=(window.__webui||(window.__webui={{}})).templates||(window.__webui.templates={{}});w['{name}']={{h:'<div/>'}};}})();\n"
-            );
+            comp.template_json = format!(r#"{{"h":"<div class=\"{name}\"></div>"}}"#);
             comp.css = format!(".{name}{{display:block}}");
         }
 

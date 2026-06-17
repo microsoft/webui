@@ -7,7 +7,7 @@
 //! artifacts after parsing. Converts WebUI Framework template syntax (`<if>`, `<for>`, `{{}}`)
 //! into FAST-compatible syntax (`<f-when>`, `<f-repeat>`, `{}`).
 
-use super::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
+use super::{AttributeAction, ComponentTemplateArtifact, ParserPlugin, ParserPluginArtifacts};
 use crate::component_registry::Component;
 use crate::html_parser::{find_tag_close, opening_tag_name};
 use crate::{CssLinkOptions, CssStrategy, Result};
@@ -46,12 +46,12 @@ impl FastV2ParserPlugin {
     /// ready to be appended to a document. This is used by the JSON partial render
     /// endpoint to send only the templates the client needs.
     #[must_use]
-    pub fn take_component_templates(&self) -> Vec<(String, String)> {
+    pub fn take_component_templates(&self) -> Vec<ComponentTemplateArtifact> {
         self.components
             .iter()
             .map(|comp| {
                 let tmpl = generate_f_template_from_processed(&comp.tag_name, &comp.template_html);
-                (comp.tag_name.clone(), tmpl)
+                ComponentTemplateArtifact::template(comp.tag_name.clone(), tmpl)
             })
             .collect()
     }
@@ -781,7 +781,8 @@ mod tests {
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
-        let (name, html) = &templates[0];
+        let name = &templates[0].tag_name;
+        let html = &templates[0].template;
         assert_eq!(name, "my-comp");
         assert!(html.contains("<f-template name=\"my-comp\">"));
         assert!(html.contains("</f-template>"));
@@ -801,7 +802,8 @@ mod tests {
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
-        let (name, html) = &templates[0];
+        let name = &templates[0].tag_name;
+        let html = &templates[0].template;
         assert_eq!(name, "no-css");
         assert!(html.contains("<f-template name=\"no-css\">"));
         assert!(!html.contains("<link rel=\"stylesheet\""));
@@ -822,7 +824,7 @@ mod tests {
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
-        let (_, html) = &templates[0];
+        let html = &templates[0].template;
         assert!(
             html.contains("<style>div { color: red; }</style>"),
             "Style strategy should inline CSS, got: {html}"
@@ -847,7 +849,7 @@ mod tests {
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
-        let (_, html) = &templates[0];
+        let html = &templates[0].template;
 
         // f-template should NOT contain the CSS module — that is added
         // by the handler at SSR (inline) and SPA-partial time.
@@ -889,7 +891,7 @@ mod tests {
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
-        let (_, html) = &templates[0];
+        let html = &templates[0].template;
         assert!(
             !html.contains("shadowrootadoptedstylesheets"),
             "No CSS = no shadowrootadoptedstylesheets, got: {html}"
@@ -915,12 +917,15 @@ mod tests {
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 2);
 
-        let names: Vec<&str> = templates.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<&str> = templates
+            .iter()
+            .map(|artifact| artifact.tag_name.as_str())
+            .collect();
         assert!(names.contains(&"comp-a"));
         assert!(names.contains(&"comp-b"));
 
-        for (_, html) in &templates {
-            assert!(html.contains("<f-template name="));
+        for artifact in &templates {
+            assert!(artifact.template.contains("<f-template name="));
         }
     }
 
@@ -952,7 +957,7 @@ mod tests {
             "Expected exactly 1 template for my-button, got {}",
             templates.len()
         );
-        assert_eq!(templates[0].0, "my-button");
+        assert_eq!(templates[0].tag_name, "my-button");
     }
 
     #[test]
@@ -975,8 +980,14 @@ mod tests {
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 2);
 
-        let button_count = templates.iter().filter(|(n, _)| n == "my-button").count();
-        let card_count = templates.iter().filter(|(n, _)| n == "my-card").count();
+        let button_count = templates
+            .iter()
+            .filter(|artifact| artifact.tag_name == "my-button")
+            .count();
+        let card_count = templates
+            .iter()
+            .filter(|artifact| artifact.tag_name == "my-card")
+            .count();
         assert_eq!(button_count, 1);
         assert_eq!(card_count, 1);
     }
@@ -1078,7 +1089,8 @@ mod tests {
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
-        let (name, result) = &templates[0];
+        let name = &templates[0].tag_name;
+        let result = &templates[0].template;
         assert_eq!(name, "my-widget");
 
         assert!(result.contains("<f-when value=\"{{visible}}\">"));
@@ -1112,7 +1124,7 @@ mod tests {
             .unwrap();
 
         let templates = plugin.take_component_templates();
-        let (_, result) = &templates[0];
+        let result = &templates[0].template;
         assert!(
             result.contains("<outlet></outlet>"),
             "outlet should be kept as marker in f-template: {result}"
@@ -1156,7 +1168,8 @@ mod tests {
             .unwrap();
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
-        let (name, html) = &templates[0];
+        let name = &templates[0].tag_name;
+        let html = &templates[0].template;
         assert_eq!(name, "my-comp");
         // f-template content should NOT have shadowrootmode
         assert!(!html.contains("shadowrootmode"));
@@ -1207,7 +1220,8 @@ mod tests {
 
         let templates = plugin.take_component_templates();
         assert_eq!(templates.len(), 1);
-        let (name, output) = &templates[0];
+        let name = &templates[0].tag_name;
+        let output = &templates[0].template;
         assert_eq!(name, "parent-comp");
 
         assert!(output.contains("<f-template name=\"parent-comp\">"));
@@ -1252,7 +1266,7 @@ mod tests {
             .unwrap();
 
         let templates = plugin.take_component_templates();
-        let (_, result) = &templates[0];
+        let result = &templates[0].template;
 
         assert!(
             result.contains("<f-repeat value=\"{{item in items}}\">"),
@@ -1278,7 +1292,7 @@ mod tests {
             .unwrap();
 
         let templates = plugin.take_component_templates();
-        let (_, result) = &templates[0];
+        let result = &templates[0].template;
 
         assert!(
             result.contains("<f-when value=\"{{visible}}\">"),
@@ -1313,7 +1327,7 @@ mod tests {
             .unwrap();
 
         let templates = plugin.take_component_templates();
-        let (_, result) = &templates[0];
+        let result = &templates[0].template;
 
         assert!(
             result.contains("<f-when value=\"{{show}}\">"),
