@@ -28,6 +28,7 @@ use plugin::BootstrapExtensionContext;
 use plugin::HandlerPlugin;
 use plugin::WebUiTemplatePayload;
 use route_matcher::CompiledRouteCache;
+use serde::ser::SerializeMap;
 use serde::Serialize;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -36,6 +37,8 @@ use thiserror::Error;
 use webui_expressions::{evaluate_with_resolver, ExpressionError};
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUIProtocol};
 use webui_state::find_value_by_dotted_path_ref;
+
+const CLIENT_STATE_TOKEN_KEY: &str = "tokens";
 
 /// Error types for the WebUI handler.
 #[derive(Debug, Error)]
@@ -360,6 +363,34 @@ where
     write_script_safe_json(writer, value)
 }
 
+struct ClientState<'a> {
+    value: &'a Value,
+}
+
+impl Serialize for ClientState<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let Value::Object(map) = self.value else {
+            return self.value.serialize(serializer);
+        };
+
+        if !map.contains_key(CLIENT_STATE_TOKEN_KEY) {
+            return self.value.serialize(serializer);
+        }
+
+        let mut out = serializer.serialize_map(None)?;
+        for (key, value) in map {
+            if key == CLIENT_STATE_TOKEN_KEY {
+                continue;
+            }
+            out.serialize_entry(key, value)?;
+        }
+        out.end()
+    }
+}
+
 fn write_webui_bootstrap(
     writer: &mut dyn ResponseWriter,
     bootstrap: WebUiBootstrap<'_>,
@@ -377,7 +408,14 @@ fn write_webui_bootstrap(
     if let Some(nonce) = bootstrap.nonce {
         write_json_field(writer, &mut wrote_field, "nonce", nonce)?;
     }
-    write_json_field(writer, &mut wrote_field, "state", bootstrap.state)?;
+    write_json_field(
+        writer,
+        &mut wrote_field,
+        "state",
+        &ClientState {
+            value: bootstrap.state,
+        },
+    )?;
     if !bootstrap.style_specs.is_empty() {
         write_json_field(writer, &mut wrote_field, "styles", bootstrap.style_specs)?;
     }
@@ -7089,6 +7127,46 @@ mod tests {
             ),
             "Unrendered (body_end) CSS module importmap tag should include nonce attribute in canonical order: {html}"
         );
+    }
+
+    #[test]
+    fn client_state_strips_tokens_after_ssr_resolution() -> Result<()> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><body><style>".to_string()),
+                    WebUIFragment::signal("tokens.light", true),
+                    WebUIFragment::raw("</style>".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({
+            "name": "Alice",
+            "tokens": {
+                "light": "--color-brand: red;"
+            }
+        });
+        let mut writer = TestWriter::new();
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        handler.handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )?;
+        let output = writer.get_content();
+
+        assert!(output.contains("--color-brand: red;"));
+        assert!(output.contains(r#""name":"Alice""#));
+        assert!(!output.contains(r#""tokens""#));
+        Ok(())
     }
 
     #[test]
