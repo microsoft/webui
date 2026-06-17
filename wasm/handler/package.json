@@ -5,7 +5,7 @@
     "Microsoft Edge"
   ],
   "description": "WebAssembly bindings for WebUI framework — powers the online playground",
-  "version": "0.0.15",
+  "version": "0.0.16",
   "license": "MIT",
   "repository": {
     "type": "git",
