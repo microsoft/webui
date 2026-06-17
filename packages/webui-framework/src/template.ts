@@ -44,11 +44,13 @@ import type {
   TemplateMeta,
 } from './template-types.js';
 
+const WEBUI_DATA_ID = 'webui-data';
 const normalizedTemplates = new WeakSet<TemplateMeta>();
+let webuiDataLoaded = false;
 
 declare global {
   interface Window {
-    /** Consolidated SSR metadata installed by the WebUI bootstrap. */
+    /** Consolidated SSR metadata loaded from `#webui-data` or partial responses. */
     __webui?: {
       state?: Record<string, unknown>;
       templates?: Record<string, TemplateMeta>;
@@ -59,7 +61,11 @@ declare global {
 }
 
 export function getTemplate(name: string): TemplateMeta | undefined {
-  const meta = window.__webui?.templates?.[name];
+  let meta = window.__webui?.templates?.[name];
+  if (!meta) {
+    loadWebUIDataBlock();
+    meta = window.__webui?.templates?.[name];
+  }
   if (meta) normalizeTemplate(name, meta);
   return meta;
 }
@@ -86,6 +92,25 @@ export function registerTemplateData(
     w.__webui.templates[tag] = meta;
     normalizeTemplate(tag, meta);
   }
+}
+
+function loadWebUIDataBlock(): void {
+  if (webuiDataLoaded || window.__webui?.state !== undefined || typeof document === 'undefined') return;
+  const el = document.getElementById(WEBUI_DATA_ID);
+  if (!el) {
+    webuiDataLoaded = true;
+    return;
+  }
+
+  const text = el.textContent;
+  if (text) {
+    const templateFns = window.__webui?.templateFns;
+    const parsed = JSON.parse(text) as NonNullable<Window['__webui']>;
+    if (templateFns) parsed.templateFns = templateFns;
+    window.__webui = parsed;
+  }
+  el.remove();
+  webuiDataLoaded = true;
 }
 
 function normalizeTemplate(name: string, meta: TemplateMeta): void {

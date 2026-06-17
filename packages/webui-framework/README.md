@@ -558,15 +558,15 @@ browser sees `42` in the DOM but the JavaScript property `this.count` is still
 `0` (the class default).  Without seeding, the first `$update()` would
 overwrite the SSR content with the wrong value.
 
-State seeding uses `window.__webui.state` — a JSON object emitted by the
-server handler as a `<script>` tag.  Like Preact's props, this delivers the
+State seeding uses `window.__webui.state` — a JSON object loaded from the
+server-emitted `#webui-data` block.  Like Preact's props, this delivers the
 same data used for SSR rendering to the client.  During `$mount()`,
 `$applySSRState()` writes matching keys directly to observable backing fields
 before any bindings are wired:
 
 ```mermaid
 flowchart LR
-    SCRIPT["&lt;script&gt;<br/>window.__webui.state = {<br/>  count: 42,<br/>  title: 'Hello'<br/>}"] --> APPLY["$applySSRState()"]
+    SCRIPT["&lt;script type='application/json' id='webui-data'&gt;<br/>{ state: { count: 42, title: 'Hello' } }"] --> APPLY["$applySSRState()"]
     APPLY --> SEED["Write to backing fields:<br/>this._count = 42<br/>this._title = 'Hello'"]
     SEED --> HYDRATE["$hydrate() — bindings match<br/>server-rendered DOM"]
 ```

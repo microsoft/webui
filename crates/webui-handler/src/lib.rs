@@ -24,6 +24,7 @@ pub(crate) mod route_renderer;
 /// without having to pull in a separate HTML-escape crate.
 pub use html_encode::encode_safe;
 
+use plugin::BootstrapExtensionContext;
 use plugin::HandlerPlugin;
 use plugin::WebUiTemplatePayload;
 use route_matcher::CompiledRouteCache;
@@ -302,7 +303,7 @@ fn write_usize(writer: &mut dyn ResponseWriter, mut n: usize) -> Result<()> {
     }
 }
 
-fn write_script_safe_json<T>(writer: &mut dyn ResponseWriter, value: &T) -> Result<()>
+pub(crate) fn write_script_safe_json<T>(writer: &mut dyn ResponseWriter, value: &T) -> Result<()>
 where
     T: Serialize + ?Sized,
 {
@@ -380,8 +381,14 @@ fn write_webui_bootstrap(
     if !bootstrap.style_specs.is_empty() {
         write_json_field(writer, &mut wrote_field, "styles", bootstrap.style_specs)?;
     }
-    write_json_field_name(writer, &mut wrote_field, "templates")?;
-    write_webui_template_json_map(writer, bootstrap.templates)?;
+    if bootstrap
+        .templates
+        .iter()
+        .any(|template| !template.template_json.is_empty())
+    {
+        write_json_field_name(writer, &mut wrote_field, "templates")?;
+        write_webui_template_json_map(writer, bootstrap.templates)?;
+    }
     writer.write("}")
 }
 
@@ -419,41 +426,6 @@ fn write_webui_template_json_map(
         write_script_safe_json_str(writer, template.template_json)?;
     }
     writer.write("}")
-}
-
-fn write_webui_template_functions(
-    writer: &mut dyn ResponseWriter,
-    templates: &[WebUiTemplatePayload<'_>],
-) -> Result<()> {
-    let has_functions = templates
-        .iter()
-        .any(|template| !template.template_functions.is_empty());
-    if !has_functions {
-        return Ok(());
-    }
-
-    writer.write("var f=w.templateFns||(w.templateFns={});")?;
-    for template in templates {
-        if template.template_functions.is_empty() {
-            continue;
-        }
-        writer.write("f[")?;
-        write_script_safe_json(writer, template.tag_name)?;
-        writer.write("]=")?;
-        writer.write(template.template_functions)?;
-        writer.write(";")?;
-    }
-    Ok(())
-}
-
-fn write_webui_data_loader_start(writer: &mut dyn ResponseWriter) -> Result<()> {
-    writer.write(
-        r#"(function(){var e=document.getElementById("webui-data");var d=e?JSON.parse(e.textContent||"{}"):{},w=window.__webui||(window.__webui={}),ks=Object.keys(d),i,k;if(e){e.remove();}for(i=0;i<ks.length;i++){k=ks[i];if(k!=="templates"&&k!=="templateFns"){w[k]=d[k];}}if(d.templates){var t=w.templates||(w.templates={}),tk=Object.keys(d.templates);for(i=0;i<tk.length;i++){k=tk[i];t[k]=d.templates[k];}}if(d.templateFns){var f=w.templateFns||(w.templateFns={}),fk=Object.keys(d.templateFns);for(i=0;i<fk.length;i++){k=fk[i];f[k]=d.templateFns[k];}}"#,
-    )
-}
-
-fn write_webui_data_loader_end(writer: &mut dyn ResponseWriter) -> Result<()> {
-    writer.write("})();")
 }
 
 fn resolve_value_from_sources<'ctx, 'state>(
@@ -1160,17 +1132,6 @@ impl WebUIHandler {
         if signal.raw && signal.value == "body_end" && !context.body_end_emitted {
             context.body_end_emitted = true;
             if context.plugin.is_some() {
-                // Build (or reuse cached) component → index map.
-                let comp_index = context.component_index_cache.get_or_insert_with(|| {
-                    crate::route_handler::build_component_index(context.protocol)
-                });
-
-                // Compute the inventory hex from actually rendered components.
-                let inventory_hex = crate::route_handler::encode_component_inventory(
-                    &context.rendered_components,
-                    comp_index,
-                );
-
                 // Emit templates for all REACHABLE components on the current route,
                 // not just those rendered in this SSR pass. Components inside false
                 // <if> blocks or empty <for> loops are reachable via client-side
@@ -1222,17 +1183,16 @@ impl WebUIHandler {
                     }
                 }
 
-                // ── WebUI SSR metadata emission ────────────────────────────
-                //
-                // Emits every non-executable metadata field as inert JSON and
-                // keeps only expression closure arrays in executable JS:
-                //   1. Data block (<script type="application/json">) with
-                //      chain, inventory, nonce, css, styles, state, templates
-                //   2. Tiny bootstrap script that parses the data block
-                //   3. Template function arrays (window.__webui.templateFns)
-                //
-                // This minimizes JS parse cost while ensuring all SSR metadata
-                // is available before DOMContentLoaded.
+                // Build (or reuse cached) component → index map.
+                let comp_index = context.component_index_cache.get_or_insert_with(|| {
+                    crate::route_handler::build_component_index(context.protocol)
+                });
+
+                // Compute the inventory hex from actually rendered components.
+                let inventory_hex = crate::route_handler::encode_component_inventory(
+                    &context.rendered_components,
+                    comp_index,
+                );
 
                 // Chain
                 let chain = crate::route_handler::collect_route_chain(
@@ -1292,26 +1252,20 @@ impl WebUIHandler {
                     },
                 )?;
 
-                // Open the executable bootstrap <script> tag
-                if let Some(nonce) = context.nonce {
-                    context.writer.write("<script nonce=\"")?;
-                    context.writer.write(nonce)?;
-                    context.writer.write("\">")?;
-                } else {
-                    context.writer.write("<script>")?;
+                // Let the active plugin emit any framework-specific executable
+                // side channel. FAST plugins default to no-op; WebUI installs
+                // templateFns. Client packages parse #webui-data lazily.
+                if let Some(ref plugin) = context.plugin {
+                    plugin.emit_bootstrap_extension(
+                        BootstrapExtensionContext {
+                            protocol: context.protocol,
+                            components: &reachable,
+                            payloads,
+                            nonce: context.nonce,
+                        },
+                        context.writer,
+                    )?;
                 }
-
-                // 1. Parse the inert JSON data block into window.__webui.
-                write_webui_data_loader_start(context.writer)?;
-
-                // 2. Template closure arrays — condition indexes in the JSON
-                //    metadata reference these component-local function arrays.
-                if let Some(ref payloads) = template_payloads {
-                    write_webui_template_functions(context.writer, payloads)?;
-                }
-                write_webui_data_loader_end(context.writer)?;
-
-                context.writer.write("</script>\n")?;
             }
 
             // Per-render `body_inject` HTML — dev livereload script,
@@ -6956,8 +6910,8 @@ mod tests {
             "executable bootstrap must not embed the window.__webui JSON literal: {html}"
         );
         assert!(
-            html.contains("w=window.__webui||(window.__webui={})"),
-            "executable bootstrap should merge into an existing window.__webui object: {html}"
+            !html.contains(r#"document.getElementById("webui-data")"#),
+            "SSR must not parse webui-data; client packages own that lazy load: {html}"
         );
         assert!(
             !html.contains("window.__webui=w;"),

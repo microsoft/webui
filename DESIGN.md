@@ -283,10 +283,10 @@ When the handler encounters `Fragment::Outlet`:
 2. Match children against the request path (relative to route base).
 3. Emit `<webui-outlet>` containing matched child `<webui-route>` with component, and hidden stubs for siblings.
 
-The handler also emits a `<meta name="webui-nonce">` tag in `<head>` for backward compatibility,
-an inert `<script type="application/json" id="webui-data">` data block containing
-all non-executable SSR metadata, and a nonce'd inline `<script>` that parses that
-data into `window.__webui` and installs component-local condition closure arrays:
+For plugins that participate in client routing, the handler also emits a
+`<meta name="webui-nonce">` tag in `<head>` for backward compatibility, an inert
+`<script type="application/json" id="webui-data">` data block containing shared
+non-executable SSR metadata:
 
 ```html
 <script type="application/json" id="webui-data">
@@ -296,22 +296,23 @@ data into `window.__webui` and installs component-local condition closure arrays
   "nonce": "abc123",
   "css": ["todo-app.css"],
   "styles": ["todo-app"],
-  "state": { "title": "Todo List" },
-  "templates": { "todo-app": { "h": "<main></main>" } }
+  "state": { "title": "Todo List" }
 }
-</script>
-<script nonce="...">
-  // Parses #webui-data into window.__webui and installs templateFns closures.
 </script>
 ```
 
 This replaces the previous `<meta name="webui-inventory">` and `<script id="webui-chain">` tags
-with one full metadata data block plus a tiny executable bootstrap. The client router reads
-`window.__webui` at startup instead of querying the DOM for metadata elements. Note that
-**templates** and
+with one metadata data block. The client packages first read any existing `window.__webui`, then
+lazily parse and remove `#webui-data` into `window.__webui` when metadata is needed. Note that
 **CSS module definitions** are emitted for all **reachable** components (including those in false
-`<if>` blocks), not just rendered ones — this ensures client-side conditional activation works
-without a server round-trip.
+`<if>` blocks), not just rendered ones.
+
+Plugins can still emit executable side-channel data after the inert block. The WebUI framework
+plugin uses that extension point to install component-local
+`window.__webui.templateFns[tagName]` closure arrays, paired with JSON-safe `templates` in
+`webui-data`. FAST plugins emit their own `<f-template>` payloads and hydration markers, so they
+use the shared router metadata (`chain`, `inventory`, `nonce`, `css`, `styles`, `state`) but do not
+emit WebUI `templates` or `templateFns`.
 
 **Key elements:**
 - `<webui-route>` — light DOM custom element, structural routing wrapper with no shadow DOM

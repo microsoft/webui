@@ -9,7 +9,7 @@
 //! in-place hydration on the client: the framework reuses the SSR comment
 //! nodes as runtime anchors instead of creating temporary wrappers.
 
-use super::HandlerPlugin;
+use super::{BootstrapExtensionContext, HandlerPlugin};
 use crate::{ResponseWriter, Result};
 use std::collections::HashSet;
 use webui_protocol::WebUIProtocol;
@@ -160,6 +160,41 @@ impl HandlerPlugin for WebUIHydrationPlugin {
         } else {
             Some(templates)
         }
+    }
+
+    fn emit_bootstrap_extension(
+        &self,
+        context: BootstrapExtensionContext<'_>,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        let has_functions = context
+            .payloads
+            .iter()
+            .any(|payload| !payload.template_functions.is_empty());
+        if !has_functions {
+            return Ok(());
+        }
+
+        if let Some(nonce) = context.nonce {
+            writer.write("<script nonce=\"")?;
+            writer.write(nonce)?;
+            writer.write("\">")?;
+        } else {
+            writer.write("<script>")?;
+        }
+        writer.write("(function(){var w=window.__webui||(window.__webui={});")?;
+        writer.write("var f=w.templateFns||(w.templateFns={});")?;
+        for payload in context.payloads {
+            if payload.template_functions.is_empty() {
+                continue;
+            }
+            writer.write("f[")?;
+            crate::write_script_safe_json(writer, payload.tag_name)?;
+            writer.write("]=")?;
+            writer.write(payload.template_functions)?;
+            writer.write(";")?;
+        }
+        writer.write("})();</script>\n")
     }
 }
 

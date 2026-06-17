@@ -33,10 +33,10 @@ Parse templates   →     Render with state    →     Framework adopts
 Compile metadata        Inject SSR markers         existing DOM,
                         Emit Declarative           wires bindings,
                         Shadow DOM                 strips markers
-                        Emit __webui.state         O(affected) updates
+                        Emit webui-data            O(affected) updates
 ```
 
-1. **Server renders HTML.** The handler walks compiled template metadata and application state and emits Declarative Shadow DOM (or light DOM) with five comment markers around structural blocks, plus a `<script>` tag carrying `window.__webui.state` and the per-component template metadata.
+1. **Server renders HTML.** The handler walks compiled template metadata and application state and emits Declarative Shadow DOM (or light DOM) with five comment markers around structural blocks, plus an inert `#webui-data` block carrying state and per-component template metadata.
 2. **Browser parses HTML.** The parser creates shadow roots inline. The user sees a fully painted page before any framework code runs.
 3. **JavaScript loads.** The component class registers via `customElements.define`. The browser upgrades pre-existing tags and fires `connectedCallback`.
 4. **`$mount` decides client-or-SSR.** If a shadow root exists or the element already has children, the framework treats the DOM as SSR. Otherwise it parses the static template HTML (`meta.h`) into a detached staging root, upgrades custom elements, wires bindings, applies the first binding pass, and only then appends the nodes. Child `connectedCallback` methods see initial parent `:` property bindings.
@@ -218,7 +218,7 @@ When the server renders `<span>42</span>` for `@observable count = 0`, the JS cl
 
 `$applySSRState` runs **before** any binding is wired:
 
-1. Read `window.__webui.state` (a JSON object emitted by the handler as a `<script>`).
+1. Read `window.__webui.state` (loaded lazily from the handler-emitted `#webui-data` block).
 2. Look up the component's `@observable` property names via the decorator registry.
 3. For each key in state that matches an observable name, write directly to the backing field: `this._count = 42`. **Not** through the setter, so no reactive update fires.
 
@@ -433,7 +433,7 @@ Everything else is internal and may change without notice.
 - Performance: `performance.getEntriesByName('webui:hydrate:total', 'measure')` after `webui:hydration-complete`.
 - Per-component lifecycle: instrument `connectedCallback` / `disconnectedCallback` on a subclass.
 - Marker layout: View Source on the SSR HTML. The five comment markers should be balanced; mismatched pairs almost always indicate a handler-plugin bug.
-- "Template metadata not found": `window.__webui.templates` was not populated by the SSR bootstrap or partial-response template registration. Check the build output.
+- "Template metadata not found": `window.__webui.templates` was not populated from `#webui-data` or partial-response template registration. Check the build output.
 - A binding that does not update: confirm the property is `@observable` (not just a class field) and the path appears in the template. Check `$pathIndex` after the first update if you can attach a debugger.
 
 ---

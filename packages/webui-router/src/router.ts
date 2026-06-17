@@ -52,6 +52,8 @@ import { buildChainFromSSR, findChangeLevel, findOrCreateRouteElement } from './
 export { parseQuery, filterQuery, WebUIRouteElement };
 
 const SSR_PRELOAD_SELECTOR = 'link[data-webui-ssr-preload]';
+const WEBUI_DATA_ID = 'webui-data';
+let webuiDataLoaded = false;
 
 export class WebUIRouter {
   private config: RouterConfig = {};
@@ -110,6 +112,8 @@ export class WebUIRouter {
     if (!customElements.get(ROUTE_SELECTOR)) {
       customElements.define(ROUTE_SELECTOR, WebUIRouteElement);
     }
+
+    loadWebUIDataBlock();
 
     // Normalize window.__webui — ensure it exists with sensible defaults.
     // Serves as the single source of truth for SSR metadata.
@@ -696,6 +700,25 @@ export class WebUIRouter {
     }
   }
 
+}
+
+function loadWebUIDataBlock(): void {
+  if (webuiDataLoaded || window.__webui?.state !== undefined) return;
+  const el = document.getElementById(WEBUI_DATA_ID);
+  if (!el) {
+    webuiDataLoaded = true;
+    return;
+  }
+
+  const text = el.textContent;
+  if (text) {
+    const templateFns = window.__webui?.templateFns;
+    const parsed = JSON.parse(text) as NonNullable<Window['__webui']>;
+    if (templateFns) parsed.templateFns = templateFns;
+    window.__webui = parsed;
+  }
+  el.remove();
+  webuiDataLoaded = true;
 }
 
 /** Singleton router instance. */

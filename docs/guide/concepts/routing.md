@@ -402,7 +402,9 @@ The server renders `<webui-route>` elements with these DOM attributes:
 
 Build-time attributes like `query`, `keep-alive`, `cache-tags`, and `invalidates` are **not** emitted as DOM attributes on `<webui-route>` elements. They are compiled into the binary protocol and delivered to the client via `window.__webui.chain` JSON data. The `<route>` source attributes remain valid and unchanged - the compiler just delivers them through JSON instead of the DOM.
 
-The server also emits an inert `webui-data` JSON block containing the SSR chain, template inventory, CSS metadata, state, and templates. A tiny nonce'd script parses that block into `window.__webui` and installs condition closures. This replaces the previous `<meta name="webui-inventory">` tag (which is still supported as a fallback for older servers).
+The server also emits an inert `webui-data` JSON block containing the SSR chain, template inventory, CSS metadata, and state. The client packages first read any existing `window.__webui`, then lazily parse and remove that block into `window.__webui` when metadata is needed. This replaces the previous `<meta name="webui-inventory">` tag (which is still supported as a fallback for older servers).
+
+When using the WebUI framework plugin, `webui-data` also includes JSON-safe component template metadata and a small executable side-channel installs component-local condition closures in `window.__webui.templateFns`. FAST plugins emit their own `<f-template>` tags, so they use the same router metadata but do not emit WebUI `templates` or `templateFns`.
 
 ```html
 <script type="application/json" id="webui-data">
@@ -415,7 +417,7 @@ The server also emits an inert `webui-data` JSON block containing the SSR chain,
   "nonce": "abc123",
   "css": ["/styles/main.css"],
   "styles": ["app-shell", "topic-page"],
-  "templates": {}
+  "state": { "title": "Topic" }
 }
 </script>
 ```

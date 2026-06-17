@@ -15,13 +15,18 @@ interface BrowserGlobals {
   };
   document: {
     createElement(): Record<string, unknown>;
+    getElementById(id: string): null;
     querySelector(): null;
+    querySelectorAll(): unknown[];
+    addEventListener(): void;
+    removeEventListener(): void;
     body: { children: never[]; appendChild(): void };
     createDocumentFragment(): { appendChild(): void };
     startViewTransition: undefined;
     head: { appendChild(): void };
   };
   window: typeof globalThis;
+  dispatchEvent(event: Event): boolean;
   navigation: {
     addEventListener(): void;
     removeEventListener(): void;
@@ -49,7 +54,11 @@ if (typeof customElements === 'undefined') {
 if (typeof document === 'undefined') {
   g.document = {
     createElement: () => ({ setAttribute() {}, style: {} }),
+    getElementById: () => null,
     querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener() {},
+    removeEventListener() {},
     body: { children: [], appendChild() {} },
     createDocumentFragment: () => ({ appendChild() {} }),
     startViewTransition: undefined,
@@ -58,6 +67,9 @@ if (typeof document === 'undefined') {
 }
 if (typeof window === 'undefined') {
   g.window = globalThis;
+}
+if (typeof dispatchEvent === 'undefined') {
+  g.dispatchEvent = () => true;
 }
 if (!g.navigation) {
   g.navigation = {

@@ -520,9 +520,9 @@ The router is organized into 13 internal modules, each handling a single concern
 | `browser-shim` | Navigation API type shims |
 | `types` | Public type definitions and type guards |
 
-## SSR Bootstrap (`window.__webui`)
+## SSR metadata (`window.__webui`)
 
-On first load, the server emits inert SSR metadata in `#webui-data`; a tiny bootstrap script parses it into `window.__webui` and installs condition closures:
+On first load, the server emits inert SSR metadata in `#webui-data`. The router first reads any existing `window.__webui`, then lazily parses and removes the data block into `window.__webui` during startup:
 
 ```html
 <script type="application/json" id="webui-data">
@@ -532,10 +532,12 @@ On first load, the server emits inert SSR metadata in `#webui-data`; a tiny boot
   "nonce": "abc123",
   "css": ["/styles/main.css"],
   "styles": ["app-shell"],
-  "templates": {}
+  "state": {}
 }
 </script>
 ```
+
+With the WebUI framework plugin, the same data block can also include JSON-safe `templates`, and a small executable side-channel installs component-local condition closures in `window.__webui.templateFns`. FAST plugins use `<f-template>` tags instead and only need the shared router metadata.
 
 The router reads this at startup, eliminating DOM walking and URLPattern usage. Older servers that emit `<meta name="webui-inventory">` are still supported as a fallback.
 

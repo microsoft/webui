@@ -25,6 +25,18 @@ pub struct WebUiTemplatePayload<'a> {
     pub template_functions: &'a str,
 }
 
+/// Context passed to plugin-specific SSR bootstrap extension hooks.
+pub struct BootstrapExtensionContext<'a> {
+    /// Full protocol for plugins that need additional component metadata.
+    pub protocol: &'a WebUIProtocol,
+    /// Route-reachable component tags for this render.
+    pub components: &'a HashSet<String>,
+    /// Split WebUI template payloads collected for this render.
+    pub payloads: &'a [WebUiTemplatePayload<'a>],
+    /// CSP nonce for executable scripts, when configured.
+    pub nonce: Option<&'a str>,
+}
+
 /// A handler plugin that can inject additional content during rendering.
 ///
 /// Plugins receive callbacks at key points in the rendering lifecycle:
@@ -123,6 +135,20 @@ pub trait HandlerPlugin {
         _components: &HashSet<String>,
     ) -> Option<Vec<WebUiTemplatePayload<'a>>> {
         None
+    }
+
+    /// Emit plugin-specific executable SSR bootstrap code, if needed.
+    ///
+    /// The handler emits shared metadata as inert `#webui-data`; client
+    /// packages parse that data lazily. Plugins can still emit executable
+    /// side-channel data here, such as WebUI framework `templateFns` closures.
+    /// The default is a no-op for FAST plugins, which use `<f-template>` tags.
+    fn emit_bootstrap_extension(
+        &self,
+        _context: BootstrapExtensionContext<'_>,
+        _writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        Ok(())
     }
 }
 

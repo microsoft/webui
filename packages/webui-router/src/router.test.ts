@@ -102,6 +102,52 @@ describe('WebUIRouter', () => {
     (globals() as any).__webui = savedWebui;
   });
 
+  describe('SSR metadata bootstrap', () => {
+    test('start lazily loads webui-data and preserves templateFns', () => {
+      const origGetElementById = (globalThis as any).document.getElementById;
+      const origQuerySelector = (globalThis as any).document.querySelector;
+      const origQuerySelectorAll = (globalThis as any).document.querySelectorAll;
+      const origAddEventListener = (globalThis as any).document.addEventListener;
+      const origRemoveEventListener = (globalThis as any).document.removeEventListener;
+      let removed = false;
+
+      globals().__webui = {
+        templateFns: { greeting: [() => true] },
+      };
+
+      (globalThis as any).document.getElementById = (id: string) => {
+        if (id !== 'webui-data') return null;
+        return {
+          textContent: '{"inventory":"0c","nonce":"n","css":["a.css"],"styles":["x-card"],"state":{"title":"Hello"},"templates":{"greeting":{"h":"<p></p>"}},"chain":[{"component":"x-card","path":"/"}]}',
+          remove() { removed = true; },
+        };
+      };
+      (globalThis as any).document.querySelector = () => null;
+      (globalThis as any).document.querySelectorAll = () => [];
+      (globalThis as any).document.addEventListener = () => {};
+      (globalThis as any).document.removeEventListener = () => {};
+
+      try {
+        const router = new WebUIRouter();
+        router.start();
+
+        assert.equal(globals().__webui!.inventory, '0c');
+        assert.equal(globals().__webui!.nonce, 'n');
+        assert.deepEqual(globals().__webui!.state, { title: 'Hello' });
+        assert.ok(globals().__webui!.templates?.greeting, 'template metadata should be loaded');
+        assert.ok(globals().__webui!.templateFns?.greeting, 'existing templateFns should be preserved');
+        assert.equal(removed, true);
+        router.destroy();
+      } finally {
+        (globalThis as any).document.getElementById = origGetElementById;
+        (globalThis as any).document.querySelector = origQuerySelector;
+        (globalThis as any).document.querySelectorAll = origQuerySelectorAll;
+        (globalThis as any).document.addEventListener = origAddEventListener;
+        (globalThis as any).document.removeEventListener = origRemoveEventListener;
+      }
+    });
+  });
+
   describe('gc', () => {
     test('clears all templates and resets inventory', () => {
       const router = new WebUIRouter();
