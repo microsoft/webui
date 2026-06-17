@@ -9,7 +9,6 @@
 
 import {
   ROUTE_SELECTOR,
-  routePath,
   isExact,
   routeComponent,
   activateRoute,
@@ -22,41 +21,20 @@ import type { RouteChainEntry } from './cache.js';
 /**
  * Build the initial route chain from SSR data.
  *
- * Primary path: reads the `window.__webui.chain` array emitted
- * by the Rust handler during SSR.  Each entry already contains the
- * resolved `component`, `path`, `params`, etc.
- *
- * Fallback: if `window.__webui` is not available, tries the legacy
- * `<script id="webui-chain">` JSON blob, then walks the DOM tree of
- * active `<webui-route>` elements.
+ * Reads the `window.__webui.chain` array loaded from `#webui-data`.
+ * Each entry already contains the resolved `component`, `path`, `params`, etc.
  */
 export function buildChainFromSSR(): RouteChainEntry[] {
-  // Primary: read from bundled window.__webui object
   const meta = window.__webui;
   if (meta?.chain && Array.isArray(meta.chain)) {
     return hydrateChainFromJSON(meta.chain as RouteChainEntry[]);
   }
-
-  // Fallback: try legacy script tag approach
-  const scriptEl = document.querySelector<HTMLElement>('#webui-chain');
-  const raw = scriptEl?.textContent;
-  if (raw) {
-    try {
-      const entries = JSON.parse(raw) as RouteChainEntry[];
-      return hydrateChainFromJSON(entries);
-    } catch {
-      // Malformed JSON — fall through to DOM-walk fallback
-    }
-  }
-
-  // Final fallback: walk SSR'd active routes in the DOM (pre-chain servers)
-  return buildChainFromDOM();
+  return [];
 }
 
 /**
  * Hydrate a chain parsed from the server-emitted JSON.
- * Uses `data-ri` attributes for O(1) element binding when available,
- * falling back to component-name matching for legacy SSR output.
+ * Uses `data-ri` attributes for O(1) element binding.
  */
 function hydrateChainFromJSON(entries: RouteChainEntry[]): RouteChainEntry[] {
   // Collect all indexed route elements, piercing shadow roots.
@@ -74,105 +52,25 @@ function hydrateChainFromJSON(entries: RouteChainEntry[]): RouteChainEntry[] {
   }
   collectRi(document);
 
-  const hasRiAttrs = riMap.size > 0;
   const chain: RouteChainEntry[] = [];
 
-  if (hasRiAttrs) {
-    // Fast path: O(1) lookup by chain index
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      entry.params = entry.params ?? {};
-      entry.component = entry.component ?? '';
-      entry.path = entry.path ?? '';
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    entry.params = entry.params ?? {};
+    entry.component = entry.component ?? '';
+    entry.path = entry.path ?? '';
 
-      const el = riMap.get(i);
-      if (el) {
-        entry.el = el;
-        activateRoute(el, entry.params);
-        setRouteMeta(el, {
-          allowedQuery: entry.allowedQuery,
-          keepAlive: entry.keepAlive ?? false,
-        });
-      }
-      chain.push(entry);
+    const el = riMap.get(i);
+    if (el) {
+      entry.el = el;
+      activateRoute(el, entry.params);
+      setRouteMeta(el, {
+        allowedQuery: entry.allowedQuery,
+        keepAlive: entry.keepAlive ?? false,
+      });
     }
-  } else {
-    // Legacy fallback: walk DOM by component name
-    let currentRoutes = discoverTopRoutes();
-
-    for (const entry of entries) {
-      entry.params = entry.params ?? {};
-      entry.component = entry.component ?? '';
-      entry.path = entry.path ?? '';
-
-      const el = findRouteByComponent(currentRoutes, entry.component);
-      if (el) {
-        entry.el = el;
-        activateRoute(el, entry.params);
-        setRouteMeta(el, {
-          allowedQuery: entry.allowedQuery,
-          keepAlive: entry.keepAlive ?? false,
-        });
-        chain.push(entry);
-        currentRoutes = discoverChildRoutes(el);
-      } else {
-        chain.push(entry);
-      }
-    }
-  }
-
-  return chain;
-}
-
-/** Find a route element by its `component` attribute within a set of candidates. */
-function findRouteByComponent(routes: HTMLElement[], component: string): HTMLElement | undefined {
-  for (const el of routes) {
-    if (routeComponent(el) === component) return el;
-  }
-  return undefined;
-}
-
-/**
- * DOM-walk fallback for servers that don't emit `#webui-chain`.
- * Walks active `<webui-route>` elements without param extraction
- * (params are empty — acceptable because the SSR content is already rendered).
- */
-function buildChainFromDOM(): RouteChainEntry[] {
-  const chain: RouteChainEntry[] = [];
-  let currentRoutes = discoverTopRoutes();
-
-  while (currentRoutes.length > 0) {
-    const activeEl = currentRoutes.find(el => el.hasAttribute('active'));
-    if (!activeEl) break;
-
-    const comp = routeComponent(activeEl);
-    const rawPath = routePath(activeEl);
-    const params: Record<string, string> = {};
-
-    const entry: RouteChainEntry = {
-      component: comp,
-      path: rawPath,
-      params,
-      exact: isExact(activeEl),
-      el: activeEl,
-      allowedQuery: activeEl.getAttribute('query') ?? undefined,
-      keepAlive: activeEl.hasAttribute('keep-alive'),
-      pendingComponent: activeEl.getAttribute('pending') ?? undefined,
-      errorComponent: activeEl.getAttribute('error') ?? undefined,
-      invalidates: activeEl.getAttribute('invalidates')
-        ?.split(',').map(s => s.trim()).filter(Boolean) ?? undefined,
-    };
-
     chain.push(entry);
-    setRouteMeta(activeEl, {
-      allowedQuery: entry.allowedQuery,
-      keepAlive: entry.keepAlive ?? false,
-    });
-    activateRoute(activeEl, params);
-
-    currentRoutes = discoverChildRoutes(activeEl);
   }
-
   return chain;
 }
 

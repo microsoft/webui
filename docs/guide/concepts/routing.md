@@ -402,7 +402,7 @@ The server renders `<webui-route>` elements with these DOM attributes:
 
 Build-time attributes like `query`, `keep-alive`, `cache-tags`, and `invalidates` are **not** emitted as DOM attributes on `<webui-route>` elements. They are compiled into the binary protocol and delivered to the client via `window.__webui.chain` JSON data. The `<route>` source attributes remain valid and unchanged - the compiler just delivers them through JSON instead of the DOM.
 
-The server also emits an inert `webui-data` JSON block containing the SSR chain, template inventory, CSS metadata, and state. The client packages first read any existing `window.__webui`, then lazily parse and remove that block into `window.__webui` when metadata is needed. This replaces the previous `<meta name="webui-inventory">` tag (which is still supported as a fallback for older servers).
+The server also emits an inert `webui-data` JSON block containing the SSR chain, template inventory, CSS metadata, and state. The client packages first read any existing `window.__webui`, then lazily parse and remove that block into `window.__webui` when metadata is needed.
 
 When using the WebUI framework plugin, `webui-data` also includes JSON-safe component template metadata and a small executable side-channel installs component-local condition closures in `window.__webui.templateFns`. FAST plugins emit their own `<f-template>` tags, so they use the same router metadata but do not emit WebUI `templates` or `templateFns`.
 
@@ -428,7 +428,7 @@ At startup, the router reads `window.__webui` instead of walking the DOM:
 
 1. **Chain**: The SSR chain is provided as JSON in `window.__webui.chain`, eliminating DOM walking and URLPattern usage
 2. **Element binding**: `data-ri` attributes on `<webui-route>` elements enable O(1) lookup by chain index - no component-name matching needed
-3. **Inventory**: `window.__webui.inventory` provides the template bitmask (falls back to `<meta name="webui-inventory">` for older servers)
+3. **Inventory**: `window.__webui.inventory` provides the template bitmask
 4. **CSS/Styles**: `window.__webui.css` and `window.__webui.styles` track injected assets
 
 #### SSR Fresh / Loaders
@@ -673,7 +673,7 @@ Each `chain` entry can include: `component`, `path`, `params`, `exact`, `keepAli
 
 ### Full HTML (initial load)
 
-Without `Accept: application/json`, return the full SSR'd page. The handler emits a `window.__webui` script in `<head>` containing the SSR chain, template inventory, and CSS metadata so the client router can bootstrap without DOM walking.
+Without `Accept: application/json`, return the full SSR'd page. The handler emits `#webui-data` containing the SSR chain, template inventory, and CSS metadata so the client router can bootstrap without DOM walking.
 
 ### Partial Navigation
 

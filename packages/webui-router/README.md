@@ -10,7 +10,7 @@ Uses the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navig
 
 1. **Server renders the full page** - the matched route chain is SSR'd with declarative shadow roots. The page is interactive before JavaScript loads.
 2. **Hydration completes** - WebUI Framework hydrates shell components.
-3. **Router starts** - reads the SSR chain and metadata from `window.__webui` (JSON bootstrap), then intercepts link clicks via the Navigation API. Falls back to DOM-based discovery for older servers.
+3. **Router starts** - lazily loads the SSR chain and metadata from `#webui-data` into `window.__webui`, then intercepts link clicks via the Navigation API.
 4. **Client-side navigation** - fetches a JSON partial from the server, which includes the matched route chain. The client diffs old vs new chain and mounts only the changed component. Parent components stay mounted.
 
 No full page reloads. The shell stays in place. Only route content changes.
@@ -539,7 +539,7 @@ On first load, the server emits inert SSR metadata in `#webui-data`. The router 
 
 With the WebUI framework plugin, the same data block can also include JSON-safe `templates`, and a small executable side-channel installs component-local condition closures in `window.__webui.templateFns`. FAST plugins use `<f-template>` tags instead and only need the shared router metadata.
 
-The router reads this at startup, eliminating DOM walking and URLPattern usage. Older servers that emit `<meta name="webui-inventory">` are still supported as a fallback.
+The router reads this at startup, eliminating DOM walking and URLPattern usage.
 
 ## Exports
 
