@@ -5,6 +5,7 @@
     <RuntimeIdentifier>linux-x64</RuntimeIdentifier>
     <Description>WebUI native runtime for Linux x64.</Description>
     <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IncludeSymbols>false</IncludeSymbols>
     <IsPackable>true</IsPackable>
     <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
     <!-- No managed code in this package -->
