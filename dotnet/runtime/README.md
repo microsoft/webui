@@ -23,6 +23,10 @@ Reference a runtime package directly only when you are manually assembling nativ
 | macOS x64 | `Microsoft.WebUI.Runtime.osx-x64` |
 | macOS ARM64 | `Microsoft.WebUI.Runtime.osx-arm64` |
 
+## Documentation
+
+See the [WebUI repository](https://github.com/microsoft/webui) for full usage guides and examples.
+
 ## License
 
-MIT
+MIT - Copyright (c) Microsoft Corporation.
