@@ -60,7 +60,7 @@ Run the development server with `npm run dev` and build for production with `npm
 
 ### Cross-Platform Support
 
-The npm package uses platform-specific optional dependencies to deliver native binaries. Supported platforms are installed automatically - no Rust toolchain required.
+The npm package uses platform-specific optional dependencies to deliver native binaries. The `webui` command is a launcher that selects the package for the current OS and CPU at runtime. Supported platforms are installed automatically - no Rust toolchain required.
 
 ## Rust
 

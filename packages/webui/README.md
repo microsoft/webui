@@ -98,7 +98,7 @@ const { templates, templateFunctions, templateStyles, inventory } = JSON.parse(j
 
 ## CLI
 
-The package also includes the `webui` CLI binary:
+The package also includes the `webui` CLI launcher:
 
 ```bash
 # Build templates to disk
@@ -122,7 +122,7 @@ npx webui inspect ./dist/protocol.bin
 | Linux | x64 | `@microsoft/webui-linux-x64` |
 | Linux | arm64 | `@microsoft/webui-linux-arm64` |
 
-Platform-specific packages are installed automatically as optional dependencies.
+Platform-specific packages are installed automatically as optional dependencies. The CLI launcher selects the matching platform package at runtime.
 
 ## License
 

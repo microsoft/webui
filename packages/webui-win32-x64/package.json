@@ -2,6 +2,9 @@
   "cpu": [
     "x64"
   ],
+  "bin": {
+    "webui-win32-x64": "bin/webui.exe"
+  },
   "description": "WebUI platform-specific binary for Windows x64",
   "files": [
     "bin/webui.exe",

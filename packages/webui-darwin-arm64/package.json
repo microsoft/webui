@@ -2,6 +2,9 @@
   "cpu": [
     "arm64"
   ],
+  "bin": {
+    "webui-darwin-arm64": "bin/webui"
+  },
   "description": "WebUI platform-specific binary for macOS ARM64",
   "files": [
     "bin/webui",

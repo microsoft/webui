@@ -20,7 +20,7 @@
     "build": "tsc",
     "postbuild": "node dist/install.js",
     "postinstall": "node --input-type=module -e \"try{await import('./dist/install.js')}catch{}\"",
-    "test": "tsc --project tsconfig.test.json && node --test dist/test/integration.test.js"
+    "test": "tsc --project tsconfig.test.json && node --test \"dist/test/*.test.js\""
   },
   "engines": {
     "node": ">=18"

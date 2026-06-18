@@ -1,0 +1,30 @@
+#!/usr/bin/env node
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+import { spawnSync } from "node:child_process";
+import { platformKey, resolve } from "../dist/platform.js";
+
+const binPath = resolve("bin");
+
+if (!binPath) {
+  console.error(
+    `[webui] No CLI binary is available for ${platformKey()}. ` +
+      "Install optional dependencies, or set WEBUI_BINARY_PATH to a custom binary.",
+  );
+  process.exit(1);
+}
+
+const result = spawnSync(binPath, process.argv.slice(2), { stdio: "inherit" });
+
+if (result.error) {
+  console.error(`[webui] Failed to run ${binPath}: ${result.error.message}`);
+  process.exit(1);
+}
+
+if (result.signal) {
+  console.error(`[webui] CLI process terminated by signal ${result.signal}`);
+  process.exit(1);
+}
+
+process.exit(result.status ?? 1);

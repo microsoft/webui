@@ -16,5 +16,4 @@ packages/*/webui.node
 publish/
 *.nupkg
 .last
-packages/webui/bin/webui
 packages/webui/bin/webui.exe

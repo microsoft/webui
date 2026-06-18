@@ -14,6 +14,8 @@
 use crate::util::{build_command, run_command_quiet};
 use crate::version;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -480,6 +482,7 @@ fn stage_platform(root: &Path, platform: &PlatformEntry, build_dir: &Path) -> bo
             .join("native"),
         dest_name: platform.ffi_lib,
         label: "nuget",
+        executable: false,
     });
 
     // npm: CLI binary → packages/webui-{platform}/bin/
@@ -488,6 +491,7 @@ fn stage_platform(root: &Path, platform: &PlatformEntry, build_dir: &Path) -> bo
         dest_dir: &root.join("packages").join(platform.npm_package).join("bin"),
         dest_name: platform.cli_binary,
         label: "npm cli",
+        executable: true,
     });
 
     // npm: Node addon (renamed to webui.node)
@@ -496,6 +500,7 @@ fn stage_platform(root: &Path, platform: &PlatformEntry, build_dir: &Path) -> bo
         dest_dir: &root.join("packages").join(platform.npm_package),
         dest_name: "webui.node",
         label: "npm addon",
+        executable: false,
     });
 
     // publish/native/: CLI binary with platform suffix for direct download
@@ -505,6 +510,7 @@ fn stage_platform(root: &Path, platform: &PlatformEntry, build_dir: &Path) -> bo
         dest_dir: &root.join("publish").join("native"),
         dest_name: &native_name,
         label: "native",
+        executable: true,
     });
 
     ok
@@ -801,6 +807,7 @@ struct CopySpec<'a> {
     dest_dir: &'a Path,
     dest_name: &'a str,
     label: &'a str,
+    executable: bool,
 }
 
 fn stage_file(spec: &CopySpec<'_>) -> bool {
@@ -838,6 +845,19 @@ fn stage_file(spec: &CopySpec<'_>) -> bool {
         return false;
     }
 
+    if spec.executable {
+        if let Err(e) = make_executable(&dest) {
+            eprintln!(
+                "  {} [{}] chmod failed: {}: {}",
+                console::style("✘").red().bold(),
+                spec.label,
+                dest.display(),
+                e,
+            );
+            return false;
+        }
+    }
+
     let rel = dest
         .strip_prefix(std::env::current_dir().as_deref().unwrap_or(Path::new("")))
         .unwrap_or(&dest);
@@ -848,6 +868,21 @@ fn stage_file(spec: &CopySpec<'_>) -> bool {
         console::style(rel.display()).bold(),
     );
     true
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> Result<(), String> {
+    let mut permissions = fs::metadata(path)
+        .map_err(|e| format!("failed to read permissions: {e}"))?
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions)
+        .map_err(|e| format!("failed to set executable permissions: {e}"))
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 fn resolve_build_dir(root: &Path, triple: &str, profile: &str) -> PathBuf {
@@ -1092,6 +1127,30 @@ mod tests {
 
         assert!(dest.path().join("pkg.crate").exists());
         assert!(!dest.path().join("other.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_file_sets_executable_permissions_when_requested() {
+        let src = tempfile::TempDir::new().unwrap();
+        let dest = tempfile::TempDir::new().unwrap();
+        let src_file = src.path().join("webui");
+        fs::write(&src_file, "binary").unwrap();
+
+        assert!(stage_file(&CopySpec {
+            src: &src_file,
+            dest_dir: dest.path(),
+            dest_name: "webui",
+            label: "test",
+            executable: true,
+        }));
+
+        let mode = fs::metadata(dest.path().join("webui"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
     }
 
     #[test]

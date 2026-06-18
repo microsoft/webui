@@ -1523,7 +1523,8 @@ output names.
 ### npm Distribution
 
 The `@microsoft/webui` npm package follows the esbuild single-package model:
-- `bin: { "webui": "bin/webui" }` — CLI binary via platform-specific `optionalDependencies`
+- `bin: { "webui": "bin/webui" }` — a Node launcher that resolves the CLI binary from the matching platform-specific `optionalDependencies` package at runtime
+- Platform packages declare platform-suffixed `bin` entries (for example, `webui-darwin-arm64`) so npm publishes their native CLI files with executable permissions.
 - `main: "lib/main.js"` — Programmatic API that loads the `.node` native addon directly
 - WASM fallback for render when native addon is unavailable (one-time warning logged)
 

@@ -968,6 +968,9 @@ Each route handler should return only the state that route's component needs:
 
 Add `@microsoft/webui-router` if using client-side navigation.
 
+The `webui` npm command is a launcher that resolves the native CLI from the
+matching platform-specific optional dependency at runtime.
+
 ## Language Integration (Server Side)
 
 WebUI renders from **any** backend. The server loads `protocol.bin` once
