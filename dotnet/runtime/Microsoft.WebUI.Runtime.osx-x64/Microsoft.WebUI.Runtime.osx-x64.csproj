@@ -5,9 +5,10 @@
     <RuntimeIdentifier>osx-x64</RuntimeIdentifier>
     <Description>WebUI native runtime for macOS x64.</Description>
     <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IncludeSymbols>false</IncludeSymbols>
     <IsPackable>true</IsPackable>
     <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
-    <!-- No managed code in this package -->
+    <!-- No managed code in this package; native-only, no symbol package needed -->
     <NoWarn>$(NoWarn);NU5128</NoWarn>
   </PropertyGroup>
   <ItemGroup>
