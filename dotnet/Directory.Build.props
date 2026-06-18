@@ -17,6 +17,12 @@
     <PackageTags>webui</PackageTags>
     <!-- PackageIcon will be set once an approved 128x128 transparent PNG is available. -->
   </PropertyGroup>
+  <PropertyGroup Condition="$([System.String]::Copy('$(MSBuildProjectName)').StartsWith('Microsoft.WebUI.Runtime.'))">
+    <IsWebUIRuntimePackage>true</IsWebUIRuntimePackage>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>WebUI native runtime assets for this release. See https://github.com/microsoft/webui/releases for release notes.</PackageReleaseNotes>
+    <PackageTags>webui dotnet native runtime ffi server-side-rendering</PackageTags>
+  </PropertyGroup>
   <ItemGroup Condition="'$(MSBuildProjectName)' != 'Microsoft.WebUI.Tests'">
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
   </ItemGroup>

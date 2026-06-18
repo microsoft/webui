@@ -1531,7 +1531,7 @@ The `@microsoft/webui` npm package follows the esbuild single-package model:
 
 The `Microsoft.WebUI` package is the managed .NET binding for `webui-ffi`. It targets `net8.0` and `net9.0`, packs `dotnet/src/Microsoft.WebUI/README.md`, and publishes XML documentation generated from public API comments.
 
-Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each supported RID. The managed package references every runtime package so NuGet restores them transitively; .NET then resolves `webui_ffi` from the matching `runtimes/<rid>/native` asset. `WEBUI_LIB_PATH` remains the override for custom local native builds.
+Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each supported RID. The runtime packages share `dotnet/runtime/README.md`, include NuGet release notes pointing to the GitHub release notes, and carry the matching `runtimes/<rid>/native` asset. The managed package references every runtime package so NuGet restores them transitively; .NET then resolves `webui_ffi` from the matching native asset. `WEBUI_LIB_PATH` remains the override for custom local native builds.
 
 `dotnet/Directory.Build.props` applies repository metadata, Source Link, and `.snupkg` symbol package generation to packable .NET projects. `cargo xtask publish` runs `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
 
