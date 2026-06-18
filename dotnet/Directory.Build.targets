@@ -1,5 +1,9 @@
 <Project>
-  <ItemGroup Condition="'$(PackageReadmeFile)' != '' and Exists('$(MSBuildProjectDirectory)\$(PackageReadmeFile)')">
-    <None Include="$(MSBuildProjectDirectory)\$(PackageReadmeFile)" Pack="true" PackagePath="/" />
+  <PropertyGroup>
+    <PackageReadmeSourceFile Condition="'$(PackageReadmeFile)' != '' and Exists('$(MSBuildProjectDirectory)/$(PackageReadmeFile)')">$(MSBuildProjectDirectory)/$(PackageReadmeFile)</PackageReadmeSourceFile>
+    <PackageReadmeSourceFile Condition="'$(PackageReadmeSourceFile)' == '' and '$(PackageReadmeFile)' != '' and '$(IsWebUIRuntimePackage)' == 'true' and Exists('$(MSBuildThisFileDirectory)runtime/$(PackageReadmeFile)')">$(MSBuildThisFileDirectory)runtime/$(PackageReadmeFile)</PackageReadmeSourceFile>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(PackageReadmeSourceFile)' != ''">
+    <None Include="$(PackageReadmeSourceFile)" Pack="true" PackagePath="/" />
   </ItemGroup>
 </Project>
