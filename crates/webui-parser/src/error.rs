@@ -34,23 +34,6 @@ pub enum ParserError {
     #[error("Component error: {0}")]
     Component(String),
 
-    /// A component supplied its own `<template>` wrapper under
-    /// `CssStrategy::Module` but did not declare a
-    /// `shadowrootadoptedstylesheets` attribute. The framework cannot
-    /// silently inject the attribute without overriding developer intent
-    /// on the wrapper, so authoring help is surfaced at build time.
-    #[error(
-        "Component <{tag}> supplies its own <template> wrapper under --css=module but is \
-         missing the `shadowrootadoptedstylesheets` attribute, which is required to wire \
-         the component's CSS module into its shadow root. Add \
-         `shadowrootadoptedstylesheets=\"{tag}\"` to the <template> tag, or remove the \
-         <template> wrapper to let the framework manage it automatically."
-    )]
-    MissingAdoptedStylesheets {
-        /// The component tag name (e.g. `mp-app`).
-        tag: String,
-    },
-
     /// CSS error.
     #[error("CSS error: {0}")]
     Css(String),

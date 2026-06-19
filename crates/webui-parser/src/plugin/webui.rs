@@ -55,8 +55,8 @@
 //!    counts them per-element, and keeps them out of the parsed protocol.
 //! 2. **`finish_element`** — encodes the accumulated event count
 //!    plus attribute binding count into 12 bytes.
-//! 3. **`register_component_template`** — caches the component's final template
-//!    HTML for later compilation (deduplicates by tag name).
+//! 3. **`register_component_template`** — caches the component's plugin-facing
+//!    template HTML for later compilation (deduplicates by tag name).
 //! 4. **`take_component_templates`** — called after parsing is complete;
 //!    compiles each tracked component into JSON metadata plus condition closures.
 
@@ -70,7 +70,7 @@ use std::cell::Cell;
 use std::fmt::Write;
 use webui_protocol::{condition_expr, ConditionExpr, WebUIElementData};
 
-/// A component whose final template HTML has been captured for compilation.
+/// A component whose plugin-facing template HTML has been captured for compilation.
 /// Repeated tracking for the same tag updates the stored template so the plugin
 /// can prefer processed HTML over raw component source.
 struct TrackedComponent {

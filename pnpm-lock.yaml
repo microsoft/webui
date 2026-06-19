@@ -256,6 +256,9 @@ importers:
       '@microsoft/webui-examples-theme':
         specifier: workspace:*
         version: link:../../../packages/webui-examples-theme
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.2
       esbuild:
         specifier: 'catalog:'
         version: 0.28.1

@@ -376,6 +376,17 @@ pub struct HtmlParser {
     current_fragment_id: String,
 }
 
+struct BuiltComponentTemplate {
+    ssr: String,
+    artifact: Option<String>,
+}
+
+impl BuiltComponentTemplate {
+    fn artifact(&self) -> &str {
+        self.artifact.as_deref().unwrap_or(&self.ssr)
+    }
+}
+
 impl HtmlParser {
     /// Create a new directive parser with default parser options.
     #[must_use]
@@ -1284,17 +1295,18 @@ impl HtmlParser {
                     .help(self.unknown_component_help(element.name()))
                 })?
                 .clone();
-            let processed = self.build_component_template(
+            let built = self.build_component_templates(
                 element.name(),
                 &html_content,
                 css_content.as_deref(),
+                self.plugin.is_some(),
             )?;
 
             if let Some(ref mut p) = self.plugin {
-                p.register_component_template(element.name(), &component_data, &processed)?;
+                p.register_component_template(element.name(), &component_data, built.artifact())?;
             }
 
-            self.parse(element.name(), &processed)?;
+            self.parse(element.name(), &built.ssr)?;
         }
 
         fragments.push(WebUIFragment::component(element.name().to_string()));
@@ -2017,18 +2029,19 @@ impl HtmlParser {
         self.token_store
             .extend(component_data.css_tokens.iter().cloned());
 
-        let processed = self.build_component_template(
+        let built = self.build_component_templates(
             component,
             &component_data.html_content,
             component_data.css_content.as_deref(),
+            self.plugin.is_some(),
         )?;
 
         if let Some(ref mut p) = self.plugin {
-            p.register_component_template(component, &component_data, &processed)?;
+            p.register_component_template(component, &component_data, built.artifact())?;
         }
 
         let saved_buffer = std::mem::take(&mut self.raw_buffer);
-        self.parse(component, &processed)?;
+        self.parse(component, &built.ssr)?;
         self.raw_buffer = saved_buffer;
 
         Ok(())
@@ -2038,6 +2051,7 @@ impl HtmlParser {
     const SKIPPED_ATTRIBUTES: &[&str] = &["class", "style", "role"];
     /// Skipped attribute prefixes for components.
     const SKIPPED_ATTRIBUTE_PREFIXES: &[&str] = &["data-", "aria-"];
+    const ADOPTED_STYLESHEETS_ATTR: &str = "shadowrootadoptedstylesheets";
 
     fn is_skipped_attribute(name: &str) -> bool {
         Self::SKIPPED_ATTRIBUTES.contains(&name)
@@ -2052,18 +2066,16 @@ impl HtmlParser {
         matches!(name, "innerHTML" | "outerHTML" | "srcdoc" | "content") || name.starts_with("on")
     }
 
-    /// Process component template HTML: wrap in shadow DOM template if needed,
-    /// inject CSS snippet (link or inline style), and strip runtime-only attributes.
-    /// When `adopted_specifier` is `Some`, it is stored in template metadata
-    /// for the client runtime to handle document-level CSS adoption.
-    fn build_component_template(
+    /// Build both SSR-facing and plugin-facing component template views.
+    fn build_component_templates(
         &mut self,
         tag_name: &str,
         html: &str,
         css_content: Option<&str>,
-    ) -> Result<String> {
+        artifact_needed: bool,
+    ) -> Result<BuiltComponentTemplate> {
         let adopted_specifier = match self.options.css_strategy {
-            CssStrategy::Module if css_content.is_some() => Some(tag_name.to_string()),
+            CssStrategy::Module if css_content.is_some() => Some(tag_name),
             _ => None,
         };
         let css_injection = match self.options.css_strategy {
@@ -2092,11 +2104,20 @@ impl HtmlParser {
             CssStrategy::Module => None,
         };
 
-        self.process_component_template(
-            html,
-            css_injection.as_deref(),
-            adopted_specifier.as_deref(),
-        )
+        let artifact_differs = artifact_needed && Self::template_has_stripped_runtime_attrs(html);
+        let ssr =
+            self.process_component_template(html, css_injection.as_deref(), adopted_specifier)?;
+        let artifact = if artifact_differs {
+            Some(self.process_component_artifact_template(
+                html,
+                css_injection.as_deref(),
+                adopted_specifier,
+            )?)
+        } else {
+            None
+        };
+
+        Ok(BuiltComponentTemplate { ssr, artifact })
     }
 
     /// Process component template HTML for SSR output.
@@ -2105,16 +2126,13 @@ impl HtmlParser {
     ///
     /// - **Dev supplied `<template ...>`:** preserved verbatim — including
     ///   `shadowrootmode`, `shadowrootadoptedstylesheets`, signal fragments,
-    ///   and any other custom attributes. The only modification is stripping
-    ///   runtime-only attributes (`@event`, `:bind`, `?cond`) from the
-    ///   opening tag, since those are protocol metadata and never appear
-    ///   in HTML output. If a CSS snippet is supplied, it is injected
+    ///   and any other custom attributes. SSR strips runtime-only attributes
+    ///   (`@event`, `:bind`, `?cond`) from the opening tag, since those are
+    ///   protocol metadata and never appear in HTML output. Plugin-facing
+    ///   artifacts preserve them. If a CSS snippet is supplied, it is injected
     ///   immediately inside the opening tag (before the dev's children) so
-    ///   styles still apply. For `CssStrategy::Module` the dev MUST author
-    ///   a `shadowrootadoptedstylesheets="<tag>"` attribute on the wrapper
-    ///   — failure to do so returns
-    ///   [`ParserError::MissingAdoptedStylesheets`] at build time so the
-    ///   broken CSS adoption never reaches a browser.
+    ///   styles still apply. For `CssStrategy::Module`, the parser appends
+    ///   `shadowrootadoptedstylesheets="<tag>"` when it is missing.
     ///
     /// - **Dev omitted `<template>`:**
     ///   - `DomStrategy::Shadow` wraps the content in a framework-controlled
@@ -2132,46 +2150,36 @@ impl HtmlParser {
         css_snippet: Option<&str>,
         adopted_specifier: Option<&str>,
     ) -> Result<String> {
+        self.process_component_template_with_mode(html, css_snippet, adopted_specifier, false)
+    }
+
+    fn process_component_artifact_template(
+        &mut self,
+        html: &str,
+        css_snippet: Option<&str>,
+        adopted_specifier: Option<&str>,
+    ) -> Result<String> {
+        self.process_component_template_with_mode(html, css_snippet, adopted_specifier, true)
+    }
+
+    fn process_component_template_with_mode(
+        &mut self,
+        html: &str,
+        css_snippet: Option<&str>,
+        adopted_specifier: Option<&str>,
+        preserve_runtime_attrs: bool,
+    ) -> Result<String> {
         let trimmed = html.trim();
         let snippet = css_snippet.unwrap_or_default();
 
         let processed = if trimmed.starts_with("<template") {
-            let stripped = self.strip_runtime_attrs_from_template(trimmed);
-
-            // For `CssStrategy::Module`, the dev must declare
-            // `shadowrootadoptedstylesheets` themselves on their wrapper.
-            // Validate at build time so adoption can never silently fail.
-            if let Some(tag) = adopted_specifier {
-                let opening = match html::find_tag_close(&stripped) {
-                    Some(end) => &stripped[..=end],
-                    None => stripped.as_str(),
-                };
-                if !opening.contains("shadowrootadoptedstylesheets=") {
-                    return Err(ParserError::MissingAdoptedStylesheets {
-                        tag: tag.to_string(),
-                    });
-                }
-            }
-
-            if snippet.is_empty() {
-                stripped
+            let base = if preserve_runtime_attrs {
+                trimmed.to_string()
             } else {
-                // Splice the CSS snippet right after the opening `<template …>` tag.
-                // The quote-aware scanner avoids matching a `>` inside an attribute value
-                // (e.g., `data-x="a>b"`).
-                match html::find_tag_close(&stripped) {
-                    Some(open_end) => {
-                        let mut result = String::with_capacity(stripped.len() + snippet.len());
-                        result.push_str(&stripped[..=open_end]);
-                        result.push_str(snippet);
-                        result.push_str(&stripped[open_end + 1..]);
-                        result
-                    }
-                    // Malformed opening tag (no closing `>`): emit as-is rather
-                    // than panic. The downstream parser surfaces the error.
-                    None => stripped,
-                }
-            }
+                self.strip_runtime_attrs_from_template(trimmed)
+            };
+            let with_adopted = Self::append_adopted_attr_if_missing(base, adopted_specifier);
+            Self::inject_css_snippet_into_template(with_adopted, snippet)
         } else {
             match self.options.dom_strategy {
                 DomStrategy::Shadow => {
@@ -2179,15 +2187,13 @@ impl HtmlParser {
                     let adopted_extra = if adopted.is_empty() {
                         0
                     } else {
-                        33 + adopted.len()
+                        Self::adopted_attr_len(adopted)
                     };
                     let mut result =
                         String::with_capacity(45 + adopted_extra + snippet.len() + trimmed.len());
                     result.push_str("<template shadowrootmode=\"open\"");
                     if !adopted.is_empty() {
-                        result.push_str(" shadowrootadoptedstylesheets=\"");
-                        result.push_str(adopted);
-                        result.push('"');
+                        Self::push_adopted_attr(&mut result, adopted);
                     }
                     result.push('>');
                     result.push_str(snippet);
@@ -2209,6 +2215,68 @@ impl HtmlParser {
         };
 
         self.strip_template_comments(processed)
+    }
+
+    fn inject_css_snippet_into_template(html: String, snippet: &str) -> String {
+        if snippet.is_empty() {
+            return html;
+        }
+
+        match html::find_tag_close(&html) {
+            Some(open_end) => {
+                let mut result = String::with_capacity(html.len() + snippet.len());
+                result.push_str(&html[..=open_end]);
+                result.push_str(snippet);
+                result.push_str(&html[open_end + 1..]);
+                result
+            }
+            // Malformed opening tag (no closing `>`): emit as-is rather than
+            // panic. The downstream parser surfaces the error.
+            None => html,
+        }
+    }
+
+    fn append_adopted_attr_if_missing(html: String, adopted_specifier: Option<&str>) -> String {
+        let Some(adopted) = adopted_specifier else {
+            return html;
+        };
+        let Some(tag) = html::parse_tag(&html) else {
+            return html;
+        };
+        if tag.name != "template" || tag.closing || tag.has_attr(Self::ADOPTED_STYLESHEETS_ATTR) {
+            return html;
+        }
+
+        let mut result = String::with_capacity(html.len() + Self::adopted_attr_len(adopted));
+        result.push_str(&html[..tag.close]);
+        Self::push_adopted_attr(&mut result, adopted);
+        result.push_str(&html[tag.close..]);
+        result
+    }
+
+    fn push_adopted_attr(out: &mut String, adopted: &str) {
+        out.push(' ');
+        out.push_str(Self::ADOPTED_STYLESHEETS_ATTR);
+        out.push_str("=\"");
+        out.push_str(adopted);
+        out.push('"');
+    }
+
+    fn adopted_attr_len(adopted: &str) -> usize {
+        4 + Self::ADOPTED_STYLESHEETS_ATTR.len() + adopted.len()
+    }
+
+    fn template_has_stripped_runtime_attrs(html: &str) -> bool {
+        let trimmed = html.trim_start();
+        let Some(tag) = html::parse_tag(trimmed) else {
+            return false;
+        };
+        if tag.name != "template" || tag.closing {
+            return false;
+        }
+        tag.attrs().any(|attr| {
+            attr.name.starts_with('@') || attr.name.starts_with(':') || attr.name.starts_with('?')
+        })
     }
 
     fn strip_template_comments(&mut self, html: String) -> Result<String> {
@@ -4451,56 +4519,26 @@ mod tests {
     // `shadowrootadoptedstylesheets` attribute is the only wire between
     // the framework-emitted importmap/module-script and the shadow root.
     // When the developer supplies their own `<template>` wrapper (e.g.
-    // to attach `@event` handlers, as commerce's `mp-app` does), the
-    // framework cannot silently inject the attribute without overriding
-    // developer intent. Instead we surface a parse-time error so adoption
-    // can never silently fail. See the search-page visual regression that
-    // surfaced this bug for the symptom of getting it wrong.
+    // to attach `@event` handlers), the framework preserves that wrapper
+    // and appends the CSS-module adoption attribute when it is missing.
 
     #[test]
-    fn dev_template_module_strategy_errors_when_attr_missing() {
+    fn dev_template_module_strategy_appends_adopted_attr_when_missing() {
         let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
-        let err = parser
+        let processed = parser
             .process_component_template(
                 r#"<template shadowrootmode="open"><div>hi</div></template>"#,
                 None,
                 Some("my-comp"),
             )
-            .expect_err("expected ParserError::MissingAdoptedStylesheets");
-        match err {
-            ParserError::MissingAdoptedStylesheets { tag } => {
-                assert_eq!(tag, "my-comp");
-            }
-            other => panic!("expected MissingAdoptedStylesheets, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn dev_template_module_strategy_error_message_is_actionable() {
-        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
-        let err = parser
-            .process_component_template(
-                r#"<template shadowrootmode="open"><div>hi</div></template>"#,
-                None,
-                Some("mp-app"),
-            )
-            .expect_err("expected ParserError::MissingAdoptedStylesheets");
-        let msg = err.to_string();
-        // Actionable per the framework's error guidance: tell the dev
-        // which component, exactly what attribute to add, and how to opt
-        // out (drop the wrapper).
-        assert!(msg.contains("<mp-app>"), "missing tag name: {msg}");
+            .expect("process failed");
         assert!(
-            msg.contains(r#"shadowrootadoptedstylesheets="mp-app""#),
-            "missing copy-pasteable fix: {msg}"
+            processed.contains(r#"shadowrootmode="open""#),
+            "dev-authored shadowrootmode must be preserved, got: {processed}"
         );
         assert!(
-            msg.contains("--css=module"),
-            "missing strategy context: {msg}"
-        );
-        assert!(
-            msg.contains("remove the <template> wrapper"),
-            "missing opt-out hint: {msg}"
+            processed.contains(r#"shadowrootadoptedstylesheets="my-comp""#),
+            "module CSS should append adopted stylesheets, got: {processed}"
         );
     }
 
@@ -4523,6 +4561,48 @@ mod tests {
             1,
             "framework must not duplicate dev-supplied adopted-stylesheets attr, got: {processed}"
         );
+    }
+
+    #[test]
+    fn dev_template_module_strategy_appends_adopted_attr_and_preserves_root_attrs() {
+        for dom_strategy in [DomStrategy::Shadow, DomStrategy::Light] {
+            let mut parser = HtmlParser::with_options((CssStrategy::Module, dom_strategy));
+            let built = match parser.build_component_templates(
+                "my-comp",
+                r#"<template shadowrootmode="open" @click="{onClick()}">Hello</template>"#,
+                Some(":host { color: red; }"),
+                true,
+            ) {
+                Ok(built) => built,
+                Err(err) => panic!(
+                    "dev-authored <template> should be accepted under {dom_strategy:?} with module CSS, got: {err}"
+                ),
+            };
+            let artifact = built.artifact();
+
+            assert!(
+                artifact.contains(r#"shadowrootmode="open""#),
+                "dev-authored shadowrootmode must be preserved under {dom_strategy:?}, got: {artifact}"
+            );
+            assert!(
+                artifact.contains(r#"@click="{onClick()}""#),
+                "dev-authored root event must be preserved under {dom_strategy:?}, got: {artifact}"
+            );
+            assert!(
+                artifact.contains(r#"shadowrootadoptedstylesheets="my-comp""#),
+                "module CSS should append adopted stylesheets under {dom_strategy:?}, got: {artifact}"
+            );
+            assert_eq!(
+                artifact.matches("shadowrootadoptedstylesheets").count(),
+                1,
+                "module CSS should append adopted stylesheets once under {dom_strategy:?}, got: {artifact}"
+            );
+            assert!(
+                !built.ssr.contains("@click"),
+                "SSR template must still strip runtime attrs, got: {}",
+                built.ssr
+            );
+        }
     }
 
     #[test]
@@ -4781,6 +4861,99 @@ mod tests {
                 None
             }
         }
+    }
+
+    struct TemplateCapturePlugin {
+        template: Option<String>,
+    }
+
+    impl TemplateCapturePlugin {
+        fn new() -> Self {
+            Self { template: None }
+        }
+    }
+
+    impl crate::plugin::ParserPlugin for TemplateCapturePlugin {
+        fn register_component_template(
+            &mut self,
+            _tag_name: &str,
+            _component: &Component,
+            processed_template: &str,
+        ) -> Result<()> {
+            self.template = Some(processed_template.to_string());
+            Ok(())
+        }
+
+        fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {
+            if attr_name.starts_with('@') || attr_name == "f-ref" {
+                AttributeAction::SkipAndCountBinding
+            } else {
+                AttributeAction::Keep
+            }
+        }
+
+        fn finish_element(&mut self, _binding_attribute_count: u32) -> Option<Vec<u8>> {
+            None
+        }
+
+        fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts> {
+            match self.template {
+                Some(template) => Ok(ParserPluginArtifacts::ComponentTemplates(vec![
+                    crate::plugin::ComponentTemplateArtifact::template(
+                        "todo-app".to_string(),
+                        template,
+                    ),
+                ])),
+                None => Ok(ParserPluginArtifacts::None),
+            }
+        }
+    }
+
+    #[test]
+    fn parser_passes_user_template_root_attrs_to_plugin_without_css_modules() {
+        let mut parser = HtmlParser::with_plugin_options(
+            Box::new(TemplateCapturePlugin::new()),
+            CssStrategy::Link,
+        );
+        parser
+            .component_registry_mut()
+            .register_component(
+                "todo-app",
+                r#"<template shadowrootmode="open" @toggle-item="{onToggleItem($e)}" @delete-item="{onDeleteItem($e)}" f-ref="{root}"><div>items</div></template>"#,
+                Some(":host { display: block; }"),
+            )
+            .expect("register todo-app");
+
+        parser
+            .parse("index.html", "<todo-app></todo-app>")
+            .expect("parse failed");
+
+        let artifacts = parser.take_plugin_artifacts().expect("artifacts");
+        let ParserPluginArtifacts::ComponentTemplates(templates) = artifacts else {
+            panic!("expected captured component template");
+        };
+        let template = &templates[0].template;
+
+        assert!(
+            template.contains(r#"shadowrootmode="open""#),
+            "parser must pass dev-authored root template attrs to plugins, got: {template}"
+        );
+        assert!(
+            template.contains(r#"@toggle-item="{onToggleItem($e)}""#),
+            "parser must pass dev-authored root event attrs to plugins, got: {template}"
+        );
+        assert!(
+            template.contains(r#"@delete-item="{onDeleteItem($e)}""#),
+            "parser must pass dev-authored root event attrs to plugins, got: {template}"
+        );
+        assert!(
+            template.contains(r#"f-ref="{root}""#),
+            "parser must pass dev-authored root FAST attrs to plugins, got: {template}"
+        );
+        assert!(
+            !template.contains("shadowrootadoptedstylesheets"),
+            "link CSS must not add CSS module adoption attrs, got: {template}"
+        );
     }
 
     #[test]
