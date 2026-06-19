@@ -526,6 +526,11 @@ webui build ./src --out ./dist --plugin=webui
 | `--legal-comments <MODE>` | `inline` | `inline` preserves legal CSS comments, `none` strips all comments |
 | `--format <FORMAT>` | `human` | `human` (colorized) or `json` (machine-readable diagnostics on stdout) |
 
+With `--css module`, WebUI appends
+`shadowrootadoptedstylesheets="<component-name>"` to component `<template>`
+wrappers when needed. If you author the wrapper yourself for root events, keep
+your attributes there; WebUI preserves them for client/plugin templates.
+
 For CDN/browser caching in `link` mode, prefer:
 
 ```bash

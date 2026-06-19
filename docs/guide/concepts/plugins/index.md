@@ -95,7 +95,8 @@ pub trait ParserPlugin {
     /// Called before parsing begins for a fragment.
     fn start_fragment(&mut self, fragment_id: &str) {}
 
-    /// Called when a component template has been fully processed.
+    /// Called with the plugin-facing component template. Authored root
+    /// `<template>` attributes are preserved for plugins.
     fn register_component_template(
         &mut self,
         tag_name: &str,

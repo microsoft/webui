@@ -4,7 +4,7 @@
 //! Parser plugin trait and built-in plugin implementations.
 //!
 //! The plugin system is framework-aware but phase-local — parser plugins
-//! classify framework-owned attributes, capture processed component templates,
+//! classify framework-owned attributes, capture plugin-facing component templates,
 //! and emit per-element hydration metadata for the handler.
 
 pub mod fast;
@@ -76,7 +76,7 @@ impl ComponentTemplateArtifact {
 ///
 /// Plugins receive callbacks at key points during HTML parsing:
 /// - **Fragment lifecycle**: `start_fragment` before a fragment parse begins
-/// - **Component registration**: `register_component_template` when a component template is finalized
+/// - **Component registration**: `register_component_template` when a plugin-facing component template is finalized
 /// - **Attribute classification**: `classify_attribute` for framework-specific attrs
 /// - **Element completion**: `finish_element` after attributes are processed
 ///
@@ -91,8 +91,9 @@ pub trait ParserPlugin {
     /// Called when parser output options change.
     fn configure(&mut self, _options: &ParserOptions) {}
 
-    /// Called when a component template has been fully processed for the active
-    /// CSS strategy and wrapped for shadow DOM rendering.
+    /// Called with the plugin-facing component template for the active CSS/DOM
+    /// strategies. Authored root `<template>` attributes are preserved here;
+    /// the SSR/internal parse view may strip runtime-only attributes.
     fn register_component_template(
         &mut self,
         tag_name: &str,
