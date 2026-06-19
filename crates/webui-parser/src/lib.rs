@@ -28,6 +28,7 @@ pub use handlebars_parser::HandlebarsParser;
 
 use crate::html_parser::{self as html, Attrs, Element, Event, Walker};
 use crate::plugin::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use webui_protocol::{
@@ -1289,9 +1290,11 @@ impl HtmlParser {
                 &html_content,
                 css_content.as_deref(),
             )?;
+            let artifact_template =
+                self.build_component_artifact_template(&component_data.html_content, &processed);
 
             if let Some(ref mut p) = self.plugin {
-                p.register_component_template(element.name(), &component_data, &processed)?;
+                p.register_component_template(element.name(), &component_data, &artifact_template)?;
             }
 
             self.parse(element.name(), &processed)?;
@@ -2022,9 +2025,11 @@ impl HtmlParser {
             &component_data.html_content,
             component_data.css_content.as_deref(),
         )?;
+        let artifact_template =
+            self.build_component_artifact_template(&component_data.html_content, &processed);
 
         if let Some(ref mut p) = self.plugin {
-            p.register_component_template(component, &component_data, &processed)?;
+            p.register_component_template(component, &component_data, &artifact_template)?;
         }
 
         let saved_buffer = std::mem::take(&mut self.raw_buffer);
@@ -2097,6 +2102,72 @@ impl HtmlParser {
             css_injection.as_deref(),
             adopted_specifier.as_deref(),
         )
+    }
+
+    /// Build the plugin-facing client template, preserving root runtime attrs
+    /// that SSR strips from the processed template.
+    fn build_component_artifact_template<'a>(
+        &self,
+        source: &str,
+        processed: &'a str,
+    ) -> Cow<'a, str> {
+        let source_attrs = Self::template_runtime_attrs(source);
+        if source_attrs.is_empty() {
+            return Cow::Borrowed(processed);
+        };
+
+        let leading_len = processed.len() - processed.trim_start().len();
+        let trimmed = &processed[leading_len..];
+        if !trimmed.starts_with("<template") {
+            return Cow::Borrowed(processed);
+        }
+        let Some(close) = html::find_tag_close(trimmed) else {
+            return Cow::Borrowed(processed);
+        };
+
+        let opening = &trimmed[..close];
+        let mut out = String::with_capacity(
+            processed.len()
+                + source_attrs
+                    .iter()
+                    .map(|attr| attr.raw.len() + 1)
+                    .sum::<usize>(),
+        );
+        out.push_str(&processed[..leading_len]);
+        out.push_str(opening);
+        let existing_attrs = Self::template_runtime_attrs(opening);
+        for attr in source_attrs {
+            if existing_attrs
+                .iter()
+                .any(|existing| existing.name == attr.name)
+            {
+                continue;
+            }
+            out.push(' ');
+            out.push_str(attr.raw);
+        }
+        out.push_str(&trimmed[close..]);
+        Cow::Owned(out)
+    }
+
+    fn template_runtime_attrs(html: &str) -> Vec<crate::html_parser::Attr<'_>> {
+        let trimmed = html.trim_start();
+        let Some(tag) = html::parse_tag(trimmed) else {
+            return Vec::new();
+        };
+        if tag.name != "template" || tag.closing {
+            return Vec::new();
+        }
+        tag.attrs()
+            .filter(|attr| Self::is_runtime_template_attr(attr.name))
+            .collect()
+    }
+
+    fn is_runtime_template_attr(name: &str) -> bool {
+        name.starts_with('@')
+            || name.starts_with(':')
+            || name.starts_with('?')
+            || matches!(name, "f-ref" | "f-slotted" | "f-children")
     }
 
     /// Process component template HTML for SSR output.
@@ -4781,6 +4852,94 @@ mod tests {
                 None
             }
         }
+    }
+
+    struct TemplateCapturePlugin {
+        tag_name: Option<String>,
+        template: Option<String>,
+    }
+
+    impl TemplateCapturePlugin {
+        fn new() -> Self {
+            Self {
+                tag_name: None,
+                template: None,
+            }
+        }
+    }
+
+    impl crate::plugin::ParserPlugin for TemplateCapturePlugin {
+        fn register_component_template(
+            &mut self,
+            _tag_name: &str,
+            _component: &Component,
+            processed_template: &str,
+        ) -> Result<()> {
+            self.tag_name = Some(_tag_name.to_string());
+            self.template = Some(processed_template.to_string());
+            Ok(())
+        }
+
+        fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {
+            if attr_name.starts_with('@') || attr_name == "f-ref" {
+                AttributeAction::SkipAndCountBinding
+            } else {
+                AttributeAction::Keep
+            }
+        }
+
+        fn finish_element(&mut self, _binding_attribute_count: u32) -> Option<Vec<u8>> {
+            None
+        }
+
+        fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts> {
+            match (self.tag_name, self.template) {
+                (Some(tag_name), Some(template)) => {
+                    Ok(ParserPluginArtifacts::ComponentTemplates(vec![
+                        crate::plugin::ComponentTemplateArtifact::template(tag_name, template),
+                    ]))
+                }
+                _ => Ok(ParserPluginArtifacts::None),
+            }
+        }
+    }
+
+    #[test]
+    fn plugin_artifact_template_keeps_root_runtime_attrs() {
+        let mut parser = HtmlParser::with_plugin(Box::new(TemplateCapturePlugin::new()));
+        parser
+            .component_registry
+            .register_component(
+                "todo-app",
+                r#"<template shadowrootmode="open" @toggle-item="{onToggleItem($e)}" @delete-item="{onDeleteItem($e)}" :config="{{settings}}" ?disabled="{{isDisabled}}"><div>items</div></template>"#,
+                None,
+            )
+            .expect("register");
+
+        parser
+            .parse("index.html", "<todo-app></todo-app>")
+            .expect("parse");
+        let artifacts = parser.take_plugin_artifacts().expect("artifacts");
+        let ParserPluginArtifacts::ComponentTemplates(templates) = artifacts else {
+            panic!("expected component templates");
+        };
+        let template = &templates[0].template;
+        assert!(template.contains(r#"@toggle-item="{onToggleItem($e)}""#));
+        assert!(template.contains(r#"@delete-item="{onDeleteItem($e)}""#));
+        assert!(template.contains(r#":config="{{settings}}""#));
+        assert!(template.contains(r#"?disabled="{{isDisabled}}""#));
+
+        let records = parser.into_fragment_records();
+        let ssr = records["todo-app"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert!(!ssr.contains("@toggle-item"));
+        assert!(!ssr.contains("@delete-item"));
     }
 
     #[test]
