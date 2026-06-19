@@ -1,23 +1,11 @@
 {
+  "extends": "../../../tsconfig.json",
   "compilerOptions": {
-    "target": "esnext",
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "lib": ["ESNext", "DOM"],
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "experimentalDecorators": true,
-    "useDefineForClassFields": false,
-    "declaration": false,
-    "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true,
-    "useUnknownInCatchVariables": true,
-    "noPropertyAccessFromIndexSignature": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
     "resolveJsonModule": true,
-    "types": ["node", "@playwright/test"],
-    "noEmit": true
+    "types": ["node", "@playwright/test"]
   },
   "include": [
     "playwright.config.ts",

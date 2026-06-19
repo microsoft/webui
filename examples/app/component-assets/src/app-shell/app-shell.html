@@ -1,0 +1,14 @@
+<section class="shell">
+  <p class="eyebrow">No router and no template endpoint</p>
+  <h1>{{title}}</h1>
+  <asset-badge label="Shared SSR component"></asset-badge>
+  <p class="summary">
+    The lazy panel's compiled template is emitted as a static .webui.json asset
+    and loaded only when this button is clicked. The badge above is the same
+    shared component used inside the lazy panel, but this template intentionally
+    does not contain a lazy-panel tag.
+  </p>
+
+  <button @click="{openPanel()}">Load lazy panel</button>
+  <div class="panel-slot" w-ref="{panelSlot}"></div>
+</section>

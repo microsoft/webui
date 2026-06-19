@@ -1,0 +1,356 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+/**
+ * Static component asset loader for the WebUI Framework plugin.
+ *
+ * Kept outside the framework root entrypoint so apps that only hydrate normal
+ * WebUI components do not load this optional CDN/static-asset helper.
+ */
+
+import { getTemplate, registerTemplateData, type TemplateMeta } from './template.js';
+
+const ASSET_TYPE = 'webui-component-asset';
+const ASSET_VERSION = 1;
+
+const injectedAssetStyles = new Set<string>();
+const assetLoadPromises = new Map<string, Promise<void>>();
+let assetStylesSeeded = false;
+
+/** Static WebUI Framework component asset emitted by `webui build --emit-component-assets`. */
+export interface ComponentAsset {
+  type?: 'webui-component-asset';
+  version?: number;
+  components?: string[];
+  templateStyles?: string[];
+  templates?: Record<string, TemplateMeta>;
+  templateFunctionModule?: string;
+}
+
+/** Options for loading or registering a static component asset. */
+export interface ComponentAssetOptions {
+  /** CSP nonce for importmap style scripts. Defaults to WebUI SSR metadata. */
+  nonce?: string;
+  /** Base URL used to resolve a relative `templateFunctionModule`. */
+  baseUrl?: string | URL;
+}
+
+/** State payload returned by a lazy component data loader. */
+export type ComponentAssetState = Record<string, unknown>;
+
+/** Manifest entry for one lazy component root. */
+export interface ComponentAssetManifestEntry<Data extends ComponentAssetState = ComponentAssetState> {
+  /** Static component asset JSON emitted by `webui build --emit-component-assets`. */
+  asset: string | URL;
+  /** JavaScript module that defines/registers the custom element class. */
+  module?: () => Promise<unknown>;
+  /** Optional data request kicked off in parallel with asset/module loading. */
+  data?: () => Promise<Data>;
+}
+
+/** Map of component tag name to lazy asset metadata. */
+export type ComponentAssetManifest = Record<string, ComponentAssetManifestEntry>;
+
+/** In-flight or completed work for one lazy component root. */
+export interface ComponentAssetPreload<Data extends ComponentAssetState = ComponentAssetState> {
+  /** Static WebUI template/style asset registration. */
+  asset: Promise<void>;
+  /** Optional JavaScript module import. */
+  module?: Promise<unknown>;
+  /** Optional data request. */
+  data?: Promise<Data>;
+}
+
+/** Options for creating a lazy component element from a manifest entry. */
+export interface ComponentAssetCreateOptions {
+  /** Wait for data before returning the element. Defaults to false. */
+  awaitData?: boolean;
+  /** Maximum time to wait for data when awaitData is true. */
+  dataTimeoutMs?: number;
+}
+
+/** Loader returned by `defineComponentAssets`. */
+export interface ComponentAssetRegistry {
+  /** Start asset, module, and optional data work for a component. */
+  preload<Data extends ComponentAssetState = ComponentAssetState>(tag: string): ComponentAssetPreload<Data>;
+  /** Start and await all configured work for a component. */
+  load<Data extends ComponentAssetState = ComponentAssetState>(tag: string): Promise<ComponentAssetPreload<Data>>;
+  /** Return the component's data promise, starting the preload if needed. */
+  data<Data extends ComponentAssetState = ComponentAssetState>(tag: string): Promise<Data | undefined>;
+  /** Create a component element and apply loaded data via setState(), if present. */
+  create<Data extends ComponentAssetState = ComponentAssetState>(
+    tag: string,
+    options?: ComponentAssetCreateOptions,
+  ): Promise<HTMLElement>;
+}
+
+interface WebUIAssetGlobal {
+  nonce?: string;
+  styles?: string[];
+  [key: string]: unknown;
+}
+
+function assetGlobal(): WebUIAssetGlobal | undefined {
+  return window.__webui as WebUIAssetGlobal | undefined;
+}
+
+/** Define a reusable manifest-driven loader for static component assets. */
+export function defineComponentAssets(manifest: ComponentAssetManifest): ComponentAssetRegistry {
+  const preloads = new Map<string, ComponentAssetPreload>();
+
+  function preload<Data extends ComponentAssetState = ComponentAssetState>(tag: string): ComponentAssetPreload<Data> {
+    const existing = preloads.get(tag) as ComponentAssetPreload<Data> | undefined;
+    if (existing) return existing;
+
+    const entry = manifest[tag];
+    if (!entry) {
+      throw new Error(`[WebUI] No component asset manifest entry for <${tag}>.`);
+    }
+
+    const next: ComponentAssetPreload<Data> = {
+      asset: loadComponentAsset(entry.asset),
+    };
+    if (entry.module) {
+      next.module = entry.module();
+    }
+    if (entry.data) {
+      next.data = entry.data() as Promise<Data>;
+    }
+    next.asset.catch(() => {});
+    next.module?.catch(() => {});
+    next.data?.catch(() => {});
+    preloads.set(tag, next);
+    return next;
+  }
+
+  async function load<Data extends ComponentAssetState = ComponentAssetState>(tag: string): Promise<ComponentAssetPreload<Data>> {
+    const pending = preload<Data>(tag);
+    const waits: Promise<unknown>[] = [pending.asset];
+    if (pending.module) waits.push(pending.module);
+    if (pending.data) waits.push(pending.data);
+    await Promise.all(waits);
+    return pending;
+  }
+
+  async function data<Data extends ComponentAssetState = ComponentAssetState>(tag: string): Promise<Data | undefined> {
+    return preload<Data>(tag).data;
+  }
+
+  async function create<Data extends ComponentAssetState = ComponentAssetState>(
+    tag: string,
+    options: ComponentAssetCreateOptions = {},
+  ): Promise<HTMLElement> {
+    const pending = preload<Data>(tag);
+    await waitForElementResources(pending);
+    const element = document.createElement(tag);
+    if (pending.data) {
+      if (options.awaitData) {
+        const state = options.dataTimeoutMs === undefined
+          ? await pending.data
+          : await dataWithTimeout(pending.data, options.dataTimeoutMs);
+        if (state) {
+          applyState(element, state);
+        } else {
+          applyDataWhenReady(element, pending.data);
+        }
+      } else {
+        applyDataWhenReady(element, pending.data);
+      }
+    }
+    return element;
+  }
+
+  return { preload, load, data, create };
+}
+
+async function waitForElementResources(pending: ComponentAssetPreload): Promise<void> {
+  if (pending.module) {
+    await Promise.all([pending.asset, pending.module]);
+  } else {
+    await pending.asset;
+  }
+}
+
+function applyState(element: HTMLElement, state: ComponentAssetState): void {
+  const setState = (element as unknown as { setState?: (state: ComponentAssetState) => void }).setState;
+  if (typeof setState === 'function') {
+    setState.call(element, state);
+  }
+}
+
+function applyDataWhenReady(element: HTMLElement, data: Promise<ComponentAssetState>): void {
+  void data.then(state => {
+    applyState(element, state);
+  }).catch(() => {});
+}
+
+function dataWithTimeout<Data extends ComponentAssetState>(
+  data: Promise<Data>,
+  timeoutMs: number,
+): Promise<Data | undefined> {
+  if (timeoutMs < 0) return data;
+  return Promise.race([
+    data,
+    new Promise<undefined>(resolve => {
+      setTimeout(() => resolve(undefined), timeoutMs);
+    }),
+  ]);
+}
+
+/** Fetch and register a static component asset emitted by the WebUI CLI. */
+function loadComponentAsset(
+  url: string | URL,
+  options: ComponentAssetOptions = {},
+): Promise<void> {
+  const assetUrl = new URL(url, document.baseURI);
+  const root = componentNameFromAssetUrl(assetUrl);
+  if (root && getTemplate(root)) return Promise.resolve();
+
+  const href = assetUrl.href;
+  let promise = assetLoadPromises.get(href);
+  if (promise) return promise;
+
+  promise = fetchAndRegisterComponentAsset(assetUrl, options)
+    .finally(() => {
+      assetLoadPromises.delete(href);
+    });
+  assetLoadPromises.set(href, promise);
+  return promise;
+}
+
+/** Register a static component asset object that has already been fetched. */
+async function registerComponentAsset(
+  asset: ComponentAsset,
+  options: ComponentAssetOptions = {},
+): Promise<void> {
+  validateAsset(asset);
+  if (asset.templates && templatesAlreadyRegistered(asset.templates)) return;
+
+  registerAssetStyles(asset.templateStyles, options.nonce ?? readNonce());
+
+  if (asset.templateFunctionModule) {
+    const moduleUrl = options.baseUrl
+      ? new URL(asset.templateFunctionModule, options.baseUrl).href
+      : asset.templateFunctionModule;
+    await import(moduleUrl);
+  }
+
+  if (asset.templates) {
+    registerTemplateData(asset.templates);
+  }
+}
+
+async function fetchAndRegisterComponentAsset(
+  assetUrl: URL,
+  options: ComponentAssetOptions,
+): Promise<void> {
+  const response = await fetch(assetUrl);
+  if (!response.ok) {
+    throw new Error(
+      `[WebUI] Failed to load component asset ${assetUrl.href}: ${response.status} ${response.statusText}`,
+    );
+  }
+  const asset = await response.json() as ComponentAsset;
+  await registerComponentAsset(asset, { ...options, baseUrl: assetUrl });
+}
+
+function componentNameFromAssetUrl(assetUrl: URL): string | undefined {
+  const path = assetUrl.pathname;
+  const slash = path.lastIndexOf('/');
+  const file = slash >= 0 ? path.substring(slash + 1) : path;
+  const suffix = '.webui.json';
+  if (!file.endsWith(suffix)) return undefined;
+  return decodeURIComponent(file.substring(0, file.length - suffix.length));
+}
+
+function validateAsset(asset: ComponentAsset): void {
+  if (asset.type !== ASSET_TYPE) {
+    throw new Error(`[WebUI] Invalid component asset type: ${String(asset.type)}`);
+  }
+  if (asset.version !== ASSET_VERSION) {
+    throw new Error(`[WebUI] Unsupported component asset version: ${String(asset.version)}`);
+  }
+}
+
+function templatesAlreadyRegistered(templates: Record<string, TemplateMeta>): boolean {
+  const tags = Object.keys(templates);
+  if (tags.length === 0) return false;
+  for (let i = 0; i < tags.length; i++) {
+    if (!getTemplate(tags[i])) return false;
+  }
+  return true;
+}
+
+function readNonce(): string {
+  const nonce = assetGlobal()?.nonce;
+  if (nonce) return nonce;
+  const meta = document.querySelector('meta[name="webui-nonce"]') as HTMLMetaElement | null;
+  return meta?.content ?? '';
+}
+
+function seedAssetStyleSet(): void {
+  if (assetStylesSeeded) return;
+  assetStylesSeeded = true;
+  const styles = assetGlobal()?.styles;
+  if (!styles) return;
+  for (let i = 0; i < styles.length; i++) {
+    injectedAssetStyles.add(styles[i]);
+  }
+}
+
+function registerAssetStyles(templateStyles: string[] | undefined, nonce: string): void {
+  if (!templateStyles || templateStyles.length === 0) return;
+  seedAssetStyleSet();
+
+  for (let i = 0; i < templateStyles.length; i++) {
+    const imports = parseImportMap(templateStyles[i]);
+    const nextImports: Record<string, string> = {};
+    let hasNewImport = false;
+    const specifiers = Object.keys(imports);
+    for (let j = 0; j < specifiers.length; j++) {
+      const specifier = specifiers[j];
+      if (injectedAssetStyles.has(specifier)) continue;
+      injectedAssetStyles.add(specifier);
+      nextImports[specifier] = imports[specifier];
+      hasNewImport = true;
+    }
+    if (!hasNewImport) continue;
+
+    const script = document.createElement('script');
+    script.type = 'importmap';
+    if (nonce) script.nonce = nonce;
+    script.textContent = JSON.stringify({ imports: nextImports });
+    document.head.appendChild(script);
+  }
+}
+
+function parseImportMap(scriptMarkup: string): Record<string, string> {
+  const trimmed = scriptMarkup.trim();
+  if (!trimmed.startsWith('<script')) {
+    throw new Error('[WebUI] Component asset templateStyles entry must be a <script type="importmap"> tag.');
+  }
+  const openTagEnd = trimmed.indexOf('>');
+  const closeTagStart = trimmed.lastIndexOf('</script>');
+  if (openTagEnd < 0 || closeTagStart <= openTagEnd) {
+    throw new Error('[WebUI] Component asset importmap tag is malformed.');
+  }
+
+  const parsed = JSON.parse(trimmed.substring(openTagEnd + 1, closeTagStart)) as {
+    imports?: Record<string, unknown>;
+  };
+  if (!parsed.imports || typeof parsed.imports !== 'object') {
+    throw new Error('[WebUI] Component asset importmap is missing an imports object.');
+  }
+
+  const imports: Record<string, string> = {};
+  const specifiers = Object.keys(parsed.imports);
+  for (let i = 0; i < specifiers.length; i++) {
+    const specifier = specifiers[i];
+    const uri = parsed.imports[specifier];
+    if (typeof uri !== 'string' || !uri.startsWith('data:text/css,')) {
+      throw new Error(`[WebUI] Component asset importmap entry "${specifier}" must be a data:text/css URI.`);
+    }
+    imports[specifier] = uri;
+  }
+  return imports;
+}

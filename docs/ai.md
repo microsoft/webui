@@ -335,6 +335,7 @@ MyComponent.define('my-component');
 | `this.$flushUpdates()` | Synchronously flush pending updates |
 | `setState(state)` | Populate from router navigation state |
 | `static define(tagName)` | Register as a custom element |
+| `defineComponentAssets(manifest)` | Define lazy component assets and load asset/module/data work in parallel |
 
 ### Emitting custom events
 
@@ -396,6 +397,50 @@ Router.start({
   loaders: { ... },
 });
 ```
+
+Without `@microsoft/webui-router`, prebuild static assets and load them from a
+CDN or the app's static folder:
+
+```bash
+webui build ./src --out ./dist --plugin=webui \
+  --emit-component-assets settings-dialog
+```
+
+```typescript
+import { settingsAssets } from './lazy-assets.js';
+
+async onOpenSettings(): Promise<void> {
+  settingsAssets.preload('settings-dialog');
+  this.panelSlot.replaceChildren(await settingsAssets.create('settings-dialog'));
+}
+```
+
+```typescript
+// lazy-assets.ts
+import { defineComponentAssets } from '@microsoft/webui-framework/component-asset.js';
+
+export const settingsAssets = defineComponentAssets({
+  'settings-dialog': {
+    asset: '/settings-dialog.webui.json',
+    module: () => import('./settings-dialog/settings-dialog.js'),
+    data: async () => await (await fetch('/settings-dialog-data.json')).json(),
+  },
+});
+```
+
+`defineComponentAssets()` uses the current page nonce from `window.__webui.nonce`
+or `<meta name="webui-nonce">` when it needs to append CSS module importmaps.
+The optional `.webui-fns.js` module registers compiled condition functions as an
+ES module, so large template metadata stays as JSON data. If the root template
+from `<tag>.webui.json` is already in `window.__webui.templates`, the loader
+skips fetching. Concurrent calls for the same URL share one in-flight request,
+and CSS module styles are deduped against `window.__webui.styles`.
+The manifest helper lets the shell start the template asset, JS chunk, and data
+fetch in parallel as soon as the user expresses intent; `create(tag)` waits for
+only the template asset and JS module by default, creates the element, then
+applies data later with `setState()`. Use
+`create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component
+must wait briefly for state before mounting.
 
 ## Component CSS
 
@@ -521,6 +566,7 @@ webui build ./src --out ./dist --plugin=webui
 | `--dom <MODE>` | `shadow` | `shadow` or `light` |
 | `--plugin <NAME>` | none | Plugin identifier (e.g. `webui`) |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
+| `--emit-component-assets <TAGS>` | none | Comma-separated root component tags emitted as static `.webui.json` assets in `--out` |
 | `--css-file-name-template <TEMPLATE>` | `[name].[ext]` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
 | `--legal-comments <MODE>` | `inline` | `inline` preserves legal CSS comments, `none` strips all comments |
@@ -543,6 +589,22 @@ webui build ./src --out ./dist \
 characters. The CSS files are still written to `--out`; `--css-public-base`
 changes only the href compiled into `protocol.bin` and emitted in stylesheet
 `<link>` tags.
+
+For lazy components without `@microsoft/webui-router`, emit static component
+assets:
+
+```bash
+webui build ./src --out ./dist --plugin=webui \
+  --emit-component-assets mail-thread,compose-page
+```
+
+This writes `mail-thread.webui.json` plus `mail-thread.webui-fns.js` only when
+compiled conditions exist. Requested roots are compiled through synthetic
+non-entry fragments, so they are not part of initial SSR unless the entry
+template also references them. The JSON is inert template/style data and has no
+inventory field. Load it with `defineComponentAssets()` before mounting the
+component. Do not reference the lazy component tag from an SSR-reachable
+template unless you intentionally want it eligible for initial SSR.
 
 HTML comments are stripped at build time and bindings inside them are ignored.
 CSS comments are stripped except legal comments and `<style>` signal fragments.

@@ -1,0 +1,13 @@
+# Demo shell metadata — auto-discovered by the demo shell server.
+# See examples/demo/README.md for the full schema.
+
+name = "Component Assets"
+description = "A no-router app that loads a deferred component from static WebUI assets"
+backend = "rust"
+
+[server]
+type = "webui-cli"
+plugin = "webui"
+source = "src"
+servedir = "dist"
+state = "data/state.json"

@@ -59,6 +59,7 @@ impl AppArgs {
             dom: self.dom,
             plugin: self.plugin,
             components: self.components.clone(),
+            component_asset_roots: Vec::new(),
             css_file_name_template: self.css_file_name_template.clone(),
             css_public_base: self.css_public_base.clone(),
             legal_comments: self.legal_comments,
@@ -90,6 +91,7 @@ mod tests {
             options.css_public_base.as_deref(),
             Some("https://cdn.example.com/assets")
         );
+        assert!(options.component_asset_roots.is_empty());
         assert_eq!(options.legal_comments, LegalComments::None);
     }
 }

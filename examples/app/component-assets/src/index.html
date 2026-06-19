@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html dir="{{textdirection}}" lang="{{language}}">
+<head>
+  <meta charset="utf-8">
+  <base href="{{basePath}}">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{title}}</title>
+  <style>
+    :root {
+      --color-bg: #f5f7fb;
+      --color-card: #ffffff;
+      --color-text: #1f2937;
+      --color-muted: #6b7280;
+      --color-brand: #2563eb;
+      --color-brand-hover: #1d4ed8;
+      --color-border: #dbe3ef;
+      --spacing-s: 8px;
+      --spacing-m: 12px;
+      --spacing-l: 16px;
+      --spacing-xl: 24px;
+      --radius-m: 12px;
+      --font-family-base: "Segoe UI", system-ui, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: var(--spacing-xl);
+      background: var(--color-bg);
+      color: var(--color-text);
+      font-family: var(--font-family-base);
+    }
+  </style>
+</head>
+<body>
+  <app-shell title="{{title}}"></app-shell>
+  <script type="module" src="./index.js"></script>
+</body>
+</html>

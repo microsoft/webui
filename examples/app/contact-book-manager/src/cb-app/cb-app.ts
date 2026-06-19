@@ -58,12 +58,13 @@ export class CbApp extends WebUIElement {
     Router.back();
   }
 
-  async onFormSaveEvent(e: FormSaveEvent): void {
+  async onFormSaveEvent(e: FormSaveEvent): Promise<void> {
     const data = e.detail;
     try {
       let saved;
-      if (data.id) {
-        saved = await api.contacts.update(data.id, data);
+      const id = data['id'];
+      if (id) {
+        saved = await api.contacts.update(id, data);
       } else {
         saved = await api.contacts.create(data);
       }

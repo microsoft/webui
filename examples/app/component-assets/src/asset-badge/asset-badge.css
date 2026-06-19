@@ -1,0 +1,13 @@
+:host {
+  display: inline-flex;
+  width: max-content;
+}
+
+span {
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+}

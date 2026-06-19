@@ -72,6 +72,12 @@ pub struct BuildOptions {
     pub plugin: Option<Plugin>,
     /// Additional component sources (npm packages or local paths).
     pub components: Vec<String>,
+    /// Additional root components to compile for static component asset emission.
+    ///
+    /// These roots are parsed into the protocol so their templates, styles, and
+    /// dependency closures can be emitted later, but they are not connected to
+    /// the entry fragment and therefore are not rendered during initial SSR.
+    pub component_asset_roots: Vec<String>,
     /// Link-mode CSS filename template using `[name]`, `[hash]`, and `[ext]`.
     /// Ignored unless `css == CssStrategy::Link`.
     pub css_file_name_template: String,
@@ -91,6 +97,7 @@ impl Default for BuildOptions {
             dom: DomStrategy::Shadow,
             plugin: None,
             components: Vec::new(),
+            component_asset_roots: Vec::new(),
             css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
             css_public_base: None,
             legal_comments: LegalComments::default(),
@@ -302,6 +309,8 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             source,
         })?;
 
+    parse_component_asset_roots(&mut parser, &options.component_asset_roots)?;
+
     let css_snapshot: Vec<(String, String)> = parser
         .component_registry()
         .get_all()
@@ -395,6 +404,34 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         component_count,
         token_count,
     })
+}
+
+fn parse_component_asset_roots(
+    parser: &mut HtmlParser,
+    roots: &[String],
+) -> Result<(), WebUIError> {
+    for (index, root) in roots.iter().enumerate() {
+        if parser.has_fragment(root) {
+            continue;
+        }
+        // Compile the requested lazy root without connecting it to the entry
+        // graph, so it can be emitted as a static asset but stays out of SSR.
+        let mut synthetic = String::with_capacity(root.len() * 2 + 5);
+        synthetic.push('<');
+        synthetic.push_str(root);
+        synthetic.push_str("></");
+        synthetic.push_str(root);
+        synthetic.push('>');
+
+        let fragment_id = format!("__webui_asset_root_{index}");
+        parser
+            .parse(&fragment_id, &synthetic)
+            .map_err(|source| WebUIError::Parse {
+                context: format!("Failed to parse component asset root <{root}>"),
+                source,
+            })?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

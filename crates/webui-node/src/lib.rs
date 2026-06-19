@@ -129,6 +129,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         dom,
         plugin,
         components: options.components.unwrap_or_default(),
+        component_asset_roots: Vec::new(),
         css_file_name_template: options
             .css_file_name_template
             .unwrap_or_else(|| webui::DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string()),

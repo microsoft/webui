@@ -1828,6 +1828,7 @@ dependencies = [
  "microsoft-webui-protocol",
  "microsoft-webui-tokens",
  "mime_guess",
+ "rayon",
  "serde_json",
  "tempfile",
  "tokio",

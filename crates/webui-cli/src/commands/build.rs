@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::common::*;
+use super::component_assets;
 use crate::utils::error::CliError;
 use crate::utils::output;
 
@@ -22,6 +23,10 @@ pub struct BuildArgs {
     /// is written with that filename and CSS files are emitted next to it.
     #[arg(long)]
     pub out: PathBuf,
+
+    /// Comma-separated root component tags to emit as static CDN-loadable assets
+    #[arg(long, value_delimiter = ',', value_name = "TAGS")]
+    pub emit_component_assets: Vec<String>,
 }
 
 /// Resolve the `--out` argument into `(output_directory, protocol_filename)`.
@@ -94,9 +99,13 @@ fn run(args: &BuildArgs) -> Result<()> {
     if !args.app_args.components.is_empty() {
         output::field("Components", &args.app_args.components.join(", "));
     }
+    if !args.emit_component_assets.is_empty() {
+        output::field("Component assets", &args.emit_component_assets.join(", "));
+    }
     eprintln!();
 
-    let build_options = args.app_args.to_build_options(&app);
+    let mut build_options = args.app_args.to_build_options(&app);
+    build_options.component_asset_roots = args.emit_component_assets.clone();
     let result = webui::build(build_options).with_context(|| "Build failed")?;
 
     fs::create_dir_all(&out_dir)
@@ -107,6 +116,11 @@ fn run(args: &BuildArgs) -> Result<()> {
         fs::write(out_dir.join(name), content)
             .with_context(|| format!("Failed to write {name} to {}", out_dir.display()))?;
     }
+    let component_asset_stats = component_assets::emit_component_assets(
+        &result.protocol,
+        &args.emit_component_assets,
+        &out_dir,
+    )?;
     let stats = result.stats;
 
     output::success(&format!(
@@ -130,7 +144,19 @@ fn run(args: &BuildArgs) -> Result<()> {
         ));
     }
 
-    let files_written = 1 + stats.css_file_count;
+    if component_asset_stats.root_count > 0 {
+        output::success(&format!(
+            "Emitted {} component asset{}",
+            console::style(component_asset_stats.root_count).bold(),
+            if component_asset_stats.root_count == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
+    }
+
+    let files_written = 1 + stats.css_file_count + component_asset_stats.file_count;
     output::success(&format!(
         "Wrote {}",
         console::style(Path::new(&protocol_name).display()).bold()
@@ -162,6 +188,7 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
             legal_comments: LegalComments::Inline,
         },
         out: out.to_path_buf(),
+        emit_component_assets: Vec::new(),
     })
 }
 
@@ -268,12 +295,121 @@ mod tests {
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
+            emit_component_assets: Vec::new(),
         })
         .unwrap();
 
         assert!(out_dir.path().join("protocol.bin").exists());
         // Inline mode should NOT write external CSS files
         assert!(!out_dir.path().join("my-card.css").exists());
+    }
+
+    #[test]
+    fn test_build_emits_static_component_assets() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", r#"<div w-ref="{slot}"></div>"#),
+            (
+                "mail-thread.html",
+                r#"<if condition="hasMessages"><mail-message title="{{title}}"></mail-message></if>"#,
+            ),
+            ("mail-message.html", "<p>{{title}}</p>"),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+
+        run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: out_dir.path().to_path_buf(),
+            emit_component_assets: vec!["mail-thread".to_string()],
+        })
+        .unwrap();
+
+        let asset_path = out_dir.path().join("mail-thread.webui.json");
+        let function_path = out_dir.path().join("mail-thread.webui-fns.js");
+        assert!(asset_path.exists());
+        assert!(function_path.exists());
+
+        let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
+        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
+        let index_fragments = &protocol.fragments["index.html"].fragments;
+        assert!(
+            !index_fragments.iter().any(|fragment| matches!(
+                fragment.fragment.as_ref(),
+                Some(Fragment::Component(component)) if component.fragment_id == "mail-thread"
+            )),
+            "mail-thread must not be reachable from the SSR entry fragment"
+        );
+
+        let asset: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(asset_path).unwrap()).unwrap();
+        assert_eq!(asset["type"], "webui-component-asset");
+        assert_eq!(asset["version"], 1);
+        assert!(asset.get("plugin").is_none());
+        assert_eq!(asset["templateFunctionModule"], "mail-thread.webui-fns.js");
+        assert!(asset.get("templateFunctions").is_none());
+        assert!(asset.get("inventory").is_none());
+        let components = asset["components"].as_array().unwrap();
+        assert!(components.contains(&serde_json::Value::String("mail-thread".to_string())));
+        assert!(components.contains(&serde_json::Value::String("mail-message".to_string())));
+        let templates = asset["templates"].as_object().unwrap();
+        assert!(templates.contains_key("mail-thread"));
+        assert!(templates.contains_key("mail-message"));
+
+        let functions = fs::read_to_string(function_path).unwrap();
+        assert!(functions.contains(r#"f["mail-thread"]="#));
+    }
+
+    #[test]
+    fn test_build_emits_fast_component_assets() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("fast-card.html", "<p>{{title}}</p>"),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+
+        run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::FastV3),
+                components: Vec::new(),
+                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: out_dir.path().to_path_buf(),
+            emit_component_assets: vec!["fast-card".to_string()],
+        })
+        .unwrap();
+
+        let asset_path = out_dir.path().join("fast-card.webui.json");
+        assert!(asset_path.exists());
+        assert!(!out_dir.path().join("fast-card.webui-fns.js").exists());
+
+        let asset: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(asset_path).unwrap()).unwrap();
+        assert_eq!(asset["type"], "webui-component-asset");
+        assert_eq!(asset["version"], 1);
+        assert!(asset.get("plugin").is_none());
+        assert!(asset.get("templateFunctionModule").is_none());
+        let templates = asset["templates"].as_object().unwrap();
+        assert!(templates["fast-card"]
+            .as_str()
+            .unwrap()
+            .contains("<f-template"));
     }
 
     #[test]
@@ -387,6 +523,7 @@ mod tests {
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
+            emit_component_assets: Vec::new(),
         })
         .unwrap();
 
@@ -470,6 +607,7 @@ mod tests {
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
+            emit_component_assets: Vec::new(),
         })
         .unwrap();
 
@@ -550,6 +688,7 @@ mod tests {
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
+            emit_component_assets: Vec::new(),
         })
         .unwrap();
 
@@ -599,6 +738,7 @@ mod tests {
                 legal_comments: LegalComments::Inline,
             },
             out: custom_path.clone(),
+            emit_component_assets: Vec::new(),
         })
         .unwrap();
 
@@ -634,6 +774,7 @@ mod tests {
                 legal_comments: LegalComments::Inline,
             },
             out: nested.clone(),
+            emit_component_assets: Vec::new(),
         })
         .unwrap();
 

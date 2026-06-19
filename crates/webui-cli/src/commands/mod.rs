@@ -3,6 +3,7 @@
 
 pub mod build;
 pub mod common;
+pub mod component_assets;
 pub mod inspect;
 pub mod serve;
 
