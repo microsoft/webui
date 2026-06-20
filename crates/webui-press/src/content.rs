@@ -164,13 +164,13 @@ fn normalize_path_as_index(path: &str) -> &str {
     let Some(slash_pos) = path.rfind('/') else {
         return path;
     };
-    
+
     let parent = &path[..slash_pos];
     let filename = &path[slash_pos + 1..];
-    
+
     // Get the parent folder name (last segment before filename)
     let folder_name = parent.rsplit('/').next().unwrap_or("");
-    
+
     // If folder name matches filename, treat as index and strip filename
     if folder_name == filename {
         parent
@@ -211,14 +211,14 @@ fn build_page_registry(content_dir: &Path, base_path: &str) -> Vec<(String, std:
             };
             let rel_str = rel.to_string_lossy().replace('\\', "/");
             let trimmed = rel_str.trim_end_matches(".md");
-            
+
             // Strip /index suffix
             let trimmed = trimmed.strip_suffix("/index").unwrap_or(trimmed);
-            
+
             // Strip redundant filename if it matches parent folder
             // e.g., "webui-button/webui-button" → "webui-button"
             let trimmed = normalize_path_as_index(trimmed);
-            
+
             // Root index.md => "/"
             let url_path = if trimmed.is_empty() || trimmed == "index" {
                 if base_path.is_empty() {
@@ -801,10 +801,7 @@ mod tests {
 
     #[test]
     fn normalize_path_as_index_no_slash_returns_unchanged() {
-        assert_eq!(
-            normalize_path_as_index("webui-button"),
-            "webui-button"
-        );
+        assert_eq!(normalize_path_as_index("webui-button"), "webui-button");
     }
 
     #[test]
