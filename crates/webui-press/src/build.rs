@@ -806,7 +806,7 @@ fn bundle_components(
 
     let out_file = site_dir.join("components.js");
 
-    let status = std::process::Command::new("npx")
+    let status = std::process::Command::new(npx_command())
         .arg("esbuild")
         .arg("--bundle")
         .arg("--format=esm")
@@ -826,7 +826,7 @@ fn bundle_components(
             }
             child.wait_with_output()
         })
-        .map_err(|e| Error::Build(format!("esbuild failed: {e}")))?;
+        .map_err(|e| Error::Build(format!("npx esbuild failed: {e}")))?;
 
     if !status.status.success() {
         let stderr = String::from_utf8_lossy(&status.stderr);
@@ -834,6 +834,16 @@ fn bundle_components(
     }
 
     Ok(ts_files.len())
+}
+
+#[cfg(windows)]
+fn npx_command() -> &'static str {
+    "npx.cmd"
+}
+
+#[cfg(not(windows))]
+fn npx_command() -> &'static str {
+    "npx"
 }
 
 const PRE_BLOCK_MARKER_PREFIX: &str = "<span data-webui-press-pre-block=\"";
@@ -932,6 +942,14 @@ mod tests {
     use super::*;
 
     type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn npx_command_uses_platform_executable() {
+        #[cfg(windows)]
+        assert_eq!(npx_command(), "npx.cmd");
+        #[cfg(not(windows))]
+        assert_eq!(npx_command(), "npx");
+    }
 
     // --- truncate_utf8 ---------------------------------------------------
 
