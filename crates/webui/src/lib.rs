@@ -45,6 +45,9 @@ pub use webui_parser::ParserError;
 pub use webui_parser::ParserOptions;
 pub use webui_parser::Plugin;
 pub use webui_parser::DEFAULT_CSS_FILE_NAME_TEMPLATE;
+pub use webui_parser::{
+    AssetFileNameTemplate, AssetFileNameTemplateError, DEFAULT_ASSET_FILE_NAME_TEMPLATE,
+};
 pub use webui_protocol::WebUIProtocol;
 
 use std::collections::HashSet;
@@ -374,7 +377,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             let resolved = css_link_options.resolve(&tag, &css);
             if !emitted_names.insert(resolved.filename.clone()) {
                 return Err(WebUIError::InvalidBuildOptions(format!(
-                    "CSS filename collision for Link strategy: '{}'. Adjust --css-file-name-template to include [name] or another unique component-specific segment.",
+                    "CSS filename collision for Link strategy: '{}'. Adjust the asset filename template to include [name] or another unique component-specific segment.",
                     resolved.filename
                 )));
             }

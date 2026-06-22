@@ -120,6 +120,7 @@ fn run(args: &BuildArgs) -> Result<()> {
         &result.protocol,
         &args.emit_component_assets,
         &out_dir,
+        &args.app_args.asset_file_name_template,
     )?;
     let stats = result.stats;
 
@@ -183,7 +184,7 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
             dom: DomStrategy::Shadow,
             plugin: None,
             components: Vec::new(),
-            css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+            asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
             css_public_base: None,
             legal_comments: LegalComments::Inline,
         },
@@ -290,7 +291,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
@@ -325,7 +326,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
@@ -334,10 +335,8 @@ mod tests {
         })
         .unwrap();
 
-        let asset_path = out_dir.path().join("mail-thread.webui.json");
-        let function_path = out_dir.path().join("mail-thread.webui-fns.js");
+        let asset_path = out_dir.path().join("mail-thread.webui.js");
         assert!(asset_path.exists());
-        assert!(function_path.exists());
 
         let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
         let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
@@ -350,23 +349,16 @@ mod tests {
             "mail-thread must not be reachable from the SSR entry fragment"
         );
 
-        let asset: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(asset_path).unwrap()).unwrap();
-        assert_eq!(asset["type"], "webui-component-asset");
-        assert_eq!(asset["version"], 1);
-        assert!(asset.get("plugin").is_none());
-        assert_eq!(asset["templateFunctionModule"], "mail-thread.webui-fns.js");
-        assert!(asset.get("templateFunctions").is_none());
-        assert!(asset.get("inventory").is_none());
-        let components = asset["components"].as_array().unwrap();
-        assert!(components.contains(&serde_json::Value::String("mail-thread".to_string())));
-        assert!(components.contains(&serde_json::Value::String("mail-message".to_string())));
-        let templates = asset["templates"].as_object().unwrap();
-        assert!(templates.contains_key("mail-thread"));
-        assert!(templates.contains_key("mail-message"));
-
-        let functions = fs::read_to_string(function_path).unwrap();
-        assert!(functions.contains(r#"f["mail-thread"]="#));
+        let asset = fs::read_to_string(asset_path).unwrap();
+        assert!(asset.contains(r#""type":"webui-component-asset""#));
+        assert!(asset.contains(r#""version":1"#));
+        assert!(!asset.contains(r#""plugin""#));
+        assert!(!asset.contains(r#""inventory""#));
+        assert!(asset.contains(r#""components":["mail-message","mail-thread"]"#));
+        assert!(asset.contains(r#""templates":{"mail-message":"#));
+        assert!(asset.contains(r#""mail-thread":"#));
+        assert!(asset.contains(r#""templateFunctions":{"mail-thread":"#));
+        assert!(asset.contains("export default asset;"));
     }
 
     #[test]
@@ -386,7 +378,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: Some(Plugin::FastV3),
                 components: Vec::new(),
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
@@ -395,21 +387,61 @@ mod tests {
         })
         .unwrap();
 
-        let asset_path = out_dir.path().join("fast-card.webui.json");
+        let asset_path = out_dir.path().join("fast-card.webui.js");
         assert!(asset_path.exists());
-        assert!(!out_dir.path().join("fast-card.webui-fns.js").exists());
+        let asset = fs::read_to_string(asset_path).unwrap();
+        assert!(asset.contains(r#""type":"webui-component-asset""#));
+        assert!(asset.contains(r#""version":1"#));
+        assert!(!asset.contains(r#""plugin""#));
+        assert!(!asset.contains(r#""templateFunctionModule""#));
+        assert!(!asset.contains(r#""templateFunctions""#));
+        assert!(asset.contains("<f-template"));
+    }
 
-        let asset: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(asset_path).unwrap()).unwrap();
-        assert_eq!(asset["type"], "webui-component-asset");
-        assert_eq!(asset["version"], 1);
-        assert!(asset.get("plugin").is_none());
-        assert!(asset.get("templateFunctionModule").is_none());
-        let templates = asset["templates"].as_object().unwrap();
-        assert!(templates["fast-card"]
-            .as_str()
+    #[test]
+    fn test_build_emits_hashed_component_asset_filename() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("mail-thread.html", "<p>{{title}}</p>"),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+
+        run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                asset_file_name_template: "[name]-[hash].[ext]".to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: out_dir.path().to_path_buf(),
+            emit_component_assets: vec!["mail-thread".to_string()],
+        })
+        .unwrap();
+
+        let asset_names: Vec<String> = fs::read_dir(out_dir.path())
             .unwrap()
-            .contains("<f-template"));
+            .filter_map(|entry| {
+                let entry = entry.unwrap();
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.ends_with(".webui.js") {
+                    Some(name.into_owned())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(asset_names.len(), 1);
+        assert!(asset_names[0].starts_with("mail-thread-"));
+        assert!(asset_names[0].ends_with(".webui.js"));
+        assert_ne!(asset_names[0], "mail-thread-.webui.js");
     }
 
     #[test]
@@ -518,7 +550,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: vec![ext_path],
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
@@ -602,7 +634,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: vec!["test-widget".to_string()],
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
@@ -683,7 +715,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: vec!["@myui".to_string()],
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
@@ -733,7 +765,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
@@ -769,7 +801,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
             },

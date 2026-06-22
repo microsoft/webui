@@ -8,7 +8,12 @@
  * WebUI components do not load this optional CDN/static-asset helper.
  */
 
-import { getTemplate, registerTemplateData, type TemplateMeta } from './template.js';
+import {
+  getTemplate,
+  registerTemplateData,
+  type CompiledConditionFn,
+  type TemplateMeta,
+} from './template.js';
 
 const ASSET_TYPE = 'webui-component-asset';
 const ASSET_VERSION = 1;
@@ -24,15 +29,13 @@ export interface ComponentAsset {
   components?: string[];
   templateStyles?: string[];
   templates?: Record<string, TemplateMeta>;
-  templateFunctionModule?: string;
+  templateFunctions?: Record<string, CompiledConditionFn[]>;
 }
 
 /** Options for loading or registering a static component asset. */
 export interface ComponentAssetOptions {
   /** CSP nonce for importmap style scripts. Defaults to WebUI SSR metadata. */
   nonce?: string;
-  /** Base URL used to resolve a relative `templateFunctionModule`. */
-  baseUrl?: string | URL;
 }
 
 /** State payload returned by a lazy component data loader. */
@@ -40,7 +43,7 @@ export type ComponentAssetState = Record<string, unknown>;
 
 /** Manifest entry for one lazy component root. */
 export interface ComponentAssetManifestEntry<Data extends ComponentAssetState = ComponentAssetState> {
-  /** Static component asset JSON emitted by `webui build --emit-component-assets`. */
+  /** Static component asset module emitted by `webui build --emit-component-assets`. */
   asset: string | URL;
   /** JavaScript module that defines/registers the custom element class. */
   module?: () => Promise<unknown>;
@@ -108,7 +111,7 @@ export function defineComponentAssets(manifest: ComponentAssetManifest): Compone
     }
 
     const next: ComponentAssetPreload<Data> = {
-      asset: loadComponentAsset(entry.asset),
+      asset: loadComponentAsset(tag, entry.asset),
     };
     if (entry.module) {
       next.module = entry.module();
@@ -197,20 +200,20 @@ function dataWithTimeout<Data extends ComponentAssetState>(
   ]);
 }
 
-/** Fetch and register a static component asset emitted by the WebUI CLI. */
+/** Import and register a static component asset emitted by the WebUI CLI. */
 function loadComponentAsset(
+  tag: string,
   url: string | URL,
   options: ComponentAssetOptions = {},
 ): Promise<void> {
-  const assetUrl = new URL(url, document.baseURI);
-  const root = componentNameFromAssetUrl(assetUrl);
-  if (root && getTemplate(root)) return Promise.resolve();
+  if (getTemplate(tag)) return Promise.resolve();
 
+  const assetUrl = new URL(url, document.baseURI);
   const href = assetUrl.href;
   let promise = assetLoadPromises.get(href);
   if (promise) return promise;
 
-  promise = fetchAndRegisterComponentAsset(assetUrl, options)
+  promise = importAndRegisterComponentAsset(assetUrl, options)
     .finally(() => {
       assetLoadPromises.delete(href);
     });
@@ -218,49 +221,38 @@ function loadComponentAsset(
   return promise;
 }
 
-/** Register a static component asset object that has already been fetched. */
-async function registerComponentAsset(
+/** Register a static component asset object that has already been imported. */
+function registerComponentAsset(
   asset: ComponentAsset,
   options: ComponentAssetOptions = {},
-): Promise<void> {
+): void {
   validateAsset(asset);
   if (asset.templates && templatesAlreadyRegistered(asset.templates)) return;
 
   registerAssetStyles(asset.templateStyles, options.nonce ?? readNonce());
 
-  if (asset.templateFunctionModule) {
-    const moduleUrl = options.baseUrl
-      ? new URL(asset.templateFunctionModule, options.baseUrl).href
-      : asset.templateFunctionModule;
-    await import(moduleUrl);
-  }
-
   if (asset.templates) {
-    registerTemplateData(asset.templates);
+    registerTemplateData(asset.templates, asset.templateFunctions);
   }
 }
 
-async function fetchAndRegisterComponentAsset(
+async function importAndRegisterComponentAsset(
   assetUrl: URL,
   options: ComponentAssetOptions,
 ): Promise<void> {
-  const response = await fetch(assetUrl);
-  if (!response.ok) {
-    throw new Error(
-      `[WebUI] Failed to load component asset ${assetUrl.href}: ${response.status} ${response.statusText}`,
-    );
-  }
-  const asset = await response.json() as ComponentAsset;
-  await registerComponentAsset(asset, { ...options, baseUrl: assetUrl });
+  const imported: unknown = await import(assetUrl.href);
+  registerComponentAsset(readComponentAssetModule(imported), options);
 }
 
-function componentNameFromAssetUrl(assetUrl: URL): string | undefined {
-  const path = assetUrl.pathname;
-  const slash = path.lastIndexOf('/');
-  const file = slash >= 0 ? path.substring(slash + 1) : path;
-  const suffix = '.webui.json';
-  if (!file.endsWith(suffix)) return undefined;
-  return decodeURIComponent(file.substring(0, file.length - suffix.length));
+function readComponentAssetModule(module: unknown): ComponentAsset {
+  if (!isObject(module) || !isObject(module.default)) {
+    throw new Error('[WebUI] Component asset module must default-export an asset object.');
+  }
+  return module.default as ComponentAsset;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 
 function validateAsset(asset: ComponentAsset): void {

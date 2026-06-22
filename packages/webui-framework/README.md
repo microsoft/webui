@@ -143,8 +143,7 @@ In most components you do not call `$update()` directly. Property changes throug
 ### Static component assets
 
 `webui build --plugin=webui --emit-component-assets settings-dialog` emits
-`settings-dialog.webui.json` and, when compiled conditions exist,
-`settings-dialog.webui-fns.js` next to `protocol.bin`. Load the JSON before
+`settings-dialog.webui.js` next to `protocol.bin`. Load the ESM asset before
 creating the component when you are not using `@microsoft/webui-router`:
 
 ```ts
@@ -160,22 +159,21 @@ import { defineComponentAssets } from '@microsoft/webui-framework/component-asse
 
 export const settingsAssets = defineComponentAssets({
   'settings-dialog': {
-    asset: '/settings-dialog.webui.json',
+    asset: '/settings-dialog.webui.js',
     module: () => import('./settings-dialog/settings-dialog.js'),
     data: async () => await (await fetch('/settings-dialog-data.json')).json(),
   },
 });
 ```
 
-The JSON is inert WebUI template/style metadata. The optional function module
-registers compiled condition closures as an ES module. CSS module importmaps use
-the current page nonce from `window.__webui.nonce` or
-`<meta name="webui-nonce">`. Asset loads skip fetching when the root template is
-already in `window.__webui.templates`, share in-flight requests by URL, and
-dedupe CSS module styles against `window.__webui.styles`. `create(tag)` does not
-block on data by default; it applies data later with `setState()`. Use
-`create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
-wait briefly for state before mounting.
+The asset module default-exports WebUI template/style metadata and compiled
+condition closures. CSS module importmaps use the current page nonce from
+`window.__webui.nonce` or `<meta name="webui-nonce">`. Asset loads skip importing
+when the root template is already in `window.__webui.templates`, share in-flight
+requests by URL, and dedupe CSS module styles against `window.__webui.styles`.
+`create(tag)` does not block on data by default; it applies data later with
+`setState()`. Use `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only
+when a component must wait briefly for state before mounting.
 
 ### `@observable`
 

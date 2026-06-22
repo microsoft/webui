@@ -7,11 +7,13 @@ use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use webui::AssetFileNameTemplate;
 use webui_handler::route_handler::{render_component_templates, ProtocolIndex};
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragmentRoute, WebUIProtocol};
 
 const ASSET_TYPE: &str = "webui-component-asset";
 const ASSET_VERSION: u64 = 1;
+const COMPONENT_ASSET_EXT: &str = "webui.js";
 
 /// Summary of emitted component asset files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +39,7 @@ pub fn emit_component_assets(
     protocol: &WebUIProtocol,
     roots: &[String],
     out_dir: &Path,
+    file_name_template: &str,
 ) -> Result<ComponentAssetStats> {
     let plans = plan_component_assets(protocol, roots)?;
     if plans.is_empty() {
@@ -45,16 +48,19 @@ pub fn emit_component_assets(
             file_count: 0,
         });
     }
+    let file_name_template =
+        AssetFileNameTemplate::try_new(file_name_template.to_string(), "asset_file_name_template")?;
 
     let files_by_root: Vec<Result<Vec<AssetFile>>> = plans
         .par_iter()
-        .map(|plan| render_asset_files(protocol, plan))
+        .map(|plan| render_asset_files(protocol, plan, &file_name_template))
         .collect();
 
-    let mut files = Vec::with_capacity(plans.len() * 2);
+    let mut files = Vec::with_capacity(plans.len());
     for root_files in files_by_root {
         files.extend(root_files?);
     }
+    validate_unique_file_names(&files)?;
 
     files.par_iter().try_for_each(|file| {
         let path = out_dir.join(&file.name);
@@ -86,6 +92,7 @@ fn plan_component_assets(
 fn render_asset_files(
     protocol: &WebUIProtocol,
     plan: &ComponentAssetPlan,
+    file_name_template: &AssetFileNameTemplate,
 ) -> Result<Vec<AssetFile>> {
     let tag_refs: Vec<&str> = plan.components.iter().map(String::as_str).collect();
     let mut index = ProtocolIndex::new(protocol);
@@ -98,8 +105,7 @@ fn render_asset_files(
     let templates = remove_object(&mut object, "templates", &plan.root)?;
     let template_styles = remove_array(&mut object, "templateStyles", &plan.root)?;
 
-    let function_module = build_function_module_file(&plan.root, &functions)?;
-    let mut asset = Map::with_capacity(7);
+    let mut asset = Map::with_capacity(6);
     asset.insert("type".into(), Value::String(ASSET_TYPE.to_string()));
     asset.insert("version".into(), Value::from(ASSET_VERSION));
     asset.insert(
@@ -114,28 +120,48 @@ fn render_asset_files(
     asset.insert("templateStyles".into(), Value::Array(template_styles));
     asset.insert("templates".into(), Value::Object(templates));
 
-    let mut files = Vec::with_capacity(if function_module.is_some() { 2 } else { 1 });
-    if let Some(function_file) = function_module {
-        asset.insert(
-            "templateFunctionModule".into(),
-            Value::String(function_file.name.clone()),
-        );
-        files.push(function_file);
-    }
+    let content = build_asset_module(&plan.root, asset, &functions)?;
+    let name = file_name_template.resolve(&plan.root, COMPONENT_ASSET_EXT, content.as_bytes());
+    Ok(vec![AssetFile { name, content }])
+}
 
-    let json = serde_json::to_string(&Value::Object(asset))
-        .with_context(|| format!("Failed to serialize component asset for <{}>", plan.root))?;
-    files.push(AssetFile {
-        name: asset_json_file_name(&plan.root),
-        content: append_newline(json),
-    });
-    Ok(files)
+fn validate_unique_file_names(files: &[AssetFile]) -> Result<()> {
+    let mut names = HashSet::with_capacity(files.len());
+    for file in files {
+        if !names.insert(file.name.as_str()) {
+            bail!(
+                "component asset filename collision for '{}'. Adjust --asset-file-name-template to include [name] or another unique component-specific segment.",
+                file.name
+            );
+        }
+    }
+    Ok(())
+}
+
+fn build_asset_module(root: &str, asset: Map<String, Value>, functions: &Value) -> Result<String> {
+    let asset_json = serde_json::to_string(&Value::Object(asset))
+        .with_context(|| format!("Failed to serialize component asset for <{root}>"))?;
+    let mut js = String::with_capacity(asset_json.len() + 64);
+    js.push_str("const asset=");
+    if has_template_functions(functions)? {
+        let Some(prefix) = asset_json.strip_suffix('}') else {
+            bail!("component asset for <{root}> was not a serialized JavaScript object");
+        };
+        js.push_str(prefix);
+        js.push_str(",\"templateFunctions\":");
+        push_template_functions_object(root, functions, &mut js)?;
+        js.push('}');
+    } else {
+        js.push_str(&asset_json);
+    }
+    js.push_str(";\nexport default asset;\n");
+    Ok(js)
 }
 
 fn into_object(payload: Value, root: &str) -> Result<Map<String, Value>> {
     match payload {
         Value::Object(object) => Ok(object),
-        _ => bail!("component asset for <{root}> was not a JSON object"),
+        _ => bail!("component asset payload for <{root}> was not an object"),
     }
 }
 
@@ -159,38 +185,37 @@ fn remove_array(object: &mut Map<String, Value>, field: &str, root: &str) -> Res
     }
 }
 
-fn build_function_module_file(root: &str, functions: &Value) -> Result<Option<AssetFile>> {
+fn has_template_functions(functions: &Value) -> Result<bool> {
+    let Value::Object(functions) = functions else {
+        bail!("component asset field 'templateFunctions' was not an object");
+    };
+    Ok(!functions.is_empty())
+}
+
+fn push_template_functions_object(root: &str, functions: &Value, js: &mut String) -> Result<()> {
     let Value::Object(functions) = functions else {
         bail!("component asset field 'templateFunctions' for <{root}> was not an object");
     };
-    if functions.is_empty() {
-        return Ok(None);
-    }
-
     let mut tags: Vec<&str> = functions.keys().map(String::as_str).collect();
     tags.sort_unstable();
 
-    let mut js = String::with_capacity(128);
-    js.push_str("const f=window.__webui.templateFns||(window.__webui.templateFns={});\n");
-    for tag in tags {
+    js.push('{');
+    for (index, tag) in tags.into_iter().enumerate() {
+        if index > 0 {
+            js.push(',');
+        }
         let Some(function_array) = functions.get(tag).and_then(Value::as_str) else {
             bail!("templateFunctions entry for <{tag}> in <{root}> asset was not a string");
         };
-        js.push_str("f[");
         js.push_str(
             &serde_json::to_string(tag)
                 .with_context(|| format!("Failed to encode template function tag <{tag}>"))?,
         );
-        js.push_str("]=");
+        js.push(':');
         js.push_str(function_array);
-        js.push_str(";\n");
     }
-    js.push_str("export {};\n");
-
-    Ok(Some(AssetFile {
-        name: asset_function_file_name(root),
-        content: js,
-    }))
+    js.push('}');
+    Ok(())
 }
 
 fn validate_roots(protocol: &WebUIProtocol, roots: &[String]) -> Result<Vec<String>> {
@@ -306,25 +331,6 @@ fn push_route_component_ids(route: &WebUIFragmentRoute, stack: &mut Vec<String>)
         }
         routes.extend(current.children.iter());
     }
-}
-
-fn asset_json_file_name(root: &str) -> String {
-    let mut name = String::with_capacity(root.len() + ".webui.json".len());
-    name.push_str(root);
-    name.push_str(".webui.json");
-    name
-}
-
-fn asset_function_file_name(root: &str) -> String {
-    let mut name = String::with_capacity(root.len() + ".webui-fns.js".len());
-    name.push_str(root);
-    name.push_str(".webui-fns.js");
-    name
-}
-
-fn append_newline(mut value: String) -> String {
-    value.push('\n');
-    value
 }
 
 #[cfg(test)]

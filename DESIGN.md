@@ -349,20 +349,24 @@ own asset loader rather than making the core `@microsoft/webui` package know
 plugin details. Asset roots are parsed into the protocol through synthetic
 non-entry fragments, so they do not become reachable from the SSR entry tree and
 are not included in the initial SSR bootstrap unless the entry graph also
-references them. Asset generation is parallelized across requested roots. Each
-root produces
-`<tag>.webui.json` and, only when compiled conditions exist,
-`<tag>.webui-fns.js`. The JSON file contains:
+references them. Asset generation is parallelized across requested roots. Each root produces one
+standard ESM module, `<tag>.webui.js`, by default. Use
+`--asset-file-name-template "[name]-[hash].[ext]"` for CDN-cacheable CSS and
+component asset names; `[hash]` is the emitted file's SHA-256 content hash
+truncated to 8 hex characters and `[ext]` resolves to `webui.js` for component
+assets. The module default-exports:
 
-```json
-{
-  "type": "webui-component-asset",
-  "version": 1,
-  "components": ["mail-thread", "mail-message"],
-  "templateStyles": [],
-  "templates": {},
-  "templateFunctionModule": "mail-thread.webui-fns.js"
-}
+```js
+export default {
+  type: "webui-component-asset",
+  version: 1,
+  components: ["mail-thread", "mail-message"],
+  templateStyles: [],
+  templates: {},
+  templateFunctions: {
+    "mail-thread": [function(v, s) { return !!v("hasMessages", s); }]
+  }
+};
 ```
 
 The component list is the conservative dependency closure for the requested root:
@@ -370,27 +374,25 @@ component edges, `<if>`, `<for>`, attribute-template edges, and all nested
 `<route>` branches are followed without evaluating runtime state. The JSON file
 is inert data and intentionally omits `inventory`: a build-time static asset does
 not know the page's current loaded bitset, so consumers must not replace
-`window.__webui.inventory` with asset-local state. The optional function module
-registers component-local condition closure arrays into
-`window.__webui.templateFns` as normal ES module code, avoiding large executable
-template payloads and avoiding nonce-bound inline function scripts. CSS module
-importmaps still use the page's current CSP nonce when materialized by the
-optional `@microsoft/webui-framework/component-asset.js` `defineComponentAssets()`
+`window.__webui.inventory` with asset-local state. Component-local condition
+closures are carried in the same ESM request as `templateFunctions`, so the
+template asset, component class chunk, and component data request can all start
+in parallel from the manifest. CSS module importmaps still use the page's current
+CSP nonce when materialized by the optional
+`@microsoft/webui-framework/component-asset.js` `defineComponentAssets()`
 manifest loader. This loader is not re-exported from the framework root package
 entrypoint, keeping it out of normal framework bundles unless an app imports the
-optional subpath. The loader first derives the root component name from
-`<tag>.webui.json` and checks `window.__webui.templates` via `getTemplate(tag)`;
-when the template is already registered, it skips the fetch entirely. Otherwise
-it deduplicates in-flight fetches by resolved asset URL and deduplicates
-module-style importmaps against `window.__webui.styles` plus previously injected
-asset styles. `defineComponentAssets().create(tag)` waits for the asset/module,
-mounts without blocking on data by default, and applies data later with
-`setState()`; callers can opt into bounded data blocking with
-`{ awaitData: true, dataTimeoutMs }`.
+optional subpath. The loader uses the manifest tag as the registered-template
+fast path, so hashed asset filenames still skip importing when
+`window.__webui.templates[tag]` already exists. Otherwise it deduplicates
+in-flight imports by resolved asset URL and deduplicates module-style importmaps
+against `window.__webui.styles` plus previously injected asset styles.
+`defineComponentAssets().create(tag)` waits for the asset/module, mounts without
+blocking on data by default, and applies data later with `setState()`; callers
+can opt into bounded data blocking with `{ awaitData: true, dataTimeoutMs }`.
 
-FAST plugin builds can emit the same asset envelope with `plugin: "fast-v3"` and
-trusted `<f-template>` payloads in `templates`; those assets require a FAST-owned
-runtime loader.
+FAST plugin builds can emit the same ESM asset shape with trusted `<f-template>`
+payloads in `templates`; those assets require a FAST-owned runtime loader.
 
 **Navigation cache:** The client router maintains a tagged navigation cache. Partial responses are stored keyed by request path and tagged with `cacheTags`. On revisit within `staleTime`, the cache is used and the network fetch is skipped. After a mutation action, `Router.invalidateTags()` evicts all entries whose tags overlap with the invalidated tags. Configuration: `Router.start({ cache: { staleTime, gcTime, maxEntries } })`.
 
@@ -1101,8 +1103,9 @@ parser.parse("index.html", &html)?;
 **CLI integration:**
 ```bash
 webui build ./templates --out ./dist --plugin=<name>
-webui build ./templates --out ./dist --css-file-name-template="[name]-[hash].[ext]" --css-public-base="https://cdn.example.com/assets"
+webui build ./templates --out ./dist --asset-file-name-template="[name]-[hash].[ext]" --css-public-base="https://cdn.example.com/assets"
 webui build ./templates --out ./dist --plugin=webui --emit-component-assets mail-thread,compose-page
+webui build ./templates --out ./dist --plugin=webui --emit-component-assets mail-thread --asset-file-name-template="[name]-[hash].[ext]"
 webui serve ./templates --state ./data/state.json --plugin=<name>
 ```
 

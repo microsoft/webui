@@ -1,7 +1,7 @@
 {
   "status": "Loaded from component fetch",
   "heading": "Static asset template is active",
-  "message": "The template came from lazy-panel.webui.json, while this state came from lazy-panel-data.json.",
+  "message": "The template came from lazy-panel.webui.js, while this state came from lazy-panel-data.json.",
   "hasDetails": true,
-  "details": "Because the panel template contains an <if>, the build also emits lazy-panel.webui-fns.js."
+  "details": "The asset module carries template metadata, CSS import maps, and compiled condition functions in one browser-native ESM file."
 }

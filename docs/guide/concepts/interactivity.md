@@ -360,10 +360,10 @@ webui build ./src --out ./dist --plugin=webui \
   --emit-component-assets settings-dialog,mail-thread
 ```
 
-Each requested root writes `<tag>.webui.json` next to `protocol.bin`. If the
-component tree uses compiled conditions, a small `<tag>.webui-fns.js` module is
-written too. The JSON contains template/style data for the root component and
-its dependency closure; it does not contain inventory state.
+Each requested root writes one ESM module such as `<tag>.webui.js` next to
+`protocol.bin`. The module carries template/style data, compiled condition
+functions, and the dependency closure for the root component; it does not contain
+inventory state.
 
 Load the asset before creating or revealing the component:
 
@@ -387,26 +387,26 @@ import { defineComponentAssets } from '@microsoft/webui-framework/component-asse
 
 export const settingsAssets = defineComponentAssets({
   'settings-dialog': {
-    asset: '/settings-dialog.webui.json',
+    asset: '/settings-dialog.webui.js',
     module: () => import('./settings-dialog/settings-dialog.js'),
     data: async () => await (await fetch('/settings-dialog-data.json')).json(),
   },
 });
 ```
 
-`defineComponentAssets()` registers template metadata, imports the optional
-function module, and applies the current page CSP nonce to CSS module importmaps
-when needed. Components can then fetch their own data in their class code and
-attach it through observables or `setState()`. The loader skips fetching when
-the root template from `<tag>.webui.json` is already present in
-`window.__webui.templates`, shares concurrent requests for the same URL, and
-dedupes CSS module styles against `window.__webui.styles`. `create(tag)` creates
-the element after template/module work is ready, then applies loaded data with
-`setState()` when the data promise resolves, matching the router state handoff
-model. Use `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a
-component must wait briefly for state before mounting.
-Use a manifest helper when you want the fastest path: it lets the shell start
-the template asset, JS chunk, and data fetch in parallel.
+`defineComponentAssets()` imports the asset module, registers template metadata,
+and applies the current page CSP nonce to CSS module importmaps when needed.
+Components can then fetch their own data in their class code and attach it
+through observables or `setState()`. The loader skips importing when the root
+template is already present in `window.__webui.templates`, shares concurrent
+requests for the same URL, and dedupes CSS module styles against
+`window.__webui.styles`. `create(tag)` creates the element after template/module
+work is ready, then applies loaded data with `setState()` when the data promise
+resolves, matching the router state handoff model. Use
+`create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
+wait briefly for state before mounting. Use a manifest helper when you want the
+fastest path: it lets the shell start the template asset, JS chunk, and data
+fetch in parallel.
 
 Do not put `<settings-dialog>` in an SSR-reachable `<if>` block for this pattern.
 If the server state ever makes that condition true, the component is part of the
