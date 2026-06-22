@@ -24,9 +24,9 @@ parser = ["dep:microsoft-webui-parser"]
 regenerate-header = ["dep:cbindgen"]
 
 [dependencies]
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.16" }
-microsoft-webui-parser = { path = "../webui-parser", version = "0.0.16", optional = true }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.16" }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.17" }
+microsoft-webui-parser = { path = "../webui-parser", version = "0.0.17", optional = true }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.17" }
 serde_json = { workspace = true }
 
 [build-dependencies]
