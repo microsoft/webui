@@ -156,6 +156,29 @@ fn collect_sidebar_links(items: &[SidebarItem]) -> Vec<&str> {
 ///
 /// Discovery is filesystem-driven: any markdown file under content_dir becomes
 /// a page. The sidebar/nav config controls navigation, not discovery.
+/// Strip redundant filename if it matches the parent folder name.
+/// E.g., "my-button/my-button" → "my-button"
+///      "my-button/usage" → "my-button/usage" (unchanged)
+fn normalize_path_as_index(path: &str) -> &str {
+    // Find the last slash to split parent/filename
+    let Some(slash_pos) = path.rfind('/') else {
+        return path;
+    };
+
+    let parent = &path[..slash_pos];
+    let filename = &path[slash_pos + 1..];
+
+    // Get the parent folder name (last segment before filename)
+    let folder_name = parent.rsplit('/').next().unwrap_or("");
+
+    // If folder name matches filename, treat as index and strip filename
+    if folder_name == filename {
+        parent
+    } else {
+        path
+    }
+}
+
 fn build_page_registry(content_dir: &Path, base_path: &str) -> Vec<(String, std::path::PathBuf)> {
     let mut pages = Vec::new();
     let mut stack: Vec<std::path::PathBuf> = vec![content_dir.to_path_buf()];
@@ -188,7 +211,14 @@ fn build_page_registry(content_dir: &Path, base_path: &str) -> Vec<(String, std:
             };
             let rel_str = rel.to_string_lossy().replace('\\', "/");
             let trimmed = rel_str.trim_end_matches(".md");
+
+            // Strip /index suffix
             let trimmed = trimmed.strip_suffix("/index").unwrap_or(trimmed);
+
+            // Strip redundant filename if it matches parent folder
+            // e.g., "webui-button/webui-button" → "webui-button"
+            let trimmed = normalize_path_as_index(trimmed);
+
             // Root index.md => "/"
             let url_path = if trimmed.is_empty() || trimmed == "index" {
                 if base_path.is_empty() {
@@ -741,6 +771,53 @@ mod tests {
         // `&link[1..]` would have panicked here on UTF-8 boundary.
         let out = normalize_link("/webui/", "é-page");
         assert!(out.ends_with("é-page"), "got {out}");
+    }
+
+    // --- normalize_path_as_index -----------------------------------------
+
+    #[test]
+    fn normalize_path_as_index_strips_duplicate_folder_name() {
+        assert_eq!(
+            normalize_path_as_index("webui-button/webui-button"),
+            "webui-button"
+        );
+    }
+
+    #[test]
+    fn normalize_path_as_index_keeps_different_filename() {
+        assert_eq!(
+            normalize_path_as_index("webui-button/usage"),
+            "webui-button/usage"
+        );
+    }
+
+    #[test]
+    fn normalize_path_as_index_nested_folders() {
+        assert_eq!(
+            normalize_path_as_index("components/webui-button/webui-button"),
+            "components/webui-button"
+        );
+    }
+
+    #[test]
+    fn normalize_path_as_index_no_slash_returns_unchanged() {
+        assert_eq!(normalize_path_as_index("webui-button"), "webui-button");
+    }
+
+    #[test]
+    fn normalize_path_as_index_deep_nesting_with_match() {
+        assert_eq!(
+            normalize_path_as_index("a/b/c/webui-card/webui-card"),
+            "a/b/c/webui-card"
+        );
+    }
+
+    #[test]
+    fn normalize_path_as_index_deep_nesting_without_match() {
+        assert_eq!(
+            normalize_path_as_index("a/b/c/webui-card/examples"),
+            "a/b/c/webui-card/examples"
+        );
     }
 
     // --- parse_frontmatter -----------------------------------------------
