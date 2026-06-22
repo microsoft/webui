@@ -29,4 +29,4 @@ See the [WebUI repository](https://github.com/microsoft/webui) for full usage gu
 
 ## License
 
-MIT - Copyright (c) Microsoft Corporation.
+MIT. NuGet package metadata uses © Microsoft Corporation. All rights reserved.

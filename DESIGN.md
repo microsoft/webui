@@ -1533,9 +1533,9 @@ The `Microsoft.WebUI` package is the managed .NET binding for `webui-ffi`. It ta
 
 Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each supported RID. The runtime packages share `dotnet/runtime/README.md`, include NuGet release notes pointing to the GitHub release notes, and carry the matching `runtimes/<rid>/native` asset. The managed package references every runtime package so NuGet restores them transitively; .NET then resolves `webui_ffi` from the matching native asset. `WEBUI_LIB_PATH` remains the override for custom local native builds.
 
-`dotnet/Directory.Build.props` applies repository metadata, Source Link, and `.snupkg` symbol package generation to packable .NET projects. `cargo xtask publish` runs `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
+`dotnet/Directory.Build.props` applies NuGet metadata to packable .NET projects: `Authors=Microsoft`, `PackageOwners=Microsoft`, a package license URL with `PackageRequireLicenseAcceptance=true`, project and repository URLs, Source Link, release notes links, discoverability tags, the required `© Microsoft Corporation. All rights reserved.` copyright notice, and `.snupkg` symbol package generation. `cargo xtask publish` runs `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
 
-NuGet publishing is not automated by ESRP today. Release workflows attach staged NuGet artifacts to GitHub Releases for manual/externally tracked nuget.org publishing with the approved owner and signing process.
+NuGet publishing is not automated by ESRP today. Release workflows attach staged NuGet artifacts to GitHub Releases for manual/externally tracked nuget.org publishing. Before nuget.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process.
 
 ### Documentation Guidelines
 - Using `vitepress` in `docs/`
