@@ -20,14 +20,15 @@
 //!
 //! * **allocations**  — count of `alloc` calls (custom GlobalAlloc)
 //! * **bytes allocated** — total bytes requested
-//! * **CPU user time** — `getrusage(RUSAGE_SELF).ru_utime` delta on Unix
-//! * **peak RSS** — `ru_maxrss` high-water mark on Unix
+//! * **CPU user time** — `getrusage(RUSAGE_SELF).ru_utime` delta on Unix,
+//!   `GetProcessTimes` user time delta on Windows
+//! * **peak RSS** — `ru_maxrss` high-water mark on Unix,
+//!   `PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize` on Windows
 //!
 //! Unlike criterion (which only reports wall-clock), this gives a
 //! direct allocator-level view useful for verifying that the streaming
 //! writer's "zero per-write allocation" claim actually holds in the
-//! production path. CPU and RSS columns are reported as zero on platforms
-//! without `getrusage`.
+//! production path.
 //!
 //! Usage:
 //!
@@ -37,12 +38,11 @@
 
 #![allow(missing_docs)]
 // SAFETY EXEMPTION: This is a benchmark example, not library code.
-// `GlobalAlloc` and, on Unix, `libc::getrusage` require `unsafe` blocks;
-// their callers here have correct contracts (forwarding to System allocator
-// with original layouts; `rusage` is fully zero-initialised before the
-// FFI call). The workspace `unsafe_code = "deny"` lint applies to
-// production library code; benchmarking infrastructure is exempted at
-// the file level with this attribute.
+// `GlobalAlloc` and process resource APIs require `unsafe` blocks; their
+// callers here have correct contracts (forwarding to System allocator with
+// original layouts; resource structs are fully initialised before FFI calls).
+// The workspace `unsafe_code = "deny"` lint applies to production library code;
+// benchmarking infrastructure is exempted at the file level with this attribute.
 #![allow(unsafe_code)]
 
 use bytes::Bytes;
@@ -107,19 +107,17 @@ fn alloc_snapshot() -> (usize, usize) {
     )
 }
 
-// ── Resource usage helpers ─────────────────────────────────────────────
+// ── Process resource helpers ───────────────────────────────────────────
 
 #[derive(Copy, Clone)]
-struct Rusage {
+struct ProcessUsage {
     user_cpu: Duration,
     sys_cpu: Duration,
-    /// Maximum resident set size, in bytes (macOS) or KB (Linux).
-    /// Normalised by `max_rss_bytes`.
-    #[cfg(unix)]
-    max_rss_raw: i64,
+    /// Maximum resident set size, normalized to bytes.
+    max_rss_bytes: i64,
 }
 
-impl Rusage {
+impl ProcessUsage {
     #[cfg(unix)]
     fn now() -> Self {
         let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
@@ -130,31 +128,66 @@ impl Rusage {
         Self {
             user_cpu: timeval_to_duration(usage.ru_utime),
             sys_cpu: timeval_to_duration(usage.ru_stime),
-            max_rss_raw: usage.ru_maxrss as i64,
+            max_rss_bytes: unix_rss_to_bytes(usage.ru_maxrss as i64),
         }
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    fn now() -> Self {
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::ProcessStatus::{
+            K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+
+        // GetCurrentProcess returns a pseudo-handle owned by the process; it
+        // must not be closed.
+        let process = unsafe { GetCurrentProcess() };
+        let mut creation_time = FILETIME::default();
+        let mut exit_time = FILETIME::default();
+        let mut kernel_time = FILETIME::default();
+        let mut user_time = FILETIME::default();
+        // SAFETY: all pointers refer to writable FILETIME values and the
+        // pseudo-handle returned by GetCurrentProcess is valid for this call.
+        let times_ok = unsafe {
+            GetProcessTimes(
+                process,
+                &mut creation_time,
+                &mut exit_time,
+                &mut kernel_time,
+                &mut user_time,
+            )
+        };
+        assert_ne!(times_ok, 0, "GetProcessTimes failed");
+
+        let counters_size = process_memory_counters_size();
+        // SAFETY: zeroed PROCESS_MEMORY_COUNTERS is valid after its cb field is
+        // set to the structure size required by GetProcessMemoryInfo.
+        let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+        counters.cb = counters_size;
+        // SAFETY: counters points to writable memory with cb initialized, and
+        // the pseudo-handle returned by GetCurrentProcess is valid for this call.
+        let memory_ok = unsafe { K32GetProcessMemoryInfo(process, &mut counters, counters_size) };
+        assert_ne!(memory_ok, 0, "GetProcessMemoryInfo failed");
+
+        Self {
+            user_cpu: filetime_to_duration(user_time),
+            sys_cpu: filetime_to_duration(kernel_time),
+            max_rss_bytes: usize_to_i64_saturating(counters.PeakWorkingSetSize),
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
     fn now() -> Self {
         Self {
             user_cpu: Duration::ZERO,
             sys_cpu: Duration::ZERO,
+            max_rss_bytes: -1,
         }
     }
 
     fn max_rss_bytes(&self) -> i64 {
-        #[cfg(all(unix, target_os = "macos"))]
-        {
-            self.max_rss_raw
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            self.max_rss_raw * 1024
-        }
-        #[cfg(not(unix))]
-        {
-            0
-        }
+        self.max_rss_bytes
     }
 }
 
@@ -163,6 +196,44 @@ fn timeval_to_duration(tv: libc::timeval) -> Duration {
     let secs = tv.tv_sec as u64;
     let usecs = tv.tv_usec as u32;
     Duration::new(secs, usecs * 1_000)
+}
+
+#[cfg(unix)]
+fn unix_rss_to_bytes(raw: i64) -> i64 {
+    if cfg!(target_os = "macos") {
+        raw
+    } else {
+        raw.saturating_mul(1024)
+    }
+}
+
+#[cfg(windows)]
+fn filetime_to_duration(filetime: windows_sys::Win32::Foundation::FILETIME) -> Duration {
+    let ticks = (u64::from(filetime.dwHighDateTime) << 32) | u64::from(filetime.dwLowDateTime);
+    let secs = ticks / 10_000_000;
+    let nanos = match u32::try_from((ticks % 10_000_000) * 100) {
+        Ok(value) => value,
+        Err(_) => panic!("FILETIME nanosecond remainder must fit in u32"),
+    };
+    Duration::new(secs, nanos)
+}
+
+#[cfg(windows)]
+fn usize_to_i64_saturating(value: usize) -> i64 {
+    match i64::try_from(value) {
+        Ok(value) => value,
+        Err(_) => i64::MAX,
+    }
+}
+
+#[cfg(windows)]
+fn process_memory_counters_size() -> u32 {
+    match u32::try_from(std::mem::size_of::<
+        windows_sys::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS,
+    >()) {
+        Ok(value) => value,
+        Err(_) => panic!("PROCESS_MEMORY_COUNTERS size must fit in u32"),
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -434,7 +505,7 @@ where
     }
 
     let (a0, b0) = alloc_snapshot();
-    let r0 = Rusage::now();
+    let r0 = ProcessUsage::now();
     let t0 = Instant::now();
 
     for _ in 0..iters {
@@ -442,7 +513,7 @@ where
     }
 
     let wall = t0.elapsed();
-    let r1 = Rusage::now();
+    let r1 = ProcessUsage::now();
     let (a1, b1) = alloc_snapshot();
 
     ResourceDelta {
@@ -503,6 +574,9 @@ fn format_bytes_per_run(bytes: f64) -> String {
 }
 
 fn format_total_rss(bytes: i64) -> String {
+    if bytes < 0 {
+        return "n/a".to_string();
+    }
     if bytes < 1024 * 1024 {
         format!("{:.1} KiB", bytes as f64 / 1024.0)
     } else {
@@ -754,8 +828,8 @@ fn main() {
         iters_per_scale
     );
     println!(
-        "RSS column = process-wide high-water mark on Unix; 0 on platforms \
-         without getrusage."
+        "RSS column = process-wide high-water mark observed at end of phase \
+         (cumulative across all phases, only meaningful as a peak)."
     );
     print_header();
 
@@ -809,15 +883,15 @@ fn main() {
     println!();
     println!("Notes:");
     println!("  * `allocs/run` and `bytes/run` are exact (custom GlobalAlloc).");
-    if cfg!(unix) {
+    if cfg!(windows) {
+        println!("  * `user µs/run` is `GetProcessTimes` user time delta / iters.");
+        println!("  * `process RSS` is `PeakWorkingSetSize` for the process at");
+    } else {
         println!("  * `user µs/run` is `getrusage(RUSAGE_SELF).ru_utime` delta / iters.");
         println!("  * `process RSS` is the high-water mark for the whole process at");
-        println!("    phase end. Per-iteration RSS is not directly observable; use");
-        println!("    `bytes/run` to compare per-render heap pressure across paths.");
-    } else {
-        println!("  * `user µs/run`, `sys µs/run`, and `process RSS` are unavailable");
-        println!("    on this platform and reported as 0.");
     }
+    println!("    phase end. Per-iteration RSS is not directly observable; use");
+    println!("    `bytes/run` to compare per-render heap pressure across paths.");
 
     match mode {
         Mode::Print => {}
@@ -841,16 +915,5 @@ fn delta_to_row(label: &str, delta: ResourceDelta) -> SnapshotRow {
         sys_cpu_us_per_run: pi.sys_cpu_us,
         wall_us_per_run: pi.wall_us,
         rss_high_water_bytes: pi.rss_bytes,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Rusage;
-
-    #[test]
-    fn captures_resource_snapshot_on_current_platform() {
-        let usage = Rusage::now();
-        let _ = usage.max_rss_bytes();
     }
 }
