@@ -104,7 +104,7 @@ pub fn run_integration_builds() -> Result<(), String> {
 // ── App builds ──────────────────────────────────────────────────────────
 
 fn is_example_app_dir(app_dir: &Path) -> bool {
-    app_dir.join("demo.toml").is_file() || app_dir.join("package.json").is_file()
+    app_dir.join("package.json").is_file()
 }
 
 pub fn run_app_builds() -> Result<(), String> {
@@ -302,11 +302,11 @@ mod tests {
     }
 
     #[test]
-    fn treats_manifest_directories_as_apps() -> Result<(), Box<dyn std::error::Error>> {
+    fn treats_package_directories_as_apps() -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let app_dir = temp.path().join("calculator");
         fs::create_dir(&app_dir)?;
-        fs::write(app_dir.join("demo.toml"), "name = \"Calculator\"\n")?;
+        fs::write(app_dir.join("package.json"), "{}\n")?;
 
         assert!(is_example_app_dir(&app_dir));
         Ok(())
