@@ -47,6 +47,3 @@ thiserror = { workspace = true }
 microsoft-webui-dev-server = { path = "../webui-dev-server", version = "0.0.17" }
 actix-web = { workspace = true }
 tokio = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }
