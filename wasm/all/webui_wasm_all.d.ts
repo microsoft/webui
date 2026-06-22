@@ -7,10 +7,6 @@
  */
 export function build_protocol(files: any, entry: string): Uint8Array;
 /**
- * Return component template payloads for requested component tags.
- */
-export function render_component_templates(protocol_bytes: Uint8Array, component_tags_json: string, inventory_hex: string): string;
-/**
  * Extract the CSS token name list from protocol protobuf bytes.
  *
  * Returns a JavaScript array of token name strings, preserving the original
@@ -32,6 +28,10 @@ export function protocol_tokens(protocol_bytes: Uint8Array): any;
  * Nothing on success, or throws a JS error on failure.
  */
 export function render(protocol_bytes: Uint8Array, state_json: string, on_chunk: Function, options?: object | null): void;
+/**
+ * Return component template payloads for requested component tags.
+ */
+export function render_component_templates(protocol_bytes: Uint8Array, component_tags_json: string, inventory_hex: string): string;
 /**
  * Produce a complete JSON partial response for client-side navigation.
  *
