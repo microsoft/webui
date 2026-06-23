@@ -215,7 +215,7 @@ HttpResponse::Ok()
 | Function | Description |
 |----------|-------------|
 | `build(options)` | Build templates into a protocol. Returns `BuildResult` |
-| `build_to_disk(options, out_dir)` | Build and write `protocol.bin` + CSS files to disk |
+| `build_to_disk(options, out_dir)` | Build and write `protocol.bin`, CSS files, and static component assets to disk |
 | `inspect(path)` | Read a protocol file and return JSON |
 | `inspect_bytes(bytes)` | Convert protocol bytes to JSON |
 
@@ -228,8 +228,14 @@ HttpResponse::Ok()
 | `css` | `CssStrategy` | `Link` | CSS delivery: `Link`, `Style`, or `Module` |
 | `plugin` | `Option<String>` | `None` | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `Vec<String>` | `[]` | External component sources |
-| `css_file_name_template` | `String` | `"[name].[ext]"` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
+| `component_asset_roots` | `Vec<String>` | `[]` | Root component tags emitted as static `.webui.js` ESM assets |
+| `css_file_name_template` | `String` | `"[name].[ext]"` | Emitted asset filename template for Link-mode CSS and component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `css_public_base` | `Option<String>` | `None` | Public URL/path prefix for Link-mode CSS hrefs |
+
+`BuildResult::component_asset_files` contains rendered static component asset
+modules. `build_to_disk()` validates `protocol.bin`, CSS files, and component
+assets as one output set before writing, so filename collisions fail without
+leaving partial output.
 
 ### BuildStats
 

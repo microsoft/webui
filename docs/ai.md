@@ -335,6 +335,7 @@ MyComponent.define('my-component');
 | `this.$flushUpdates()` | Synchronously flush pending updates |
 | `setState(state)` | Populate from router navigation state |
 | `static define(tagName)` | Register as a custom element |
+| `defineComponentAssets(manifest)` | Define lazy component assets and load asset/module/data work in parallel |
 
 ### Emitting custom events
 
@@ -396,6 +397,55 @@ Router.start({
   loaders: { ... },
 });
 ```
+
+Without `@microsoft/webui-router`, prebuild static assets and load them from a
+CDN or the app's static folder:
+
+```bash
+webui build ./src --out ./dist --plugin=webui \
+  --emit-component-assets settings-dialog
+```
+
+Rust callers can set `BuildOptions::component_asset_roots`; rendered ESM files
+are returned in `BuildResult::component_asset_files` and written by
+`build_to_disk()`. Node callers use `componentAssetRoots` and receive flattened
+`componentAssetFiles` (`[filename, content, ...]`) from `build()`.
+
+```typescript
+import { settingsAssets } from './lazy-assets.js';
+
+async onOpenSettings(): Promise<void> {
+  settingsAssets.preload('settings-dialog');
+  this.panelSlot.replaceChildren(await settingsAssets.create('settings-dialog'));
+}
+```
+
+```typescript
+// lazy-assets.ts
+import { defineComponentAssets } from '@microsoft/webui-framework/component-asset.js';
+
+export const settingsAssets = defineComponentAssets({
+  'settings-dialog': {
+    asset: '/settings-dialog.webui.js',
+    module: () => import('./settings-dialog/settings-dialog.js'),
+    data: async () => await (await fetch('/settings-dialog-data.json')).json(),
+  },
+});
+```
+
+`defineComponentAssets()` uses the current page nonce from `window.__webui.nonce`
+or `<meta name="webui-nonce">` when it needs to append CSS module importmaps.
+The `.webui.js` asset is a browser-native ESM module that default-exports
+template/style metadata and compiled condition functions in one request. If the
+root template is already in `window.__webui.templates`, the loader skips
+importing. Concurrent calls for the same URL share one in-flight request, and
+CSS module styles are deduped against `window.__webui.styles`.
+The manifest helper lets the shell start the template asset, JS chunk, and data
+fetch in parallel as soon as the user expresses intent; `create(tag)` waits for
+only the template asset and JS module by default, creates the element, then
+applies data later with `setState()`. Use
+`create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component
+must wait briefly for state before mounting.
 
 ## Component CSS
 
@@ -521,7 +571,8 @@ webui build ./src --out ./dist --plugin=webui
 | `--dom <MODE>` | `shadow` | `shadow` or `light` |
 | `--plugin <NAME>` | none | Plugin identifier (e.g. `webui`) |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
-| `--css-file-name-template <TEMPLATE>` | `[name].[ext]` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
+| `--emit-component-assets <TAGS>` | none | Comma-separated root component tags emitted as static `.webui.js` ESM assets in `--out` |
+| `--asset-file-name-template <TEMPLATE>` | `[name].[ext]` | Emitted asset filename template for Link-mode CSS files and static component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
 | `--legal-comments <MODE>` | `inline` | `inline` preserves legal CSS comments, `none` strips all comments |
 | `--format <FORMAT>` | `human` | `human` (colorized) or `json` (machine-readable diagnostics on stdout) |
@@ -535,7 +586,7 @@ For CDN/browser caching in `link` mode, prefer:
 
 ```bash
 webui build ./src --out ./dist \
-  --css-file-name-template "[name]-[hash].[ext]" \
+  --asset-file-name-template "[name]-[hash].[ext]" \
   --css-public-base "https://cdn.example.com/assets"
 ```
 
@@ -543,6 +594,23 @@ webui build ./src --out ./dist \
 characters. The CSS files are still written to `--out`; `--css-public-base`
 changes only the href compiled into `protocol.bin` and emitted in stylesheet
 `<link>` tags.
+
+For lazy components without `@microsoft/webui-router`, emit static component
+assets:
+
+```bash
+webui build ./src --out ./dist --plugin=webui \
+  --emit-component-assets mail-thread,compose-page
+```
+
+This writes `mail-thread.webui.js`. Requested roots are compiled through
+synthetic non-entry fragments, so they are not part of initial SSR unless the
+entry template also references them. The asset is standard ESM that carries
+template/style data and compiled condition functions with no inventory field.
+Load it with `defineComponentAssets()` before mounting the component. Use
+`--asset-file-name-template "[name]-[hash].[ext]"` for CDN-cacheable filenames.
+Do not reference the lazy component tag from an SSR-reachable template unless you
+intentionally want it eligible for initial SSR.
 
 HTML comments are stripped at build time and bindings inside them are ignored.
 CSS comments are stripped except legal comments and `<style>` signal fragments.
@@ -571,7 +639,7 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
 | `--api-port <PORT>` | none | Proxy route requests to API server |
 | `--theme <PACKAGE>` | none | Design token theme (see below) |
-| `--css-file-name-template <TEMPLATE>` | `[name].[ext]` | Link-mode CSS filename template |
+| `--asset-file-name-template <TEMPLATE>` | `[name].[ext]` | Emitted asset filename template |
 | `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
 | `--legal-comments <MODE>` | `inline` | `inline` preserves legal CSS comments, `none` strips all comments |
 | `--format <FORMAT>` | `human` | `human` (colorized) or `json` (machine-readable diagnostics on stdout) |

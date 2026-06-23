@@ -140,6 +140,41 @@ Base class for framework components.
 
 In most components you do not call `$update()` directly. Property changes through `@observable` and `@attr` trigger updates for you.
 
+### Static component assets
+
+`webui build --plugin=webui --emit-component-assets settings-dialog` emits
+`settings-dialog.webui.js` next to `protocol.bin`. Load the ESM asset before
+creating the component when you are not using `@microsoft/webui-router`:
+
+```ts
+import { settingsAssets } from './lazy-assets.js';
+
+settingsAssets.preload('settings-dialog');
+panelSlot.replaceChildren(await settingsAssets.create('settings-dialog'));
+```
+
+```ts
+// lazy-assets.ts
+import { defineComponentAssets } from '@microsoft/webui-framework/component-asset.js';
+
+export const settingsAssets = defineComponentAssets({
+  'settings-dialog': {
+    asset: '/settings-dialog.webui.js',
+    module: () => import('./settings-dialog/settings-dialog.js'),
+    data: async () => await (await fetch('/settings-dialog-data.json')).json(),
+  },
+});
+```
+
+The asset module default-exports WebUI template/style metadata and compiled
+condition closures. CSS module importmaps use the current page nonce from
+`window.__webui.nonce` or `<meta name="webui-nonce">`. Asset loads skip importing
+when the root template is already in `window.__webui.templates`, share in-flight
+requests by URL, and dedupe CSS module styles against `window.__webui.styles`.
+`create(tag)` does not block on data by default; it applies data later with
+`setState()`. Use `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only
+when a component must wait briefly for state before mounting.
+
 ### `@observable`
 
 Marks a property as reactive.  When the value changes, the framework

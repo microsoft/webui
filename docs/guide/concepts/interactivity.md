@@ -349,6 +349,69 @@ onColorChange(e: CustomEvent): void {
 
 This pattern keeps components decoupled - the child doesn't know who is listening, and the parent reacts declaratively.
 
+## Loading Static Component Assets
+
+When you are not using `@microsoft/webui-router`, components hidden behind
+inactive routes or deferred UI can still be loaded from static files. Build the
+root components as assets:
+
+```bash
+webui build ./src --out ./dist --plugin=webui \
+  --emit-component-assets settings-dialog,mail-thread
+```
+
+Each requested root writes one ESM module such as `<tag>.webui.js` next to
+`protocol.bin`. The module carries template/style data, compiled condition
+functions, and the dependency closure for the root component; it does not contain
+inventory state.
+
+Load the asset before creating or revealing the component:
+
+```typescript
+import { WebUIElement } from '@microsoft/webui-framework';
+import { settingsAssets } from './lazy-assets.js';
+
+export class AppShell extends WebUIElement {
+  panelSlot!: HTMLDivElement;
+
+  async openSettings(): Promise<void> {
+    settingsAssets.preload('settings-dialog');
+    this.panelSlot.replaceChildren(await settingsAssets.create('settings-dialog'));
+  }
+}
+```
+
+```typescript
+// lazy-assets.ts
+import { defineComponentAssets } from '@microsoft/webui-framework/component-asset.js';
+
+export const settingsAssets = defineComponentAssets({
+  'settings-dialog': {
+    asset: '/settings-dialog.webui.js',
+    module: () => import('./settings-dialog/settings-dialog.js'),
+    data: async () => await (await fetch('/settings-dialog-data.json')).json(),
+  },
+});
+```
+
+`defineComponentAssets()` imports the asset module, registers template metadata,
+and applies the current page CSP nonce to CSS module importmaps when needed.
+Components can then fetch their own data in their class code and attach it
+through observables or `setState()`. The loader skips importing when the root
+template is already present in `window.__webui.templates`, shares concurrent
+requests for the same URL, and dedupes CSS module styles against
+`window.__webui.styles`. `create(tag)` creates the element after template/module
+work is ready, then applies loaded data with `setState()` when the data promise
+resolves, matching the router state handoff model. Use
+`create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
+wait briefly for state before mounting. Use a manifest helper when you want the
+fastest path: it lets the shell start the template asset, JS chunk, and data
+fetch in parallel.
+
+Do not put `<settings-dialog>` in an SSR-reachable `<if>` block for this pattern.
+If the server state ever makes that condition true, the component is part of the
+initial SSR graph instead of being loaded only from the static asset.
+
 ## Styling
 
 CSS is scoped to each component via Shadow DOM. Styles in one component cannot leak into or be affected by another.

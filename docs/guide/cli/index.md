@@ -33,7 +33,7 @@ Use `--format json` in editors, CI, or AI/agent tooling that needs to parse buil
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--css-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--emit-component-assets <TAGS>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -47,7 +47,8 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--plugin <NAME>` | Load a parser plugin | *(none)* |
 | `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
-| `--css-file-name-template <TEMPLATE>` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
+| `--emit-component-assets <TAGS>` | Comma-separated root component tags to emit as static WebUI component assets in `--out` | *(none)* |
+| `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files and static component assets. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
 | `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
 | `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
 
@@ -61,11 +62,65 @@ Path inputs for `APP`, `--state`, and `--servedir` support absolute paths, relat
 | `style` | Embeds CSS content directly in `<style>` tags inside shadow DOM templates. No separate CSS files are written. |
 | `module` | Emits `<script type="importmap">{"imports":{"component":"data:text/css,..."}}</script>` tags that register each component's CSS under a data URI, and adds `shadowrootadoptedstylesheets` to `<template>` tags. The browser shares a single `CSSStyleSheet` across all shadow roots that adopt it. No separate CSS files are written. Based on the [Import Maps](https://html.spec.whatwg.org/multipage/webappapis.html#import-maps) and [CSS Module Scripts](https://github.com/whatwg/html/issues/9572) proposals. If a component supplies its own `<template>` wrapper (e.g. to attach `@event` handlers), WebUI preserves the wrapper attributes and appends `shadowrootadoptedstylesheets="component-name"` when it is missing. |
 
-For long-lived CDN/browser caching in `link` mode, include `[hash]` in the CSS
-filename template. `[hash]` is the component CSS file's SHA-256 content hash
-truncated to 8 hex characters. The CSS file is still written to `--out`;
-`--css-public-base` only changes the href stored in `protocol.bin` and emitted
-in `<link>` tags.
+For long-lived CDN/browser caching, include `[hash]` in
+`--asset-file-name-template`. `[hash]` is the emitted file's SHA-256 content hash
+truncated to 8 hex characters. Link-mode CSS files are still written to `--out`;
+`--css-public-base` only changes the CSS href stored in `protocol.bin` and
+emitted in `<link>` tags.
+
+**Component assets:**
+
+Use `--emit-component-assets` with the WebUI plugin to prebuild CDN-loadable
+template assets for components that are not included in initial SSR, such as
+route branches or dialogs loaded without `@microsoft/webui-router`:
+
+```bash
+webui build ./my-app --out ./dist --plugin=webui \
+  --emit-component-assets mail-thread,compose-page
+```
+
+The flag is a strict comma-separated allowlist. Every tag must be a discovered
+lowercase kebab-case component. Requested roots are compiled through synthetic
+non-entry fragments, so they do not become part of initial SSR unless your entry
+template also references them. Assets are emitted to the same output folder as
+standard ESM modules, for example `mail-thread.webui.js`. Each module
+default-exports plugin-specific template/style metadata and includes compiled
+WebUI condition closures in the same request. FAST plugin builds can emit the
+same module shape with `<f-template>` payloads, but need a FAST-owned runtime
+loader rather than the WebUI Framework loader. Asset emission is parallelized
+across requested root tags. The module intentionally omits inventory state
+because a static CDN asset cannot know the page's current loaded template bitset.
+Use `--asset-file-name-template "[name]-[hash].[ext]"` for long-lived CDN
+caching; `[hash]` is the emitted asset module's SHA-256 content hash truncated
+to 8 hex characters. Protocol, CSS, and component asset filenames are validated
+as one output set before any files are written, so collisions fail without
+leaving partial output.
+
+Load an asset before creating the component:
+
+```typescript
+import { mailAssets } from './lazy-assets.js';
+
+mailAssets.preload('mail-thread');
+panelSlot.replaceChildren(await mailAssets.create('mail-thread'));
+```
+
+```typescript
+// lazy-assets.ts
+import { defineComponentAssets } from '@microsoft/webui-framework/component-asset.js';
+
+export const mailAssets = defineComponentAssets({
+  'mail-thread': {
+    asset: '/mail-thread.webui.js',
+    module: () => import('./mail-thread/mail-thread.js'),
+    data: async () => await (await fetch('/mail-thread-data.json')).json(),
+  },
+});
+```
+
+Keep the lazy component tag out of SSR-reachable templates unless it should be
+eligible for initial SSR. Use a mount element or another non-HTML trigger, then
+create the custom element with `mailAssets.create(...)`.
 
 **Comment handling:**
 
@@ -102,11 +157,11 @@ webui build ./my-app --out ./dist --entry home.html
 webui build ./my-app --out ./dist --css style
 
 # Build link-mode CSS with content-hashed filenames
-webui build ./my-app --out ./dist --css-file-name-template "[name]-[hash].[ext]"
+webui build ./my-app --out ./dist --asset-file-name-template "[name]-[hash].[ext]"
 
 # Point generated stylesheet hrefs at a CDN/public asset root
 webui build ./my-app --out ./dist \
-  --css-file-name-template "[name]-[hash].[ext]" \
+  --asset-file-name-template "[name]-[hash].[ext]" \
   --css-public-base "https://cdn.example.com/assets"
 
 # Build with the WebUI Framework plugin (hydration support)
@@ -155,7 +210,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--api-port <PORT>] [--theme <VALUE>] [--css-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--api-port <PORT>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -174,7 +229,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--api-port <PORT>` | Proxy route requests to your API server on this port. The dev server forwards navigation requests so your backend can provide real state data. | *(none)* |
 | `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Resolved tokens are injected into the render state. | *(none)* |
-| `--css-file-name-template <TEMPLATE>` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
+| `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
 | `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
 | `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
 

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html dir="{{textdirection}}" lang="{{language}}">
+<head>
+  <meta charset="utf-8">
+  <base href="{{basePath}}">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{title}}</title>
+  <style>
+    :root {
+      /*{{{tokens.light}}}*/
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        /*{{{tokens.dark}}}*/
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: var(--spacing-xl);
+      background: var(--color-neutral-50);
+      color: var(--color-neutral-800);
+      font-family: var(--font-family-base);
+    }
+  </style>
+</head>
+<body>
+  <app-shell title="{{title}}"></app-shell>
+  <script type="module" src="./index.js"></script>
+</body>
+</html>

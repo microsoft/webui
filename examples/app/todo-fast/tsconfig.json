@@ -1,17 +1,8 @@
 {
-  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "../../../tsconfig.json",
   "compilerOptions": {
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "target": "ESNext",                          // ESModules support.
-    "strict": true,                              // Required by MSFT-SEC.
-    "experimentalDecorators": true,              // To support FAST decorators.
-    "useDefineForClassFields": false,            // To support FAST observables.
-    "skipLibCheck": true,                        // TypeScript 5 feature to disable node_modules typecheck.
-    "allowSyntheticDefaultImports": true,        // For supporting default imports.
-    "sourceMap": true,                           // Needed to generate source maps.
-    "incremental": true                          // Faster compilation.
+    "outDir": "dist",
+    "rootDir": "src"
   },
-  "include": ["src"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src"]
 }

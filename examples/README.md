@@ -16,6 +16,7 @@ Current entries:
 | `app/todo-fast` | @microsoft/fast-element 3.x hydration app with components, `@event` bindings, `f-ref`, and `<f-template>` injection |
 | `app/todo-webui` | WebUI Framework hydration app — components, `@click`, `w-ref`, compiled templates |
 | `app/contact-book-manager` | Full CRUD contact manager with WebUI Framework + router + Node API |
+| `app/component-assets` | No-router WebUI Framework app that lazy-loads a static component asset on demand |
 | `app/commerce` | WebUI Framework hydration app with a Rust backend for commerce demo app, dozens of controls |
 | `app/routes` | Nested declarative routing demo showing 4-level deep routes, full server side and client handoff |
 | `app/service-worker` | Static/CDN service worker app using `webui_wasm_handler` to stream WASM-rendered chunks from public API state |
@@ -37,6 +38,7 @@ cargo xtask dev <name>
 cargo xtask dev hello-world
 cargo xtask dev calculator
 cargo xtask dev contact-book-manager
+cargo xtask dev component-assets
 cargo xtask dev todo-webui
 ```
 

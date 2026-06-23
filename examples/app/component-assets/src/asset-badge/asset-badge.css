@@ -1,0 +1,13 @@
+:host {
+  display: inline-flex;
+  width: max-content;
+}
+
+span {
+  border-radius: var(--border-radius-pill);
+  padding: var(--spacing-xs) var(--spacing-m);
+  background: var(--color-brand-lighter);
+  color: var(--color-blue-text);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+}

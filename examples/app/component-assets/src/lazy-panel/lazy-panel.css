@@ -1,0 +1,29 @@
+:host {
+  display: block;
+}
+
+.panel {
+  display: grid;
+  gap: var(--spacing-s);
+  padding: var(--spacing-l);
+  border: 1px solid var(--color-neutral-200);
+  border-radius: var(--border-radius-l);
+  background: var(--color-neutral-100);
+}
+
+h2,
+p {
+  margin: 0;
+}
+
+p {
+  color: var(--color-neutral-500);
+  line-height: var(--line-height-base);
+}
+
+.details {
+  padding: var(--spacing-s);
+  border-radius: var(--border-radius-m);
+  background: var(--color-brand-light);
+  color: var(--color-neutral-800);
+}

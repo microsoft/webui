@@ -4,6 +4,7 @@
 //! Directive parser for WebUI template directives.
 //!
 //! This module handles parsing WebUI-specific directives like <for>, <if>, etc.
+mod asset_filename;
 mod comment_policy;
 mod component_registry;
 mod condition_parser;
@@ -17,6 +18,9 @@ pub mod plugin;
 mod route_parser;
 mod suggest;
 
+pub use asset_filename::{
+    AssetFileNameTemplate, AssetFileNameTemplateError, DEFAULT_ASSET_FILE_NAME_TEMPLATE,
+};
 pub use component_registry::{Component, ComponentRegistry};
 pub use condition_parser::ConditionParser;
 pub use css_link::{CssLinkHref, CssLinkOptions, DEFAULT_CSS_FILE_NAME_TEMPLATE};

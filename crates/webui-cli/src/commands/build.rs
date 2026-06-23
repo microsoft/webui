@@ -4,6 +4,7 @@
 use anyhow::{Context, Result};
 use clap::Args;
 use expand_tilde::expand_tilde;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,10 @@ pub struct BuildArgs {
     /// is written with that filename and CSS files are emitted next to it.
     #[arg(long)]
     pub out: PathBuf,
+
+    /// Comma-separated root component tags to emit as static CDN-loadable assets
+    #[arg(long, value_delimiter = ',', value_name = "TAGS")]
+    pub emit_component_assets: Vec<String>,
 }
 
 /// Resolve the `--out` argument into `(output_directory, protocol_filename)`.
@@ -46,6 +51,34 @@ fn resolve_out(out: &Path) -> (PathBuf, OsString) {
     } else {
         (out.to_path_buf(), OsString::from("protocol.bin"))
     }
+}
+
+fn validate_output_file_names(
+    protocol_name: &std::ffi::OsStr,
+    result: &webui::BuildResult,
+) -> Result<()> {
+    let mut names =
+        HashSet::with_capacity(1 + result.css_files.len() + result.component_asset_files.len());
+    names.insert(protocol_name.to_os_string());
+    for (name, _) in &result.css_files {
+        let name = OsString::from(name);
+        if !names.insert(name.clone()) {
+            anyhow::bail!(
+                "output filename collision for '{}'. Adjust --asset-file-name-template to include [ext] or another unique asset-type segment.",
+                name.to_string_lossy()
+            );
+        }
+    }
+    for file in &result.component_asset_files {
+        let name = OsString::from(&file.name);
+        if !names.insert(name.clone()) {
+            anyhow::bail!(
+                "output filename collision for '{}'. Adjust --asset-file-name-template to include [ext] or another unique asset-type segment.",
+                name.to_string_lossy()
+            );
+        }
+    }
+    Ok(())
 }
 
 pub fn execute(args: &BuildArgs) -> Result<()> {
@@ -94,10 +127,15 @@ fn run(args: &BuildArgs) -> Result<()> {
     if !args.app_args.components.is_empty() {
         output::field("Components", &args.app_args.components.join(", "));
     }
+    if !args.emit_component_assets.is_empty() {
+        output::field("Component assets", &args.emit_component_assets.join(", "));
+    }
     eprintln!();
 
-    let build_options = args.app_args.to_build_options(&app);
+    let mut build_options = args.app_args.to_build_options(&app);
+    build_options.component_asset_roots = args.emit_component_assets.clone();
     let result = webui::build(build_options).with_context(|| "Build failed")?;
+    validate_output_file_names(&protocol_name, &result)?;
 
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("Failed to create {}", out_dir.display()))?;
@@ -106,6 +144,15 @@ fn run(args: &BuildArgs) -> Result<()> {
     for (name, content) in &result.css_files {
         fs::write(out_dir.join(name), content)
             .with_context(|| format!("Failed to write {name} to {}", out_dir.display()))?;
+    }
+    for file in &result.component_asset_files {
+        fs::write(out_dir.join(&file.name), &file.content).with_context(|| {
+            format!(
+                "Failed to write component asset {} to {}",
+                file.name,
+                out_dir.display()
+            )
+        })?;
     }
     let stats = result.stats;
 
@@ -130,7 +177,19 @@ fn run(args: &BuildArgs) -> Result<()> {
         ));
     }
 
-    let files_written = 1 + stats.css_file_count;
+    if !result.component_asset_files.is_empty() {
+        output::success(&format!(
+            "Emitted {} component asset{}",
+            console::style(result.component_asset_files.len()).bold(),
+            if result.component_asset_files.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
+    }
+
+    let files_written = 1 + stats.css_file_count + result.component_asset_files.len();
     output::success(&format!(
         "Wrote {}",
         console::style(Path::new(&protocol_name).display()).bold()
@@ -157,11 +216,12 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
             dom: DomStrategy::Shadow,
             plugin: None,
             components: Vec::new(),
-            css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+            asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
             css_public_base: None,
             legal_comments: LegalComments::Inline,
         },
         out: out.to_path_buf(),
+        emit_component_assets: Vec::new(),
     })
 }
 
@@ -263,17 +323,186 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
+            emit_component_assets: Vec::new(),
         })
         .unwrap();
 
         assert!(out_dir.path().join("protocol.bin").exists());
         // Inline mode should NOT write external CSS files
         assert!(!out_dir.path().join("my-card.css").exists());
+    }
+
+    #[test]
+    fn test_build_emits_static_component_assets() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", r#"<div w-ref="{slot}"></div>"#),
+            (
+                "mail-thread.html",
+                r#"<if condition="hasMessages"><mail-message title="{{title}}"></mail-message></if>"#,
+            ),
+            ("mail-message.html", "<p>{{title}}</p>"),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+
+        run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: out_dir.path().to_path_buf(),
+            emit_component_assets: vec!["mail-thread".to_string()],
+        })
+        .unwrap();
+
+        let asset_path = out_dir.path().join("mail-thread.webui.js");
+        assert!(asset_path.exists());
+
+        let bytes = fs::read(out_dir.path().join("protocol.bin")).unwrap();
+        let protocol = WebUIProtocol::from_protobuf(&bytes).unwrap();
+        let index_fragments = &protocol.fragments["index.html"].fragments;
+        assert!(
+            !index_fragments.iter().any(|fragment| matches!(
+                fragment.fragment.as_ref(),
+                Some(Fragment::Component(component)) if component.fragment_id == "mail-thread"
+            )),
+            "mail-thread must not be reachable from the SSR entry fragment"
+        );
+
+        let asset = fs::read_to_string(asset_path).unwrap();
+        assert!(asset.contains(r#""type":"webui-component-asset""#));
+        assert!(asset.contains(r#""version":1"#));
+        assert!(!asset.contains(r#""plugin""#));
+        assert!(!asset.contains(r#""inventory""#));
+        assert!(asset.contains(r#""components":["mail-message","mail-thread"]"#));
+        assert!(asset.contains(r#""templates":{"mail-message":"#));
+        assert!(asset.contains(r#""mail-thread":"#));
+        assert!(asset.contains(r#""templateFunctions":{"mail-thread":"#));
+        assert!(asset.contains("export default asset;"));
+    }
+
+    #[test]
+    fn test_build_rejects_duplicate_component_assets_before_writing() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("mail-thread.html", "<p>Mail</p>"),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+
+        let result = run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: out_dir.path().to_path_buf(),
+            emit_component_assets: vec!["mail-thread".to_string(), "mail-thread".to_string()],
+        });
+
+        assert!(result.is_err());
+        assert!(!out_dir.path().join("protocol.bin").exists());
+    }
+
+    #[test]
+    fn test_build_emits_fast_component_assets() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("fast-card.html", "<p>{{title}}</p>"),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+
+        run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::FastV3),
+                components: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: out_dir.path().to_path_buf(),
+            emit_component_assets: vec!["fast-card".to_string()],
+        })
+        .unwrap();
+
+        let asset_path = out_dir.path().join("fast-card.webui.js");
+        assert!(asset_path.exists());
+        let asset = fs::read_to_string(asset_path).unwrap();
+        assert!(asset.contains(r#""type":"webui-component-asset""#));
+        assert!(asset.contains(r#""version":1"#));
+        assert!(!asset.contains(r#""plugin""#));
+        assert!(!asset.contains(r#""templateFunctionModule""#));
+        assert!(!asset.contains(r#""templateFunctions""#));
+        assert!(asset.contains("<f-template"));
+    }
+
+    #[test]
+    fn test_build_emits_hashed_component_asset_filename() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("mail-thread.html", "<p>{{title}}</p>"),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+
+        run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                asset_file_name_template: "[name]-[hash].[ext]".to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: out_dir.path().to_path_buf(),
+            emit_component_assets: vec!["mail-thread".to_string()],
+        })
+        .unwrap();
+
+        let asset_names: Vec<String> = fs::read_dir(out_dir.path())
+            .unwrap()
+            .filter_map(|entry| {
+                let entry = entry.unwrap();
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.ends_with(".webui.js") {
+                    Some(name.into_owned())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(asset_names.len(), 1);
+        assert!(asset_names[0].starts_with("mail-thread-"));
+        assert!(asset_names[0].ends_with(".webui.js"));
+        assert_ne!(asset_names[0], "mail-thread-.webui.js");
     }
 
     #[test]
@@ -382,11 +611,12 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: vec![ext_path],
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
+            emit_component_assets: Vec::new(),
         })
         .unwrap();
 
@@ -465,11 +695,12 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: vec!["test-widget".to_string()],
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
+            emit_component_assets: Vec::new(),
         })
         .unwrap();
 
@@ -545,11 +776,12 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: vec!["@myui".to_string()],
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: out_dir.path().to_path_buf(),
+            emit_component_assets: Vec::new(),
         })
         .unwrap();
 
@@ -594,11 +826,12 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: custom_path.clone(),
+            emit_component_assets: Vec::new(),
         })
         .unwrap();
 
@@ -629,11 +862,12 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
-                css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
             },
             out: nested.clone(),
+            emit_component_assets: Vec::new(),
         })
         .unwrap();
 

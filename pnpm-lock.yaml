@@ -141,6 +141,27 @@ importers:
         specifier: 'catalog:'
         version: 5.9.3
 
+  examples/app/component-assets:
+    devDependencies:
+      '@microsoft/webui-examples-theme':
+        specifier: workspace:*
+        version: link:../../../packages/webui-examples-theme
+      '@microsoft/webui-framework':
+        specifier: workspace:*
+        version: link:../../../packages/webui-framework
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.2
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.28.1
+      tslib:
+        specifier: 'catalog:'
+        version: 2.8.1
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   examples/app/contact-book-manager:
     dependencies:
       cors:

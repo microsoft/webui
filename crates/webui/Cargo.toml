@@ -29,6 +29,7 @@ tokio = { workspace = true }
 memchr = { workspace = true }
 crossbeam-queue = { workspace = true }
 log = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -20,10 +20,12 @@
 //! println!("Built {} fragments in {:?}", result.stats.fragment_count, result.stats.duration);
 //! ```
 
+mod component_assets;
 mod error;
 pub mod server;
 pub mod streaming;
 
+pub use component_assets::{render_component_assets, ComponentAssetFile};
 pub use error::WebUIError;
 
 // Re-export core types from downstream crates
@@ -45,9 +47,13 @@ pub use webui_parser::ParserError;
 pub use webui_parser::ParserOptions;
 pub use webui_parser::Plugin;
 pub use webui_parser::DEFAULT_CSS_FILE_NAME_TEMPLATE;
+pub use webui_parser::{
+    AssetFileNameTemplate, AssetFileNameTemplateError, DEFAULT_ASSET_FILE_NAME_TEMPLATE,
+};
 pub use webui_protocol::WebUIProtocol;
 
 use std::collections::HashSet;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
@@ -72,8 +78,15 @@ pub struct BuildOptions {
     pub plugin: Option<Plugin>,
     /// Additional component sources (npm packages or local paths).
     pub components: Vec<String>,
-    /// Link-mode CSS filename template using `[name]`, `[hash]`, and `[ext]`.
-    /// Ignored unless `css == CssStrategy::Link`.
+    /// Additional root components to compile for static component asset emission.
+    ///
+    /// These roots are parsed into the protocol so their templates, styles, and
+    /// dependency closures can be emitted later, but they are not connected to
+    /// the entry fragment and therefore are not rendered during initial SSR.
+    pub component_asset_roots: Vec<String>,
+    /// Emitted asset filename template using `[name]`, `[hash]`, and `[ext]`.
+    ///
+    /// Applies to Link-mode CSS files and static component assets.
     pub css_file_name_template: String,
     /// Optional URL/base-path prefix for Link-mode `css_href` values.
     /// When set, emitted protocol hrefs become `<base>/<filename>`.
@@ -91,6 +104,7 @@ impl Default for BuildOptions {
             dom: DomStrategy::Shadow,
             plugin: None,
             components: Vec::new(),
+            component_asset_roots: Vec::new(),
             css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
             css_public_base: None,
             legal_comments: LegalComments::default(),
@@ -124,6 +138,10 @@ pub struct BuildResult {
     pub protocol_bytes: Vec<u8>,
     /// Component CSS files: `(filename, content)` — only components referenced in the protocol.
     pub css_files: Vec<(String, String)>,
+    /// Static component asset files: `(filename, ESM module content)`.
+    ///
+    /// Populated when [`BuildOptions::component_asset_roots`] is non-empty.
+    pub component_asset_files: Vec<ComponentAssetFile>,
     /// Component client template payloads.
     /// Includes templates for all components encountered during parsing,
     /// including route-referenced components.
@@ -162,6 +180,7 @@ pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
         protocol: raw.protocol,
         protocol_bytes,
         css_files: raw.css_files,
+        component_asset_files: raw.component_asset_files,
         component_templates: raw.component_templates,
         stats,
     })
@@ -169,7 +188,8 @@ pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
 
 /// Build a WebUI application and write output files to disk.
 ///
-/// Writes `protocol.bin` and any external CSS files to `out_dir`.
+/// Writes `protocol.bin`, any external CSS files, and static component assets
+/// to `out_dir`.
 /// Creates `out_dir` if it does not exist.
 ///
 /// # Errors
@@ -177,6 +197,7 @@ pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
 /// Returns [`WebUIError`] on build failure or if output files cannot be written.
 pub fn build_to_disk(options: BuildOptions, out_dir: &Path) -> Result<BuildStats, WebUIError> {
     let result = build(options)?;
+    validate_output_file_names(OsStr::new("protocol.bin"), &result)?;
 
     fs::create_dir_all(out_dir).map_err(|source| WebUIError::Io {
         context: format!("Failed to create {}", out_dir.display()),
@@ -193,6 +214,16 @@ pub fn build_to_disk(options: BuildOptions, out_dir: &Path) -> Result<BuildStats
     for (name, content) in &result.css_files {
         fs::write(out_dir.join(name), content).map_err(|source| WebUIError::Io {
             context: format!("Failed to write {name} to {}", out_dir.display()),
+            source,
+        })?;
+    }
+    for file in &result.component_asset_files {
+        fs::write(out_dir.join(&file.name), &file.content).map_err(|source| WebUIError::Io {
+            context: format!(
+                "Failed to write component asset {} to {}",
+                file.name,
+                out_dir.display()
+            ),
             source,
         })?;
     }
@@ -221,6 +252,7 @@ pub fn inspect_bytes(protocol_bytes: &[u8]) -> Result<String, WebUIError> {
 struct RawBuildOutput {
     protocol: WebUIProtocol,
     css_files: Vec<(String, String)>,
+    component_asset_files: Vec<ComponentAssetFile>,
     component_templates: Vec<ComponentTemplateArtifact>,
     fragment_count: usize,
     component_count: usize,
@@ -302,6 +334,9 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             source,
         })?;
 
+    let synthetic_asset_fragments =
+        parse_component_asset_roots(&mut parser, &options.component_asset_roots)?;
+
     let css_snapshot: Vec<(String, String)> = parser
         .component_registry()
         .get_all()
@@ -333,7 +368,10 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         };
 
     // Build protocol (consumes parser)
-    let fragment_records = parser.into_fragment_records();
+    let mut fragment_records = parser.into_fragment_records();
+    for fragment_id in synthetic_asset_fragments {
+        fragment_records.remove(&fragment_id);
+    }
     let fragment_count: usize = fragment_records.values().map(|v| v.fragments.len()).sum();
 
     let mut protocol = WebUIProtocol::with_tokens(fragment_records, tokens);
@@ -365,7 +403,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             let resolved = css_link_options.resolve(&tag, &css);
             if !emitted_names.insert(resolved.filename.clone()) {
                 return Err(WebUIError::InvalidBuildOptions(format!(
-                    "CSS filename collision for Link strategy: '{}'. Adjust --css-file-name-template to include [name] or another unique component-specific segment.",
+                    "CSS filename collision for Link strategy: '{}'. Adjust the asset filename template to include [name] or another unique component-specific segment.",
                     resolved.filename
                 )));
             }
@@ -387,14 +425,101 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         component.template_functions = artifact.template_functions.clone();
     }
 
+    let component_asset_files = component_assets::render_component_assets(
+        &protocol,
+        &options.component_asset_roots,
+        &options.css_file_name_template,
+    )?;
+    validate_generated_file_names(&css_files, &component_asset_files)?;
+
     Ok(RawBuildOutput {
         protocol,
         css_files,
+        component_asset_files,
         component_templates,
         fragment_count,
         component_count,
         token_count,
     })
+}
+
+fn parse_component_asset_roots(
+    parser: &mut HtmlParser,
+    roots: &[String],
+) -> Result<Vec<String>, WebUIError> {
+    let mut synthetic_fragments = Vec::with_capacity(roots.len());
+    for (index, root) in roots.iter().enumerate() {
+        let root = root.trim();
+        if parser.has_fragment(root) {
+            continue;
+        }
+        // Compile the requested lazy root without connecting it to the entry
+        // graph, so it can be emitted as a static asset but stays out of SSR.
+        let mut synthetic = String::with_capacity(root.len() * 2 + 5);
+        synthetic.push('<');
+        synthetic.push_str(root);
+        synthetic.push_str("></");
+        synthetic.push_str(root);
+        synthetic.push('>');
+
+        let fragment_id = format!("__webui_asset_root_{index}");
+        parser
+            .parse(&fragment_id, &synthetic)
+            .map_err(|source| WebUIError::Parse {
+                context: format!("Failed to parse component asset root <{root}>"),
+                source,
+            })?;
+        synthetic_fragments.push(fragment_id);
+    }
+    Ok(synthetic_fragments)
+}
+
+fn validate_generated_file_names(
+    css_files: &[(String, String)],
+    component_asset_files: &[ComponentAssetFile],
+) -> Result<(), WebUIError> {
+    let mut names = HashSet::with_capacity(css_files.len() + component_asset_files.len());
+    for (name, _) in css_files {
+        names.insert(name.as_str());
+    }
+    for file in component_asset_files {
+        if !names.insert(file.name.as_str()) {
+            return Err(WebUIError::InvalidBuildOptions(format!(
+                "output filename collision for '{}'. Adjust the asset filename template to include [ext] or another unique asset-type segment.",
+                file.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_output_file_names(
+    protocol_name: &OsStr,
+    result: &BuildResult,
+) -> Result<(), WebUIError> {
+    let mut names =
+        HashSet::with_capacity(1 + result.css_files.len() + result.component_asset_files.len());
+    names.insert(protocol_name.to_os_string());
+    for (name, _) in &result.css_files {
+        let file_name = OsString::from(name);
+        if !names.insert(file_name.clone()) {
+            return Err(output_file_collision_error(&file_name));
+        }
+    }
+    for file in &result.component_asset_files {
+        let file_name = OsString::from(&file.name);
+        if !names.insert(file_name.clone()) {
+            return Err(output_file_collision_error(&file_name));
+        }
+    }
+    Ok(())
+}
+
+fn output_file_collision_error(name: &OsStr) -> WebUIError {
+    WebUIError::InvalidBuildOptions(format!(
+        "output filename collision for '{}'. Adjust the asset filename template to include [ext] or another unique asset-type segment.",
+        name.to_string_lossy()
+    ))
 }
 
 #[cfg(test)]
@@ -770,6 +895,78 @@ mod tests {
         let result = build(options);
 
         assert!(matches!(result, Err(WebUIError::InvalidBuildOptions(_))));
+    }
+
+    #[test]
+    fn test_build_returns_static_component_asset_files() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            (
+                "lazy-panel.html",
+                r#"<if condition="ready"><p>{{title}}</p></if>"#,
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.component_asset_roots = vec!["lazy-panel".to_string()];
+
+        let result = build(options).unwrap();
+
+        assert_eq!(result.component_asset_files.len(), 1);
+        assert_eq!(result.component_asset_files[0].name, "lazy-panel.webui.js");
+        assert!(result.component_asset_files[0]
+            .content
+            .contains(r#""type":"webui-component-asset""#));
+        assert!(result.component_asset_files[0]
+            .content
+            .contains(r#""templateFunctions":{"lazy-panel":"#));
+        assert!(result.protocol.fragments.contains_key("lazy-panel"));
+        assert!(
+            !result
+                .protocol
+                .fragments
+                .keys()
+                .any(|key| key.starts_with("__webui_asset_root_")),
+            "synthetic asset root fragments must not be serialized"
+        );
+    }
+
+    #[test]
+    fn test_component_asset_filename_collision_with_css_is_rejected() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("lazy-panel.html", "<p>Lazy</p>"),
+            ("lazy-panel.css", ".panel { color: red; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.component_asset_roots = vec!["lazy-panel".to_string()];
+        options.css_file_name_template = "[name]".to_string();
+
+        let result = build(options);
+
+        assert!(matches!(result, Err(WebUIError::InvalidBuildOptions(_))));
+    }
+
+    #[test]
+    fn test_build_to_disk_rejects_protocol_name_collision_before_writing() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("lazy-panel.html", "<p>Lazy</p>"),
+        ]);
+        let out = TempDir::new().unwrap();
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.component_asset_roots = vec!["lazy-panel".to_string()];
+        options.css_file_name_template = "protocol.bin".to_string();
+
+        let result = build_to_disk(options, out.path());
+
+        assert!(matches!(result, Err(WebUIError::InvalidBuildOptions(_))));
+        assert!(!out.path().join("protocol.bin").exists());
     }
 
     #[test]

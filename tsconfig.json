@@ -3,7 +3,8 @@
     // enable latest features
     "lib": [
       "ESNext",
-      "DOM"
+      "DOM",
+      "DOM.Iterable"
     ],
     "target": "esnext",
     "module": "NodeNext",

@@ -38,13 +38,15 @@ const result = build({
   css: "link",           // CSS strategy: "link" or "style"
   plugin: "webui",       // Parser plugin name
   components: [],        // Additional component sources
-  cssFileNameTemplate: "[name]-[hash].[ext]", // Link-mode CSS filename template
+  componentAssetRoots: ["settings-dialog"], // Static .webui.js asset roots
+  cssFileNameTemplate: "[name]-[hash].[ext]", // CSS/component asset filename template
   cssPublicBase: "https://cdn.example.com/assets", // Optional CDN/public href base
   outDir: "./dist",      // Output directory for CLI fallback
 });
 
 // result.protocol  - Buffer containing the compiled protocol
 // result.cssFiles  - Array of [filename, content, ...] pairs
+// result.componentAssetFiles - Array of [filename, ESM content, ...] pairs
 // result.stats     - { durationMs, fragmentCount, componentCount, cssFileCount, protocolSizeBytes, tokenCount }
 ```
 

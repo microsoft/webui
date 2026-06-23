@@ -1800,6 +1800,7 @@ dependencies = [
  "microsoft-webui-handler",
  "microsoft-webui-parser",
  "microsoft-webui-protocol",
+ "rayon",
  "serde",
  "serde_json",
  "tempfile",
