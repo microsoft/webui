@@ -25,7 +25,8 @@ use serde_json::Value;
 /// Requires browser support for Multiple Import Maps (Chrome 133+); the
 /// browser merges each emitted importmap into the document-level resolution
 /// table.
-pub(crate) fn build_importmap_tag(specifier: &str, css: &str, nonce: Option<&str>) -> String {
+#[must_use]
+pub fn build_importmap_tag(specifier: &str, css: &str, nonce: Option<&str>) -> String {
     let data_uri = build_data_uri(css);
     let body = build_importmap_json(specifier, data_uri);
 

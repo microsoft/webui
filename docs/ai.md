@@ -406,6 +406,10 @@ webui build ./src --out ./dist --plugin=webui \
   --emit-component-assets settings-dialog
 ```
 
+Rust callers can set `BuildOptions::component_asset_roots`; rendered ESM files
+are returned in `BuildResult::component_asset_files` and written by
+`build_to_disk()`.
+
 ```typescript
 import { settingsAssets } from './lazy-assets.js';
 

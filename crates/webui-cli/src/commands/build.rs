@@ -4,12 +4,12 @@
 use anyhow::{Context, Result};
 use clap::Args;
 use expand_tilde::expand_tilde;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::common::*;
-use super::component_assets;
 use crate::utils::error::CliError;
 use crate::utils::output;
 
@@ -51,6 +51,34 @@ fn resolve_out(out: &Path) -> (PathBuf, OsString) {
     } else {
         (out.to_path_buf(), OsString::from("protocol.bin"))
     }
+}
+
+fn validate_output_file_names(
+    protocol_name: &std::ffi::OsStr,
+    result: &webui::BuildResult,
+) -> Result<()> {
+    let mut names =
+        HashSet::with_capacity(1 + result.css_files.len() + result.component_asset_files.len());
+    names.insert(protocol_name.to_os_string());
+    for (name, _) in &result.css_files {
+        let name = OsString::from(name);
+        if !names.insert(name.clone()) {
+            anyhow::bail!(
+                "output filename collision for '{}'. Adjust --asset-file-name-template to include [ext] or another unique asset-type segment.",
+                name.to_string_lossy()
+            );
+        }
+    }
+    for file in &result.component_asset_files {
+        let name = OsString::from(&file.name);
+        if !names.insert(name.clone()) {
+            anyhow::bail!(
+                "output filename collision for '{}'. Adjust --asset-file-name-template to include [ext] or another unique asset-type segment.",
+                name.to_string_lossy()
+            );
+        }
+    }
+    Ok(())
 }
 
 pub fn execute(args: &BuildArgs) -> Result<()> {
@@ -107,6 +135,7 @@ fn run(args: &BuildArgs) -> Result<()> {
     let mut build_options = args.app_args.to_build_options(&app);
     build_options.component_asset_roots = args.emit_component_assets.clone();
     let result = webui::build(build_options).with_context(|| "Build failed")?;
+    validate_output_file_names(&protocol_name, &result)?;
 
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("Failed to create {}", out_dir.display()))?;
@@ -116,12 +145,15 @@ fn run(args: &BuildArgs) -> Result<()> {
         fs::write(out_dir.join(name), content)
             .with_context(|| format!("Failed to write {name} to {}", out_dir.display()))?;
     }
-    let component_asset_stats = component_assets::emit_component_assets(
-        &result.protocol,
-        &args.emit_component_assets,
-        &out_dir,
-        &args.app_args.asset_file_name_template,
-    )?;
+    for file in &result.component_asset_files {
+        fs::write(out_dir.join(&file.name), &file.content).with_context(|| {
+            format!(
+                "Failed to write component asset {} to {}",
+                file.name,
+                out_dir.display()
+            )
+        })?;
+    }
     let stats = result.stats;
 
     output::success(&format!(
@@ -145,11 +177,11 @@ fn run(args: &BuildArgs) -> Result<()> {
         ));
     }
 
-    if component_asset_stats.root_count > 0 {
+    if !result.component_asset_files.is_empty() {
         output::success(&format!(
             "Emitted {} component asset{}",
-            console::style(component_asset_stats.root_count).bold(),
-            if component_asset_stats.root_count == 1 {
+            console::style(result.component_asset_files.len()).bold(),
+            if result.component_asset_files.len() == 1 {
                 ""
             } else {
                 "s"
@@ -157,7 +189,7 @@ fn run(args: &BuildArgs) -> Result<()> {
         ));
     }
 
-    let files_written = 1 + stats.css_file_count + component_asset_stats.file_count;
+    let files_written = 1 + stats.css_file_count + result.component_asset_files.len();
     output::success(&format!(
         "Wrote {}",
         console::style(Path::new(&protocol_name).display()).bold()
@@ -359,6 +391,35 @@ mod tests {
         assert!(asset.contains(r#""mail-thread":"#));
         assert!(asset.contains(r#""templateFunctions":{"mail-thread":"#));
         assert!(asset.contains("export default asset;"));
+    }
+
+    #[test]
+    fn test_build_rejects_duplicate_component_assets_before_writing() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("mail-thread.html", "<p>Mail</p>"),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+
+        let result = run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: out_dir.path().to_path_buf(),
+            emit_component_assets: vec!["mail-thread".to_string(), "mail-thread".to_string()],
+        });
+
+        assert!(result.is_err());
+        assert!(!out_dir.path().join("protocol.bin").exists());
     }
 
     #[test]

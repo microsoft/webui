@@ -6,7 +6,7 @@
 //! This crate provides functionality to process and render WebUI protocols
 //! into final HTML output based on provided data.
 
-pub(crate) mod css_module;
+pub mod css_module;
 pub(crate) mod html_encode;
 pub mod plugin;
 pub mod route_handler;

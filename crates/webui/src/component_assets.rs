@@ -1,32 +1,26 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use anyhow::{bail, Context, Result};
+//! Static component asset rendering for CDN-loadable ESM modules.
+
 use rayon::prelude::*;
-use serde_json::{Map, Value};
 use std::collections::HashSet;
-use std::fs;
-use std::path::Path;
-use webui::AssetFileNameTemplate;
-use webui_handler::route_handler::{render_component_templates, ProtocolIndex};
+use webui_handler::css_module;
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragmentRoute, WebUIProtocol};
+
+use crate::{AssetFileNameTemplate, WebUIError};
 
 const ASSET_TYPE: &str = "webui-component-asset";
 const ASSET_VERSION: u64 = 1;
 const COMPONENT_ASSET_EXT: &str = "webui.js";
 
-/// Summary of emitted component asset files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ComponentAssetStats {
-    /// Number of requested root component assets emitted.
-    pub root_count: usize,
-    /// Number of physical files written.
-    pub file_count: usize,
-}
-
-struct AssetFile {
-    name: String,
-    content: String,
+/// A rendered static component asset file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentAssetFile {
+    /// Output filename for the ESM asset.
+    pub name: String,
+    /// JavaScript module content.
+    pub content: String,
 }
 
 struct ComponentAssetPlan {
@@ -34,50 +28,49 @@ struct ComponentAssetPlan {
     components: Vec<String>,
 }
 
-/// Emit static CDN-loadable component assets for the requested root components.
-pub fn emit_component_assets(
+/// Render static CDN-loadable component asset modules for root components.
+///
+/// Each requested root produces one ESM module. The module contains the root's
+/// conservative component dependency closure, template/style metadata, and any
+/// WebUI condition closures needed by those templates.
+///
+/// # Errors
+///
+/// Returns [`WebUIError`] when the root allowlist is invalid, a requested root
+/// has no compiled template metadata, asset filename generation fails, or two
+/// component assets resolve to the same filename.
+#[must_use = "component asset files must be written or otherwise consumed"]
+pub fn render_component_assets(
     protocol: &WebUIProtocol,
     roots: &[String],
-    out_dir: &Path,
     file_name_template: &str,
-) -> Result<ComponentAssetStats> {
+) -> Result<Vec<ComponentAssetFile>, WebUIError> {
     let plans = plan_component_assets(protocol, roots)?;
     if plans.is_empty() {
-        return Ok(ComponentAssetStats {
-            root_count: 0,
-            file_count: 0,
-        });
+        return Ok(Vec::new());
     }
-    let file_name_template =
-        AssetFileNameTemplate::try_new(file_name_template.to_string(), "asset_file_name_template")?;
 
-    let files_by_root: Vec<Result<Vec<AssetFile>>> = plans
+    let file_name_template =
+        AssetFileNameTemplate::try_new(file_name_template.to_string(), "asset_file_name_template")
+            .map_err(|error| WebUIError::InvalidBuildOptions(error.to_string()))?;
+
+    let rendered: Vec<Result<ComponentAssetFile, WebUIError>> = plans
         .par_iter()
-        .map(|plan| render_asset_files(protocol, plan, &file_name_template))
+        .map(|plan| render_asset_file(protocol, plan, &file_name_template))
         .collect();
 
     let mut files = Vec::with_capacity(plans.len());
-    for root_files in files_by_root {
-        files.extend(root_files?);
+    for file in rendered {
+        files.push(file?);
     }
-    validate_unique_file_names(&files)?;
-
-    files.par_iter().try_for_each(|file| {
-        let path = out_dir.join(&file.name);
-        fs::write(&path, &file.content)
-            .with_context(|| format!("Failed to write component asset {}", path.display()))
-    })?;
-
-    Ok(ComponentAssetStats {
-        root_count: plans.len(),
-        file_count: files.len(),
-    })
+    validate_unique_asset_file_names(&files)?;
+    Ok(files)
 }
 
 fn plan_component_assets(
     protocol: &WebUIProtocol,
     roots: &[String],
-) -> Result<Vec<ComponentAssetPlan>> {
+) -> Result<Vec<ComponentAssetPlan>, WebUIError> {
     let roots = validate_roots(protocol, roots)?;
     let mut plans = Vec::with_capacity(roots.len());
     for root in roots {
@@ -89,164 +82,239 @@ fn plan_component_assets(
     Ok(plans)
 }
 
-fn render_asset_files(
+fn render_asset_file(
     protocol: &WebUIProtocol,
     plan: &ComponentAssetPlan,
     file_name_template: &AssetFileNameTemplate,
-) -> Result<Vec<AssetFile>> {
-    let tag_refs: Vec<&str> = plan.components.iter().map(String::as_str).collect();
-    let mut index = ProtocolIndex::new(protocol);
-    let payload = render_component_templates(protocol, &tag_refs, "", &mut index)
-        .with_context(|| format!("Failed to render component asset for <{}>", plan.root))?;
-    let mut object = into_object(payload, &plan.root)?;
-    let functions = object
-        .remove("templateFunctions")
-        .unwrap_or_else(|| Value::Object(Map::new()));
-    let templates = remove_object(&mut object, "templates", &plan.root)?;
-    let template_styles = remove_array(&mut object, "templateStyles", &plan.root)?;
-
-    let mut asset = Map::with_capacity(6);
-    asset.insert("type".into(), Value::String(ASSET_TYPE.to_string()));
-    asset.insert("version".into(), Value::from(ASSET_VERSION));
-    asset.insert(
-        "components".into(),
-        Value::Array(
-            plan.components
-                .iter()
-                .map(|tag| Value::String(tag.clone()))
-                .collect(),
-        ),
-    );
-    asset.insert("templateStyles".into(), Value::Array(template_styles));
-    asset.insert("templates".into(), Value::Object(templates));
-
-    let content = build_asset_module(&plan.root, asset, &functions)?;
+) -> Result<ComponentAssetFile, WebUIError> {
+    let content = build_asset_module(protocol, plan)?;
     let name = file_name_template.resolve(&plan.root, COMPONENT_ASSET_EXT, content.as_bytes());
-    Ok(vec![AssetFile { name, content }])
+    Ok(ComponentAssetFile { name, content })
 }
 
-fn validate_unique_file_names(files: &[AssetFile]) -> Result<()> {
+fn validate_unique_asset_file_names(files: &[ComponentAssetFile]) -> Result<(), WebUIError> {
     let mut names = HashSet::with_capacity(files.len());
     for file in files {
         if !names.insert(file.name.as_str()) {
-            bail!(
+            return Err(WebUIError::InvalidBuildOptions(format!(
                 "component asset filename collision for '{}'. Adjust --asset-file-name-template to include [name] or another unique component-specific segment.",
                 file.name
-            );
+            )));
         }
     }
     Ok(())
 }
 
-fn build_asset_module(root: &str, asset: Map<String, Value>, functions: &Value) -> Result<String> {
-    let asset_json = serde_json::to_string(&Value::Object(asset))
-        .with_context(|| format!("Failed to serialize component asset for <{root}>"))?;
-    let mut js = String::with_capacity(asset_json.len() + 64);
-    js.push_str("const asset=");
-    if has_template_functions(functions)? {
-        let Some(prefix) = asset_json.strip_suffix('}') else {
-            bail!("component asset for <{root}> was not a serialized JavaScript object");
-        };
-        js.push_str(prefix);
-        js.push_str(",\"templateFunctions\":");
-        push_template_functions_object(root, functions, &mut js)?;
+fn build_asset_module(
+    protocol: &WebUIProtocol,
+    plan: &ComponentAssetPlan,
+) -> Result<String, WebUIError> {
+    let estimated = estimate_asset_module_size(protocol, plan);
+    let mut js = String::with_capacity(estimated);
+    js.push_str("const asset={\"type\":\"");
+    js.push_str(ASSET_TYPE);
+    js.push_str("\",\"version\":");
+    push_u64(&mut js, ASSET_VERSION);
+    js.push_str(",\"components\":[");
+    push_string_array(&mut js, &plan.components)?;
+    js.push_str("],\"templateStyles\":[");
+    push_template_styles(protocol, &plan.components, &mut js)?;
+    js.push_str("],\"templates\":{");
+    push_templates(protocol, &plan.components, &mut js)?;
+    js.push('}');
+    if has_template_functions(protocol, &plan.components) {
+        js.push_str(",\"templateFunctions\":{");
+        push_template_functions(protocol, &plan.root, &plan.components, &mut js)?;
         js.push('}');
-    } else {
-        js.push_str(&asset_json);
     }
-    js.push_str(";\nexport default asset;\n");
+    js.push_str("};\nexport default asset;\n");
     Ok(js)
 }
 
-fn into_object(payload: Value, root: &str) -> Result<Map<String, Value>> {
-    match payload {
-        Value::Object(object) => Ok(object),
-        _ => bail!("component asset payload for <{root}> was not an object"),
-    }
-}
-
-fn remove_object(
-    object: &mut Map<String, Value>,
-    field: &str,
-    root: &str,
-) -> Result<Map<String, Value>> {
-    match object.remove(field) {
-        Some(Value::Object(value)) => Ok(value),
-        Some(_) => bail!("component asset field '{field}' for <{root}> was not an object"),
-        None => Ok(Map::new()),
-    }
-}
-
-fn remove_array(object: &mut Map<String, Value>, field: &str, root: &str) -> Result<Vec<Value>> {
-    match object.remove(field) {
-        Some(Value::Array(value)) => Ok(value),
-        Some(_) => bail!("component asset field '{field}' for <{root}> was not an array"),
-        None => Ok(Vec::new()),
-    }
-}
-
-fn has_template_functions(functions: &Value) -> Result<bool> {
-    let Value::Object(functions) = functions else {
-        bail!("component asset field 'templateFunctions' was not an object");
-    };
-    Ok(!functions.is_empty())
-}
-
-fn push_template_functions_object(root: &str, functions: &Value, js: &mut String) -> Result<()> {
-    let Value::Object(functions) = functions else {
-        bail!("component asset field 'templateFunctions' for <{root}> was not an object");
-    };
-    let mut tags: Vec<&str> = functions.keys().map(String::as_str).collect();
-    tags.sort_unstable();
-
-    js.push('{');
-    for (index, tag) in tags.into_iter().enumerate() {
-        if index > 0 {
-            js.push(',');
+fn estimate_asset_module_size(protocol: &WebUIProtocol, plan: &ComponentAssetPlan) -> usize {
+    let mut size = 128 + plan.root.len();
+    for tag in &plan.components {
+        size += tag.len() + 8;
+        if let Some(component) = protocol.components.get(tag) {
+            size += component.template_json.len();
+            size += component.template.len();
+            size += component.template_functions.len();
+            size += component.css.len();
         }
-        let Some(function_array) = functions.get(tag).and_then(Value::as_str) else {
-            bail!("templateFunctions entry for <{tag}> in <{root}> asset was not a string");
-        };
-        js.push_str(
-            &serde_json::to_string(tag)
-                .with_context(|| format!("Failed to encode template function tag <{tag}>"))?,
-        );
-        js.push(':');
-        js.push_str(function_array);
     }
-    js.push('}');
+    size
+}
+
+fn push_string_array(out: &mut String, values: &[String]) -> Result<(), WebUIError> {
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        push_json_string(out, value, "component tag")?;
+    }
     Ok(())
 }
 
-fn validate_roots(protocol: &WebUIProtocol, roots: &[String]) -> Result<Vec<String>> {
+fn push_template_styles(
+    protocol: &WebUIProtocol,
+    components: &[String],
+    out: &mut String,
+) -> Result<(), WebUIError> {
+    let mut written = 0usize;
+    for tag in components {
+        let Some(component) = protocol.components.get(tag) else {
+            continue;
+        };
+        if component.css.is_empty() {
+            continue;
+        }
+        if written > 0 {
+            out.push(',');
+        }
+        let tag_html = css_module::build_importmap_tag(tag, &component.css, None);
+        push_json_string(out, &tag_html, "component asset templateStyles entry")?;
+        written += 1;
+    }
+    Ok(())
+}
+
+fn push_templates(
+    protocol: &WebUIProtocol,
+    components: &[String],
+    out: &mut String,
+) -> Result<(), WebUIError> {
+    let mut written = 0usize;
+    for tag in components {
+        let Some(component) = protocol.components.get(tag) else {
+            continue;
+        };
+        if !has_template_payload(component) {
+            continue;
+        }
+        if written > 0 {
+            out.push(',');
+        }
+        push_json_string(out, tag, "component tag")?;
+        out.push(':');
+        if !component.template_json.is_empty() {
+            out.push_str(&component.template_json);
+        } else {
+            push_json_string(out, &component.template, "component template")?;
+        }
+        written += 1;
+    }
+    Ok(())
+}
+
+fn has_template_functions(protocol: &WebUIProtocol, components: &[String]) -> bool {
+    components.iter().any(|tag| {
+        protocol
+            .components
+            .get(tag)
+            .is_some_and(|component| !component.template_functions.is_empty())
+    })
+}
+
+fn push_template_functions(
+    protocol: &WebUIProtocol,
+    root: &str,
+    components: &[String],
+    out: &mut String,
+) -> Result<(), WebUIError> {
+    let mut written = 0usize;
+    for tag in components {
+        let Some(component) = protocol.components.get(tag) else {
+            continue;
+        };
+        if component.template_functions.is_empty() {
+            continue;
+        }
+        if written > 0 {
+            out.push(',');
+        }
+        push_json_string(out, tag, "component tag")?;
+        out.push(':');
+        out.push_str(&component.template_functions);
+        written += 1;
+    }
+    if written == 0 {
+        return Err(WebUIError::InvalidBuildOptions(format!(
+            "component asset for <{root}> had no template functions to emit"
+        )));
+    }
+    Ok(())
+}
+
+fn push_json_string(out: &mut String, value: &str, context: &str) -> Result<(), WebUIError> {
+    let encoded = serde_json::to_string(value).map_err(|error| {
+        WebUIError::Serialization(format!("Failed to encode {context}: {error}"))
+    })?;
+    out.push_str(&encoded);
+    Ok(())
+}
+
+fn push_u64(out: &mut String, value: u64) {
+    let mut digits = [0u8; 20];
+    let mut n = value;
+    let mut i = digits.len();
+    if n == 0 {
+        out.push('0');
+        return;
+    }
+    while n > 0 {
+        i -= 1;
+        digits[i] = match n % 10 {
+            0 => b'0',
+            1 => b'1',
+            2 => b'2',
+            3 => b'3',
+            4 => b'4',
+            5 => b'5',
+            6 => b'6',
+            7 => b'7',
+            8 => b'8',
+            _ => b'9',
+        };
+        n /= 10;
+    }
+    for digit in &digits[i..] {
+        out.push(char::from(*digit));
+    }
+}
+
+fn validate_roots(protocol: &WebUIProtocol, roots: &[String]) -> Result<Vec<String>, WebUIError> {
     let mut seen = HashSet::with_capacity(roots.len());
     let mut normalized = Vec::with_capacity(roots.len());
     for raw in roots {
         let tag = raw.trim();
         if tag.is_empty() {
-            bail!("--emit-component-assets contains an empty component tag");
+            return Err(WebUIError::InvalidBuildOptions(
+                "--emit-component-assets contains an empty component tag".to_string(),
+            ));
         }
         if !is_component_tag_name(tag) {
-            bail!(
+            return Err(WebUIError::InvalidBuildOptions(format!(
                 "--emit-component-assets component '{tag}' must be a lowercase kebab-case custom element tag"
-            );
+            )));
         }
         if !seen.insert(tag.to_string()) {
-            bail!("--emit-component-assets contains duplicate component <{tag}>");
+            return Err(WebUIError::InvalidBuildOptions(format!(
+                "--emit-component-assets contains duplicate component <{tag}>"
+            )));
         }
         if !protocol.fragments.contains_key(tag) {
-            bail!(
+            return Err(WebUIError::InvalidBuildOptions(format!(
                 "--emit-component-assets requested unknown component <{tag}>. Add a discovered {tag}.html component or remove it from the allowlist."
-            );
+            )));
         }
         if !protocol
             .components
             .get(tag)
             .is_some_and(has_template_payload)
         {
-            bail!(
+            return Err(WebUIError::InvalidBuildOptions(format!(
                 "--emit-component-assets requested <{tag}>, but it has no compiled template metadata. Build with a plugin that emits component templates and ensure the component has a template."
-            );
+            )));
         }
         normalized.push(tag.to_string());
     }
@@ -376,6 +444,21 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("duplicate"));
+    }
+
+    #[test]
+    fn render_component_assets_emits_esm_module() {
+        let protocol = protocol_with_component("mail-thread");
+        let files =
+            render_component_assets(&protocol, &["mail-thread".to_string()], "[name].[ext]")
+                .unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "mail-thread.webui.js");
+        assert!(files[0]
+            .content
+            .contains(r#""type":"webui-component-asset""#));
+        assert!(files[0].content.contains("export default asset;"));
     }
 
     #[test]

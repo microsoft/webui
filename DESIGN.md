@@ -354,7 +354,10 @@ standard ESM module, `<tag>.webui.js`, by default. Use
 `--asset-file-name-template "[name]-[hash].[ext]"` for CDN-cacheable CSS and
 component asset names; `[hash]` is the emitted file's SHA-256 content hash
 truncated to 8 hex characters and `[ext]` resolves to `webui.js` for component
-assets. The module default-exports:
+assets. Programmatic Rust builds expose the rendered files through
+`BuildResult::component_asset_files`; `build_to_disk()` and the CLI validate
+protocol/CSS/component-asset filenames as one output set before writing any
+file. The module default-exports:
 
 ```js
 export default {

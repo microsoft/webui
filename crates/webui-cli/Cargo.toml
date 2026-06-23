@@ -34,7 +34,6 @@ bytes = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 log = { workspace = true }
-rayon = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

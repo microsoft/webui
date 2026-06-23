@@ -23,6 +23,7 @@ let result = build(BuildOptions {
 
 // result.protocol_bytes — serialized protocol (protobuf binary)
 // result.css_files — extracted component CSS files
+// result.component_asset_files — static `.webui.js` ESM component assets
 // result.stats — build timing and fragment counts
 ```
 
@@ -33,7 +34,7 @@ let result = build(BuildOptions {
 | Function | Description |
 |----------|-------------|
 | `build(options)` | Parse templates, discover components, compile protocol |
-| `build_to_disk(options, out_dir)` | Build and write `protocol.bin` + CSS to disk |
+| `build_to_disk(options, out_dir)` | Build and write `protocol.bin`, CSS, and component assets to disk |
 
 ```rust
 use webui::{build_to_disk, BuildOptions, CssStrategy, DomStrategy, LegalComments, Plugin};
@@ -53,13 +54,26 @@ build_to_disk(
 )?;
 ```
 
-For CDN/cache-friendly Link-mode CSS, override only the CSS asset fields:
+For CDN/cache-friendly Link-mode CSS and static component assets, override the
+asset output fields:
 
 ```rust
 BuildOptions {
     app_dir: "src".into(),
     css_file_name_template: "[name]-[hash].[ext]".into(),
     css_public_base: Some("https://cdn.example.com/assets".into()),
+    ..BuildOptions::default()
+}
+```
+
+To emit lazy static component assets from Rust, set `component_asset_roots` and
+use the WebUI plugin:
+
+```rust
+BuildOptions {
+    app_dir: "src".into(),
+    plugin: Some(Plugin::WebUI),
+    component_asset_roots: vec!["settings-dialog".into()],
     ..BuildOptions::default()
 }
 ```

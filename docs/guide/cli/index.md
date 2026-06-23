@@ -92,7 +92,9 @@ across requested root tags. The module intentionally omits inventory state
 because a static CDN asset cannot know the page's current loaded template bitset.
 Use `--asset-file-name-template "[name]-[hash].[ext]"` for long-lived CDN
 caching; `[hash]` is the emitted asset module's SHA-256 content hash truncated
-to 8 hex characters.
+to 8 hex characters. Protocol, CSS, and component asset filenames are validated
+as one output set before any files are written, so collisions fail without
+leaving partial output.
 
 Load an asset before creating the component:
 
