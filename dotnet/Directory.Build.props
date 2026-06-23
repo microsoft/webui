@@ -3,7 +3,9 @@
     <Version>0.0.17</Version>
     <Authors>Microsoft</Authors>
     <Company>Microsoft</Company>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageOwners>Microsoft</PackageOwners>
+    <PackageLicenseUrl>https://github.com/microsoft/webui/blob/main/LICENSE</PackageLicenseUrl>
+    <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
     <PackageProjectUrl>https://github.com/microsoft/webui</PackageProjectUrl>
     <RepositoryUrl>https://github.com/microsoft/webui</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
@@ -12,9 +14,10 @@
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true' or '$(TF_BUILD)' == 'true'">true</ContinuousIntegrationBuild>
-    <Copyright>Copyright (c) Microsoft Corporation</Copyright>
-    <Description>WebUI — high-performance server-side rendering without JavaScript runtimes.</Description>
-    <PackageTags>webui</PackageTags>
+    <Copyright>© Microsoft Corporation. All rights reserved.</Copyright>
+    <Description>WebUI is a high-performance server-side rendering framework without JavaScript runtimes.</Description>
+    <PackageReleaseNotes>See https://github.com/microsoft/webui/releases for release notes.</PackageReleaseNotes>
+    <PackageTags>webui dotnet server-side-rendering ssr templates web-components ffi</PackageTags>
     <!-- PackageIcon will be set once an approved 128x128 transparent PNG is available. -->
   </PropertyGroup>
   <PropertyGroup Condition="$([System.String]::Copy('$(MSBuildProjectName)').StartsWith('Microsoft.WebUI.Runtime.'))">

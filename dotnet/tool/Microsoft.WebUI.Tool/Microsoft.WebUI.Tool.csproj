@@ -11,5 +11,6 @@
     <ToolCommandName>webui</ToolCommandName>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <Description>WebUI CLI tool for building and inspecting WebUI templates.</Description>
+    <PackageTags>webui dotnet tool cli templates server-side-rendering</PackageTags>
   </PropertyGroup>
 </Project>

@@ -31,6 +31,7 @@ dotnet add package Microsoft.WebUI
 ```
 
 The NuGet package restores platform-specific `Microsoft.WebUI.Runtime.*` native assets transitively. Release builds stage `.nupkg` and `.snupkg` artifacts with repository metadata and Source Link; nuget.org publishing is manual until ESRP automation supports this project.
+NuGet metadata uses `Authors=Microsoft`, the `Microsoft` package owner, a stable project URL, a package license URL with license acceptance required, release notes links, discoverability tags, and the required `© Microsoft Corporation. All rights reserved.` copyright notice. Before nuget.org publishing, staged packages and Authenticode-signable contents must be signed with a Microsoft certificate through the approved signing process.
 
 ## Learn
 

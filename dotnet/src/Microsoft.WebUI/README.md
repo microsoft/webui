@@ -82,7 +82,7 @@ The managed package depends on all supported `Microsoft.WebUI.Runtime.<rid>` pac
 
 ### Package Metadata
 
-Packed NuGet artifacts include this README, repository metadata, Source Link, and `.snupkg` symbol packages. Release workflows stage `.nupkg` and `.snupkg` files; nuget.org publishing remains manual/externally tracked until ESRP supports automated NuGet publishing for this project.
+Packed NuGet artifacts include this README, repository metadata, Source Link, a package license URL with license acceptance required, release notes links, discoverability tags, the `© Microsoft Corporation. All rights reserved.` notice, and `.snupkg` symbol packages. Release workflows stage `.nupkg` and `.snupkg` files; nuget.org publishing remains manual/externally tracked until ESRP supports automated NuGet publishing for this project. Before publishing, staged packages and Authenticode-signable contents must be signed with a Microsoft certificate through the approved signing process.
 
 ### Manual Native Library Path
 
@@ -106,4 +106,4 @@ cargo xtask dotnet
 
 ## License
 
-MIT
+MIT. NuGet package metadata uses © Microsoft Corporation. All rights reserved.
