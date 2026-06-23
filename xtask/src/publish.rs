@@ -260,6 +260,26 @@ pub fn run_stage(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Stage already-built native artifacts for specific targets after one clean.
+pub(crate) fn stage_native_targets<'a, I>(
+    root: &Path,
+    triples: I,
+    profile: &str,
+) -> Result<(), String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    prepare_publish_dirs(root, StageMode::NativeOnly)?;
+
+    for triple in triples {
+        if stage_one_platform(root, triple, profile) != ExitCode::SUCCESS {
+            return Err(format!("failed to stage native artifacts for {triple}"));
+        }
+    }
+
+    Ok(())
+}
+
 // ── Publish directory setup ─────────────────────────────────────────────
 
 /// Create the `publish/` directory tree, cleaning it first if it exists.

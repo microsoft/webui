@@ -11,6 +11,7 @@ mod process;
 mod publish;
 mod util;
 mod version;
+mod windows_local;
 
 use std::process::ExitCode;
 use std::time::Instant;
@@ -79,6 +80,10 @@ fn main() -> ExitCode {
             let extra: Vec<String> = args.iter().skip(2).cloned().collect();
             publish::run_stage(&extra)
         }
+        Some("build-windows-local") => {
+            let extra: Vec<String> = args.iter().skip(2).cloned().collect();
+            windows_local::run(&extra)
+        }
         Some("license-headers") => {
             let fix = args.iter().any(|a| a == "--fix");
             if fix {
@@ -132,6 +137,7 @@ fn usage() -> ExitCode {
            e2e-approve [run-id]  Download CI screenshot baselines and apply locally\n  \
            version <semver>  Update version across all Cargo.toml and package.json files\n  \
            publish-stage [--target <triple|all>] [--profile release] [--native-only|--pack-only]  Stage release artifacts into publish/\n  \
+           build-windows-local [--target all|x64|arm64|<triple>]  Build and stage Windows MSVC artifacts locally with cargo-xwin\n  \
            license-headers [--fix]  Check (or fix) license headers in source files\n  \
            proto  Regenerate src/gen_webui.rs from proto/webui.proto"
     );

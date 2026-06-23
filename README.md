@@ -61,6 +61,58 @@ Common commands:
 | `cargo xtask build` | Build the workspace and examples |
 | `cargo xtask dev <app>` | Run an example app in development mode |
 | `cargo xtask bench <target>` | Run benchmarks |
+| `cargo xtask build-windows-local` | Manually build and stage Windows MSVC artifacts on macOS |
+
+### Manual Windows builds on macOS
+
+`cargo xtask build-windows-local` is a local-only helper for producing Windows
+x64 and ARM64 release bits from macOS. It does not run in CI and does not
+install tools automatically.
+
+Install the build prerequisites once:
+
+```bash
+brew install llvm lld
+cargo install cargo-xwin --version 0.23.0
+rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+```
+
+If Homebrew's `clang-cl` and LLD are not on `PATH`, add them before running the helper:
+
+```bash
+export PATH="$(brew --prefix llvm)/bin:$(brew --prefix lld)/bin:$PATH"
+```
+
+Build both Windows targets, or choose one target:
+
+```bash
+cargo xtask build-windows-local
+cargo xtask build-windows-local --target x64
+cargo xtask build-windows-local --target arm64
+```
+
+The command stages artifacts into `publish/native/`, `packages/webui-win32-*`,
+and `dotnet/runtimes/win-*/native/`. `cargo-xwin` downloads Microsoft Windows
+SDK and CRT assets; using it requires accepting the Microsoft SDK license terms
+referenced by cargo-xwin.
+
+For a quick local sanity check of the x64 CLI artifact, install Wine Stable:
+
+```bash
+brew install --cask wine-stable
+```
+
+Wine Stable may require explicit approval in macOS **System Settings** >
+**Privacy & Security** because it is not notarized. After approving it, run:
+
+```bash
+WINEDEBUG=-all WINEPREFIX="$PWD/.wine-webui-x64" \
+  "/Applications/Wine Stable.app/Contents/Resources/wine/bin/wine" \
+  "$PWD/packages/webui-win32-x64/bin/webui.exe" --help
+```
+
+Use Wine only for the x64 artifact. Test the ARM64 Windows artifact on Windows
+ARM hardware or a Windows ARM environment.
 
 For contribution policy, issue guidelines, and the current pull request policy, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
