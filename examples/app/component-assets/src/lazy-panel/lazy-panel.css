@@ -6,9 +6,9 @@
   display: grid;
   gap: var(--spacing-s);
   padding: var(--spacing-l);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-m);
-  background: #f8fbff;
+  border: 1px solid var(--color-neutral-200);
+  border-radius: var(--border-radius-l);
+  background: var(--color-neutral-100);
 }
 
 h2,
@@ -17,13 +17,13 @@ p {
 }
 
 p {
-  color: var(--color-muted);
-  line-height: 1.5;
+  color: var(--color-neutral-500);
+  line-height: var(--line-height-base);
 }
 
 .details {
   padding: var(--spacing-s);
-  border-radius: 8px;
-  background: #eef6ff;
-  color: var(--color-text);
+  border-radius: var(--border-radius-m);
+  background: var(--color-brand-light);
+  color: var(--color-neutral-800);
 }

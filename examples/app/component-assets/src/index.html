@@ -7,19 +7,13 @@
   <title>{{title}}</title>
   <style>
     :root {
-      --color-bg: #f5f7fb;
-      --color-card: #ffffff;
-      --color-text: #1f2937;
-      --color-muted: #6b7280;
-      --color-brand: #2563eb;
-      --color-brand-hover: #1d4ed8;
-      --color-border: #dbe3ef;
-      --spacing-s: 8px;
-      --spacing-m: 12px;
-      --spacing-l: 16px;
-      --spacing-xl: 24px;
-      --radius-m: 12px;
-      --font-family-base: "Segoe UI", system-ui, sans-serif;
+      /*{{{tokens.light}}}*/
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        /*{{{tokens.dark}}}*/
+      }
     }
 
     * {
@@ -32,8 +26,8 @@
       display: grid;
       place-items: center;
       padding: var(--spacing-xl);
-      background: var(--color-bg);
-      color: var(--color-text);
+      background: var(--color-neutral-50);
+      color: var(--color-neutral-800);
       font-family: var(--font-family-base);
     }
   </style>

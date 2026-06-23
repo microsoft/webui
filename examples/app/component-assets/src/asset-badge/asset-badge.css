@@ -4,10 +4,10 @@
 }
 
 span {
-  border-radius: 999px;
-  padding: 3px 8px;
-  background: #dbeafe;
-  color: #1d4ed8;
-  font-size: 12px;
+  border-radius: var(--border-radius-pill);
+  padding: var(--spacing-xs) var(--spacing-m);
+  background: var(--color-brand-lighter);
+  color: var(--color-blue-text);
+  font-size: var(--font-size-xs);
   font-weight: 700;
 }

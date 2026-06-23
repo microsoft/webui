@@ -143,6 +143,9 @@ importers:
 
   examples/app/component-assets:
     devDependencies:
+      '@microsoft/webui-examples-theme':
+        specifier: workspace:*
+        version: link:../../../packages/webui-examples-theme
       '@microsoft/webui-framework':
         specifier: workspace:*
         version: link:../../../packages/webui-framework
