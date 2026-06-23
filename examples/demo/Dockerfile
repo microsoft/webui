@@ -60,6 +60,7 @@ RUN cd examples/app/calculator && \
 
 RUN cd examples/app/todo-webui && pnpm build
 RUN cd examples/app/contact-book-manager && pnpm build
+RUN cd examples/app/component-assets && pnpm build
 RUN cd examples/app/routes && pnpm build
 RUN cd examples/app/commerce && pnpm build
 
@@ -119,27 +120,38 @@ RUN chmod 0755 /usr/local/bin/demo-entrypoint.sh && \
 # hello-world
 COPY --from=builder --chown=app:app /build/examples/app/hello-world/src/ ./apps/hello-world/src/
 COPY --from=builder --chown=app:app /build/examples/app/hello-world/dist/ ./apps/hello-world/dist/
+COPY --from=builder --chown=app:app /build/examples/app/hello-world/data/ ./apps/hello-world/data/
 COPY --from=builder --chown=app:app /build/examples/app/hello-world/demo.toml ./apps/hello-world/demo.toml
 
 # todo-fast
 COPY --from=builder --chown=app:app /build/examples/app/todo-fast/src/ ./apps/todo-fast/src/
 COPY --from=builder --chown=app:app /build/examples/app/todo-fast/dist/ ./apps/todo-fast/dist/
+COPY --from=builder --chown=app:app /build/examples/app/todo-fast/data/ ./apps/todo-fast/data/
 COPY --from=builder --chown=app:app /build/examples/app/todo-fast/demo.toml ./apps/todo-fast/demo.toml
 
 # calculator
 COPY --from=builder --chown=app:app /build/examples/app/calculator/src/ ./apps/calculator/src/
 COPY --from=builder --chown=app:app /build/examples/app/calculator/dist/ ./apps/calculator/dist/
+COPY --from=builder --chown=app:app /build/examples/app/calculator/data/ ./apps/calculator/data/
 COPY --from=builder --chown=app:app /build/examples/app/calculator/demo.toml ./apps/calculator/demo.toml
 
 # todo-webui
 COPY --from=builder --chown=app:app /build/examples/app/todo-webui/src/ ./apps/todo-webui/src/
 COPY --from=builder --chown=app:app /build/examples/app/todo-webui/dist/ ./apps/todo-webui/dist/
+COPY --from=builder --chown=app:app /build/examples/app/todo-webui/data/ ./apps/todo-webui/data/
 COPY --from=builder --chown=app:app /build/examples/app/todo-webui/demo.toml ./apps/todo-webui/demo.toml
 
 # contact-book-manager (has Node API)
 COPY --from=builder --chown=app:app /build/examples/app/contact-book-manager/src/ ./apps/contact-book-manager/src/
 COPY --from=builder --chown=app:app /build/examples/app/contact-book-manager/dist/ ./apps/contact-book-manager/dist/
+COPY --from=builder --chown=app:app /build/examples/app/contact-book-manager/data/ ./apps/contact-book-manager/data/
 COPY --from=builder --chown=app:app /build/examples/app/contact-book-manager/demo.toml ./apps/contact-book-manager/demo.toml
+
+# component-assets
+COPY --from=builder --chown=app:app /build/examples/app/component-assets/src/ ./apps/component-assets/src/
+COPY --from=builder --chown=app:app /build/examples/app/component-assets/dist/ ./apps/component-assets/dist/
+COPY --from=builder --chown=app:app /build/examples/app/component-assets/data/ ./apps/component-assets/data/
+COPY --from=builder --chown=app:app /build/examples/app/component-assets/demo.toml ./apps/component-assets/demo.toml
 
 # routes (has Node API)
 COPY --from=builder --chown=app:app /build/examples/app/routes/src/ ./apps/routes/src/
@@ -157,9 +169,12 @@ COPY --from=builder --chown=app:app /build/examples/app/commerce/demo.toml ./app
 COPY --from=builder --chown=app:app /build/examples/demo/src/  ./shell/src/
 COPY --from=builder --chown=app:app /build/examples/demo/dist/ ./shell/dist/
 
+# Shared npm theme used by webui-cli demo apps at runtime
+COPY --from=builder --chown=app:app /build/packages/webui-examples-theme/ ./node_modules/@microsoft/webui-examples-theme/
+
 # Create data directories for apps that use state files
 RUN mkdir -p apps/hello-world/data apps/todo-fast/data apps/calculator/data \
-    apps/todo-webui/data apps/contact-book-manager/data && \
+    apps/todo-webui/data apps/contact-book-manager/data apps/component-assets/data && \
     chown -R app:app apps/
 
 USER app

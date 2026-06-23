@@ -79,7 +79,8 @@ port-offset = 10                    # API port = app port + offset
 
 1. Create your app in `examples/app/{my-app}/`
 2. Add a `demo.toml` file with the metadata above
-3. Rebuild the Docker image — the shell auto-discovers it
+3. Add the app build and copy steps to `examples/demo/Dockerfile`
+4. Rebuild the Docker image — the shell auto-discovers copied `demo.toml` files
 
 ## CLI Options
 
@@ -124,6 +125,7 @@ cd examples/demo && pnpm start:server    # serves examples/demo/src on :3099
 |-----|---------|-------------|
 | Calculator | Rust | Scientific calculator (WebUI Framework) |
 | Commerce | Rust | Full e-commerce marketplace (custom Actix server) |
+| Component Assets | Rust | No-router app that loads a deferred component from a static WebUI asset |
 | Contact Book | Rust + Node | CRUD contact manager with REST API |
 | Hello World | Rust | Minimal WebUI starter app |
 | Routes | Rust + Node | Multi-page routed app with Node.js API |

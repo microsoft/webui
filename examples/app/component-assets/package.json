@@ -11,11 +11,14 @@
     "copy:data": "cp src/lazy-panel-data.json dist/lazy-panel-data.json",
     "start:client": "esbuild src/index.ts --bundle --outdir=dist --format=esm --splitting --chunk-names=chunks/[name]-[hash] --sourcemap --watch",
     "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --theme=@microsoft/webui-examples-theme --plugin=webui --servedir ./dist --port 3010 --watch",
-    "start": "cargo xtask dev component-assets"
+    "start": "cargo xtask dev component-assets",
+    "test": "playwright test",
+    "test:update-snapshots": "playwright test --update-snapshots"
   },
   "devDependencies": {
     "@microsoft/webui-examples-theme": "workspace:*",
     "@microsoft/webui-framework": "workspace:*",
+    "@playwright/test": "catalog:",
     "esbuild": "catalog:",
     "tslib": "catalog:",
     "typescript": "catalog:"
