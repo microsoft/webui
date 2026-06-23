@@ -267,14 +267,18 @@ fn missing_targets_message(missing: &[&str]) -> String {
 }
 
 fn ensure_llvm_tools() -> Result<(), String> {
-    let has_clang = which_exists("clang") || which_exists("clang-cl");
+    let has_clang_cl = which_exists("clang-cl");
     let has_lld = which_exists("lld-link") || which_exists("ld.lld") || which_exists("lld");
 
-    if has_clang && has_lld {
+    if has_clang_cl && has_lld {
         return Ok(());
     }
 
-    Err("clang/LLVM tools are required for cargo-xwin. On macOS: brew install llvm lld, then ensure both Homebrew bin directories are on PATH".to_string())
+    Err(llvm_tools_help().to_string())
+}
+
+fn llvm_tools_help() -> &'static str {
+    "clang-cl and LLD are required for cargo-xwin. On macOS: brew install llvm lld, then ensure both Homebrew bin directories are on PATH"
 }
 
 fn build_target(root: &Path, target: &WindowsTarget, cache_dir: &Path) -> Result<(), String> {
@@ -446,6 +450,14 @@ mod tests {
         assert!(
             message.contains("rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc")
         );
+    }
+
+    #[test]
+    fn llvm_tools_help_mentions_clang_cl() {
+        let message = llvm_tools_help();
+
+        assert!(message.contains("clang-cl"));
+        assert!(message.contains("brew install llvm lld"));
     }
 
     #[test]

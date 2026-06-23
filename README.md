@@ -77,7 +77,7 @@ cargo install cargo-xwin --version 0.23.0
 rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
 ```
 
-If Homebrew's LLVM and LLD are not on `PATH`, add them before running the helper:
+If Homebrew's `clang-cl` and LLD are not on `PATH`, add them before running the helper:
 
 ```bash
 export PATH="$(brew --prefix llvm)/bin:$(brew --prefix lld)/bin:$PATH"
