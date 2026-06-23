@@ -23,7 +23,9 @@ export interface BuildOptions {
   plugin?: string;
   /** Additional component sources (npm packages or local paths). */
   components?: string[];
-  /** Link-mode CSS filename template. Tokens: [name], [hash], [ext]. */
+  /** Root component tags emitted as static `.webui.js` ESM assets. */
+  componentAssetRoots?: string[];
+  /** Emitted asset filename template for Link-mode CSS and component assets. Tokens: [name], [hash], [ext]. */
   cssFileNameTemplate?: string;
   /** Optional base URL/path prefix for Link-mode CSS hrefs. */
   cssPublicBase?: string;
@@ -53,6 +55,8 @@ export interface BuildResult {
   protocol: Buffer;
   /** CSS files as alternating [filename, content, ...]. */
   cssFiles: string[];
+  /** Static component asset files as alternating [filename, content, ...]. */
+  componentAssetFiles: string[];
   /** Build statistics. */
   stats: BuildStats;
 }
@@ -117,6 +121,7 @@ interface NativeAddon {
     css?: string;
     plugin?: string;
     components?: string[];
+    componentAssetRoots?: string[];
     cssFileNameTemplate?: string;
     cssPublicBase?: string;
   }): BuildResult;
@@ -186,6 +191,9 @@ export function build(options: BuildOptions): BuildResult {
       args.push("--components", c);
     }
   }
+  if (options.componentAssetRoots && options.componentAssetRoots.length > 0) {
+    args.push("--emit-component-assets", options.componentAssetRoots.join(","));
+  }
   if (options.cssFileNameTemplate) {
     args.push("--css-file-name-template", options.cssFileNameTemplate);
   }
@@ -199,10 +207,30 @@ export function build(options: BuildOptions): BuildResult {
   // CLI fallback does not return in-memory protocol.
   if (options.outDir) {
     const protocol = fs.readFileSync(nodePath.join(options.outDir, "protocol.bin"));
-    return { protocol, cssFiles: [], stats: emptyStats() };
+    return {
+      protocol,
+      cssFiles: [],
+      componentAssetFiles: readComponentAssetFiles(options.outDir),
+      stats: emptyStats(),
+    };
   }
 
-  return { protocol: Buffer.alloc(0), cssFiles: [], stats: emptyStats() };
+  return { protocol: Buffer.alloc(0), cssFiles: [], componentAssetFiles: [], stats: emptyStats() };
+}
+
+function readComponentAssetFiles(outDir: string): string[] {
+  const files: string[] = [];
+  const entries = fs.readdirSync(outDir, { withFileTypes: true });
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (!entry.isFile()) continue;
+    const name = entry.name;
+    const path = nodePath.join(outDir, name);
+    const content = fs.readFileSync(path, "utf8");
+    if (!content.startsWith("const asset=") || !content.includes("webui-component-asset")) continue;
+    files.push(name, content);
+  }
+  return files;
 }
 
 // ── Render API ───────────────────────────────────────────────────────

@@ -10,13 +10,23 @@ import { describe, test, before, after } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { build, render, renderStream, inspect, renderComponentTemplates } from '@microsoft/webui';
 import type { ComponentTemplatesResponse } from '@microsoft/webui';
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 let appDir: string;
 
 before(() => {
+  const addonName = process.platform === 'win32'
+    ? 'webui_node.dll'
+    : process.platform === 'darwin'
+      ? 'libwebui_node.dylib'
+      : 'libwebui_node.so';
+  const workspaceAddon = join(process.cwd(), '..', '..', 'target', 'debug', addonName);
+  if (existsSync(workspaceAddon)) {
+    process.env.WEBUI_ADDON_PATH = workspaceAddon;
+  }
+
   appDir = mkdtempSync(join(tmpdir(), 'webui-test-'));
 
   writeFileSync(join(appDir, 'index.html'), `
@@ -37,6 +47,9 @@ before(() => {
   writeFileSync(join(appDir, 'my-card.html'), '<div class="card"><slot></slot></div>');
   writeFileSync(join(appDir, 'my-card.css'), '.card { border: 1px solid #ccc; }');
   writeFileSync(join(appDir, 'index2.html'), '<my-card>Hello</my-card>');
+  writeFileSync(join(appDir, 'app-shell.html'), '<div></div>');
+  writeFileSync(join(appDir, 'lazy-panel.html'), '<p>{{title}}</p>');
+  writeFileSync(join(appDir, 'index3.html'), '<app-shell></app-shell>');
 });
 
 after(() => {
@@ -58,6 +71,18 @@ describe('build', () => {
     assert.ok(result.stats.componentCount > 0);
     assert.equal(result.cssFiles.length, 2); // [filename, content]
     assert.equal(result.stats.cssFileCount, 1);
+  });
+
+  test('emits static component asset files', () => {
+    const result = build({
+      appDir,
+      entry: 'index3.html',
+      plugin: 'webui',
+      componentAssetRoots: ['lazy-panel'],
+    });
+    assert.equal(result.componentAssetFiles.length, 2); // [filename, content]
+    assert.equal(result.componentAssetFiles[0], 'lazy-panel.webui.js');
+    assert.match(result.componentAssetFiles[1], /webui-component-asset/);
   });
 
   test('throws on missing appDir', () => {

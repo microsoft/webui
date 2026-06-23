@@ -408,7 +408,8 @@ webui build ./src --out ./dist --plugin=webui \
 
 Rust callers can set `BuildOptions::component_asset_roots`; rendered ESM files
 are returned in `BuildResult::component_asset_files` and written by
-`build_to_disk()`.
+`build_to_disk()`. Node callers use `componentAssetRoots` and receive flattened
+`componentAssetFiles` (`[filename, content, ...]`) from `build()`.
 
 ```typescript
 import { settingsAssets } from './lazy-assets.js';

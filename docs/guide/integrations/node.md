@@ -89,7 +89,7 @@ Deno.serve({ port: 3000 }, (req) => {
 
 | Function | Description |
 |----------|-------------|
-| `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, stats }` |
+| `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, componentAssetFiles, stats }` |
 | `render(protocol, state, options?)` | Render protocol with route matching. Returns the rendered HTML as a string |
 | `renderStream(protocol, state, onChunk, options?)` | Render with streaming output. Each HTML fragment is passed to `onChunk` as it is produced |
 | `inspect(protocol)` | Convert protocol to JSON for debugging |
@@ -114,7 +114,8 @@ Deno.serve({ port: 3000 }, (req) => {
 | `dom` | `"shadow" \| "light"` | `"shadow"` | DOM strategy for component rendering |
 | `plugin` | `string` | - | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `string[]` | - | External component sources |
-| `cssFileNameTemplate` | `string` | `"[name].[ext]"` | Link-mode CSS filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
+| `componentAssetRoots` | `string[]` | - | Root component tags emitted as static `.webui.js` ESM assets |
+| `cssFileNameTemplate` | `string` | `"[name].[ext]"` | Emitted asset filename template for Link-mode CSS and component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `cssPublicBase` | `string` | - | Public URL/path prefix for Link-mode CSS hrefs |
 | `legalComments` | `"inline" \| "none"` | `"inline"` | Preserve legal CSS comments inline, or strip all comments |
 
