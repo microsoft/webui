@@ -697,42 +697,323 @@ pub(crate) fn truncate_utf8(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+#[derive(Default)]
+struct SearchText {
+    content: String,
+    headings: Vec<SearchHeading>,
+}
+
+/// Heading metadata emitted into `search-index.json`.
+///
+/// The client search UI uses this to create separate, anchor-linked rows for
+/// matching sections (`Page > Heading`) without re-parsing page HTML at runtime.
+struct SearchHeading {
+    text: String,
+    anchor: String,
+    level: u8,
+}
+
+/// Mutable heading capture state while scanning rendered HTML.
+struct CurrentHeading {
+    text: String,
+    anchor: String,
+    level: u8,
+}
+
+struct HtmlTag<'a> {
+    name: &'a str,
+    is_end: bool,
+}
+
 /// Build a single search-index entry for a page. Strips HTML tags,
-/// collapses whitespace, and truncates to 500 bytes. Called once per
-/// page during descriptor construction in `process_content` so cache
-/// hits carry their entry forward verbatim.
+/// decodes escaped text, captures headings for weighted ranking,
+/// collapses whitespace, and truncates body content to 500 bytes.
 pub(crate) fn build_search_entry(title: &str, path: &str, html: &str) -> Value {
-    let mut clean = String::with_capacity(html.len() / 2);
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => {
-                in_tag = false;
-                clean.push(' ');
-            }
-            _ if !in_tag => clean.push(ch),
-            _ => {}
-        }
-    }
-    // split_whitespace collapses arbitrary runs; we re-emit a single
-    // space between tokens. Avoiding `collect::<Vec<_>>().join(" ")` so
-    // we don't allocate an intermediate vector for sequential access.
-    let mut content = String::with_capacity(clean.len());
-    let mut first = true;
-    for tok in clean.split_whitespace() {
-        if !first {
-            content.push(' ');
-        }
-        content.push_str(tok);
-        first = false;
-    }
+    let search_text = extract_search_text(html);
+    let content = normalize_search_text(&search_text.content);
     let truncated = truncate_utf8(&content, 500);
+    let headings: Vec<Value> = search_text
+        .headings
+        .into_iter()
+        .map(|heading| {
+            json_obj([
+                ("text", Value::String(heading.text)),
+                ("anchor", Value::String(heading.anchor)),
+                (
+                    "level",
+                    Value::Number(serde_json::Number::from(u64::from(heading.level))),
+                ),
+            ])
+        })
+        .collect();
     json_obj([
         ("title", Value::String(title.to_string())),
         ("path", Value::String(path.to_string())),
         ("content", Value::String(truncated.to_string())),
+        ("headings", Value::Array(headings)),
     ])
+}
+
+fn extract_search_text(html: &str) -> SearchText {
+    let mut text = SearchText {
+        content: String::with_capacity(html.len() / 2),
+        headings: Vec::with_capacity(8),
+    };
+    let mut current_heading: Option<CurrentHeading> = None;
+    let mut skip_header_anchor = 0usize;
+    let mut cursor = 0;
+
+    while cursor < html.len() {
+        let remaining = &html[cursor..];
+        let Some(tag_offset) = remaining.find('<') else {
+            push_search_text(
+                &mut text,
+                current_heading.as_mut(),
+                skip_header_anchor,
+                remaining,
+            );
+            break;
+        };
+        let text_end = cursor + tag_offset;
+        push_search_text(
+            &mut text,
+            current_heading.as_mut(),
+            skip_header_anchor,
+            &html[cursor..text_end],
+        );
+        let tag_start = text_end + 1;
+        let Some(tag_len) = html[tag_start..].find('>') else {
+            push_search_text(
+                &mut text,
+                current_heading.as_mut(),
+                skip_header_anchor,
+                &html[text_end..],
+            );
+            break;
+        };
+        let tag_end = tag_start + tag_len;
+        handle_search_tag(
+            &html[tag_start..tag_end],
+            &mut text,
+            &mut current_heading,
+            &mut skip_header_anchor,
+        );
+        cursor = tag_end + 1;
+    }
+
+    text
+}
+
+fn handle_search_tag(
+    raw_tag: &str,
+    text: &mut SearchText,
+    current_heading: &mut Option<CurrentHeading>,
+    skip_header_anchor: &mut usize,
+) {
+    if let Some(tag) = parse_html_tag(raw_tag) {
+        if tag.is_end {
+            handle_end_tag(tag.name, text, current_heading, skip_header_anchor);
+        } else {
+            handle_start_tag(tag.name, raw_tag, current_heading, skip_header_anchor);
+        }
+    }
+    push_search_space(text, current_heading.as_mut(), *skip_header_anchor);
+}
+
+fn handle_start_tag(
+    name: &str,
+    raw_tag: &str,
+    current_heading: &mut Option<CurrentHeading>,
+    skip_header_anchor: &mut usize,
+) {
+    if let Some(level) = heading_level(name) {
+        *current_heading = Some(CurrentHeading {
+            text: String::with_capacity(64),
+            anchor: attr_value(raw_tag, "id").unwrap_or("").to_string(),
+            level,
+        });
+    } else if name.eq_ignore_ascii_case("a") && raw_tag.contains("header-anchor") {
+        *skip_header_anchor += 1;
+    }
+}
+
+fn handle_end_tag(
+    name: &str,
+    text: &mut SearchText,
+    current_heading: &mut Option<CurrentHeading>,
+    skip_header_anchor: &mut usize,
+) {
+    if name.eq_ignore_ascii_case("a") && *skip_header_anchor > 0 {
+        *skip_header_anchor -= 1;
+    }
+    if heading_level(name).is_some() {
+        if let Some(raw_heading) = current_heading.take() {
+            let heading_text = normalize_search_text(&raw_heading.text);
+            if !heading_text.is_empty() {
+                text.headings.push(SearchHeading {
+                    text: heading_text,
+                    anchor: raw_heading.anchor,
+                    level: raw_heading.level,
+                });
+            }
+        }
+    }
+}
+
+fn parse_html_tag(raw: &str) -> Option<HtmlTag<'_>> {
+    let mut tag = raw.trim_start();
+    if tag.starts_with('!') || tag.starts_with('?') {
+        return None;
+    }
+    let is_end = tag.starts_with('/');
+    if is_end {
+        tag = tag[1..].trim_start();
+    }
+
+    let mut name_end = 0;
+    for (idx, byte) in tag.bytes().enumerate() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' {
+            name_end = idx + 1;
+        } else {
+            break;
+        }
+    }
+    if name_end == 0 {
+        return None;
+    }
+    Some(HtmlTag {
+        name: &tag[..name_end],
+        is_end,
+    })
+}
+
+/// Return a heading level for `h1` through `h6`.
+///
+/// The scanner works on tag names from already-rendered markdown, so an ASCII
+/// byte check is sufficient and avoids allocating a lowercased copy.
+fn heading_level(name: &str) -> Option<u8> {
+    let bytes = name.as_bytes();
+    if bytes.len() == 2 && bytes[0].eq_ignore_ascii_case(&b'h') && (b'1'..=b'6').contains(&bytes[1])
+    {
+        Some(bytes[1] - b'0')
+    } else {
+        None
+    }
+}
+
+/// Extract an HTML attribute value from a rendered start tag without a DOM
+/// parser.
+///
+/// Search indexing runs once per page at build time, but it still avoids regex
+/// and allocation-heavy parsing. This helper handles quoted and unquoted values
+/// because heading IDs are generated as ordinary HTML attributes.
+fn attr_value<'a>(raw_tag: &'a str, attr_name: &str) -> Option<&'a str> {
+    let bytes = raw_tag.as_bytes();
+    let mut cursor = 0;
+
+    while cursor < bytes.len() {
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+
+        let name_start = cursor;
+        while bytes.get(cursor).is_some_and(|b| is_attr_name_byte(*b)) {
+            cursor += 1;
+        }
+        if name_start == cursor {
+            cursor += 1;
+            continue;
+        }
+        let name = &raw_tag[name_start..cursor];
+
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        if bytes.get(cursor) != Some(&b'=') {
+            continue;
+        }
+        cursor += 1;
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+
+        let (value_start, value_end) = attr_value_range(raw_tag, cursor);
+        if name.eq_ignore_ascii_case(attr_name) {
+            return Some(&raw_tag[value_start..value_end]);
+        }
+        cursor = value_end.saturating_add(1);
+    }
+
+    None
+}
+
+fn is_attr_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':')
+}
+
+fn attr_value_range(raw_tag: &str, cursor: usize) -> (usize, usize) {
+    let bytes = raw_tag.as_bytes();
+    match bytes.get(cursor).copied() {
+        Some(b'"' | b'\'') => {
+            let quote = bytes[cursor];
+            let value_start = cursor + 1;
+            let value_end = raw_tag[value_start..]
+                .find(char::from(quote))
+                .map_or(raw_tag.len(), |offset| value_start + offset);
+            (value_start, value_end)
+        }
+        Some(_) => {
+            let value_start = cursor;
+            let value_end = raw_tag[value_start..]
+                .find(char::is_whitespace)
+                .map_or(raw_tag.len(), |offset| value_start + offset);
+            (value_start, value_end)
+        }
+        None => (raw_tag.len(), raw_tag.len()),
+    }
+}
+
+fn push_search_text(
+    text: &mut SearchText,
+    current_heading: Option<&mut CurrentHeading>,
+    skip_header_anchor: usize,
+    value: &str,
+) {
+    if skip_header_anchor > 0 {
+        return;
+    }
+    text.content.push_str(value);
+    if let Some(heading) = current_heading {
+        heading.text.push_str(value);
+    }
+}
+
+fn push_search_space(
+    text: &mut SearchText,
+    current_heading: Option<&mut CurrentHeading>,
+    skip_header_anchor: usize,
+) {
+    if skip_header_anchor > 0 {
+        return;
+    }
+    text.content.push(' ');
+    if let Some(heading) = current_heading {
+        heading.text.push(' ');
+    }
+}
+
+fn normalize_search_text(raw: &str) -> String {
+    let decoded = html_escape::decode_html_entities(raw);
+    let mut normalized = String::with_capacity(decoded.len());
+    let mut first = true;
+    for token in decoded.split_whitespace() {
+        if !first {
+            normalized.push(' ');
+        }
+        normalized.push_str(token);
+        first = false;
+    }
+    normalized
 }
 
 fn is_component_ts_file(path: &Path) -> bool {
@@ -1102,6 +1383,34 @@ mod tests {
             "only hydration entry files should be bundled"
         );
         Ok(())
+    }
+
+    #[test]
+    fn build_search_entry_decodes_code_text_and_captures_headings() {
+        let entry = build_search_entry(
+            "`<for>` Loop Directive",
+            "/guide/concepts/directives/for/",
+            r##"<h1 id="for"><code>&lt;for&gt;</code> Loop Directive <a class="header-anchor" href="#for">#</a></h1><p>Use <code>&lt;for&gt;</code> loops.</p><h2 id="syntax">Syntax <a class="header-anchor" href="#syntax">#</a></h2><h3 id="nested">Nested Search <a class="header-anchor" href="#nested">#</a></h3>"##,
+        );
+
+        assert_eq!(entry["title"].as_str(), Some("`<for>` Loop Directive"));
+        assert_eq!(
+            entry["content"].as_str(),
+            Some("<for> Loop Directive Use <for> loops. Syntax Nested Search")
+        );
+        let Some(headings) = entry["headings"].as_array() else {
+            panic!("headings should be an array: {entry:?}");
+        };
+        assert_eq!(headings.len(), 3);
+        assert_eq!(headings[0]["text"].as_str(), Some("<for> Loop Directive"));
+        assert_eq!(headings[0]["anchor"].as_str(), Some("for"));
+        assert_eq!(headings[0]["level"].as_u64(), Some(1));
+        assert_eq!(headings[1]["text"].as_str(), Some("Syntax"));
+        assert_eq!(headings[1]["anchor"].as_str(), Some("syntax"));
+        assert_eq!(headings[1]["level"].as_u64(), Some(2));
+        assert_eq!(headings[2]["text"].as_str(), Some("Nested Search"));
+        assert_eq!(headings[2]["anchor"].as_str(), Some("nested"));
+        assert_eq!(headings[2]["level"].as_u64(), Some(3));
     }
 
     // --- fxhash ----------------------------------------------------------

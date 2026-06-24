@@ -42,6 +42,7 @@ rayon = { workspace = true }
 
 # Utilities
 thiserror = { workspace = true }
+html-escape = { workspace = true }
 
 # Dev server (`webui-press serve`)
 microsoft-webui-dev-server = { path = "../webui-dev-server", version = "0.0.17" }
