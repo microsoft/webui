@@ -82,6 +82,49 @@ webui inspect <FILE>
 webui inspect ./dist/protocol.bin
 ```
 
+### `webui desktop`
+
+Run desktop commands through the desktop sidecar backend. `webui` remains the
+only user-facing CLI; the sidecar is resolved automatically from the installed
+desktop support package, next to the `webui` binary, or from the workspace during
+local development. Set `WEBUI_DESKTOP_BINARY` only to override sidecar discovery.
+
+```bash
+webui desktop build ./src \
+  --state ./data/state.json \
+  --servedir ./dist \
+  --out ./desktop-bundle \
+  --plugin webui \
+  --devtools
+```
+
+The sidecar currently creates immutable desktop bundles with `protocol.bin`,
+copied assets, startup state, `manifest.webui-desktop.json`, and SHA-256
+integrity hashes. Native window backends and platform package emitters are
+implemented in the desktop sidecar so the default CLI stays lean.
+
+```bash
+webui desktop package ./my-app --target macos-app --out ./packages
+webui desktop package ./desktop-bundle --target macos-app --out ./packages \
+  --runner ./target/release/my-desktop-host
+```
+
+The Rust packager currently writes runnable macOS `.app` bundles and portable
+folder layouts. For app roots, the sidecar reads `webuiDesktop` from
+`package.json`, runs configured web build scripts, builds the app-specific Cargo
+runner crate, stages non-generated assets, builds the bundle, and packages the
+runner-backed app. Use `--runner` for lower-level existing-bundle flows with
+route providers or typed IPC commands; omitting it packages the generic sidecar
+for file-backed/static seed-state bundles. Installer targets return actionable
+missing-tool diagnostics until the platform packagers are enabled.
+
+Use `--devtools` on desktop build/run to make development webviews inspectable.
+On macOS, inspect from Safari's Develop menu.
+
+Rust desktop apps that need dynamic route data should use
+`webui_desktop::DesktopApp::builder(...).route(...)` in their host binary. The
+CLI `--state` flag is a file-backed fallback for simple demos.
+
 ## App Layout
 
 ```

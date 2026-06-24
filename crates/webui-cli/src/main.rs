@@ -31,6 +31,7 @@ fn main() {
 
     let result = match command {
         Commands::Build(args) => commands::build::execute(args),
+        Commands::Desktop(args) => commands::desktop::execute(args),
         Commands::Inspect(args) => commands::inspect::execute(args),
         Commands::Serve(args) => commands::serve::execute(args),
     };

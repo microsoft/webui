@@ -44,6 +44,12 @@ pub enum CliError {
         /// The path that could not be read.
         path: String,
     },
+
+    /// The desktop sidecar backend could not be launched.
+    DesktopBinaryNotFound {
+        /// The binary name or path that failed to launch.
+        binary: String,
+    },
 }
 
 impl fmt::Display for CliError {
@@ -56,6 +62,9 @@ impl fmt::Display for CliError {
                 write!(f, "Port {port} on 127.0.0.1 is already in use")
             }
             CliError::EntryReadFailed { path } => write!(f, "Failed to read entry file: {path}"),
+            CliError::DesktopBinaryNotFound { binary } => {
+                write!(f, "Desktop sidecar backend not found: {binary}")
+            }
         }
     }
 }
@@ -77,6 +86,9 @@ impl CliError {
             CliError::EntryReadFailed { .. } => {
                 "Use --entry <file> to specify a different entry file"
             }
+            CliError::DesktopBinaryNotFound { .. } => {
+                "Install WebUI desktop support or set WEBUI_DESKTOP_BINARY to the webui-desktop sidecar path"
+            }
         }
     }
 
@@ -89,7 +101,8 @@ impl CliError {
             CliError::AppFolderNotFound { .. }
             | CliError::StateFileNotFound { .. }
             | CliError::ServeDirNotFound { .. }
-            | CliError::EntryReadFailed { .. } => 66,
+            | CliError::EntryReadFailed { .. }
+            | CliError::DesktopBinaryNotFound { .. } => 66,
             // A required service (the port) is unavailable → EX_UNAVAILABLE.
             CliError::PortInUse { .. } => 69,
         }

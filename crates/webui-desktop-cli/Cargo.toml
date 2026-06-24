@@ -1,0 +1,72 @@
+[package]
+name = "microsoft-webui-desktop-cli"
+description = "Desktop sidecar backend invoked by the WebUI CLI"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["webui", "desktop", "webview", "packaging", "sidecar"]
+categories = ["gui", "web-programming"]
+
+[[bin]]
+name = "webui-desktop"
+path = "src/main.rs"
+
+[lib]
+name = "webui_desktop_runner"
+path = "src/lib.rs"
+
+[dependencies]
+microsoft-webui = { path = "../webui", version = "0.0.17", features = ["cli"] }
+microsoft-webui-desktop = { path = "../webui-desktop", version = "0.0.17" }
+microsoft-webui-tokens = { path = "../webui-tokens", version = "0.0.17" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+console = { workspace = true }
+expand-tilde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.4", features = ["exception"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSGraphics", "NSResponder", "NSRunningApplication", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSDictionary", "NSURL", "NSURLRequest", "NSURLResponse", "NSString", "NSObject", "NSNotification", "NSGeometry"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-app-kit", "objc2-core-foundation", "block2", "WKURLSchemeHandler", "WKURLSchemeTask", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKNavigation", "WKNavigationAction", "WKNavigationDelegate"] }
+block2 = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = { workspace = true }
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-core = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk4 = { workspace = true, default-features = false, features = ["v4_10"] }
+webkit6 = { workspace = true, default-features = false, features = ["v2_42"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+perf = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+large_enum_variant = "deny"
+large_stack_arrays = "deny"
+large_futures = "deny"
+needless_collect = "deny"
+redundant_clone = "deny"
+unnecessary_to_owned = "deny"
+inefficient_to_string = "deny"
+manual_memcpy = "deny"
+naive_bytecount = "deny"
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+cast_possible_wrap = "deny"
+rc_buffer = "deny"
+large_types_passed_by_value = "deny"
+vec_box = "deny"
+unnecessary_box_returns = "deny"

@@ -651,6 +651,98 @@ webui inspect ./dist/protocol.bin
 webui inspect ./dist/protocol.bin | jq '.fragments | keys'
 ```
 
+### Desktop
+
+```bash
+webui desktop build ./src \
+  --state ./data/state.json \
+  --servedir ./dist \
+  --out ./desktop-bundle \
+  --plugin=webui \
+  --devtools
+```
+
+`webui` is the only public CLI. `webui desktop` delegates to the separate
+`webui-desktop` sidecar backend so the base CLI does not link native webview
+dependencies. Desktop support provides that sidecar; set `WEBUI_DESKTOP_BINARY`
+only to override sidecar discovery.
+
+Desktop bundles contain:
+
+| File | Description |
+|------|-------------|
+| `protocol.bin` | Compiled WebUI protocol |
+| `assets/` | Generated CSS, copied static assets, and the desktop IPC helper |
+| `state.json` | Optional startup state |
+| `manifest.webui-desktop.json` | App metadata, window defaults, bundle paths, and integrity hashes |
+
+Desktop runtime uses system webviews only: WebView2 on Windows, WKWebView on
+macOS, and GTK4/WebKitGTK 6 on Linux. Do not use Electron, Node, bundled
+Chromium, or a localhost HTTP server for desktop mode.
+Link CSS remains the default desktop CSS strategy. Pass `--theme` when an app
+uses design tokens.
+Linux builds require GTK4/WebKitGTK 6 target packages or a configured sysroot.
+Windows uses the target-gated WebView2 Win32 backend and should be runtime-tested
+on Windows with the WebView2 Runtime installed.
+
+Pass `--devtools` for inspectable development builds. On macOS, use Safari's
+Develop menu to inspect the WKWebView.
+
+Rust desktop apps should provide dynamic route data in Rust:
+
+```rust
+let runtime = webui_desktop::DesktopApp::builder(build_options)
+    .state_value(seed_state)
+    .route("/contacts/:id", |ctx| {
+        Ok(contact_detail_state(ctx.param("id").unwrap_or("")))
+    })?
+    .build()?;
+```
+
+Route providers feed both full HTML renders and WebUI router partial requests.
+Provider errors are surfaced as desktop runtime errors; do not implement silent
+fallbacks to stale seed state. Valid routes may contain dots, so route/asset
+logic must use asset lookup first and protocol route matching second.
+For app mutations, prefer Rust custom-protocol API handlers such as
+`/api/contacts/:id` so existing browser code can keep using `fetch("./api")`
+while the desktop host mutates Rust-owned state.
+
+Package a Rust-first desktop app root in one command:
+
+```bash
+webui desktop package ./my-app --target macos-app --out ./packages
+webui desktop package ./my-app --target macos-app --out ./packages \
+  --theme @microsoft/webui-examples-theme
+webui desktop package ./my-app --target macos-app --out ./packages \
+  --icon ./desktop/app.icns
+```
+
+The app root should define `webuiDesktop` in `package.json` with app/source,
+state, assets, theme, plugin, runnerCrate, buildScripts, and package metadata.
+The sidecar runs those scripts, builds the runner crate, stages non-generated
+assets, builds the bundle, and packages the app-specific runner.
+Use package `--theme` to override `webuiDesktop.theme` for a one-off package.
+Use package `--icon` to override `webuiDesktop.icon`; macOS uses `.icns` icons as
+`CFBundleIconFile`, and portable layouts copy the icon into resources.
+
+Existing bundle packaging:
+
+```bash
+webui desktop package ./desktop-bundle --target macos-app --out ./packages \
+  --runner ./target/release/my-desktop-host
+```
+
+Supported Rust-written outputs today: runnable `macos-app` and portable folder
+layouts. Existing bundles for Rust route/IPC apps should package an app-specific
+runner with `--runner`; the generic sidecar runner is only for file-backed/static
+seed-state bundles. Installer targets return actionable missing-tool diagnostics
+until their platform packagers are enabled.
+
+The manifest `shell` object is the extension point for app icons, menus, Windows
+jump lists, popovers, and download handling. Keep shell features Rust-owned and
+capability-gated by backend; do not add a localhost server or Electron-style
+background runtime.
+
 ## Build Diagnostics & Error Output
 
 Authoring mistakes fail `webui build` with a structured, actionable diagnostic

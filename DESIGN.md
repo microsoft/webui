@@ -1504,6 +1504,8 @@ webui/
 │   ├── webui/                # Programmatic library API (build, inspect, re-exports)
 │   ├── webui-cli/            # CLI build tool (binary: "webui")
 │   ├── webui-dev-server/     # Shared dev-server toolkit (watcher, livereload, static serving) used by webui-cli and webui-press
+│   ├── webui-desktop/        # Rust-native desktop runtime primitives (custom protocol, protobuf IPC, packaging model)
+│   ├── webui-desktop-cli/    # Desktop sidecar backend (binary: "webui-desktop")
 │   ├── webui-discovery/      # External component discovery (npm, paths)
 │   ├── webui-expressions/    # Expression evaluation engine
 │   ├── webui-ffi/            # C-compatible FFI bindings
@@ -1547,6 +1549,13 @@ webui-cli ──────► webui (library) ◄────── webui-node
                     ├── webui-protocol        └── serde_json
                     └── webui-discovery
 
+webui-cli ──────► webui-desktop-cli (sidecar process, no webview deps in webui-cli)
+                       │
+                       ├── webui-desktop
+                       ├── webui
+                       ├── webui-handler
+                       └── webui-protocol
+
 webui-ffi ──────► webui-handler ◄────── webui-wasm (handler feature)
                   webui-parser       ┌──── webui-wasm (parser feature)
                   webui-protocol     └──── webui-wasm (all/default feature)
@@ -1586,6 +1595,223 @@ The `@microsoft/webui` npm package follows the esbuild single-package model:
 - `bin: { "webui": "bin/webui" }` — CLI binary via platform-specific `optionalDependencies`
 - `main: "lib/main.js"` — Programmatic API that loads the `.node` native addon directly
 - WASM fallback for render when native addon is unavailable (one-time warning logged)
+
+### Desktop Distribution
+
+The `webui desktop` command runs and packages WebUI applications in a
+Rust-native desktop shell without Electron, Node, or a bundled JavaScript
+runtime. `webui` is the only public CLI. Desktop work is implemented by a
+separate `webui-desktop` sidecar backend so the default `webui` CLI does not
+link webview dependencies. The base CLI exposes `webui desktop ...`, resolves
+and executes the sidecar backend, and returns a typed CLI error with an install
+hint if desktop support is unavailable.
+
+#### Runtime backend
+
+Desktop runtime uses direct platform backends:
+
+- Windows: WebView2.
+- macOS: WKWebView.
+- Linux: GTK4 with WebKitGTK 6.
+
+The shell registers a custom app protocol and loads the initial page from that
+origin instead of starting a localhost HTTP server. Platform engines expose
+custom origins differently, so desktop client code must use relative URLs and
+`location.origin` rather than hard-coded `webui://app` URLs. Navigation is
+denied by default unless the target stays inside the allowed app origin or is
+explicitly allowed by a registered capability.
+
+Linux builds require GTK4 and WebKitGTK 6 so protobuf IPC POST bodies are
+available without depending on unmaintained GTK3 Rust bindings. CI and developer
+setup must install the platform WebKitGTK/GTK packages explicitly; the xtask
+helpers may auto-install Rust tooling, but must not auto-install system
+packages.
+
+Backend dependencies are target-specific so the default `webui` CLI and
+non-desktop platforms stay lean. macOS links only the objc2 WebKit/AppKit stack.
+Linux links GTK4/WebKitGTK 6 only on Linux. Windows links WebView2 only on
+Windows. The runtime still uses the same `DesktopRuntime` dispatcher on every
+platform: no localhost server, one shared protocol/state/asset graph, bounded
+asset reads, and route/API/IPC dispatch through the custom app origin.
+Linux cross-compilation requires a configured GTK/WebKitGTK sysroot and
+`PKG_CONFIG_SYSROOT_DIR`/`PKG_CONFIG_PATH`; this is a platform dependency, not
+something xtask may install. The Windows WebView2 dependency and Win32
+controller/message-loop backend are target-gated and share the same
+`DesktopRuntime` dispatcher; runtime validation still belongs on Windows CI or a
+Windows developer machine with the WebView2 Runtime installed.
+
+#### Desktop command surface
+
+```bash
+webui desktop run [APP] --state <FILE> [--servedir <DIR>] [--watch] [shared build flags] [window flags] [--ipc <SCHEMA>]
+webui desktop build [APP] --out <BUNDLE_DIR> --state <FILE> [--servedir <DIR>] [shared build flags] [window/package flags] [--ipc <SCHEMA>]
+webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET|all>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--release] [--bundle-out <DIR>] [--no-web-build] [signing/package flags]
+```
+
+`run` builds from source paths, renders the startup HTML in process, creates the
+native window, and loads the app protocol URL. With `--watch`, it rebuilds and
+rerenders changed templates, component sources, state, and static assets, then
+reloads the webview through native reload or script-evaluation APIs. It must not
+start an HTTP server or browser polling loop.
+
+`build` creates an immutable desktop bundle containing:
+
+- `protocol.bin`, generated CSS, copied static assets, and the desktop IPC
+  helper under `assets/`.
+- Optional seed `state.json`. Dynamic desktop apps should treat this as seed
+  data only; route-scoped data comes from Rust route providers.
+- A desktop manifest with app id, app name, version, publisher, window defaults,
+  WebUI build options, IPC schema hashes, asset roots, capabilities, and package
+  metadata.
+- Generated IPC client/stub artifacts when an IPC schema is provided.
+- Integrity hashes for packaged protocol and assets.
+
+`package` is the one-command Rust-first packaging entry point. When the input is
+a WebUI app root, the sidecar reads `webuiDesktop` metadata from `package.json`,
+runs configured web build scripts, builds the app-specific Cargo runner crate,
+stages non-generated static assets, builds the desktop bundle, and emits native
+artifacts with that runner. When the input is an existing desktop bundle, the
+command remains a lower-level packager and accepts `--runner <PATH>` for the
+app-specific executable. The generic sidecar runner is only for file-backed or
+static seed-state bundles.
+
+Example app metadata:
+
+```json
+{
+  "webuiDesktop": {
+    "app": "src",
+    "state": "data/state.json",
+    "assets": "dist",
+    "theme": "@microsoft/webui-examples-theme",
+    "icon": "desktop/app.icns",
+    "plugin": "webui",
+    "runnerCrate": "contact-book-desktop",
+    "buildScripts": ["build:deps", "build:client"],
+    "appId": "com.microsoft.webui.contactbook",
+    "appName": "Contact Book Manager",
+    "appVersion": "1.0.0",
+    "title": "Contact Book Manager",
+    "width": 1200,
+    "height": 800,
+    "devtools": true
+  }
+}
+```
+
+If `runnerCrate` is omitted, the sidecar tries to infer it from
+`<APP_ROOT>/desktop/Cargo.toml`. App-root packaging copies non-generated assets
+from `assets` into an internal staging directory and excludes generated CSS,
+`protocol.bin`, generated startup HTML, manifest, seed state, and IPC helper
+files so WebUI-owned outputs cannot collide with static assets.
+The CLI `--theme` flag overrides `webuiDesktop.theme` for one-off packaging.
+
+#### Shell extension model
+
+The desktop bundle manifest carries a runtime-neutral `shell` object. It is the
+stable extension point for native shell features without coupling app code to a
+particular OS API:
+
+- `iconPath` - bundle-relative app icon path. macOS uses `.icns` as
+  `CFBundleIconFile`; portable layouts copy the icon next to bundle resources.
+- `menus` - declarative native menu groups and menu items. Items dispatch to
+  allowlisted desktop IPC commands.
+- `jumpList` - Windows jump-list entries targeting app routes or external URLs.
+- `popovers` - policy for child popup windows used by popovers/tool windows.
+- `downloads` - download policy and optional IPC command for app-controlled
+  downloads.
+
+Backends must expose only capabilities they can implement safely. Unsupported
+shell features are ignored or rejected with actionable diagnostics at build or
+launch time. Shell extensions must not add background servers, global mutable
+state, or persistent caches to the render hot path.
+
+- `macos-app`
+- `windows-portable`
+- `windows-msi`
+- `windows-msix`
+- `linux-portable`
+- `linux-appimage`
+- `linux-deb`
+- `linux-rpm`
+- `all`
+
+Packaging is Rust-first and build-time only. The current Rust implementation
+writes macOS `.app` and portable folder layouts directly, validates that output
+paths do not overlap app/bundle/state/asset/runner inputs before deleting
+anything, and returns actionable diagnostics for installer targets that still
+require platform packagers. Missing system tools must produce actionable errors;
+system packages, signing certificates, and secrets are never auto-installed or
+logged.
+
+#### Desktop IPC
+
+Desktop IPC is protobuf-first. The app shell serves a reserved custom-protocol
+endpoint for IPC requests; JavaScript sends protobuf request bytes via
+`fetch()` and receives protobuf response bytes. Platform string-only webview IPC
+channels such as `window.ipc.postMessage` are not used for payload bytes.
+
+The stable envelope contains:
+
+- protocol version
+- request id
+- method identifier
+- payload bytes
+- response payload bytes or structured error
+
+Rust dispatch is allowlisted. Unknown methods fail closed. Payload size limits
+are enforced before decoding. Errors are structured protobuf frames and never
+panics. Development-only IPC methods are disabled in packaged builds.
+
+#### Rust route/state providers
+
+Desktop applications that need dynamic route data should use the Rust host API
+instead of baking route data into static files. Developers register route state
+providers in their desktop host:
+
+```rust
+let runtime = webui_desktop::DesktopApp::builder(build_options)
+    .state_value(seed_state)
+    .asset_root("./dist")
+    .route("/", |ctx| {
+        Ok(json!({ "page": "dashboard", "recentContacts": recent_contacts() }))
+    })?
+    .route("/contacts/:id", |ctx| {
+        let id = ctx.param("id").ok_or_else(|| missing_id())?;
+        Ok(contact_detail_state(id))
+    })?
+    .build()?;
+```
+
+Route providers run inside the Rust desktop host for full HTML renders and
+`@microsoft/webui-router` partial requests. They receive the request path,
+route parameters, and seed state, and return route-scoped JSON state. This keeps
+state ownership in Rust, avoids duplicated static route HTML, and lets router
+navigation use the same protocol path as browser/server deployments.
+
+If a route provider returns an error, the desktop runtime surfaces that error;
+it must not silently fall back to seed state. Valid route paths may contain `.`
+segments, so asset lookup happens before protocol route-chain matching rather
+than using filename heuristics.
+
+Rust desktop hosts may also register custom-protocol API handlers for paths such
+as `/api/contacts/:id`. This lets existing browser code keep using `fetch("./api")`
+while the packaged app services create/update/delete/favorite mutations against
+Rust-owned in-memory state.
+
+#### Desktop performance and memory constraints
+
+- No localhost HTTP server in desktop mode.
+- No Electron, Node, or bundled Chromium.
+- No per-navigation template rebuild.
+- Share protocol, route indexes, CSS maps, and immutable asset metadata by
+  reference.
+- Serve packaged assets from the bundle/resource root only; cap or stream large
+  static reads.
+- Packaged builds must not include watchers, HMR scripts, devtools, or debug IPC
+  methods unless explicitly built as a development bundle.
+- Measure cold startup phases, first paint where automatable, packaged app
+  startup, steady-state RSS after first paint, binary size, and bundle size.
 
 ### .NET / NuGet Distribution
 

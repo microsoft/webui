@@ -1,0 +1,34 @@
+[package]
+name = "microsoft-webui-desktop"
+description = "Rust-native desktop runtime primitives for WebUI applications"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["webui", "desktop", "webview", "ipc", "ssr"]
+categories = ["gui", "web-programming"]
+
+[lib]
+name = "webui_desktop"
+
+[dependencies]
+microsoft-webui = { path = "../webui", version = "0.0.17", features = ["cli"] }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.17" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.17" }
+microsoft-webui-tokens = { path = "../webui-tokens", version = "0.0.17" }
+mime_guess = { workspace = true }
+percent-encoding = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+syntax = "proto3";
+
+package webui.desktop;
+
+message DesktopIpcRequest {
+  uint32 version = 1;
+  uint64 request_id = 2;
+  string method = 3;
+  bytes payload = 4;
+}
+
+message DesktopIpcResponse {
+  uint32 version = 1;
+  uint64 request_id = 2;
+
+  oneof result {
+    bytes payload = 3;
+    DesktopIpcError error = 4;
+  }
+}
+
+message DesktopIpcError {
+  string code = 1;
+  string message = 2;
+  string help = 3;
+}

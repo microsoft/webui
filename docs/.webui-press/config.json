@@ -144,6 +144,10 @@
             "link": "/guide/integrations/node"
           },
           {
+            "text": "Desktop",
+            "link": "/guide/integrations/desktop"
+          },
+          {
             "text": "Electron",
             "link": "/guide/integrations/electron"
           },

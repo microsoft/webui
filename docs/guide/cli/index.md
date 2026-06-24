@@ -283,6 +283,92 @@ webui serve ./my-app --state ./state.json --theme ./themes/dark.json --watch
 | `/*` | Static files from `--servedir` (when provided) |
 | `/hmr` | HMR version endpoint (polling backend, only when `--watch`) |
 
+### `webui desktop`
+
+Run desktop tooling through `webui`, the only public CLI. Desktop support is
+implemented by a separate `webui-desktop` sidecar backend so normal
+build/serve/inspect installs stay lean and do not link native webview
+dependencies. The sidecar is resolved automatically from the installed desktop
+support package, next to the `webui` binary, or from the workspace during local
+development; set `WEBUI_DESKTOP_BINARY` only to override discovery.
+
+```bash
+webui desktop build [APP] --out <BUNDLE_DIR> [--state <FILE>] [--servedir <DIR>] [--theme <VALUE>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]...
+webui desktop package <APP_ROOT|BUNDLE_DIR> [--target <TARGET>] --out <OUT_DIR> [--theme <VALUE>] [--icon <FILE>] [--runner <PATH>] [--runner-crate <NAME>] [--release] [--bundle-out <DIR>] [--no-web-build]
+```
+
+**Arguments:**
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `APP` | Path to the app folder | `.` |
+| `--out <BUNDLE_DIR>` | Output desktop bundle directory | *(required)* |
+| `--state <FILE>` | Startup state JSON copied into the bundle | *(optional)* |
+| `--servedir <DIR>` | Static assets copied into the bundle | *(optional)* |
+| `--theme <VALUE>` | Design token theme, as a file path or npm package name | *(optional)* |
+| `--app-id <ID>` | Reverse-DNS app identifier | `com.microsoft.webui.app` |
+| `--app-name <NAME>` | Human-readable app name | `WebUI App` |
+| `--app-version <VERSION>` | App version stored in the bundle manifest | `0.0.0` |
+| `--publisher <NAME>` | Publisher stored in the bundle manifest | `Microsoft` |
+| `--title <TITLE>` | Default desktop window title | `WebUI` |
+| `--width <PX>` | Default desktop window width | `1200` |
+| `--height <PX>` | Default desktop window height | `800` |
+| `--devtools` | Enable web inspector/devtools for the packaged desktop webview | `false` |
+| `--theme <VALUE>` | Theme override for app-root packaging | `webuiDesktop.theme` |
+| `--icon <FILE>` | App icon override for app-root packaging | `webuiDesktop.icon` |
+| `--runner <PATH>` | App-specific runner executable for existing bundle packaging | sidecar runner |
+| `--runner-crate <NAME>` | Cargo package name for app-root packaging | inferred from `desktop/Cargo.toml` |
+| `--release` | Build the app-specific runner with `cargo build --release` | `false` |
+| `--bundle-out <DIR>` | Keep the intermediate desktop bundle at this path | temporary bundle |
+| `--no-web-build` | Skip configured `webuiDesktop.buildScripts` | `false` |
+
+The bundle contains `protocol.bin`, generated CSS, copied static assets under
+`assets/`, optional `state.json`, `manifest.webui-desktop.json`, and SHA-256
+integrity hashes. Native window backends use system webviews only: WebView2 on
+Windows, WKWebView on macOS, and GTK4/WebKitGTK 6 on Linux. Electron, Node,
+bundled Chromium, and localhost HTTP servers are not part of desktop mode.
+
+```bash
+webui desktop build ./src \
+  --state ./data/state.json \
+  --servedir ./dist \
+  --out ./desktop-bundle \
+  --plugin webui \
+  --theme @my-org/brand-tokens \
+  --devtools \
+  --app-id com.example.todo \
+  --app-name "Todo Desktop"
+```
+
+On macOS, inspect the app from Safari's Develop menu. Enable it with Safari >
+Settings > Advanced > Show features for web developers.
+
+Package a Rust-first desktop app root in one command:
+
+```bash
+webui desktop package ./my-app --target macos-app --out ./packages
+```
+
+For app roots, `webui desktop package` reads `webuiDesktop` from `package.json`,
+runs configured web build scripts, builds the app-specific Cargo runner crate,
+stages non-generated assets, builds the bundle, and packages the runner-backed
+app. Pass `--theme` to override `webuiDesktop.theme` for a one-off package.
+Pass `--icon` to override `webuiDesktop.icon`; macOS packages use `.icns` icons
+as `CFBundleIconFile`, and portable layouts copy the icon into resources.
+Existing bundle packaging remains available:
+
+```bash
+webui desktop package ./desktop-bundle --target macos-app --out ./packages \
+  --runner ./target/release/my-desktop-host
+```
+
+The current Rust packager writes runnable macOS `.app` bundles and portable
+folder layouts. Omitting `--runner` for an existing bundle packages the generic
+sidecar and is appropriate only for file-backed/static seed-state bundles.
+Installer targets (`windows-msi`, `windows-msix`, `linux-appimage`, `linux-deb`,
+`linux-rpm`) return actionable tooling diagnostics until their platform packagers
+are enabled.
+
 ## Error output and exit codes
 
 When a template has an authoring mistake, the CLI prints a structured diagnostic with a stable error code, the source location, the offending snippet, and an actionable `help:` line:

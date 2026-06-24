@@ -1,0 +1,19 @@
+[package]
+name = "contact-book-desktop"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "contact-book-desktop"
+path = "src/main.rs"
+
+[dependencies]
+microsoft-webui = { path = "../../../../crates/webui", features = ["cli"] }
+microsoft-webui-desktop = { path = "../../../../crates/webui-desktop" }
+microsoft-webui-desktop-cli = { path = "../../../../crates/webui-desktop-cli" }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

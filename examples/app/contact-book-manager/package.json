@@ -14,15 +14,31 @@
     "start": "cargo xtask dev contact-book-manager",
     "test": "playwright test",
     "test:update-snapshots": "playwright test --update-snapshots"
-   },
-   "imports": {
+  },
+  "webuiDesktop": {
+    "app": "src",
+    "state": "data/state.json",
+    "assets": "dist",
+    "theme": "@microsoft/webui-examples-theme",
+    "plugin": "webui",
+    "runnerCrate": "contact-book-desktop",
+    "buildScripts": ["build:deps", "build:client"],
+    "appId": "com.microsoft.webui.contactbook",
+    "appName": "Contact Book Manager",
+    "appVersion": "1.0.0",
+    "title": "Contact Book Manager",
+    "width": 1200,
+    "height": 800,
+    "devtools": true
+  },
+  "imports": {
     "#atoms/*": "./src/atoms/*",
     "#molecules/*": "./src/molecules/*",
     "#organisms/*": "./src/organisms/*",
     "#pages/*": "./src/pages/*",
     "#app/*": "./src/cb-app/*",
     "#api": "./src/api.ts"
-   },
+  },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^5.1.0"

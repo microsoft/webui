@@ -7,6 +7,7 @@ members = [
     "examples/integration/streaming-browser-bench/server",
     "examples/app/commerce/server",
     "examples/demo/server",
+    "examples/app/contact-book-manager/desktop",
 ]
 resolver = "2"
 
@@ -68,6 +69,12 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
 ] }
+block2 = "0.6.2"
+webview2-com = "0.39.1"
+gtk4 = { version = "0.11.3", default-features = false }
+webkit6 = { version = "0.6.1", default-features = false }
+windows = "0.62.2"
+windows-core = "0.62.2"
 
 # Test dependencies
 criterion = "0.8.2"
