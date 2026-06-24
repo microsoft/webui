@@ -3,7 +3,8 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use crate::DesktopFrame;
+use anyhow::Result;
 use gtk4::{gio, glib, prelude::*, Application, ApplicationWindow};
 use webkit6::{prelude::*, URISchemeRequest, URISchemeResponse, WebContext, WebView};
 use webui_desktop::{
@@ -17,12 +18,7 @@ use webui_desktop::{
 ///
 /// Returns an error when packaged resources cannot be located or GTK cannot run.
 pub fn run_packaged_app() -> Result<()> {
-    let resources = packaged_resources_dir()?;
-    let manifest =
-        webui_desktop::DesktopBundleManifest::load(&resources.join("manifest.webui-desktop.json"))
-            .with_context(|| "Failed to read packaged desktop manifest")?;
-    let runtime = Arc::new(DesktopRuntime::from_bundle(resources)?);
-    run_runtime(runtime, manifest.window)
+    crate::run_packaged_app()
 }
 
 /// Run a prebuilt desktop runtime in a GTK4/WebKitGTK 6 window.
@@ -34,12 +30,16 @@ pub fn run_runtime(
     runtime: Arc<DesktopRuntime>,
     window: webui_desktop::WindowOptions,
 ) -> Result<()> {
+    run_frame(DesktopFrame::new(runtime, window))
+}
+
+pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     let app = Application::builder()
         .application_id("com.microsoft.webui.desktop")
         .build();
     app.connect_activate(move |app| {
         let context = WebContext::new();
-        let handler_runtime = Arc::clone(&runtime);
+        let handler_runtime = Arc::clone(&frame.runtime);
         context.register_uri_scheme("webui", move |request| {
             handle_scheme_request(request, &handler_runtime);
         });
@@ -47,12 +47,12 @@ pub fn run_runtime(
         let webview = WebView::builder().web_context(&context).build();
         let window_widget = ApplicationWindow::builder()
             .application(app)
-            .title(&window.title)
-            .default_width(i32::try_from(window.width).unwrap_or(1200))
-            .default_height(i32::try_from(window.height).unwrap_or(800))
+            .title(&frame.window.title)
+            .default_width(i32::try_from(frame.window.width).unwrap_or(1200))
+            .default_height(i32::try_from(frame.window.height).unwrap_or(800))
             .child(&webview)
             .build();
-        if window.maximized {
+        if frame.window.maximized {
             window_widget.maximize();
         }
         window_widget.present();
@@ -60,14 +60,6 @@ pub fn run_runtime(
     });
     app.run();
     Ok(())
-}
-
-fn packaged_resources_dir() -> Result<std::path::PathBuf> {
-    let exe = std::env::current_exe().context("Failed to locate webui-desktop executable")?;
-    let root = exe
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Failed to locate desktop executable directory"))?;
-    Ok(root.join("resources").join("webui"))
 }
 
 fn startup_url() -> String {

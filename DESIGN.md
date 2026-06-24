@@ -1614,6 +1614,18 @@ Desktop runtime uses direct platform backends:
 - macOS: WKWebView.
 - Linux: GTK4 with WebKitGTK 6.
 
+Native shells are hidden behind the `webui_desktop_runner` frame abstraction.
+App-specific runners construct a runtime-neutral `DesktopFrame` and call
+`webui_desktop_runner::run_frame(frame)` or
+`webui_desktop_runner::run_runtime(runtime, window)`. The crate dispatches to a
+target-gated `PlatformFrameBackend` that implements the shared
+`DesktopFrameBackend` trait. Application code must not branch on
+`cfg(target_os)` to choose `macos`, `windows`, or `linux`; platform differences
+belong in backend modules. New cross-platform shell APIs (menus, jump lists,
+popovers, downloads, file dialogs, and similar features) must first be expressed
+on the frame/backend contract, then implemented per backend with capability
+reporting and actionable unsupported-feature errors.
+
 The shell registers a custom app protocol and loads the initial page from that
 origin instead of starting a localhost HTTP server. Platform engines expose
 custom origins differently, so desktop client code must use relative URLs and
@@ -1633,6 +1645,9 @@ Linux links GTK4/WebKitGTK 6 only on Linux. Windows links WebView2 only on
 Windows. The runtime still uses the same `DesktopRuntime` dispatcher on every
 platform: no localhost server, one shared protocol/state/asset graph, bounded
 asset reads, and route/API/IPC dispatch through the custom app origin.
+Packaged app runners use `webui_desktop_runner::find_packaged_resources_dir()`
+to locate bundle resources so macOS `.app` layouts and Windows/Linux portable
+layouts remain behind one API.
 Linux cross-compilation requires a configured GTK/WebKitGTK sysroot and
 `PKG_CONFIG_SYSROOT_DIR`/`PKG_CONFIG_PATH`; this is a platform dependency, not
 something xtask may install. The Windows WebView2 dependency and Win32

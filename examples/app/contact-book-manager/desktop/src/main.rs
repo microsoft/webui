@@ -23,32 +23,15 @@ struct ContactApiError {
     message: String,
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn main() -> Result<()> {
     let (runtime, window) = match packaged_resources_dir() {
         Some(resources) => packaged_runtime(&resources)?,
         None => source_runtime()?,
     };
 
-    run_platform_runtime(Arc::new(runtime), window)
+    webui_desktop_runner::run_runtime(Arc::new(runtime), window)
 }
 
-#[cfg(target_os = "macos")]
-fn run_platform_runtime(runtime: Arc<DesktopRuntime>, window: WindowOptions) -> Result<()> {
-    webui_desktop_runner::macos::run_runtime(runtime, window)
-}
-
-#[cfg(target_os = "windows")]
-fn run_platform_runtime(runtime: Arc<DesktopRuntime>, window: WindowOptions) -> Result<()> {
-    webui_desktop_runner::windows::run_runtime(runtime, window)
-}
-
-#[cfg(target_os = "linux")]
-fn run_platform_runtime(runtime: Arc<DesktopRuntime>, window: WindowOptions) -> Result<()> {
-    webui_desktop_runner::linux::run_runtime(runtime, window)
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn source_runtime() -> Result<(DesktopRuntime, WindowOptions)> {
     let root = workspace_root();
     let app_root = root.join("examples/app/contact-book-manager");
@@ -75,7 +58,6 @@ fn source_runtime() -> Result<(DesktopRuntime, WindowOptions)> {
     Ok((runtime, window))
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn packaged_runtime(resources: &std::path::Path) -> Result<(DesktopRuntime, WindowOptions)> {
     let manifest = DesktopBundleManifest::load(&resources.join("manifest.webui-desktop.json"))?;
     let state_path = resources.join("state.json");
@@ -88,31 +70,8 @@ fn packaged_runtime(resources: &std::path::Path) -> Result<(DesktopRuntime, Wind
     Ok((runtime, manifest.window))
 }
 
-#[cfg(target_os = "macos")]
 fn packaged_resources_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let contents = exe.parent().and_then(std::path::Path::parent)?;
-    let resources = contents.join("Resources").join("webui");
-    resources
-        .join("manifest.webui-desktop.json")
-        .is_file()
-        .then_some(resources)
-}
-
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn packaged_resources_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let resources = exe.parent()?.join("resources").join("webui");
-    resources
-        .join("manifest.webui-desktop.json")
-        .is_file()
-        .then_some(resources)
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-fn main() -> Result<()> {
-    println!("contact-book-desktop is not supported on this platform yet");
-    Ok(())
+    webui_desktop_runner::find_packaged_resources_dir()
 }
 
 fn workspace_root() -> PathBuf {

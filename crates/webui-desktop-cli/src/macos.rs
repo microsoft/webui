@@ -3,10 +3,10 @@
 
 use std::cell::OnceCell;
 use std::ffi::c_void;
-use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::DesktopFrame;
 use anyhow::{Context, Result};
 use block2::DynBlock;
 use objc2::ffi::NSInteger;
@@ -311,13 +311,7 @@ struct MacosLaunchOptions {
 }
 
 pub fn run_packaged_app() -> Result<()> {
-    let resources = packaged_resources_dir()?;
-    let mtm = MainThreadMarker::new().context("macOS desktop must run on the main thread")?;
-    let manifest =
-        webui_desktop::DesktopBundleManifest::load(&resources.join("manifest.webui-desktop.json"))
-            .with_context(|| "Failed to read packaged desktop manifest")?;
-    set_runtime(Arc::new(DesktopRuntime::from_bundle(resources)?));
-    run_app(mtm, manifest.window)
+    crate::run_packaged_app()
 }
 
 /// Run a prebuilt desktop runtime in a macOS WKWebView.
@@ -329,9 +323,13 @@ pub fn run_runtime(
     runtime: Arc<DesktopRuntime>,
     window: webui_desktop::WindowOptions,
 ) -> Result<()> {
+    run_frame(DesktopFrame::new(runtime, window))
+}
+
+pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     let mtm = MainThreadMarker::new().context("macOS desktop must run on the main thread")?;
-    set_runtime(runtime);
-    run_app(mtm, window)
+    set_runtime(frame.runtime);
+    run_app(mtm, frame.window)
 }
 
 fn run_app(mtm: MainThreadMarker, window: webui_desktop::WindowOptions) -> Result<()> {
@@ -349,15 +347,6 @@ fn run_app(mtm: MainThreadMarker, window: webui_desktop::WindowOptions) -> Resul
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     app.run();
     Ok(())
-}
-
-fn packaged_resources_dir() -> Result<PathBuf> {
-    let exe = std::env::current_exe().context("Failed to locate webui-desktop executable")?;
-    let contents = exe
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| anyhow::anyhow!("Failed to locate .app Contents directory"))?;
-    Ok(contents.join("Resources").join("webui"))
 }
 
 fn devtools_enabled_by_env() -> bool {

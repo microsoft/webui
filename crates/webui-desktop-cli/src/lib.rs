@@ -3,6 +3,12 @@
 
 //! Native desktop runners for `microsoft-webui-desktop`.
 
+mod frame;
+pub use frame::{
+    find_packaged_resources_dir, run_frame, run_packaged_app, run_runtime, DesktopFrame,
+    DesktopFrameBackend, DesktopFrameCapabilities, PlatformFrameBackend,
+};
+
 #[cfg(target_os = "macos")]
 pub mod macos;
 

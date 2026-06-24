@@ -19,12 +19,6 @@ use webui_desktop::{
 };
 #[cfg(not(target_os = "macos"))]
 use webui_desktop::{DesktopRuntime, DesktopSourceConfig};
-#[cfg(target_os = "linux")]
-use webui_desktop_runner::linux;
-#[cfg(target_os = "macos")]
-use webui_desktop_runner::macos;
-#[cfg(target_os = "windows")]
-use webui_desktop_runner::windows;
 
 #[derive(Parser)]
 #[command(name = "webui-desktop", about = "WebUI desktop runner and packager")]
@@ -341,30 +335,8 @@ fn run(cli: Cli) -> Result<()> {
         Some(Commands::Run(args)) => run_desktop(args),
         Some(Commands::Build(args)) => build_bundle(args),
         Some(Commands::Package(args)) => package_bundle(args),
-        None => run_packaged_app(),
+        None => webui_desktop_runner::run_packaged_app(),
     }
-}
-
-#[cfg(target_os = "macos")]
-fn run_packaged_app() -> Result<()> {
-    macos::run_packaged_app()
-}
-
-#[cfg(target_os = "linux")]
-fn run_packaged_app() -> Result<()> {
-    linux::run_packaged_app()
-}
-
-#[cfg(target_os = "windows")]
-fn run_packaged_app() -> Result<()> {
-    windows::run_packaged_app()
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn run_packaged_app() -> Result<()> {
-    Err(anyhow::anyhow!(
-        "packaged desktop launch is not implemented on this platform yet"
-    ))
 }
 
 fn run_desktop(args: RunArgs) -> Result<()> {
@@ -1239,12 +1211,12 @@ fn parse_package_targets(raw: &str) -> Result<Vec<DesktopPackageTarget>> {
 
 #[cfg(target_os = "linux")]
 fn run_webview(runtime: Arc<DesktopRuntime>, window: &WindowArgs) -> Result<()> {
-    linux::run_runtime(runtime, window_options(window))
+    webui_desktop_runner::run_runtime(runtime, window_options(window))
 }
 
 #[cfg(target_os = "windows")]
 fn run_webview(runtime: Arc<DesktopRuntime>, window: &WindowArgs) -> Result<()> {
-    windows::run_runtime(runtime, window_options(window))
+    webui_desktop_runner::run_runtime(runtime, window_options(window))
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]

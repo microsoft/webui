@@ -679,6 +679,11 @@ Desktop bundles contain:
 Desktop runtime uses system webviews only: WebView2 on Windows, WKWebView on
 macOS, and GTK4/WebKitGTK 6 on Linux. Do not use Electron, Node, bundled
 Chromium, or a localhost HTTP server for desktop mode.
+Use the cross-platform frame API in Rust app runners:
+`webui_desktop_runner::run_runtime(runtime, window)` or
+`webui_desktop_runner::run_frame(frame)`. Do not write app-level
+`cfg(target_os)` branches to select `macos`, `windows`, or `linux`; the runner
+crate dispatches through `PlatformFrameBackend`.
 Link CSS remains the default desktop CSS strategy. Pass `--theme` when an app
 uses design tokens.
 Linux builds require GTK4/WebKitGTK 6 target packages or a configured sysroot.
@@ -706,6 +711,9 @@ logic must use asset lookup first and protocol route matching second.
 For app mutations, prefer Rust custom-protocol API handlers such as
 `/api/contacts/:id` so existing browser code can keep using `fetch("./api")`
 while the desktop host mutates Rust-owned state.
+Packaged app runners should use
+`webui_desktop_runner::find_packaged_resources_dir()` to locate bundle resources
+across macOS `.app` and Windows/Linux portable layouts.
 
 Package a Rust-first desktop app root in one command:
 

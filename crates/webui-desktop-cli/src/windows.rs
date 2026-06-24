@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
+use crate::DesktopFrame;
 use anyhow::{Context, Result};
 use webui_desktop::{
     DesktopHttpMethod, DesktopProtocolRequest, DesktopProtocolResponse, DesktopRuntime,
@@ -51,12 +52,7 @@ const APP_ORIGIN: &str = "webui://app";
 ///
 /// Returns an error if packaged resources cannot be located or WebView2 cannot initialize.
 pub fn run_packaged_app() -> Result<()> {
-    let resources = packaged_resources_dir()?;
-    let manifest =
-        webui_desktop::DesktopBundleManifest::load(&resources.join("manifest.webui-desktop.json"))
-            .with_context(|| "Failed to read packaged desktop manifest")?;
-    let runtime = Arc::new(DesktopRuntime::from_bundle(resources)?);
-    run_runtime(runtime, manifest.window)
+    crate::run_packaged_app()
 }
 
 /// Run a prebuilt desktop runtime in a Windows WebView2 window.
@@ -68,27 +64,31 @@ pub fn run_runtime(
     runtime: Arc<DesktopRuntime>,
     window: webui_desktop::WindowOptions,
 ) -> Result<()> {
+    run_frame(DesktopFrame::new(runtime, window))
+}
+
+pub(crate) fn run_frame(frame: DesktopFrame) -> Result<()> {
     let _com = initialize_com()?;
     configure_dpi_awareness()?;
 
-    let frame = FrameWindow::new(&window)?;
+    let window_frame = FrameWindow::new(&frame.window)?;
     let environment = create_environment().with_context(|| {
         "Failed to initialize WebView2; install the Microsoft Edge WebView2 Runtime or use a Windows image that includes it"
     })?;
-    let controller = create_controller(&environment, frame.hwnd)?;
+    let controller = create_controller(&environment, window_frame.hwnd)?;
     let webview = unsafe { controller.CoreWebView2()? };
-    configure_settings(&webview, window.devtools)?;
+    configure_settings(&webview, frame.window.devtools)?;
     register_navigation_guard(&webview)?;
-    register_runtime_handler(&environment, &webview, runtime)?;
-    set_controller_bounds(&controller, frame.hwnd)?;
+    register_runtime_handler(&environment, &webview, frame.runtime)?;
+    set_controller_bounds(&controller, window_frame.hwnd)?;
     unsafe { controller.SetIsVisible(true)? };
     let state = Box::new(WindowState { controller });
-    set_window_state(frame.hwnd, Some(state));
+    set_window_state(window_frame.hwnd, Some(state));
 
     unsafe {
-        let _ = WindowsAndMessaging::ShowWindow(frame.hwnd, WindowsAndMessaging::SW_SHOW);
-        let _ = Gdi::UpdateWindow(frame.hwnd);
-        let _ = KeyboardAndMouse::SetFocus(Some(frame.hwnd));
+        let _ = WindowsAndMessaging::ShowWindow(window_frame.hwnd, WindowsAndMessaging::SW_SHOW);
+        let _ = Gdi::UpdateWindow(window_frame.hwnd);
+        let _ = KeyboardAndMouse::SetFocus(Some(window_frame.hwnd));
     }
     let url = CoTaskMemPWSTR::from(startup_url().as_str());
     unsafe { webview.Navigate(*url.as_ref().as_pcwstr())? };
@@ -117,14 +117,6 @@ fn configure_dpi_awareness() -> Result<()> {
         Err(error) if error.code() == E_ACCESSDENIED => Ok(()),
         Err(error) => Err(error.into()),
     }
-}
-
-fn packaged_resources_dir() -> Result<std::path::PathBuf> {
-    let exe = std::env::current_exe().context("Failed to locate webui-desktop executable")?;
-    let root = exe
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Failed to locate desktop executable directory"))?;
-    Ok(root.join("resources").join("webui"))
 }
 
 fn startup_url() -> String {

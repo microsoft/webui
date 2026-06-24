@@ -18,6 +18,13 @@ system or a configured cross-compilation sysroot. Windows support uses the
 WebView2 Runtime and the target-gated Win32 backend; validate runtime behavior
 on Windows CI or a Windows developer machine with WebView2 installed.
 
+Desktop app runners use one cross-platform frame API. Build a
+`DesktopRuntime`, then call `webui_desktop_runner::run_runtime(runtime, window)`
+or construct a `DesktopFrame` and call `run_frame`. Do not branch on
+`cfg(target_os)` in app code to select macOS, Windows, or Linux modules. The
+runner crate dispatches to the current platform backend and keeps future shell
+features on one shared contract.
+
 ## Command shape
 
 Use `webui desktop ...` for desktop commands. `webui` is the only public CLI;
@@ -102,6 +109,20 @@ loads the packaged bundle with `DesktopRuntime::from_bundle_config`. Omitting
 `--runner` packages the generic sidecar and is appropriate only for
 file-backed/static seed-state bundles.
 
+App-specific runners can use the shared resource helper instead of OS-specific
+bundle paths:
+
+```rust
+fn main() -> anyhow::Result<()> {
+    let (runtime, window) = match webui_desktop_runner::find_packaged_resources_dir() {
+        Some(resources) => load_packaged_runtime(&resources)?,
+        None => build_source_runtime()?,
+    };
+
+    webui_desktop_runner::run_runtime(std::sync::Arc::new(runtime), window)
+}
+```
+
 The Rust packager currently writes:
 
 | Target | Output |
@@ -171,6 +192,10 @@ menus, Windows jump lists, popovers, and app-controlled downloads. Backends expo
 only capabilities they can implement safely on the current OS; unsupported
 features fail with actionable diagnostics rather than silently pretending to
 work.
+
+New shell features should be added to the frame/backend contract first. Each
+platform backend then implements the same method or reports that the capability
+is unavailable, so application developers keep using a single cross-platform API.
 
 ## Web inspector
 
