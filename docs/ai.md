@@ -411,6 +411,13 @@ are returned in `BuildResult::component_asset_files` and written by
 `build_to_disk()`. Node callers use `componentAssetRoots` and receive flattened
 `componentAssetFiles` (`[filename, content, ...]`) from `build()`.
 
+`webui serve` accepts the same `--emit-component-assets` flag and validates each
+root on every dev build — so HTML and theme-token errors in lazily loaded
+components (which are not part of the SSR tree) fail the build instead of being
+silently skipped — then serves the compiled `<tag>.webui.js` from memory,
+rebuilding it on change under `--watch`. No separate `webui build`/`--out` step
+is needed during development.
+
 ```typescript
 import { settingsAssets } from './lazy-assets.js';
 
@@ -572,6 +579,7 @@ webui build ./src --out ./dist --plugin=webui
 | `--plugin <NAME>` | none | Plugin identifier (e.g. `webui`) |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
 | `--emit-component-assets <TAGS>` | none | Comma-separated root component tags emitted as static `.webui.js` ESM assets in `--out` |
+| `--theme <PACKAGE>` | none | Design token theme to validate against (see below) |
 | `--asset-file-name-template <TEMPLATE>` | `[name].[ext]` | Emitted asset filename template for Link-mode CSS files and static component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
 | `--legal-comments <MODE>` | `inline` | `inline` preserves legal CSS comments, `none` strips all comments |
@@ -638,7 +646,7 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 | `--plugin <NAME>` | none | Plugin identifier (e.g. `webui`) |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
 | `--api-port <PORT>` | none | Proxy route requests to API server |
-| `--theme <PACKAGE>` | none | Design token theme (see below) |
+| `--theme <PACKAGE>` | none | Design token theme; missing unresolved tokens fail the build (see below) |
 | `--asset-file-name-template <TEMPLATE>` | `[name].[ext]` | Emitted asset filename template |
 | `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
 | `--legal-comments <MODE>` | `inline` | `inline` preserves legal CSS comments, `none` strips all comments |
@@ -701,7 +709,8 @@ apply to a given error are `null`.
 
 `invalid-for-each`, `invalid-for-identifier`, `missing-for-each`,
 `invalid-if-condition`, `missing-if-condition`, `unknown-component`,
-`invalid-event-handler`, `invalid-w-ref`, `unclosed-html-tag`,
+`invalid-event-handler`, `invalid-w-ref`, `missing-theme-token`,
+`unclosed-html-tag`,
 `malformed-html-tag`, `unexpected-closing-tag`, `unterminated-html-comment`,
 `unterminated-html-declaration`, `excessive-nesting`, `recursive-template`,
 `invalid-css`.
@@ -773,8 +782,10 @@ webui build ./src --out ./dist \
 
 ## `--theme` - Design Token Themes
 
-The `--theme` flag loads a token JSON file and injects resolved CSS custom
-property declarations into the render state. Only available on `webui serve`.
+The `--theme` flag loads a token JSON file. On `webui build`, it validates that
+each unresolved CSS token discovered by the parser exists in every theme. On
+`webui serve`, it performs the same validation and injects resolved CSS custom
+property declarations into the render state.
 
 **What it accepts:**
 
@@ -787,10 +798,34 @@ property declarations into the render state. Only available on `webui serve`.
 1. Loads the JSON file (multi-theme or flat single-theme format)
 2. Filters tokens to only those actually used in your CSS (`var(--name)`,
    including nested `var()` fallbacks)
-3. Expands transitive `var()` references and detects cycles
-4. Generates CSS declaration strings per theme
-5. Injects into SSR state as `state.tokens.light`, `state.tokens.dark`, etc.
+3. Expands present transitive `var()` references; theme internals are trusted, so
+   missing/cyclic references inside theme values are left to browser CSS
+   semantics
+4. Fails with `missing-theme-token` when any required token is absent from a
+   theme. `var(--a, var(--b, var(--c)))` requires `a`, `b`, and `c` unless a
+   token is defined by local/ancestor CSS. A `var()` usage with a literal
+   fallback (e.g. `var(--brand, #000)`) is exempt — the token is still hoisted
+   for runtime resolution but its absence does not fail the build, unless the
+   same token is also used without a fallback.
+5. Generates CSS declaration strings per theme
+6. Injects into SSR state as `state.tokens.light`, `state.tokens.dark`, etc.
    These render-only token strings are omitted from the emitted client state.
+
+A token used only with a literal `var()` fallback and absent from every theme
+(e.g. a misspelled `var(--colr-brand, #000)`) is reported as a non-fatal
+`unthemed-token` **warning** on `BuildResult.warnings` (a `Vec<Diagnostic>`,
+also printed by `webui build` and `webui serve`) instead of failing the build —
+a typo safety net. Warnings are warning-severity `Diagnostic`s, so they render
+with the same layout as `missing-theme-token` errors: both carry the source
+location (`my-card.css:2:10` + the CSS line) and a `did you mean --…?`
+suggestion computed by Levenshtein edit distance against the theme's tokens. The
+dev server frames each error/warning with blank lines so consecutive advisories
+stay readable.
+
+In `webui serve --watch`, rebuild failures are retained in dev-server state:
+the terminal and live-reload SSE report the error, and a browser refresh returns
+the latest rebuild error instead of stale HTML while keeping the live-reload
+connection active until the next clean rebuild.
 
 **Multi-theme format:**
 ```json

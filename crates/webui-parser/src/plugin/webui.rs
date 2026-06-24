@@ -3101,6 +3101,8 @@ mod tests {
             html_content: "<p>hi</p>".to_string(),
             css_content: None,
             css_tokens: Vec::new(),
+            css_definitions: Vec::new(),
+            css_fallback_chains: Vec::new(),
             source_path: std::path::PathBuf::new(),
             class_name: None,
         };
@@ -3152,6 +3154,8 @@ mod tests {
             html_content: "<p>hi</p>".to_string(),
             css_content: Some(".root { color: red; }".to_string()),
             css_tokens: Vec::new(),
+            css_definitions: Vec::new(),
+            css_fallback_chains: Vec::new(),
             source_path: std::path::PathBuf::new(),
             class_name: None,
         };
@@ -3183,6 +3187,8 @@ mod tests {
                     .to_string(),
             css_content: Some(".root { color: red; }".to_string()),
             css_tokens: Vec::new(),
+            css_definitions: Vec::new(),
+            css_fallback_chains: Vec::new(),
             source_path: std::path::PathBuf::new(),
             class_name: None,
         };
@@ -3210,6 +3216,8 @@ mod tests {
             html_content: "<p>hi</p>".to_string(),
             css_content: Some(".root { color: red; }".to_string()),
             css_tokens: Vec::new(),
+            css_definitions: Vec::new(),
+            css_fallback_chains: Vec::new(),
             source_path: std::path::PathBuf::new(),
             class_name: None,
         };

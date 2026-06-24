@@ -27,6 +27,11 @@ pub struct BuildArgs {
     /// Comma-separated root component tags to emit as static CDN-loadable assets
     #[arg(long, value_delimiter = ',', value_name = "TAGS")]
     pub emit_component_assets: Vec<String>,
+
+    /// Design token theme to validate against: a JSON file path or npm package name.
+    /// Missing unresolved CSS tokens fail the build.
+    #[arg(long)]
+    pub theme: Option<String>,
 }
 
 /// Resolve the `--out` argument into `(output_directory, protocol_filename)`.
@@ -130,10 +135,18 @@ fn run(args: &BuildArgs) -> Result<()> {
     if !args.emit_component_assets.is_empty() {
         output::field("Component assets", &args.emit_component_assets.join(", "));
     }
+    if let Some(ref theme) = args.theme {
+        output::field("Theme", theme);
+    }
     eprintln!();
 
     let mut build_options = args.app_args.to_build_options(&app);
     build_options.component_asset_roots = args.emit_component_assets.clone();
+    build_options.theme = args
+        .theme
+        .as_deref()
+        .map(|theme| load_theme(theme, &app))
+        .transpose()?;
     let result = webui::build(build_options).with_context(|| "Build failed")?;
     validate_output_file_names(&protocol_name, &result)?;
 
@@ -195,6 +208,10 @@ fn run(args: &BuildArgs) -> Result<()> {
         console::style(Path::new(&protocol_name).display()).bold()
     ));
 
+    for advisory in &result.warnings {
+        output::warning_diagnostic(advisory);
+    }
+
     output::finish(&format!(
         "Build complete ({} file{} written) {}",
         console::style(files_written).bold(),
@@ -222,6 +239,7 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
         },
         out: out.to_path_buf(),
         emit_component_assets: Vec::new(),
+        theme: None,
     })
 }
 
@@ -329,6 +347,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            theme: None,
         })
         .unwrap();
 
@@ -364,6 +383,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string()],
+            theme: None,
         })
         .unwrap();
 
@@ -416,6 +436,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string(), "mail-thread".to_string()],
+            theme: None,
         });
 
         assert!(result.is_err());
@@ -445,6 +466,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["fast-card".to_string()],
+            theme: None,
         })
         .unwrap();
 
@@ -482,6 +504,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string()],
+            theme: None,
         })
         .unwrap();
 
@@ -617,6 +640,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            theme: None,
         })
         .unwrap();
 
@@ -701,6 +725,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            theme: None,
         })
         .unwrap();
 
@@ -782,6 +807,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            theme: None,
         })
         .unwrap();
 
@@ -809,6 +835,48 @@ mod tests {
     }
 
     #[test]
+    fn test_build_theme_missing_token_fails() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<my-btn></my-btn>"),
+            ("my-btn.html", "<button><slot></slot></button>"),
+            (
+                "my-btn.css",
+                ":host { --token-a: red; --foo-bar: var(--token-a, var(--token-b, var(--token-c))); }",
+            ),
+            ("theme.json", r#"{"themes":{"light":{"token-b":"green"}}}"#),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+        let result = run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: None,
+                components: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: out_dir.path().to_path_buf(),
+            emit_component_assets: Vec::new(),
+            theme: Some(
+                app_dir
+                    .path()
+                    .join("theme.json")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+        });
+
+        let err = result.expect_err("missing theme token must fail");
+        let message = format!("{err:#}");
+        assert!(message.contains("missing-theme-token"), "msg: {message}");
+        assert!(message.contains("--token-c"), "msg: {message}");
+        assert!(!out_dir.path().join("protocol.bin").exists());
+    }
+
+    #[test]
     fn test_build_custom_protocol_name() {
         let app_dir = create_app_dir(&[
             ("index.html", "<my-card>Hi</my-card>"),
@@ -832,6 +900,7 @@ mod tests {
             },
             out: custom_path.clone(),
             emit_component_assets: Vec::new(),
+            theme: None,
         })
         .unwrap();
 
@@ -868,6 +937,7 @@ mod tests {
             },
             out: nested.clone(),
             emit_component_assets: Vec::new(),
+            theme: None,
         })
         .unwrap();
 

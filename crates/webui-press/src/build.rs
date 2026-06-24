@@ -394,6 +394,7 @@ pub fn build_docs_with_cache(
             entry: "index.html".to_string(),
             plugin: Some(webui::Plugin::WebUI),
             components: component_sources.clone(),
+            theme: token_file.clone(),
             ..BuildOptions::default()
         })
         .map_err(|e| Error::Build(format!("{}: {e}", page.path)))?;
@@ -543,6 +544,7 @@ pub fn build_docs_with_cache(
         entry: "index.html".to_string(),
         plugin: Some(webui::Plugin::WebUI),
         components: component_sources.clone(),
+        theme: token_file.clone(),
         ..BuildOptions::default()
     })
     .map_err(|e| Error::Build(format!("404 build failed: {e}")))?;

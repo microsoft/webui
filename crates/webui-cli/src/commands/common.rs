@@ -1,8 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+use anyhow::{Context, Result};
 use clap::Args;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 pub use webui::CssStrategy;
 pub use webui::DomStrategy;
 pub use webui::LegalComments;
@@ -63,8 +64,17 @@ impl AppArgs {
             css_file_name_template: self.asset_file_name_template.clone(),
             css_public_base: self.css_public_base.clone(),
             legal_comments: self.legal_comments,
+            theme: None,
         }
     }
+}
+
+/// Load and resolve a theme file from a CLI `--theme` value.
+pub fn load_theme(theme: &str, search_root: &Path) -> Result<webui::TokenFile> {
+    let resolved = webui::resolve_theme_path(theme, search_root)
+        .with_context(|| format!("Failed to resolve theme: {theme}"))?;
+    webui::load_token_file(&resolved)
+        .with_context(|| format!("Failed to load theme file: {}", resolved.display()))
 }
 
 #[cfg(test)]
@@ -93,5 +103,22 @@ mod tests {
         );
         assert!(options.component_asset_roots.is_empty());
         assert_eq!(options.legal_comments, LegalComments::None);
+    }
+
+    #[test]
+    fn load_theme_resolves_packages_from_app_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_dir = dir.path().join("app");
+        let package_dir = app_dir.join("node_modules").join("@scope").join("tokens");
+        std::fs::create_dir_all(&package_dir).unwrap();
+        std::fs::write(
+            package_dir.join("tokens.json"),
+            r##"{"themes":{"light":{"color-brand":"#123456"}}}"##,
+        )
+        .unwrap();
+
+        let theme = load_theme("@scope/tokens", &app_dir).unwrap();
+
+        assert_eq!(theme.themes["light"]["color-brand"], "#123456");
     }
 }

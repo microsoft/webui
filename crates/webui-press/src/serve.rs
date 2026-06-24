@@ -130,7 +130,8 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             build_docs_with_cache(&cfg, &config_dir, &template_dir, &mut guard)
                 .map_err(|e| format!("{e}"))?;
-            Ok(())
+            // webui-press has no per-rebuild advisories to surface.
+            Ok(Vec::new())
         })
     };
 
@@ -150,12 +151,14 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
                 paths: watched,
                 ignore,
                 debounce: DEBOUNCE_DURATION,
+                retry_unchanged_when: None,
             },
-            move |_paths: Vec<PathBuf>| {
-                // Coalesce on full: the worker drains all queued ticks
-                // before starting a build, so a dropped tick is
+            move |paths: Vec<PathBuf>| {
+                // Forward the changed paths so the rebuild line names the
+                // triggering file. Coalesce on full: the worker drains all
+                // queued ticks before starting a build, so a dropped tick is
                 // equivalent to a coalesced one.
-                let _ = tx.try_send(());
+                let _ = tx.try_send(paths);
             },
         )?
     };

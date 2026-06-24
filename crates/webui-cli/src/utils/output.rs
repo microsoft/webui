@@ -3,7 +3,7 @@
 
 use std::sync::OnceLock;
 
-use webui::{Diagnostic, ParserError, WebUIError};
+use webui::{Diagnostic, ParserError, Severity, WebUIError};
 
 /// CLI output format, selected with the global `--format` flag.
 ///
@@ -188,13 +188,19 @@ pub fn build_error_renderings(err: &anyhow::Error) -> (String, String) {
 /// Build the per-line-colorized body of `diag` for the dev-server reporter.
 ///
 /// Mirrors [`diagnostic`], but returns a string because the reporter prepends
-/// its own `✘ build error:` marker. Each line opens and closes its own SGR
-/// span so the output survives being re-prefixed line-by-line (e.g. `[server]`
-/// under `xtask dev`); a single span across newlines would bleed.
-fn styled_diagnostic_body(diag: &Diagnostic) -> String {
+/// its own `✘ build error:` / `⚠ build warning:` marker. Each line opens and
+/// closes its own SGR span so the output survives being re-prefixed line-by-line
+/// (e.g. `[server]` under `xtask dev`); a single span across newlines would
+/// bleed. The title is colored by severity (red for errors, yellow for
+/// warnings); the location/snippet/help styling is shared.
+pub(crate) fn styled_diagnostic_body(diag: &Diagnostic) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(128);
-    let _ = write!(out, "{}", console::style(diag.title()).red().bold());
+    let styled_title = match diag.severity() {
+        Severity::Warning => console::style(diag.title()).yellow().bold(),
+        Severity::Error => console::style(diag.title()).red().bold(),
+    };
+    let _ = write!(out, "{styled_title}");
     if let Some(code) = diag.error_code() {
         let _ = write!(out, " {}", console::style(format!("[{code}]")).dim());
     }
@@ -243,6 +249,22 @@ pub fn hint(message: &str) {
         return;
     }
     eprintln!("\n  {} {message}", console::style("hint:").dim());
+}
+
+/// Print a non-fatal build advisory as a multi-line warning [`Diagnostic`]
+/// (yellow `⚠ build warning:`), mirroring the error layout with its
+/// `--> file:line:col`, source snippet, and `help:` suggestion. A leading
+/// blank line frames it. Suppressed in JSON mode.
+pub fn warning_diagnostic(diag: &Diagnostic) {
+    if is_json() {
+        return;
+    }
+    eprintln!(
+        "\n  {} {} {}",
+        console::style("⚠").yellow().bold(),
+        console::style("build warning:").yellow().bold(),
+        styled_diagnostic_body(diag),
+    );
 }
 
 #[cfg(test)]

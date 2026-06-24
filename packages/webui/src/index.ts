@@ -31,6 +31,8 @@ export interface BuildOptions {
   cssPublicBase?: string;
   /** Output directory (used by CLI fallback for build-to-disk). */
   outDir?: string;
+  /** Design token theme: a JSON file path or npm package name. */
+  theme?: string;
 }
 
 /** Build statistics. */
@@ -57,6 +59,8 @@ export interface BuildResult {
   cssFiles: string[];
   /** Static component asset files as alternating [filename, content, ...]. */
   componentAssetFiles: string[];
+  /** Non-fatal build advisories as plain diagnostic strings. */
+  warnings: string[];
   /** Build statistics. */
   stats: BuildStats;
 }
@@ -200,6 +204,7 @@ export function build(options: BuildOptions): BuildResult {
   if (options.cssPublicBase) {
     args.push("--css-public-base", options.cssPublicBase);
   }
+  if (options.theme) args.push("--theme", options.theme);
   if (options.outDir) args.push("--out", options.outDir);
 
   execFileSync(binPath, args, { stdio: "inherit" });
@@ -211,11 +216,18 @@ export function build(options: BuildOptions): BuildResult {
       protocol,
       cssFiles: [],
       componentAssetFiles: readComponentAssetFiles(options.outDir),
+      warnings: [],
       stats: emptyStats(),
     };
   }
 
-  return { protocol: Buffer.alloc(0), cssFiles: [], componentAssetFiles: [], stats: emptyStats() };
+  return {
+    protocol: Buffer.alloc(0),
+    cssFiles: [],
+    componentAssetFiles: [],
+    warnings: [],
+    stats: emptyStats(),
+  };
 }
 
 function readComponentAssetFiles(outDir: string): string[] {

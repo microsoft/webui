@@ -349,7 +349,10 @@ own asset loader rather than making the core `@microsoft/webui` package know
 plugin details. Asset roots are parsed into the protocol through synthetic
 non-entry fragments, so they do not become reachable from the SSR entry tree and
 are not included in the initial SSR bootstrap unless the entry graph also
-references them. Asset generation is parallelized across requested roots. Each root produces one
+references them. `webui serve --emit-component-assets` parses and validates the
+same roots on every dev build — surfacing their HTML and theme-token errors even
+though they are outside the SSR tree — and serves the compiled modules from
+memory. Asset generation is parallelized across requested roots. Each root produces one
 standard ESM module, `<tag>.webui.js`, by default. Use
 `--asset-file-name-template "[name]-[hash].[ext]"` for CDN-cacheable CSS and
 component asset names; `[hash]` is the emitted file's SHA-256 content hash
@@ -1110,11 +1113,35 @@ webui build ./templates --out ./dist --asset-file-name-template="[name]-[hash].[
 webui build ./templates --out ./dist --plugin=webui --emit-component-assets mail-thread,compose-page
 webui build ./templates --out ./dist --plugin=webui --emit-component-assets mail-thread --asset-file-name-template="[name]-[hash].[ext]"
 webui serve ./templates --state ./data/state.json --plugin=<name>
+webui serve ./templates --state ./data/state.json --plugin=webui --emit-component-assets mail-thread,compose-page --watch
 ```
 
 `webui serve` performs a preflight bind check on its configured HTTP port and
 fails before the initial build if that port is already in use, returning an
 actionable message so stale dev processes can be stopped explicitly.
+
+In `webui serve --watch`, the file watcher is **content-aware**: it hashes each
+changed file and drops events whose bytes are unchanged, so a no-op save
+(repeated Ctrl+S that rewrites identical content) triggers no rebuild in the
+clean state. While a rebuild error is active, unchanged events are forwarded so a
+no-op save can retry transient failures without forcing a real content edit.
+Deletions and oversized files always count as changed. Each rebuild's terminal
+line names the triggering file (`↻ rebuilt app-shell.css …`, or `… (+N more)`).
+Incremental rebuild failures are retained in dev-server state. The rebuild
+worker reports the error to the terminal and live-reload SSE; subsequent browser
+refreshes, route renders, JSON partial requests, and component template requests
+return the latest rebuild error instead of stale output. HTML error pages keep
+the live-reload client connected, and JSON partial requests return the rebuild
+error before resolving file/API state. A successful rebuild clears the stored
+error and updates the served protocol/HTML. Non-fatal build advisories (e.g. a
+literal-fallback CSS token absent from every theme) are warning-severity
+`Diagnostic`s rendered with the same `--> file:line:column` + snippet + `help:`
+layout as errors, framed with surrounding blank lines so consecutive
+errors/warnings stay readable. They print under the rebuild line but are
+**deduplicated**: a warning is printed when it first appears (or reappears after
+being resolved), not on every rebuild, so editing an unrelated file does not
+re-spam unchanged advisories. Errors are not deduplicated — a broken build is
+surfaced on every rebuild attempt.
 
 #### Content Processing
 
@@ -1200,6 +1227,9 @@ impl CssParser {
 - Reject malformed CSS at build time with `ParserError::Css`, including
   unterminated `var()` calls, block comments, strings, and unmatched braces,
   parentheses, or brackets.
+- Exclude any token that is defined by local CSS before validating theme
+  coverage. For example, `--foo: var(--token-a, var(--token-b))` reports
+  `token-b` only when `--token-a` is defined in the same CSS input.
 
 ### HTML Scanner
 
@@ -1242,7 +1272,7 @@ child range pushes an explicit parse operation, and directive bodies (`<for>`,
 
 ### CSS Token Hoisting
 
-CSS Token Hoisting extracts the set of CSS custom properties (tokens) that are **used** across all components and entry page styles at build time. The sorted, deduplicated list is included in the protocol's `tokens` field, enabling host runtimes to resolve only the design tokens the application actually needs.
+CSS Token Hoisting extracts the set of CSS custom properties (tokens) that are **used** across all components and entry page styles at build time. The sorted, deduplicated list is included in the protocol's `tokens` field, enabling host runtimes to resolve only the design tokens the application can still need after local CSS definitions are considered.
 
 #### Token Extraction (`CssParser::extract_tokens`)
 
@@ -1255,18 +1285,28 @@ The `extract_tokens` method uses a deterministic CSS scanner to extract custom p
 
 **Excluded (not hoisted):**
 - `--bar: 12px` — local custom property definitions
-- `var(--bar)` when `--bar` is defined in the same CSS file
+- `var(--bar)` when `--bar` is defined in the same CSS file or by an ancestor
+  component/root CSS scope
 
 The scanner tracks nested `var()` fallback expressions, so nested fallbacks are naturally handled.
 
 #### Token Collection During Parsing
 
-The `HtmlParser` maintains a `token_store: HashSet<String>` that accumulates tokens from two sources:
+The `HtmlParser` records CSS fallback-chain requirements and custom-property
+definitions from two sources:
 
-1. **Component CSS** — when a component is first encountered during parsing, its pre-extracted `css_tokens` (stored in the `Component` struct at registration time) are merged into the token store.
+1. **Component CSS** — component registration stores each component's
+   pre-extracted `css_fallback_chains` and `css_definitions`.
 2. **Inline `<style>` tags** — when the parser processes a `<style>` tag, it extracts token usages and definitions while stripping removable CSS comments in the same scanner pass.
 
-After parsing completes, `HtmlParser::take_tokens()` returns the sorted, deduplicated token list for inclusion in the protocol.
+After parsing completes, `HtmlParser::token_analysis()` walks the parsed fragment
+graph iteratively from each entry/root fragment and returns `CssTokenAnalysis {
+protocol_tokens, fallback_chains }`. The walk carries a counted set of CSS
+custom-property definitions from the entry/root through component boundaries,
+because CSS custom properties inherit through Shadow DOM. Each token candidate
+in a fallback chain such as `var(--a, var(--b, var(--c)))` is removed when that
+token is defined by the current or ancestor CSS scope; any remaining candidates
+contribute to the sorted protocol token list.
 
 #### Comment Handling
 
@@ -1287,7 +1327,7 @@ the comment wrapper so the CSS parser can distinguish them from invalid CSS.
 
 ### Design Token Resolution (`webui-tokens`)
 
-The `webui-tokens` crate provides serve-time resolution of design token values. While the parser extracts token **names** into the protocol at build time, the token resolver loads token **values** from a theme file and generates CSS declarations for injection into state.
+The `webui-tokens` crate provides build/serve-time validation and resolution of design token values. While the parser extracts token **names** and `var()` fallback chains, the token crate owns the theme-coverage policy: `validate_chain_tokens` decides which chain candidates a theme must provide (literal-fallback chains are exempt) and `unthemed_literal_fallback_tokens` reports likely typos, while `resolve_tokens` generates CSS declarations for injection into state. The parser only adapts the resulting [`webui_tokens::TokenError`] into a structured `Diagnostic`.
 
 #### Theme File Format
 
@@ -1309,26 +1349,41 @@ Token names omit the `--` prefix (matching the `protocol.tokens` format). Flat s
 ```
 load_token_file(path) → TokenFile
     ↓
-resolve_tokens(protocol.tokens, token_file) → ResolvedTokens { css, warnings }
+CssTokenAnalysis::validate_theme_tokens(token_file) → Result<()>
+    ↓
+resolve_tokens(protocol.tokens, token_file) → ResolvedTokens { css }
     ↓
 inject_token_css(state, css) → state["tokens"]["light"] = "..."
 ```
 
-1. **Filter**: Only tokens in `protocol.tokens` are kept.
-2. **Dependency closure**: Token values referencing other tokens via `var(--x)` trigger transitive inclusion. Uses an iterative BFS expansion followed by DFS cycle detection.
+1. **Validate**: Every *required* token must exist in every theme. A token is required when it appears in at least one unresolved `var()` chain with no literal CSS fallback. Local and ancestor CSS definitions are removed before validation, so `--token-a: red; --foo: var(--token-a, var(--token-b))` requires `token-b` from the theme but not `token-a`. A literal-terminated chain such as `var(--brand, #000)` is exempt — `--brand` stays in `protocol.tokens` for runtime resolution (the theme value still wins when present) but does not fail the build when the theme omits it. The same token referenced once with a bare `var(--brand)` and once as `var(--brand, #000)` is still required (the bare usage has no fallback). Missing required tokens fail with `missing-theme-token`. Theme token values are trusted: unresolved or cyclic `var(--x)` references inside the theme remain browser CSS semantics rather than build failures.
+2. **Dependency closure**: Token values referencing other tokens via `var(--x)` trigger transitive inclusion when the referenced token is present in the same theme. Missing transitive references are left in the CSS value as authored.
 3. **CSS generation**: Sorted `--name: value;` declarations. Output is deterministic.
 4. **State injection**: Per-theme CSS strings are set on `state.tokens.<theme>`, where `/*{{{tokens.<theme>}}}*/` signals resolve them during rendering. These render-only token strings are omitted from the emitted `webui-data` client bootstrap.
+
+A token used **only** with a literal `var()` fallback and defined in no theme (e.g. a misspelled `var(--colr-brand, #000)`) is reported as a non-fatal `unthemed-token` warning in `BuildResult::warnings` (a `Vec<Diagnostic>`) rather than failing the build. These are warning-severity `Diagnostic`s carrying location, snippet, and a `did you mean …?` suggestion, so `webui build` and `webui serve` render them with the same layout as errors; Node receives their plain `Display` text.
 
 #### Package Resolution (`resolve_theme_path`)
 
 The CLI `--theme` flag accepts a file path or an npm package name:
 
 ```bash
+webui build ./src --out ./dist --theme=@microsoft/webui-examples-theme
 webui serve ./src --theme=@microsoft/webui-examples-theme
 webui serve ./src --theme=./my-theme.json
 ```
 
 Package names are resolved by walking up from `search_root` looking for `node_modules/<pkg>/tokens.json`. Scoped packages (`@scope/name`) and explicit subpaths (`@scope/name/custom.json`) are supported.
+
+`BuildOptions::theme` accepts a loaded `TokenFile`. When present, `webui::build`
+validates parser-discovered unresolved tokens before protocol serialization and
+returns `WebUIError::Parse { source: ParserError::Template(..) }` when required
+tokens are missing from the theme. CLI `webui build --theme`, `webui serve
+--theme`, and Node `build({ theme })` all use this same build validation path.
+
+When `webui serve --watch` hits one of these theme-token validation failures
+during an incremental rebuild, the failure is retained as the current dev-server
+state so refreshes keep showing the diagnostic until the next successful rebuild.
 
 ### Error Handling
 ```rust

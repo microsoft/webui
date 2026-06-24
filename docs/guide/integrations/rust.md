@@ -231,11 +231,19 @@ HttpResponse::Ok()
 | `component_asset_roots` | `Vec<String>` | `[]` | Root component tags emitted as static `.webui.js` ESM assets |
 | `css_file_name_template` | `String` | `"[name].[ext]"` | Emitted asset filename template for Link-mode CSS and component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `css_public_base` | `Option<String>` | `None` | Public URL/path prefix for Link-mode CSS hrefs |
+| `theme` | `Option<TokenFile>` | `None` | Loaded design-token theme used to validate unresolved CSS tokens during build |
 
 `BuildResult::component_asset_files` contains rendered static component asset
 modules. `build_to_disk()` validates `protocol.bin`, CSS files, and component
 assets as one output set before writing, so filename collisions fail without
 leaving partial output.
+
+Load themes with `webui::resolve_theme_path()` and `webui::load_token_file()`.
+When `theme` is set, missing required CSS tokens fail as parser diagnostics
+before the protocol is returned. Tokens used only with a literal `var()`
+fallback (e.g. `var(--brand, #000)`) are exempt; if such a token is also absent
+from every theme it is reported as a non-fatal advisory in
+`BuildResult::warnings` (a likely typo) instead of failing the build.
 
 ### BuildStats
 

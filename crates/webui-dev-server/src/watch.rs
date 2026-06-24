@@ -8,8 +8,11 @@
 //! background thread; **the handle must be kept alive** for the watcher
 //! to run.
 
-use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
+use std::hash::Hasher;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -41,6 +44,12 @@ pub struct WatchConfig {
     /// Debounce window — events arriving within this window are
     /// coalesced into a single callback invocation.
     pub debounce: Duration,
+    /// Optional predicate that allows byte-identical file events through.
+    ///
+    /// `webui serve --watch` uses this while a rebuild error is active so a
+    /// no-op save can retry transient failures. When the predicate returns
+    /// `false` (the common clean state), identical saves are still dropped.
+    pub retry_unchanged_when: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 /// Start a debounced recursive watcher.
@@ -49,6 +58,12 @@ pub struct WatchConfig {
 /// owned, deduplicated list of paths that changed outside any
 /// `cfg.ignore` root. If every event in a window targets an ignored
 /// subtree, the callback is not invoked.
+///
+/// Paths whose file content is byte-identical to the previous event are dropped
+/// in the clean state, so a no-op save (e.g. repeated Ctrl+S that rewrites the
+/// same bytes) triggers **no** rebuild. If `retry_unchanged_when` returns true,
+/// unchanged events are forwarded so callers can retry an active error.
+/// Deletions and files larger than an internal cap always count as changed.
 ///
 /// Non-existent paths in `cfg.paths` are silently skipped; this matches
 /// the dev-server use case where some watched directories (e.g. an
@@ -71,6 +86,8 @@ where
         .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
         .collect();
 
+    let mut content_hashes: HashMap<PathBuf, u64> = HashMap::new();
+    let retry_unchanged_when = cfg.retry_unchanged_when.clone();
     let mut debouncer = new_debouncer(cfg.debounce, move |res: DebounceEventResult| match res {
         Ok(events) => {
             // Filter out ignored paths and dedupe (notify can emit
@@ -85,6 +102,17 @@ where
                     paths.push(e.path);
                 }
             }
+            // Drop paths whose content is byte-identical to the last event.
+            // Editors fire a write on every Ctrl+S even when nothing changed;
+            // rebuilding then is pure wasted work, so a no-op save triggers no
+            // rebuild at all in the clean state. When the caller reports that a
+            // rebuild error is active, unchanged events are allowed through so a
+            // no-op save can retry transient failures. Deletions and oversized
+            // files always count as changed (see `content_changed`).
+            let retry_unchanged = retry_unchanged_when
+                .as_ref()
+                .is_some_and(|predicate| predicate());
+            paths.retain(|path| should_forward_path(&mut content_hashes, path, retry_unchanged));
             if !paths.is_empty() {
                 on_event(paths);
             }
@@ -167,6 +195,52 @@ pub fn default_ignore_paths() -> Vec<PathBuf> {
     ]
 }
 
+/// Largest file the watcher will hash to detect a no-op change. Above this,
+/// an event is always treated as a change — hashing a huge file on every event
+/// would cost more than an occasional rebuild. Dev source files are tiny, so
+/// this only guards pathological inputs.
+const MAX_HASH_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Whether `path`'s content changed since the previous event, updating `cache`.
+///
+/// A path that cannot be read as a regular file within the size cap (deleted,
+/// a directory, a permissions error, or oversized) is treated as **changed** so
+/// deletions still trigger a rebuild and large files are never silently skipped.
+fn content_changed(cache: &mut HashMap<PathBuf, u64>, path: &Path) -> bool {
+    match hash_file(path) {
+        Some(hash) => match cache.insert(path.to_path_buf(), hash) {
+            Some(previous) => previous != hash,
+            None => true,
+        },
+        None => {
+            cache.remove(path);
+            true
+        }
+    }
+}
+
+fn should_forward_path(
+    cache: &mut HashMap<PathBuf, u64>,
+    path: &Path,
+    retry_unchanged: bool,
+) -> bool {
+    content_changed(cache, path) || retry_unchanged
+}
+
+/// Hash the full contents of `path`, or `None` if it is not a readable regular
+/// file within [`MAX_HASH_BYTES`]. Uses the standard hasher — collision
+/// resistance is irrelevant here; we only need "did these bytes change".
+fn hash_file(path: &Path) -> Option<u64> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_HASH_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let mut hasher = DefaultHasher::new();
+    hasher.write(&bytes);
+    Some(hasher.finish())
+}
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
@@ -227,5 +301,44 @@ mod tests {
         ));
         assert!(is_ignored(Path::new("/repo/.git/HEAD"), &ignore));
         assert!(!is_ignored(Path::new("/repo/src/index.ts"), &ignore));
+    }
+
+    #[test]
+    fn content_changed_skips_identical_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.css");
+        std::fs::write(&file, "a { color: red; }").unwrap();
+        let mut cache = HashMap::new();
+
+        // First sighting → changed (nothing cached yet).
+        assert!(content_changed(&mut cache, &file));
+        // Re-saving identical bytes (repeated Ctrl+S) → no change → no rebuild.
+        assert!(!content_changed(&mut cache, &file));
+        assert!(!content_changed(&mut cache, &file));
+
+        // A real edit → changed.
+        std::fs::write(&file, "a { color: blue; }").unwrap();
+        assert!(content_changed(&mut cache, &file));
+        // Identical again → unchanged.
+        assert!(!content_changed(&mut cache, &file));
+
+        // Deletion → changed, so a rebuild can clear stale output.
+        std::fs::remove_file(&file).unwrap();
+        assert!(content_changed(&mut cache, &file));
+        // The cache forgot it, so a later recreation is a fresh change.
+        std::fs::write(&file, "a { color: blue; }").unwrap();
+        assert!(content_changed(&mut cache, &file));
+    }
+
+    #[test]
+    fn unchanged_save_can_retry_when_error_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.css");
+        std::fs::write(&file, "a { color: red; }").unwrap();
+        let mut cache = HashMap::new();
+
+        assert!(should_forward_path(&mut cache, &file, false));
+        assert!(!should_forward_path(&mut cache, &file, false));
+        assert!(should_forward_path(&mut cache, &file, true));
     }
 }

@@ -41,14 +41,22 @@ const result = build({
   componentAssetRoots: ["settings-dialog"], // Static .webui.js asset roots
   cssFileNameTemplate: "[name]-[hash].[ext]", // CSS/component asset filename template
   cssPublicBase: "https://cdn.example.com/assets", // Optional CDN/public href base
+  theme: "./themes/brand.json", // Optional design-token theme validation
   outDir: "./dist",      // Output directory for CLI fallback
 });
 
 // result.protocol  - Buffer containing the compiled protocol
 // result.cssFiles  - Array of [filename, content, ...] pairs
 // result.componentAssetFiles - Array of [filename, ESM content, ...] pairs
+// result.warnings  - Array of non-fatal build advisory diagnostics
 // result.stats     - { durationMs, fragmentCount, componentCount, cssFileCount, protocolSizeBytes, tokenCount }
 ```
+
+When `theme` is provided, every required CSS token must exist in the theme
+after local and ancestor custom-property definitions are excluded. A `var()`
+usage with a literal fallback (e.g. `var(--brand, #000)`) is exempt. Missing
+required tokens fail the build with a structured `missing-theme-token` error.
+Misspelled literal-fallback tokens are returned as non-fatal warnings.
 
 ### `render(protocol: Buffer, state: object | string): string`
 

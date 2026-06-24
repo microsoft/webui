@@ -677,6 +677,8 @@ mod tests {
             html_content: html.to_string(),
             css_content: css.map(ToString::to_string),
             css_tokens: Vec::new(),
+            css_definitions: Vec::new(),
+            css_fallback_chains: Vec::new(),
             source_path: PathBuf::from("/test"),
             class_name: None,
         }

@@ -5,7 +5,7 @@
 //!
 //! This module manages the registry of web components used in the application.
 
-use crate::{CssParser, LegalComments, ParserError, Result};
+use crate::{CssFallbackChain, CssParser, LegalComments, ParserError, Result};
 use std::collections::HashMap;
 #[cfg(feature = "fs")]
 use std::fs;
@@ -14,6 +14,8 @@ use std::path::Path;
 use std::path::PathBuf;
 #[cfg(feature = "fs")]
 use walkdir::WalkDir;
+
+type ProcessedCss = (String, Vec<String>, Vec<String>, Vec<CssFallbackChain>);
 
 /// Represents a web component in the registry.
 #[derive(Debug, Clone)]
@@ -30,6 +32,12 @@ pub struct Component {
     /// CSS custom property token names extracted from this component's CSS
     /// (sorted, deduplicated, without `--` prefix).
     pub css_tokens: Vec<String>,
+
+    /// CSS custom property definitions from this component's CSS.
+    pub css_definitions: Vec<String>,
+
+    /// CSS `var()` fallback chains from this component's CSS.
+    pub css_fallback_chains: Vec<CssFallbackChain>,
 
     /// The file path where this component is defined
     pub source_path: PathBuf,
@@ -143,21 +151,24 @@ impl ComponentRegistry {
         })?;
 
         // Read CSS content and extract tokens if available
-        let (css_content, css_tokens) = if let Some(css_path) = css_path {
-            let css_path = css_path.as_ref();
-            if css_path.exists() {
-                let content = fs::read_to_string(css_path).map_err(|source| ParserError::IO {
-                    context: format!("Failed to read CSS file: {}", css_path.display()),
-                    source,
-                })?;
-                let (content, tokens) = self.process_css_content(&content)?;
-                (Some(content), tokens)
+        let (css_content, css_tokens, css_definitions, css_fallback_chains) =
+            if let Some(css_path) = css_path {
+                let css_path = css_path.as_ref();
+                if css_path.exists() {
+                    let content =
+                        fs::read_to_string(css_path).map_err(|source| ParserError::IO {
+                            context: format!("Failed to read CSS file: {}", css_path.display()),
+                            source,
+                        })?;
+                    let (content, tokens, definitions, requirements) =
+                        self.process_css_content(&content)?;
+                    (Some(content), tokens, definitions, requirements)
+                } else {
+                    (None, Vec::new(), Vec::new(), Vec::new())
+                }
             } else {
-                (None, Vec::new())
-            }
-        } else {
-            (None, Vec::new())
-        };
+                (None, Vec::new(), Vec::new(), Vec::new())
+            };
 
         // Create and register the component
         let component = Component {
@@ -165,6 +176,8 @@ impl ComponentRegistry {
             html_content,
             css_content,
             css_tokens,
+            css_definitions,
+            css_fallback_chains,
             source_path: html_path.to_path_buf(),
             class_name: None,
         };
@@ -197,12 +210,12 @@ impl ComponentRegistry {
         }
 
         // Extract CSS tokens if CSS content is provided
-        let (css_content, css_tokens) = match css_content {
+        let (css_content, css_tokens, css_definitions, css_fallback_chains) = match css_content {
             Some(css) => {
-                let (content, tokens) = self.process_css_content(css)?;
-                (Some(content), tokens)
+                let (content, tokens, definitions, requirements) = self.process_css_content(css)?;
+                (Some(content), tokens, definitions, requirements)
             }
-            None => (None, Vec::new()),
+            None => (None, Vec::new(), Vec::new(), Vec::new()),
         };
 
         // Create component with dummy path since it's coming from string content
@@ -211,6 +224,8 @@ impl ComponentRegistry {
             html_content: html_content.to_string(),
             css_content,
             css_tokens,
+            css_definitions,
+            css_fallback_chains,
             source_path: PathBuf::new(), // Empty path since it's not from a file
             class_name: None,
         };
@@ -221,13 +236,23 @@ impl ComponentRegistry {
     }
 
     /// Extract CSS tokens from content and return as a sorted `Vec`.
-    fn process_css_content(&mut self, css_content: &str) -> Result<(String, Vec<String>)> {
-        let (tokens, _definitions, stripped) = self
+    fn process_css_content(&mut self, css_content: &str) -> Result<ProcessedCss> {
+        let (tokens, definitions, requirements, stripped) = self
             .css_parser
-            .extract_tokens_definitions_and_strip_comments(css_content, self.legal_comments)?;
+            .extract_tokens_definitions_requirements_and_strip_comments(
+                css_content,
+                self.legal_comments,
+            )?;
         let mut sorted: Vec<String> = tokens.into_iter().collect();
         sorted.sort();
-        Ok((stripped.into_owned(), sorted))
+        let mut sorted_definitions: Vec<String> = definitions.into_iter().collect();
+        sorted_definitions.sort();
+        Ok((
+            stripped.into_owned(),
+            sorted,
+            sorted_definitions,
+            requirements,
+        ))
     }
 
     /// Check if a tag name is registered as a component.
@@ -265,6 +290,7 @@ impl ComponentRegistry {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use webui_test_utils::TestFileSystem;

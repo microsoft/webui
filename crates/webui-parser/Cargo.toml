@@ -27,6 +27,7 @@ ignored = ["clap"]
 
 [dependencies]
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.17" }
+microsoft-webui-tokens = { path = "../webui-tokens", version = "0.0.17" }
 thiserror = { workspace = true }
 html-escape = { workspace = true }
 walkdir = { workspace = true, optional = true }

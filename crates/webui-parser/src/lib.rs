@@ -25,10 +25,10 @@ pub use component_registry::{Component, ComponentRegistry};
 pub use condition_parser::ConditionParser;
 pub use css_link::{CssLinkHref, CssLinkOptions, DEFAULT_CSS_FILE_NAME_TEMPLATE};
 pub use css_parser::CssParser;
-use diagnostic::codes;
-pub use diagnostic::{Diagnostic, Severity};
+pub use diagnostic::{codes, Diagnostic, Severity};
 pub use error::{ParserError, Result};
 pub use handlebars_parser::HandlebarsParser;
+pub use webui_tokens::CssFallbackChain;
 
 use crate::html_parser::{self as html, Attrs, Element, Event, Walker};
 use crate::plugin::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
@@ -305,6 +305,38 @@ struct ParseContext {
     raw_buffer: String,
 }
 
+#[derive(Default)]
+struct FragmentCssTokens {
+    definitions: Vec<String>,
+    fallback_chains: Vec<CssFallbackChain>,
+}
+
+/// CSS token analysis produced from the parsed template/component graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CssTokenAnalysis {
+    /// Sorted, deduplicated token candidates stored in the protocol.
+    pub protocol_tokens: Vec<String>,
+    /// Fallback chains that still need theme/literal coverage after local and
+    /// ancestor custom-property definitions are considered.
+    pub fallback_chains: Vec<CssFallbackChain>,
+    /// Source location of each unresolved token's first `var()` usage, keyed by
+    /// token name. Used to point theme-validation diagnostics at the offending
+    /// CSS. Build-time only; never serialized.
+    pub(crate) token_sites: HashMap<String, TokenSite>,
+}
+
+/// Where an unresolved CSS token is first referenced, for diagnostics.
+///
+/// `owner` is a file-like label (`my-card.css`, or the entry file for inline
+/// `<style>`). `position`/`snippet` are populated for component CSS where the
+/// source is a standalone file; inline styles record the owner only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TokenSite {
+    owner: String,
+    position: Option<(usize, usize)>,
+    snippet: Option<String>,
+}
+
 enum ParseOp<'a> {
     Parse {
         range: Range<usize>,
@@ -325,6 +357,13 @@ enum ParseOp<'a> {
         condition: ConditionExpr,
         fragment_id: String,
     },
+}
+
+enum TokenGraphOp<'a> {
+    EnterFragment(&'a str),
+    EnterComponent(&'a str),
+    EnterRoute(&'a WebUiFragmentRoute),
+    ExitDefinitions(&'a [String]),
 }
 
 impl Default for HtmlParser {
@@ -362,14 +401,13 @@ pub struct HtmlParser {
     /// Optional parser plugin for framework-specific behavior.
     plugin: Option<Box<dyn ParserPlugin>>,
 
-    /// Accumulated CSS custom property token names from all processed
-    /// components and inline `<style>` tags.
-    token_store: HashSet<String>,
+    /// Top-level fragments parsed by callers. Token graph traversal starts
+    /// from these roots after parsing completes.
+    token_roots: Vec<String>,
 
-    /// CSS custom property names **defined** in inline `<style>` tags
-    /// (e.g., `:root { --color-primary: #0078d4; }`). These are excluded
-    /// from the final token set since the app already provides their values.
-    token_definitions: HashSet<String>,
+    /// CSS custom property definitions and fallback chains from inline
+    /// `<style>` tags, keyed by owning fragment id.
+    fragment_css_tokens: HashMap<String, FragmentCssTokens>,
 
     /// Fragment IDs currently being parsed, used to reject recursive component
     /// references before they can recurse through template parsing.
@@ -389,6 +427,271 @@ impl BuiltComponentTemplate {
     fn artifact(&self) -> &str {
         self.artifact.as_deref().unwrap_or(&self.ssr)
     }
+}
+
+fn add_token_definitions(definitions: &[String], available_counts: &mut HashMap<String, usize>) {
+    for definition in definitions {
+        let count = available_counts.entry(definition.clone()).or_insert(0);
+        *count += 1;
+    }
+}
+
+fn remove_token_definitions(definitions: &[String], available_counts: &mut HashMap<String, usize>) {
+    for definition in definitions {
+        if let Some(count) = available_counts.get_mut(definition) {
+            if *count == 1 {
+                available_counts.remove(definition);
+            } else {
+                *count -= 1;
+            }
+        }
+    }
+}
+
+/// Accumulators for the token-graph walk: the unresolved fallback chains and
+/// the per-token source locations, grouped so walk helpers stay within the
+/// argument-count budget.
+#[derive(Default)]
+struct UnresolvedTokens {
+    chains: Vec<CssFallbackChain>,
+    sites: HashMap<String, TokenSite>,
+}
+
+fn record_unresolved_requirements(
+    source: &[CssFallbackChain],
+    available_counts: &HashMap<String, usize>,
+    owner: &str,
+    css_source: Option<&str>,
+    out: &mut UnresolvedTokens,
+) {
+    for requirement in source {
+        let tokens: Vec<String> = requirement
+            .tokens
+            .iter()
+            .filter(|token| !available_counts.contains_key(*token))
+            .cloned()
+            .collect();
+        if tokens.is_empty() {
+            continue;
+        }
+        for token in &tokens {
+            if !out.sites.contains_key(token) {
+                out.sites
+                    .insert(token.clone(), token_site(owner, css_source, token));
+            }
+        }
+        out.chains.push(CssFallbackChain {
+            tokens,
+            has_literal_fallback: requirement.has_literal_fallback,
+        });
+    }
+}
+
+/// Build the [`TokenSite`] for `token`. When `css_source` is available (a
+/// component's standalone CSS), the token's `var()` usage is located for a
+/// precise `line:column` and snippet; otherwise only the `owner` is recorded.
+fn token_site(owner: &str, css_source: Option<&str>, token: &str) -> TokenSite {
+    let (position, snippet) = match css_source.and_then(|css| locate_css_token(css, token)) {
+        Some((line, column, snippet)) => (Some((line, column)), Some(snippet)),
+        None => (None, None),
+    };
+    TokenSite {
+        owner: owner.to_string(),
+        position,
+        snippet,
+    }
+}
+
+/// Locate the first `var(--token)` **usage** (not a `--token:` definition) in
+/// `css`, returning its 1-based `(line, column)` and a one-line snippet.
+///
+/// Iterative byte scan — no regex, no recursion. Cold-ish (build time, only for
+/// unresolved tokens).
+fn locate_css_token(css: &str, token: &str) -> Option<(usize, usize, String)> {
+    let bytes = css.as_bytes();
+    let name = token.as_bytes();
+    let mut index = 0;
+    while index + 2 + name.len() <= bytes.len() {
+        let is_prefixed = bytes[index] == b'-'
+            && bytes[index + 1] == b'-'
+            && bytes.get(index + 2..index + 2 + name.len()) == Some(name);
+        if is_prefixed {
+            let after = index + 2 + name.len();
+            let is_exact_name = bytes
+                .get(after)
+                .is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_'));
+            if is_exact_name {
+                let mut cursor = after;
+                while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+                // `--token:` is a definition, not the usage we want to point at.
+                if bytes.get(cursor) != Some(&b':') {
+                    let (line, column) = diagnostic::line_column(css, index);
+                    return Some((line, column, css_line_snippet(css, index)));
+                }
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+/// Extract the trimmed line containing byte `offset`, capped so a minified
+/// stylesheet does not produce a wall-of-text snippet.
+fn css_line_snippet(css: &str, offset: usize) -> String {
+    const MAX_SNIPPET: usize = 80;
+    let start = css[..offset].rfind('\n').map_or(0, |n| n + 1);
+    let end = css[offset..].find('\n').map_or(css.len(), |n| offset + n);
+    let line = css[start..end].trim();
+    if line.chars().count() > MAX_SNIPPET {
+        let truncated: String = line.chars().take(MAX_SNIPPET).collect();
+        format!("{truncated}…")
+    } else {
+        line.to_string()
+    }
+}
+
+/// File-like owner label for a component's standalone CSS
+/// (`my-card` → `my-card.css`), used as the `--> owner:line:column` prefix.
+fn css_owner_label(tag_name: &str) -> String {
+    let mut label = String::with_capacity(tag_name.len() + 4);
+    label.push_str(tag_name);
+    label.push_str(".css");
+    label
+}
+
+impl CssTokenAnalysis {
+    /// Validate the required CSS tokens against a loaded design-token theme.
+    ///
+    /// A token is *required* in every theme only when it appears in at least one
+    /// unresolved `var()` chain with **no** literal CSS fallback. A chain such as
+    /// `var(--x, 16px)` provides its own value, so `--x` stays in
+    /// [`protocol_tokens`](Self::protocol_tokens) for runtime resolution (the
+    /// theme value still wins when present) but does not fail the build when the
+    /// theme omits it. The chain/theme policy lives in
+    /// [`webui_tokens::validate_chain_tokens`]; this only adapts its
+    /// [`webui_tokens::TokenError`] into a structured [`Diagnostic`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParserError::Template`] with a stable diagnostic code when a
+    /// required token is missing from a theme. Theme token values are trusted and
+    /// their transitive references are left to browser CSS semantics.
+    pub fn validate_theme_tokens(&self, theme: &webui_tokens::TokenFile) -> Result<()> {
+        webui_tokens::validate_chain_tokens(&self.fallback_chains, theme)
+            .map_err(|source| self.theme_token_error(source, theme))
+    }
+
+    /// CSS tokens used **only** with a literal `var()` fallback and defined in no
+    /// theme — likely typos that callers may surface as non-fatal advisories.
+    ///
+    /// Thin wrapper over [`webui_tokens::unthemed_literal_fallback_tokens`].
+    #[must_use]
+    pub fn unthemed_literal_fallback_tokens(&self, theme: &webui_tokens::TokenFile) -> Vec<String> {
+        webui_tokens::unthemed_literal_fallback_tokens(&self.fallback_chains, theme)
+    }
+
+    /// Structured, color-free advisories for CSS tokens used only with a
+    /// literal `var()` fallback and defined in no theme — almost always typos.
+    ///
+    /// Returned as warning-severity [`Diagnostic`]s so hosts render them with
+    /// the same location/snippet/`help:` layout as errors (the CLI colorizes;
+    /// other hosts use the plain [`Diagnostic::body`]). Each carries the token's
+    /// source location and a `did you mean --…?` suggestion.
+    #[must_use]
+    pub fn theme_token_warnings(&self, theme: &webui_tokens::TokenFile) -> Vec<Diagnostic> {
+        let mut warnings = Vec::new();
+        for token in webui_tokens::unthemed_literal_fallback_tokens(&self.fallback_chains, theme) {
+            let help = match closest_theme_token(&token, theme.themes.values()) {
+                Some(suggestion) => {
+                    format!("did you mean --{suggestion}? otherwise the literal fallback is used")
+                }
+                None => format!(
+                    "define --{token} in the theme, or keep its literal fallback if intentional"
+                ),
+            };
+            let diag = self.locate_diagnostic(
+                Diagnostic::warning(format!("unthemed CSS token --{token}"))
+                    .code(codes::UNTHEMED_TOKEN)
+                    .help(help),
+                &token,
+            );
+            warnings.push(diag);
+        }
+        warnings
+    }
+
+    /// Adapt a [`webui_tokens::TokenError`] into a structured [`Diagnostic`],
+    /// enriching it with the token's source location and a `did you mean …?`
+    /// suggestion drawn from the theme's own tokens.
+    #[cold]
+    #[inline(never)]
+    fn theme_token_error(
+        &self,
+        source: webui_tokens::TokenError,
+        theme: &webui_tokens::TokenFile,
+    ) -> ParserError {
+        match source {
+            webui_tokens::TokenError::MissingToken {
+                theme: theme_name,
+                token,
+            } => {
+                // The error title + snippet already say the token is missing
+                // from the theme, so the help only adds what isn't obvious: the
+                // likely-typo suggestion and the local-definition escape hatch.
+                let help =
+                    match closest_theme_token(&token, theme.themes.get(&theme_name).into_iter()) {
+                        Some(suggestion) => {
+                            format!("did you mean --{suggestion}? otherwise define it locally")
+                        }
+                        None => {
+                            "define it locally if it should not come from the theme".to_string()
+                        }
+                    };
+                self.locate_diagnostic(
+                    Diagnostic::error("missing theme token")
+                        .code(codes::MISSING_THEME_TOKEN)
+                        .help(help),
+                    &token,
+                )
+                .into()
+            }
+            other => ParserError::Generic(format!("Theme token validation failed: {other}")),
+        }
+    }
+
+    /// Attach `token`'s recorded source location (owner, `line:column`, snippet)
+    /// to `diag`. Falls back to a `--token` snippet when no location is known.
+    fn locate_diagnostic(&self, diag: Diagnostic, token: &str) -> Diagnostic {
+        let Some(site) = self.token_sites.get(token) else {
+            return diag.snippet(format!("--{token}"));
+        };
+        let mut diag = diag.component(site.owner.clone());
+        if let Some((line, column)) = site.position {
+            diag = diag.position(line, column);
+        }
+        match &site.snippet {
+            Some(snippet) => diag.snippet(snippet.clone()),
+            None => diag.snippet(format!("--{token}")),
+        }
+    }
+}
+
+/// Closest theme token to `target` by Levenshtein distance across the given
+/// theme token maps, considering each theme's keys. Sorted for determinism.
+#[cold]
+#[inline(never)]
+fn closest_theme_token<'a>(
+    target: &str,
+    themes: impl Iterator<Item = &'a std::collections::HashMap<String, String>>,
+) -> Option<String> {
+    let mut names: Vec<&str> = themes
+        .flat_map(|theme| theme.keys().map(String::as_str))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    crate::suggest::closest_match(target, names.into_iter()).map(ToOwned::to_owned)
 }
 
 impl HtmlParser {
@@ -413,8 +716,8 @@ impl HtmlParser {
             fragment_records: WebUIFragmentRecords::new(),
             options,
             plugin: None,
-            token_store: HashSet::new(),
-            token_definitions: HashSet::new(),
+            token_roots: Vec::new(),
+            fragment_css_tokens: HashMap::new(),
             in_progress_fragments: HashSet::new(),
             current_fragment_id: String::new(),
         }
@@ -480,25 +783,189 @@ impl HtmlParser {
 
     /// Take the accumulated CSS tokens as a sorted, deduplicated `Vec`.
     ///
-    /// Tokens that are **defined** in inline `<style>` tags (e.g., in a
-    /// `:root` block) are excluded — only externally-referenced tokens
-    /// that the app does not already define are returned.
-    ///
-    /// This consumes the internal token store. Call after parsing is complete.
+    /// Convenience wrapper around [`HtmlParser::token_analysis`].
     #[must_use]
     pub fn take_tokens(&mut self) -> Vec<String> {
-        let definitions = std::mem::take(&mut self.token_definitions);
-        let mut tokens: Vec<String> = std::mem::take(&mut self.token_store)
-            .into_iter()
-            .filter(|t| !definitions.contains(t))
-            .collect();
-        tokens.sort();
-        tokens
+        self.token_analysis().protocol_tokens
+    }
+
+    /// Analyze CSS token requirements from the parsed fragment/component graph.
+    ///
+    /// Each token candidate in a `var()` fallback chain is removed when that
+    /// token is defined by CSS in the current fragment or an ancestor
+    /// component/root. The returned protocol token list is sorted and
+    /// deduplicated from the remaining unresolved fallback-chain candidates.
+    #[must_use]
+    pub fn token_analysis(&self) -> CssTokenAnalysis {
+        let (fallback_chains, token_sites) = self.collect_unresolved_fallback_chains();
+        let mut protocol_token_set = HashSet::new();
+        for chain in &fallback_chains {
+            for token in &chain.tokens {
+                protocol_token_set.insert(token.clone());
+            }
+        }
+        let mut protocol_tokens: Vec<String> = protocol_token_set.into_iter().collect();
+        protocol_tokens.sort();
+        CssTokenAnalysis {
+            protocol_tokens,
+            fallback_chains,
+            token_sites,
+        }
+    }
+
+    fn collect_unresolved_fallback_chains(
+        &self,
+    ) -> (Vec<CssFallbackChain>, HashMap<String, TokenSite>) {
+        let mut out = UnresolvedTokens::default();
+        let mut available_counts: HashMap<String, usize> = HashMap::new();
+        let mut ops: Vec<TokenGraphOp<'_>> = Vec::with_capacity(self.token_roots.len());
+        for root in self.token_roots.iter().rev() {
+            ops.push(TokenGraphOp::EnterFragment(root.as_str()));
+        }
+
+        while let Some(op) = ops.pop() {
+            match op {
+                TokenGraphOp::EnterFragment(fragment_id) => {
+                    self.enter_token_fragment(
+                        fragment_id,
+                        &mut available_counts,
+                        &mut out,
+                        &mut ops,
+                    );
+                }
+                TokenGraphOp::EnterComponent(tag_name) => {
+                    self.enter_token_component(tag_name, &mut available_counts, &mut out, &mut ops);
+                }
+                TokenGraphOp::EnterRoute(route) => {
+                    self.enter_token_route(route, &mut available_counts, &mut out, &mut ops);
+                }
+                TokenGraphOp::ExitDefinitions(definitions) => {
+                    remove_token_definitions(definitions, &mut available_counts);
+                }
+            }
+        }
+
+        (out.chains, out.sites)
+    }
+
+    fn enter_token_fragment<'a>(
+        &'a self,
+        fragment_id: &'a str,
+        available_counts: &mut HashMap<String, usize>,
+        out: &mut UnresolvedTokens,
+        ops: &mut Vec<TokenGraphOp<'a>>,
+    ) {
+        if let Some(css) = self.fragment_css_tokens.get(fragment_id) {
+            add_token_definitions(&css.definitions, available_counts);
+            // Inline `<style>` tokens record their owning fragment (the entry
+            // file). A fragment may carry several `<style>` blocks, so an
+            // offset into one body is ambiguous — record the owner only.
+            record_unresolved_requirements(
+                &css.fallback_chains,
+                available_counts,
+                fragment_id,
+                None,
+                out,
+            );
+            ops.push(TokenGraphOp::ExitDefinitions(&css.definitions));
+        }
+
+        let Some(fragments) = self.fragment_records.get(fragment_id) else {
+            return;
+        };
+        for fragment in fragments.fragments.iter().rev() {
+            match fragment.fragment.as_ref() {
+                Some(web_ui_fragment::Fragment::Component(component)) => {
+                    ops.push(TokenGraphOp::EnterComponent(component.fragment_id.as_str()));
+                }
+                Some(web_ui_fragment::Fragment::ForLoop(for_loop)) => {
+                    ops.push(TokenGraphOp::EnterFragment(for_loop.fragment_id.as_str()));
+                }
+                Some(web_ui_fragment::Fragment::IfCond(if_cond)) => {
+                    ops.push(TokenGraphOp::EnterFragment(if_cond.fragment_id.as_str()));
+                }
+                Some(web_ui_fragment::Fragment::Route(route)) => {
+                    ops.push(TokenGraphOp::EnterRoute(route));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn enter_token_component<'a>(
+        &'a self,
+        tag_name: &'a str,
+        available_counts: &mut HashMap<String, usize>,
+        out: &mut UnresolvedTokens,
+        ops: &mut Vec<TokenGraphOp<'a>>,
+    ) {
+        let Some(component) = self.component_registry.get(tag_name) else {
+            return;
+        };
+        add_token_definitions(&component.css_definitions, available_counts);
+        record_unresolved_requirements(
+            &component.css_fallback_chains,
+            available_counts,
+            &css_owner_label(tag_name),
+            component.css_content.as_deref(),
+            out,
+        );
+        ops.push(TokenGraphOp::ExitDefinitions(&component.css_definitions));
+        ops.push(TokenGraphOp::EnterFragment(tag_name));
+    }
+
+    fn enter_token_route<'a>(
+        &'a self,
+        route: &'a WebUiFragmentRoute,
+        available_counts: &mut HashMap<String, usize>,
+        out: &mut UnresolvedTokens,
+        ops: &mut Vec<TokenGraphOp<'a>>,
+    ) {
+        let Some(component) = self.component_registry.get(&route.fragment_id) else {
+            return;
+        };
+        add_token_definitions(&component.css_definitions, available_counts);
+        record_unresolved_requirements(
+            &component.css_fallback_chains,
+            available_counts,
+            &css_owner_label(&route.fragment_id),
+            component.css_content.as_deref(),
+            out,
+        );
+        ops.push(TokenGraphOp::ExitDefinitions(&component.css_definitions));
+        if !route.error_component.is_empty() {
+            ops.push(TokenGraphOp::EnterComponent(route.error_component.as_str()));
+        }
+        if !route.pending_component.is_empty() {
+            ops.push(TokenGraphOp::EnterComponent(
+                route.pending_component.as_str(),
+            ));
+        }
+        for child in route.children.iter().rev() {
+            ops.push(TokenGraphOp::EnterRoute(child));
+        }
+        ops.push(TokenGraphOp::EnterFragment(route.fragment_id.as_str()));
+    }
+
+    fn record_fragment_css_tokens(
+        &mut self,
+        definitions: HashSet<String>,
+        fallback_chains: Vec<CssFallbackChain>,
+    ) {
+        let css = self
+            .fragment_css_tokens
+            .entry(self.current_fragment_id.clone())
+            .or_default();
+        css.definitions.extend(definitions);
+        css.definitions.sort();
+        css.definitions.dedup();
+        css.fallback_chains.extend(fallback_chains);
     }
 
     /// Parse HTML content to generate WebUI fragments.
     pub fn parse(&mut self, fragment_id: &str, html_content: &str) -> Result<()> {
         let fragment_key = fragment_id.to_string();
+        let is_token_root = self.in_progress_fragments.is_empty();
         // Save the caller's fragment id and restore it before returning. A
         // component parse recurses through `enter_component_directive`
         // (`self.parse(child, …)`); without restoring, the parent would keep
@@ -519,6 +986,9 @@ impl HtmlParser {
                 .into();
             self.current_fragment_id = previous_fragment_id;
             return Err(err);
+        }
+        if is_token_root && !self.token_roots.contains(&fragment_key) {
+            self.token_roots.push(fragment_key.clone());
         }
 
         let result = self.parse_inner(fragment_id, html_content);
@@ -1268,7 +1738,7 @@ impl HtmlParser {
 
         self.flush_raw_buffer(fragments);
 
-        let (html_content, css_content, css_tokens) = {
+        let (html_content, css_content) = {
             let component = self.component_registry.get(element.name()).ok_or_else(|| {
                 self.authoring_error_at(
                     codes::UNKNOWN_COMPONENT,
@@ -1280,11 +1750,8 @@ impl HtmlParser {
             (
                 component.html_content.clone(),
                 component.css_content.clone(),
-                component.css_tokens.clone(),
             )
         };
-
-        self.token_store.extend(css_tokens);
 
         if !self.fragment_records.contains_key(element.name()) {
             let component_data = self
@@ -1637,12 +2104,14 @@ impl HtmlParser {
         self.add_raw_fragment(element.opening());
         let inner = element.inner();
         let style_content = &element.source()[inner.start..inner.end];
-        let (tokens, defs, comments) = self
+        let (_tokens, defs, requirements, comments) = self
             .css_parser
-            .extract_tokens_definitions_and_comments(style_content, self.options.legal_comments)
+            .extract_tokens_definitions_requirements_and_comments(
+                style_content,
+                self.options.legal_comments,
+            )
             .map_err(|e| self.css_diagnostic(e))?;
-        self.token_store.extend(tokens);
-        self.token_definitions.extend(defs);
+        self.record_fragment_css_tokens(defs, requirements);
         self.process_style_content(style_content, &comments, fragments);
         if element.close_end() > element.content_end() {
             // Reconstruct the closing tag from the parsed name so the emitted
@@ -1892,7 +2361,10 @@ impl HtmlParser {
         let inner = element.inner();
         let style_content = &element.source()[inner.start..inner.end];
         self.css_parser
-            .extract_tokens_definitions_and_comments(style_content, self.options.legal_comments)
+            .extract_tokens_definitions_requirements_and_comments(
+                style_content,
+                self.options.legal_comments,
+            )
             .map_err(|e| self.css_diagnostic(e))?;
         Ok(())
     }
@@ -2029,9 +2501,6 @@ impl HtmlParser {
                 .help(self.unknown_component_help(component))
             })?
             .clone();
-
-        self.token_store
-            .extend(component_data.css_tokens.iter().cloned());
 
         let built = self.build_component_templates(
             component,
@@ -2290,9 +2759,12 @@ impl HtmlParser {
 
         for (style_start, style_end) in style_ranges {
             let css = &html[style_start..style_end];
-            let (_tokens, _defs, comments) = self
+            let (_tokens, _defs, _requirements, comments) = self
                 .css_parser
-                .extract_tokens_definitions_and_comments(css, self.options.legal_comments)
+                .extract_tokens_definitions_requirements_and_comments(
+                    css,
+                    self.options.legal_comments,
+                )
                 .map_err(|e| self.css_diagnostic(e))?;
             for comment in comments {
                 let comment_text = &css[comment.start_byte..comment.end_byte];
@@ -5274,6 +5746,275 @@ mod tests {
         let tokens = parser.take_tokens();
 
         assert_eq!(tokens, vec!["borderWidth", "textColor"]);
+    }
+
+    #[test]
+    fn test_token_requirements_preserve_fallback_chains() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(
+                "my-card",
+                "<div>Card</div>",
+                Some(":host { color: var(--token-a, var(--token-b, var(--token-c))); }"),
+            )
+            .expect("register failed");
+
+        parser
+            .parse("test.html", "<my-card></my-card>")
+            .expect("parse failed");
+        let analysis = parser.token_analysis();
+
+        assert_eq!(analysis.fallback_chains.len(), 1);
+        assert_eq!(
+            analysis.fallback_chains[0].tokens,
+            vec!["token-a", "token-b", "token-c"]
+        );
+        assert!(!analysis.fallback_chains[0].has_literal_fallback);
+    }
+
+    #[test]
+    fn test_token_requirements_remove_locally_defined_candidates_from_fallback_chain() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(
+                "my-card",
+                "<div>Card</div>",
+                Some(
+                    ":host { --token-a: red; --foo-bar: var(--token-a, var(--token-b, var(--token-c))); }",
+                ),
+            )
+            .expect("register failed");
+
+        parser
+            .parse("test.html", "<my-card></my-card>")
+            .expect("parse failed");
+        let analysis = parser.token_analysis();
+
+        assert_eq!(analysis.protocol_tokens, vec!["token-b", "token-c"]);
+        assert_eq!(analysis.fallback_chains.len(), 1);
+        assert_eq!(
+            analysis.fallback_chains[0].tokens,
+            vec!["token-b", "token-c"]
+        );
+    }
+
+    #[test]
+    fn test_token_analysis_theme_validation_reports_missing_unresolved_token() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(
+                "my-card",
+                "<div>Card</div>",
+                Some(
+                    ":host { --token-a: red; --foo-bar: var(--token-a, var(--token-b, var(--token-c))); }",
+                ),
+            )
+            .expect("register failed");
+        parser
+            .parse("test.html", "<my-card></my-card>")
+            .expect("parse failed");
+
+        let analysis = parser.token_analysis();
+        let theme = webui_tokens::TokenFile {
+            themes: HashMap::from([(
+                "light".to_string(),
+                HashMap::from([("token-b".to_string(), "green".to_string())]),
+            )]),
+        };
+
+        let Err(ParserError::Template(diagnostic)) = analysis.validate_theme_tokens(&theme) else {
+            panic!("missing --token-c in the theme must fail parser validation");
+        };
+        assert_eq!(diagnostic.error_code(), Some(codes::MISSING_THEME_TOKEN));
+        // The help is concise: a typo suggestion plus the local-definition
+        // escape hatch — it does not restate "add --token-c to theme".
+        let help = diagnostic.help_text().expect("help text");
+        assert!(help.contains("did you mean --token-b?"), "help: {help}");
+        assert!(help.contains("define it locally"), "help: {help}");
+        assert!(!help.contains("add --token"), "help: {help}");
+    }
+
+    #[test]
+    fn test_token_analysis_literal_fallback_token_exempt_from_theme_validation() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(
+                "my-card",
+                "<div>Card</div>",
+                Some(":host { color: var(--brand, #000); }"),
+            )
+            .expect("register failed");
+        parser
+            .parse("test.html", "<my-card></my-card>")
+            .expect("parse failed");
+
+        let analysis = parser.token_analysis();
+        // The token is still hoisted so the runtime resolves it when a theme
+        // does provide it.
+        assert_eq!(analysis.protocol_tokens, vec!["brand"]);
+
+        // A theme without `--brand` must NOT fail the build: the CSS literal
+        // fallback (`#000`) already provides a value.
+        let theme = webui_tokens::TokenFile {
+            themes: HashMap::from([("light".to_string(), HashMap::new())]),
+        };
+        analysis
+            .validate_theme_tokens(&theme)
+            .expect("literal fallback must exempt --brand from theme validation");
+    }
+
+    #[test]
+    fn test_token_analysis_mixed_literal_and_bare_usage_requires_token() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(
+                "my-card",
+                "<div>Card</div>",
+                // One usage has a literal fallback, the other does not. The
+                // bare `var(--brand)` makes the token genuinely required.
+                Some(":host { color: var(--brand, #000); background: var(--brand); }"),
+            )
+            .expect("register failed");
+        parser
+            .parse("test.html", "<my-card></my-card>")
+            .expect("parse failed");
+
+        let analysis = parser.token_analysis();
+        let theme = webui_tokens::TokenFile {
+            themes: HashMap::from([("light".to_string(), HashMap::new())]),
+        };
+
+        let Err(ParserError::Template(diagnostic)) = analysis.validate_theme_tokens(&theme) else {
+            panic!("a bare var(--brand) usage must require --brand in the theme");
+        };
+        assert_eq!(diagnostic.error_code(), Some(codes::MISSING_THEME_TOKEN));
+        assert!(diagnostic.to_string().contains("--brand"));
+    }
+
+    #[test]
+    fn test_unthemed_literal_fallback_tokens_flags_only_literal_only_absent_tokens() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(
+                "my-card",
+                "<div>Card</div>",
+                Some(
+                    ":host { \
+                       color: var(--colr-brand, #000); \
+                       border: var(--present, 1px); \
+                       margin: var(--required); \
+                     }",
+                ),
+            )
+            .expect("register failed");
+        parser
+            .parse("test.html", "<my-card></my-card>")
+            .expect("parse failed");
+
+        let analysis = parser.token_analysis();
+        let theme = webui_tokens::TokenFile {
+            themes: HashMap::from([(
+                "light".to_string(),
+                HashMap::from([
+                    ("present".to_string(), "2px".to_string()),
+                    ("required".to_string(), "8px".to_string()),
+                ]),
+            )]),
+        };
+
+        // `colr-brand`: literal-only and absent from every theme → warned.
+        // `present`: literal-only but defined in the theme → not warned.
+        // `required`: has no literal fallback → a validation concern, not a warning.
+        assert_eq!(
+            analysis.unthemed_literal_fallback_tokens(&theme),
+            vec!["colr-brand".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_theme_token_error_reports_location_and_suggestion() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(
+                "my-card",
+                "<div>Card</div>",
+                ":host {\n  color: var(--color-neutral-2000);\n}".into(),
+            )
+            .expect("register failed");
+        parser
+            .parse("test.html", "<my-card></my-card>")
+            .expect("parse failed");
+
+        let analysis = parser.token_analysis();
+        let theme = webui_tokens::TokenFile {
+            themes: HashMap::from([(
+                "dark".to_string(),
+                HashMap::from([("color-neutral-200".to_string(), "#222".to_string())]),
+            )]),
+        };
+
+        let Err(ParserError::Template(diag)) = analysis.validate_theme_tokens(&theme) else {
+            panic!("missing --color-neutral-2000 must fail validation");
+        };
+        assert_eq!(diag.error_code(), Some(codes::MISSING_THEME_TOKEN));
+        // File + line:column, like other authoring diagnostics.
+        let location = diag.location().expect("a source location");
+        assert!(location.contains("my-card.css:2:"), "location: {location}");
+        // Snippet shows the offending CSS line.
+        assert!(
+            diag.snippet_text()
+                .is_some_and(|s| s.contains("--color-neutral-2000")),
+            "snippet: {:?}",
+            diag.snippet_text()
+        );
+        // Did-you-mean from the theme's own tokens.
+        assert!(
+            diag.help_text()
+                .is_some_and(|h| h.contains("did you mean --color-neutral-200?")),
+            "help: {:?}",
+            diag.help_text()
+        );
+    }
+
+    #[test]
+    fn test_theme_token_warning_reports_location_and_suggestion() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(
+                "my-card",
+                "<div>Card</div>",
+                ":host {\n  color: var(--colr-brand, #000);\n}".into(),
+            )
+            .expect("register failed");
+        parser
+            .parse("test.html", "<my-card></my-card>")
+            .expect("parse failed");
+
+        let analysis = parser.token_analysis();
+        let theme = webui_tokens::TokenFile {
+            themes: HashMap::from([(
+                "light".to_string(),
+                HashMap::from([("color-brand".to_string(), "#abc".to_string())]),
+            )]),
+        };
+
+        let warnings = analysis.theme_token_warnings(&theme);
+        assert_eq!(warnings.len(), 1, "warnings: {warnings:?}");
+        let body = warnings[0].body();
+        assert!(body.contains("my-card.css:2:"), "warning: {body}");
+        assert!(body.contains("--colr-brand"), "warning: {body}");
+        assert!(
+            body.contains("did you mean --color-brand?"),
+            "warning: {body}"
+        );
     }
 
     #[test]

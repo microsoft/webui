@@ -7,9 +7,29 @@ use crate::{comment_policy, LegalComments, ParserError, Result};
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
+use webui_tokens::CssFallbackChain;
 
 /// Parser for CSS files.
 pub struct CssParser;
+
+type CssScanResult = (
+    HashSet<String>,
+    HashSet<String>,
+    Vec<CssComment>,
+    Vec<CssFallbackChain>,
+);
+type CssRequirementsAndStripped<'a> = (
+    HashSet<String>,
+    HashSet<String>,
+    Vec<CssFallbackChain>,
+    Cow<'a, str>,
+);
+type CssRequirementsAndComments = (
+    HashSet<String>,
+    HashSet<String>,
+    Vec<CssFallbackChain>,
+    Vec<CssComment>,
+);
 
 /// Format a byte `offset` into CSS `source` as `at line L, column C`.
 ///
@@ -42,7 +62,7 @@ impl CssParser {
 
     /// Extract CSS custom property token names used via `var()` in the given CSS.
     pub fn extract_tokens(&mut self, css_content: &str) -> Result<HashSet<String>> {
-        let (mut tokens, definitions, _comments) =
+        let (mut tokens, definitions, _comments, _requirements) =
             scan_css(css_content, LegalComments::Inline, false)?;
         tokens.retain(|t| !definitions.contains(t));
         Ok(tokens)
@@ -50,7 +70,7 @@ impl CssParser {
 
     /// Extract CSS custom property definitions from the given CSS.
     pub fn extract_definitions(&mut self, css_content: &str) -> Result<HashSet<String>> {
-        let (_tokens, definitions, _comments) =
+        let (_tokens, definitions, _comments, _requirements) =
             scan_css(css_content, LegalComments::Inline, false)?;
         Ok(definitions)
     }
@@ -60,35 +80,37 @@ impl CssParser {
         &mut self,
         css_content: &str,
     ) -> Result<(HashSet<String>, HashSet<String>)> {
-        let (mut tokens, definitions, _comments) =
+        let (mut tokens, definitions, _comments, _requirements) =
             scan_css(css_content, LegalComments::Inline, false)?;
         tokens.retain(|t| !definitions.contains(t));
         Ok((tokens, definitions))
     }
 
     /// Extract tokens, definitions, and CSS with removable comments stripped in one scan.
-    pub(crate) fn extract_tokens_definitions_and_strip_comments<'a>(
+    pub(crate) fn extract_tokens_definitions_requirements_and_strip_comments<'a>(
         &mut self,
         css_content: &'a str,
         legal_comments: LegalComments,
-    ) -> Result<(HashSet<String>, HashSet<String>, Cow<'a, str>)> {
-        let (mut tokens, definitions, comments) = scan_css(css_content, legal_comments, true)?;
+    ) -> Result<CssRequirementsAndStripped<'a>> {
+        let (mut tokens, definitions, comments, requirements) =
+            scan_css(css_content, legal_comments, true)?;
         tokens.retain(|t| !definitions.contains(t));
         let mut comment_ranges = removable_ranges(&comments);
         let stripped = comment_policy::strip_ranges(css_content, comment_ranges.as_mut_slice());
-        Ok((tokens, definitions, stripped))
+        Ok((tokens, definitions, requirements, stripped))
     }
 
     /// Extract tokens, definitions, and CSS comments in one scan.
-    pub(crate) fn extract_tokens_definitions_and_comments(
+    pub(crate) fn extract_tokens_definitions_requirements_and_comments(
         &mut self,
         css_content: &str,
         legal_comments: LegalComments,
-    ) -> Result<(HashSet<String>, HashSet<String>, Vec<CssComment>)> {
-        let (mut tokens, definitions, mut comments) = scan_css(css_content, legal_comments, true)?;
+    ) -> Result<CssRequirementsAndComments> {
+        let (mut tokens, definitions, mut comments, requirements) =
+            scan_css(css_content, legal_comments, true)?;
         tokens.retain(|t| !definitions.contains(t));
         comments.sort_unstable_by_key(|comment| comment.start_byte);
-        Ok((tokens, definitions, comments))
+        Ok((tokens, definitions, requirements, comments))
     }
 }
 
@@ -96,11 +118,12 @@ fn scan_css(
     source: &str,
     legal_comments: LegalComments,
     collect_comments: bool,
-) -> Result<(HashSet<String>, HashSet<String>, Vec<CssComment>)> {
+) -> Result<CssScanResult> {
     let bytes = source.as_bytes();
     let mut tokens = HashSet::new();
     let mut definitions = HashSet::new();
     let mut comments = Vec::new();
+    let mut requirements = Vec::new();
     let mut index = 0usize;
     let mut quote: u8 = 0;
     let mut brace_depth = 0usize;
@@ -172,7 +195,7 @@ fn scan_css(
                 }
             }
             b'v' if source[index..].starts_with("var(") => {
-                index = scan_var_call(source, index, &mut tokens)?;
+                index = scan_var_call(source, index, &mut tokens, &mut requirements)?;
             }
             b'{' => {
                 brace_depth += 1;
@@ -243,17 +266,46 @@ fn scan_css(
         ));
     }
 
-    Ok((tokens, definitions, comments))
+    Ok((tokens, definitions, comments, requirements))
 }
 
-fn scan_var_call(source: &str, start: usize, tokens: &mut HashSet<String>) -> Result<usize> {
+fn scan_var_call(
+    source: &str,
+    start: usize,
+    tokens: &mut HashSet<String>,
+    requirements: &mut Vec<CssFallbackChain>,
+) -> Result<usize> {
+    struct VarFrame<'a> {
+        close_depth: usize,
+        tokens: Vec<&'a str>,
+        after_fallback_comma: bool,
+        has_literal_fallback: bool,
+        fallback_has_unsafe_var: bool,
+    }
+
+    impl<'a> VarFrame<'a> {
+        fn new(close_depth: usize) -> Self {
+            Self {
+                close_depth,
+                tokens: Vec::new(),
+                after_fallback_comma: false,
+                has_literal_fallback: false,
+                fallback_has_unsafe_var: false,
+            }
+        }
+
+        fn has_safe_literal_fallback(&self) -> bool {
+            self.has_literal_fallback && !self.fallback_has_unsafe_var
+        }
+    }
+
     let bytes = source.as_bytes();
     let mut index = start + 4;
     let mut depth = 1usize;
     let mut brace_depth = 0usize;
     let mut bracket_depth = 0usize;
     let mut quote: u8 = 0;
-    let mut pending_tokens: Vec<&str> = Vec::new();
+    let mut frames = vec![VarFrame::new(1)];
 
     while index < bytes.len() {
         if quote != 0 {
@@ -270,6 +322,11 @@ fn scan_var_call(source: &str, start: usize, tokens: &mut HashSet<String>) -> Re
 
         match bytes[index] {
             b'"' | b'\'' => {
+                if let Some(frame) = frames.last_mut() {
+                    if frame.after_fallback_comma {
+                        frame.has_literal_fallback = true;
+                    }
+                }
                 quote = bytes[index];
                 index += 1;
             }
@@ -285,14 +342,53 @@ fn scan_var_call(source: &str, start: usize, tokens: &mut HashSet<String>) -> Re
             b'/' if comment_policy::is_css_line_comment_start(source, index) => {
                 index = comment_policy::find_css_line_comment_end(source, index + 2);
             }
+            b'v' if source[index..].starts_with("var(") => {
+                depth += 1;
+                frames.push(VarFrame::new(depth));
+                index += 4;
+            }
+            b',' => {
+                if let Some(frame) = frames.last_mut() {
+                    frame.after_fallback_comma = true;
+                }
+                index += 1;
+            }
             b'(' => {
+                if let Some(frame) = frames.last_mut() {
+                    if frame.after_fallback_comma {
+                        frame.has_literal_fallback = true;
+                    }
+                }
                 depth += 1;
                 index += 1;
             }
             b')' => {
+                let closes_var = frames
+                    .last()
+                    .is_some_and(|frame| frame.close_depth == depth);
                 depth = depth.saturating_sub(1);
                 index += 1;
-                if depth == 0 {
+                if closes_var {
+                    let Some(frame) = frames.pop() else {
+                        return Err(ParserError::Css(format!(
+                            "Unterminated CSS var() call {}. Add the missing `)` before building.",
+                            css_loc(source, start)
+                        )));
+                    };
+                    if !frames.is_empty() {
+                        let safe_literal = frame.has_safe_literal_fallback();
+                        if let Some(parent) = frames.last_mut() {
+                            if parent.after_fallback_comma {
+                                if safe_literal {
+                                    parent.has_literal_fallback = true;
+                                } else {
+                                    parent.fallback_has_unsafe_var = true;
+                                }
+                            }
+                            parent.tokens.extend(frame.tokens);
+                        }
+                        continue;
+                    }
                     if brace_depth != 0 {
                         return Err(ParserError::Css(format!(
                             "Unterminated CSS brace expression inside var() {}. Add the missing `}}` before building.",
@@ -305,13 +401,29 @@ fn scan_var_call(source: &str, start: usize, tokens: &mut HashSet<String>) -> Re
                             css_loc(source, start)
                         )));
                     }
-                    for token in pending_tokens {
-                        tokens.insert(token.to_string());
+                    if !frame.tokens.is_empty() {
+                        let has_safe_literal_fallback = frame.has_safe_literal_fallback();
+                        let mut chain = Vec::with_capacity(frame.tokens.len());
+                        for token in frame.tokens {
+                            tokens.insert(token.to_string());
+                            if !chain.iter().any(|existing| existing == token) {
+                                chain.push(token.to_string());
+                            }
+                        }
+                        requirements.push(CssFallbackChain {
+                            tokens: chain,
+                            has_literal_fallback: has_safe_literal_fallback,
+                        });
                     }
                     return Ok(index);
                 }
             }
             b'{' => {
+                if let Some(frame) = frames.last_mut() {
+                    if frame.after_fallback_comma {
+                        frame.has_literal_fallback = true;
+                    }
+                }
                 brace_depth += 1;
                 index += 1;
             }
@@ -326,6 +438,11 @@ fn scan_var_call(source: &str, start: usize, tokens: &mut HashSet<String>) -> Re
                 index += 1;
             }
             b'[' => {
+                if let Some(frame) = frames.last_mut() {
+                    if frame.after_fallback_comma {
+                        frame.has_literal_fallback = true;
+                    }
+                }
                 bracket_depth += 1;
                 index += 1;
             }
@@ -341,13 +458,22 @@ fn scan_var_call(source: &str, start: usize, tokens: &mut HashSet<String>) -> Re
             }
             b'-' if bytes.get(index + 1) == Some(&b'-') => {
                 if let Some((name, end)) = parse_custom_property_name(source, index) {
-                    pending_tokens.push(name);
+                    if let Some(frame) = frames.last_mut() {
+                        frame.tokens.push(name);
+                    }
                     index = end;
                 } else {
                     index += 1;
                 }
             }
-            _ => index += 1,
+            _ => {
+                if let Some(frame) = frames.last_mut() {
+                    if frame.after_fallback_comma && !bytes[index].is_ascii_whitespace() {
+                        frame.has_literal_fallback = true;
+                    }
+                }
+                index += 1;
+            }
         }
     }
 
@@ -391,20 +517,46 @@ fn is_custom_property_definition(source: &str, name_end: usize) -> bool {
         return false;
     }
 
-    let mut before = name_end.saturating_sub(1);
-    while before > 0 && bytes[before - 1].is_ascii_whitespace() {
-        before -= 1;
-    }
+    // Walk back over the property name itself (`--name`, where `-` is allowed).
+    let mut before = name_end;
     while before > 0
         && (bytes[before - 1].is_ascii_alphanumeric() || matches!(bytes[before - 1], b'_' | b'-'))
     {
         before -= 1;
     }
-    while before > 0 && bytes[before - 1].is_ascii_whitespace() {
-        before -= 1;
-    }
+    // Skip whitespace and any preceding block comments so a property declared
+    // after a comment — e.g. a signal comment between `{` and the property,
+    // `:root { /*{{{tokens.light}}}*/ --foo: 1px; }` — is still recognized as a
+    // definition at the declaration boundary rather than a usage.
+    before = skip_ws_and_block_comments_back(source, before);
 
     before == 0 || matches!(bytes[before - 1], b'{' | b';')
+}
+
+/// Skip whitespace and preceding CSS block comments (`/* … */`) backward from
+/// `pos`, returning the position of the first non-whitespace, non-comment byte.
+///
+/// Iterative; no regex, no recursion. Used by [`is_custom_property_definition`]
+/// to reach the real declaration boundary when a comment precedes a property.
+fn skip_ws_and_block_comments_back(source: &str, mut pos: usize) -> usize {
+    let bytes = source.as_bytes();
+    loop {
+        while pos > 0 && bytes[pos - 1].is_ascii_whitespace() {
+            pos -= 1;
+        }
+        // A preceding block comment ends with `*/` immediately before `pos`.
+        if pos >= 2 && &source[pos - 2..pos] == "*/" {
+            match source[..pos - 2].rfind("/*") {
+                Some(open) => pos = open,
+                // Unbalanced `*/` without a matching `/*`: stop here rather than
+                // scanning past the start of the input.
+                None => break,
+            }
+        } else {
+            break;
+        }
+    }
+    pos
 }
 
 fn removable_ranges(comments: &[CssComment]) -> Vec<(usize, usize)> {
@@ -481,11 +633,53 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_nested_fallbacks_excludes_locally_defined_tokens() {
+        let css = r#"
+            :root { --token-a: red; }
+            .x { --foo-bar: var(--token-a, var(--token-b, var(--token-c))); }
+        "#;
+        let mut parser = CssParser::new();
+        let tokens = parser.extract_tokens(css).expect("extract_tokens failed");
+        assert_eq!(
+            tokens,
+            HashSet::from(["token-b".to_string(), "token-c".to_string()])
+        );
+    }
+
+    #[test]
     fn test_literal_fallback_ignored() {
         let css = ".x { font-size: var(--size, 16px); }";
         let mut parser = CssParser::new();
         let tokens = parser.extract_tokens(css).expect("extract_tokens failed");
         assert_eq!(tokens, HashSet::from(["size".to_string()]));
+    }
+
+    #[test]
+    fn test_nested_var_without_literal_keeps_chain_required() {
+        let css = ".x { margin: var(--gap, calc(var(--spacing-m) * 2)); }";
+        let (_tokens, _definitions, _comments, requirements) =
+            scan_css(css, LegalComments::Inline, false).expect("scan failed");
+
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(requirements[0].tokens, vec!["gap", "spacing-m"]);
+        assert!(
+            !requirements[0].has_literal_fallback,
+            "calc(var(--spacing-m) * 2) is not a safe literal fallback"
+        );
+    }
+
+    #[test]
+    fn test_nested_var_with_literal_keeps_chain_optional() {
+        let css = ".x { margin: var(--gap, calc(var(--spacing-m, 1px) * 2)); }";
+        let (_tokens, _definitions, _comments, requirements) =
+            scan_css(css, LegalComments::Inline, false).expect("scan failed");
+
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(requirements[0].tokens, vec!["gap", "spacing-m"]);
+        assert!(
+            requirements[0].has_literal_fallback,
+            "calc(var(--spacing-m, 1px) * 2) has a safe literal fallback"
+        );
     }
 
     #[test]
@@ -527,6 +721,34 @@ mod tests {
         let mut parser = CssParser::new();
         let tokens = parser.extract_tokens(css).expect("extract_tokens failed");
         assert_eq!(tokens, HashSet::from(["external".to_string()]));
+    }
+
+    #[test]
+    fn test_definition_after_block_comment_is_recognized() {
+        // A signal/comment between `{` and the property must not hide the
+        // definition: `--foo-bar` is declared here, not used.
+        let css = ":root {\n  /*{{{tokens.light}}}*/\n  --foo-bar: 100px;\n}";
+        let mut parser = CssParser::new();
+        let defs = parser
+            .extract_definitions(css)
+            .expect("extract_definitions failed");
+        assert!(
+            defs.contains("foo-bar"),
+            "definition after a comment should be recognized: {defs:?}"
+        );
+    }
+
+    #[test]
+    fn test_definition_after_comment_excludes_matching_usage() {
+        // When the ancestor defines `--foo-bar` (after a comment), a later
+        // `var(--foo-bar)` usage in the same input is treated as resolved.
+        let css = ":root {\n  /* note */ --foo-bar: 100px;\n}\n.x { padding: var(--foo-bar); }";
+        let mut parser = CssParser::new();
+        let tokens = parser.extract_tokens(css).expect("extract_tokens failed");
+        assert!(
+            tokens.is_empty(),
+            "--foo-bar is defined locally and must not be hoisted: {tokens:?}"
+        );
     }
 
     #[test]
@@ -614,8 +836,8 @@ mod tests {
     #[test]
     fn test_comments_are_collected_and_stripped() {
         let mut parser = CssParser::new();
-        let (_tokens, _defs, stripped) = parser
-            .extract_tokens_definitions_and_strip_comments(
+        let (_tokens, _defs, _requirements, stripped) = parser
+            .extract_tokens_definitions_requirements_and_strip_comments(
                 "/* remove */.x{color:var(--a)}/*! keep */",
                 LegalComments::Inline,
             )

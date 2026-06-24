@@ -22,6 +22,7 @@ microsoft-webui-parser = { path = "../webui-parser", version = "0.0.17" }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.17" }
 microsoft-webui-handler = { path = "../webui-handler", version = "0.0.17" }
 microsoft-webui-discovery = { path = "../webui-discovery", version = "0.0.17" }
+microsoft-webui-tokens = { path = "../webui-tokens", version = "0.0.17" }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }
