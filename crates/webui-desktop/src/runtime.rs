@@ -20,8 +20,8 @@ use crate::error::{DesktopError, Result};
 use crate::ipc::IpcRegistry;
 use crate::path::resolve_safe_path;
 use crate::protocol::{
-    read_asset_response, DesktopHttpMethod, DesktopProtocolRequest, DesktopProtocolResponse,
-    DEFAULT_MAX_ASSET_BYTES, IPC_ENDPOINT,
+    read_asset_response, read_known_asset_response, DesktopHttpMethod, DesktopProtocolRequest,
+    DesktopProtocolResponse, DEFAULT_MAX_ASSET_BYTES, IPC_ENDPOINT,
 };
 
 /// Source-backed desktop runtime configuration.
@@ -112,6 +112,7 @@ pub struct DesktopRuntime {
     state: Value,
     css_files: HashMap<String, String>,
     asset_root: Option<PathBuf>,
+    asset_index: HashMap<String, DesktopAssetEntry>,
     max_asset_bytes: u64,
     startup_html: String,
     ipc_registry: IpcRegistry,
@@ -184,6 +185,12 @@ impl ApiRouteRegistry {
 struct ApiRouteEntry {
     pattern: RoutePattern,
     handler: Arc<ApiHandler>,
+}
+
+struct DesktopAssetEntry {
+    path: PathBuf,
+    content_type: String,
+    size_bytes: u64,
 }
 
 impl RouteStateRegistry {
@@ -395,6 +402,7 @@ impl DesktopRuntime {
             state,
             css_files,
             asset_root,
+            asset_index: HashMap::new(),
             max_asset_bytes: config.max_asset_bytes,
             startup_html,
             ipc_registry: config.ipc_registry,
@@ -425,6 +433,32 @@ impl DesktopRuntime {
         let bundle_root = canonical_bundle_root(&config.bundle_dir)?;
         let manifest =
             crate::DesktopBundleManifest::load(&bundle_root.join("manifest.webui-desktop.json"))?;
+        Self::from_canonical_bundle_config_and_manifest(config, bundle_root, manifest)
+    }
+
+    /// Load a desktop runtime from a bundle directory with an already-loaded manifest.
+    ///
+    /// Use this when the caller also needs manifest metadata such as window or
+    /// shell configuration, so startup does not read and parse the manifest
+    /// twice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DesktopError`] if the protocol, state, or asset root cannot be
+    /// loaded, or if startup rendering fails.
+    pub fn from_bundle_config_and_manifest(
+        config: DesktopBundleConfig,
+        manifest: crate::DesktopBundleManifest,
+    ) -> Result<Self> {
+        let bundle_root = canonical_bundle_root(&config.bundle_dir)?;
+        Self::from_canonical_bundle_config_and_manifest(config, bundle_root, manifest)
+    }
+
+    fn from_canonical_bundle_config_and_manifest(
+        config: DesktopBundleConfig,
+        bundle_root: PathBuf,
+        manifest: crate::DesktopBundleManifest,
+    ) -> Result<Self> {
         let protocol_path =
             resolve_manifest_path(&bundle_root, &manifest.protocol_path, "protocol")?;
         let protocol_bytes = fs::read(&protocol_path).map_err(|source| DesktopError::Io {
@@ -441,11 +475,12 @@ impl DesktopRuntime {
             Some(state) => state,
             None => read_state(state_path.as_ref())?,
         };
-        let asset_root = Some(resolve_manifest_path(
-            &bundle_root,
-            &manifest.assets_dir,
-            "assets",
-        )?);
+        let asset_root = resolve_manifest_path(&bundle_root, &manifest.assets_dir, "assets")?;
+        let asset_index = build_asset_index(
+            &asset_root,
+            &manifest.integrity.assets,
+            config.max_asset_bytes,
+        )?;
         let plugin = parse_plugin(manifest.plugin.as_deref());
         let startup_state = state_for_request(StateRequestContext {
             protocol: &protocol,
@@ -462,7 +497,8 @@ impl DesktopRuntime {
             entry: manifest.entry,
             state,
             css_files: HashMap::new(),
-            asset_root,
+            asset_root: Some(asset_root),
+            asset_index,
             max_asset_bytes: config.max_asset_bytes,
             startup_html,
             ipc_registry: config.ipc_registry,
@@ -562,6 +598,25 @@ impl DesktopRuntime {
             return Ok(None);
         };
 
+        if !self.asset_index.is_empty() {
+            if resolve_safe_path(root, request_path).is_none() {
+                return Err(DesktopError::InvalidAssetPath {
+                    path: request_path.to_string(),
+                });
+            }
+            let key = asset_index_key(request_path);
+            return match self.asset_index.get(key.as_str()) {
+                Some(asset) => read_known_asset_response(
+                    &asset.path,
+                    &asset.content_type,
+                    asset.size_bytes,
+                    self.max_asset_bytes,
+                )
+                .map(Some),
+                None => Ok(None),
+            };
+        }
+
         let Some(path) = resolve_safe_path(root, request_path) else {
             return Err(DesktopError::InvalidAssetPath {
                 path: request_path.to_string(),
@@ -620,6 +675,58 @@ impl DesktopRuntime {
             &mut cache,
         );
         route_chain_matches_request(&chain, route_path)
+    }
+}
+
+fn build_asset_index(
+    asset_root: &Path,
+    assets: &[crate::BundleAsset],
+    max_asset_bytes: u64,
+) -> Result<HashMap<String, DesktopAssetEntry>> {
+    let mut index = HashMap::with_capacity(assets.len());
+    for asset in assets {
+        let Some(relative) = asset.path.strip_prefix("assets/") else {
+            return Err(DesktopError::InvalidAssetPath {
+                path: asset.path.clone(),
+            });
+        };
+        let request_path = asset_index_key(relative);
+        let Some(path) = resolve_safe_path(asset_root, &request_path) else {
+            return Err(DesktopError::InvalidAssetPath {
+                path: asset.path.clone(),
+            });
+        };
+        if asset.size_bytes > max_asset_bytes {
+            return Err(DesktopError::AssetTooLarge {
+                path,
+                size: asset.size_bytes,
+                max_bytes: max_asset_bytes,
+            });
+        }
+        let content_type = mime_guess::from_path(&path)
+            .first_or_octet_stream()
+            .to_string();
+        index.insert(
+            request_path,
+            DesktopAssetEntry {
+                path,
+                content_type,
+                size_bytes: asset.size_bytes,
+            },
+        );
+    }
+    Ok(index)
+}
+
+fn asset_index_key(path: &str) -> String {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    if path.starts_with('/') {
+        path.to_string()
+    } else {
+        let mut key = String::with_capacity(path.len() + 1);
+        key.push('/');
+        key.push_str(path);
+        key
     }
 }
 
@@ -1087,6 +1194,46 @@ mod tests {
 
         let state = partial_state(&runtime, "/users/ada");
         assert_eq!(state["name"], "ada");
+    }
+
+    #[test]
+    fn bundle_runtime_serves_manifest_indexed_assets() {
+        let dir = TempDir::new().unwrap();
+        let app = dir.path().join("app");
+        let bundle = dir.path().join("bundle");
+        write_file(&app, "index.html", "<main>Hello</main>");
+        write_file(&app, "public/app.js", "console.log('bundle');");
+
+        crate::build_desktop_bundle(crate::DesktopBundleOptions {
+            build_options: build_options(app.clone()),
+            out_dir: bundle.clone(),
+            state_file: None,
+            asset_root: Some(app.join("public")),
+            token_css: None,
+            app_id: "com.microsoft.webui.bundle".to_string(),
+            app_name: "Bundle Host".to_string(),
+            version: "0.0.0".to_string(),
+            publisher: "Microsoft".to_string(),
+            window: crate::WindowOptions::default(),
+            icon_file: None,
+            shell: crate::DesktopShellConfig::default(),
+            package_targets: Vec::new(),
+        })
+        .unwrap();
+
+        let runtime = DesktopRuntime::from_bundle(bundle).unwrap();
+        let response = runtime
+            .handle_request(&DesktopProtocolRequest::get("/app.js?v=1"))
+            .unwrap();
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.content_type, "text/javascript");
+        assert_eq!(response.body, b"console.log('bundle');");
+
+        let err = runtime
+            .handle_request(&DesktopProtocolRequest::get("/%2e%2e/protocol.bin"))
+            .unwrap_err();
+        assert!(matches!(err, DesktopError::InvalidAssetPath { .. }));
     }
 
     #[test]

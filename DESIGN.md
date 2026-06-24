@@ -1648,6 +1648,13 @@ asset reads, and route/API/IPC dispatch through the custom app origin.
 Packaged app runners use `webui_desktop_runner::find_packaged_resources_dir()`
 to locate bundle resources so macOS `.app` layouts and Windows/Linux portable
 layouts remain behind one API.
+When callers need manifest metadata, they should load
+`DesktopBundleManifest` once and call
+`DesktopRuntime::from_bundle_config_and_manifest(config, manifest)`. This avoids
+double manifest I/O during cold start. Bundle-backed runtimes also build an
+in-memory index from manifest integrity metadata, so immutable asset requests
+avoid per-request canonicalization and metadata reads while preserving lexical
+traversal validation and the configured response-size cap.
 Linux cross-compilation requires a configured GTK/WebKitGTK sysroot and
 `PKG_CONFIG_SYSROOT_DIR`/`PKG_CONFIG_PATH`; this is a platform dependency, not
 something xtask may install. The Windows WebView2 dependency and Win32

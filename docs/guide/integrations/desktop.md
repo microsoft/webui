@@ -123,6 +123,12 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
+For cold start, load `manifest.webui-desktop.json` once when the runner needs
+window or shell metadata, then pass it into
+`DesktopRuntime::from_bundle_config_and_manifest(config, manifest)`. Bundle
+assets are served through the manifest integrity index, avoiding per-request
+metadata reads for immutable packaged assets.
+
 The Rust packager currently writes:
 
 | Target | Output |

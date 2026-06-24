@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use webui_desktop::{DesktopBundleManifest, DesktopRuntime, DesktopShellConfig, WindowOptions};
+use webui_desktop::{
+    DesktopBundleConfig, DesktopBundleManifest, DesktopRuntime, DesktopShellConfig, WindowOptions,
+};
 
 /// Cross-platform desktop frame owned by a native shell backend.
 ///
@@ -126,8 +128,13 @@ pub fn run_packaged_app() -> Result<()> {
     })?;
     let manifest = DesktopBundleManifest::load(&resources.join("manifest.webui-desktop.json"))
         .with_context(|| "Failed to read packaged desktop manifest")?;
-    let runtime = Arc::new(DesktopRuntime::from_bundle(resources)?);
-    run_frame(DesktopFrame::new(runtime, manifest.window).with_shell(manifest.shell))
+    let window = manifest.window.clone();
+    let shell = manifest.shell.clone();
+    let runtime = Arc::new(DesktopRuntime::from_bundle_config_and_manifest(
+        DesktopBundleConfig::new(resources),
+        manifest,
+    )?);
+    run_frame(DesktopFrame::new(runtime, window).with_shell(shell))
 }
 
 /// Return the packaged bundle resource directory when the executable is running

@@ -60,14 +60,15 @@ fn source_runtime() -> Result<(DesktopRuntime, WindowOptions)> {
 
 fn packaged_runtime(resources: &std::path::Path) -> Result<(DesktopRuntime, WindowOptions)> {
     let manifest = DesktopBundleManifest::load(&resources.join("manifest.webui-desktop.json"))?;
+    let window = manifest.window.clone();
     let state_path = resources.join("state.json");
     let state = Arc::new(RwLock::new(load_state(&state_path)?));
     let mut config = DesktopBundleConfig::new(resources.to_path_buf());
     config.state = Some(snapshot_state(&state)?);
     register_routes(&mut config.route_state, Arc::clone(&state))?;
     register_api_routes(&mut config.api_routes, Arc::clone(&state))?;
-    let runtime = DesktopRuntime::from_bundle_config(config)?;
-    Ok((runtime, manifest.window))
+    let runtime = DesktopRuntime::from_bundle_config_and_manifest(config, manifest)?;
+    Ok((runtime, window))
 }
 
 fn packaged_resources_dir() -> Option<PathBuf> {

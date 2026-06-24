@@ -714,6 +714,11 @@ while the desktop host mutates Rust-owned state.
 Packaged app runners should use
 `webui_desktop_runner::find_packaged_resources_dir()` to locate bundle resources
 across macOS `.app` and Windows/Linux portable layouts.
+If the runner needs manifest metadata, load `DesktopBundleManifest` once and use
+`DesktopRuntime::from_bundle_config_and_manifest(config, manifest)` to avoid
+double manifest I/O. Bundle-backed assets are indexed from manifest integrity
+metadata, so packaged asset requests should go through the runtime instead of
+performing ad-hoc filesystem lookups.
 
 Package a Rust-first desktop app root in one command:
 

@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::error::{DesktopError, Result};
@@ -165,4 +166,56 @@ pub(crate) fn read_asset_response(
         .to_string();
 
     Ok(Some(DesktopProtocolResponse::new(200, content_type, body)))
+}
+
+pub(crate) fn read_known_asset_response(
+    asset_path: &Path,
+    content_type: &str,
+    size_bytes: u64,
+    max_asset_bytes: u64,
+) -> Result<DesktopProtocolResponse> {
+    if size_bytes > max_asset_bytes {
+        return Err(DesktopError::AssetTooLarge {
+            path: asset_path.to_path_buf(),
+            size: size_bytes,
+            max_bytes: max_asset_bytes,
+        });
+    }
+
+    let mut file = fs::File::open(asset_path).map_err(|source| DesktopError::Io {
+        context: format!("reading desktop asset {}", asset_path.display()),
+        source,
+    })?;
+    let capacity = usize::try_from(size_bytes).map_err(|_| DesktopError::AssetTooLarge {
+        path: asset_path.to_path_buf(),
+        size: size_bytes,
+        max_bytes: max_asset_bytes,
+    })?;
+    let mut body = Vec::with_capacity(capacity);
+    let limit = max_asset_bytes.saturating_add(1);
+    file.by_ref()
+        .take(limit)
+        .read_to_end(&mut body)
+        .map_err(|source| DesktopError::Io {
+            context: format!("reading desktop asset {}", asset_path.display()),
+            source,
+        })?;
+    let read_size = u64::try_from(body.len()).map_err(|_| DesktopError::AssetTooLarge {
+        path: asset_path.to_path_buf(),
+        size: size_bytes,
+        max_bytes: max_asset_bytes,
+    })?;
+    if read_size > max_asset_bytes {
+        return Err(DesktopError::AssetTooLarge {
+            path: asset_path.to_path_buf(),
+            size: read_size,
+            max_bytes: max_asset_bytes,
+        });
+    }
+
+    Ok(DesktopProtocolResponse::new(
+        200,
+        content_type.to_string(),
+        body,
+    ))
 }
