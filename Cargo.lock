@@ -1940,6 +1940,7 @@ dependencies = [
  "clap",
  "comrak",
  "console",
+ "html-escape",
  "microsoft-webui",
  "microsoft-webui-dev-server",
  "microsoft-webui-handler",

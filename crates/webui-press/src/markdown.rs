@@ -211,39 +211,19 @@ pub fn render_markdown(
 
     let root = parse_document(&arena, content, &options);
 
-    // Two-pass approach: collect node pointers first, then modify.
-    // This avoids modifying the tree during iteration.
+    // Multi-pass approach: collect node pointers first, then modify.
+    // This avoids modifying the tree during iteration and lets heading
+    // rendering see original code-span nodes before they are converted to raw
+    // HTML for WebUI template-signal escaping.
 
-    // Pass 1: Replace code blocks and rewrite internal links
+    // Pass 1: Rewrite internal links before custom heading rendering.
     for node in root.descendants() {
         let mut data = node.data.borrow_mut();
-        match &mut data.value {
-            NodeValue::CodeBlock(ref mut block) => {
-                let lang = if block.info.is_empty() {
-                    "text"
-                } else {
-                    block.info.split_whitespace().next().unwrap_or("text")
-                };
-                let highlighted = highlighter.highlight_code(&block.literal, lang);
-                data.value = NodeValue::HtmlInline(highlighted);
+        if let NodeValue::Link(ref mut link) = data.value {
+            // Prepend base_path to absolute internal links
+            if link.url.starts_with('/') && !link.url.starts_with(base_path) && base_path != "/" {
+                link.url = format!("{}{}", base_path.trim_end_matches('/'), &link.url);
             }
-            NodeValue::Code(ref code) => {
-                // Replace inline code with pre-escaped HTML so `{{...}}` inside
-                // code spans is not interpreted as a WebUI signal binding.
-                let mut html = String::with_capacity(code.literal.len() + 13);
-                html.push_str("<code>");
-                emit_escaped(&mut html, &code.literal);
-                html.push_str("</code>");
-                data.value = NodeValue::HtmlInline(html);
-            }
-            NodeValue::Link(ref mut link) => {
-                // Prepend base_path to absolute internal links
-                if link.url.starts_with('/') && !link.url.starts_with(base_path) && base_path != "/"
-                {
-                    link.url = format!("{}{}", base_path.trim_end_matches('/'), &link.url);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -272,6 +252,33 @@ pub fn render_markdown(
             child.detach();
         }
         node.data.borrow_mut().value = NodeValue::HtmlInline(html);
+    }
+
+    // Pass 3: Replace code blocks and inline code after heading extraction,
+    // so headings can still collect code-span literals for display and slugs.
+    for node in root.descendants() {
+        let mut data = node.data.borrow_mut();
+        match &mut data.value {
+            NodeValue::CodeBlock(ref mut block) => {
+                let lang = if block.info.is_empty() {
+                    "text"
+                } else {
+                    block.info.split_whitespace().next().unwrap_or("text")
+                };
+                let highlighted = highlighter.highlight_code(&block.literal, lang);
+                data.value = NodeValue::HtmlInline(highlighted);
+            }
+            NodeValue::Code(ref code) => {
+                // Replace inline code with pre-escaped HTML so `{{...}}` inside
+                // code spans is not interpreted as a WebUI signal binding.
+                let mut html = String::with_capacity(code.literal.len() + 13);
+                html.push_str("<code>");
+                emit_escaped(&mut html, &code.literal);
+                html.push_str("</code>");
+                data.value = NodeValue::HtmlInline(html);
+            }
+            _ => {}
+        }
     }
 
     let mut html = String::with_capacity(content.len());
@@ -320,6 +327,22 @@ mod tests {
         assert!(
             !html.contains("{{value}}"),
             "raw `{{{{value}}}}` must not survive: {html}"
+        );
+    }
+
+    #[test]
+    fn heading_inline_code_survives_custom_anchor_rendering() {
+        let h = Highlighter::new();
+        let html = match render_markdown("# `<for>` Loop Directive\n", &h, "/") {
+            Ok(html) => html,
+            Err(e) => panic!("render_markdown should succeed: {e}"),
+        };
+
+        assert!(
+            html.contains(
+                r##"<h1 id="for-loop-directive"><code>&lt;for&gt;</code> Loop Directive"##
+            ),
+            "heading inline code should render as code: {html}"
         );
     }
 

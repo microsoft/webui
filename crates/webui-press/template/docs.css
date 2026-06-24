@@ -64,6 +64,10 @@
   --docs-color-brand-bg: #eef2ff;
   --docs-color-code-bg: #f6f8fa;
   --docs-color-code-text: #24292f;
+  --docs-scrollbar-thumb: #9ca3af;
+  --docs-scrollbar-thumb-hover: #6b7280;
+  --docs-scrollbar-track: #f3f4f6;
+  --docs-search-mark-bg: #ffe58a;
 
   /* ── Syntax highlighting (GitHub Light) ── */
   --docs-hl-keyword: #cf222e;
@@ -123,6 +127,10 @@
   --docs-color-brand-bg: rgba(129, 140, 248, 0.1);
   --docs-color-code-bg: #161b22;
   --docs-color-code-text: #e6edf3;
+  --docs-scrollbar-thumb: #4b5563;
+  --docs-scrollbar-thumb-hover: #6b7280;
+  --docs-scrollbar-track: #111827;
+  --docs-search-mark-bg: #b7791f;
   --docs-hl-keyword: #ff7b72;
   --docs-hl-string: #a5d6ff;
   --docs-hl-comment: #8b949e;
@@ -150,6 +158,10 @@
     --docs-color-brand-bg: rgba(129, 140, 248, 0.1);
     --docs-color-code-bg: #161b22;
     --docs-color-code-text: #e6edf3;
+    --docs-scrollbar-thumb: #4b5563;
+    --docs-scrollbar-thumb-hover: #6b7280;
+    --docs-scrollbar-track: #111827;
+    --docs-search-mark-bg: #b7791f;
     --docs-hl-keyword: #ff7b72;
     --docs-hl-string: #a5d6ff;
     --docs-hl-comment: #8b949e;
@@ -165,16 +177,57 @@
   }
 }
 
+html {
+  /* Keep browser chrome stable: docs pages scroll inside `.main-content`
+     while the sidebar keeps an independent scrollbar. */
+  height: 100%;
+  overflow: hidden;
+}
+
 * {
   box-sizing: border-box;
 }
 
 body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
   font-family: var(--docs-font-sans);
   color: var(--docs-color-text);
   background: var(--docs-color-bg);
   line-height: var(--docs-line-height);
   -webkit-font-smoothing: antialiased;
+}
+
+.sidebar,
+.main-content {
+  scrollbar-color: var(--docs-scrollbar-thumb) var(--docs-scrollbar-track);
+}
+
+.main-content:focus {
+  outline: none;
+}
+
+.sidebar::-webkit-scrollbar,
+.main-content::-webkit-scrollbar {
+  width: 12px;
+}
+
+.sidebar::-webkit-scrollbar-track,
+.main-content::-webkit-scrollbar-track {
+  background: var(--docs-scrollbar-track);
+}
+
+.sidebar::-webkit-scrollbar-thumb,
+.main-content::-webkit-scrollbar-thumb {
+  background: var(--docs-scrollbar-thumb);
+  border: 3px solid var(--docs-scrollbar-track);
+  border-radius: 999px;
+}
+
+.sidebar::-webkit-scrollbar-thumb:hover,
+.main-content::-webkit-scrollbar-thumb:hover {
+  background: var(--docs-scrollbar-thumb-hover);
 }
 
 /* ── Navigation ────────────────────────────────────── */
@@ -257,7 +310,8 @@ body {
   display: flex;
   max-width: var(--docs-max-width);
   margin: 0 auto;
-  min-height: calc(100vh - var(--docs-nav-height));
+  height: calc(100vh - var(--docs-nav-height));
+  min-height: 0;
 }
 
 /* ── Sidebar ───────────────────────────────────────── */
@@ -269,7 +323,7 @@ body {
   flex-shrink: 0;
   position: sticky;
   top: var(--docs-nav-height);
-  height: calc(100vh - var(--docs-nav-height));
+  height: 100%;
   overflow-y: auto;
 }
 
@@ -339,6 +393,9 @@ body {
 .main-content {
   flex: 1;
   min-width: 0;
+  min-height: 0;
+  height: calc(100vh - var(--docs-nav-height));
+  overflow-y: auto;
   padding: var(--docs-space-xl) var(--docs-space-2xl) var(--docs-space-3xl);
 }
 
@@ -521,6 +578,7 @@ body {
   justify-content: space-between;
   margin-top: var(--docs-space-2xl);
   padding-top: var(--docs-space-l);
+  padding-bottom: var(--docs-space-l);
   border-top: 1px solid var(--docs-color-border);
 }
 
@@ -773,6 +831,8 @@ body[data-layout="page"] .page-nav {
 body[data-layout="full"] .main-content {
   padding: 0;
   max-width: none;
+  height: 100%;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }

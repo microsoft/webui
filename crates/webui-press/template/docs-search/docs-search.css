@@ -117,17 +117,47 @@ input::placeholder {
 
 .result-title {
   font-weight: var(--docs-font-weight-semibold);
-  font-size: var(--docs-font-size-m);
+  font-size: 0;
   margin-bottom: 2px;
 }
 
+.result-title .result-segment {
+  font-size: var(--docs-font-size-m);
+}
+
+.result-title code.result-segment {
+  font-family: var(--docs-font-mono);
+  font-size: var(--docs-font-size-s);
+  background: var(--docs-color-bg-alt);
+  border: 1px solid var(--docs-color-border);
+  border-radius: var(--docs-radius-s);
+  padding: 0 3px;
+}
+
+.result-title .result-separator {
+  color: var(--docs-color-text-3);
+  font-weight: var(--docs-font-weight-normal);
+  margin: 0 0.4em;
+}
+
+.result mark {
+  background: var(--docs-search-mark-bg);
+  border-radius: 2px;
+  color: inherit;
+  padding: 0;
+}
+
 .result-snippet {
-  font-size: var(--docs-font-size-xs);
+  font-size: 0;
   color: var(--docs-color-text-2);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.result-snippet .result-segment {
+  font-size: var(--docs-font-size-xs);
 }
 
 .empty {

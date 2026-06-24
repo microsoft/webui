@@ -8,7 +8,35 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
       <input w-ref={searchInput} type="text" placeholder="Search documentation..." autocomplete="off" @input="{onInput()}" />
     </div>
-    <div class="results" w-ref={resultsEl}></div>
+    <div class="results">
+      <if condition="emptyMessage">
+        <div class="empty">{{emptyMessage}}</div>
+      </if>
+      <if condition="hasResults">
+        <for each="result in resultItems">
+          <a class="{{result.className}}" href="{{result.path}}">
+            <div class="result-title">
+              <for each="segment in result.titleSegments">
+                <if condition="segment.code">
+                  <if condition="segment.mark"><code class="result-segment"><mark>{{segment.text}}</mark></code></if>
+                  <if condition="!segment.mark"><code class="result-segment">{{segment.text}}</code></if>
+                </if>
+                <if condition="!segment.code">
+                  <if condition="segment.mark"><mark class="{{segment.className}}">{{segment.text}}</mark></if>
+                  <if condition="!segment.mark"><span class="{{segment.className}}">{{segment.text}}</span></if>
+                </if>
+              </for>
+            </div>
+            <div class="result-snippet">
+              <for each="segment in result.snippetSegments">
+                <if condition="segment.mark"><mark class="{{segment.className}}">{{segment.text}}</mark></if>
+                <if condition="!segment.mark"><span class="{{segment.className}}">{{segment.text}}</span></if>
+              </for>
+            </div>
+          </a>
+        </for>
+      </if>
+    </div>
     <div class="hint">↑↓ Navigate · Enter Select · Esc Close</div>
   </div>
 </dialog>

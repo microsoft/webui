@@ -43,25 +43,43 @@
   {{{headTags}}}
   <script>
     /* Preserve sidebar scroll across cross-document navigations.
-       Runs BEFORE pagereveal fires (and before first paint) so the
-       restored position is what view transitions animate to,
+       The page itself is not scrollable; sidebar and main-content own their
+       own scrollbars. Runs BEFORE pagereveal fires (and before first paint)
+       so restored positions are what view transitions animate to,
        eliminating the end-of-transition jump. */
     (function () {
-      var KEY = 'webui-press:sidebar-scroll';
+      var SIDEBAR_KEY = 'webui-press:sidebar-scroll';
+      var MAIN_KEY_PREFIX = 'webui-press:main-scroll:';
       function sidebar() { return document.querySelector('.sidebar'); }
-      function save() { var s = sidebar(); if (s) sessionStorage.setItem(KEY, s.scrollTop); }
+      function main() { return document.querySelector('.main-content'); }
+      function mainKey() { return MAIN_KEY_PREFIX + location.pathname + location.search; }
+      function save() {
+        var s = sidebar();
+        if (s) sessionStorage.setItem(SIDEBAR_KEY, s.scrollTop);
+        var m = main();
+        if (m) sessionStorage.setItem(mainKey(), m.scrollTop);
+      }
       function restore() {
         var s = sidebar();
-        if (!s) return;
-        var v = sessionStorage.getItem(KEY);
-        if (v !== null) s.scrollTop = +v;
+        var v = sessionStorage.getItem(SIDEBAR_KEY);
+        if (s && v !== null) s.scrollTop = +v;
+        var m = main();
+        if (!m) return;
+        if (!location.hash) {
+          var mv = sessionStorage.getItem(mainKey());
+          if (mv !== null) m.scrollTop = +mv;
+        }
+        if (document.activeElement === document.body) {
+          m.focus({ preventScroll: true });
+        }
       }
       window.addEventListener('pageswap', save);
       window.addEventListener('pagehide', save);
       if ('onpagereveal' in window) {
         window.addEventListener('pagereveal', restore);
-      } else if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', restore);
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', restore, { once: true });
       } else {
         restore();
       }
@@ -86,7 +104,7 @@
   </header>
 
   <if condition="page.isHome">
-    <main class="main-content" style="max-width:1152px;margin:0 auto;">
+    <main class="main-content" tabindex="-1" style="max-width:1152px;margin:0 auto;">
       <if condition="hero">
         <div class="home-hero">
           <h1>{{site.title}}</h1>
@@ -119,6 +137,11 @@
             </div>
           </for>
         </div>
+      </if>
+      <if condition="footer">
+        <footer class="site-footer">
+          {{{footer.html}}}
+        </footer>
       </if>
     </main>
   </if>
@@ -172,7 +195,7 @@
       </for>
     </aside>
 
-    <main class="main-content">
+    <main class="main-content" tabindex="-1">
       <article class="doc-content">
         {{{page.content}}}
       </article>
@@ -188,14 +211,13 @@
           <a href="{{next.link}}">{{next.text}} →</a>
         </if>
       </nav>
+      <if condition="footer">
+        <footer class="site-footer">
+          {{{footer.html}}}
+        </footer>
+      </if>
     </main>
   </div>
-  </if>
-
-  <if condition="footer">
-    <footer class="site-footer">
-      {{{footer.html}}}
-    </footer>
   </if>
 
   <script>

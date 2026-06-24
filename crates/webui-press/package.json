@@ -1,0 +1,13 @@
+{
+  "name": "@webui/webui-press",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild \"**/*.test.ts\" --bundle --platform=node --format=esm --packages=external --outbase=. --outdir=dist-test --out-extension:.js=.mjs",
+    "test": "pnpm --filter @webui/docs... build && pnpm run build && node --test dist-test/**/*.test.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "catalog:",
+    "esbuild": "catalog:"
+  }
+}
