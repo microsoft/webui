@@ -578,6 +578,7 @@ body {
   justify-content: space-between;
   margin-top: var(--docs-space-2xl);
   padding-top: var(--docs-space-l);
+  padding-bottom: var(--docs-space-l);
   border-top: 1px solid var(--docs-color-border);
 }
 
