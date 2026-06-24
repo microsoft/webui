@@ -77,8 +77,9 @@
       window.addEventListener('pagehide', save);
       if ('onpagereveal' in window) {
         window.addEventListener('pagereveal', restore);
-      } else if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', restore);
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', restore, { once: true });
       } else {
         restore();
       }
