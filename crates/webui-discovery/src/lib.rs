@@ -52,15 +52,31 @@ enum ComponentSource {
 /// - Starts with `.`, `/`, `\`, or contains a drive letter (Windows) → path
 /// - Everything else → npm package
 fn classify_source(source: &str) -> ComponentSource {
-    if source.starts_with('.')
-        || source.starts_with('/')
-        || source.starts_with('\\')
-        || (cfg!(windows) && source.len() >= 2 && source.as_bytes()[1] == b':')
-    {
+    if is_local_source(source) {
         ComponentSource::Path(PathBuf::from(source))
     } else {
         ComponentSource::NpmPackage(source.to_string())
     }
+}
+
+/// Returns `true` when a `--components` source string denotes a local
+/// filesystem path rather than an npm package name or scope.
+///
+/// A source is a local path when it starts with `.`, `/`, `\`, or a Windows
+/// drive letter (e.g. `C:\...`). Everything else — bare names like
+/// `my-widget` and scopes like `@scope` / `@scope/pkg` — is an npm package.
+///
+/// This is the single source of truth for the classification; callers that
+/// pre-resolve sources before handing them to [`discover_source`] (such as
+/// `webui-press`, which must resolve local paths against its own working
+/// directory while leaving npm names bare) should use it instead of
+/// re-implementing the check.
+#[must_use]
+pub fn is_local_source(source: &str) -> bool {
+    source.starts_with('.')
+        || source.starts_with('/')
+        || source.starts_with('\\')
+        || (cfg!(windows) && source.len() >= 2 && source.as_bytes()[1] == b':')
 }
 
 /// Discover components from a single source and register them into a component registry.
@@ -201,5 +217,18 @@ mod tests {
             classify_source("C:\\components"),
             ComponentSource::Path(_)
         ));
+    }
+
+    #[test]
+    fn test_is_local_source() {
+        // Local paths
+        assert!(is_local_source("./libs/shared"));
+        assert!(is_local_source("../components"));
+        assert!(is_local_source("/absolute/path"));
+        assert!(is_local_source("\\unc\\path"));
+        // npm packages / scopes
+        assert!(!is_local_source("my-widget"));
+        assert!(!is_local_source("@reactive-ui"));
+        assert!(!is_local_source("@scope/button"));
     }
 }

@@ -37,6 +37,24 @@ fn find_node_modules(start: &Path) -> Result<PathBuf> {
     );
 }
 
+/// Find `node_modules/` by walking up from `primary`, falling back to a
+/// walk up from `fallback` when the primary search comes up empty.
+///
+/// The fallback rescues callers whose primary search root lives outside
+/// any project tree. For example, `webui-press` builds each docs page in a
+/// synthesized scratch directory under the system temp folder, which has no
+/// `node_modules` ancestor; the project's `node_modules` is instead reached
+/// from the process working directory the command was invoked in. The error
+/// from the primary search is preserved when both roots fail.
+fn find_node_modules_with_fallback(primary: &Path, fallback: &Path) -> Result<PathBuf> {
+    find_node_modules(primary).or_else(|primary_err| {
+        if fallback == primary {
+            return Err(primary_err);
+        }
+        find_node_modules(fallback).map_err(|_| primary_err)
+    })
+}
+
 /// Check if a package name is a bare scope (e.g., `@reactive-ui` without a sub-package).
 fn is_bare_scope(name: &str) -> bool {
     name.starts_with('@') && !name.contains('/')
@@ -79,10 +97,16 @@ fn read_to_string_limited(path: &Path, max_size: u64) -> Result<String> {
 /// Resolve an npm package or scope to discovered components.
 pub fn resolve(
     name: &str,
-    cwd: &Path,
+    search_dir: &Path,
     cache: &mut DiscoveryCache,
 ) -> Result<Vec<DiscoveredComponent>> {
-    let node_modules = find_node_modules(cwd)?;
+    // Walk up from the build's app directory first, then fall back to the
+    // process working directory. The fallback covers callers whose app
+    // directory lives outside the project (e.g. a system-temp scratch dir),
+    // where the project's `node_modules` is only reachable from the cwd the
+    // command was invoked in.
+    let fallback = std::env::current_dir().unwrap_or_else(|_| search_dir.to_path_buf());
+    let node_modules = find_node_modules_with_fallback(search_dir, &fallback)?;
 
     if is_bare_scope(name) {
         resolve_scoped(name, &node_modules, cache)
@@ -376,6 +400,36 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let result = find_node_modules(tmp.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_find_node_modules_fallback_used_when_primary_empty() {
+        let primary = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        let nm = project.path().join("node_modules");
+        fs::create_dir_all(&nm).unwrap();
+
+        let found = find_node_modules_with_fallback(primary.path(), project.path()).unwrap();
+        assert_eq!(found, nm);
+    }
+
+    #[test]
+    fn test_find_node_modules_fallback_prefers_primary() {
+        let primary = TempDir::new().unwrap();
+        let nm_primary = primary.path().join("node_modules");
+        fs::create_dir_all(&nm_primary).unwrap();
+        let project = TempDir::new().unwrap();
+        fs::create_dir_all(project.path().join("node_modules")).unwrap();
+
+        let found = find_node_modules_with_fallback(primary.path(), project.path()).unwrap();
+        assert_eq!(found, nm_primary);
+    }
+
+    #[test]
+    fn test_find_node_modules_fallback_errors_when_neither_has_it() {
+        let primary = TempDir::new().unwrap();
+        let fallback = TempDir::new().unwrap();
+        assert!(find_node_modules_with_fallback(primary.path(), fallback.path()).is_err());
     }
 
     #[test]
