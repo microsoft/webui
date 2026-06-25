@@ -1943,6 +1943,7 @@ dependencies = [
  "html-escape",
  "microsoft-webui",
  "microsoft-webui-dev-server",
+ "microsoft-webui-discovery",
  "microsoft-webui-handler",
  "microsoft-webui-tokens",
  "rayon",

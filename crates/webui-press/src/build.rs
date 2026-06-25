@@ -88,6 +88,20 @@ fn inject_theme_tokens(
     Ok(())
 }
 
+/// Resolve a configured component source for the per-page builds.
+///
+/// Local paths are made absolute against `cwd` (the project root) because
+/// `webui-discovery` resolves relative paths against the synthesized per-page
+/// app directory, not the project. npm package names and scopes (e.g.
+/// `@mai-ui`) are left bare so discovery resolves them from `node_modules`.
+fn resolve_config_component_source(source: &str, cwd: &Path) -> String {
+    if webui_discovery::is_local_source(source) {
+        cwd.join(source).to_string_lossy().to_string()
+    } else {
+        source.to_string()
+    }
+}
+
 // ── Output helpers ──────────────────────────────────────────────
 //
 // Mirrors the styling vocabulary in `crates/webui-cli/src/utils/output.rs`
@@ -266,6 +280,7 @@ pub fn build_docs_with_cache(
 
     // Step 2: Resolve component sources for the per-page builds
     let mut component_sources: Vec<String> = Vec::new();
+    let cwd = std::env::current_dir().unwrap_or_default();
     // Built-in component library (e.g. crates/webui-press/components/)
     let builtin_components = template_dir.parent().map(|p| p.join("components"));
     if let Some(ref bc) = builtin_components {
@@ -273,11 +288,12 @@ pub fn build_docs_with_cache(
             component_sources.push(bc.to_string_lossy().to_string());
         }
     }
-    // User component dirs from config
-    if let Some(ref user_dirs) = config.components {
-        for d in user_dirs {
-            let abs = std::env::current_dir().unwrap_or_default().join(d);
-            component_sources.push(abs.to_string_lossy().to_string());
+    // User component sources from config. Local paths are resolved against
+    // the current project root; npm package names/scopes must stay bare so
+    // webui-discovery resolves them from node_modules.
+    if let Some(ref user_sources) = config.components {
+        for source in user_sources {
+            component_sources.push(resolve_config_component_source(source, &cwd));
         }
     }
     // Template-local components (e.g. docs-search, docs-theme-toggle living
@@ -1230,6 +1246,31 @@ mod tests {
         assert_eq!(npx_command(), "npx.cmd");
         #[cfg(not(windows))]
         assert_eq!(npx_command(), "npx");
+    }
+
+    #[test]
+    fn config_component_source_preserves_npm_packages() {
+        let cwd = Path::new("project");
+
+        assert_eq!(resolve_config_component_source("@mai-ui", cwd), "@mai-ui");
+        assert_eq!(
+            resolve_config_component_source("@mai-ui/button", cwd),
+            "@mai-ui/button"
+        );
+        assert_eq!(
+            resolve_config_component_source("plain-widget", cwd),
+            "plain-widget"
+        );
+    }
+
+    #[test]
+    fn config_component_source_resolves_local_paths() {
+        let cwd = Path::new("project");
+
+        assert_eq!(
+            std::path::PathBuf::from(resolve_config_component_source("./components", cwd)),
+            cwd.join("./components")
+        );
     }
 
     // --- truncate_utf8 ---------------------------------------------------
