@@ -3,7 +3,7 @@
 
 //! Build orchestrator: content pipeline → protocol build → parallel render → output.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -21,16 +21,26 @@ use crate::error::{Error, Result};
 use crate::markdown::Highlighter;
 use crate::types::{BuildStats, BundlerConfig, DocsConfig};
 
-/// A script entry extracted from a page's HTML for bundling.
+/// A page-level esbuild entry generated from local component scripts and
+/// explicit `<script bundle>` sources.
 #[derive(Debug, Clone)]
-struct PageScript {
-    /// Unique numeric ID used in the placeholder comment.
+struct PageBundleEntry {
+    /// Unique numeric ID used in the generated output filename.
     id: usize,
-    /// The page path this script belongs to (retained for diagnostics).
-    #[allow(dead_code)]
+    /// The page path this bundle belongs to (retained for diagnostics).
     page_path: String,
-    /// Script content: either inline source or a `src` path reference.
-    source: ScriptSource,
+    /// Local component scripts used by this page.
+    component_scripts: Vec<PathBuf>,
+    /// Explicit scripts from `<script bundle>` tags or custom page `scriptFile`.
+    explicit_scripts: Vec<ScriptSource>,
+}
+
+/// Local component script discovered from a component HTML file and optional
+/// sibling TypeScript file.
+#[derive(Debug, Clone)]
+struct ComponentScript {
+    html_content: String,
+    script_path: PathBuf,
 }
 
 struct BundleThread {
@@ -359,8 +369,7 @@ pub fn build_docs_with_cache(
 
     let template_html = fs::read_to_string(template_dir.join("index.html"))
         .map_err(|e| Error::Build(format!("Failed to read template: {e}")))?;
-    let module_version = next_rebuild_nonce_hex();
-    let template_html = version_component_bundle_loader(&template_html, &module_version);
+    let component_script_index = discover_component_scripts(&component_sources)?;
 
     // Step 3: Wipe the previous output and recreate the site root.
     // Always done — a from-scratch run guarantees the output matches
@@ -398,28 +407,25 @@ pub fn build_docs_with_cache(
             .map_err(|e| Error::Io(format!("Cannot create dir {}: {e}", page_dir.display())))?;
     }
 
-    // Kick off TypeScript component bundling on a background thread.
-    // esbuild is independent of the render pipeline, so we overlap it
-    // with the per-page protocol build + render.
-    //
     // Step 2b: Extract <script bundle> tags from page content BEFORE
-    // rendering. This gives us the page scripts to bundle alongside
-    // components. The extraction mutates page content by replacing scripts
-    // with placeholder comments.
+    // rendering. Page scripts become imports in the page's virtual esbuild
+    // entry; the source HTML keeps plain, non-bundled scripts untouched.
     //
-    // Also collect `scriptFile` entries from customPages config — these
+    // Also collect `scriptFile` entries from customPages config. These
     // produce per-page scripts without polluting the HTML string.
-    let mut all_page_scripts: Vec<PageScript> = Vec::new();
+    let mut explicit_page_scripts: HashMap<String, Vec<ScriptSource>> = HashMap::new();
     let mut page_contents_with_scripts: HashMap<String, String> = HashMap::new();
 
     for page in &pages {
         let content = page.state["page"]["content"].as_str().unwrap_or("");
         if content.contains("<script") && content.contains("bundle") {
-            let (modified, scripts) =
-                extract_bundle_scripts(content, &page.path, all_page_scripts.len());
+            let (modified, scripts) = extract_bundle_scripts(content);
             if !scripts.is_empty() {
                 page_contents_with_scripts.insert(page.path.clone(), modified);
-                all_page_scripts.extend(scripts);
+                explicit_page_scripts
+                    .entry(page.path.clone())
+                    .or_default()
+                    .extend(scripts);
             }
         }
     }
@@ -435,44 +441,80 @@ pub fn build_docs_with_cache(
                 format!("{link}/")
             };
             let page_path = format!("{}{}", base_path, &normalized[1..]);
-            let id = all_page_scripts.len();
-            all_page_scripts.push(PageScript {
-                id,
-                page_path,
-                source: ScriptSource::File(script_path.to_string()),
-            });
+            explicit_page_scripts
+                .entry(page_path)
+                .or_default()
+                .push(ScriptSource::File(script_path.to_string()));
         }
     }
 
-    // Build a map of page_path → [script_id] so we can inject <script> tags
-    // into the rendered output in step 8b. This is separate from
-    // `page_contents_with_scripts` (which uses inline placeholders) because
-    // the WebUI renderer strips HTML comments, so scriptFile entries can't
-    // rely on placeholder comments surviving.
-    let mut page_script_ids: HashMap<String, Vec<usize>> =
-        HashMap::with_capacity(all_page_scripts.len());
-    for script in &all_page_scripts {
-        page_script_ids
-            .entry(script.page_path.clone())
-            .or_default()
-            .push(script.id);
+    let not_found_content = format!(
+        "<h1>404 — Page Not Found</h1>\
+         <p>The page you're looking for doesn't exist or has been moved.</p>\
+         <p><a href=\"{base_path}\">← Back to Home</a></p>"
+    );
+
+    // Build one virtual entry per page. Each entry imports the local
+    // component scripts discovered from the template + page HTML and then
+    // imports explicit page scripts from markdown/custom page config.
+    let mut page_bundles: Vec<PageBundleEntry> = Vec::new();
+    let mut page_bundle_ids: HashMap<String, usize> = HashMap::with_capacity(pages.len());
+    for page in &pages {
+        let content = page_contents_with_scripts
+            .get(&page.path)
+            .map(String::as_str)
+            .unwrap_or_else(|| page.state["page"]["content"].as_str().unwrap_or(""));
+        let component_scripts = collect_component_scripts_for_html(
+            &[template_html.as_str(), content],
+            &component_script_index,
+        )?;
+        let explicit_scripts = explicit_page_scripts.remove(&page.path).unwrap_or_default();
+        if component_scripts.is_empty() && explicit_scripts.is_empty() {
+            continue;
+        }
+
+        let id = page_bundles.len();
+        page_bundle_ids.insert(page.path.clone(), id);
+        page_bundles.push(PageBundleEntry {
+            id,
+            page_path: page.path.clone(),
+            component_scripts,
+            explicit_scripts,
+        });
     }
 
-    let template_dir_owned = template_dir.to_path_buf();
-    let component_sources_clone = component_sources.clone();
+    let not_found_component_scripts = collect_component_scripts_for_html(
+        &[template_html.as_str(), not_found_content.as_str()],
+        &component_script_index,
+    )?;
+    let not_found_bundle_id = if not_found_component_scripts.is_empty() {
+        None
+    } else {
+        let id = page_bundles.len();
+        page_bundles.push(PageBundleEntry {
+            id,
+            page_path: format!("{base_path}404/"),
+            component_scripts: not_found_component_scripts,
+            explicit_scripts: Vec::new(),
+        });
+        Some(id)
+    };
+
+    // Kick off TypeScript bundling on a background thread. esbuild is
+    // independent of the render pipeline, so we overlap it with the
+    // per-page protocol build + render.
+
     let site_dir_clone = site_dir.clone();
-    let page_scripts_clone = all_page_scripts.clone();
+    let page_bundles_clone = page_bundles.clone();
     let bundler_config = config.bundler.clone();
     let dev_mode = cache.dev_mode;
     let config_dir_owned = config_dir.to_path_buf();
     let node_modules_owned = resolve_node_modules(config_dir)?;
     let bundle_thread = BundleThread::spawn(move || -> Result<BundleResult> {
         bundle_assets(&BundleOptions {
-            template_dir: &template_dir_owned,
-            component_sources: &component_sources_clone,
             site_dir: &site_dir_clone,
             node_modules: &node_modules_owned,
-            page_scripts: &page_scripts_clone,
+            page_bundles: &page_bundles_clone,
             bundler_config: bundler_config.as_ref(),
             dev_mode,
             config_dir: &config_dir_owned,
@@ -496,7 +538,7 @@ pub fn build_docs_with_cache(
         let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
         let target = page_dir.join("index.html");
 
-        // Use modified content (with script placeholders) if scripts were extracted.
+        // Use modified content (with bundled script tags removed) if scripts were extracted.
         let content = page_contents_with_scripts
             .get(&page.path)
             .map(|s| s.as_str())
@@ -631,11 +673,6 @@ pub fn build_docs_with_cache(
         .map(|f| json_obj([("html", Value::String(f.html.clone()))]))
         .unwrap_or(Value::Null);
 
-    let not_found_content = format!(
-        "<h1>404 — Page Not Found</h1>\
-         <p>The page you're looking for doesn't exist or has been moved.</p>\
-         <p><a href=\"{base_path}\">← Back to Home</a></p>"
-    );
     let mut not_found_state = json_obj([
         (
             "site",
@@ -744,72 +781,62 @@ pub fn build_docs_with_cache(
     let bundle_result = bundle_thread.join()?;
     print_success(
         cache,
-        &format!("Bundled {} components", bundle_result.component_count),
+        &format!(
+            "Bundled {} component script{} into {} page script{}",
+            bundle_result.component_count,
+            if bundle_result.component_count == 1 {
+                ""
+            } else {
+                "s"
+            },
+            bundle_result.page_entry_count,
+            if bundle_result.page_entry_count == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ),
     );
 
     // Step 8b: Inject page script <script> tags into rendered pages.
     if !bundle_result.script_map.is_empty() {
         let mut linked_count = 0usize;
         for page in &pages {
-            let has_placeholders = page_contents_with_scripts.contains_key(&page.path);
-            let script_ids = page_script_ids.get(&page.path);
-            if !has_placeholders && script_ids.is_none() {
-                continue;
-            }
-            let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
-            let target = page_dir.join("index.html");
-            let Ok(mut html) = fs::read_to_string(&target) else {
+            let Some(bundle_id) = page_bundle_ids.get(&page.path) else {
                 continue;
             };
+            let Some(rel_path) = bundle_result.script_map.get(bundle_id) else {
+                return Err(Error::Build(format!(
+                    "Missing bundled script for page {} entry {}",
+                    page.path, bundle_id
+                )));
+            };
+            let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
+            let target = page_dir.join("index.html");
+            let mut html = fs::read_to_string(&target)
+                .map_err(|e| Error::Io(format!("Cannot read {}: {e}", target.display())))?;
 
-            // Replace inline placeholder comments (from <script bundle> extraction).
-            let mut replaced_ids = Vec::new();
-            if has_placeholders && html.contains(SCRIPT_PLACEHOLDER_PREFIX) {
-                let replaced = replace_script_placeholders_with_ids(
-                    &html,
-                    base_path,
-                    &bundle_result.script_map,
-                );
-                html = replaced.0;
-                linked_count += replaced.1.len();
-                replaced_ids = replaced.1;
-            }
-
-            // Inject <script> tags for script IDs that don't have placeholders
-            // (i.e. scriptFile entries). Insert before </body>.
-            if let Some(ids) = script_ids {
-                let mut tags = String::new();
-                for &id in ids {
-                    if replaced_ids.contains(&id) {
-                        continue;
-                    }
-                    if let Some(rel_path) = bundle_result.script_map.get(&id) {
-                        let src = if base_path.is_empty() || base_path == "/" {
-                            rel_path.clone()
-                        } else {
-                            format!(
-                                "{}/{}",
-                                base_path.trim_end_matches('/'),
-                                rel_path.trim_start_matches('/')
-                            )
-                        };
-                        tags.push_str(&format!(
-                            "\n<script type=\"module\" src=\"{src}\"></script>"
-                        ));
-                        linked_count += 1;
-                    }
-                }
-                if !tags.is_empty() {
-                    if let Some(pos) = html.rfind("</body>") {
-                        html.insert_str(pos, &tags);
-                    } else {
-                        html.push_str(&tags);
-                    }
-                }
-            }
+            let tag = module_script_tag(base_path, rel_path);
+            inject_script_tag(&mut html, &tag);
+            linked_count += 1;
 
             fs::write(&target, &html)
                 .map_err(|e| Error::Io(format!("Cannot rewrite {}: {e}", page.path)))?;
+        }
+        if let Some(bundle_id) = not_found_bundle_id {
+            let Some(rel_path) = bundle_result.script_map.get(&bundle_id) else {
+                return Err(Error::Build(format!(
+                    "Missing bundled script for 404 page entry {bundle_id}"
+                )));
+            };
+            let target = site_dir.join("404.html");
+            let mut html = fs::read_to_string(&target)
+                .map_err(|e| Error::Io(format!("Cannot read {}: {e}", target.display())))?;
+            let tag = module_script_tag(base_path, rel_path);
+            inject_script_tag(&mut html, &tag);
+            fs::write(&target, &html)
+                .map_err(|e| Error::Io(format!("Cannot rewrite 404.html: {e}")))?;
+            linked_count += 1;
         }
         if linked_count > 0 {
             print_success(
@@ -1236,52 +1263,195 @@ fn normalize_search_text(raw: &str) -> String {
     normalized
 }
 
-fn is_component_ts_file(path: &Path) -> bool {
-    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    path.extension().is_some_and(|extension| extension == "ts")
-        && !file_name.ends_with(".spec.ts")
-        && !file_name.ends_with(".test.ts")
-        && !file_name.ends_with(".d.ts")
+fn is_component_html_file(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension == "html")
+        && path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains('-'))
 }
 
-/// Collect component `.ts` files from a directory tree (iterative).
-fn collect_ts_files(dir: &Path) -> Vec<std::path::PathBuf> {
-    let mut files = Vec::new();
+/// Discover local component scripts from component sources.
+///
+/// A script is considered the client entry for a component when a
+/// `tag-name.html` file has a sibling `tag-name.ts` file. npm component
+/// sources are skipped here because package custom-element imports are
+/// explicit page script responsibility.
+fn discover_component_scripts(
+    component_sources: &[String],
+) -> Result<BTreeMap<String, ComponentScript>> {
+    let mut scripts = BTreeMap::new();
+    for source in component_sources {
+        let root = Path::new(source);
+        if !root.is_dir() {
+            continue;
+        }
+        collect_component_scripts(root, &mut scripts)?;
+    }
+    Ok(scripts)
+}
+
+/// Collect component script pairs from a directory tree (iterative).
+fn collect_component_scripts(
+    dir: &Path,
+    scripts: &mut BTreeMap<String, ComponentScript>,
+) -> Result<()> {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&d) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        let entries = fs::read_dir(&d)
+            .map_err(|e| Error::Io(format!("Cannot read component dir {}: {e}", d.display())))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| Error::Io(e.to_string()))?;
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if is_component_ts_file(&path) {
-                files.push(path);
+            } else if is_component_html_file(&path) {
+                let Some(tag) = path.file_stem().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                let script_path = path.with_extension("ts");
+                if script_path.exists() {
+                    let script_path = script_path.canonicalize().unwrap_or(script_path);
+                    let html_content = fs::read_to_string(&path).map_err(|e| {
+                        Error::Io(format!(
+                            "Cannot read component template {}: {e}",
+                            path.display()
+                        ))
+                    })?;
+                    scripts.entry(tag.to_string()).or_insert(ComponentScript {
+                        html_content,
+                        script_path,
+                    });
+                }
             }
         }
     }
-    files.sort();
-    files
+    Ok(())
+}
+
+fn collect_component_scripts_for_html(
+    html_fragments: &[&str],
+    component_scripts: &BTreeMap<String, ComponentScript>,
+) -> Result<Vec<PathBuf>> {
+    if component_scripts.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut pending = Vec::new();
+    for html in html_fragments {
+        push_custom_element_tags(html, component_scripts, &mut pending);
+    }
+
+    let mut seen_tags = HashSet::with_capacity(pending.len());
+    let mut script_paths = Vec::new();
+    let mut cursor = 0;
+    while cursor < pending.len() {
+        let tag = pending[cursor].clone();
+        cursor += 1;
+        if !seen_tags.insert(tag.clone()) {
+            continue;
+        }
+        let Some(component) = component_scripts.get(&tag) else {
+            continue;
+        };
+        script_paths.push(component.script_path.clone());
+        push_custom_element_tags(&component.html_content, component_scripts, &mut pending);
+    }
+
+    Ok(script_paths)
+}
+
+fn push_custom_element_tags(
+    html: &str,
+    component_scripts: &BTreeMap<String, ComponentScript>,
+    tags: &mut Vec<String>,
+) {
+    let bytes = html.as_bytes();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let Some(rel) = html[cursor..].find('<') else {
+            break;
+        };
+        let tag_start = cursor + rel;
+        let name_start = tag_start + 1;
+        let Some(&first) = bytes.get(name_start) else {
+            break;
+        };
+
+        if first == b'!' {
+            if bytes.get(name_start + 1) == Some(&b'-') && bytes.get(name_start + 2) == Some(&b'-')
+            {
+                if let Some(end_rel) = html[name_start + 3..].find("-->") {
+                    cursor = name_start + 3 + end_rel + 3;
+                    continue;
+                }
+                break;
+            }
+            cursor = name_start + 1;
+            continue;
+        }
+
+        if matches!(first, b'/' | b'?') {
+            cursor = name_start + 1;
+            continue;
+        }
+
+        let mut name_end = name_start;
+        let mut has_hyphen = false;
+        while name_end < bytes.len() && is_tag_name_byte(bytes[name_end]) {
+            if bytes[name_end] == b'-' {
+                has_hyphen = true;
+            }
+            name_end += 1;
+        }
+
+        if name_end == name_start {
+            cursor = name_start + 1;
+            continue;
+        }
+
+        let tag = &html[name_start..name_end];
+        if tag == "script" || tag == "style" {
+            let close = if tag == "script" {
+                "</script>"
+            } else {
+                "</style>"
+            };
+            if let Some(end_rel) = html[name_end..].find(close) {
+                cursor = name_end + end_rel + close.len();
+                continue;
+            }
+            break;
+        }
+
+        if has_hyphen && component_scripts.contains_key(tag) {
+            tags.push(tag.to_string());
+        }
+
+        cursor = name_end;
+    }
+}
+
+fn is_tag_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'-'
 }
 
 /// Bundle result returned by [`bundle_assets`].
 struct BundleResult {
-    /// Number of component entry points bundled.
+    /// Number of local component scripts imported by page entries.
     component_count: usize,
-    /// Map from page-script ID to relative output path (e.g. `"assets/playground-abc123.js"`).
+    /// Number of page entry points bundled.
+    page_entry_count: usize,
+    /// Map from page-bundle ID to relative output path (e.g. `"assets/page-0.js"`).
     script_map: HashMap<usize, String>,
 }
 
 /// Configuration for the [`bundle_assets`] function.
 struct BundleOptions<'a> {
-    template_dir: &'a Path,
-    component_sources: &'a [String],
     site_dir: &'a Path,
     node_modules: &'a Path,
-    page_scripts: &'a [PageScript],
+    page_bundles: &'a [PageBundleEntry],
     bundler_config: Option<&'a BundlerConfig>,
     dev_mode: bool,
     config_dir: &'a Path,
@@ -1289,6 +1459,14 @@ struct BundleOptions<'a> {
 
 fn path_for_js(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn push_import_once(entry: &mut String, imports: &mut HashSet<String>, specifier: &str) {
+    if imports.insert(specifier.to_string()) {
+        entry.push_str("import \"");
+        entry.push_str(specifier);
+        entry.push_str("\";\n");
+    }
 }
 
 fn push_external_args(
@@ -1435,63 +1613,20 @@ fn esbuild_args(
     args
 }
 
-/// Bundle component TypeScript files and page scripts via esbuild.
+/// Bundle page-scoped scripts via esbuild.
 ///
-/// Uses a single esbuild invocation with multiple entry points for optimal
-/// code splitting. Component .ts files produce `components.js` (the global
-/// hydration bundle); page scripts produce separate entry chunks under `assets/`.
+/// Uses a single esbuild invocation with one virtual entry per page for
+/// optimal code splitting. Each page entry imports local component scripts
+/// discovered from that page's HTML plus any explicit `<script bundle>` or
+/// `scriptFile` sources.
 ///
-/// Returns a [`BundleResult`] with the component count and a mapping from
-/// page-script IDs to their output file paths.
+/// Returns a [`BundleResult`] with the component script count and a mapping
+/// from page-bundle IDs to their output file paths.
 fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
-    let mut ts_files = Vec::new();
-
-    // Collect from user component directories
-    for dir in opts.component_sources {
-        let p = Path::new(dir);
-        if p.exists() {
-            ts_files.extend(collect_ts_files(p));
-        }
-    }
-
-    // Collect from template subdirectories (docs-search, docs-theme-toggle, etc.)
-    if let Ok(entries) = fs::read_dir(opts.template_dir) {
-        for entry in entries.flatten() {
-            if entry.path().is_dir() {
-                ts_files.extend(collect_ts_files(&entry.path()));
-            }
-        }
-    }
-
-    // Exclude component .ts files that are explicitly referenced as page script sources.
-    // This avoids bundling the same file in both the global components.js and a page script.
-    if !opts.page_scripts.is_empty() {
-        let page_script_paths: Vec<std::path::PathBuf> = opts
-            .page_scripts
-            .iter()
-            .filter_map(|s| match &s.source {
-                ScriptSource::File(path) => {
-                    let resolved = opts.config_dir.join(path);
-                    resolved.canonicalize().ok()
-                }
-                ScriptSource::Inline(_) => None,
-            })
-            .collect();
-
-        if !page_script_paths.is_empty() {
-            ts_files.retain(|f| {
-                let canon = f.canonicalize().unwrap_or_else(|_| f.clone());
-                !page_script_paths.contains(&canon)
-            });
-        }
-    }
-
-    let has_components = !ts_files.is_empty();
-    let has_scripts = !opts.page_scripts.is_empty();
-
-    if !has_components && !has_scripts {
+    if opts.page_bundles.is_empty() {
         return Ok(BundleResult {
             component_count: 0,
+            page_entry_count: 0,
             script_map: HashMap::new(),
         });
     }
@@ -1510,45 +1645,64 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     fs::create_dir_all(&assets_dir)
         .map_err(|e| Error::Io(format!("Cannot create assets dir: {e}")))?;
 
-    // Build the component entry file (imports all component .ts files).
     let mut entry_files: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let mut component_imports = HashSet::new();
 
-    if has_components {
-        let imports: String = ts_files
-            .iter()
-            .map(|f| format!("import \"{}\";", f.to_string_lossy().replace('\\', "/")))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let components_entry = bundle_tmp.join("components.ts");
-        fs::write(&components_entry, &imports)
-            .map_err(|e| Error::Build(format!("Cannot write component entry: {e}")))?;
-        entry_files.push(("components".to_string(), components_entry));
-    }
-
-    // Write page script entry files.
-    for script in opts.page_scripts {
-        let entry_name = format!("assets/page-{}", script.id);
+    // Write one virtual entry per page. Inline scripts are written as sibling
+    // modules and imported, preserving module scope when a page has multiple
+    // bundled script tags.
+    for bundle in opts.page_bundles {
+        let entry_name = format!("assets/page-{}", bundle.id);
         let entry_path = bundle_tmp.join(format!("{entry_name}.ts"));
-        let content = match &script.source {
-            ScriptSource::Inline(code) => code.clone(),
-            ScriptSource::File(path) => {
-                // Resolve src path relative to config_dir and canonicalize
-                // to an absolute path so the entry file (in a temp dir)
-                // can resolve the import.
-                let resolved = opts.config_dir.join(path);
-                let abs_path = resolved
-                    .canonicalize()
-                    .unwrap_or(resolved)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                format!("import \"{abs_path}\";")
-            }
-        };
         if let Some(parent) = entry_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| Error::Build(format!("Cannot create script entry dir: {e}")))?;
         }
-        fs::write(&entry_path, &content)
+
+        let mut entry = String::with_capacity(
+            32 + bundle.page_path.len()
+                + (bundle.component_scripts.len() + bundle.explicit_scripts.len()) * 80,
+        );
+        entry.push_str("// Page: ");
+        entry.push_str(&bundle.page_path);
+        entry.push('\n');
+        let mut imports =
+            HashSet::with_capacity(bundle.component_scripts.len() + bundle.explicit_scripts.len());
+
+        for path in &bundle.component_scripts {
+            component_imports.insert(path.clone());
+            let specifier = path_for_js(path);
+            push_import_once(&mut entry, &mut imports, &specifier);
+        }
+
+        for (idx, source) in bundle.explicit_scripts.iter().enumerate() {
+            match source {
+                ScriptSource::Inline(code) => {
+                    let inline_path =
+                        bundle_tmp.join(format!("inline/page-{}-{idx}.ts", bundle.id));
+                    if let Some(parent) = inline_path.parent() {
+                        fs::create_dir_all(parent).map_err(|e| {
+                            Error::Build(format!("Cannot create inline script dir: {e}"))
+                        })?;
+                    }
+                    fs::write(&inline_path, code)
+                        .map_err(|e| Error::Build(format!("Cannot write inline script: {e}")))?;
+                    let specifier = path_for_js(&inline_path);
+                    push_import_once(&mut entry, &mut imports, &specifier);
+                }
+                ScriptSource::File(path) => {
+                    // Resolve src path relative to config_dir and canonicalize
+                    // to an absolute path so the entry file (in a temp dir)
+                    // can resolve the import.
+                    let resolved = opts.config_dir.join(path);
+                    let abs_path = resolved.canonicalize().unwrap_or(resolved);
+                    let specifier = path_for_js(&abs_path);
+                    push_import_once(&mut entry, &mut imports, &specifier);
+                }
+            }
+        }
+
+        fs::write(&entry_path, &entry)
             .map_err(|e| Error::Build(format!("Cannot write script entry: {e}")))?;
         entry_files.push((entry_name, entry_path));
     }
@@ -1570,14 +1724,19 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     }
 
     // Build script_map: find output files for page-script entries.
-    let mut script_map = HashMap::with_capacity(opts.page_scripts.len());
-    for script in opts.page_scripts {
-        let entry_name = format!("page-{}", script.id);
+    let mut script_map = HashMap::with_capacity(opts.page_bundles.len());
+    for bundle in opts.page_bundles {
+        let entry_name = format!("page-{}", bundle.id);
         // esbuild outputs entry chunks as `{entry_name}.js` in the output dir.
         let output_file = format!("assets/{entry_name}.js");
         let full_path = opts.site_dir.join(&output_file);
         if full_path.exists() {
-            script_map.insert(script.id, versioned_asset_path(&output_file, &full_path)?);
+            script_map.insert(bundle.id, versioned_asset_path(&output_file, &full_path)?);
+        } else {
+            return Err(Error::Build(format!(
+                "Bundled script output missing: {}",
+                full_path.display()
+            )));
         }
     }
 
@@ -1585,7 +1744,8 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     fs::remove_dir_all(&bundle_tmp).ok();
 
     Ok(BundleResult {
-        component_count: ts_files.len(),
+        component_count: component_imports.len(),
+        page_entry_count: opts.page_bundles.len(),
         script_map,
     })
 }
@@ -1611,21 +1771,13 @@ fn esbuild_command(node_modules: &Path) -> std::path::PathBuf {
 const PRE_BLOCK_MARKER_PREFIX: &str = "<span data-webui-press-pre-block=\"";
 const PRE_BLOCK_MARKER_SUFFIX: &str = "\"></span>";
 
-const SCRIPT_PLACEHOLDER_PREFIX: &str = "<!--ws:script:";
-const SCRIPT_PLACEHOLDER_SUFFIX: &str = "-->";
-
 /// Extract `<script type="module" bundle>` and `<script type="module" bundle src="...">` tags
-/// from page content HTML. Returns the modified content (with placeholder comments)
-/// and the extracted script entries.
+/// from page content HTML. Returns the modified content (with those tags removed)
+/// and the extracted script sources.
 ///
 /// The scanner is iterative and avoids regex (per project rules). It looks for
-/// `<script` tags containing the `bundle` attribute and replaces each with a
-/// `<!--ws:script:ID-->` comment placeholder.
-fn extract_bundle_scripts(
-    content: &str,
-    page_path: &str,
-    id_offset: usize,
-) -> (String, Vec<PageScript>) {
+/// `<script` tags containing the `bundle` attribute.
+fn extract_bundle_scripts(content: &str) -> (String, Vec<ScriptSource>) {
     let mut scripts = Vec::new();
     let mut out = String::with_capacity(content.len());
     let mut cursor = 0;
@@ -1686,18 +1838,11 @@ fn extract_bundle_scripts(
             continue;
         };
 
-        let id = id_offset + scripts.len();
-        scripts.push(PageScript {
-            id,
-            page_path: page_path.to_string(),
-            source,
-        });
+        scripts.push(source);
 
-        // Emit the placeholder comment.
+        // Drop the original bundled script tag. The page's generated virtual
+        // entry is injected once near the end of the rendered document.
         out.push_str(&content[cursor..tag_start]);
-        out.push_str(SCRIPT_PLACEHOLDER_PREFIX);
-        out.push_str(&id.to_string());
-        out.push_str(SCRIPT_PLACEHOLDER_SUFFIX);
         cursor = close_end;
     }
 
@@ -1814,48 +1959,27 @@ fn extract_src_attr(attrs: &str) -> Option<&str> {
     None
 }
 
-/// Replace `<!--ws:script:ID-->` placeholders in rendered HTML with actual
-/// `<script type="module" src="...">` tags pointing to bundled output files.
-///
-/// `script_map` maps script ID → relative output path (e.g. `"assets/playground-abc123.js"`).
-fn replace_script_placeholders_with_ids(
-    html: &str,
-    base_path: &str,
-    script_map: &HashMap<usize, String>,
-) -> (String, Vec<usize>) {
-    if script_map.is_empty() {
-        return (html.to_string(), Vec::new());
+fn module_script_tag(base_path: &str, rel_path: &str) -> String {
+    let mut tag = String::with_capacity(base_path.len() + rel_path.len() + 40);
+    tag.push_str("\n<script type=\"module\" src=\"");
+    if base_path.is_empty() || base_path == "/" {
+        tag.push('/');
+        tag.push_str(rel_path.trim_start_matches('/'));
+    } else {
+        tag.push_str(base_path.trim_end_matches('/'));
+        tag.push('/');
+        tag.push_str(rel_path.trim_start_matches('/'));
     }
-    let mut out = String::with_capacity(html.len());
-    let mut replaced_ids = Vec::with_capacity(script_map.len());
-    let mut cursor = 0;
-    while let Some(rel) = html[cursor..].find(SCRIPT_PLACEHOLDER_PREFIX) {
-        let p = cursor + rel;
-        out.push_str(&html[cursor..p]);
-        let after = p + SCRIPT_PLACEHOLDER_PREFIX.len();
-        if let Some(end_rel) = html[after..].find(SCRIPT_PLACEHOLDER_SUFFIX) {
-            let num_str = &html[after..after + end_rel];
-            if let Ok(id) = num_str.parse::<usize>() {
-                if let Some(output_path) = script_map.get(&id) {
-                    out.push_str("<script type=\"module\" src=\"");
-                    out.push_str(base_path);
-                    out.push_str(output_path);
-                    out.push_str("\"></script>");
-                    replaced_ids.push(id);
-                    cursor = after + end_rel + SCRIPT_PLACEHOLDER_SUFFIX.len();
-                    continue;
-                }
-            }
-            // Unknown placeholder — keep verbatim.
-            out.push_str(&html[p..after + end_rel + SCRIPT_PLACEHOLDER_SUFFIX.len()]);
-            cursor = after + end_rel + SCRIPT_PLACEHOLDER_SUFFIX.len();
-        } else {
-            out.push_str(&html[p..]);
-            return (out, replaced_ids);
-        }
+    tag.push_str("\"></script>");
+    tag
+}
+
+fn inject_script_tag(html: &mut String, tag: &str) {
+    if let Some(pos) = html.rfind("</body>") {
+        html.insert_str(pos, tag);
+    } else {
+        html.push_str(tag);
     }
-    out.push_str(&html[cursor..]);
-    (out, replaced_ids)
 }
 
 /// Replace `<pre …>…</pre>` blocks with placeholder elements so the WebUI
@@ -1934,13 +2058,6 @@ fn restore_pre_blocks(html: &str, blocks: &[String]) -> String {
     }
     out.push_str(&html[cursor..]);
     out
-}
-
-fn version_component_bundle_loader(html: &str, version: &str) -> String {
-    html.replace(
-        "base + 'components.js'",
-        &format!("base + 'components.js?v={version}'"),
-    )
 }
 
 /// Cheap deterministic hash for building unique temp directory names.
@@ -2151,30 +2268,63 @@ mod tests {
     }
 
     #[test]
-    fn collect_ts_files_skips_tests_and_declarations() -> TestResult {
+    fn discover_component_scripts_pairs_html_and_ts() -> TestResult {
         let root = std::env::temp_dir().join(format!(
-            "webui-press-ts-collect-test-{}-{:x}",
+            "webui-press-component-script-test-{}-{:x}",
             std::process::id(),
-            fxhash("ts-collect")
+            fxhash("component-script")
         ));
         if root.exists() {
             fs::remove_dir_all(&root)?;
         }
         fs::create_dir_all(root.join("my-widget"))?;
+        fs::create_dir_all(root.join("html-only"))?;
         fs::write(root.join("my-widget/my-widget.ts"), "")?;
-        fs::write(root.join("my-widget/my-widget.spec.ts"), "")?;
-        fs::write(root.join("my-widget/my-widget.test.ts"), "")?;
-        fs::write(root.join("my-widget/my-widget.d.ts"), "")?;
+        fs::write(root.join("my-widget/my-widget.html"), "<p>widget</p>")?;
+        fs::write(root.join("html-only/html-only.html"), "<p>no script</p>")?;
 
-        let files = collect_ts_files(&root);
+        let index = discover_component_scripts(&[root.to_string_lossy().into_owned()])?;
+        let expected = root.join("my-widget/my-widget.ts").canonicalize()?;
 
         fs::remove_dir_all(&root)?;
 
-        assert_eq!(
-            files,
-            vec![root.join("my-widget/my-widget.ts")],
-            "only hydration entry files should be bundled"
-        );
+        assert_eq!(index.len(), 1);
+        let Some(script) = index.get("my-widget") else {
+            panic!("my-widget script should be discovered");
+        };
+        assert_eq!(script.script_path, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn collect_component_scripts_for_html_follows_nested_local_components() -> TestResult {
+        let root = std::env::temp_dir().join(format!(
+            "webui-press-component-nesting-test-{}-{:x}",
+            std::process::id(),
+            fxhash("component-nesting")
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root)?;
+        }
+        fs::create_dir_all(root.join("live-preview"))?;
+        fs::create_dir_all(root.join("inner-card"))?;
+        fs::write(
+            root.join("live-preview/live-preview.html"),
+            "<section><inner-card></inner-card></section>",
+        )?;
+        fs::write(root.join("live-preview/live-preview.ts"), "")?;
+        fs::write(root.join("inner-card/inner-card.html"), "<slot></slot>")?;
+        fs::write(root.join("inner-card/inner-card.ts"), "")?;
+
+        let index = discover_component_scripts(&[root.to_string_lossy().into_owned()])?;
+        let scripts =
+            collect_component_scripts_for_html(&["<live-preview></live-preview>"], &index)?;
+        let expected_live = root.join("live-preview/live-preview.ts").canonicalize()?;
+        let expected_inner = root.join("inner-card/inner-card.ts").canonicalize()?;
+
+        fs::remove_dir_all(&root)?;
+
+        assert_eq!(scripts, vec![expected_live, expected_inner]);
         Ok(())
     }
 
@@ -2219,11 +2369,9 @@ mod tests {
     #[test]
     fn extract_bundle_scripts_inline() {
         let html = r#"<p>Hello</p><script type="module" bundle>import "@fluentui/web-components";</script><p>World</p>"#;
-        let (out, scripts) = extract_bundle_scripts(html, "/test/", 0);
+        let (out, scripts) = extract_bundle_scripts(html);
         assert_eq!(scripts.len(), 1);
-        assert_eq!(scripts[0].id, 0);
-        assert!(matches!(&scripts[0].source, ScriptSource::Inline(s) if s.contains("@fluentui")));
-        assert!(out.contains("<!--ws:script:0-->"));
+        assert!(matches!(&scripts[0], ScriptSource::Inline(s) if s.contains("@fluentui")));
         assert!(!out.contains("<script"));
         assert!(out.contains("<p>Hello</p>"));
         assert!(out.contains("<p>World</p>"));
@@ -2232,18 +2380,16 @@ mod tests {
     #[test]
     fn extract_bundle_scripts_src() {
         let html = r#"<script type="module" bundle src="./scripts/playground.ts"></script>"#;
-        let (out, scripts) = extract_bundle_scripts(html, "/playground/", 0);
+        let (out, scripts) = extract_bundle_scripts(html);
         assert_eq!(scripts.len(), 1);
-        assert!(
-            matches!(&scripts[0].source, ScriptSource::File(s) if s == "./scripts/playground.ts")
-        );
-        assert!(out.contains("<!--ws:script:0-->"));
+        assert!(matches!(&scripts[0], ScriptSource::File(s) if s == "./scripts/playground.ts"));
+        assert_eq!(out, "");
     }
 
     #[test]
     fn extract_bundle_scripts_ignores_non_bundle() {
         let html = r#"<script type="module">console.log("hi");</script>"#;
-        let (out, scripts) = extract_bundle_scripts(html, "/page/", 0);
+        let (out, scripts) = extract_bundle_scripts(html);
         assert_eq!(scripts.len(), 0);
         assert_eq!(out, html);
     }
@@ -2255,19 +2401,18 @@ mod tests {
             r#"<p>middle</p>"#,
             r#"<script type="module" bundle src="./b.ts"></script>"#,
         );
-        let (out, scripts) = extract_bundle_scripts(html, "/page/", 5);
+        let (out, scripts) = extract_bundle_scripts(html);
         assert_eq!(scripts.len(), 2);
-        assert_eq!(scripts[0].id, 5);
-        assert_eq!(scripts[1].id, 6);
-        assert!(out.contains("<!--ws:script:5-->"));
-        assert!(out.contains("<!--ws:script:6-->"));
+        assert!(matches!(&scripts[0], ScriptSource::Inline(s) if s.contains("import \"a\"")));
+        assert!(matches!(&scripts[1], ScriptSource::File(s) if s == "./b.ts"));
         assert!(out.contains("<p>middle</p>"));
+        assert!(!out.contains("<script"));
     }
 
     #[test]
     fn extract_bundle_scripts_empty_body_no_src_skipped() {
         let html = r#"<script type="module" bundle></script>"#;
-        let (out, scripts) = extract_bundle_scripts(html, "/page/", 0);
+        let (out, scripts) = extract_bundle_scripts(html);
         assert_eq!(scripts.len(), 0);
         assert_eq!(out, html); // passes through unchanged
     }
@@ -2306,47 +2451,34 @@ mod tests {
         assert_eq!(extract_src_attr(r#" type="module" bundle"#), None);
     }
 
-    // --- replace_script_placeholders -------------------------------------
+    // --- script tag injection --------------------------------------------
 
     #[test]
-    fn replace_script_placeholders_basic() {
-        let html = "<html><!--ws:script:0--><p>content</p><!--ws:script:1--></html>";
-        let mut map = HashMap::new();
-        map.insert(0, "assets/page-0.js".to_string());
-        map.insert(1, "assets/page-1.js".to_string());
-        let result = replace_script_placeholders_with_ids(html, "/webui/", &map).0;
-        assert!(result.contains(r#"<script type="module" src="/webui/assets/page-0.js"></script>"#));
-        assert!(result.contains(r#"<script type="module" src="/webui/assets/page-1.js"></script>"#));
-        assert!(!result.contains("<!--ws:script"));
-    }
-
-    #[test]
-    fn replace_script_placeholders_empty_map_unchanged() {
-        let html = "no scripts here";
-        let map = HashMap::new();
+    fn module_script_tag_prefixes_base_path() {
+        let tag = module_script_tag("/webui/", "assets/page-0.js?v=abc");
         assert_eq!(
-            replace_script_placeholders_with_ids(html, "/", &map).0,
-            html
+            tag,
+            "\n<script type=\"module\" src=\"/webui/assets/page-0.js?v=abc\"></script>"
         );
     }
 
     #[test]
-    fn replace_script_placeholders_tracks_replaced_ids() {
-        let html = "<!--ws:script:2--><!--ws:script:9-->";
-        let mut map = HashMap::new();
-        map.insert(2, "assets/page-2.js".to_string());
-
-        let (result, replaced_ids) = replace_script_placeholders_with_ids(html, "/", &map);
-
-        assert_eq!(replaced_ids, vec![2]);
-        assert!(result.contains(r#"<script type="module" src="/assets/page-2.js"></script>"#));
-        assert!(result.contains("<!--ws:script:9-->"));
+    fn module_script_tag_handles_root_base_path() {
+        assert_eq!(
+            module_script_tag("/", "assets/page-0.js"),
+            "\n<script type=\"module\" src=\"/assets/page-0.js\"></script>"
+        );
     }
 
     #[test]
-    fn version_component_bundle_loader_adds_hash_query() {
-        let html = "<script>var base = '/webui/'; s.src = base + 'components.js';</script>";
-        let result = version_component_bundle_loader(html, "abc123");
-        assert!(result.contains("base + 'components.js?v=abc123'"));
+    fn inject_script_tag_inserts_before_body_close() {
+        let mut html = "<html><body><p>content</p></body></html>".to_string();
+        inject_script_tag(
+            &mut html,
+            "\n<script type=\"module\" src=\"/assets/page-0.js\"></script>",
+        );
+        assert!(html.contains(
+            "<p>content</p>\n<script type=\"module\" src=\"/assets/page-0.js\"></script></body>"
+        ));
     }
 }

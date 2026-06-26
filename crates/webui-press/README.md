@@ -139,7 +139,7 @@ The build pipeline:
 8. Generate search index     → JSON for client-side fuzzy search
 9. Copy public/              → static asset passthrough
 10. Write 404.html
-11. Bundle scripts           → one esbuild build for components.js + per-page script entries
+11. Bundle scripts           → one esbuild build for page-scoped script entries
 ```
 
 Typical build for a 30-page site: under half a second on a laptop.
@@ -275,7 +275,7 @@ Every entry in `head[]` is rendered into `<head>` with attributes sorted alphabe
 
 ### `bundler`
 
-`webui-press` uses [esbuild](https://esbuild.github.io/) for client JavaScript. It runs one build with all component and page script entry points, so shared imports are split into shared chunks automatically.
+`webui-press` uses [esbuild](https://esbuild.github.io/) for client JavaScript. It runs one build with one generated entry per page, so page-specific code stays local and shared imports are split into reusable chunks automatically.
 
 | Field      | Type             | Effect                                                   |
 | ---------- | ---------------- | -------------------------------------------------------- |
@@ -361,8 +361,8 @@ Components are:
 
 1. Compiled into the WebUI protocol at build time
 2. Server-rendered with **Declarative Shadow DOM** pre-expanded, visible without JavaScript
-3. Bundled into `components.js` for client-side hydration
-4. Available across every page automatically
+3. Auto-imported into the generated page script only when that page uses the component tag
+4. Shared through esbuild chunks when multiple pages use the same component or dependency
 
 Markdown inside slots is rendered as markdown, so you can mix prose and components freely.
 
@@ -393,9 +393,23 @@ You can also point at a file:
 
 `src` paths are resolved relative to `config.json`'s directory (`.webui-press/` by convention), not relative to the markdown file. For example, if your config is `.webui-press/config.json`, use `src="./scripts/example.ts"` for `.webui-press/scripts/example.ts`.
 
-`webui-press` extracts those scripts before rendering, gives each one its own esbuild entry, and writes script tags for the generated files back into the page HTML. Plain `<script>` tags without `bundle` pass through unchanged.
+`webui-press` extracts those scripts before rendering and imports them into that page's virtual esbuild entry. Plain `<script>` tags without `bundle` pass through unchanged.
 
-All page scripts and component scripts are bundled in one esbuild build. If ten pages import the same package, esbuild can emit that package once as a shared chunk and have the page entry files import it.
+Local component scripts are discovered automatically. If a page contains `<live-preview>` and the component source has `live-preview.html` next to `live-preview.ts`, the generated page entry imports `live-preview.ts`. Component templates are scanned too, so local child components are included without adding duplicate imports.
+
+Package custom elements stay explicit because tag names cannot reliably be mapped back to package exports. Add those package registrations to the page's bundled script:
+
+```markdown
+<live-preview>
+  <mai-button appearance="button">Click Me</mai-button>
+</live-preview>
+
+<script type="module" bundle>
+import "@mai-ui/button/define.js";
+</script>
+```
+
+All page entries are bundled in one esbuild build. If ten pages import the same package or local component runtime, esbuild can emit that dependency once as a shared chunk and have the page entry files import it.
 
 `webui-press build` minifies bundled JavaScript. `webui-press serve` skips minification for faster rebuilds during local development.
 
@@ -477,7 +491,7 @@ For pages that are pure interactive components (a playground, a live editor, a c
 | `layout`    | `doc`, `home`, `page`, `full` (see [Layouts](#layouts)).                            |
 | `state`     | Inline JSON merged into the page's render state under `pageData`.                   |
 | `stateFile` | Path to a JSON file, resolved relative to `config.json`'s directory (`.webui-press/`). Each unique file is read and parsed once and shared across pages. |
-| `scriptFile` | Path to a TypeScript or JavaScript file, resolved relative to `config.json`'s directory. The file is bundled as a page-specific esbuild entry and linked only from this page. |
+| `scriptFile` | Path to a TypeScript or JavaScript file, resolved relative to `config.json`'s directory. The file is imported into this page's generated esbuild entry and linked only from this page. |
 
 `state` and `stateFile` are mutually exclusive. State files are cached so multiple pages can share one source of truth without re-parsing.
 
@@ -509,7 +523,7 @@ The output is fully renderable without JavaScript:
 - Declarative Shadow DOM pre-expanded inline
 - Critical styles inlined per component shadow root
 
-When the browser loads `components.js` (deferred, after first paint), the framework finds existing DSD shadow roots and **upgrades** them in place, no re-render, no flash, no virtual DOM. Event handlers and observable state are bound to the already-painted DOM. Pages with bundled page scripts also load their generated `assets/page-N.js` entry after rendering.
+When the browser loads the generated page script (deferred, after first paint), the framework finds existing DSD shadow roots and **upgrades** them in place, no re-render, no flash, no virtual DOM. Event handlers and observable state are bound to the already-painted DOM. Each page script imports only the local component scripts and explicit bundled scripts needed by that page, with shared dependencies split into reusable chunks.
 
 This is the WebUI Framework's [`webui` plugin](https://microsoft.github.io/webui/guide/concepts/plugins/) at work, and it is what makes the site feel instant on slow connections.
 

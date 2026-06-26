@@ -217,8 +217,8 @@ pub struct FooterConfig {
 /// JavaScript bundler configuration overrides.
 ///
 /// All fields are optional; sensible defaults are applied when omitted.
-/// These settings affect how page scripts and component TypeScript files
-/// are bundled into the output `assets/` directory.
+/// These settings affect how generated page script entries are bundled into
+/// the output `assets/` directory.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct BundlerConfig {
     /// ECMAScript target (e.g. `"es2022"`). Defaults to `"es2022"`.
