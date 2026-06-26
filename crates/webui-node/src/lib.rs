@@ -64,6 +64,9 @@ pub struct JsBuildResult {
     pub css_files: Vec<String>,
     /// Static component asset files as alternating [filename, content, filename, content, ...].
     pub component_asset_files: Vec<String>,
+    /// Non-fatal build advisories (plain text), e.g. CSS tokens used only with a
+    /// literal `var()` fallback and absent from every theme.
+    pub warnings: Vec<String>,
     /// Build statistics.
     pub stats: JsBuildStats,
 }
@@ -91,6 +94,8 @@ pub struct JsBuildOptions {
     pub css_public_base: Option<String>,
     /// Legal comment handling: "inline" (default) or "none".
     pub legal_comments: Option<String>,
+    /// Design token theme: a JSON file path or npm package name.
+    pub theme: Option<String>,
 }
 
 /// Build a WebUI application from an app directory.
@@ -126,8 +131,15 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         .map_err(NapiError::from_reason)?
         .unwrap_or_default();
 
+    let app_dir = std::path::PathBuf::from(&options.app_dir);
+    let theme = options
+        .theme
+        .as_deref()
+        .map(|theme| load_theme(theme, &app_dir))
+        .transpose()?;
+
     let build_options = webui::BuildOptions {
-        app_dir: std::path::PathBuf::from(&options.app_dir),
+        app_dir,
         entry: options.entry.unwrap_or_else(|| "index.html".to_string()),
         css,
         dom,
@@ -139,6 +151,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
             .unwrap_or_else(|| webui::DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string()),
         css_public_base: options.css_public_base,
         legal_comments,
+        theme,
     };
 
     let result = webui::build(build_options)
@@ -155,11 +168,13 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         .into_iter()
         .flat_map(|file| [file.name, file.content])
         .collect();
+    let warnings: Vec<String> = result.warnings.iter().map(|d| d.to_string()).collect();
 
     Ok(JsBuildResult {
         protocol: Buffer::from(result.protocol_bytes),
         css_files,
         component_asset_files,
+        warnings,
         stats: JsBuildStats {
             duration_ms: result.stats.duration.as_secs_f64() * 1000.0,
             fragment_count: result.stats.fragment_count as u32,
@@ -168,6 +183,14 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
             protocol_size_bytes: result.stats.protocol_size_bytes as u32,
             token_count: result.stats.token_count as u32,
         },
+    })
+}
+
+fn load_theme(theme: &str, search_root: &std::path::Path) -> napi::Result<webui::TokenFile> {
+    let resolved = webui::resolve_theme_path(theme, search_root)
+        .map_err(|e| NapiError::from_reason(format!("Theme resolution error: {e}")))?;
+    webui::load_token_file(&resolved).map_err(|e| {
+        NapiError::from_reason(format!("Theme load error for {}: {e}", resolved.display()))
     })
 }
 
@@ -503,6 +526,7 @@ mod tests {
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
+            theme: None,
         };
 
         let result = build(options).unwrap();
@@ -528,6 +552,7 @@ mod tests {
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
+            theme: None,
         };
 
         let result = build(options).unwrap();
@@ -547,6 +572,7 @@ mod tests {
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
+            theme: None,
         };
 
         let result = build(options);
@@ -569,6 +595,7 @@ mod tests {
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
+            theme: None,
         };
 
         let result = build(options);
@@ -593,6 +620,7 @@ mod tests {
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
+            theme: None,
         };
 
         let result = build(options).unwrap();
@@ -601,6 +629,41 @@ mod tests {
         assert_eq!(result.css_files[0], "my-card.css");
         assert!(result.css_files[1].contains("color: red"));
         assert_eq!(result.stats.css_file_count, 1);
+    }
+
+    #[test]
+    fn test_build_with_theme_missing_token_errors() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<my-card></my-card>").unwrap();
+        std::fs::write(dir.path().join("my-card.html"), "<div>Card</div>").unwrap();
+        std::fs::write(
+            dir.path().join("my-card.css"),
+            ":host { --token-a: red; --foo-bar: var(--token-a, var(--token-b, var(--token-c))); }",
+        )
+        .unwrap();
+        let theme_path = dir.path().join("theme.json");
+        std::fs::write(&theme_path, r#"{"themes":{"light":{"token-b":"green"}}}"#).unwrap();
+
+        let options = JsBuildOptions {
+            app_dir: dir.path().to_string_lossy().to_string(),
+            entry: None,
+            css: Some("link".to_string()),
+            dom: None,
+            plugin: None,
+            components: None,
+            component_asset_roots: None,
+            css_file_name_template: None,
+            css_public_base: None,
+            legal_comments: None,
+            theme: Some(theme_path.to_string_lossy().to_string()),
+        };
+
+        let Err(err) = build(options) else {
+            panic!("missing theme token must fail");
+        };
+        let message = err.to_string();
+        assert!(message.contains("missing-theme-token"), "msg: {message}");
+        assert!(message.contains("--token-c"), "msg: {message}");
     }
 
     #[test]
@@ -621,6 +684,7 @@ mod tests {
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
+            theme: None,
         };
 
         let result = build(options).unwrap();
@@ -653,6 +717,7 @@ mod tests {
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: Some("none".to_string()),
+            theme: None,
         };
 
         let result = build(options).unwrap();
@@ -675,6 +740,7 @@ mod tests {
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: Some("linked".to_string()),
+            theme: None,
         };
 
         let result = build(options);
@@ -698,6 +764,7 @@ mod tests {
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
+            theme: None,
         };
 
         let result = build(options).unwrap();
@@ -725,6 +792,7 @@ mod tests {
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
+            theme: None,
         };
 
         let result = build(options).unwrap();
@@ -751,6 +819,7 @@ mod tests {
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
+            theme: None,
         };
 
         let result = build(options);

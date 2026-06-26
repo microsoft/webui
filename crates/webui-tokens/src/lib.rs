@@ -3,10 +3,11 @@
 
 //! Design token loading, filtering, and CSS generation for WebUI.
 //!
-//! Loads token values from JSON files, filters them against the protocol's
-//! required token list, resolves transitive `var(--x)` dependencies, detects
-//! cycles, and generates per-theme CSS declaration strings ready for state
-//! injection.
+//! Loads token values from JSON files, filters them against the protocol's token
+//! list, follows present transitive `var(--x)` dependencies for tokens in each
+//! theme, and generates per-theme CSS declaration strings ready for state
+//! injection. Theme token internals are trusted: unresolved or cyclic
+//! dependencies remain browser CSS semantics rather than build failures.
 //!
 //! # Token file format
 //!
@@ -29,7 +30,7 @@
 
 mod error;
 
-pub use error::{Result, TokenError, TokenWarning};
+pub use error::{Result, TokenError};
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -42,13 +43,23 @@ pub struct TokenFile {
     pub themes: HashMap<String, HashMap<String, String>>,
 }
 
-/// Result of resolving tokens: per-theme CSS strings and any warnings.
+/// A CSS `var()` fallback chain that needs theme or local CSS coverage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CssFallbackChain {
+    /// Candidate custom property names in browser fallback order, without `--`.
+    pub tokens: Vec<String>,
+    /// Whether the CSS chain ends in a non-token literal fallback.
+    ///
+    /// When true, the chain is valid even if no candidate token exists in a
+    /// theme because the browser can use the literal fallback.
+    pub has_literal_fallback: bool,
+}
+
+/// Result of resolving tokens: per-theme CSS strings.
 #[derive(Debug, Clone)]
 pub struct ResolvedTokens {
     /// Theme name → CSS declarations string (e.g. `"--surface-page: #fff;\n--text-primary: #111;"`)
     pub css: HashMap<String, String>,
-    /// Non-fatal warnings encountered during resolution.
-    pub warnings: Vec<TokenWarning>,
 }
 
 // ── Loading ──────────────────────────────────────────────────────────
@@ -229,78 +240,162 @@ pub fn resolve_theme_path(theme: &str, search_root: &Path) -> Result<PathBuf> {
 
 // ── Resolution ───────────────────────────────────────────────────────
 
-/// Resolve tokens for all themes against the protocol's required token list.
+/// Resolve tokens for all themes against the protocol's token candidate list.
 ///
 /// For each theme:
-/// 1. Filters to keep only tokens in `protocol_tokens`
-/// 2. Expands transitive `var(--x)` dependencies
-/// 3. Detects cyclic references
-/// 4. Generates CSS declaration strings
+/// 1. Keeps only protocol tokens that are present in that theme
+/// 2. Follows present transitive `var(--x)` dependencies
+/// 3. Generates CSS declaration strings
 ///
 /// # Errors
 ///
-/// Returns [`TokenError::CyclicDependency`] if a dependency cycle is found.
+/// Missing protocol token candidates and missing transitive dependencies are
+/// skipped. Call [`validate_required_tokens`] first when flat token presence must
+/// be strict; theme token values themselves are trusted and left to browser CSS
+/// semantics.
 pub fn resolve_tokens(
     protocol_tokens: &[String],
     token_file: &TokenFile,
 ) -> Result<ResolvedTokens> {
-    let required: HashSet<&str> = protocol_tokens.iter().map(String::as_str).collect();
     let mut css = HashMap::with_capacity(token_file.themes.len());
-    let mut warnings = Vec::new();
 
     for (theme_name, theme_tokens) in &token_file.themes {
-        let (css_string, theme_warnings) = resolve_theme(&required, theme_tokens, theme_name)?;
+        let css_string = resolve_theme(protocol_tokens, theme_tokens);
         css.insert(theme_name.clone(), css_string);
-        warnings.extend(theme_warnings);
     }
 
-    Ok(ResolvedTokens { css, warnings })
+    Ok(ResolvedTokens { css })
+}
+
+/// Validate that every required token exists in every theme.
+///
+/// The caller selects which tokens are mandatory (e.g. only the candidates of
+/// `var()` chains without a literal CSS fallback). Theme token values themselves
+/// are trusted and are not dependency-validated.
+///
+/// # Errors
+///
+/// Returns [`TokenError::MissingToken`] if a required token is not present in
+/// every theme.
+pub fn validate_required_tokens(required_tokens: &[String], token_file: &TokenFile) -> Result<()> {
+    for (theme_name, theme_tokens) in &token_file.themes {
+        validate_theme_required_tokens(required_tokens, theme_tokens, theme_name)?;
+    }
+    Ok(())
+}
+
+/// Validate the tokens required by parser `var()` fallback chains against a theme.
+///
+/// A token is *required* when it appears in at least one chain with **no**
+/// literal CSS fallback. A chain that terminates in a literal value
+/// (`var(--x, 16px)`) does not make its candidates required — the literal
+/// already supplies a value, so `--x` may be absent from a theme. Theme token
+/// values themselves are trusted and are not dependency-validated.
+///
+/// # Errors
+///
+/// Returns [`TokenError::MissingToken`] if a required token is not present in
+/// every theme.
+pub fn validate_chain_tokens(chains: &[CssFallbackChain], token_file: &TokenFile) -> Result<()> {
+    validate_required_tokens(&required_chain_tokens(chains), token_file)
+}
+
+/// CSS tokens used **only** with a literal `var()` fallback and defined in no
+/// theme — likely typos.
+///
+/// A token referenced solely as `var(--name, <literal>)` is not a validation
+/// failure (the literal supplies a value), but when no theme defines it the
+/// reference is often a misspelling (e.g. `var(--colr-brand, #000)` for
+/// `--color-brand`). Callers may surface these as non-fatal advisories.
+/// Returned sorted and deduplicated, without the `--` prefix.
+#[must_use]
+pub fn unthemed_literal_fallback_tokens(
+    chains: &[CssFallbackChain],
+    token_file: &TokenFile,
+) -> Vec<String> {
+    let required: HashSet<&str> = chains
+        .iter()
+        .filter(|chain| !chain.has_literal_fallback)
+        .flat_map(|chain| chain.tokens.iter().map(String::as_str))
+        .collect();
+
+    let mut unthemed: Vec<String> = chains
+        .iter()
+        .flat_map(|chain| chain.tokens.iter())
+        .filter(|token| !required.contains(token.as_str()))
+        .filter(|token| {
+            token_file
+                .themes
+                .values()
+                .all(|theme| !theme.contains_key(token.as_str()))
+        })
+        .cloned()
+        .collect();
+    unthemed.sort_unstable();
+    unthemed.dedup();
+    unthemed
+}
+
+/// Collect the tokens made mandatory by `var()` chains without a literal
+/// fallback, sorted and deduplicated so validation order is deterministic.
+fn required_chain_tokens(chains: &[CssFallbackChain]) -> Vec<String> {
+    let mut required: Vec<String> = chains
+        .iter()
+        .filter(|chain| !chain.has_literal_fallback)
+        .flat_map(|chain| chain.tokens.iter().cloned())
+        .collect();
+    required.sort_unstable();
+    required.dedup();
+    required
 }
 
 /// Resolve a single theme: filter, expand deps, generate CSS.
-fn resolve_theme(
-    required: &HashSet<&str>,
+fn resolve_theme(required_tokens: &[String], theme_tokens: &HashMap<String, String>) -> String {
+    let present_tokens: Vec<String> = required_tokens
+        .iter()
+        .filter(|token| theme_tokens.contains_key(*token))
+        .cloned()
+        .collect();
+    let closure = theme_token_closure(&present_tokens, theme_tokens);
+    generate_css_declarations(&closure, theme_tokens)
+}
+
+fn validate_theme_required_tokens(
+    required_tokens: &[String],
     theme_tokens: &HashMap<String, String>,
     theme_name: &str,
-) -> Result<(String, Vec<TokenWarning>)> {
-    let mut warnings = Vec::new();
-
-    // Step 1: Compute the closure of required tokens (including transitive deps)
-    let closure = compute_token_closure(required, theme_tokens, theme_name, &mut warnings)?;
-
-    // Step 2: Warn about required tokens missing from the theme
-    for name in required {
-        if !theme_tokens.contains_key(*name) {
-            warnings.push(TokenWarning::MissingToken {
+) -> Result<()> {
+    for name in required_tokens {
+        if !theme_tokens.contains_key(name) {
+            return Err(TokenError::MissingToken {
                 theme: theme_name.into(),
-                token: (*name).into(),
+                token: name.clone(),
             });
         }
     }
-
-    // Step 3: Generate sorted CSS declarations
-    let css = generate_css_declarations(&closure, theme_tokens);
-
-    Ok((css, warnings))
+    Ok(())
 }
 
-/// Compute the transitive closure of required tokens by following `var(--x)`
-/// references in token values. Uses iterative expansion with cycle detection.
+fn theme_token_closure(
+    required_tokens: &[String],
+    theme_tokens: &HashMap<String, String>,
+) -> Vec<String> {
+    let required: HashSet<&str> = required_tokens.iter().map(String::as_str).collect();
+    compute_token_closure(&required, theme_tokens)
+}
+
+/// Compute the transitive closure of required tokens by following present
+/// `var(--x)` references in token values.
 fn compute_token_closure(
     required: &HashSet<&str>,
     theme_tokens: &HashMap<String, String>,
-    theme_name: &str,
-    warnings: &mut Vec<TokenWarning>,
-) -> Result<Vec<String>> {
+) -> Vec<String> {
     let mut closure: HashSet<String> = HashSet::new();
     let mut queue: Vec<String> = required
         .iter()
         .filter(|name| theme_tokens.contains_key(**name))
         .map(|s| (*s).into())
         .collect();
-
-    // Track dependency graph edges for cycle detection
-    let mut edges: HashMap<String, Vec<String>> = HashMap::new();
 
     while let Some(name) = queue.pop() {
         if !closure.insert(name.clone()) {
@@ -310,90 +405,16 @@ fn compute_token_closure(
         if let Some(value) = theme_tokens.get(&name) {
             let deps = extract_var_references(value);
             for dep in deps {
-                if !theme_tokens.contains_key(&dep) {
-                    warnings.push(TokenWarning::MissingDependency {
-                        theme: theme_name.into(),
-                        token: name.clone(),
-                        dependency: dep,
-                    });
-                    continue;
-                }
-                edges.entry(name.clone()).or_default().push(dep.clone());
-                if !closure.contains(&dep) {
+                if theme_tokens.contains_key(&dep) && !closure.contains(&dep) {
                     queue.push(dep);
                 }
             }
         }
     }
 
-    // Detect cycles using DFS on the dependency graph
-    detect_cycles(&edges, &closure)?;
-
     let mut sorted: Vec<String> = closure.into_iter().collect();
     sorted.sort();
-    Ok(sorted)
-}
-
-/// Detect cycles in the dependency graph using iterative DFS with explicit
-/// coloring (White → Gray → Black).
-fn detect_cycles(edges: &HashMap<String, Vec<String>>, all_nodes: &HashSet<String>) -> Result<()> {
-    const WHITE: u8 = 0;
-    const GRAY: u8 = 1;
-    const BLACK: u8 = 2;
-
-    let mut color: HashMap<&str, u8> = all_nodes.iter().map(|n| (n.as_str(), WHITE)).collect();
-    // parent map for cycle path reconstruction
-    let mut parent: HashMap<&str, &str> = HashMap::new();
-
-    for start in all_nodes {
-        if color[start.as_str()] != WHITE {
-            continue;
-        }
-
-        let mut stack = vec![start.as_str()];
-
-        while let Some(node) = stack.last().copied() {
-            match color[node] {
-                WHITE => {
-                    color.insert(node, GRAY);
-                    if let Some(deps) = edges.get(node) {
-                        for dep in deps {
-                            match color.get(dep.as_str()).copied().unwrap_or(WHITE) {
-                                GRAY => {
-                                    // Cycle found — reconstruct
-                                    let mut chain = vec![dep.as_str(), node];
-                                    let mut cur = node;
-                                    while let Some(&p) = parent.get(cur) {
-                                        if p == dep.as_str() {
-                                            break;
-                                        }
-                                        chain.push(p);
-                                        cur = p;
-                                    }
-                                    chain.reverse();
-                                    return Err(TokenError::cycle(&chain));
-                                }
-                                WHITE => {
-                                    parent.insert(dep.as_str(), node);
-                                    stack.push(dep.as_str());
-                                }
-                                _ => {} // BLACK — already processed
-                            }
-                        }
-                    }
-                }
-                GRAY => {
-                    color.insert(node, BLACK);
-                    stack.pop();
-                }
-                _ => {
-                    stack.pop();
-                }
-            }
-        }
-    }
-
-    Ok(())
+    sorted
 }
 
 // ── var(--x) extraction (no regex — deterministic scanner) ───────────
@@ -521,6 +542,7 @@ pub fn inject_token_css(state: &mut Value, token_css: &HashMap<String, String>) 
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -748,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_detects_direct_cycle() {
+    fn resolve_trusts_direct_cycle() {
         let token_file = TokenFile {
             themes: HashMap::from([(
                 "light".into(),
@@ -760,15 +782,21 @@ mod tests {
         };
 
         let protocol_tokens = vec!["a".into()];
-        let result = resolve_tokens(&protocol_tokens, &token_file);
+        let resolved = resolve_tokens(&protocol_tokens, &token_file).unwrap();
+        let css = &resolved.css["light"];
+
         assert!(
-            matches!(result, Err(TokenError::CyclicDependency(ref msg)) if msg.contains("--a") && msg.contains("--b")),
-            "expected cycle error, got: {result:?}"
+            css.contains("--a: var(--b);"),
+            "a should be included: {css}"
+        );
+        assert!(
+            css.contains("--b: var(--a);"),
+            "b should be included: {css}"
         );
     }
 
     #[test]
-    fn resolve_detects_self_referencing_cycle() {
+    fn resolve_trusts_self_referencing_cycle() {
         let token_file = TokenFile {
             themes: HashMap::from([(
                 "light".into(),
@@ -777,15 +805,12 @@ mod tests {
         };
 
         let protocol_tokens = vec!["a".into()];
-        let result = resolve_tokens(&protocol_tokens, &token_file);
-        assert!(
-            matches!(result, Err(TokenError::CyclicDependency(_))),
-            "expected cycle error, got: {result:?}"
-        );
+        let resolved = resolve_tokens(&protocol_tokens, &token_file).unwrap();
+        assert_eq!(resolved.css["light"], "--a: var(--a);");
     }
 
     #[test]
-    fn resolve_warns_on_missing_protocol_token() {
+    fn resolve_skips_missing_protocol_token() {
         let token_file = TokenFile {
             themes: HashMap::from([(
                 "light".into(),
@@ -796,18 +821,11 @@ mod tests {
         let protocol_tokens = vec!["surface-page".into(), "nonexistent".into()];
         let resolved = resolve_tokens(&protocol_tokens, &token_file).unwrap();
 
-        assert!(
-            resolved.warnings.iter().any(|w| matches!(
-                w,
-                TokenWarning::MissingToken { token, .. } if token == "nonexistent"
-            )),
-            "should warn about missing token: {:?}",
-            resolved.warnings
-        );
+        assert_eq!(resolved.css["light"], "--surface-page: #fff;");
     }
 
     #[test]
-    fn resolve_warns_on_missing_dependency() {
+    fn resolve_trusts_missing_dependency() {
         let token_file = TokenFile {
             themes: HashMap::from([(
                 "light".into(),
@@ -818,14 +836,123 @@ mod tests {
         let protocol_tokens = vec!["surface-page".into()];
         let resolved = resolve_tokens(&protocol_tokens, &token_file).unwrap();
 
+        assert_eq!(resolved.css["light"], "--surface-page: var(--not-defined);");
+    }
+
+    #[test]
+    fn validate_required_tokens_accepts_complete_theme() {
+        let token_file = TokenFile {
+            themes: HashMap::from([(
+                "light".into(),
+                HashMap::from([
+                    ("surface-page".into(), "var(--neutral-100)".into()),
+                    ("neutral-100".into(), "#fff".into()),
+                ]),
+            )]),
+        };
+
+        let protocol_tokens = vec!["surface-page".into()];
+        validate_required_tokens(&protocol_tokens, &token_file).unwrap();
+    }
+
+    #[test]
+    fn validate_required_tokens_errors_on_missing_token() {
+        let token_file = TokenFile {
+            themes: HashMap::from([("light".into(), HashMap::new())]),
+        };
+
+        let protocol_tokens = vec!["surface-page".into()];
+        let result = validate_required_tokens(&protocol_tokens, &token_file);
         assert!(
-            resolved.warnings.iter().any(|w| matches!(
-                w,
-                TokenWarning::MissingDependency { dependency, .. } if dependency == "not-defined"
-            )),
-            "should warn about missing dep: {:?}",
-            resolved.warnings
+            matches!(result, Err(TokenError::MissingToken { ref token, .. }) if token == "surface-page"),
+            "expected missing token error, got: {result:?}"
         );
+    }
+
+    fn chain(tokens: &[&str], has_literal_fallback: bool) -> CssFallbackChain {
+        CssFallbackChain {
+            tokens: tokens.iter().map(|t| (*t).to_string()).collect(),
+            has_literal_fallback,
+        }
+    }
+
+    #[test]
+    fn validate_chain_tokens_requires_all_non_literal_candidates() {
+        // `var(--token-a, var(--token-b))` with no literal fallback requires both.
+        let token_file = TokenFile {
+            themes: HashMap::from([(
+                "light".into(),
+                HashMap::from([("token-a".into(), "red".into())]),
+            )]),
+        };
+        let chains = vec![chain(&["token-a", "token-b"], false)];
+
+        let result = validate_chain_tokens(&chains, &token_file);
+        assert!(
+            matches!(result, Err(TokenError::MissingToken { ref token, .. }) if token == "token-b"),
+            "expected token-b missing, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn validate_chain_tokens_exempts_literal_fallback_chain() {
+        // `var(--brand, #000)` must pass even when no theme defines `--brand`.
+        let token_file = TokenFile {
+            themes: HashMap::from([("light".into(), HashMap::new())]),
+        };
+        let chains = vec![chain(&["brand"], true)];
+
+        validate_chain_tokens(&chains, &token_file).unwrap();
+    }
+
+    #[test]
+    fn validate_chain_tokens_requires_token_with_any_bare_usage() {
+        // The same token used once with and once without a literal fallback is
+        // required because of the bare usage.
+        let token_file = TokenFile {
+            themes: HashMap::from([("light".into(), HashMap::new())]),
+        };
+        let chains = vec![chain(&["brand"], true), chain(&["brand"], false)];
+
+        let result = validate_chain_tokens(&chains, &token_file);
+        assert!(
+            matches!(result, Err(TokenError::MissingToken { ref token, .. }) if token == "brand"),
+            "expected brand required, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn unthemed_literal_fallback_tokens_flags_only_literal_only_absent_tokens() {
+        let token_file = TokenFile {
+            themes: HashMap::from([(
+                "light".into(),
+                HashMap::from([
+                    ("present".into(), "2px".into()),
+                    ("required".into(), "8px".into()),
+                ]),
+            )]),
+        };
+        let chains = vec![
+            chain(&["colr-brand"], true), // literal-only, absent → flagged
+            chain(&["present"], true),    // literal-only but themed → not flagged
+            chain(&["required"], false),  // no literal fallback → not an advisory
+        ];
+
+        assert_eq!(
+            unthemed_literal_fallback_tokens(&chains, &token_file),
+            vec!["colr-brand".to_string()]
+        );
+    }
+
+    #[test]
+    fn unthemed_literal_fallback_tokens_does_not_flag_token_with_bare_usage() {
+        let token_file = TokenFile {
+            themes: HashMap::from([("light".into(), HashMap::new())]),
+        };
+        // Used both with and without a literal fallback → required, not advisory.
+        let chains = vec![chain(&["brand"], true), chain(&["brand"], false)];
+
+        assert!(unthemed_literal_fallback_tokens(&chains, &token_file).is_empty());
     }
 
     #[test]
@@ -923,7 +1050,6 @@ mod tests {
                 ("light".into(), "--a: #fff;".into()),
                 ("dark".into(), "--a: #000;".into()),
             ]),
-            warnings: vec![],
         };
 
         inject_into_state(&mut state, &resolved);
@@ -940,7 +1066,6 @@ mod tests {
         });
         let resolved = ResolvedTokens {
             css: HashMap::from([("light".into(), "--a: #fff;".into())]),
-            warnings: vec![],
         };
 
         inject_into_state(&mut state, &resolved);
@@ -957,7 +1082,6 @@ mod tests {
         });
         let resolved = ResolvedTokens {
             css: HashMap::from([("light".into(), "--a: #fff;".into())]),
-            warnings: vec![],
         };
 
         inject_into_state(&mut state, &resolved);
@@ -990,30 +1114,5 @@ mod tests {
         assert!(css.contains("--d: #000;"), "d should be included: {css}");
         assert!(css.contains("--b:"), "b should be included: {css}");
         assert!(css.contains("--c:"), "c should be included: {css}");
-    }
-
-    // ── Warning Display ──────────────────────────────────────────────
-
-    #[test]
-    fn warning_display_missing_token() {
-        let w = TokenWarning::MissingToken {
-            theme: "light".into(),
-            token: "color-brand".into(),
-        };
-        let msg = w.to_string();
-        assert!(msg.contains("--color-brand"));
-        assert!(msg.contains("light"));
-    }
-
-    #[test]
-    fn warning_display_missing_dependency() {
-        let w = TokenWarning::MissingDependency {
-            theme: "dark".into(),
-            token: "surface".into(),
-            dependency: "neutral-100".into(),
-        };
-        let msg = w.to_string();
-        assert!(msg.contains("--surface"));
-        assert!(msg.contains("--neutral-100"));
     }
 }

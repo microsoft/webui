@@ -36,10 +36,8 @@ use std::fmt::Write as _;
 pub enum Severity {
     /// A fatal authoring error — the build cannot continue.
     Error,
-    /// A non-fatal warning — the build continues. Part of the diagnostics
-    /// surface for future advisories; not constructed while every current
-    /// authoring check is fatal.
-    #[allow(dead_code)]
+    /// A non-fatal warning — the build continues. Surfaced e.g. for CSS tokens
+    /// used only with a literal `var()` fallback and absent from every theme.
     Warning,
 }
 
@@ -95,6 +93,11 @@ pub mod codes {
     pub const RECURSIVE_TEMPLATE: &str = "recursive-template";
     /// A `<style>` block contains malformed CSS.
     pub const INVALID_CSS: &str = "invalid-css";
+    /// A CSS token required by parser output is missing from the configured theme.
+    pub const MISSING_THEME_TOKEN: &str = "missing-theme-token";
+    /// A CSS token used only with a literal `var()` fallback and absent from
+    /// every theme — non-fatal, but usually a typo. Severity: warning.
+    pub const UNTHEMED_TOKEN: &str = "unthemed-token";
 }
 
 /// A build-time template-authoring diagnostic.
@@ -128,9 +131,8 @@ impl Diagnostic {
 
     /// Start a non-fatal warning diagnostic.
     ///
-    /// Reserved for future advisories; every current authoring check is fatal,
-    /// so this is not yet called outside tests.
-    #[allow(dead_code)]
+    /// Rendered with the same location/snippet/`help:` layout as an error, but
+    /// the build continues (e.g. an unthemed literal-fallback CSS token).
     #[must_use]
     pub fn warning(title: impl Into<String>) -> Self {
         Self::new(Severity::Warning, title)

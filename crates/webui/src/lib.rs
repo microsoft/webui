@@ -40,7 +40,6 @@ pub use webui_handler::{
 };
 pub use webui_parser::plugin::ComponentTemplateArtifact;
 pub use webui_parser::CssStrategy;
-pub use webui_parser::Diagnostic;
 pub use webui_parser::DomStrategy;
 pub use webui_parser::LegalComments;
 pub use webui_parser::ParserError;
@@ -50,7 +49,10 @@ pub use webui_parser::DEFAULT_CSS_FILE_NAME_TEMPLATE;
 pub use webui_parser::{
     AssetFileNameTemplate, AssetFileNameTemplateError, DEFAULT_ASSET_FILE_NAME_TEMPLATE,
 };
+pub use webui_parser::{CssFallbackChain, CssTokenAnalysis};
+pub use webui_parser::{Diagnostic, Severity};
 pub use webui_protocol::WebUIProtocol;
+pub use webui_tokens::{load_token_file, resolve_theme_path, TokenFile};
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
@@ -93,6 +95,14 @@ pub struct BuildOptions {
     pub css_public_base: Option<String>,
     /// Legal comment preservation strategy.
     pub legal_comments: LegalComments,
+    /// Optional loaded design-token theme used to validate discovered CSS tokens.
+    ///
+    /// When present, every discovered CSS token that remains unresolved after
+    /// local and ancestor CSS definitions are removed must exist in every theme,
+    /// unless the `var()` usage supplies a literal CSS fallback (e.g.
+    /// `var(--x, 16px)`), which provides its own value. Missing required tokens
+    /// fail the build as parser diagnostics.
+    pub theme: Option<TokenFile>,
 }
 
 impl Default for BuildOptions {
@@ -108,6 +118,7 @@ impl Default for BuildOptions {
             css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
             css_public_base: None,
             legal_comments: LegalComments::default(),
+            theme: None,
         }
     }
 }
@@ -146,6 +157,13 @@ pub struct BuildResult {
     /// Includes templates for all components encountered during parsing,
     /// including route-referenced components.
     pub component_templates: Vec<ComponentTemplateArtifact>,
+    /// Non-fatal build advisories as warning-severity [`Diagnostic`]s.
+    ///
+    /// Currently surfaces CSS tokens that are referenced only with a literal
+    /// `var()` fallback and defined in no theme — often typos. Empty when no
+    /// theme is supplied. Carries the same structured location/snippet/`help:`
+    /// data as errors; the entry point decides how to present (and color) them.
+    pub warnings: Vec<Diagnostic>,
     /// Build statistics.
     pub stats: BuildStats,
 }
@@ -158,7 +176,7 @@ pub struct BuildResult {
 /// # Errors
 ///
 /// Returns [`WebUIError`] if the app directory is invalid, templates fail
-/// to parse, or the protocol cannot be serialized.
+/// to parse, theme tokens are incomplete, or the protocol cannot be serialized.
 #[must_use = "BuildResult contains the compiled protocol and statistics"]
 pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
     let started = Instant::now();
@@ -182,6 +200,7 @@ pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
         css_files: raw.css_files,
         component_asset_files: raw.component_asset_files,
         component_templates: raw.component_templates,
+        warnings: raw.warnings,
         stats,
     })
 }
@@ -254,6 +273,7 @@ struct RawBuildOutput {
     css_files: Vec<(String, String)>,
     component_asset_files: Vec<ComponentAssetFile>,
     component_templates: Vec<ComponentTemplateArtifact>,
+    warnings: Vec<Diagnostic>,
     fragment_count: usize,
     component_count: usize,
     token_count: usize,
@@ -349,9 +369,23 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         })
         .collect();
 
-    // Collect CSS tokens before consuming the parser
-    let tokens = parser.take_tokens();
-    let token_count = tokens.len();
+    // Collect CSS token analysis before consuming the parser.
+    let token_analysis = parser.token_analysis();
+    let mut warnings: Vec<Diagnostic> = Vec::new();
+    if let Some(theme) = options.theme.as_ref() {
+        token_analysis
+            .validate_theme_tokens(theme)
+            .map_err(|source| WebUIError::Parse {
+                context: "Failed to validate theme tokens".to_string(),
+                source,
+            })?;
+        // Advisory: a token used only as `var(--x, <literal>)` and absent from
+        // every theme is often a misspelling. The literal keeps the build green,
+        // so this is a warning (with a "did you mean …?" suggestion), not an
+        // error.
+        warnings = token_analysis.theme_token_warnings(theme);
+    }
+    let token_count = token_analysis.protocol_tokens.len();
 
     let component_templates =
         match parser
@@ -374,7 +408,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     }
     let fragment_count: usize = fragment_records.values().map(|v| v.fragments.len()).sum();
 
-    let mut protocol = WebUIProtocol::with_tokens(fragment_records, tokens);
+    let mut protocol = WebUIProtocol::with_tokens(fragment_records, token_analysis.protocol_tokens);
 
     // Record build-wide strategies so the handler can decide rendering behavior.
     protocol.set_css_strategy(match options.css {
@@ -437,6 +471,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         css_files,
         component_asset_files,
         component_templates,
+        warnings,
         fragment_count,
         component_count,
         token_count,
@@ -526,6 +561,7 @@ fn output_file_collision_error(name: &OsStr) -> WebUIError {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use tempfile::TempDir;
     use webui_protocol::web_ui_fragment::Fragment;
@@ -1423,6 +1459,197 @@ mod tests {
         };
         let result = build(options);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_allows_fallback_chain_when_all_theme_tokens_exist() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card></my-card>"),
+            ("my-card.html", "<div>Card</div>"),
+            (
+                "my-card.css",
+                ":host { color: var(--token-a, var(--token-b, var(--token-c))); }",
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.theme = Some(TokenFile {
+            themes: HashMap::from([(
+                "light".to_string(),
+                HashMap::from([
+                    ("token-a".to_string(), "red".to_string()),
+                    ("token-b".to_string(), "blue".to_string()),
+                    ("token-c".to_string(), "green".to_string()),
+                ]),
+            )]),
+        });
+
+        let result = build(options).expect("all fallback tokens are defined");
+        assert!(result.protocol.tokens.contains(&"token-a".to_string()));
+        assert!(result.protocol.tokens.contains(&"token-b".to_string()));
+        assert!(result.protocol.tokens.contains(&"token-c".to_string()));
+    }
+
+    #[test]
+    fn test_build_allows_literal_fallback_token_absent_from_theme() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card></my-card>"),
+            ("my-card.html", "<div>Card</div>"),
+            ("my-card.css", ":host { color: var(--brand, #000); }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.theme = Some(TokenFile {
+            themes: HashMap::from([("light".to_string(), HashMap::new())]),
+        });
+
+        // The CSS literal fallback (`#000`) means `--brand` is not required from
+        // the theme, so the build must succeed — but the token is still hoisted
+        // so the runtime resolves it when a theme provides it.
+        let result = build(options).expect("literal fallback should not fail the build");
+        assert!(result.protocol.tokens.contains(&"brand".to_string()));
+        // `--brand` is absent from every theme and only used with a literal
+        // fallback, so it is surfaced as a non-fatal typo advisory.
+        assert_eq!(result.warnings.len(), 1, "warnings: {:?}", result.warnings);
+        assert!(result.warnings[0].body().contains("--brand"));
+    }
+
+    #[test]
+    fn test_build_ancestor_inline_style_definition_after_comment_satisfies_descendant() {
+        // `--foo-bar` is defined in the entry's inline <style> after a signal
+        // comment and consumed inside a component. Custom properties inherit
+        // through Shadow DOM, so the ancestor definition must satisfy the
+        // descendant and the token must not be required from the theme.
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<html><head><style>:root {\n  /*{{{tokens.light}}}*/\n  --foo-bar: 100px;\n}</style></head><body><my-card></my-card></body></html>",
+            ),
+            ("my-card.html", "<div>Card</div>"),
+            ("my-card.css", ":host { padding: var(--foo-bar); }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.theme = Some(TokenFile {
+            themes: HashMap::from([("light".to_string(), HashMap::new())]),
+        });
+
+        let result = build(options)
+            .expect("ancestor inline-style definition (after a comment) should satisfy the child");
+        assert!(
+            !result.protocol.tokens.contains(&"foo-bar".to_string()),
+            "ancestor-defined token should not be hoisted: {:?}",
+            result.protocol.tokens
+        );
+    }
+
+    #[test]
+    fn test_build_no_warning_when_literal_fallback_token_is_themed() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card></my-card>"),
+            ("my-card.html", "<div>Card</div>"),
+            ("my-card.css", ":host { color: var(--brand, #000); }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.theme = Some(TokenFile {
+            themes: HashMap::from([(
+                "light".to_string(),
+                HashMap::from([("brand".to_string(), "#123456".to_string())]),
+            )]),
+        });
+
+        let result = build(options).expect("themed literal-fallback token builds");
+        assert!(
+            result.warnings.is_empty(),
+            "a themed token must not warn: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn test_build_without_theme_produces_no_warnings() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card></my-card>"),
+            ("my-card.html", "<div>Card</div>"),
+            ("my-card.css", ":host { color: var(--brand, #000); }"),
+        ]);
+        let result = build(default_options(app.path())).unwrap();
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_build_excludes_tokens_defined_by_ancestor_component_css() {
+        let app = create_app_dir(&[
+            ("index.html", "<component-a></component-a>"),
+            ("component-a.html", "<component-b></component-b>"),
+            ("component-a.css", ":host { --brand-color: red; }"),
+            ("component-b.html", "<div>Child</div>"),
+            ("component-b.css", ":host { color: var(--brand-color); }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.theme = Some(TokenFile {
+            themes: HashMap::from([("light".to_string(), HashMap::new())]),
+        });
+
+        let result =
+            build(options).expect("ancestor component custom property should satisfy child");
+        assert!(
+            !result.protocol.tokens.contains(&"brand-color".to_string()),
+            "ancestor-defined token should not be exposed: {:?}",
+            result.protocol.tokens
+        );
+    }
+
+    #[test]
+    fn test_build_does_not_use_sibling_component_definitions_for_theme_validation() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<component-a></component-a><component-b></component-b>",
+            ),
+            ("component-a.html", "<div>A</div>"),
+            ("component-a.css", ":host { --brand-color: red; }"),
+            ("component-b.html", "<div>B</div>"),
+            ("component-b.css", ":host { color: var(--brand-color); }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.theme = Some(TokenFile {
+            themes: HashMap::from([("light".to_string(), HashMap::new())]),
+        });
+
+        let Err(err) = build(options) else {
+            panic!("sibling custom property must not satisfy component-b");
+        };
+        let message = err.chain_message();
+        assert!(message.contains("missing theme token"), "msg: {message}");
+        assert!(message.contains("missing-theme-token"), "msg: {message}");
+        assert!(message.contains("--brand-color"), "msg: {message}");
+    }
+
+    #[test]
+    fn test_build_rejects_missing_theme_token_after_local_definition_filter() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card></my-card>"),
+            ("my-card.html", "<div>Card</div>"),
+            (
+                "my-card.css",
+                ":host { --token-a: red; --foo-bar: var(--token-a, var(--token-b, var(--token-c))); }",
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.theme = Some(TokenFile {
+            themes: HashMap::from([(
+                "light".to_string(),
+                HashMap::from([("token-b".to_string(), "green".to_string())]),
+            )]),
+        });
+
+        let Err(err) = build(options) else {
+            panic!("missing --token-c in the theme must fail the build");
+        };
+        let message = err.chain_message();
+        assert!(message.contains("missing-theme-token"), "msg: {message}");
+        assert!(message.contains("--token-c"), "msg: {message}");
+        // The error demands the missing `--token-c`, never the locally-defined
+        // `--token-a` (which only appears in the source snippet as context).
+        assert!(!message.contains("add --token-a"), "msg: {message}");
     }
 
     #[test]

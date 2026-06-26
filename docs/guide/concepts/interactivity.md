@@ -365,6 +365,19 @@ Each requested root writes one ESM module such as `<tag>.webui.js` next to
 functions, and the dependency closure for the root component; it does not contain
 inventory state.
 
+During development, pass the same flag to `webui serve` so these roots are
+validated and served without a separate build step:
+
+```bash
+webui serve ./src --state ./data/state.json --plugin=webui \
+  --emit-component-assets settings-dialog,mail-thread --watch
+```
+
+The dev server parses and validates each root on every build — HTML and
+theme-token errors in a lazily loaded component fail the build instead of being
+skipped because it is outside the SSR tree — and serves the compiled
+`<tag>.webui.js` from memory, rebuilding it on change.
+
 Load the asset before creating or revealing the component:
 
 ```typescript

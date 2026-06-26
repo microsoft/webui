@@ -64,6 +64,7 @@ describe('build', () => {
     assert.ok(result.stats.durationMs >= 0);
     assert.ok(result.stats.protocolSizeBytes > 0);
     assert.ok(result.stats.componentCount >= 0);
+    assert.ok(Array.isArray(result.warnings));
   });
 
   test('emits CSS files for used components', () => {

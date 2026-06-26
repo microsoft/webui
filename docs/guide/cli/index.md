@@ -33,7 +33,7 @@ Use `--format json` in editors, CI, or AI/agent tooling that needs to parse buil
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--emit-component-assets <TAGS>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--emit-component-assets <TAGS>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -48,6 +48,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to emit as static WebUI component assets in `--out` | *(none)* |
+| `--theme <VALUE>` | Design token theme to validate against: a JSON file path or npm package name. Missing required tokens fail the build. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files and static component assets. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
 | `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
 | `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
@@ -170,6 +171,9 @@ webui build ./my-app --out ./dist --plugin=webui
 # Build with external component packages
 webui build ./my-app --out ./dist --components @reactive-ui
 
+# Validate CSS design tokens against a theme
+webui build ./my-app --out ./dist --theme ./themes/brand.json
+
 # Build with components from a local shared library
 webui build ./my-app --out ./dist --components ./shared/components
 
@@ -210,7 +214,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--api-port <PORT>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -228,7 +232,8 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--api-port <PORT>` | Proxy route requests to your API server on this port. The dev server forwards navigation requests so your backend can provide real state data. | *(none)* |
-| `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Resolved tokens are injected into the render state. | *(none)* |
+| `--emit-component-assets <TAGS>` | Comma-separated root component tags to compile as static WebUI component assets, matching `webui build`. Their templates and CSS are parsed and validated on every build, and the compiled `<tag>.webui.js` modules are served from memory. | *(none)* |
+| `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Missing required tokens fail the build; resolved tokens are injected into the render state. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
 | `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
 | `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
@@ -275,11 +280,35 @@ webui serve ./my-app --state ./state.json --theme @my-org/brand-tokens --watch
 webui serve ./my-app --state ./state.json --theme ./themes/dark.json --watch
 ```
 
+When `--theme` is present on `build` or `serve`, every required token must
+exist in every theme. Nested fallback tokens are validated individually:
+`var(--a, var(--b, var(--c)))` requires `a`, `b`, and `c` unless a token is
+defined by local or ancestor CSS. A `var()` usage with a literal fallback (e.g.
+`var(--brand, #000)`) is exempt — the token is still hoisted for runtime
+resolution but its absence does not fail the build. When such a literal-fallback
+token is also absent from every theme it is surfaced as a non-fatal
+`unthemed-token` **warning** (rendered like an error, with location, snippet, and
+a `did you mean …?` suggestion) since it is usually a typo.
+
+`--emit-component-assets` behaves identically on `serve` and `build`: each listed
+root is parsed and validated on every build — its template and CSS are checked
+for HTML and theme-token errors even though the component is not part of the
+initial SSR tree — so authoring mistakes in lazily loaded components fail the dev
+build instead of being silently skipped. The compiled `<tag>.webui.js` modules
+are served from memory (and rebuilt on change under `--watch`), so no separate
+`webui build` step or `--out` directory is needed during development.
+
+In `serve --watch`, rebuild failures are sticky: the terminal and live-reload
+SSE report the error, and refreshing the page returns the latest rebuild error
+instead of stale HTML while keeping the live-reload connection active. The next
+successful rebuild clears the error and reloads connected browsers.
+
 **Routes:**
 
 | Path | Description |
 |------|-------------|
 | `/` or `/index.html` | Rendered HTML with live-reload script |
+| `/<tag>.webui.js` | In-memory static component assets emitted by `--emit-component-assets` (served as JS modules) |
 | `/*` | Static files from `--servedir` (when provided) |
 | `/hmr` | HMR version endpoint (polling backend, only when `--watch`) |
 

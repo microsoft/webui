@@ -89,7 +89,7 @@ Deno.serve({ port: 3000 }, (req) => {
 
 | Function | Description |
 |----------|-------------|
-| `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, componentAssetFiles, stats }` |
+| `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, componentAssetFiles, warnings, stats }` |
 | `render(protocol, state, options?)` | Render protocol with route matching. Returns the rendered HTML as a string |
 | `renderStream(protocol, state, onChunk, options?)` | Render with streaming output. Each HTML fragment is passed to `onChunk` as it is produced |
 | `inspect(protocol)` | Convert protocol to JSON for debugging |
@@ -118,6 +118,7 @@ Deno.serve({ port: 3000 }, (req) => {
 | `cssFileNameTemplate` | `string` | `"[name].[ext]"` | Emitted asset filename template for Link-mode CSS and component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `cssPublicBase` | `string` | - | Public URL/path prefix for Link-mode CSS hrefs |
 | `legalComments` | `"inline" \| "none"` | `"inline"` | Preserve legal CSS comments inline, or strip all comments |
+| `theme` | `string` | - | Design token theme JSON path or npm package name. Missing required CSS tokens fail the build (literal `var()` fallbacks are exempt) |
 
 ### BuildStats
 
