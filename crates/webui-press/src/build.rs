@@ -1196,6 +1196,29 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         }
     }
 
+    // Exclude component .ts files that are explicitly referenced as page script sources.
+    // This avoids bundling the same file in both the global components.js and a page script.
+    if !opts.page_scripts.is_empty() {
+        let page_script_paths: Vec<std::path::PathBuf> = opts
+            .page_scripts
+            .iter()
+            .filter_map(|s| match &s.source {
+                ScriptSource::File(path) => {
+                    let resolved = opts.config_dir.join(path);
+                    resolved.canonicalize().ok()
+                }
+                ScriptSource::Inline(_) => None,
+            })
+            .collect();
+
+        if !page_script_paths.is_empty() {
+            ts_files.retain(|f| {
+                let canon = f.canonicalize().unwrap_or_else(|_| f.clone());
+                !page_script_paths.contains(&canon)
+            });
+        }
+    }
+
     let has_components = !ts_files.is_empty();
     let has_scripts = !opts.page_scripts.is_empty();
 
