@@ -229,76 +229,6 @@ function passArray8ToWasm0(arg, malloc) {
     return ptr;
 }
 /**
- * Extract the CSS token name list from protocol protobuf bytes.
- *
- * Returns a JavaScript array of token name strings, preserving the original
- * order from the build step.
- * @param {Uint8Array} protocol_bytes
- * @returns {any}
- */
-export function protocol_tokens(protocol_bytes) {
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passArray8ToWasm0(protocol_bytes, wasm.__wbindgen_export_0);
-        const len0 = WASM_VECTOR_LEN;
-        wasm.protocol_tokens(retptr, ptr0, len0);
-        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
-        if (r2) {
-            throw takeObject(r1);
-        }
-        return takeObject(r0);
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-    }
-}
-
-let stack_pointer = 128;
-
-function addBorrowedObject(obj) {
-    if (stack_pointer == 1) throw new Error('out of js stack');
-    heap[--stack_pointer] = obj;
-    return stack_pointer;
-}
-/**
- * Render a pre-built WebUI protocol with state data, streaming chunks to a callback.
- *
- * # Arguments
- *
- * * `protocol_bytes` - Protobuf bytes of the serialized `WebUIProtocol`.
- * * `state_json` - JSON string of the state data.
- * * `on_chunk` - Callback invoked with each rendered HTML fragment.
- * * `options` - Optional object with `entry`, `requestPath`, and `plugin` fields.
- *
- * # Returns
- *
- * Nothing on success, or throws a JS error on failure.
- * @param {Uint8Array} protocol_bytes
- * @param {string} state_json
- * @param {Function} on_chunk
- * @param {object | null} [options]
- */
-export function render(protocol_bytes, state_json, on_chunk, options) {
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passArray8ToWasm0(protocol_bytes, wasm.__wbindgen_export_0);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(state_json, wasm.__wbindgen_export_0, wasm.__wbindgen_export_1);
-        const len1 = WASM_VECTOR_LEN;
-        wasm.render(retptr, ptr0, len0, ptr1, len1, addBorrowedObject(on_chunk), isLikeNone(options) ? 0 : addHeapObject(options));
-        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-        if (r1) {
-            throw takeObject(r0);
-        }
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-        heap[stack_pointer++] = undefined;
-    }
-}
-
-/**
  * Return component template payloads for requested component tags.
  * @param {Uint8Array} protocol_bytes
  * @param {string} component_tags_json
@@ -383,6 +313,76 @@ export function render_partial(protocol_bytes, state_json, entry_id, request_pat
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
         wasm.__wbindgen_export_3(deferred7_0, deferred7_1, 1);
+    }
+}
+
+let stack_pointer = 128;
+
+function addBorrowedObject(obj) {
+    if (stack_pointer == 1) throw new Error('out of js stack');
+    heap[--stack_pointer] = obj;
+    return stack_pointer;
+}
+/**
+ * Render a pre-built WebUI protocol with state data, streaming chunks to a callback.
+ *
+ * # Arguments
+ *
+ * * `protocol_bytes` - Protobuf bytes of the serialized `WebUIProtocol`.
+ * * `state_json` - JSON string of the state data.
+ * * `on_chunk` - Callback invoked with each rendered HTML fragment.
+ * * `options` - Optional object with `entry`, `requestPath`, and `plugin` fields.
+ *
+ * # Returns
+ *
+ * Nothing on success, or throws a JS error on failure.
+ * @param {Uint8Array} protocol_bytes
+ * @param {string} state_json
+ * @param {Function} on_chunk
+ * @param {object | null} [options]
+ */
+export function render(protocol_bytes, state_json, on_chunk, options) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArray8ToWasm0(protocol_bytes, wasm.__wbindgen_export_0);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(state_json, wasm.__wbindgen_export_0, wasm.__wbindgen_export_1);
+        const len1 = WASM_VECTOR_LEN;
+        wasm.render(retptr, ptr0, len0, ptr1, len1, addBorrowedObject(on_chunk), isLikeNone(options) ? 0 : addHeapObject(options));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        if (r1) {
+            throw takeObject(r0);
+        }
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        heap[stack_pointer++] = undefined;
+    }
+}
+
+/**
+ * Extract the CSS token name list from protocol protobuf bytes.
+ *
+ * Returns a JavaScript array of token name strings, preserving the original
+ * order from the build step.
+ * @param {Uint8Array} protocol_bytes
+ * @returns {any}
+ */
+export function protocol_tokens(protocol_bytes) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArray8ToWasm0(protocol_bytes, wasm.__wbindgen_export_0);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.protocol_tokens(retptr, ptr0, len0);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        if (r2) {
+            throw takeObject(r1);
+        }
+        return takeObject(r0);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
     }
 }
 
