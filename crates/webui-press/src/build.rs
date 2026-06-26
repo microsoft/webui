@@ -399,7 +399,7 @@ pub fn build_docs_with_cache(
     }
 
     // Kick off TypeScript component bundling on a background thread.
-    // Rolldown is independent of the render pipeline, so we overlap it
+    // esbuild is independent of the render pipeline, so we overlap it
     // with the per-page protocol build + render.
     //
     // Step 2b: Extract <script bundle> tags from page content BEFORE
@@ -1291,33 +1291,17 @@ fn path_for_js(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn json_string(value: &str) -> Result<String> {
-    serde_json::to_string(value)
-        .map_err(|e| Error::Build(format!("Cannot serialize Rolldown config string: {e}")))
-}
-
-fn push_external_config(
-    config: &mut String,
+fn push_external_args(
+    args: &mut Vec<String>,
     external: &[String],
     aliases: &BTreeMap<String, String>,
-) -> Result<()> {
-    let mut wrote_header = false;
+) {
     for ext in external {
         if aliases.contains_key(ext.as_str()) {
             continue;
         }
-        if wrote_header {
-            config.push_str(", ");
-        } else {
-            config.push_str("  external: [");
-            wrote_header = true;
-        }
-        config.push_str(&json_string(ext)?);
+        args.push(format!("--external:{ext}"));
     }
-    if wrote_header {
-        config.push_str("],\n");
-    }
-    Ok(())
 }
 
 fn file_version(path: &Path) -> Result<String> {
@@ -1387,12 +1371,7 @@ fn normalized_alias_target(config_dir: &Path, target: &str) -> String {
     target.replace('\\', "/")
 }
 
-fn write_rolldown_config(
-    opts: &BundleOptions<'_>,
-    entry_files: &[(String, PathBuf)],
-    output_dir: &Path,
-    bundle_tmp: &Path,
-) -> Result<PathBuf> {
+fn build_aliases(opts: &BundleOptions<'_>) -> BTreeMap<String, String> {
     let mut aliases: BTreeMap<String, String> = BTreeMap::new();
     if let Some(path) = default_framework_alias(opts.node_modules) {
         aliases.insert("@microsoft/webui-framework".to_string(), path_for_js(&path));
@@ -1404,63 +1383,61 @@ fn write_rolldown_config(
         }
     }
 
-    let mut config = String::with_capacity(2048);
-    config.push_str("export default {\n  input: {\n");
-    for (name, path) in entry_files {
-        config.push_str("    ");
-        config.push_str(&json_string(name)?);
-        config.push_str(": ");
-        config.push_str(&json_string(&path_for_js(path))?);
-        config.push_str(",\n");
-    }
-    config.push_str("  },\n  output: {\n    dir: ");
-    config.push_str(&json_string(&path_for_js(output_dir))?);
-    config.push_str(",\n    format: \"esm\",\n    entryFileNames: \"[name].js\",\n    chunkFileNames: \"assets/[name]-[hash].js\",\n  },\n  advancedChunks: { minSize: 0 },\n  moduleTypes: { \".html\": \"text\", \".css\": \"text\" },\n");
-
-    if !opts.dev_mode {
-        config.push_str("  minify: true,\n");
-    }
-
-    if let Some(cfg) = opts.bundler_config {
-        push_external_config(&mut config, &cfg.external, &aliases)?;
-        if cfg.target.is_some() || !cfg.define.is_empty() {
-            config.push_str("  transform: {\n");
-            if let Some(target) = &cfg.target {
-                config.push_str("    target: ");
-                config.push_str(&json_string(target)?);
-                config.push_str(",\n");
-            }
-            if !cfg.define.is_empty() {
-                config.push_str("    define: ");
-                config.push_str(&serde_json::to_string(&cfg.define).map_err(|e| {
-                    Error::Build(format!("Cannot serialize Rolldown defines: {e}"))
-                })?);
-                config.push_str(",\n");
-            }
-            config.push_str("  },\n");
-        }
-    }
-
-    if !aliases.is_empty() {
-        config.push_str("  resolve: { alias: ");
-        config.push_str(
-            &serde_json::to_string(&aliases)
-                .map_err(|e| Error::Build(format!("Cannot serialize Rolldown aliases: {e}")))?,
-        );
-        config.push_str(" },\n");
-    }
-
-    config.push_str("};\n");
-
-    let config_path = bundle_tmp.join("rolldown.config.mjs");
-    fs::write(&config_path, config)
-        .map_err(|e| Error::Build(format!("Cannot write Rolldown config: {e}")))?;
-    Ok(config_path)
+    aliases
 }
 
-/// Bundle component TypeScript files and page scripts via Rolldown.
+fn push_alias_args(args: &mut Vec<String>, aliases: &BTreeMap<String, String>) {
+    for (from, to) in aliases {
+        args.push(format!("--alias:{from}={to}"));
+    }
+}
+
+fn push_define_args(args: &mut Vec<String>, cfg: &BundlerConfig) {
+    for (key, value) in &cfg.define {
+        args.push(format!("--define:{key}={value}"));
+    }
+}
+
+fn esbuild_args(
+    opts: &BundleOptions<'_>,
+    entry_files: &[(String, PathBuf)],
+    bundle_tmp: &Path,
+) -> Vec<String> {
+    let aliases = build_aliases(opts);
+    let target = opts
+        .bundler_config
+        .and_then(|cfg| cfg.target.as_deref())
+        .unwrap_or("es2022");
+    let mut args = Vec::with_capacity(14 + entry_files.len());
+    args.push("--bundle".to_string());
+    args.push("--platform=browser".to_string());
+    args.push("--format=esm".to_string());
+    args.push("--splitting".to_string());
+    args.push(format!("--target={target}"));
+    args.push(format!("--outdir={}", path_for_js(opts.site_dir)));
+    args.push(format!("--outbase={}", path_for_js(bundle_tmp)));
+    args.push("--entry-names=[dir]/[name]".to_string());
+    args.push("--chunk-names=assets/[name]-[hash]".to_string());
+    args.push("--loader:.html=text".to_string());
+    args.push("--loader:.css=text".to_string());
+    args.push("--log-level=warning".to_string());
+    if !opts.dev_mode {
+        args.push("--minify".to_string());
+    }
+    if let Some(cfg) = opts.bundler_config {
+        push_external_args(&mut args, &cfg.external, &aliases);
+        push_define_args(&mut args, cfg);
+    }
+    push_alias_args(&mut args, &aliases);
+    for (_, path) in entry_files {
+        args.push(path_for_js(path));
+    }
+    args
+}
+
+/// Bundle component TypeScript files and page scripts via esbuild.
 ///
-/// Uses a single Rolldown invocation with multiple entry points for optimal
+/// Uses a single esbuild invocation with multiple entry points for optimal
 /// code splitting. Component .ts files produce `components.js` (the global
 /// hydration bundle); page scripts produce separate entry chunks under `assets/`.
 ///
@@ -1542,7 +1519,7 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
             .map(|f| format!("import \"{}\";", f.to_string_lossy().replace('\\', "/")))
             .collect::<Vec<_>>()
             .join("\n");
-        let components_entry = bundle_tmp.join("_components.ts");
+        let components_entry = bundle_tmp.join("components.ts");
         fs::write(&components_entry, &imports)
             .map_err(|e| Error::Build(format!("Cannot write component entry: {e}")))?;
         entry_files.push(("components".to_string(), components_entry));
@@ -1576,37 +1553,27 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         entry_files.push((entry_name, entry_path));
     }
 
-    let rolldown_config = write_rolldown_config(opts, &entry_files, opts.site_dir, &bundle_tmp)?;
+    let args = esbuild_args(opts, &entry_files, &bundle_tmp);
+    let esbuild_bin = esbuild_command(opts.node_modules);
 
-    // Resolve the rolldown binary from node_modules.
-    let rolldown_bin = rolldown_command(opts.node_modules);
-
-    let output = std::process::Command::new(&rolldown_bin)
-        .arg("--config")
-        .arg(&rolldown_config)
-        .arg("--logLevel")
-        .arg("warn")
+    let output = std::process::Command::new(&esbuild_bin)
+        .args(&args)
         .env("NODE_PATH", opts.node_modules)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
-        .map_err(|e| Error::Build(format!("rolldown failed to start: {e}")))?;
+        .map_err(|e| Error::Build(format!("esbuild failed to start: {e}")))?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
-        return Err(Error::Build(format!("rolldown error: {stderr}")));
-    }
-    if stderr.contains("[UNRESOLVED_IMPORT]") {
-        return Err(Error::Build(format!(
-            "rolldown unresolved import: {stderr}"
-        )));
+        return Err(Error::Build(format!("esbuild error: {stderr}")));
     }
 
     // Build script_map: find output files for page-script entries.
     let mut script_map = HashMap::with_capacity(opts.page_scripts.len());
     for script in opts.page_scripts {
         let entry_name = format!("page-{}", script.id);
-        // Rolldown outputs entry chunks as `{entry_name}.js` in the output dir.
+        // esbuild outputs entry chunks as `{entry_name}.js` in the output dir.
         let output_file = format!("assets/{entry_name}.js");
         let full_path = opts.site_dir.join(&output_file);
         if full_path.exists() {
@@ -1623,24 +1590,22 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     })
 }
 
-/// Resolve the rolldown binary path from node_modules.
-fn rolldown_command(node_modules: &Path) -> std::path::PathBuf {
-    let bin_dir = node_modules.join(".bin");
-    let rolldown = if cfg!(windows) {
-        bin_dir.join("rolldown.cmd")
+/// Resolve the esbuild binary path from node_modules.
+fn esbuild_command(node_modules: &Path) -> std::path::PathBuf {
+    let binary = if cfg!(windows) {
+        "esbuild.cmd"
     } else {
-        bin_dir.join("rolldown")
+        "esbuild"
     };
-    if rolldown.exists() {
-        rolldown
-    } else {
-        // Fallback to PATH-based lookup.
-        std::path::PathBuf::from(if cfg!(windows) {
-            "rolldown.cmd"
-        } else {
-            "rolldown"
-        })
+    if let Some(project_dir) = node_modules.parent() {
+        for dir in project_dir.ancestors() {
+            let candidate = dir.join("node_modules").join(".bin").join(binary);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
     }
+    std::path::PathBuf::from(binary)
 }
 
 const PRE_BLOCK_MARKER_PREFIX: &str = "<span data-webui-press-pre-block=\"";
@@ -1999,23 +1964,23 @@ mod tests {
     type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
 
     #[test]
-    fn rolldown_command_resolves_from_node_modules() {
-        let tmp = std::env::temp_dir().join("webui-press-rolldown-test");
+    fn esbuild_command_resolves_from_node_modules() {
+        let tmp = std::env::temp_dir().join("webui-press-esbuild-test");
         let bin_dir = tmp.join("node_modules/.bin");
         fs::create_dir_all(&bin_dir).unwrap();
         let bin_path = if cfg!(windows) {
-            bin_dir.join("rolldown.cmd")
+            bin_dir.join("esbuild.cmd")
         } else {
-            bin_dir.join("rolldown")
+            bin_dir.join("esbuild")
         };
         fs::write(&bin_path, "").unwrap();
-        let resolved = rolldown_command(&tmp.join("node_modules"));
+        let resolved = esbuild_command(&tmp.join("node_modules"));
         assert_eq!(resolved, bin_path);
         fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
-    fn push_external_config_filters_aliased_packages() -> TestResult {
+    fn push_external_args_filters_aliased_packages() {
         let external = vec![
             "@microsoft/webui-framework".to_string(),
             "cdn-only-package".to_string(),
@@ -2025,13 +1990,14 @@ mod tests {
             "@microsoft/webui-framework".to_string(),
             "/repo/packages/webui-framework/dist/index.js".to_string(),
         );
-        let mut config = String::new();
+        let mut args = Vec::new();
 
-        push_external_config(&mut config, &external, &aliases)?;
+        push_external_args(&mut args, &external, &aliases);
 
-        assert!(!config.contains("@microsoft/webui-framework"));
-        assert!(config.contains("cdn-only-package"));
-        Ok(())
+        assert!(!args
+            .iter()
+            .any(|arg| arg.contains("@microsoft/webui-framework")));
+        assert!(args.contains(&"--external:cdn-only-package".to_string()));
     }
 
     #[test]

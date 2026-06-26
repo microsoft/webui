@@ -27,7 +27,7 @@ pub struct DocsConfig {
     pub custom_pages: std::collections::HashMap<String, CustomPage>,
     pub hero: Option<HeroConfig>,
     pub footer: Option<FooterConfig>,
-    /// Optional bundler configuration for Rolldown (overrides defaults).
+    /// Optional JavaScript bundler configuration (overrides defaults).
     pub bundler: Option<BundlerConfig>,
 }
 
@@ -83,7 +83,7 @@ pub enum CustomPage {
         /// a state file only read it once. Mutually exclusive with `state`.
         state_file: Option<String>,
         /// Path (relative to `config.json`) of a TypeScript/JavaScript file
-        /// to bundle as a per-page script. The file is bundled with Rolldown
+        /// to bundle as a per-page script. The file is bundled with esbuild
         /// and a `<script>` tag is appended to the page output.
         script_file: Option<String>,
     },
@@ -214,7 +214,7 @@ pub struct FooterConfig {
     pub html: String,
 }
 
-/// Rolldown bundler configuration overrides.
+/// JavaScript bundler configuration overrides.
 ///
 /// All fields are optional; sensible defaults are applied when omitted.
 /// These settings affect how page scripts and component TypeScript files

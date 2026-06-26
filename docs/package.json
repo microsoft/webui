@@ -18,6 +18,6 @@
     "@codemirror/theme-one-dark": "catalog:",
     "@codemirror/view": "catalog:",
     "@microsoft/webui-framework": "workspace:*",
-    "rolldown": "catalog:"
+    "esbuild": "catalog:"
   }
 }
