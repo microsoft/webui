@@ -1274,6 +1274,30 @@ fn json_string(value: &str) -> Result<String> {
         .map_err(|e| Error::Build(format!("Cannot serialize Rolldown config string: {e}")))
 }
 
+fn push_external_config(
+    config: &mut String,
+    external: &[String],
+    aliases: &BTreeMap<String, String>,
+) -> Result<()> {
+    let mut wrote_header = false;
+    for ext in external {
+        if aliases.contains_key(ext.as_str()) {
+            continue;
+        }
+        if wrote_header {
+            config.push_str(", ");
+        } else {
+            config.push_str("  external: [");
+            wrote_header = true;
+        }
+        config.push_str(&json_string(ext)?);
+    }
+    if wrote_header {
+        config.push_str("],\n");
+    }
+    Ok(())
+}
+
 fn file_version(path: &Path) -> Result<String> {
     let bytes =
         fs::read(path).map_err(|e| Error::Io(format!("Cannot read {}: {e}", path.display())))?;
@@ -1348,16 +1372,7 @@ fn write_rolldown_config(
     }
 
     if let Some(cfg) = opts.bundler_config {
-        if !cfg.external.is_empty() {
-            config.push_str("  external: ");
-            config.push_str(
-                &serde_json::to_string(&cfg.external).map_err(|e| {
-                    Error::Build(format!("Cannot serialize Rolldown externals: {e}"))
-                })?,
-            );
-            config.push_str(",\n");
-        }
-
+        push_external_config(&mut config, &cfg.external, &aliases)?;
         if cfg.target.is_some() || !cfg.define.is_empty() {
             config.push_str("  transform: {\n");
             if let Some(target) = &cfg.target {
@@ -1922,6 +1937,26 @@ mod tests {
         let resolved = rolldown_command(&tmp.join("node_modules"));
         assert_eq!(resolved, bin_path);
         fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn push_external_config_filters_aliased_packages() -> TestResult {
+        let external = vec![
+            "@microsoft/webui-framework".to_string(),
+            "cdn-only-package".to_string(),
+        ];
+        let mut aliases = BTreeMap::new();
+        aliases.insert(
+            "@microsoft/webui-framework".to_string(),
+            "/repo/packages/webui-framework/dist/index.js".to_string(),
+        );
+        let mut config = String::new();
+
+        push_external_config(&mut config, &external, &aliases)?;
+
+        assert!(!config.contains("@microsoft/webui-framework"));
+        assert!(config.contains("cdn-only-package"));
+        Ok(())
     }
 
     #[test]
