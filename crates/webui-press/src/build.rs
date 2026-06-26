@@ -372,6 +372,9 @@ pub fn build_docs_with_cache(
     // rendering. This gives us the page scripts to bundle alongside
     // components. The extraction mutates page content by replacing scripts
     // with placeholder comments.
+    //
+    // Also collect `scriptFile` entries from customPages config — these
+    // produce per-page scripts without polluting the HTML string.
     let mut all_page_scripts: Vec<PageScript> = Vec::new();
     let mut page_contents_with_scripts: HashMap<String, String> = HashMap::new();
 
@@ -384,6 +387,32 @@ pub fn build_docs_with_cache(
                 page_contents_with_scripts.insert(page.path.clone(), modified);
                 all_page_scripts.extend(scripts);
             }
+        }
+    }
+
+    // Collect scriptFile from customPages config.
+    for (link, custom_page) in &config.custom_pages {
+        if let Some(script_path) = custom_page.script_file() {
+            let id = all_page_scripts.len();
+            all_page_scripts.push(PageScript {
+                id,
+                page_path: link.clone(),
+                source: ScriptSource::File(script_path.to_string()),
+            });
+            // Insert a placeholder at end of page content so the script tag
+            // gets appended when replace_script_placeholders runs.
+            let placeholder = format!("\n<!--ws:script:{id}-->");
+            page_contents_with_scripts
+                .entry(link.clone())
+                .and_modify(|c| c.push_str(&placeholder))
+                .or_insert_with(|| {
+                    let content = pages
+                        .iter()
+                        .find(|p| p.path == *link)
+                        .and_then(|p| p.state["page"]["content"].as_str())
+                        .unwrap_or("");
+                    format!("{content}{placeholder}")
+                });
         }
     }
 

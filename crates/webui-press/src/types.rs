@@ -82,6 +82,10 @@ pub enum CustomPage {
         /// The build pipeline caches each unique file so that pages that share
         /// a state file only read it once. Mutually exclusive with `state`.
         state_file: Option<String>,
+        /// Path (relative to `config.json`) of a TypeScript/JavaScript file
+        /// to bundle as a per-page script. The file is bundled with Rolldown
+        /// and a `<script>` tag is appended to the page output.
+        script_file: Option<String>,
     },
 }
 
@@ -111,6 +115,13 @@ impl CustomPage {
         match self {
             Self::Html(_) => None,
             Self::Full { state_file, .. } => state_file.as_deref(),
+        }
+    }
+
+    pub fn script_file(&self) -> Option<&str> {
+        match self {
+            Self::Html(_) => None,
+            Self::Full { script_file, .. } => script_file.as_deref(),
         }
     }
 }
@@ -347,5 +358,28 @@ mod tests {
         assert!(cfg.external.is_empty());
         assert!(cfg.define.is_empty());
         assert!(cfg.alias.is_empty());
+    }
+
+    // --- CustomPage::script_file -------------------------------------------
+
+    #[test]
+    fn custom_page_script_file_deserializes() {
+        let json = r#"{
+            "layout": "full",
+            "html": "<my-comp></my-comp>",
+            "scriptFile": "./components/my-comp/my-comp.ts"
+        }"#;
+        let page: CustomPage = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            page.script_file(),
+            Some("./components/my-comp/my-comp.ts")
+        );
+    }
+
+    #[test]
+    fn custom_page_script_file_none_when_absent() {
+        let json = r#"{ "layout": "full", "html": "<p>hi</p>" }"#;
+        let page: CustomPage = serde_json::from_str(json).unwrap();
+        assert!(page.script_file().is_none());
     }
 }
