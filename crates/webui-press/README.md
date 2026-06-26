@@ -139,7 +139,7 @@ The build pipeline:
 8. Generate search index     → JSON for client-side fuzzy search
 9. Copy public/              → static asset passthrough
 10. Write 404.html
-11. Bundle scripts           → one esbuild build for page-scoped script entries
+11. Bundle scripts           → one esbuild build for root + needed page entries
 ```
 
 Typical build for a 30-page site: under half a second on a laptop.
@@ -275,7 +275,7 @@ Every entry in `head[]` is rendered into `<head>` with attributes sorted alphabe
 
 ### `bundler`
 
-`webui-press` uses [esbuild](https://esbuild.github.io/) for client JavaScript. It runs one build with one generated entry per page, so page-specific code stays local and shared imports are split into reusable chunks automatically.
+`webui-press` uses [esbuild](https://esbuild.github.io/) for client JavaScript. It runs one build with a shared root entry plus page entries only when page content needs extra scripts, so page-specific code stays local and shared imports are split into reusable chunks automatically.
 
 | Field      | Type             | Effect                                                   |
 | ---------- | ---------------- | -------------------------------------------------------- |
@@ -361,7 +361,7 @@ Components are:
 
 1. Compiled into the WebUI protocol at build time
 2. Server-rendered with **Declarative Shadow DOM** pre-expanded, visible without JavaScript
-3. Auto-imported into the generated page script only when that page uses the component tag
+3. Auto-imported into the root script for template chrome or a page script when page content uses the component tag
 4. Shared through esbuild chunks when multiple pages use the same component or dependency
 
 Markdown inside slots is rendered as markdown, so you can mix prose and components freely.
@@ -409,7 +409,9 @@ import "@mai-ui/button/define.js";
 </script>
 ```
 
-All page entries are bundled in one esbuild build. If ten pages import the same package or local component runtime, esbuild can emit that dependency once as a shared chunk and have the page entry files import it.
+The template chrome uses a shared root script (`index.js`). Pages with no page-specific component scripts or bundled imports load only that root script. Pages with identical page-specific import sets reuse the same generated page entry instead of emitting duplicate wrappers.
+
+All root and page entries are bundled in one esbuild build. If ten pages import the same package or local component runtime, esbuild can emit that dependency once as a shared chunk and have the entry files import it.
 
 `webui-press build` minifies bundled JavaScript. `webui-press serve` skips minification for faster rebuilds during local development.
 
@@ -523,7 +525,7 @@ The output is fully renderable without JavaScript:
 - Declarative Shadow DOM pre-expanded inline
 - Critical styles inlined per component shadow root
 
-When the browser loads the generated page script (deferred, after first paint), the framework finds existing DSD shadow roots and **upgrades** them in place, no re-render, no flash, no virtual DOM. Event handlers and observable state are bound to the already-painted DOM. Each page script imports only the local component scripts and explicit bundled scripts needed by that page, with shared dependencies split into reusable chunks.
+When the browser loads the generated root/page scripts (deferred, after first paint), the framework finds existing DSD shadow roots and **upgrades** them in place, no re-render, no flash, no virtual DOM. Event handlers and observable state are bound to the already-painted DOM. Page scripts import only the local component scripts and explicit bundled scripts needed by that page, with shared dependencies split into reusable chunks.
 
 This is the WebUI Framework's [`webui` plugin](https://microsoft.github.io/webui/guide/concepts/plugins/) at work, and it is what makes the site feel instant on slow connections.
 
@@ -532,7 +534,7 @@ This is the WebUI Framework's [`webui` plugin](https://microsoft.github.io/webui
 ## Performance notes
 
 - **Parallel rendering.** Pages render concurrently via rayon. Build time scales with cores, not page count.
-- **Single esbuild build.** Component TypeScript and all page script entries are bundled together so shared dependencies are split once and reused.
+- **Single esbuild build.** Template chrome, component TypeScript, and page script entries are bundled together so shared dependencies are split once and reused.
 - **Cached protocol.** The WebUI binary protocol is built once per run and reused across all pages.
 - **Shared highlighter.** One `syntect::SyntaxSet` is loaded per build and cloned per worker, not per page.
 - **No regex in core paths.** Markdown processing, link normalization, and DSD pre-expansion are deterministic scanners.
