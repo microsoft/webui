@@ -33,6 +33,38 @@ struct PageScript {
     source: ScriptSource,
 }
 
+struct BundleThread {
+    handle: Option<std::thread::JoinHandle<Result<BundleResult>>>,
+}
+
+impl BundleThread {
+    fn spawn<F>(f: F) -> Self
+    where
+        F: FnOnce() -> Result<BundleResult> + Send + 'static,
+    {
+        Self {
+            handle: Some(std::thread::spawn(f)),
+        }
+    }
+
+    fn join(mut self) -> Result<BundleResult> {
+        let Some(handle) = self.handle.take() else {
+            return Err(Error::Build("Bundle thread already joined".to_string()));
+        };
+        handle
+            .join()
+            .map_err(|_| Error::Build("Bundle thread panicked".to_string()))?
+    }
+}
+
+impl Drop for BundleThread {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// Source of a bundleable script.
 #[derive(Debug, Clone)]
 enum ScriptSource {
@@ -327,6 +359,8 @@ pub fn build_docs_with_cache(
 
     let template_html = fs::read_to_string(template_dir.join("index.html"))
         .map_err(|e| Error::Build(format!("Failed to read template: {e}")))?;
+    let module_version = next_rebuild_nonce_hex();
+    let template_html = version_component_bundle_loader(&template_html, &module_version);
 
     // Step 3: Wipe the previous output and recreate the site root.
     // Always done — a from-scratch run guarantees the output matches
@@ -431,15 +465,13 @@ pub fn build_docs_with_cache(
     let bundler_config = config.bundler.clone();
     let dev_mode = cache.dev_mode;
     let config_dir_owned = config_dir.to_path_buf();
-    let bundle_handle = std::thread::spawn(move || -> Result<BundleResult> {
-        let node_modules = std::env::current_dir()
-            .unwrap_or_default()
-            .join("node_modules");
+    let node_modules_owned = resolve_node_modules(config_dir)?;
+    let bundle_thread = BundleThread::spawn(move || -> Result<BundleResult> {
         bundle_assets(&BundleOptions {
             template_dir: &template_dir_owned,
             component_sources: &component_sources_clone,
             site_dir: &site_dir_clone,
-            node_modules: &node_modules,
+            node_modules: &node_modules_owned,
             page_scripts: &page_scripts_clone,
             bundler_config: bundler_config.as_ref(),
             dev_mode,
@@ -709,26 +741,19 @@ pub fn build_docs_with_cache(
     }
 
     // Step 8: Wait for the background bundling thread.
-    let bundle_result = bundle_handle
-        .join()
-        .map_err(|_| Error::Build("Bundle thread panicked".to_string()))??;
+    let bundle_result = bundle_thread.join()?;
     print_success(
         cache,
         &format!("Bundled {} components", bundle_result.component_count),
     );
 
-    // Step 8b: Inject page script <script> tags into rendered pages and add
-    // content-hash cache busters to module URLs so existing dev tabs don't
-    // keep a stale module graph after rebuilds.
-    if bundle_result.component_version.is_some() || !bundle_result.script_map.is_empty() {
+    // Step 8b: Inject page script <script> tags into rendered pages.
+    if !bundle_result.script_map.is_empty() {
         let mut linked_count = 0usize;
         for page in &pages {
             let has_placeholders = page_contents_with_scripts.contains_key(&page.path);
             let script_ids = page_script_ids.get(&page.path);
-            if bundle_result.component_version.is_none()
-                && !has_placeholders
-                && script_ids.is_none()
-            {
+            if !has_placeholders && script_ids.is_none() {
                 continue;
             }
             let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
@@ -737,13 +762,17 @@ pub fn build_docs_with_cache(
                 continue;
             };
 
-            if let Some(version) = &bundle_result.component_version {
-                html = version_component_bundle_loader(&html, version);
-            }
-
             // Replace inline placeholder comments (from <script bundle> extraction).
+            let mut replaced_ids = Vec::new();
             if has_placeholders && html.contains(SCRIPT_PLACEHOLDER_PREFIX) {
-                html = replace_script_placeholders(&html, base_path, &bundle_result.script_map);
+                let replaced = replace_script_placeholders_with_ids(
+                    &html,
+                    base_path,
+                    &bundle_result.script_map,
+                );
+                html = replaced.0;
+                linked_count += replaced.1.len();
+                replaced_ids = replaced.1;
             }
 
             // Inject <script> tags for script IDs that don't have placeholders
@@ -751,6 +780,9 @@ pub fn build_docs_with_cache(
             if let Some(ids) = script_ids {
                 let mut tags = String::new();
                 for &id in ids {
+                    if replaced_ids.contains(&id) {
+                        continue;
+                    }
                     if let Some(rel_path) = bundle_result.script_map.get(&id) {
                         let src = if base_path.is_empty() || base_path == "/" {
                             rel_path.clone()
@@ -778,14 +810,6 @@ pub fn build_docs_with_cache(
 
             fs::write(&target, &html)
                 .map_err(|e| Error::Io(format!("Cannot rewrite {}: {e}", page.path)))?;
-        }
-        if let Some(version) = &bundle_result.component_version {
-            let nf_target = site_dir.join("404.html");
-            if let Ok(html) = fs::read_to_string(&nf_target) {
-                let html = version_component_bundle_loader(&html, version);
-                fs::write(&nf_target, html)
-                    .map_err(|e| Error::Io(format!("Cannot rewrite 404.html: {e}")))?;
-            }
         }
         if linked_count > 0 {
             print_success(
@@ -1247,8 +1271,6 @@ fn collect_ts_files(dir: &Path) -> Vec<std::path::PathBuf> {
 struct BundleResult {
     /// Number of component entry points bundled.
     component_count: usize,
-    /// Cache-busting query string for `components.js`, derived from file contents.
-    component_version: Option<String>,
     /// Map from page-script ID to relative output path (e.g. `"assets/playground-abc123.js"`).
     script_map: HashMap<usize, String>,
 }
@@ -1307,6 +1329,34 @@ fn file_version(path: &Path) -> Result<String> {
 fn versioned_asset_path(rel_path: &str, full_path: &Path) -> Result<String> {
     let version = file_version(full_path)?;
     Ok(format!("{rel_path}?v={version}"))
+}
+
+fn next_rebuild_nonce_hex() -> String {
+    format!(
+        "{:x}",
+        REBUILD_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+fn resolve_node_modules(config_dir: &Path) -> Result<PathBuf> {
+    let start = config_dir.canonicalize().map_err(|e| {
+        Error::Build(format!(
+            "Cannot resolve config directory {} while locating node_modules: {e}",
+            config_dir.display()
+        ))
+    })?;
+
+    for dir in start.ancestors() {
+        let node_modules = dir.join("node_modules");
+        if node_modules.exists() {
+            return Ok(node_modules);
+        }
+    }
+
+    Err(Error::Build(format!(
+        "Cannot find node_modules in {} or its ancestors. Run pnpm install from the docs project root before building bundled scripts.",
+        start.display()
+    )))
 }
 
 fn default_framework_alias(node_modules: &Path) -> Option<PathBuf> {
@@ -1465,14 +1515,14 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     if !has_components && !has_scripts {
         return Ok(BundleResult {
             component_count: 0,
-            component_version: None,
             script_map: HashMap::new(),
         });
     }
 
     // Create a temp directory for the bundler entry files.
+    let nonce = next_rebuild_nonce_hex();
     let bundle_tmp =
-        std::env::temp_dir().join(format!("webui-press-bundle-{}", std::process::id(),));
+        std::env::temp_dir().join(format!("webui-press-bundle-{}-{nonce}", std::process::id(),));
     if bundle_tmp.exists() {
         fs::remove_dir_all(&bundle_tmp).ok();
     }
@@ -1564,19 +1614,11 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         }
     }
 
-    let component_path = opts.site_dir.join("components.js");
-    let component_version = if component_path.exists() {
-        Some(file_version(&component_path)?)
-    } else {
-        None
-    };
-
     // Clean up temp dir.
     fs::remove_dir_all(&bundle_tmp).ok();
 
     Ok(BundleResult {
         component_count: ts_files.len(),
-        component_version,
         script_map,
     })
 }
@@ -1698,30 +1740,61 @@ fn extract_bundle_scripts(
     (out, scripts)
 }
 
-/// Check if the attributes region contains a standalone `bundle` word.
+/// Check if the attributes region contains a `bundle` attribute name.
 fn has_bundle_attr(attrs: &str) -> bool {
     let bytes = attrs.as_bytes();
     let target = b"bundle";
     let mut i = 0;
-    while i + target.len() <= bytes.len() {
-        if let Some(rel) = attrs[i..].find("bundle") {
-            let pos = i + rel;
-            let before_ok =
-                pos == 0 || matches!(bytes[pos - 1], b' ' | b'\t' | b'\n' | b'\r' | b'"' | b'\'');
-            let after_pos = pos + target.len();
-            let after_ok = after_pos >= bytes.len()
-                || matches!(
-                    bytes[after_pos],
-                    b' ' | b'\t' | b'\n' | b'\r' | b'>' | b'=' | b'"' | b'\''
-                );
-            if before_ok && after_ok {
-                return true;
-            }
-            i = pos + 1;
-        } else {
+
+    while i < bytes.len() {
+        while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r' | b'/') {
+            i += 1;
+        }
+        if i >= bytes.len() {
             break;
         }
+
+        let name_start = i;
+        while i < bytes.len()
+            && !matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r' | b'=' | b'/' | b'>')
+        {
+            i += 1;
+        }
+        if name_start == i {
+            i += 1;
+            continue;
+        }
+
+        if i - name_start == target.len() && &bytes[name_start..i] == target {
+            return true;
+        }
+
+        while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r') {
+            i += 1;
+        }
+
+        if i < bytes.len() && bytes[i] == b'=' {
+            i += 1;
+            while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r') {
+                i += 1;
+            }
+            if i < bytes.len() && matches!(bytes[i], b'"' | b'\'') {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            } else {
+                while i < bytes.len() && !matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r') {
+                    i += 1;
+                }
+            }
+        }
     }
+
     false
 }
 
@@ -1780,15 +1853,16 @@ fn extract_src_attr(attrs: &str) -> Option<&str> {
 /// `<script type="module" src="...">` tags pointing to bundled output files.
 ///
 /// `script_map` maps script ID → relative output path (e.g. `"assets/playground-abc123.js"`).
-fn replace_script_placeholders(
+fn replace_script_placeholders_with_ids(
     html: &str,
     base_path: &str,
     script_map: &HashMap<usize, String>,
-) -> String {
+) -> (String, Vec<usize>) {
     if script_map.is_empty() {
-        return html.to_string();
+        return (html.to_string(), Vec::new());
     }
     let mut out = String::with_capacity(html.len());
+    let mut replaced_ids = Vec::with_capacity(script_map.len());
     let mut cursor = 0;
     while let Some(rel) = html[cursor..].find(SCRIPT_PLACEHOLDER_PREFIX) {
         let p = cursor + rel;
@@ -1802,6 +1876,7 @@ fn replace_script_placeholders(
                     out.push_str(base_path);
                     out.push_str(output_path);
                     out.push_str("\"></script>");
+                    replaced_ids.push(id);
                     cursor = after + end_rel + SCRIPT_PLACEHOLDER_SUFFIX.len();
                     continue;
                 }
@@ -1811,11 +1886,11 @@ fn replace_script_placeholders(
             cursor = after + end_rel + SCRIPT_PLACEHOLDER_SUFFIX.len();
         } else {
             out.push_str(&html[p..]);
-            return out;
+            return (out, replaced_ids);
         }
     }
     out.push_str(&html[cursor..]);
-    out
+    (out, replaced_ids)
 }
 
 /// Replace `<pre …>…</pre>` blocks with placeholder elements so the WebUI
@@ -2238,11 +2313,13 @@ mod tests {
         assert!(has_bundle_attr(r#" type="module" bundle"#));
         assert!(has_bundle_attr(r#" bundle type="module""#));
         assert!(has_bundle_attr(" bundle"));
+        assert!(has_bundle_attr(r#" bundle="" type="module""#));
     }
 
     #[test]
     fn has_bundle_attr_not_substring() {
         assert!(!has_bundle_attr(r#" type="module" data-bundle="true""#));
+        assert!(!has_bundle_attr(r#" type="module" data-mode="bundle""#));
         assert!(!has_bundle_attr(r#" unbundle"#));
     }
 
@@ -2271,7 +2348,7 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(0, "assets/page-0.js".to_string());
         map.insert(1, "assets/page-1.js".to_string());
-        let result = replace_script_placeholders(html, "/webui/", &map);
+        let result = replace_script_placeholders_with_ids(html, "/webui/", &map).0;
         assert!(result.contains(r#"<script type="module" src="/webui/assets/page-0.js"></script>"#));
         assert!(result.contains(r#"<script type="module" src="/webui/assets/page-1.js"></script>"#));
         assert!(!result.contains("<!--ws:script"));
@@ -2281,7 +2358,23 @@ mod tests {
     fn replace_script_placeholders_empty_map_unchanged() {
         let html = "no scripts here";
         let map = HashMap::new();
-        assert_eq!(replace_script_placeholders(html, "/", &map), html);
+        assert_eq!(
+            replace_script_placeholders_with_ids(html, "/", &map).0,
+            html
+        );
+    }
+
+    #[test]
+    fn replace_script_placeholders_tracks_replaced_ids() {
+        let html = "<!--ws:script:2--><!--ws:script:9-->";
+        let mut map = HashMap::new();
+        map.insert(2, "assets/page-2.js".to_string());
+
+        let (result, replaced_ids) = replace_script_placeholders_with_ids(html, "/", &map);
+
+        assert_eq!(replaced_ids, vec![2]);
+        assert!(result.contains(r#"<script type="module" src="/assets/page-2.js"></script>"#));
+        assert!(result.contains("<!--ws:script:9-->"));
     }
 
     #[test]
