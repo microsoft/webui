@@ -27,6 +27,8 @@ pub struct DocsConfig {
     pub custom_pages: std::collections::HashMap<String, CustomPage>,
     pub hero: Option<HeroConfig>,
     pub footer: Option<FooterConfig>,
+    /// Optional bundler configuration for Rolldown (overrides defaults).
+    pub bundler: Option<BundlerConfig>,
 }
 
 fn default_out_dir() -> String {
@@ -201,6 +203,26 @@ pub struct FooterConfig {
     pub html: String,
 }
 
+/// Rolldown bundler configuration overrides.
+///
+/// All fields are optional; sensible defaults are applied when omitted.
+/// These settings affect how page scripts and component TypeScript files
+/// are bundled into the output `assets/` directory.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BundlerConfig {
+    /// ECMAScript target (e.g. `"es2022"`). Defaults to `"es2022"`.
+    pub target: Option<String>,
+    /// Packages to treat as external (not bundled).
+    #[serde(default)]
+    pub external: Vec<String>,
+    /// Compile-time constant replacements (e.g. `{ "process.env.NODE_ENV": "\"production\"" }`).
+    #[serde(default)]
+    pub define: std::collections::HashMap<String, String>,
+    /// Module path aliases (e.g. `{ "~": "./src" }`).
+    #[serde(default)]
+    pub alias: std::collections::HashMap<String, String>,
+}
+
 /// A processed page ready for rendering.
 pub struct PageDescriptor {
     pub path: String,
@@ -296,5 +318,34 @@ mod tests {
             None,
         );
         assert_eq!(t1.to_html(), t2.to_html());
+    }
+
+    // --- BundlerConfig ---------------------------------------------------
+
+    #[test]
+    fn bundler_config_deserializes_all_fields() {
+        let json = r#"{
+            "target": "es2022",
+            "external": ["lodash"],
+            "define": { "process.env.NODE_ENV": "\"production\"" },
+            "alias": { "~": "./src" }
+        }"#;
+        let cfg: BundlerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.target.as_deref(), Some("es2022"));
+        assert_eq!(cfg.external, vec!["lodash"]);
+        assert_eq!(
+            cfg.define.get("process.env.NODE_ENV").unwrap(),
+            "\"production\""
+        );
+        assert_eq!(cfg.alias.get("~").unwrap(), "./src");
+    }
+
+    #[test]
+    fn bundler_config_defaults_when_empty() {
+        let cfg: BundlerConfig = serde_json::from_str("{}").unwrap();
+        assert!(cfg.target.is_none());
+        assert!(cfg.external.is_empty());
+        assert!(cfg.define.is_empty());
+        assert!(cfg.alias.is_empty());
     }
 }

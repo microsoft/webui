@@ -19,7 +19,28 @@ use webui_tokens::TokenFile;
 use crate::content::process_content;
 use crate::error::{Error, Result};
 use crate::markdown::Highlighter;
-use crate::types::{BuildStats, DocsConfig};
+use crate::types::{BuildStats, BundlerConfig, DocsConfig};
+
+/// A script entry extracted from a page's HTML for bundling.
+#[derive(Debug, Clone)]
+struct PageScript {
+    /// Unique numeric ID used in the placeholder comment.
+    id: usize,
+    /// The page path this script belongs to (retained for diagnostics).
+    #[allow(dead_code)]
+    page_path: String,
+    /// Script content: either inline source or a `src` path reference.
+    source: ScriptSource,
+}
+
+/// Source of a bundleable script.
+#[derive(Debug, Clone)]
+enum ScriptSource {
+    /// Inline script content to bundle.
+    Inline(String),
+    /// A `src` attribute path (resolved relative to the config dir).
+    File(String),
+}
 
 /// Persistent state held by the dev server across rebuilds. The dev
 /// server always performs a full rebuild on every watcher tick — the
@@ -44,6 +65,9 @@ pub struct BuildCache {
     /// retry path and shaves disk I/O off every rebuild. Stale files
     /// from deleted source pages survive until the next process restart.
     pub skip_clean: bool,
+    /// Dev-mode flag: when true, the bundler skips minification for
+    /// faster rebuilds during `webui-press serve`.
+    pub dev_mode: bool,
 }
 
 impl BuildCache {
@@ -60,6 +84,7 @@ impl BuildCache {
     pub fn set_dev_rebuild(&mut self) {
         self.quiet = true;
         self.skip_clean = true;
+        self.dev_mode = true;
     }
 }
 
@@ -340,22 +365,49 @@ pub fn build_docs_with_cache(
     }
 
     // Kick off TypeScript component bundling on a background thread.
-    // esbuild (npx process startup) takes 100s of ms and is independent
-    // of the render pipeline, so we overlap it with the per-page
-    // protocol build + render.
+    // Rolldown is independent of the render pipeline, so we overlap it
+    // with the per-page protocol build + render.
+    //
+    // Step 2b: Extract <script bundle> tags from page content BEFORE
+    // rendering. This gives us the page scripts to bundle alongside
+    // components. The extraction mutates page content by replacing scripts
+    // with placeholder comments.
+    let mut all_page_scripts: Vec<PageScript> = Vec::new();
+    let mut page_contents_with_scripts: HashMap<String, String> = HashMap::new();
+
+    for page in &pages {
+        let content = page.state["page"]["content"].as_str().unwrap_or("");
+        if content.contains("<script") && content.contains("bundle") {
+            let (modified, scripts) =
+                extract_bundle_scripts(content, &page.path, all_page_scripts.len());
+            if !scripts.is_empty() {
+                page_contents_with_scripts.insert(page.path.clone(), modified);
+                all_page_scripts.extend(scripts);
+            }
+        }
+    }
+
     let template_dir_owned = template_dir.to_path_buf();
     let component_sources_clone = component_sources.clone();
     let site_dir_clone = site_dir.clone();
-    let bundle_handle = std::thread::spawn(move || -> Result<usize> {
+    let page_scripts_clone = all_page_scripts.clone();
+    let bundler_config = config.bundler.clone();
+    let dev_mode = cache.dev_mode;
+    let config_dir_owned = config_dir.to_path_buf();
+    let bundle_handle = std::thread::spawn(move || -> Result<BundleResult> {
         let node_modules = std::env::current_dir()
             .unwrap_or_default()
             .join("node_modules");
-        bundle_components(
-            &template_dir_owned,
-            &component_sources_clone,
-            &site_dir_clone,
-            &node_modules,
-        )
+        bundle_assets(&BundleOptions {
+            template_dir: &template_dir_owned,
+            component_sources: &component_sources_clone,
+            site_dir: &site_dir_clone,
+            node_modules: &node_modules,
+            page_scripts: &page_scripts_clone,
+            bundler_config: bundler_config.as_ref(),
+            dev_mode,
+            config_dir: &config_dir_owned,
+        })
     });
 
     // Per-page build + render + write in parallel.
@@ -375,7 +427,11 @@ pub fn build_docs_with_cache(
         let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
         let target = page_dir.join("index.html");
 
-        let content = page.state["page"]["content"].as_str().unwrap_or("");
+        // Use modified content (with script placeholders) if scripts were extracted.
+        let content = page_contents_with_scripts
+            .get(&page.path)
+            .map(|s| s.as_str())
+            .unwrap_or_else(|| page.state["page"]["content"].as_str().unwrap_or(""));
 
         // Protect <pre> blocks from HTML parser whitespace normalization.
         let (protected, pre_blocks) = protect_pre_blocks(content);
@@ -616,10 +672,37 @@ pub fn build_docs_with_cache(
     }
 
     // Step 8: Wait for the background bundling thread.
-    let component_count = bundle_handle
+    let bundle_result = bundle_handle
         .join()
         .map_err(|_| Error::Build("Bundle thread panicked".to_string()))??;
-    print_success(cache, &format!("Bundled {component_count} components"));
+    print_success(
+        cache,
+        &format!("Bundled {} components", bundle_result.component_count),
+    );
+
+    // Step 8b: Replace script placeholders in rendered pages with actual
+    // <script> tags pointing to the bundled output files.
+    if !bundle_result.script_map.is_empty() {
+        for page in &pages {
+            if !page_contents_with_scripts.contains_key(&page.path) {
+                continue;
+            }
+            let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
+            let target = page_dir.join("index.html");
+            if let Ok(html) = fs::read_to_string(&target) {
+                if html.contains(SCRIPT_PLACEHOLDER_PREFIX) {
+                    let updated =
+                        replace_script_placeholders(&html, base_path, &bundle_result.script_map);
+                    fs::write(&target, &updated)
+                        .map_err(|e| Error::Io(format!("Cannot rewrite {}: {e}", page.path)))?;
+                }
+            }
+        }
+        print_success(
+            cache,
+            &format!("Linked {} page scripts", bundle_result.script_map.len()),
+        );
+    }
 
     let elapsed = start.elapsed();
     let total_bytes = total_bytes.load(std::sync::atomic::Ordering::Relaxed);
@@ -1065,18 +1148,39 @@ fn collect_ts_files(dir: &Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-/// Bundle component TypeScript files into a single `components.js` via esbuild.
-/// Returns the number of components bundled.
-fn bundle_components(
-    template_dir: &Path,
-    component_sources: &[String],
-    site_dir: &Path,
-    node_modules: &Path,
-) -> Result<usize> {
+/// Bundle result returned by [`bundle_assets`].
+struct BundleResult {
+    /// Number of component entry points bundled.
+    component_count: usize,
+    /// Map from page-script ID to relative output path (e.g. `"assets/playground-abc123.js"`).
+    script_map: HashMap<usize, String>,
+}
+
+/// Configuration for the [`bundle_assets`] function.
+struct BundleOptions<'a> {
+    template_dir: &'a Path,
+    component_sources: &'a [String],
+    site_dir: &'a Path,
+    node_modules: &'a Path,
+    page_scripts: &'a [PageScript],
+    bundler_config: Option<&'a BundlerConfig>,
+    dev_mode: bool,
+    config_dir: &'a Path,
+}
+
+/// Bundle component TypeScript files and page scripts via Rolldown.
+///
+/// Uses a single Rolldown invocation with multiple entry points for optimal
+/// code splitting. Component .ts files produce `components.js` (the global
+/// hydration bundle); page scripts produce separate entry chunks under `assets/`.
+///
+/// Returns a [`BundleResult`] with the component count and a mapping from
+/// page-script IDs to their output file paths.
+fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     let mut ts_files = Vec::new();
 
     // Collect from user component directories
-    for dir in component_sources {
+    for dir in opts.component_sources {
         let p = Path::new(dir);
         if p.exists() {
             ts_files.extend(collect_ts_files(p));
@@ -1084,7 +1188,7 @@ fn bundle_components(
     }
 
     // Collect from template subdirectories (docs-search, docs-theme-toggle, etc.)
-    if let Ok(entries) = fs::read_dir(template_dir) {
+    if let Ok(entries) = fs::read_dir(opts.template_dir) {
         for entry in entries.flatten() {
             if entry.path().is_dir() {
                 ts_files.extend(collect_ts_files(&entry.path()));
@@ -1092,61 +1196,394 @@ fn bundle_components(
         }
     }
 
-    if ts_files.is_empty() {
-        return Ok(0);
+    let has_components = !ts_files.is_empty();
+    let has_scripts = !opts.page_scripts.is_empty();
+
+    if !has_components && !has_scripts {
+        return Ok(BundleResult {
+            component_count: 0,
+            script_map: HashMap::new(),
+        });
     }
 
-    // Generate the entry file content
-    let imports: String = ts_files
-        .iter()
-        .map(|f| format!("import \"{}\";", f.to_string_lossy().replace('\\', "/")))
-        .collect::<Vec<_>>()
-        .join("\n");
+    // Create a temp directory for the bundler entry files.
+    let bundle_tmp =
+        std::env::temp_dir().join(format!("webui-press-bundle-{}", std::process::id(),));
+    if bundle_tmp.exists() {
+        fs::remove_dir_all(&bundle_tmp).ok();
+    }
+    fs::create_dir_all(&bundle_tmp)
+        .map_err(|e| Error::Build(format!("Cannot create bundle temp dir: {e}")))?;
 
-    let out_file = site_dir.join("components.js");
+    let assets_dir = opts.site_dir.join("assets");
+    fs::create_dir_all(&assets_dir)
+        .map_err(|e| Error::Io(format!("Cannot create assets dir: {e}")))?;
 
-    let status = std::process::Command::new(npx_command())
-        .arg("esbuild")
-        .arg("--bundle")
-        .arg("--format=esm")
-        .arg("--minify")
-        .arg("--loader:.html=text")
-        .arg("--loader:.css=text")
-        .arg(format!("--outfile={}", out_file.to_string_lossy()))
-        .env("NODE_PATH", node_modules)
-        .stdin(std::process::Stdio::piped())
+    // Build the component entry file (imports all component .ts files).
+    let mut entry_files: Vec<(String, std::path::PathBuf)> = Vec::new();
+
+    if has_components {
+        let imports: String = ts_files
+            .iter()
+            .map(|f| format!("import \"{}\";", f.to_string_lossy().replace('\\', "/")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let components_entry = bundle_tmp.join("_components.ts");
+        fs::write(&components_entry, &imports)
+            .map_err(|e| Error::Build(format!("Cannot write component entry: {e}")))?;
+        entry_files.push(("components".to_string(), components_entry));
+    }
+
+    // Write page script entry files.
+    for script in opts.page_scripts {
+        let entry_name = format!("page-{}", script.id);
+        let entry_path = bundle_tmp.join(format!("{entry_name}.ts"));
+        let content = match &script.source {
+            ScriptSource::Inline(code) => code.clone(),
+            ScriptSource::File(path) => {
+                // Resolve src path relative to config_dir for absolute import.
+                let resolved = opts.config_dir.join(path);
+                let abs_path = resolved.to_string_lossy().replace('\\', "/");
+                format!("import \"{abs_path}\";")
+            }
+        };
+        fs::write(&entry_path, &content)
+            .map_err(|e| Error::Build(format!("Cannot write script entry: {e}")))?;
+        entry_files.push((entry_name, entry_path));
+    }
+
+    // Build the Rolldown CLI arguments.
+    let mut args: Vec<String> = Vec::with_capacity(32);
+
+    // Entry points as positional args.
+    for (_name, path) in &entry_files {
+        args.push(path.to_string_lossy().to_string());
+    }
+
+    args.push("--format".to_string());
+    args.push("esm".to_string());
+    args.push("--dir".to_string());
+    args.push(assets_dir.to_string_lossy().to_string());
+
+    // Enable code splitting (automatic with --dir + multiple entries).
+    // Set chunk file names to include content hash for cache busting.
+    args.push("--advancedChunks.minSize".to_string());
+    args.push("0".to_string());
+
+    // Loaders for HTML and CSS imported as text.
+    args.push("--moduleTypes".to_string());
+    args.push(".html=text".to_string());
+    args.push("--moduleTypes".to_string());
+    args.push(".css=text".to_string());
+
+    // Minify only in production mode.
+    if !opts.dev_mode {
+        args.push("--minify".to_string());
+    }
+
+    // Apply bundler config overrides.
+    if let Some(cfg) = opts.bundler_config {
+        if let Some(ref target) = cfg.target {
+            args.push("--target".to_string());
+            args.push(target.clone());
+        }
+        for ext in &cfg.external {
+            args.push("--external".to_string());
+            args.push(ext.clone());
+        }
+        for (key, value) in &cfg.define {
+            args.push("--define".to_string());
+            args.push(format!("{key}={value}"));
+        }
+        for (from, to) in &cfg.alias {
+            args.push("--resolve.alias".to_string());
+            args.push(format!("{from}={to}"));
+        }
+    }
+
+    // Resolve the rolldown binary from node_modules.
+    let rolldown_bin = rolldown_command(opts.node_modules);
+
+    let output = std::process::Command::new(&rolldown_bin)
+        .args(&args)
+        .env("NODE_PATH", opts.node_modules)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            if let Some(ref mut stdin) = child.stdin {
-                let _ = stdin.write_all(imports.as_bytes());
-            }
-            child.wait_with_output()
-        })
-        .map_err(|e| Error::Build(format!("npx esbuild failed: {e}")))?;
+        .output()
+        .map_err(|e| Error::Build(format!("rolldown failed to start: {e}")))?;
 
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        return Err(Error::Build(format!("esbuild error: {stderr}")));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Build(format!("rolldown error: {stderr}")));
     }
 
-    Ok(ts_files.len())
+    // Build script_map: find output files for page-script entries.
+    let mut script_map = HashMap::with_capacity(opts.page_scripts.len());
+    for script in opts.page_scripts {
+        let entry_name = format!("page-{}", script.id);
+        // Rolldown outputs entry chunks as `{entry_name}.js` in the output dir.
+        let output_file = format!("assets/{entry_name}.js");
+        let full_path = opts.site_dir.join(&output_file);
+        if full_path.exists() {
+            script_map.insert(script.id, output_file);
+        }
+    }
+
+    // Move components entry to site root as `components.js` for backward compat.
+    if has_components {
+        let components_in_assets = assets_dir.join("_components.js");
+        let components_at_root = opts.site_dir.join("components.js");
+        if components_in_assets.exists() {
+            fs::rename(&components_in_assets, &components_at_root)
+                .map_err(|e| Error::Io(format!("Cannot move components.js: {e}")))?;
+        }
+    }
+
+    // Clean up temp dir.
+    fs::remove_dir_all(&bundle_tmp).ok();
+
+    Ok(BundleResult {
+        component_count: ts_files.len(),
+        script_map,
+    })
 }
 
-#[cfg(windows)]
-fn npx_command() -> &'static str {
-    "npx.cmd"
-}
-
-#[cfg(not(windows))]
-fn npx_command() -> &'static str {
-    "npx"
+/// Resolve the rolldown binary path from node_modules.
+fn rolldown_command(node_modules: &Path) -> std::path::PathBuf {
+    let bin_dir = node_modules.join(".bin");
+    let rolldown = if cfg!(windows) {
+        bin_dir.join("rolldown.cmd")
+    } else {
+        bin_dir.join("rolldown")
+    };
+    if rolldown.exists() {
+        rolldown
+    } else {
+        // Fallback to PATH-based lookup.
+        std::path::PathBuf::from(if cfg!(windows) {
+            "rolldown.cmd"
+        } else {
+            "rolldown"
+        })
+    }
 }
 
 const PRE_BLOCK_MARKER_PREFIX: &str = "<span data-webui-press-pre-block=\"";
 const PRE_BLOCK_MARKER_SUFFIX: &str = "\"></span>";
+
+const SCRIPT_PLACEHOLDER_PREFIX: &str = "<!--ws:script:";
+const SCRIPT_PLACEHOLDER_SUFFIX: &str = "-->";
+
+/// Extract `<script type="module" bundle>` and `<script type="module" bundle src="...">` tags
+/// from page content HTML. Returns the modified content (with placeholder comments)
+/// and the extracted script entries.
+///
+/// The scanner is iterative and avoids regex (per project rules). It looks for
+/// `<script` tags containing the `bundle` attribute and replaces each with a
+/// `<!--ws:script:ID-->` comment placeholder.
+fn extract_bundle_scripts(
+    content: &str,
+    page_path: &str,
+    id_offset: usize,
+) -> (String, Vec<PageScript>) {
+    let mut scripts = Vec::new();
+    let mut out = String::with_capacity(content.len());
+    let mut cursor = 0;
+    let bytes = content.as_bytes();
+
+    while cursor < bytes.len() {
+        // Find next <script (case-sensitive — HTML from our pipeline is always lowercase).
+        let Some(rel) = content[cursor..].find("<script") else {
+            break;
+        };
+        let tag_start = cursor + rel;
+        let after_tag = tag_start + 7; // len("<script")
+
+        // Verify boundary: next char must be ' ', '\t', '\n', '\r', or '>'.
+        match bytes.get(after_tag) {
+            Some(b' ' | b'\t' | b'\n' | b'\r' | b'>') => {}
+            _ => {
+                out.push_str(&content[cursor..after_tag]);
+                cursor = after_tag;
+                continue;
+            }
+        }
+
+        // Find the end of the opening tag '>'
+        let Some(gt_rel) = content[after_tag..].find('>') else {
+            break;
+        };
+        let gt_pos = after_tag + gt_rel;
+        let attrs_region = &content[after_tag..gt_pos];
+
+        // Check for `bundle` attribute (space-separated, could be anywhere).
+        if !has_bundle_attr(attrs_region) {
+            out.push_str(&content[cursor..gt_pos + 1]);
+            cursor = gt_pos + 1;
+            continue;
+        }
+
+        // Find closing </script> tag.
+        let Some(close_rel) = content[gt_pos + 1..].find("</script>") else {
+            // Malformed — pass through the rest.
+            break;
+        };
+        let close_start = gt_pos + 1 + close_rel;
+        let close_end = close_start + "</script>".len();
+
+        // Extract source info.
+        let src_attr = extract_src_attr(attrs_region);
+        let inline_body = &content[gt_pos + 1..close_start];
+
+        let source = if let Some(src) = src_attr {
+            ScriptSource::File(src.to_string())
+        } else if !inline_body.trim().is_empty() {
+            ScriptSource::Inline(inline_body.to_string())
+        } else {
+            // Empty script with no src — skip it.
+            out.push_str(&content[cursor..close_end]);
+            cursor = close_end;
+            continue;
+        };
+
+        let id = id_offset + scripts.len();
+        scripts.push(PageScript {
+            id,
+            page_path: page_path.to_string(),
+            source,
+        });
+
+        // Emit the placeholder comment.
+        out.push_str(&content[cursor..tag_start]);
+        out.push_str(SCRIPT_PLACEHOLDER_PREFIX);
+        out.push_str(&id.to_string());
+        out.push_str(SCRIPT_PLACEHOLDER_SUFFIX);
+        cursor = close_end;
+    }
+
+    out.push_str(&content[cursor..]);
+    (out, scripts)
+}
+
+/// Check if the attributes region contains a standalone `bundle` word.
+fn has_bundle_attr(attrs: &str) -> bool {
+    let bytes = attrs.as_bytes();
+    let target = b"bundle";
+    let mut i = 0;
+    while i + target.len() <= bytes.len() {
+        if let Some(rel) = attrs[i..].find("bundle") {
+            let pos = i + rel;
+            let before_ok =
+                pos == 0 || matches!(bytes[pos - 1], b' ' | b'\t' | b'\n' | b'\r' | b'"' | b'\'');
+            let after_pos = pos + target.len();
+            let after_ok = after_pos >= bytes.len()
+                || matches!(
+                    bytes[after_pos],
+                    b' ' | b'\t' | b'\n' | b'\r' | b'>' | b'=' | b'"' | b'\''
+                );
+            if before_ok && after_ok {
+                return true;
+            }
+            i = pos + 1;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
+/// Extract the value of a `src="..."` or `src='...'` attribute from an attrs region.
+fn extract_src_attr(attrs: &str) -> Option<&str> {
+    let bytes = attrs.as_bytes();
+    let mut i = 0;
+    while i + 4 <= bytes.len() {
+        if let Some(rel) = attrs[i..].find("src") {
+            let pos = i + rel;
+            // Verify boundary before: space or start.
+            let before_ok = pos == 0 || matches!(bytes[pos - 1], b' ' | b'\t' | b'\n' | b'\r');
+            let after_src = pos + 3;
+            if !before_ok || after_src >= bytes.len() {
+                i = pos + 1;
+                continue;
+            }
+
+            // Skip whitespace and '='.
+            let mut eq = after_src;
+            while eq < bytes.len() && matches!(bytes[eq], b' ' | b'\t') {
+                eq += 1;
+            }
+            if eq >= bytes.len() || bytes[eq] != b'=' {
+                i = pos + 1;
+                continue;
+            }
+            eq += 1;
+            while eq < bytes.len() && matches!(bytes[eq], b' ' | b'\t') {
+                eq += 1;
+            }
+
+            // Read quoted value.
+            if eq >= bytes.len() {
+                i = pos + 1;
+                continue;
+            }
+            let quote = bytes[eq];
+            if quote != b'"' && quote != b'\'' {
+                i = pos + 1;
+                continue;
+            }
+            let val_start = eq + 1;
+            if let Some(val_end_rel) = attrs[val_start..].find(quote as char) {
+                return Some(&attrs[val_start..val_start + val_end_rel]);
+            }
+            i = pos + 1;
+        } else {
+            break;
+        }
+    }
+    None
+}
+
+/// Replace `<!--ws:script:ID-->` placeholders in rendered HTML with actual
+/// `<script type="module" src="...">` tags pointing to bundled output files.
+///
+/// `script_map` maps script ID → relative output path (e.g. `"assets/playground-abc123.js"`).
+fn replace_script_placeholders(
+    html: &str,
+    base_path: &str,
+    script_map: &HashMap<usize, String>,
+) -> String {
+    if script_map.is_empty() {
+        return html.to_string();
+    }
+    let mut out = String::with_capacity(html.len());
+    let mut cursor = 0;
+    while let Some(rel) = html[cursor..].find(SCRIPT_PLACEHOLDER_PREFIX) {
+        let p = cursor + rel;
+        out.push_str(&html[cursor..p]);
+        let after = p + SCRIPT_PLACEHOLDER_PREFIX.len();
+        if let Some(end_rel) = html[after..].find(SCRIPT_PLACEHOLDER_SUFFIX) {
+            let num_str = &html[after..after + end_rel];
+            if let Ok(id) = num_str.parse::<usize>() {
+                if let Some(output_path) = script_map.get(&id) {
+                    out.push_str("<script type=\"module\" src=\"");
+                    out.push_str(base_path);
+                    out.push_str(output_path);
+                    out.push_str("\"></script>");
+                    cursor = after + end_rel + SCRIPT_PLACEHOLDER_SUFFIX.len();
+                    continue;
+                }
+            }
+            // Unknown placeholder — keep verbatim.
+            out.push_str(&html[p..after + end_rel + SCRIPT_PLACEHOLDER_SUFFIX.len()]);
+            cursor = after + end_rel + SCRIPT_PLACEHOLDER_SUFFIX.len();
+        } else {
+            out.push_str(&html[p..]);
+            return out;
+        }
+    }
+    out.push_str(&html[cursor..]);
+    out
+}
 
 /// Replace `<pre …>…</pre>` blocks with placeholder elements so the WebUI
 /// HTML parser does not normalize whitespace inside them. Returns the
@@ -1243,11 +1680,19 @@ mod tests {
     type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
 
     #[test]
-    fn npx_command_uses_platform_executable() {
-        #[cfg(windows)]
-        assert_eq!(npx_command(), "npx.cmd");
-        #[cfg(not(windows))]
-        assert_eq!(npx_command(), "npx");
+    fn rolldown_command_resolves_from_node_modules() {
+        let tmp = std::env::temp_dir().join("webui-press-rolldown-test");
+        let bin_dir = tmp.join("node_modules/.bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let bin_path = if cfg!(windows) {
+            bin_dir.join("rolldown.cmd")
+        } else {
+            bin_dir.join("rolldown")
+        };
+        fs::write(&bin_path, "").unwrap();
+        let resolved = rolldown_command(&tmp.join("node_modules"));
+        assert_eq!(resolved, bin_path);
+        fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
@@ -1462,5 +1907,116 @@ mod tests {
     fn fxhash_deterministic() {
         assert_eq!(fxhash("abc"), fxhash("abc"));
         assert_ne!(fxhash("abc"), fxhash("abd"));
+    }
+
+    // --- extract_bundle_scripts -------------------------------------------
+
+    #[test]
+    fn extract_bundle_scripts_inline() {
+        let html = r#"<p>Hello</p><script type="module" bundle>import "@fluentui/web-components";</script><p>World</p>"#;
+        let (out, scripts) = extract_bundle_scripts(html, "/test/", 0);
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(scripts[0].id, 0);
+        assert!(matches!(&scripts[0].source, ScriptSource::Inline(s) if s.contains("@fluentui")));
+        assert!(out.contains("<!--ws:script:0-->"));
+        assert!(!out.contains("<script"));
+        assert!(out.contains("<p>Hello</p>"));
+        assert!(out.contains("<p>World</p>"));
+    }
+
+    #[test]
+    fn extract_bundle_scripts_src() {
+        let html = r#"<script type="module" bundle src="./scripts/playground.ts"></script>"#;
+        let (out, scripts) = extract_bundle_scripts(html, "/playground/", 0);
+        assert_eq!(scripts.len(), 1);
+        assert!(
+            matches!(&scripts[0].source, ScriptSource::File(s) if s == "./scripts/playground.ts")
+        );
+        assert!(out.contains("<!--ws:script:0-->"));
+    }
+
+    #[test]
+    fn extract_bundle_scripts_ignores_non_bundle() {
+        let html = r#"<script type="module">console.log("hi");</script>"#;
+        let (out, scripts) = extract_bundle_scripts(html, "/page/", 0);
+        assert_eq!(scripts.len(), 0);
+        assert_eq!(out, html);
+    }
+
+    #[test]
+    fn extract_bundle_scripts_multiple() {
+        let html = concat!(
+            r#"<script type="module" bundle>import "a";</script>"#,
+            r#"<p>middle</p>"#,
+            r#"<script type="module" bundle src="./b.ts"></script>"#,
+        );
+        let (out, scripts) = extract_bundle_scripts(html, "/page/", 5);
+        assert_eq!(scripts.len(), 2);
+        assert_eq!(scripts[0].id, 5);
+        assert_eq!(scripts[1].id, 6);
+        assert!(out.contains("<!--ws:script:5-->"));
+        assert!(out.contains("<!--ws:script:6-->"));
+        assert!(out.contains("<p>middle</p>"));
+    }
+
+    #[test]
+    fn extract_bundle_scripts_empty_body_no_src_skipped() {
+        let html = r#"<script type="module" bundle></script>"#;
+        let (out, scripts) = extract_bundle_scripts(html, "/page/", 0);
+        assert_eq!(scripts.len(), 0);
+        assert_eq!(out, html); // passes through unchanged
+    }
+
+    // --- has_bundle_attr --------------------------------------------------
+
+    #[test]
+    fn has_bundle_attr_standalone() {
+        assert!(has_bundle_attr(r#" type="module" bundle"#));
+        assert!(has_bundle_attr(r#" bundle type="module""#));
+        assert!(has_bundle_attr(" bundle"));
+    }
+
+    #[test]
+    fn has_bundle_attr_not_substring() {
+        assert!(!has_bundle_attr(r#" type="module" data-bundle="true""#));
+        assert!(!has_bundle_attr(r#" unbundle"#));
+    }
+
+    // --- extract_src_attr -------------------------------------------------
+
+    #[test]
+    fn extract_src_attr_double_quotes() {
+        assert_eq!(extract_src_attr(r#" src="./foo.ts""#), Some("./foo.ts"));
+    }
+
+    #[test]
+    fn extract_src_attr_single_quotes() {
+        assert_eq!(extract_src_attr(" src='bar.js'"), Some("bar.js"));
+    }
+
+    #[test]
+    fn extract_src_attr_none_when_missing() {
+        assert_eq!(extract_src_attr(r#" type="module" bundle"#), None);
+    }
+
+    // --- replace_script_placeholders -------------------------------------
+
+    #[test]
+    fn replace_script_placeholders_basic() {
+        let html = "<html><!--ws:script:0--><p>content</p><!--ws:script:1--></html>";
+        let mut map = HashMap::new();
+        map.insert(0, "assets/page-0.js".to_string());
+        map.insert(1, "assets/page-1.js".to_string());
+        let result = replace_script_placeholders(html, "/webui/", &map);
+        assert!(result.contains(r#"<script type="module" src="/webui/assets/page-0.js"></script>"#));
+        assert!(result.contains(r#"<script type="module" src="/webui/assets/page-1.js"></script>"#));
+        assert!(!result.contains("<!--ws:script"));
+    }
+
+    #[test]
+    fn replace_script_placeholders_empty_map_unchanged() {
+        let html = "no scripts here";
+        let map = HashMap::new();
+        assert_eq!(replace_script_placeholders(html, "/", &map), html);
     }
 }

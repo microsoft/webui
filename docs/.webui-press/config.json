@@ -220,7 +220,7 @@
   "customPages": {
     "/playground/": {
       "layout": "full",
-      "html": "<docs-playground></docs-playground>",
+      "html": "<docs-playground></docs-playground>\n<script type=\"module\" bundle src=\"./.webui-press/scripts/playground.ts\"></script>",
       "stateFile": "./state/playground.json"
     }
   },
