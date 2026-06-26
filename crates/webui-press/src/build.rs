@@ -717,16 +717,18 @@ pub fn build_docs_with_cache(
         &format!("Bundled {} components", bundle_result.component_count),
     );
 
-    // Step 8b: Inject page script <script> tags into rendered pages.
-    // For inline <script bundle> tags, placeholder comments in the content
-    // were replaced by the renderer. For scriptFile entries (and as a
-    // fallback), we inject <script> tags before </body> using page_script_ids.
-    if !bundle_result.script_map.is_empty() {
+    // Step 8b: Inject page script <script> tags into rendered pages and add
+    // content-hash cache busters to module URLs so existing dev tabs don't
+    // keep a stale module graph after rebuilds.
+    if bundle_result.component_version.is_some() || !bundle_result.script_map.is_empty() {
         let mut linked_count = 0usize;
         for page in &pages {
             let has_placeholders = page_contents_with_scripts.contains_key(&page.path);
             let script_ids = page_script_ids.get(&page.path);
-            if !has_placeholders && script_ids.is_none() {
+            if bundle_result.component_version.is_none()
+                && !has_placeholders
+                && script_ids.is_none()
+            {
                 continue;
             }
             let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
@@ -734,6 +736,10 @@ pub fn build_docs_with_cache(
             let Ok(mut html) = fs::read_to_string(&target) else {
                 continue;
             };
+
+            if let Some(version) = &bundle_result.component_version {
+                html = version_component_bundle_loader(&html, version);
+            }
 
             // Replace inline placeholder comments (from <script bundle> extraction).
             if has_placeholders && html.contains(SCRIPT_PLACEHOLDER_PREFIX) {
@@ -772,6 +778,14 @@ pub fn build_docs_with_cache(
 
             fs::write(&target, &html)
                 .map_err(|e| Error::Io(format!("Cannot rewrite {}: {e}", page.path)))?;
+        }
+        if let Some(version) = &bundle_result.component_version {
+            let nf_target = site_dir.join("404.html");
+            if let Ok(html) = fs::read_to_string(&nf_target) {
+                let html = version_component_bundle_loader(&html, version);
+                fs::write(&nf_target, html)
+                    .map_err(|e| Error::Io(format!("Cannot rewrite 404.html: {e}")))?;
+            }
         }
         if linked_count > 0 {
             print_success(
@@ -1233,6 +1247,8 @@ fn collect_ts_files(dir: &Path) -> Vec<std::path::PathBuf> {
 struct BundleResult {
     /// Number of component entry points bundled.
     component_count: usize,
+    /// Cache-busting query string for `components.js`, derived from file contents.
+    component_version: Option<String>,
     /// Map from page-script ID to relative output path (e.g. `"assets/playground-abc123.js"`).
     script_map: HashMap<usize, String>,
 }
@@ -1256,6 +1272,17 @@ fn path_for_js(path: &Path) -> String {
 fn json_string(value: &str) -> Result<String> {
     serde_json::to_string(value)
         .map_err(|e| Error::Build(format!("Cannot serialize Rolldown config string: {e}")))
+}
+
+fn file_version(path: &Path) -> Result<String> {
+    let bytes =
+        fs::read(path).map_err(|e| Error::Io(format!("Cannot read {}: {e}", path.display())))?;
+    Ok(format!("{:x}", fxhash_bytes(&bytes)))
+}
+
+fn versioned_asset_path(rel_path: &str, full_path: &Path) -> Result<String> {
+    let version = file_version(full_path)?;
+    Ok(format!("{rel_path}?v={version}"))
 }
 
 fn default_framework_alias(node_modules: &Path) -> Option<PathBuf> {
@@ -1423,6 +1450,7 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     if !has_components && !has_scripts {
         return Ok(BundleResult {
             component_count: 0,
+            component_version: None,
             script_map: HashMap::new(),
         });
     }
@@ -1517,15 +1545,23 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         let output_file = format!("assets/{entry_name}.js");
         let full_path = opts.site_dir.join(&output_file);
         if full_path.exists() {
-            script_map.insert(script.id, output_file);
+            script_map.insert(script.id, versioned_asset_path(&output_file, &full_path)?);
         }
     }
+
+    let component_path = opts.site_dir.join("components.js");
+    let component_version = if component_path.exists() {
+        Some(file_version(&component_path)?)
+    } else {
+        None
+    };
 
     // Clean up temp dir.
     fs::remove_dir_all(&bundle_tmp).ok();
 
     Ok(BundleResult {
         component_count: ts_files.len(),
+        component_version,
         script_map,
     })
 }
@@ -1845,10 +1881,21 @@ fn restore_pre_blocks(html: &str, blocks: &[String]) -> String {
     out
 }
 
+fn version_component_bundle_loader(html: &str, version: &str) -> String {
+    html.replace(
+        "base + 'components.js'",
+        &format!("base + 'components.js?v={version}'"),
+    )
+}
+
 /// Cheap deterministic hash for building unique temp directory names.
 fn fxhash(s: &str) -> u64 {
+    fxhash_bytes(s.as_bytes())
+}
+
+fn fxhash_bytes(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.bytes() {
+    for &b in bytes {
         hash ^= u64::from(b);
         hash = hash.wrapping_mul(0x100_0000_01b3);
     }
@@ -2200,5 +2247,12 @@ mod tests {
         let html = "no scripts here";
         let map = HashMap::new();
         assert_eq!(replace_script_placeholders(html, "/", &map), html);
+    }
+
+    #[test]
+    fn version_component_bundle_loader_adds_hash_query() {
+        let html = "<script>var base = '/webui/'; s.src = base + 'components.js';</script>";
+        let result = version_component_bundle_loader(html, "abc123");
+        assert!(result.contains("base + 'components.js?v=abc123'"));
     }
 }
