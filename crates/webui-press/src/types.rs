@@ -370,10 +370,7 @@ mod tests {
             "scriptFile": "./components/my-comp/my-comp.ts"
         }"#;
         let page: CustomPage = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            page.script_file(),
-            Some("./components/my-comp/my-comp.ts")
-        );
+        assert_eq!(page.script_file(), Some("./components/my-comp/my-comp.ts"));
     }
 
     #[test]

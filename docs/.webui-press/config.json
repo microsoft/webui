@@ -222,7 +222,7 @@
       "layout": "full",
       "html": "<docs-playground></docs-playground>",
       "stateFile": "./state/playground.json",
-      "scriptFile": "./.webui-press/components/docs-playground/docs-playground.ts"
+      "scriptFile": "./components/docs-playground/docs-playground.ts"
     }
   },
   "hero": {

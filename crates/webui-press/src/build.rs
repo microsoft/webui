@@ -3,9 +3,9 @@
 
 //! Build orchestrator: content pipeline → protocol build → parallel render → output.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
@@ -393,27 +393,35 @@ pub fn build_docs_with_cache(
     // Collect scriptFile from customPages config.
     for (link, custom_page) in &config.custom_pages {
         if let Some(script_path) = custom_page.script_file() {
+            // Build the full page path matching how process_content constructs
+            // URL paths: base_path + link (minus leading slash).
+            let normalized = if link.ends_with('/') {
+                link.clone()
+            } else {
+                format!("{link}/")
+            };
+            let page_path = format!("{}{}", base_path, &normalized[1..]);
             let id = all_page_scripts.len();
             all_page_scripts.push(PageScript {
                 id,
-                page_path: link.clone(),
+                page_path,
                 source: ScriptSource::File(script_path.to_string()),
             });
-            // Insert a placeholder at end of page content so the script tag
-            // gets appended when replace_script_placeholders runs.
-            let placeholder = format!("\n<!--ws:script:{id}-->");
-            page_contents_with_scripts
-                .entry(link.clone())
-                .and_modify(|c| c.push_str(&placeholder))
-                .or_insert_with(|| {
-                    let content = pages
-                        .iter()
-                        .find(|p| p.path == *link)
-                        .and_then(|p| p.state["page"]["content"].as_str())
-                        .unwrap_or("");
-                    format!("{content}{placeholder}")
-                });
         }
+    }
+
+    // Build a map of page_path → [script_id] so we can inject <script> tags
+    // into the rendered output in step 8b. This is separate from
+    // `page_contents_with_scripts` (which uses inline placeholders) because
+    // the WebUI renderer strips HTML comments, so scriptFile entries can't
+    // rely on placeholder comments surviving.
+    let mut page_script_ids: HashMap<String, Vec<usize>> =
+        HashMap::with_capacity(all_page_scripts.len());
+    for script in &all_page_scripts {
+        page_script_ids
+            .entry(script.page_path.clone())
+            .or_default()
+            .push(script.id);
     }
 
     let template_dir_owned = template_dir.to_path_buf();
@@ -709,28 +717,72 @@ pub fn build_docs_with_cache(
         &format!("Bundled {} components", bundle_result.component_count),
     );
 
-    // Step 8b: Replace script placeholders in rendered pages with actual
-    // <script> tags pointing to the bundled output files.
+    // Step 8b: Inject page script <script> tags into rendered pages.
+    // For inline <script bundle> tags, placeholder comments in the content
+    // were replaced by the renderer. For scriptFile entries (and as a
+    // fallback), we inject <script> tags before </body> using page_script_ids.
     if !bundle_result.script_map.is_empty() {
+        let mut linked_count = 0usize;
         for page in &pages {
-            if !page_contents_with_scripts.contains_key(&page.path) {
+            let has_placeholders = page_contents_with_scripts.contains_key(&page.path);
+            let script_ids = page_script_ids.get(&page.path);
+            if !has_placeholders && script_ids.is_none() {
                 continue;
             }
             let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
             let target = page_dir.join("index.html");
-            if let Ok(html) = fs::read_to_string(&target) {
-                if html.contains(SCRIPT_PLACEHOLDER_PREFIX) {
-                    let updated =
-                        replace_script_placeholders(&html, base_path, &bundle_result.script_map);
-                    fs::write(&target, &updated)
-                        .map_err(|e| Error::Io(format!("Cannot rewrite {}: {e}", page.path)))?;
+            let Ok(mut html) = fs::read_to_string(&target) else {
+                continue;
+            };
+
+            // Replace inline placeholder comments (from <script bundle> extraction).
+            if has_placeholders && html.contains(SCRIPT_PLACEHOLDER_PREFIX) {
+                html = replace_script_placeholders(&html, base_path, &bundle_result.script_map);
+            }
+
+            // Inject <script> tags for script IDs that don't have placeholders
+            // (i.e. scriptFile entries). Insert before </body>.
+            if let Some(ids) = script_ids {
+                let mut tags = String::new();
+                for &id in ids {
+                    if let Some(rel_path) = bundle_result.script_map.get(&id) {
+                        let src = if base_path.is_empty() || base_path == "/" {
+                            rel_path.clone()
+                        } else {
+                            format!(
+                                "{}/{}",
+                                base_path.trim_end_matches('/'),
+                                rel_path.trim_start_matches('/')
+                            )
+                        };
+                        tags.push_str(&format!(
+                            "\n<script type=\"module\" src=\"{src}\"></script>"
+                        ));
+                        linked_count += 1;
+                    }
+                }
+                if !tags.is_empty() {
+                    if let Some(pos) = html.rfind("</body>") {
+                        html.insert_str(pos, &tags);
+                    } else {
+                        html.push_str(&tags);
+                    }
                 }
             }
+
+            fs::write(&target, &html)
+                .map_err(|e| Error::Io(format!("Cannot rewrite {}: {e}", page.path)))?;
         }
-        print_success(
-            cache,
-            &format!("Linked {} page scripts", bundle_result.script_map.len()),
-        );
+        if linked_count > 0 {
+            print_success(
+                cache,
+                &format!(
+                    "Linked {} page script{}",
+                    linked_count,
+                    if linked_count == 1 { "" } else { "s" }
+                ),
+            );
+        }
     }
 
     let elapsed = start.elapsed();
@@ -1197,6 +1249,123 @@ struct BundleOptions<'a> {
     config_dir: &'a Path,
 }
 
+fn path_for_js(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn json_string(value: &str) -> Result<String> {
+    serde_json::to_string(value)
+        .map_err(|e| Error::Build(format!("Cannot serialize Rolldown config string: {e}")))
+}
+
+fn default_framework_alias(node_modules: &Path) -> Option<PathBuf> {
+    let pkg = node_modules.join("@microsoft").join("webui-framework");
+    let dist = pkg.join("dist").join("index.js");
+    if dist.exists() {
+        return Some(dist);
+    }
+
+    let src = pkg.join("src").join("index.ts");
+    if src.exists() {
+        return Some(src);
+    }
+
+    None
+}
+
+fn normalized_alias_target(config_dir: &Path, target: &str) -> String {
+    let path = Path::new(target);
+    if path.is_absolute() {
+        return target.replace('\\', "/");
+    }
+
+    if target.starts_with('.') {
+        return path_for_js(&config_dir.join(path));
+    }
+
+    target.replace('\\', "/")
+}
+
+fn write_rolldown_config(
+    opts: &BundleOptions<'_>,
+    entry_files: &[(String, PathBuf)],
+    output_dir: &Path,
+    bundle_tmp: &Path,
+) -> Result<PathBuf> {
+    let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(path) = default_framework_alias(opts.node_modules) {
+        aliases.insert("@microsoft/webui-framework".to_string(), path_for_js(&path));
+    }
+
+    if let Some(cfg) = opts.bundler_config {
+        for (from, to) in &cfg.alias {
+            aliases.insert(from.clone(), normalized_alias_target(opts.config_dir, to));
+        }
+    }
+
+    let mut config = String::with_capacity(2048);
+    config.push_str("export default {\n  input: {\n");
+    for (name, path) in entry_files {
+        config.push_str("    ");
+        config.push_str(&json_string(name)?);
+        config.push_str(": ");
+        config.push_str(&json_string(&path_for_js(path))?);
+        config.push_str(",\n");
+    }
+    config.push_str("  },\n  output: {\n    dir: ");
+    config.push_str(&json_string(&path_for_js(output_dir))?);
+    config.push_str(",\n    format: \"esm\",\n    entryFileNames: \"[name].js\",\n    chunkFileNames: \"assets/[name]-[hash].js\",\n  },\n  advancedChunks: { minSize: 0 },\n  moduleTypes: { \".html\": \"text\", \".css\": \"text\" },\n");
+
+    if !opts.dev_mode {
+        config.push_str("  minify: true,\n");
+    }
+
+    if let Some(cfg) = opts.bundler_config {
+        if !cfg.external.is_empty() {
+            config.push_str("  external: ");
+            config.push_str(
+                &serde_json::to_string(&cfg.external).map_err(|e| {
+                    Error::Build(format!("Cannot serialize Rolldown externals: {e}"))
+                })?,
+            );
+            config.push_str(",\n");
+        }
+
+        if cfg.target.is_some() || !cfg.define.is_empty() {
+            config.push_str("  transform: {\n");
+            if let Some(target) = &cfg.target {
+                config.push_str("    target: ");
+                config.push_str(&json_string(target)?);
+                config.push_str(",\n");
+            }
+            if !cfg.define.is_empty() {
+                config.push_str("    define: ");
+                config.push_str(&serde_json::to_string(&cfg.define).map_err(|e| {
+                    Error::Build(format!("Cannot serialize Rolldown defines: {e}"))
+                })?);
+                config.push_str(",\n");
+            }
+            config.push_str("  },\n");
+        }
+    }
+
+    if !aliases.is_empty() {
+        config.push_str("  resolve: { alias: ");
+        config.push_str(
+            &serde_json::to_string(&aliases)
+                .map_err(|e| Error::Build(format!("Cannot serialize Rolldown aliases: {e}")))?,
+        );
+        config.push_str(" },\n");
+    }
+
+    config.push_str("};\n");
+
+    let config_path = bundle_tmp.join("rolldown.config.mjs");
+    fs::write(&config_path, config)
+        .map_err(|e| Error::Build(format!("Cannot write Rolldown config: {e}")))?;
+    Ok(config_path)
+}
+
 /// Bundle component TypeScript files and page scripts via Rolldown.
 ///
 /// Uses a single Rolldown invocation with multiple entry points for optimal
@@ -1288,85 +1457,56 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
 
     // Write page script entry files.
     for script in opts.page_scripts {
-        let entry_name = format!("page-{}", script.id);
+        let entry_name = format!("assets/page-{}", script.id);
         let entry_path = bundle_tmp.join(format!("{entry_name}.ts"));
         let content = match &script.source {
             ScriptSource::Inline(code) => code.clone(),
             ScriptSource::File(path) => {
-                // Resolve src path relative to config_dir for absolute import.
+                // Resolve src path relative to config_dir and canonicalize
+                // to an absolute path so the entry file (in a temp dir)
+                // can resolve the import.
                 let resolved = opts.config_dir.join(path);
-                let abs_path = resolved.to_string_lossy().replace('\\', "/");
+                let abs_path = resolved
+                    .canonicalize()
+                    .unwrap_or(resolved)
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 format!("import \"{abs_path}\";")
             }
         };
+        if let Some(parent) = entry_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| Error::Build(format!("Cannot create script entry dir: {e}")))?;
+        }
         fs::write(&entry_path, &content)
             .map_err(|e| Error::Build(format!("Cannot write script entry: {e}")))?;
         entry_files.push((entry_name, entry_path));
     }
 
-    // Build the Rolldown CLI arguments.
-    let mut args: Vec<String> = Vec::with_capacity(32);
-
-    // Entry points as positional args.
-    for (_name, path) in &entry_files {
-        args.push(path.to_string_lossy().to_string());
-    }
-
-    args.push("--format".to_string());
-    args.push("esm".to_string());
-    args.push("--dir".to_string());
-    args.push(assets_dir.to_string_lossy().to_string());
-
-    // Enable code splitting (automatic with --dir + multiple entries).
-    // Set chunk file names to include content hash for cache busting.
-    args.push("--advancedChunks.minSize".to_string());
-    args.push("0".to_string());
-
-    // Loaders for HTML and CSS imported as text.
-    args.push("--moduleTypes".to_string());
-    args.push(".html=text".to_string());
-    args.push("--moduleTypes".to_string());
-    args.push(".css=text".to_string());
-
-    // Minify only in production mode.
-    if !opts.dev_mode {
-        args.push("--minify".to_string());
-    }
-
-    // Apply bundler config overrides.
-    if let Some(cfg) = opts.bundler_config {
-        if let Some(ref target) = cfg.target {
-            args.push("--target".to_string());
-            args.push(target.clone());
-        }
-        for ext in &cfg.external {
-            args.push("--external".to_string());
-            args.push(ext.clone());
-        }
-        for (key, value) in &cfg.define {
-            args.push("--define".to_string());
-            args.push(format!("{key}={value}"));
-        }
-        for (from, to) in &cfg.alias {
-            args.push("--resolve.alias".to_string());
-            args.push(format!("{from}={to}"));
-        }
-    }
+    let rolldown_config = write_rolldown_config(opts, &entry_files, opts.site_dir, &bundle_tmp)?;
 
     // Resolve the rolldown binary from node_modules.
     let rolldown_bin = rolldown_command(opts.node_modules);
 
     let output = std::process::Command::new(&rolldown_bin)
-        .args(&args)
+        .arg("--config")
+        .arg(&rolldown_config)
+        .arg("--logLevel")
+        .arg("warn")
         .env("NODE_PATH", opts.node_modules)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
         .map_err(|e| Error::Build(format!("rolldown failed to start: {e}")))?;
 
+    let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(Error::Build(format!("rolldown error: {stderr}")));
+    }
+    if stderr.contains("[UNRESOLVED_IMPORT]") {
+        return Err(Error::Build(format!(
+            "rolldown unresolved import: {stderr}"
+        )));
     }
 
     // Build script_map: find output files for page-script entries.
@@ -1378,16 +1518,6 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         let full_path = opts.site_dir.join(&output_file);
         if full_path.exists() {
             script_map.insert(script.id, output_file);
-        }
-    }
-
-    // Move components entry to site root as `components.js` for backward compat.
-    if has_components {
-        let components_in_assets = assets_dir.join("_components.js");
-        let components_at_root = opts.site_dir.join("components.js");
-        if components_in_assets.exists() {
-            fs::rename(&components_in_assets, &components_at_root)
-                .map_err(|e| Error::Io(format!("Cannot move components.js: {e}")))?;
         }
     }
 
