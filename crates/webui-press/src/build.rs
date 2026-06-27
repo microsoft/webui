@@ -828,7 +828,7 @@ pub fn build_docs_with_cache(
     print_success(
         cache,
         &format!(
-            "Bundled {} component script{} into {} root script{} and {} page script{}",
+            "Bundled {} component script{} into {} root script{} and {} page script group{}",
             bundle_result.component_count,
             if bundle_result.component_count == 1 {
                 ""
@@ -854,17 +854,22 @@ pub fn build_docs_with_cache(
     if bundle_result.root_script.is_some() || !bundle_result.script_map.is_empty() {
         let mut linked_count = 0usize;
         for page in &pages {
-            let page_rel_path = if let Some(bundle_id) = page_bundle_ids.get(&page.path) {
-                Some(bundle_result.script_map.get(bundle_id).ok_or_else(|| {
+            let page_rel_paths = if let Some(bundle_id) = page_bundle_ids.get(&page.path) {
+                let rel_paths = bundle_result.script_map.get(bundle_id).ok_or_else(|| {
                     Error::Build(format!(
                         "Missing bundled script for page {} entry {}",
                         page.path, bundle_id
                     ))
-                })?)
+                })?;
+                if rel_paths.is_empty() {
+                    None
+                } else {
+                    Some(rel_paths)
+                }
             } else {
                 None
             };
-            if bundle_result.root_script.is_none() && page_rel_path.is_none() {
+            if bundle_result.root_script.is_none() && page_rel_paths.is_none() {
                 continue;
             }
             let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
@@ -877,17 +882,15 @@ pub fn build_docs_with_cache(
                 inject_script_tag(&mut html, &tag);
                 linked_count += 1;
             }
-            if let Some(rel_path) = page_rel_path {
-                let tag = module_script_tag(base_path, rel_path);
-                inject_script_tag(&mut html, &tag);
-                linked_count += 1;
+            if let Some(rel_paths) = page_rel_paths {
+                linked_count += inject_module_script_tags(&mut html, base_path, rel_paths);
             }
 
             fs::write(&target, &html)
                 .map_err(|e| Error::Io(format!("Cannot rewrite {}: {e}", page.path)))?;
         }
         if let Some(bundle_id) = not_found_bundle_id {
-            let rel_path = bundle_result.script_map.get(&bundle_id).ok_or_else(|| {
+            let rel_paths = bundle_result.script_map.get(&bundle_id).ok_or_else(|| {
                 Error::Build(format!(
                     "Missing bundled script for 404 page entry {bundle_id}"
                 ))
@@ -900,11 +903,9 @@ pub fn build_docs_with_cache(
                 inject_script_tag(&mut html, &tag);
                 linked_count += 1;
             }
-            let tag = module_script_tag(base_path, rel_path);
-            inject_script_tag(&mut html, &tag);
+            linked_count += inject_module_script_tags(&mut html, base_path, rel_paths);
             fs::write(&target, &html)
                 .map_err(|e| Error::Io(format!("Cannot rewrite 404.html: {e}")))?;
-            linked_count += 1;
         } else if let Some(rel_path) = bundle_result.root_script.as_ref() {
             let target = site_dir.join("404.html");
             let mut html = fs::read_to_string(&target)
@@ -1551,10 +1552,14 @@ struct BundleResult {
     root_script: Option<String>,
     /// Number of local component scripts imported by page entries.
     component_count: usize,
-    /// Number of page entry points bundled.
+    /// Number of page-specific import groups bundled.
     page_entry_count: usize,
-    /// Map from page-bundle ID to relative output path (e.g. `"assets/page-0.js"`).
-    script_map: HashMap<usize, String>,
+    /// Map from page-bundle ID to relative output paths.
+    ///
+    /// Import-only esbuild entry wrappers are flattened to the chunks they
+    /// import so pages do not pay a request for a `page-N.js` file that only
+    /// forwards to shared chunks.
+    script_map: HashMap<usize, Vec<String>>,
 }
 
 /// Configuration for the [`bundle_assets`] function.
@@ -1602,6 +1607,234 @@ fn file_version(path: &Path) -> Result<String> {
 fn versioned_asset_path(rel_path: &str, full_path: &Path) -> Result<String> {
     let version = file_version(full_path)?;
     Ok(format!("{rel_path}?v={version}"))
+}
+
+fn versioned_script_paths(site_dir: &Path, rel_paths: &[String]) -> Result<Vec<String>> {
+    let mut versioned = Vec::with_capacity(rel_paths.len());
+    for rel_path in rel_paths {
+        let full_path = site_dir.join(rel_path);
+        if !full_path.exists() {
+            return Err(Error::Build(format!(
+                "Bundled chunk output missing: {}",
+                full_path.display()
+            )));
+        }
+        versioned.push(versioned_asset_path(rel_path, &full_path)?);
+    }
+    Ok(versioned)
+}
+
+fn skip_js_whitespace(input: &str, mut cursor: usize) -> usize {
+    let bytes = input.as_bytes();
+    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    cursor
+}
+
+fn skip_js_trivia(input: &str, mut cursor: usize) -> usize {
+    let bytes = input.as_bytes();
+    loop {
+        while cursor < bytes.len() && (bytes[cursor].is_ascii_whitespace() || bytes[cursor] == b';')
+        {
+            cursor += 1;
+        }
+
+        if cursor + 1 >= bytes.len() || bytes[cursor] != b'/' {
+            return cursor;
+        }
+
+        if bytes[cursor + 1] == b'/' {
+            cursor += 2;
+            while cursor < bytes.len() && bytes[cursor] != b'\n' {
+                cursor += 1;
+            }
+            continue;
+        }
+
+        if bytes[cursor + 1] == b'*' {
+            if let Some(end_rel) = input[cursor + 2..].find("*/") {
+                cursor += end_rel + 4;
+                continue;
+            }
+            return input.len();
+        }
+
+        return cursor;
+    }
+}
+
+fn quoted_js_string_at(input: &str, cursor: usize) -> Option<(&str, usize)> {
+    let bytes = input.as_bytes();
+    let quote = *bytes.get(cursor)?;
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+
+    let start = cursor + 1;
+    let mut end = start;
+    while end < bytes.len() {
+        if bytes[end] == b'\\' {
+            end += 2;
+            continue;
+        }
+        if bytes[end] == quote {
+            return Some((&input[start..end], end + 1));
+        }
+        end += 1;
+    }
+    None
+}
+
+fn next_leading_import_statement<'a>(input: &'a str, cursor: &mut usize) -> Option<&'a str> {
+    let start = skip_js_trivia(input, *cursor);
+    if !input[start..].starts_with("import") {
+        *cursor = start;
+        return None;
+    }
+
+    let after_import = start + "import".len();
+    if let Some(byte) = input.as_bytes().get(after_import) {
+        if byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'$' {
+            *cursor = start;
+            return None;
+        }
+    }
+
+    let end_rel = input[after_import..].find(';')?;
+    let end = after_import + end_rel;
+    *cursor = end + 1;
+    Some(&input[start..=end])
+}
+
+fn side_effect_import_specifier(statement: &str) -> Option<&str> {
+    let cursor = skip_js_whitespace(statement, "import".len());
+    quoted_js_string_at(statement, cursor).map(|(specifier, _)| specifier)
+}
+
+fn static_import_specifier(statement: &str) -> Option<&str> {
+    if let Some(specifier) = side_effect_import_specifier(statement) {
+        return Some(specifier);
+    }
+
+    let from_pos = statement.rfind("from")?;
+    let cursor = skip_js_whitespace(statement, from_pos + "from".len());
+    quoted_js_string_at(statement, cursor).map(|(specifier, _)| specifier)
+}
+
+fn resolve_js_import_path(importer_rel: &str, specifier: &str) -> Option<String> {
+    if !specifier.starts_with("./") && !specifier.starts_with("../") {
+        return None;
+    }
+
+    let parent = importer_rel
+        .rsplit_once('/')
+        .map_or("", |(parent, _)| parent);
+    let mut parts = Vec::new();
+    for part in parent.split('/') {
+        if !part.is_empty() {
+            parts.push(part);
+        }
+    }
+    for part in specifier.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+fn collect_leading_relative_imports(
+    input: &str,
+    importer_rel: &str,
+    imports: &mut HashSet<String>,
+) {
+    let mut cursor = 0;
+    while let Some(statement) = next_leading_import_statement(input, &mut cursor) {
+        if let Some(specifier) = static_import_specifier(statement) {
+            if let Some(rel_path) = resolve_js_import_path(importer_rel, specifier) {
+                imports.insert(rel_path);
+            }
+        }
+    }
+}
+
+fn import_only_relative_imports(input: &str, importer_rel: &str) -> Option<Vec<String>> {
+    let mut cursor = 0;
+    let mut imports = Vec::new();
+    loop {
+        cursor = skip_js_trivia(input, cursor);
+        if cursor >= input.len() {
+            return if imports.is_empty() {
+                None
+            } else {
+                Some(imports)
+            };
+        }
+
+        let statement = next_leading_import_statement(input, &mut cursor)?;
+        let specifier = side_effect_import_specifier(statement)?;
+        let rel_path = resolve_js_import_path(importer_rel, specifier)?;
+        imports.push(rel_path);
+    }
+}
+
+fn prune_redundant_imports(
+    site_dir: &Path,
+    root_imports: &HashSet<String>,
+    imports: &[String],
+) -> Result<Vec<String>> {
+    let mut transitive_imports = HashSet::new();
+    for rel_path in imports {
+        let full_path = site_dir.join(rel_path);
+        if !full_path.exists() {
+            return Err(Error::Build(format!(
+                "Bundled chunk output missing: {}",
+                full_path.display()
+            )));
+        }
+        let contents = fs::read_to_string(&full_path)
+            .map_err(|e| Error::Io(format!("Cannot read {}: {e}", full_path.display())))?;
+        collect_leading_relative_imports(&contents, rel_path, &mut transitive_imports);
+    }
+
+    let mut seen = HashSet::with_capacity(imports.len());
+    let mut retained = Vec::with_capacity(imports.len());
+    for rel_path in imports {
+        if root_imports.contains(rel_path) || transitive_imports.contains(rel_path) {
+            continue;
+        }
+        if seen.insert(rel_path.clone()) {
+            retained.push(rel_path.clone());
+        }
+    }
+    Ok(retained)
+}
+
+fn page_script_paths(
+    site_dir: &Path,
+    output_file: &str,
+    full_path: &Path,
+    root_imports: &HashSet<String>,
+) -> Result<Vec<String>> {
+    let contents = fs::read_to_string(full_path)
+        .map_err(|e| Error::Io(format!("Cannot read {}: {e}", full_path.display())))?;
+    if let Some(imports) = import_only_relative_imports(&contents, output_file) {
+        let rel_paths = prune_redundant_imports(site_dir, root_imports, &imports)?;
+        fs::remove_file(full_path).map_err(|e| {
+            Error::Io(format!(
+                "Cannot remove import-only script wrapper {}: {e}",
+                full_path.display()
+            ))
+        })?;
+        versioned_script_paths(site_dir, &rel_paths)
+    } else {
+        Ok(vec![versioned_asset_path(output_file, full_path)?])
+    }
 }
 
 fn next_rebuild_nonce_hex() -> String {
@@ -1856,10 +2089,14 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         return Err(Error::Build(format!("esbuild error: {stderr}")));
     }
 
+    let mut root_imports = HashSet::new();
     let root_script = if opts.root_bundle.is_some() {
         let output_file = "index.js";
         let full_path = opts.site_dir.join(output_file);
         if full_path.exists() {
+            let contents = fs::read_to_string(&full_path)
+                .map_err(|e| Error::Io(format!("Cannot read {}: {e}", full_path.display())))?;
+            collect_leading_relative_imports(&contents, output_file, &mut root_imports);
             Some(versioned_asset_path(output_file, &full_path)?)
         } else {
             return Err(Error::Build(format!(
@@ -1879,7 +2116,10 @@ fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         let output_file = format!("assets/{entry_name}.js");
         let full_path = opts.site_dir.join(&output_file);
         if full_path.exists() {
-            script_map.insert(bundle.id, versioned_asset_path(&output_file, &full_path)?);
+            script_map.insert(
+                bundle.id,
+                page_script_paths(opts.site_dir, &output_file, &full_path, &root_imports)?,
+            );
         } else {
             return Err(Error::Build(format!(
                 "Bundled script output missing: {}",
@@ -2121,6 +2361,16 @@ fn module_script_tag(base_path: &str, rel_path: &str) -> String {
     }
     tag.push_str("\"></script>");
     tag
+}
+
+fn inject_module_script_tags(html: &mut String, base_path: &str, rel_paths: &[String]) -> usize {
+    let mut count = 0;
+    for rel_path in rel_paths {
+        let tag = module_script_tag(base_path, rel_path);
+        inject_script_tag(html, &tag);
+        count += 1;
+    }
+    count
 }
 
 fn inject_script_tag(html: &mut String, tag: &str) {
@@ -2500,6 +2750,73 @@ mod tests {
             page_bundle_signature(&components, &scripts, config_dir),
             page_bundle_signature(&components, &changed, config_dir)
         );
+    }
+
+    #[test]
+    fn import_only_relative_imports_detects_wrapper_entries() {
+        let imports = import_only_relative_imports(
+            r#"import"./chunk-a.js";import "./chunk-b.js";"#,
+            "assets/page-0.js",
+        );
+        assert_eq!(
+            imports,
+            Some(vec![
+                "assets/chunk-a.js".to_string(),
+                "assets/chunk-b.js".to_string()
+            ])
+        );
+
+        assert_eq!(
+            import_only_relative_imports(
+                r#"import{a as b}from"./chunk-a.js";console.log(b);"#,
+                "assets/page-0.js"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn page_script_paths_flattens_import_only_wrapper() -> TestResult {
+        let root = std::env::temp_dir().join(format!(
+            "webui-press-wrapper-flatten-test-{}-{:x}",
+            std::process::id(),
+            fxhash("wrapper-flatten")
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root)?;
+        }
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets)?;
+        fs::write(
+            assets.join("page-0.js"),
+            r#"import"./chunk-a.js";import"./chunk-b.js";import"./chunk-shared.js";"#,
+        )?;
+        fs::write(
+            assets.join("chunk-a.js"),
+            r#"import"./chunk-shared.js";console.log("a");"#,
+        )?;
+        fs::write(assets.join("chunk-b.js"), r#"console.log("b");"#)?;
+        fs::write(assets.join("chunk-shared.js"), r#"console.log("shared");"#)?;
+
+        let mut root_imports = HashSet::new();
+        root_imports.insert("assets/chunk-shared.js".to_string());
+        let paths = page_script_paths(
+            &root,
+            "assets/page-0.js",
+            &assets.join("page-0.js"),
+            &root_imports,
+        )?;
+
+        assert!(!assets.join("page-0.js").exists());
+        assert_eq!(paths.len(), 2);
+        assert!(paths[0].starts_with("assets/chunk-a.js?v="));
+        assert!(paths[1].starts_with("assets/chunk-b.js?v="));
+        assert!(!paths
+            .iter()
+            .any(|path| path.starts_with("assets/chunk-shared.js")));
+
+        fs::remove_dir_all(&root)?;
+        Ok(())
     }
 
     #[test]

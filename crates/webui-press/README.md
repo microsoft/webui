@@ -409,9 +409,9 @@ import "@mai-ui/button/define.js";
 </script>
 ```
 
-The template chrome uses a shared root script (`index.js`). Pages with no page-specific component scripts or bundled imports load only that root script. Pages with identical page-specific import sets reuse the same generated page entry instead of emitting duplicate wrappers.
+The template chrome uses a shared root script (`index.js`). Pages with no page-specific component scripts or bundled imports load only that root script. Pages with identical page-specific import sets reuse the same generated import group instead of emitting duplicate wrappers.
 
-All root and page entries are bundled in one esbuild build. If ten pages import the same package or local component runtime, esbuild can emit that dependency once as a shared chunk and have the entry files import it.
+All root and page entries are bundled in one esbuild build. If ten pages import the same package or local component runtime, esbuild can emit that dependency once as a shared chunk. Import-only page wrappers are collapsed after bundling, so generated pages link directly to the chunks they need instead of loading a `page-N.js` file that only re-imports the same chunks.
 
 `webui-press build` minifies bundled JavaScript. `webui-press serve` skips minification for faster rebuilds during local development.
 
