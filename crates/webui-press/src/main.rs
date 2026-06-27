@@ -12,6 +12,7 @@
 //! ```
 
 mod build;
+mod bundler;
 mod content;
 mod error;
 mod markdown;

@@ -219,18 +219,6 @@
     </main>
   </div>
   </if>
-
-  <script>
-    // Load component JS bundle for hydration
-    (function () {
-      var b = document.querySelector('meta[name="base"]');
-      var base = b ? b.getAttribute('content') : '/';
-      var s = document.createElement('script');
-      s.type = 'module';
-      s.src = base + 'components.js';
-      document.head.appendChild(s);
-    })();
-  </script>
 </body>
 
 </html>

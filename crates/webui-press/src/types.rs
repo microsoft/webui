@@ -27,6 +27,8 @@ pub struct DocsConfig {
     pub custom_pages: std::collections::HashMap<String, CustomPage>,
     pub hero: Option<HeroConfig>,
     pub footer: Option<FooterConfig>,
+    /// Optional JavaScript bundler configuration (overrides defaults).
+    pub bundler: Option<BundlerConfig>,
 }
 
 fn default_out_dir() -> String {
@@ -80,6 +82,10 @@ pub enum CustomPage {
         /// The build pipeline caches each unique file so that pages that share
         /// a state file only read it once. Mutually exclusive with `state`.
         state_file: Option<String>,
+        /// Path (relative to `config.json`) of a TypeScript/JavaScript file
+        /// to bundle as a per-page script. The file is bundled with esbuild
+        /// and a `<script>` tag is appended to the page output.
+        script_file: Option<String>,
     },
 }
 
@@ -109,6 +115,13 @@ impl CustomPage {
         match self {
             Self::Html(_) => None,
             Self::Full { state_file, .. } => state_file.as_deref(),
+        }
+    }
+
+    pub fn script_file(&self) -> Option<&str> {
+        match self {
+            Self::Html(_) => None,
+            Self::Full { script_file, .. } => script_file.as_deref(),
         }
     }
 }
@@ -199,6 +212,26 @@ fn is_void_element(tag: &str) -> bool {
 #[derive(Debug, Deserialize)]
 pub struct FooterConfig {
     pub html: String,
+}
+
+/// JavaScript bundler configuration overrides.
+///
+/// All fields are optional; sensible defaults are applied when omitted.
+/// These settings affect how generated page script entries are bundled into
+/// the output `assets/` directory.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BundlerConfig {
+    /// ECMAScript target (e.g. `"es2022"`). Defaults to `"es2022"`.
+    pub target: Option<String>,
+    /// Packages to treat as external (not bundled).
+    #[serde(default)]
+    pub external: Vec<String>,
+    /// Compile-time constant replacements (e.g. `{ "process.env.NODE_ENV": "\"production\"" }`).
+    #[serde(default)]
+    pub define: std::collections::HashMap<String, String>,
+    /// Module path aliases (e.g. `{ "~": "./src" }`).
+    #[serde(default)]
+    pub alias: std::collections::HashMap<String, String>,
 }
 
 /// A processed page ready for rendering.
@@ -296,5 +329,54 @@ mod tests {
             None,
         );
         assert_eq!(t1.to_html(), t2.to_html());
+    }
+
+    // --- BundlerConfig ---------------------------------------------------
+
+    #[test]
+    fn bundler_config_deserializes_all_fields() {
+        let json = r#"{
+            "target": "es2022",
+            "external": ["lodash"],
+            "define": { "process.env.NODE_ENV": "\"production\"" },
+            "alias": { "~": "./src" }
+        }"#;
+        let cfg: BundlerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.target.as_deref(), Some("es2022"));
+        assert_eq!(cfg.external, vec!["lodash"]);
+        assert_eq!(
+            cfg.define.get("process.env.NODE_ENV").unwrap(),
+            "\"production\""
+        );
+        assert_eq!(cfg.alias.get("~").unwrap(), "./src");
+    }
+
+    #[test]
+    fn bundler_config_defaults_when_empty() {
+        let cfg: BundlerConfig = serde_json::from_str("{}").unwrap();
+        assert!(cfg.target.is_none());
+        assert!(cfg.external.is_empty());
+        assert!(cfg.define.is_empty());
+        assert!(cfg.alias.is_empty());
+    }
+
+    // --- CustomPage::script_file -------------------------------------------
+
+    #[test]
+    fn custom_page_script_file_deserializes() {
+        let json = r#"{
+            "layout": "full",
+            "html": "<my-comp></my-comp>",
+            "scriptFile": "./components/my-comp/my-comp.ts"
+        }"#;
+        let page: CustomPage = serde_json::from_str(json).unwrap();
+        assert_eq!(page.script_file(), Some("./components/my-comp/my-comp.ts"));
+    }
+
+    #[test]
+    fn custom_page_script_file_none_when_absent() {
+        let json = r#"{ "layout": "full", "html": "<p>hi</p>" }"#;
+        let page: CustomPage = serde_json::from_str(json).unwrap();
+        assert!(page.script_file().is_none());
     }
 }

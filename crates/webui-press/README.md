@@ -1,6 +1,6 @@
 # WebUI Press
 
-A static site generator powered by the [WebUI Framework](https://github.com/microsoft/webui). Markdown in, hydration-ready HTML out, no Node.js anywhere.
+A static site generator powered by the [WebUI Framework](https://github.com/microsoft/webui). Markdown in, hydration-ready HTML out, with no Node.js server required.
 
 [![microsoft-webui-press on crates.io](https://img.shields.io/badge/crate-microsoft--webui--press-orange)](https://github.com/microsoft/webui)
 
@@ -14,11 +14,11 @@ Most documentation site generators are JavaScript first. They run a Node.js serv
 
 `webui-press` takes the opposite approach:
 
-- **Single Rust binary.** No Node.js, no build server, no JavaScript runtime on the host. Drop the binary into CI, run it, ship the `dist/` folder.
+- **Single Rust binary.** No Node.js server, no build server, no JavaScript runtime on the server. Drop the binary into CI, run it, ship the `dist/` folder.
 - **Pre-compiled templates.** Pages are compiled into the WebUI binary protocol once, then rendered with state. Repeat builds reuse the cached protocol.
 - **Parallel everything.** Page rendering is parallelized with [rayon](https://docs.rs/rayon). Syntax highlighting reuses one preloaded `syntect` syntax set across threads. Markdown parsing is per-page and free of cross-page state.
 - **Hydration that works on GitHub Pages.** The output is static HTML with Declarative Shadow DOM pre-expanded. The browser parses it as HTML, no JavaScript required for first paint. Optional client-side hydration upgrades interactive components without re-rendering anything.
-- **Custom Web Components in markdown.** Drop a component into `components/`, reference it from any `.md` file with normal HTML, and it gets server-rendered with full DSD output. No MDX, no JSX, no compile step in your editor.
+- **Custom Web Components in markdown.** Drop a component into `components/`, reference it from any `.md` file with normal HTML, and it gets server-rendered with full DSD output. Page-specific scripts can opt into esbuild bundling when they need npm imports.
 
 ---
 
@@ -35,7 +35,11 @@ Or as a workspace dependency:
 microsoft-webui-press = "0.0.10"
 ```
 
-The binary is named `webui-press`.
+The binary is named `webui-press`. If your docs site includes component `.ts` files or per-page bundled scripts, install esbuild in the docs project:
+
+```bash
+pnpm add -D esbuild
+```
 
 ---
 
@@ -135,7 +139,7 @@ The build pipeline:
 8. Generate search index     → JSON for client-side fuzzy search
 9. Copy public/              → static asset passthrough
 10. Write 404.html
-11. Bundle components        → components.js for hydration (esbuild, runs in parallel with rendering)
+11. Bundle scripts           → one esbuild build for root + needed page entries
 ```
 
 Typical build for a 30-page site: under half a second on a laptop.
@@ -192,6 +196,12 @@ Shadow DOM components can react to the layout via `:host-context([data-layout="f
   "theme": "@my-org/design-tokens",
   "css": "./.webui-press/theme.css",
   "components": ["./.webui-press/components"],
+  "bundler": {
+    "target": "es2022",
+    "external": [],
+    "define": { "process.env.NODE_ENV": "\"production\"" },
+    "alias": { "~": "./src" }
+  },
 
   "head": [
     { "tag": "link",   "attrs": { "rel": "icon", "href": "/favicon.ico" } },
@@ -245,7 +255,8 @@ Shadow DOM components can react to the layout via `:host-context([data-layout="f
     "/playground/": {
       "layout": "full",
       "html": "<my-playground></my-playground>",
-      "stateFile": "./state/playground.json"
+      "stateFile": "./state/playground.json",
+      "scriptFile": "./components/my-playground/my-playground.ts"
     }
   }
 }
@@ -261,6 +272,19 @@ Shadow DOM components can react to the layout via `:host-context([data-layout="f
 ### `head` injection
 
 Every entry in `head[]` is rendered into `<head>` with attributes sorted alphabetically (deterministic output for reproducible builds). Use it for favicons, analytics tags, preloads, OpenGraph overrides, anything `<head>`-shaped.
+
+### `bundler`
+
+`webui-press` uses [esbuild](https://esbuild.github.io/) for client JavaScript. It runs one build with a shared root entry plus page entries only when page content needs extra scripts, so page-specific code stays local and shared imports are split into reusable chunks automatically.
+
+| Field      | Type             | Effect                                                   |
+| ---------- | ---------------- | -------------------------------------------------------- |
+| `target`   | string           | JavaScript target passed to esbuild. |
+| `external` | string array     | Package IDs to leave external. Aliased packages are always bundled. |
+| `define`   | object           | Compile-time replacements such as `process.env.NODE_ENV`. |
+| `alias`    | object           | Module ID aliases. Relative targets are resolved from `config.json`'s directory. |
+
+You usually do not need a `bundler` section. Add one only when you need a package externalized to a CDN, a compile-time define, or a local alias.
 
 ---
 
@@ -337,12 +361,61 @@ Components are:
 
 1. Compiled into the WebUI protocol at build time
 2. Server-rendered with **Declarative Shadow DOM** pre-expanded, visible without JavaScript
-3. Bundled into a single `components.js` for client-side hydration
-4. Available across every page automatically
+3. Auto-imported into the root script for template chrome or a page script when page content uses the component tag
+4. Shared through esbuild chunks when multiple pages use the same component or dependency
 
 Markdown inside slots is rendered as markdown, so you can mix prose and components freely.
 
 See the [WebUI Framework component guide](https://microsoft.github.io/webui/guide/concepts/components) for authoring details.
+
+### Per-page scripts
+
+Use a page script when a single markdown page needs browser behavior that should not ship on every page. Mark a module script with the boolean `bundle` attribute:
+
+```markdown
+# Example
+
+<p id="status">Waiting...</p>
+
+<script type="module" bundle>
+import { fluentButton } from "@fluentui/web-components";
+
+fluentButton();
+document.getElementById("status").textContent = "Bundled script loaded.";
+</script>
+```
+
+You can also point at a file:
+
+```markdown
+<script type="module" bundle src="./scripts/example.ts"></script>
+```
+
+`src` paths are resolved relative to `config.json`'s directory (`.webui-press/` by convention), not relative to the markdown file. For example, if your config is `.webui-press/config.json`, use `src="./scripts/example.ts"` for `.webui-press/scripts/example.ts`.
+
+Bundled script files must stay inside the docs project (`config.json`'s directory or `contentDir`) and use a JavaScript/TypeScript extension (`.js`, `.mjs`, `.jsx`, `.ts`, or `.tsx`). Relative imports inside bundled scripts are checked against the same project roots, and absolute filesystem imports are rejected. Package imports such as `@fluentui/web-components/button.js` remain supported.
+
+`webui-press` extracts those scripts before rendering and imports them into that page's virtual esbuild entry. Plain `<script>` tags without `bundle` pass through unchanged.
+
+Local component scripts are discovered automatically. If a page contains `<live-preview>` and the component source has `live-preview.html` next to `live-preview.ts`, the generated page entry imports `live-preview.ts`. Component templates are scanned too, so local child components are included without adding duplicate imports.
+
+Package custom elements stay explicit because tag names cannot reliably be mapped back to package exports. Add those package registrations to the page's bundled script:
+
+```markdown
+<live-preview>
+  <webui-button appearance="button">Click Me</webui-button>
+</live-preview>
+
+<script type="module" bundle>
+import "@microsoft/webui-components/button.js";
+</script>
+```
+
+The template chrome uses a shared root script (`index.js`). Pages with no page-specific component scripts or bundled imports load only that root script. Pages with identical page-specific import sets reuse the same generated import group instead of emitting duplicate wrappers.
+
+All root and page entries are bundled in one esbuild build. If ten pages import the same package or local component runtime, esbuild can emit that dependency once as a shared chunk. Import-only page wrappers are collapsed after bundling, so generated pages link directly to the chunks they need instead of loading a `page-N.js` file that only re-imports the same chunks.
+
+`webui-press build` minifies bundled JavaScript. `webui-press serve` skips minification for faster rebuilds during local development.
 
 ### Built-in components
 
@@ -409,7 +482,8 @@ For pages that are pure interactive components (a playground, a live editor, a c
     "/playground/": {
       "layout": "full",
       "html": "<docs-playground></docs-playground>",
-      "stateFile": "./state/playground.json"
+      "stateFile": "./state/playground.json",
+      "scriptFile": "./components/docs-playground/docs-playground.ts"
     }
   }
 }
@@ -421,8 +495,18 @@ For pages that are pure interactive components (a playground, a live editor, a c
 | `layout`    | `doc`, `home`, `page`, `full` (see [Layouts](#layouts)).                            |
 | `state`     | Inline JSON merged into the page's render state under `pageData`.                   |
 | `stateFile` | Path to a JSON file, resolved relative to `config.json`'s directory (`.webui-press/`). Each unique file is read and parsed once and shared across pages. |
+| `scriptFile` | Path to a TypeScript or JavaScript file, resolved relative to `config.json`'s directory. The file is imported into this page's generated esbuild entry and linked only from this page. |
 
 `state` and `stateFile` are mutually exclusive. State files are cached so multiple pages can share one source of truth without re-parsing.
+
+`scriptFile` is useful for full-page components such as playgrounds. Keep the script next to its component HTML and CSS:
+
+```
+.webui-press/components/docs-playground/
+├── docs-playground.html
+├── docs-playground.css
+└── docs-playground.ts
+```
 
 ---
 
@@ -443,7 +527,7 @@ The output is fully renderable without JavaScript:
 - Declarative Shadow DOM pre-expanded inline
 - Critical styles inlined per component shadow root
 
-When the browser loads `components.js` (deferred, after first paint), the framework finds existing DSD shadow roots and **upgrades** them in place, no re-render, no flash, no virtual DOM. Event handlers and observable state are bound to the already-painted DOM.
+When the browser loads the generated root/page scripts (deferred, after first paint), the framework finds existing DSD shadow roots and **upgrades** them in place, no re-render, no flash, no virtual DOM. Event handlers and observable state are bound to the already-painted DOM. Page scripts import only the local component scripts and explicit bundled scripts needed by that page, with shared dependencies split into reusable chunks.
 
 This is the WebUI Framework's [`webui` plugin](https://microsoft.github.io/webui/guide/concepts/plugins/) at work, and it is what makes the site feel instant on slow connections.
 
@@ -452,6 +536,7 @@ This is the WebUI Framework's [`webui` plugin](https://microsoft.github.io/webui
 ## Performance notes
 
 - **Parallel rendering.** Pages render concurrently via rayon. Build time scales with cores, not page count.
+- **Single esbuild build.** Template chrome, component TypeScript, and page script entries are bundled together so shared dependencies are split once and reused.
 - **Cached protocol.** The WebUI binary protocol is built once per run and reused across all pages.
 - **Shared highlighter.** One `syntect::SyntaxSet` is loaded per build and cloned per worker, not per page.
 - **No regex in core paths.** Markdown processing, link normalization, and DSD pre-expansion are deterministic scanners.
