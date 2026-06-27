@@ -403,11 +403,11 @@ Package custom elements stay explicit because tag names cannot reliably be mappe
 
 ```markdown
 <live-preview>
-  <mai-button appearance="button">Click Me</mai-button>
+  <webui-button appearance="button">Click Me</webui-button>
 </live-preview>
 
 <script type="module" bundle>
-import "@mai-ui/button/define.js";
+import "@webui/button/define.js";
 </script>
 ```
 
