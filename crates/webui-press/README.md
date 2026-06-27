@@ -407,7 +407,7 @@ Package custom elements stay explicit because tag names cannot reliably be mappe
 </live-preview>
 
 <script type="module" bundle>
-import "@webui/button/define.js";
+import "@microsoft/webui-components/button.js";
 </script>
 ```
 
