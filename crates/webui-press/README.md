@@ -393,6 +393,8 @@ You can also point at a file:
 
 `src` paths are resolved relative to `config.json`'s directory (`.webui-press/` by convention), not relative to the markdown file. For example, if your config is `.webui-press/config.json`, use `src="./scripts/example.ts"` for `.webui-press/scripts/example.ts`.
 
+Bundled script files must stay inside the docs project (`config.json`'s directory or `contentDir`) and use a JavaScript/TypeScript extension (`.js`, `.mjs`, `.jsx`, `.ts`, or `.tsx`). Relative imports inside bundled scripts are checked against the same project roots, and absolute filesystem imports are rejected. Package imports such as `@fluentui/web-components/button.js` remain supported.
+
 `webui-press` extracts those scripts before rendering and imports them into that page's virtual esbuild entry. Plain `<script>` tags without `bundle` pass through unchanged.
 
 Local component scripts are discovered automatically. If a page contains `<live-preview>` and the component source has `live-preview.html` next to `live-preview.ts`, the generated page entry imports `live-preview.ts`. Component templates are scanned too, so local child components are included without adding duplicate imports.

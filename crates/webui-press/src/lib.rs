@@ -7,6 +7,7 @@
 //! WebUI template engine and parallel rendering.
 
 pub mod build;
+mod bundler;
 pub mod content;
 pub mod error;
 pub mod markdown;
