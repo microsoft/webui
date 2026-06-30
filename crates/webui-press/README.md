@@ -251,6 +251,8 @@ Shadow DOM components can react to the layout via `:host-context([data-layout="f
     "html": "Released under the MIT License."
   },
 
+  "stateFile": "./state/site.json",
+
   "customPages": {
     "/playground/": {
       "layout": "full",
@@ -268,6 +270,34 @@ Shadow DOM components can react to the layout via `:host-context([data-layout="f
 - **`sidebar`** is the default sidebar shown on pages that don't match a `sidebarGroups` prefix.
 - **`sidebarGroups`** maps URL prefixes to sidebar definitions. The longest matching prefix wins. A page at `/guide/concepts/` uses the `/guide/` sidebar.
 - **`prev`/`next`** links at the bottom of a page are derived from the active sidebar's flat link order.
+
+### Shared state
+
+Use top-level `state` or `stateFile` when every page needs the same project data:
+
+```json
+{
+  "stateFile": "./state/site.json"
+}
+```
+
+The JSON must be an object and is merged into every page's render state, so
+components and Markdown-authored custom elements can bind to it directly:
+
+```html
+<span>{{release.version}}</span>
+```
+
+Shared state cannot override reserved docs keys such as `site`, `navigation`,
+`sidebar`, `page`, `hero`, `footer`, `prev`, `next`, `pageData`,
+`headTags`, `label`, or `icon`. Global state is applied first. Custom page
+state is applied afterward for that page, so non-reserved custom page keys can
+override global keys.
+
+The merged render state is embedded into each generated page's `#webui-data`
+hydration block. Do not put secrets in `state` or `stateFile`, and keep shared
+state small. Large global JSON files are duplicated into every output page; use
+custom page state or static JSON assets for large page-specific datasets.
 
 ### `head` injection
 

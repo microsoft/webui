@@ -25,6 +25,12 @@ pub struct DocsConfig {
     pub sidebar_groups: std::collections::BTreeMap<String, Vec<SidebarSection>>,
     #[serde(default)]
     pub custom_pages: std::collections::HashMap<String, CustomPage>,
+    /// Inline JSON object merged into every page's render state. Mutually
+    /// exclusive with `state_file`.
+    pub state: Option<serde_json::Value>,
+    /// Path (relative to `config.json`) of a JSON object merged into every
+    /// page's render state. Mutually exclusive with `state`.
+    pub state_file: Option<String>,
     pub hero: Option<HeroConfig>,
     pub footer: Option<FooterConfig>,
     /// Optional JavaScript bundler configuration (overrides defaults).

@@ -22,9 +22,10 @@ use crate::bundler::{
     page_bundle_signature, resolve_config_component_source, resolve_node_modules, BundleOptions,
     BundleResult, BundleThread, PageBundleEntry, RootBundleEntry, ScriptSource,
 };
-use crate::content::process_content;
+use crate::content::process_content_with_states;
 use crate::error::{Error, Result};
 use crate::markdown::Highlighter;
+use crate::state::{load_render_states, merge_page_state};
 use crate::types::{BuildStats, DocsConfig};
 
 /// Persistent state held by the dev server across rebuilds. The dev
@@ -96,6 +97,53 @@ fn inject_theme_tokens(
         .map_err(|e| Error::Build(format!("Failed to resolve theme tokens: {e}")))?;
     webui_tokens::inject_into_state(state, &resolved);
     Ok(())
+}
+
+struct NotFoundStateInput<'a> {
+    config: &'a DocsConfig,
+    base_path: &'a str,
+    nav: Value,
+    footer: Value,
+    content: &'a str,
+    head_injection: &'a str,
+    global_state: Option<&'a Value>,
+}
+
+fn build_not_found_state(input: NotFoundStateInput<'_>) -> Value {
+    let state = json_obj([
+        (
+            "site",
+            json_obj([
+                ("title", Value::String(input.config.site.title.clone())),
+                ("base", Value::String(input.base_path.to_string())),
+            ]),
+        ),
+        ("navigation", input.nav),
+        ("sidebar", json_obj([("sections", Value::Array(vec![]))])),
+        (
+            "page",
+            json_obj([
+                ("title", Value::String("Page Not Found".to_string())),
+                (
+                    "description",
+                    Value::String("The page you're looking for doesn't exist.".to_string()),
+                ),
+                ("content", Value::String(input.content.to_string())),
+                ("isHome", Value::Bool(false)),
+                ("layout", Value::String("doc".to_string())),
+            ]),
+        ),
+        ("hero", Value::Null),
+        ("footer", input.footer),
+        ("prev", Value::Null),
+        ("next", Value::Null),
+        ("pageData", Value::Null),
+        ("headTags", Value::String(input.head_injection.to_string())),
+        ("label", Value::String("Copy".to_string())),
+        ("icon", Value::String("🌙".to_string())),
+    ]);
+
+    merge_page_state(state, input.global_state, None)
 }
 
 // ── Output helpers ──────────────────────────────────────────────
@@ -267,9 +315,9 @@ pub fn build_docs_with_cache(
     // Step 1: Process content. Highlighter is cached across rebuilds —
     // syntect's default syntax/theme load is ~30-50ms which we don't want
     // to pay every keystroke.
+    let render_states = load_render_states(config, config_dir)?;
     let highlighter = cache.highlighter.take().unwrap_or_default();
-
-    let pages = process_content(config, config_dir, &highlighter, &head_injection)?;
+    let pages = process_content_with_states(config, &highlighter, &head_injection, &render_states)?;
 
     // Restore the highlighter for the next rebuild.
     cache.highlighter = Some(highlighter);
@@ -645,37 +693,15 @@ pub fn build_docs_with_cache(
         .map(|f| json_obj([("html", Value::String(f.html.clone()))]))
         .unwrap_or(Value::Null);
 
-    let mut not_found_state = json_obj([
-        (
-            "site",
-            json_obj([
-                ("title", Value::String(config.site.title.clone())),
-                ("base", Value::String(base_path.to_string())),
-            ]),
-        ),
-        ("navigation", nav_val),
-        ("sidebar", json_obj([("sections", Value::Array(vec![]))])),
-        (
-            "page",
-            json_obj([
-                ("title", Value::String("Page Not Found".to_string())),
-                (
-                    "description",
-                    Value::String("The page you're looking for doesn't exist.".to_string()),
-                ),
-                ("content", Value::String(not_found_content.clone())),
-                ("isHome", Value::Bool(false)),
-                ("layout", Value::String("doc".to_string())),
-            ]),
-        ),
-        ("hero", Value::Null),
-        ("footer", footer_val),
-        ("prev", Value::Null),
-        ("next", Value::Null),
-    ]);
-    not_found_state["headTags"] = Value::String(head_injection);
-    not_found_state["label"] = Value::String("Copy".to_string());
-    not_found_state["icon"] = Value::String("🌙".to_string());
+    let mut not_found_state = build_not_found_state(NotFoundStateInput {
+        config,
+        base_path,
+        nav: nav_val,
+        footer: footer_val,
+        content: &not_found_content,
+        head_injection: &head_injection,
+        global_state: render_states.global(),
+    });
 
     let not_found_html = template_html.replace("{{{page.content}}}", &not_found_content);
     let nf_tmp = std::env::temp_dir().join(format!(
@@ -1366,7 +1392,54 @@ fn fxhash_bytes(bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
 
-    type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
+    type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+    fn test_obj<const N: usize>(entries: [(&str, Value); N]) -> Value {
+        let mut map = Map::with_capacity(N);
+        for (key, value) in entries {
+            map.insert(key.to_string(), value);
+        }
+        Value::Object(map)
+    }
+
+    fn string_value(value: &str) -> Value {
+        Value::String(value.to_string())
+    }
+
+    fn docs_config() -> TestResult<DocsConfig> {
+        let config = serde_json::from_str(
+            r#"{
+                "site": { "title": "Docs" },
+                "basePath": "/",
+                "contentDir": ".",
+                "nav": [],
+                "sidebar": []
+            }"#,
+        )?;
+        Ok(config)
+    }
+
+    #[test]
+    fn not_found_state_includes_global_state() -> TestResult {
+        let config = docs_config()?;
+        let global = test_obj([("release", test_obj([("version", string_value("v1.2.3"))]))]);
+
+        let state = build_not_found_state(NotFoundStateInput {
+            config: &config,
+            base_path: "/",
+            nav: Value::Array(vec![]),
+            footer: Value::Null,
+            content: "<h1>404</h1>",
+            head_injection: "<meta name=\"docs\">",
+            global_state: Some(&global),
+        });
+
+        assert_eq!(state["release"]["version"], "v1.2.3");
+        assert_eq!(state["page"]["title"], "Page Not Found");
+        assert_eq!(state["pageData"], Value::Null);
+        assert_eq!(state["headTags"], "<meta name=\"docs\">");
+        Ok(())
+    }
 
     // --- truncate_utf8 ---------------------------------------------------
 

@@ -17,6 +17,7 @@ mod content;
 mod error;
 mod markdown;
 mod serve;
+mod state;
 mod types;
 
 use std::fs;
