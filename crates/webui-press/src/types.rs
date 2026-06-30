@@ -26,7 +26,7 @@ pub struct DocsConfig {
     #[serde(default)]
     pub custom_pages: std::collections::HashMap<String, CustomPage>,
     /// Inline JSON object merged into every page's render state. Mutually
-    /// exclusive with `state_file`.
+    /// exclusive with `stateFile`.
     pub state: Option<serde_json::Value>,
     /// Path (relative to `config.json`) of a JSON object merged into every
     /// page's render state. Mutually exclusive with `state`.
