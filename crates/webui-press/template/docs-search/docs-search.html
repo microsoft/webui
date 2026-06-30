@@ -6,7 +6,7 @@
   <div class="box">
     <div class="input-wrap">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-      <input w-ref={searchInput} type="text" placeholder="Search documentation..." autocomplete="off" @input="{onInput()}" />
+      <input id="docs-search-input" name="q" w-ref={searchInput} type="text" placeholder="Search documentation..." autocomplete="off" @input="{onInput()}" />
     </div>
     <div class="results">
       <if condition="emptyMessage">

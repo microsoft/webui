@@ -12,6 +12,8 @@ use crate::error::{Error, Result};
 use crate::types::BundlerConfig;
 
 static BUNDLE_REBUILD_NONCE: AtomicU64 = AtomicU64::new(0);
+const WEBUI_TSCONFIG_RAW: &str =
+    r#"{"compilerOptions":{"experimentalDecorators":true,"useDefineForClassFields":false}}"#;
 
 /// Resolve a configured component source for the per-page builds.
 ///
@@ -1054,6 +1056,7 @@ fn esbuild_args(
     args.push("--chunk-names=assets/[name]-[hash]".to_string());
     args.push("--loader:.html=text".to_string());
     args.push("--loader:.css=text".to_string());
+    args.push(format!("--tsconfig-raw={WEBUI_TSCONFIG_RAW}"));
     args.push("--log-level=warning".to_string());
     if !opts.dev_mode {
         args.push("--minify".to_string());
@@ -1558,6 +1561,25 @@ mod tests {
             .iter()
             .any(|arg| arg.contains("@microsoft/webui-framework")));
         assert!(args.contains(&"--external:cdn-only-package".to_string()));
+    }
+
+    #[test]
+    fn esbuild_args_force_webui_decorator_semantics() {
+        let site_dir = Path::new("/site");
+        let config_dir = Path::new("/site/.webui-press");
+        let opts = BundleOptions {
+            site_dir,
+            node_modules: None,
+            root_bundle: None,
+            page_bundles: &[],
+            bundler_config: None,
+            dev_mode: false,
+            config_dir,
+            content_dir: Path::new("/site"),
+        };
+        let args = esbuild_args(&opts, &[], Path::new("/tmp/webui-press-bundle"));
+
+        assert!(args.contains(&format!("--tsconfig-raw={WEBUI_TSCONFIG_RAW}")));
     }
 
     #[test]
