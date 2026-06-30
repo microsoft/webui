@@ -101,6 +101,7 @@ impl StateLoader {
 
         let abs = config_dir.join(rel_path);
         let key = fs::canonicalize(&abs).unwrap_or_else(|_| abs.clone());
+        if let Some(cached) = self.cache.get(&key) {
             return Ok(Some(cached.clone()));
         }
 
@@ -323,7 +324,9 @@ mod tests {
             panic!("expected object validation error");
         };
         assert!(
-            error.to_string().contains("state must be a JSON object"),
+            error
+                .to_string()
+                .contains("state/stateFile must be a JSON object"),
             "{error}"
         );
     }
