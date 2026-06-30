@@ -91,9 +91,16 @@ impl StateLoader {
             return Ok(None);
         };
 
-        let abs = config_dir.join(rel);
+        let rel_path = Path::new(rel);
+        if rel_path.is_absolute() {
+            return Err(Error::Build(format!(
+                "{label}: stateFile must be a path relative to config.json, got absolute path {}",
+                rel_path.display()
+            )));
+        }
+
+        let abs = config_dir.join(rel_path);
         let key = fs::canonicalize(&abs).unwrap_or_else(|_| abs.clone());
-        if let Some(cached) = self.cache.get(&key) {
             return Ok(Some(cached.clone()));
         }
 
