@@ -22,7 +22,6 @@ mod types;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -119,20 +118,15 @@ fn load_config(
     Ok((docs_config, config_dir, template))
 }
 
-/// Monotonic counter that, combined with the process id, gives each staged
-/// extraction a unique directory name so concurrent runs never collide.
-static EXTRACT_NONCE: AtomicU64 = AtomicU64::new(0);
-
 /// Materialize the embedded template + components into a per-version,
 /// content-addressed cache directory and return the `template` subdirectory.
 ///
 /// The cache is content-addressed (keyed by an FNV-1a hash of the embedded
 /// bytes), so a `.complete` directory for a given hash is always valid and is
-/// reused as-is. Extraction is concurrency-safe: assets are written into a
-/// unique per-process staging directory and then published with a single
-/// atomic `rename`. No process ever deletes or writes into a published cache
-/// directory, so simultaneous `webui-press` invocations can never observe a
-/// partially extracted cache or race a delete against another's writes.
+/// reused as-is. A fresh extraction is written into a sibling staging directory
+/// and published with a single atomic `rename`, so an interrupted run (Ctrl-C,
+/// crash) never leaves a half-written cache: the next run sees no `.complete`
+/// sentinel and re-extracts.
 fn extract_embedded_assets() -> Result<PathBuf> {
     let dir_name = format!(
         "webui-press-{}-{:016x}",
@@ -147,15 +141,11 @@ fn extract_embedded_assets() -> Result<PathBuf> {
         return Ok(template_dir);
     }
 
-    let unique = format!(
-        "{}-{:x}",
-        std::process::id(),
-        EXTRACT_NONCE.fetch_add(1, Ordering::Relaxed)
-    );
-    let staging = tmp.join(format!("{dir_name}.staging-{unique}"));
-
-    // Start from a clean staging dir, extract both trees, then mark complete.
+    // A `root` that isn't complete is a stale or interrupted extraction. Clear
+    // it and any leftover staging dir, extract into staging, then publish.
+    let staging = tmp.join(format!("{dir_name}.staging"));
     let _ = fs::remove_dir_all(&staging);
+    let _ = fs::remove_dir_all(&root);
     EMBEDDED_TEMPLATE
         .extract(staging.join("template"))
         .map_err(|e| anyhow::anyhow!("Cannot extract embedded template: {e}"))?;
@@ -165,7 +155,9 @@ fn extract_embedded_assets() -> Result<PathBuf> {
     fs::write(staging.join(".complete"), [])
         .map_err(|e| anyhow::anyhow!("Cannot finalize embedded template assets: {e}"))?;
 
-    publish_cache(&staging, &root, &dir_name, &unique)?;
+    // Atomic publish: the fully staged tree appears at `root` in one step.
+    fs::rename(&staging, &root)
+        .map_err(|e| anyhow::anyhow!("Cannot publish embedded template assets: {e}"))?;
     Ok(template_dir)
 }
 
@@ -179,49 +171,6 @@ fn is_complete_cache(root: &Path) -> bool {
     root.join(".complete").is_file()
         && root.join("template").join("index.html").is_file()
         && root.join("components").is_dir()
-}
-
-/// Publish a fully staged cache directory to its final, content-addressed
-/// location with an atomic `rename`. If a peer process publishes the same
-/// (identical, content-addressed) cache first, its copy is reused and the
-/// local staging dir is discarded. A stale/incomplete `root` left by an older
-/// build or external corruption is moved aside under a unique name (so
-/// concurrent movers never collide) and replaced. The retry count is bounded
-/// to guarantee termination.
-fn publish_cache(staging: &Path, root: &Path, dir_name: &str, unique: &str) -> Result<()> {
-    let tmp = std::env::temp_dir();
-    for _ in 0..16 {
-        match fs::rename(staging, root) {
-            Ok(()) => return Ok(()),
-            Err(_) if is_complete_cache(root) => {
-                let _ = fs::remove_dir_all(staging);
-                return Ok(());
-            }
-            Err(_) if root.exists() => {
-                let stale = tmp.join(format!("{dir_name}.stale-{unique}"));
-                if fs::rename(root, &stale).is_ok() {
-                    let _ = fs::remove_dir_all(&stale);
-                }
-                // Retry the publish now that `root` should be free.
-            }
-            Err(e) => {
-                let _ = fs::remove_dir_all(staging);
-                return Err(anyhow::anyhow!(
-                    "Cannot publish embedded template assets: {e}"
-                ));
-            }
-        }
-    }
-
-    if is_complete_cache(root) {
-        let _ = fs::remove_dir_all(staging);
-        Ok(())
-    } else {
-        let _ = fs::remove_dir_all(staging);
-        Err(anyhow::anyhow!(
-            "Cannot publish embedded template assets after repeated attempts"
-        ))
-    }
 }
 
 fn embedded_assets_hash() -> u64 {
@@ -300,10 +249,10 @@ mod tests {
     #[test]
     fn incomplete_cache_is_not_treated_as_complete() -> Result<()> {
         let base = std::env::temp_dir().join(format!(
-            "webui-press-test-incomplete-{}-{:x}",
-            std::process::id(),
-            EXTRACT_NONCE.fetch_add(1, Ordering::Relaxed)
+            "webui-press-test-incomplete-{}",
+            std::process::id()
         ));
+        let _ = fs::remove_dir_all(&base);
         let outcome: Result<()> = (|| {
             // `.complete` + template present, but no sibling components/ dir.
             fs::create_dir_all(base.join("template"))?;
