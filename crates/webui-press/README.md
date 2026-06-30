@@ -290,7 +290,7 @@ components and Markdown-authored custom elements can bind to it directly:
 
 Shared state cannot override reserved docs keys such as `site`, `navigation`,
 `sidebar`, `page`, `hero`, `footer`, `prev`, `next`, `pageData`,
-`headTags`, `label`, or `icon`. Global state is applied first. Custom page
+`headTags`, `tokens`, `label`, or `icon`. Global state is applied first. Custom page
 state is applied afterward for that page, so non-reserved custom page keys can
 override global keys.
 

@@ -55,6 +55,7 @@ const RESERVED_STATE_KEYS: &[&str] = &[
     "next",
     "pageData",
     "headTags",
+    "tokens",
     "label",
     "icon",
 ];
@@ -392,10 +393,12 @@ mod tests {
         let custom = test_obj([
             ("site", test_obj([("title", string_value("Override"))])),
             ("headTags", string_value("<script>bad()</script>")),
+            ("tokens", string_value("not-token-css")),
         ]);
 
         let merged = merge_page_state(base, None, Some(&custom));
         assert_eq!(merged["site"]["title"], "Docs");
         assert_eq!(merged["headTags"], "<meta name=\"docs\">");
+        assert_eq!(merged.get("tokens"), None);
     }
 }
