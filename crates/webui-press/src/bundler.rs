@@ -1787,13 +1787,12 @@ mod tests {
         }
         fs::create_dir_all(root.join(".webui-press"))?;
         let allowed_roots = allowed_script_roots(&root.join(".webui-press"), &root)?;
+        let absolute_import = root.join("secret.js").to_string_lossy().replace('\\', "/");
+        let code = format!("console.log('before'); import \"{absolute_import}\";");
 
-        let Err(err) = validate_inline_script_imports(
-            "console.log('before'); import \"/tmp/secret.js\";",
-            &root.join(".webui-press"),
-            &allowed_roots,
-            None,
-        ) else {
+        let Err(err) =
+            validate_inline_script_imports(&code, &root.join(".webui-press"), &allowed_roots, None)
+        else {
             panic!("absolute import should be rejected");
         };
 

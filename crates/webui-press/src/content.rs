@@ -11,6 +11,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::markdown::{render_markdown, Highlighter};
+use crate::state::{load_render_states, merge_page_state, LoadedStates};
 use crate::types::{DocsConfig, PageDescriptor, SidebarItem, SidebarSection};
 
 /// Normalize a config link (e.g. `/guide/intro/` or `/guide/intro`) to a
@@ -47,22 +48,6 @@ fn json_obj<const N: usize>(entries: [(&str, Value); N]) -> Value {
     }
     Value::Object(map)
 }
-
-/// Top-level state keys reserved by the docs renderer. Custom-page `stateFile`
-/// objects whose top-level fields are flattened onto the page state must not
-/// shadow these names — collisions are silently skipped so the canonical docs
-/// state always wins.
-const RESERVED_STATE_KEYS: &[&str] = &[
-    "site",
-    "navigation",
-    "sidebar",
-    "page",
-    "hero",
-    "footer",
-    "prev",
-    "next",
-    "pageData",
-];
 
 /// Parsed frontmatter from a markdown file.
 #[derive(Debug)]
@@ -321,62 +306,6 @@ fn find_sidebar_text(url_path: &str, config: &DocsConfig) -> Option<String> {
     None
 }
 
-/// Resolve and load every custom page's `stateFile` once, returning a map keyed
-/// by the custom-page link (e.g. `/playground/`) holding the parsed JSON value.
-/// Inline `state` values are passed through untouched.
-///
-/// State files are cached by canonical filesystem path so that two custom pages
-/// pointing at the same file only read and parse it once.
-fn load_custom_page_states(
-    config: &DocsConfig,
-    config_dir: &Path,
-) -> Result<HashMap<String, Value>> {
-    let mut cache: HashMap<std::path::PathBuf, Value> = HashMap::new();
-    let mut out: HashMap<String, Value> = HashMap::with_capacity(config.custom_pages.len());
-
-    for (link, page) in &config.custom_pages {
-        let inline = page.inline_state();
-        let path = page.state_file();
-
-        if inline.is_some() && path.is_some() {
-            return Err(crate::error::Error::Build(format!(
-                "Custom page {link}: 'state' and 'stateFile' are mutually exclusive — pick one."
-            )));
-        }
-
-        if let Some(value) = inline {
-            out.insert(link.clone(), value.clone());
-            continue;
-        }
-
-        if let Some(rel) = path {
-            let abs = config_dir.join(rel);
-            let key = fs::canonicalize(&abs).unwrap_or_else(|_| abs.clone());
-            let value = if let Some(cached) = cache.get(&key) {
-                cached.clone()
-            } else {
-                let raw = fs::read_to_string(&abs).map_err(|e| {
-                    crate::error::Error::Build(format!(
-                        "Custom page {link}: cannot read stateFile {}: {e}",
-                        abs.display()
-                    ))
-                })?;
-                let parsed: Value = serde_json::from_str(&raw).map_err(|e| {
-                    crate::error::Error::Build(format!(
-                        "Custom page {link}: stateFile {} is not valid JSON: {e}",
-                        abs.display()
-                    ))
-                })?;
-                cache.insert(key, parsed.clone());
-                parsed
-            };
-            out.insert(link.clone(), value);
-        }
-    }
-
-    Ok(out)
-}
-
 /// Process all content files and return page descriptors.
 ///
 /// `config_dir` is the directory containing `config.json`; relative paths
@@ -386,17 +315,25 @@ fn load_custom_page_states(
 /// `head_injection` is the fully-resolved `<head>` snippet (CSS link
 /// tags + `config.head` entries). It MUST be computed before this call
 /// so the descriptor is render-ready.
+#[allow(dead_code)] // Public library API; the binary uses preloaded state for 404 parity.
 pub fn process_content(
     config: &DocsConfig,
     config_dir: &Path,
     highlighter: &Highlighter,
     head_injection: &str,
 ) -> Result<Vec<PageDescriptor>> {
+    let states = load_render_states(config, config_dir)?;
+    process_content_with_states(config, highlighter, head_injection, &states)
+}
+
+pub(crate) fn process_content_with_states(
+    config: &DocsConfig,
+    highlighter: &Highlighter,
+    head_injection: &str,
+    states: &LoadedStates,
+) -> Result<Vec<PageDescriptor>> {
     let content_dir = Path::new(&config.content_dir);
     let base_path = &config.base_path;
-
-    // Load custom-page state once before the parallel pipeline.
-    let custom_states = load_custom_page_states(config, config_dir)?;
 
     let nav_links: Vec<Value> = config
         .nav
@@ -468,6 +405,7 @@ pub fn process_content(
                     .custom_pages
                     .get(&logical_path)
                     .or_else(|| config.custom_pages.get(logical_path.trim_end_matches('/')));
+                let custom_state = states.custom_page_state(&logical_path);
 
                 if let Some(entry) = custom_entry {
                     html = entry.html().to_string();
@@ -603,45 +541,17 @@ pub fn process_content(
                     ("footer", footer_val),
                     ("prev", Value::Null),
                     ("next", Value::Null),
-                    (
-                        "pageData",
-                        custom_states
-                            .get(&logical_path)
-                            .or_else(|| custom_states.get(logical_path.trim_end_matches('/')))
-                            .cloned()
-                            .unwrap_or(Value::Null),
-                    ),
+                    ("pageData", custom_state.cloned().unwrap_or(Value::Null)),
                     ("headTags", Value::String(head_injection.to_string())),
                     ("label", Value::String("Copy".to_string())),
                     ("icon", Value::String("🌙".to_string())),
                 ]);
 
-                // Flatten the loaded custom-page state object onto the top-level
-                // page state so component templates can bind directly to its
-                // fields (e.g. `<for each="item in files">`). This is what enables
-                // SSR for components driven by a `stateFile`. Reserved keys are
-                // never overwritten.
-                let state = if let Some(Value::Object(extra)) = custom_states
-                    .get(&logical_path)
-                    .or_else(|| custom_states.get(logical_path.trim_end_matches('/')))
-                {
-                    let mut map = match state {
-                        Value::Object(m) => m,
-                        other => {
-                            let mut m = Map::new();
-                            m.insert("_root".to_string(), other);
-                            m
-                        }
-                    };
-                    for (k, v) in extra {
-                        if !RESERVED_STATE_KEYS.contains(&k.as_str()) && !map.contains_key(k) {
-                            map.insert(k.clone(), v.clone());
-                        }
-                    }
-                    Value::Object(map)
-                } else {
-                    state
-                };
+                // Flatten shared state first, then custom-page state. Component
+                // templates can bind directly to these fields (e.g.
+                // `<for each="item in files">`) while reserved docs keys keep
+                // their canonical values.
+                let state = merge_page_state(state, states.global(), custom_state);
 
                 Ok((
                     idx,

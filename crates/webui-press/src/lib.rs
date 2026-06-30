@@ -12,6 +12,7 @@ pub mod content;
 pub mod error;
 pub mod markdown;
 pub mod serve;
+mod state;
 pub mod types;
 
 pub use build::build_docs;
