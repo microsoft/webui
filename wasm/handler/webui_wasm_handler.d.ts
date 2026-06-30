@@ -1,9 +1,26 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
+ * Extract the CSS token name list from protocol protobuf bytes.
+ *
+ * Returns a JavaScript array of token name strings, preserving the original
+ * order from the build step.
+ */
+export function protocol_tokens(protocol_bytes: Uint8Array): any;
+/**
  * Return component template payloads for requested component tags.
  */
 export function render_component_templates(protocol_bytes: Uint8Array, component_tags_json: string, inventory_hex: string): string;
+/**
+ * Produce a complete JSON partial response for client-side navigation.
+ *
+ * Combines application state, route templates, inventory, request path, and
+ * matched route chain into a single JSON string:
+ * `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
+ *
+ * Host servers return this directly - no assembly required.
+ */
+export function render_partial(protocol_bytes: Uint8Array, state_json: string, entry_id: string, request_path: string, inventory_hex: string): string;
 /**
  * Render a pre-built WebUI protocol with state data, streaming chunks to a callback.
  *
@@ -19,23 +36,6 @@ export function render_component_templates(protocol_bytes: Uint8Array, component
  * Nothing on success, or throws a JS error on failure.
  */
 export function render(protocol_bytes: Uint8Array, state_json: string, on_chunk: Function, options?: object | null): void;
-/**
- * Extract the CSS token name list from protocol protobuf bytes.
- *
- * Returns a JavaScript array of token name strings, preserving the original
- * order from the build step.
- */
-export function protocol_tokens(protocol_bytes: Uint8Array): any;
-/**
- * Produce a complete JSON partial response for client-side navigation.
- *
- * Combines application state, route templates, inventory, request path, and
- * matched route chain into a single JSON string:
- * `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
- *
- * Host servers return this directly - no assembly required.
- */
-export function render_partial(protocol_bytes: Uint8Array, state_json: string, entry_id: string, request_path: string, inventory_hex: string): string;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
