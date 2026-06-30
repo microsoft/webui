@@ -130,7 +130,7 @@ impl StateLoader {
 
         if !value.is_object() {
             return Err(Error::Build(
-                "Global state: state must be a JSON object.".to_string(),
+                "Global state: state/stateFile must be a JSON object.".to_string(),
             ));
         }
 
