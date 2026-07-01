@@ -76,7 +76,8 @@ export class TestList extends WebUIElement {
   }
 
   selectItemWithEvent(id: string, e: Event): void {
-    this.lastLoopArg = `arg=${id} event=${e.type} args.length=${arguments.length}`;
+    const currentTarget = e.currentTarget as Element | null;
+    this.lastLoopArg = `arg=${id} event=${e.type} current=${currentTarget?.className ?? ''} args.length=${arguments.length}`;
   }
 }
 

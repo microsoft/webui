@@ -1771,7 +1771,9 @@ export class WebUIElement extends CoreElement {
     while (current) {
       for (let i = 0; i < entries.length; i++) {
         const entry = entries[i];
-        if (entry.target === current) this.$callEventHandler(entry.method, entry.args, event, entry.scope);
+        if (entry.target === current) {
+          this.$callEventHandler(entry.method, entry.args, event, entry.scope, entry.target);
+        }
       }
       current = current.parentNode;
     }
@@ -1797,9 +1799,19 @@ export class WebUIElement extends CoreElement {
     (instance.cleanups ??= []).push(cleanup);
   }
 
-  private $callEventHandler(method: EventHandler, args: CompiledEventArgs, event: Event, scope?: ScopeFrame): void {
+  private $callEventHandler(
+    method: EventHandler,
+    args: CompiledEventArgs,
+    event: Event,
+    scope?: ScopeFrame,
+    currentTarget?: EventTarget,
+  ): void {
     if (args.length === 0) {
       method.call(this);
+      return;
+    }
+    if (currentTarget && this.$eventArgsUseEvent(args)) {
+      this.$callEventHandlerWithCurrentTarget(method, args, event, scope, currentTarget);
       return;
     }
     if (args.length === 1 && args[0][0] === 'e') {
@@ -1807,6 +1819,36 @@ export class WebUIElement extends CoreElement {
       return;
     }
     method.apply(this, this.$resolveEventArgs(args, event, scope));
+  }
+
+  private $eventArgsUseEvent(args: CompiledEventArgs): boolean {
+    for (let i = 0; i < args.length; i++) {
+      if (args[i][0] === 'e') return true;
+    }
+    return false;
+  }
+
+  private $callEventHandlerWithCurrentTarget(
+    method: EventHandler,
+    args: CompiledEventArgs,
+    event: Event,
+    scope: ScopeFrame | undefined,
+    currentTarget: EventTarget,
+  ): void {
+    const descriptor = Object.getOwnPropertyDescriptor(event, 'currentTarget');
+    Object.defineProperty(event, 'currentTarget', {
+      configurable: true,
+      value: currentTarget,
+    });
+    try {
+      this.$callEventHandler(method, args, event, scope);
+    } finally {
+      if (descriptor) {
+        Object.defineProperty(event, 'currentTarget', descriptor);
+      } else {
+        delete (event as { currentTarget?: EventTarget | null }).currentTarget;
+      }
+    }
   }
 
   private $resolveEventArgs(args: CompiledEventArgs, event: Event, scope?: ScopeFrame): unknown[] {
