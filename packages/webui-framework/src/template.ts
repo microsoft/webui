@@ -16,6 +16,9 @@
  * - `sa` — adopted stylesheet specifier for CSS module strategy
  * - `sd` — shadow DOM flag for client-created components
  * - `re` — root events on the host element
+ * - `tr` — state roots referenced by the compiled template
+ * - `ta` — observed host attributes for those roots, flat `[attr, root]` pairs
+ * - `tf` — compiler feature bitmask
  * - `ae` — internal auto-element eligibility flag for scriptless templates
  *
  * Template registration also notifies optional runtimes, such as the

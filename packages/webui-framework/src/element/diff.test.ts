@@ -25,9 +25,9 @@ describe('itemKey edge cases', () => {
   // itemKey is not exported, but we can verify the behavior through
   // resolveRepeatValue which it depends on. The key bug was that
   // outer-scope attrs (e.g. data-group="{{group.name}}") produced
-  // empty-string keyPaths, causing itemKey to stringify the whole
+  // empty-string key paths, causing itemKey to stringify the whole
   // item object as "[object Object]". The fix ensures $repeatMaps
-  // never puts empty-string paths into attrMap, but we verify the
+  // only stores item-scoped keys, but we verify the
   // resolution layer is correct.
 
   test('resolving outer-scope path returns undefined', () => {

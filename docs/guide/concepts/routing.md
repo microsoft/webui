@@ -206,7 +206,7 @@ How it works:
 - The loader receives route `params`, `query`, and an `AbortSignal` tied to the navigation
 - If a loader fails, the router falls back to server-provided `data.state` with a console warning
 - Loaders run on both SSR bootstrap and SPA navigations for consistency
-- Components without a `loader()` use server state as before — fully backwards compatible
+- Components without a `loader()` use server state
 
 ### Controlling State
 

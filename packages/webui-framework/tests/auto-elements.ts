@@ -4,9 +4,10 @@
 /**
  * Shared fixture bootstrap for HTML-only auto-element tests.
  *
- * These fixtures intentionally have no `element.ts`; importing the framework
- * root is enough to install the auto-element runtime and prove scriptless
- * templates hydrate without authored component stubs.
+ * These fixtures intentionally have no `element.ts`; they opt into the
+ * HTML-only runtime explicitly so authored components do not pay for it.
  */
 
-import '../src/index.js';
+import { installAutoElementRuntime } from '../src/auto-element.js';
+
+installAutoElementRuntime();

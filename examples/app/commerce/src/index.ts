@@ -5,9 +5,9 @@
  * WebUI Store — WebUI Framework hydration + client-side routing.
  *
  * The server pre-renders all HTML via WebUI's binary protocol (--plugin=webui).
- * This script registers interactive custom elements, lets the framework
- * auto-define HTML-only template elements, and activates the WebUI Router for
- * SPA page transitions.
+ * This script registers interactive custom elements, opts into the HTML-only
+ * runtime for declarative components, and activates the WebUI Router for SPA
+ * page transitions.
  *
  * Navigation flow:
  *  1. Initial page load → full SSR + WebUI Framework hydration
@@ -17,13 +17,15 @@
  */
 
 import { Router } from '@microsoft/webui-router';
+import { installAutoElementRuntime } from '@microsoft/webui-framework/auto-element.js';
 
-// Shell and interactive children — eagerly loaded. HTML-only tags are
-// auto-claimed from compiled template metadata.
+// Shell and interactive children — eagerly loaded.
 import '#organisms/mp-app/mp-app.js';
 import '#organisms/mp-category-nav/mp-category-nav.js';
 import '#organisms/mp-filter-list/mp-filter-list.js';
 import '#organisms/mp-product-card/mp-product-card.js';
+
+installAutoElementRuntime();
 
 // Listen for the framework's global hydration-complete event.
 // NOTE: ES module imports are hoisted, so hydration may complete before

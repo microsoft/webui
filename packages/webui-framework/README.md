@@ -92,6 +92,15 @@ Build with `--dom=shadow` (default) to wrap in a declarative shadow root, or `--
 If a component has no event handlers, custom lifecycle code, or client-only
 methods, it can ship only `component.html` and optional `component.css`.
 
+Apps that include HTML-only components receiving server or route state opt into
+their runtime once from the app entrypoint:
+
+```ts
+import { installAutoElementRuntime } from '@microsoft/webui-framework/auto-element.js';
+
+installAutoElementRuntime();
+```
+
 Create a custom element only for an Interactive Island: event handlers, custom
 lifecycle code, imperative methods, or state that TypeScript code reads or
 mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
@@ -103,8 +112,9 @@ to access the value or when the value is part of the component's public API.
 cargo run -p microsoft-webui-cli -- build ./src --out ./dist --plugin=webui
 ```
 
-The WebUI plugin prepares component templates for the browser. App code should
-only import the generated entrypoint and component modules.
+The WebUI plugin prepares component templates for the browser. App code imports
+the generated entrypoint, authored component modules, and the HTML-only runtime
+only when the app uses HTML-only components.
 
 ### Property binding lifecycle
 
@@ -180,9 +190,11 @@ export const settingsAssets = defineComponentAssets({
 });
 ```
 
-The asset module carries the component's template and style payload. Asset
-loads share in-flight requests by URL and dedupe CSS module styles. `create(tag)`
-does not block on optional data by default. Use
+The asset module carries the component's template and style payload. Use
+`preload(tag)` to start template, module, and optional data work early, then
+`create(tag)` to create the element after template/module work is ready.
+Concurrent asset requests share one in-flight load and CSS module styles are
+deduped. `create(tag)` does not block on optional data by default. Use
 `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
 wait briefly for state before mounting.
 

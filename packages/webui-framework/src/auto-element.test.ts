@@ -87,9 +87,12 @@ type ObservedElementConstructor = CustomElementConstructor & {
 };
 
 function textTemplate(path: string, autoElement = true): TemplateMeta {
+  const attr = path.replace(/[A-Z]/g, value => `-${value.toLowerCase()}`);
   return {
     h: '<p></p>',
     ae: autoElement ? 1 : undefined,
+    tr: [path],
+    ta: [attr, path],
     tx: [[
       [[], 0],
       [[path]],
@@ -172,6 +175,7 @@ describe('auto element fallback', () => {
     registerUnitTemplate(tag, {
       h: '<button></button>',
       ae: 1,
+      tf: 1,
       e: [['click', 'onClick', [], [0]]],
     });
     installAutoElementRuntime();

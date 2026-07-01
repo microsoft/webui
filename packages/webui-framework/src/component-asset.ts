@@ -76,10 +76,6 @@ export interface ComponentAssetCreateOptions {
 export interface ComponentAssetRegistry {
   /** Start asset, module, and optional data work for a component. */
   preload<Data extends ComponentAssetState = ComponentAssetState>(tag: string): ComponentAssetPreload<Data>;
-  /** Start and await all configured work for a component. */
-  load<Data extends ComponentAssetState = ComponentAssetState>(tag: string): Promise<ComponentAssetPreload<Data>>;
-  /** Return the component's data promise, starting the preload if needed. */
-  data<Data extends ComponentAssetState = ComponentAssetState>(tag: string): Promise<Data | undefined>;
   /** Create a component element and apply loaded data via setState(), if present. */
   create<Data extends ComponentAssetState = ComponentAssetState>(
     tag: string,
@@ -126,19 +122,6 @@ export function defineComponentAssets(manifest: ComponentAssetManifest): Compone
     return next;
   }
 
-  async function load<Data extends ComponentAssetState = ComponentAssetState>(tag: string): Promise<ComponentAssetPreload<Data>> {
-    const pending = preload<Data>(tag);
-    const waits: Promise<unknown>[] = [pending.asset];
-    if (pending.module) waits.push(pending.module);
-    if (pending.data) waits.push(pending.data);
-    await Promise.all(waits);
-    return pending;
-  }
-
-  async function data<Data extends ComponentAssetState = ComponentAssetState>(tag: string): Promise<Data | undefined> {
-    return preload<Data>(tag).data;
-  }
-
   async function create<Data extends ComponentAssetState = ComponentAssetState>(
     tag: string,
     options: ComponentAssetCreateOptions = {},
@@ -163,15 +146,12 @@ export function defineComponentAssets(manifest: ComponentAssetManifest): Compone
     return element;
   }
 
-  return { preload, load, data, create };
+  return { preload, create };
 }
 
 async function waitForElementResources(pending: ComponentAssetPreload): Promise<void> {
-  if (pending.module) {
-    await Promise.all([pending.asset, pending.module]);
-  } else {
-    await pending.asset;
-  }
+  await pending.asset;
+  if (pending.module) await pending.module;
 }
 
 function applyState(element: HTMLElement, state: ComponentAssetState): void {
@@ -182,8 +162,10 @@ function applyState(element: HTMLElement, state: ComponentAssetState): void {
 }
 
 function applyDataWhenReady(element: HTMLElement, data: Promise<ComponentAssetState>): void {
+  const elementRef = new WeakRef(element);
   void data.then(state => {
-    applyState(element, state);
+    const liveElement = elementRef.deref();
+    if (liveElement) applyState(liveElement, state);
   }).catch(() => {});
 }
 

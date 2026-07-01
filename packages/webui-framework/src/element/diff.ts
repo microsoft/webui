@@ -99,21 +99,21 @@ export function syncRepeat(
     return;
   }
 
-  const keyPath = Object.values(rep.attrMap)[0];
+  const keyPath = rep.keyPath;
   const hasKeys = keyPath !== undefined && keyPath !== '';
   const oldInstances = rep.instances;
 
   // ── Fast path for unkeyed (index-based) repeats ────────────────
   if (!hasKeys) {
-    const next: RepeatItemInstance[] = [];
-    const reuseCount = Math.min(oldInstances.length, items.length);
+    const oldLength = oldInstances.length;
+    const reuseCount = Math.min(oldLength, items.length);
+    let nextCount = reuseCount;
 
     // Reuse existing instances by index
     for (let i = 0; i < reuseCount; i += 1) {
       const entry = oldInstances[i];
       entry.value = items[i];
       if (entry.instance.scope) entry.instance.scope.value = items[i];
-      next.push(entry);
     }
 
     // Create new instances for items beyond old length
@@ -121,23 +121,24 @@ export function syncRepeat(
       const scope = itemScope(rep, items[i]);
       const instance = host.$createBlockInstance(rep.blockIndex, scope);
       if (instance) {
-        next.push({ key: null, value: items[i], instance });
+        oldInstances[nextCount] = { key: null, value: items[i], instance };
+        nextCount += 1;
       }
     }
 
     // Remove excess old instances
-    for (let i = reuseCount; i < oldInstances.length; i += 1) {
+    for (let i = reuseCount; i < oldLength; i += 1) {
       host.$removeInstance(oldInstances[i].instance);
     }
 
-    rep.instances = next;
+    oldInstances.length = nextCount;
 
     let cursor: Node | null = rep.start;
-    for (let i = 0; i < next.length; i += 1) {
-      cursor = host.$insertInstanceAfter(cursor, container, next[i].instance);
+    for (let i = 0; i < oldInstances.length; i += 1) {
+      cursor = host.$insertInstanceAfter(cursor, container, oldInstances[i].instance);
     }
     for (let i = 0; i < reuseCount; i += 1) {
-      host.$updateInstance(next[i].instance);
+      host.$updateInstance(oldInstances[i].instance);
     }
     return;
   }
@@ -145,7 +146,7 @@ export function syncRepeat(
   // ── Keyed diff ─────────────────────────────────────────────────
 
   // ── Build old-key → instance map ────────────────────────────────
-  const oldByKey = new Map<string, RepeatItemInstance>();
+  const oldByKey = new Map<string, RepeatItemInstance | undefined>();
   for (let i = 0; i < oldInstances.length; i += 1) {
     const entry = oldInstances[i];
     const k = entry.key;
@@ -153,43 +154,46 @@ export function syncRepeat(
   }
 
   // ── Match / create ──────────────────────────────────────────────
-  const next: RepeatItemInstance[] = [];
+  let nextCount = 0;
   for (let i = 0; i < items.length; i += 1) {
     const item = items[i];
     const key = itemKey(item, keyPath);
     const existing = key != null ? oldByKey.get(key) : undefined;
 
     if (existing) {
-      oldByKey.delete(key!);
+      oldByKey.set(key!, undefined);
       existing.value = item;
       existing.key = key;
       if (existing.instance.scope) existing.instance.scope.value = item;
-      next.push(existing);
+      oldInstances[nextCount] = existing;
+      nextCount += 1;
     } else {
       const scope = itemScope(rep, item);
       const instance = host.$createBlockInstance(rep.blockIndex, scope);
       if (instance) {
-        next.push({ key: key ?? null, value: item, instance });
+        oldInstances[nextCount] = { key: key ?? null, value: item, instance };
+        nextCount += 1;
       }
     }
   }
 
   // ── Remove unmatched old instances ──────────────────────────────
   for (const leftover of oldByKey.values()) {
-    host.$removeInstance(leftover.instance);
+    if (leftover) host.$removeInstance(leftover.instance);
   }
-  rep.instances = next;
+  oldInstances.length = nextCount;
 
   // ── Reorder DOM (forward pass) ──────────────────────────────────
   // Newly-created instances were patched while detached. Reused instances
   // update after moving so nested structural nodes stay with the item.
   let cursor: Node | null = rep.start;
-  for (let i = 0; i < next.length; i += 1) {
-    cursor = host.$insertInstanceAfter(cursor, container, next[i].instance);
+  for (let i = 0; i < oldInstances.length; i += 1) {
+    cursor = host.$insertInstanceAfter(cursor, container, oldInstances[i].instance);
   }
   for (let i = 0; i < oldInstances.length; i += 1) {
     const entry = oldInstances[i];
-    const k = entry.key;
-    if (k != null && !oldByKey.has(k)) host.$updateInstance(entry.instance);
+    if (entry.key != null && oldByKey.has(entry.key) && oldByKey.get(entry.key) === undefined) {
+      host.$updateInstance(entry.instance);
+    }
   }
 }

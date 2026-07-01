@@ -12,6 +12,7 @@
  */
 
 import { Router } from '@microsoft/webui-router';
+import { installAutoElementRuntime } from '@microsoft/webui-framework/auto-element.js';
 
 // Listen for the framework's global hydration-complete event.
 // NOTE: ES module imports are hoisted, so hydration may complete before
@@ -32,6 +33,8 @@ function onHydrationComplete(): void {
 
 // Side-effect imports — register custom elements and trigger hydration
 import './routes-app/routes-app.js';
+
+installAutoElementRuntime();
 
 // Fallback: if hydration already completed before the listener, log now
 if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {

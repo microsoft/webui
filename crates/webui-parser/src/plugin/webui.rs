@@ -350,6 +350,21 @@ struct CompiledTemplatePayload {
     template_functions: String,
 }
 
+struct TemplateBuildMetadata {
+    roots: Vec<String>,
+    has_events: bool,
+}
+
+struct RootScope<'a> {
+    name: &'a str,
+    parent: Option<usize>,
+}
+
+struct RootVisit<'a> {
+    block: &'a TemplateSectionMeta,
+    scope: Option<usize>,
+}
+
 struct ConditionFunctionEmitter {
     functions: String,
     count: usize,
@@ -458,6 +473,7 @@ fn emit_compiled_template_payload(
 ) -> CompiledTemplatePayload {
     let mut conditions = ConditionFunctionEmitter::new(128);
     let mut out = String::with_capacity(512 + html_content.len());
+    let build_meta = collect_template_build_metadata(meta);
     out.push('{');
 
     emit_json_template_section(&meta.root, &mut out, &mut conditions);
@@ -492,6 +508,31 @@ fn emit_compiled_template_payload(
             out.push(']');
         }
         out.push(']');
+    }
+
+    if !build_meta.roots.is_empty() {
+        out.push_str(",\"tr\":[");
+        for (i, root) in build_meta.roots.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            emit_js_string(root, &mut out);
+        }
+        out.push_str("],\"ta\":[");
+        for (i, root) in build_meta.roots.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let attr = webui_protocol::attrs::camel_to_kebab(root);
+            emit_js_string(&attr, &mut out);
+            out.push(',');
+            emit_js_string(root, &mut out);
+        }
+        out.push(']');
+    }
+
+    if build_meta.has_events {
+        out.push_str(",\"tf\":1");
     }
 
     // b: nested block table
@@ -629,6 +670,164 @@ fn emit_json_attr_binding(
         }
     }
     out.push(']');
+}
+
+fn collect_template_build_metadata(meta: &TemplateMeta) -> TemplateBuildMetadata {
+    let mut roots = Vec::new();
+    let mut scopes = Vec::<RootScope<'_>>::new();
+    let mut stack = Vec::with_capacity(1 + meta.blocks.len());
+    let mut has_events = !meta.root_events.is_empty();
+    stack.push(RootVisit {
+        block: &meta.root,
+        scope: None,
+    });
+
+    while let Some(visit) = stack.pop() {
+        let block = visit.block;
+        if !block.events.is_empty() {
+            has_events = true;
+        }
+
+        for (_, parts, _) in &block.text_runs {
+            add_part_roots(&mut roots, parts, &scopes, visit.scope);
+        }
+
+        for binding in &block.attr_bindings {
+            match binding {
+                CompiledAttrBinding::Simple { value, .. }
+                | CompiledAttrBinding::Complex { value, .. } => {
+                    add_root(&mut roots, value, &scopes, visit.scope);
+                }
+                CompiledAttrBinding::Boolean { condition, .. } => {
+                    add_condition_roots(&mut roots, condition, &scopes, visit.scope);
+                }
+                CompiledAttrBinding::Template { parts, .. } => {
+                    add_part_roots(&mut roots, parts, &scopes, visit.scope);
+                }
+            }
+        }
+
+        for (condition, block_index) in &block.conditionals {
+            add_condition_roots(&mut roots, condition, &scopes, visit.scope);
+            if let Some(child) = meta.blocks.get(*block_index) {
+                stack.push(RootVisit {
+                    block: child,
+                    scope: visit.scope,
+                });
+            }
+        }
+
+        for (collection, item_var, block_index) in &block.repeats {
+            add_root(&mut roots, collection, &scopes, visit.scope);
+            if let Some(child) = meta.blocks.get(*block_index) {
+                let scope = scopes.len();
+                scopes.push(RootScope {
+                    name: item_var,
+                    parent: visit.scope,
+                });
+                stack.push(RootVisit {
+                    block: child,
+                    scope: Some(scope),
+                });
+            }
+        }
+    }
+
+    TemplateBuildMetadata { roots, has_events }
+}
+
+fn path_root(path: &str) -> &str {
+    match path.find('.') {
+        Some(dot) => &path[..dot],
+        None => path,
+    }
+}
+
+fn is_scoped_path(path: &str, scopes: &[RootScope<'_>], scope: Option<usize>) -> bool {
+    let root = path_root(path);
+    let mut current = scope;
+    while let Some(index) = current {
+        let Some(frame) = scopes.get(index) else {
+            return false;
+        };
+        if frame.name == root {
+            return true;
+        }
+        current = frame.parent;
+    }
+    false
+}
+
+fn add_root(roots: &mut Vec<String>, path: &str, scopes: &[RootScope<'_>], scope: Option<usize>) {
+    if path.is_empty() || is_scoped_path(path, scopes, scope) {
+        return;
+    }
+    let root = path_root(path);
+    if roots.iter().any(|existing| existing == root) {
+        return;
+    }
+    roots.push(root.to_string());
+}
+
+fn add_part_roots(
+    roots: &mut Vec<String>,
+    parts: &[CompiledAttrPart],
+    scopes: &[RootScope<'_>],
+    scope: Option<usize>,
+) {
+    for part in parts {
+        if let CompiledAttrPart::Dynamic(path) = part {
+            add_root(roots, path, scopes, scope);
+        }
+    }
+}
+
+fn is_condition_literal(value: &str) -> bool {
+    (value.starts_with('"') && value.ends_with('"'))
+        || (value.starts_with('\'') && value.ends_with('\''))
+        || value == "true"
+        || value == "false"
+        || (!value.is_empty()
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-'))
+}
+
+fn add_condition_roots(
+    roots: &mut Vec<String>,
+    condition: &ConditionExpr,
+    scopes: &[RootScope<'_>],
+    scope: Option<usize>,
+) {
+    let mut stack = Vec::with_capacity(1);
+    stack.push(condition);
+    while let Some(current) = stack.pop() {
+        match &current.expr {
+            Some(condition_expr::Expr::Identifier(id)) => {
+                add_root(roots, &id.value, scopes, scope);
+            }
+            Some(condition_expr::Expr::Predicate(pred)) => {
+                add_root(roots, &pred.left, scopes, scope);
+                if !is_condition_literal(&pred.right) {
+                    add_root(roots, &pred.right, scopes, scope);
+                }
+            }
+            Some(condition_expr::Expr::Not(not_cond)) => {
+                if let Some(inner) = not_cond.condition.as_ref() {
+                    stack.push(inner);
+                }
+            }
+            Some(condition_expr::Expr::Compound(compound)) => {
+                if let Some(left) = compound.left.as_ref() {
+                    stack.push(left);
+                }
+                if let Some(right) = compound.right.as_ref() {
+                    stack.push(right);
+                }
+            }
+            None => {}
+        }
+    }
 }
 
 /// Emit a compiled condition function as `function(v,s){return EXPR}`.
@@ -2749,6 +2948,34 @@ mod tests {
         assert!(result.contains("\"title\""));
         assert!(result.contains(r#","tx":[[[[0],0],[["title"]]]]"#));
         assert!(!result.contains("{{"));
+    }
+
+    #[test]
+    fn test_metadata_emits_template_roots_and_observed_attrs() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<h1>{{displayValue}}</h1><input ?readonly="{{readOnly}}" />"#,
+        );
+
+        assert!(result.contains(r#","tr":["displayValue","readOnly"]"#));
+        assert!(result.contains(r#","ta":["display-value","displayValue","readonly","readOnly"]"#));
+    }
+
+    #[test]
+    fn test_metadata_excludes_repeat_scope_roots() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><p>{{item.title}} {{heading}}</p></for>"#,
+        );
+        assert!(result.contains(r#","tr":["items","heading"]"#));
+    }
+
+    #[test]
+    fn test_metadata_emits_event_feature_flag() {
+        let result =
+            generate_compiled_template("my-comp", r#"<button @click="{onClick()}">Go</button>"#);
+
+        assert!(result.contains(r#","tf":1"#));
     }
 
     #[test]

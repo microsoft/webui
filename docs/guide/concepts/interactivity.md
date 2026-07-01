@@ -423,11 +423,12 @@ export const settingsAssets = defineComponentAssets({
 });
 ```
 
-`defineComponentAssets()` loads the component's template, styles, JavaScript
-module, and optional data together. Components can then fetch their own data in
-their class code and expose it through `@observable` fields when JavaScript needs
-to read or mutate it. Concurrent requests for the same asset share one in-flight
-load. `create(tag)` creates the element after template/module work is ready. Use
+`defineComponentAssets()` exposes `preload(tag)` and `create(tag)`.
+`preload(tag)` starts the component's template, styles, JavaScript module, and
+optional data together. Components can then fetch their own data in their class
+code and expose it through `@observable` fields when JavaScript needs to read or
+mutate it. Concurrent requests for the same asset share one in-flight load.
+`create(tag)` creates the element after template/module work is ready. Use
 `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
 wait briefly for state before mounting. Use a manifest helper when you want the
 fastest path: it lets the shell start the template asset, JS chunk, and data

@@ -77,7 +77,7 @@ import {
   ATTR_KIND_COMPLEX,
   ATTR_KIND_TEMPLATE,
 } from './element/types.js';
-import { getTemplateAttributeMap, getTemplateRootSet } from './template-roots.js';
+import { templateHasRoot, templateRootForAttribute } from './template-roots.js';
 import type {
   AttrBinding,
   CondBinding,
@@ -92,6 +92,7 @@ type DelegatedEventEntry = {
   target: Element;
   method: EventHandler;
   args: CompiledEventArgs;
+  usesEvent: boolean;
   scope?: ScopeFrame;
 };
 
@@ -131,18 +132,35 @@ function getTplOrdinals(tplNode: Node): Map<number, [number, number]> {
 // ── Sentinels ───────────────────────────────────────────────────
 
 const EMPTY_ARR: readonly never[] = [];
-const EMPTY_SET: ReadonlySet<string> = Object.freeze(new Set<string>()) as ReadonlySet<string>;
-const EMPTY_ATTR_MAP: ReadonlyMap<string, string> = Object.freeze(new Map<string, string>()) as ReadonlyMap<string, string>;
-
 /** Branded single-key state writer used by framework bindings, not public duck typing. */
 const WEBUI_SET_STATE_KEY = Symbol.for('microsoft.webui.setStateKey');
 
-const templateAttributeMaps = new WeakMap<Function, ReadonlyMap<string, string>>();
-const templateRootSets = new WeakMap<Function, ReadonlySet<string>>();
+const templateMetaByCtor = new WeakMap<Function, TemplateMeta>();
+let domReadyQueue: Array<() => void> | null = null;
 
 type TemplateObservedConstructor = CustomElementConstructor & {
   readonly observedAttributes?: readonly string[];
 };
+
+function runWhenDomReady(callback: () => void): void {
+  if (document.readyState !== 'loading') {
+    callback();
+    return;
+  }
+  if (domReadyQueue) {
+    domReadyQueue.push(callback);
+    return;
+  }
+  domReadyQueue = [callback];
+  document.addEventListener('DOMContentLoaded', flushDomReadyQueue, { once: true });
+}
+
+function flushDomReadyQueue(): void {
+  const queue = domReadyQueue;
+  domReadyQueue = null;
+  if (!queue) return;
+  for (let i = 0; i < queue.length; i++) queue[i]();
+}
 
 // ── Helper: snapshot child nodes into a pre-allocated array ──────
 
@@ -176,19 +194,19 @@ function installTemplateObservedAttributes(ctor: TemplateObservedConstructor, ta
   const meta = getTemplate(tagName);
   if (!meta) return;
 
-  const attrMap = getTemplateAttributeMap(meta);
-  templateRootSets.set(ctor, getTemplateRootSet(meta));
-  if (attrMap.size === 0) return;
-  templateAttributeMaps.set(ctor, attrMap);
+  templateMetaByCtor.set(ctor, meta);
+  const attrs = meta.ta ?? EMPTY_ARR;
+  if (attrs.length === 0) return;
 
   const existing = ctor.observedAttributes ?? EMPTY_ARR;
-  const merged = new Array<string>(existing.length + attrMap.size);
+  const merged = new Array<string>(existing.length + (attrs.length >> 1));
   let count = 0;
   for (let i = 0; i < existing.length; i++) {
     merged[count] = existing[i];
     count += 1;
   }
-  for (const attrName of attrMap.keys()) {
+  for (let attrIndex = 0; attrIndex + 1 < attrs.length; attrIndex += 2) {
+    const attrName = attrs[attrIndex];
     let found = false;
     for (let i = 0; i < count; i++) {
       if (merged[i] === attrName) {
@@ -308,11 +326,7 @@ export class CoreElement extends HTMLElement {
     // opening tag, connectedCallback fires BEFORE children are parsed.
     // If the document is still loading, defer to let the parser finish.
     if (document.readyState === 'loading') {
-      const handler = (): void => {
-        document.removeEventListener('DOMContentLoaded', handler);
-        this.$mount(meta);
-      };
-      document.addEventListener('DOMContentLoaded', handler);
+      runWhenDomReady(() => this.$mount(meta));
     } else {
       // Document is already parsed — children are available
       this.$mount(meta);
@@ -451,7 +465,7 @@ export class CoreElement extends HTMLElement {
     newValue: string | null,
   ): void {
     if (Object.is(oldValue, newValue)) return;
-    const property = this.$templateAttributeMap().get(name);
+    const property = this.$templateRootForAttribute(name);
     if (property && this.$usesTemplateState(property)) {
       this.$setTemplateState(property, newValue);
     }
@@ -502,28 +516,22 @@ export class CoreElement extends HTMLElement {
     return true;
   }
 
-  private $templateStateNames(): ReadonlySet<string> {
-    const fromCtor = templateRootSets.get(this.constructor as Function);
+  private $templateMeta(): TemplateMeta | undefined {
+    if (this.$meta) return this.$meta;
+    const fromCtor = templateMetaByCtor.get(this.constructor as Function);
     if (fromCtor) return fromCtor;
-    if (this.$meta) return getTemplateRootSet(this.$meta);
     const tagName = this.tagName;
-    if (!tagName) return EMPTY_SET;
-    const meta = getTemplate(tagName.toLowerCase());
-    return meta ? getTemplateRootSet(meta) : EMPTY_SET;
+    return tagName ? getTemplate(tagName.toLowerCase()) : undefined;
   }
 
-  private $templateAttributeMap(): ReadonlyMap<string, string> {
-    const fromCtor = templateAttributeMaps.get(this.constructor as Function);
-    if (fromCtor) return fromCtor;
-    if (!this.$meta) {
-      const meta = getTemplate(this.tagName.toLowerCase());
-      return meta ? getTemplateAttributeMap(meta) : EMPTY_ATTR_MAP;
-    }
-    return getTemplateAttributeMap(this.$meta);
+  private $templateRootForAttribute(name: string): string | undefined {
+    const meta = this.$templateMeta();
+    return meta ? templateRootForAttribute(meta, name) : undefined;
   }
 
   private $usesTemplateState(key: string): boolean {
-    return this.$templateStateNames().has(key) && !hasAuthoredMember(this, key);
+    const meta = this.$templateMeta();
+    return !!meta && templateHasRoot(meta, key) && !hasAuthoredMember(this, key);
   }
 
   /** Route one external state key to an authored observable or hidden template state. */
@@ -782,7 +790,8 @@ export class CoreElement extends HTMLElement {
     // capture target positions from the untouched DOM first.
 
     // Pre-resolve text binding slots
-    const textRefs: Array<{ parent: Node; ref: Node | null; parts: CompiledAttrPart[]; raw?: boolean }> = [];
+    const textRefs = new Array<{ parent: Node; ref: Node | null; parts: CompiledAttrPart[]; raw?: boolean }>(meta.tx?.length ?? 0);
+    let textRefCount = 0;
     if (meta.tx) {
       for (let i = 0; i < meta.tx.length; i++) {
         const entry = meta.tx[i];
@@ -791,33 +800,38 @@ export class CoreElement extends HTMLElement {
         const [parentPath, beforeIndex] = slot;
         const parent = parentPath.length > 0 ? this.$resolve(root, parentPath) : root;
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
-        textRefs.push({ parent, ref: parent.childNodes[beforeIndex] || null, parts, raw });
+        textRefs[textRefCount] = { parent, ref: parent.childNodes[beforeIndex] || null, parts, raw };
+        textRefCount += 1;
       }
     }
 
     // Pre-resolve conditional slots
     type CondRef = { parent: Node; ref: Node | null; condition: CompiledCondition; blockIndex: number };
-    const condRefs: CondRef[] = [];
+    const condRefs = new Array<CondRef>(meta.c?.length ?? 0);
+    let condRefCount = 0;
     if (meta.c) {
       for (let i = 0; i < meta.c.length; i++) {
         const [condition, blockIndex, slotMeta] = meta.c[i];
         const [parentPath, beforeIndex] = slotMeta;
         const parent = parentPath.length > 0 ? this.$resolve(root, parentPath) : root;
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
-        condRefs.push({ parent, ref: parent.childNodes[beforeIndex] || null, condition: condition as CompiledCondition, blockIndex });
+        condRefs[condRefCount] = { parent, ref: parent.childNodes[beforeIndex] || null, condition: condition as CompiledCondition, blockIndex };
+        condRefCount += 1;
       }
     }
 
     // Pre-resolve repeat slots
     type RepRef = { parent: Node; ref: Node | null; collection: string; itemVar: string; blockIndex: number };
-    const repRefs: RepRef[] = [];
+    const repRefs = new Array<RepRef>(meta.r?.length ?? 0);
+    let repRefCount = 0;
     if (meta.r) {
       for (let i = 0; i < meta.r.length; i++) {
         const [collection, itemVar, blockIndex, slotMeta] = meta.r[i];
         const [parentPath, beforeIndex] = slotMeta;
         const parent = parentPath.length > 0 ? this.$resolve(root, parentPath) : root;
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
-        repRefs.push({ parent, ref: parent.childNodes[beforeIndex] || null, collection, itemVar, blockIndex });
+        repRefs[repRefCount] = { parent, ref: parent.childNodes[beforeIndex] || null, collection, itemVar, blockIndex };
+        repRefCount += 1;
       }
     }
 
@@ -832,7 +846,8 @@ export class CoreElement extends HTMLElement {
     // Now insert anchors using pre-resolved references
 
     // Text bindings
-    for (const t of textRefs) {
+    for (let i = 0; i < textRefCount; i++) {
+      const t = textRefs[i];
       const anchor = document.createComment('');
       t.parent.insertBefore(anchor, t.ref);
       if (t.raw) {
@@ -849,23 +864,24 @@ export class CoreElement extends HTMLElement {
     }
 
     // Conditional bindings
-    for (const c of condRefs) {
+    for (let i = 0; i < condRefCount; i++) {
+      const c = condRefs[i];
       const anchor = document.createComment('');
       c.parent.insertBefore(anchor, c.ref);
       instance.conds.push({ condition: c.condition, blockIndex: c.blockIndex, anchor, scope, instance: null });
     }
 
     // Repeat bindings
-    for (let i = 0; i < repRefs.length; i++) {
+    for (let i = 0; i < repRefCount; i++) {
       const r = repRefs[i];
       const anchor = document.createComment('');
       r.parent.insertBefore(anchor, r.ref);
-      const { attrMap, rootBindings } = this.$repeatMaps(r.blockIndex, r.itemVar);
+      const { keyAttribute, keyPath } = this.$repeatMaps(r.blockIndex, r.itemVar);
       instance.repeats.push({
         markerId: i, collection: r.collection, itemVar: r.itemVar, blockIndex: r.blockIndex,
         container: r.parent as ParentNode & Node, start: anchor, end: null,
         scope, owner: instance, instances: [], rootTag: null,
-        attrMap, rootBindings,
+        keyAttribute, keyPath,
       });
     }
 
@@ -1027,12 +1043,11 @@ export class CoreElement extends HTMLElement {
         }
 
         const blockMeta = this.$block(blockIndex);
-        const { attrMap, rootBindings } = this.$repeatMaps(blockIndex, itemVar);
+        const { keyAttribute, keyPath } = this.$repeatMaps(blockIndex, itemVar);
         const blockTplDom = blockMeta ? getTemplateDom(blockMeta) : null;
         const rootTag = blockMeta && blockTplDom?.childNodes.length === 1 && blockTplDom.children.length === 1
           ? this.$rootTag(blockMeta)
           : null;
-        const keyPath = Object.values(attrMap)[0];
 
         // Find the next <!--wr--> marker in ssrParent (after any previously found one)
         const marker = this.$findMarker(ssrParent, MARKER_REPEAT_START, lastRepMarker);
@@ -1065,7 +1080,6 @@ export class CoreElement extends HTMLElement {
               `[webui] hydration: repeat marker count (${itemMarkers.length}) ≠ data length (${items.length}) for "${collection}"`,
             );
           }
-          const firstKey = Object.keys(attrMap)[0];
           const limit = Math.min(itemMarkers.length, items.length);
           for (let j = 0; j < limit; j++) {
             const itemValue = items[j];
@@ -1074,8 +1088,8 @@ export class CoreElement extends HTMLElement {
             if (rootTag) {
               const itemEl = nextElement(itemMarkers[j]);
               if (itemEl) {
-                const key = firstKey !== undefined
-                  ? itemEl.getAttribute(firstKey)
+                const key = keyAttribute !== undefined
+                  ? itemEl.getAttribute(keyAttribute)
                   : String(j);
                 const childInstance = this.$hydrate(itemEl, blockMeta, blockTplDom, itemScope, 1);
                 repeatInsts.push({ key, value: itemValue, instance: childInstance });
@@ -1118,7 +1132,7 @@ export class CoreElement extends HTMLElement {
           container: (anchor.parentNode ?? ssrRoot) as ParentNode & Node,
           start: anchor, end: null,
           scope, owner: instance, instances: repeatInsts, rootTag,
-          attrMap, rootBindings, synced: true,
+          keyAttribute, keyPath, synced: true,
         });
       }
     }
@@ -1336,13 +1350,13 @@ export class CoreElement extends HTMLElement {
     return { element: el, name, kind: kind as number, path: (entry[2] as string) || '', scope };
   }
 
-  /** Build attrMap and rootBindings for a repeat block. */
+  /** Build the first stable item-scoped key for a repeat block. */
   private $repeatMaps(blockIndex: number, itemVar: string): {
-    attrMap: Record<string, string>;
-    rootBindings: CompiledAttrMeta[];
+    keyAttribute?: string;
+    keyPath?: string;
   } {
-    const attrMap: Record<string, string> = {};
-    const rootBindings: CompiledAttrMeta[] = [];
+    let keyAttribute: string | undefined;
+    let keyPath: string | undefined;
     const bm = this.$block(blockIndex);
     if (bm?.a && bm.ag) {
       for (let g = 0; g < bm.ag.length; g++) {
@@ -1355,7 +1369,6 @@ export class CoreElement extends HTMLElement {
           for (let j = 0; j < c; j++) {
             const entry = bm.a[s + j];
             if (entry) {
-              rootBindings.push(entry);
               if (entry[1] === 0 || entry[1] === 3) {
                 const dp = this.$singleDynamic(
                   entry[1] === 3 ? (entry[2] as CompiledAttrPart[]) : [[entry[2] as string]],
@@ -1363,8 +1376,9 @@ export class CoreElement extends HTMLElement {
                 // Only use item-scoped paths as keys; outer-scope bindings
                 // (e.g. group.name inside <for each="opt in ...">) would
                 // resolve to the same value for every item and break keying.
-                if (dp && dp.path.startsWith(itemVar + '.')) {
-                  attrMap[entry[0]] = dp.path.slice(itemVar.length + 1);
+                if (dp && keyPath === undefined && dp.path.startsWith(itemVar + '.')) {
+                  keyAttribute = entry[0];
+                  keyPath = dp.path.slice(itemVar.length + 1);
                 }
               }
             }
@@ -1372,7 +1386,7 @@ export class CoreElement extends HTMLElement {
         }
       }
     }
-    return { attrMap, rootBindings };
+    return { keyAttribute, keyPath };
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1734,6 +1748,7 @@ export class WebUIElement extends CoreElement {
         target: el as Element,
         method: method as EventHandler,
         args,
+        usesEvent: this.$eventArgsUseEvent(args),
         scope,
       });
     }
@@ -1772,7 +1787,7 @@ export class WebUIElement extends CoreElement {
       for (let i = 0; i < entries.length; i++) {
         const entry = entries[i];
         if (entry.target === current) {
-          this.$callEventHandler(entry.method, entry.args, event, entry.scope, entry.target);
+          this.$callEventHandler(entry.method, entry.args, event, entry.scope, entry.target, entry.usesEvent);
         }
       }
       current = current.parentNode;
@@ -1805,20 +1820,46 @@ export class WebUIElement extends CoreElement {
     event: Event,
     scope?: ScopeFrame,
     currentTarget?: EventTarget,
+    usesEvent = false,
   ): void {
-    if (args.length === 0) {
-      method.call(this);
-      return;
-    }
-    if (currentTarget && this.$eventArgsUseEvent(args)) {
+    if (currentTarget && usesEvent) {
       this.$callEventHandlerWithCurrentTarget(method, args, event, scope, currentTarget);
       return;
     }
-    if (args.length === 1 && args[0][0] === 'e') {
-      method.call(this, event);
-      return;
+    switch (args.length) {
+      case 0:
+        method.call(this);
+        return;
+      case 1:
+        method.call(this, this.$resolveEventArg(args[0], event, scope));
+        return;
+      case 2:
+        method.call(
+          this,
+          this.$resolveEventArg(args[0], event, scope),
+          this.$resolveEventArg(args[1], event, scope),
+        );
+        return;
+      case 3:
+        method.call(
+          this,
+          this.$resolveEventArg(args[0], event, scope),
+          this.$resolveEventArg(args[1], event, scope),
+          this.$resolveEventArg(args[2], event, scope),
+        );
+        return;
+      case 4:
+        method.call(
+          this,
+          this.$resolveEventArg(args[0], event, scope),
+          this.$resolveEventArg(args[1], event, scope),
+          this.$resolveEventArg(args[2], event, scope),
+          this.$resolveEventArg(args[3], event, scope),
+        );
+        return;
+      default:
+        method.apply(this, this.$resolveEventArgs(args, event, scope));
     }
-    method.apply(this, this.$resolveEventArgs(args, event, scope));
   }
 
   private $eventArgsUseEvent(args: CompiledEventArgs): boolean {

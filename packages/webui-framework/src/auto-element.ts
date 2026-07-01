@@ -5,9 +5,10 @@
  * Automatic HTML-only component runtime.
  *
  * The parser marks component templates that have no sibling `.ts` / `.js`
- * implementation. Importing the framework root installs this runtime so those
- * scriptless templates still hydrate as real WebUI elements when server or route
- * state changes. Authored custom elements always win, and templates with event
+ * implementation. Apps with stateful HTML-only templates call
+ * `installAutoElementRuntime()` once from their entrypoint so those scriptless
+ * templates still hydrate as real WebUI elements when server or route state
+ * changes. Authored custom elements always win, and templates with event
  * metadata are refused because event handlers require developer code.
  *
  * Keep this module dependent on `CoreElement`, not `WebUIElement`: the whole
@@ -15,9 +16,8 @@
  */
 
 import { CoreElement } from './element.js';
-import { toKebabCase } from './decorators.js';
 import { getTemplateRegistry } from './template.js';
-import { templateNeedsAutoElement } from './template-roots.js';
+import { templateAttributeForRoot, templateNeedsAutoElement } from './template-roots.js';
 import {
   TEMPLATES_REGISTERED_EVENT,
   templateRegistrationDetail,
@@ -37,7 +37,8 @@ function defineAutoElement(tag: string, meta: TemplateMeta): void {
 
   class AutoWebUIElement extends CoreElement {
     protected $shouldApplyTemplateStateFromSSR(key: string): boolean {
-      return !this.hasAttribute(toKebabCase(key));
+      const attr = templateAttributeForRoot(meta, key);
+      return attr === undefined || !this.hasAttribute(attr);
     }
   }
 
@@ -91,8 +92,8 @@ function queueInitialAutoElementClaim(): void {
 /**
  * Install the runtime for compiler-marked HTML-only templates.
  *
- * This is called by the package root as a side effect, so app authors do not
- * maintain tag lists or import an auto-element subpath.
+ * Apps call this from `@microsoft/webui-framework/auto-element.js`; the package
+ * root remains side-effect free so authored-only apps do not load this code.
  */
 export function installAutoElementRuntime(): void {
   if (runtimeInstalled) {

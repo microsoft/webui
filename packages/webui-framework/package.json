@@ -4,11 +4,7 @@
   "type": "module",
   "description": "WebUI Framework Next — Preact-inspired lightweight Web Component runtime with SSR hydration. 15KB minified, compiled-template path mapping, no hydration markers.",
   "license": "MIT",
-  "sideEffects": [
-    "./dist/index.js",
-    "./src/index.js",
-    "./src/index.ts"
-  ],
+  "sideEffects": false,
   "exports": {
     ".": {
       "import": {
@@ -20,6 +16,12 @@
       "import": {
         "types": "./dist/component-asset.d.ts",
         "default": "./dist/component-asset.js"
+      }
+    },
+    "./auto-element.js": {
+      "import": {
+        "types": "./dist/auto-element.d.ts",
+        "default": "./dist/auto-element.js"
       }
     }
   },

@@ -69,6 +69,12 @@ export interface TemplateMeta extends TemplateBlockMeta {
   b?: TemplateBlockMeta[];
   sa?: string;
   re?: [string, string, CompiledEventArgs][];
+  /** Component-level state roots referenced by template bindings. */
+  tr?: string[];
+  /** Flat observed-attribute map: `[attrName, stateRoot, ...]`. */
+  ta?: string[];
+  /** Template feature bitmask emitted by the compiler. */
+  tf?: number;
   /** Shadow DOM flag — when true, client-created components use shadow root. */
   sd?: boolean;
   /** Internal auto-element flag — true when the parser found no authored script. */

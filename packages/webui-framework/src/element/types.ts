@@ -21,7 +21,6 @@
  */
 
 import type {
-  CompiledAttrMeta,
   CompiledAttrPart,
   CompiledCondition,
 } from '../template.js';
@@ -101,8 +100,8 @@ export interface RepeatBinding {
   owner: TemplateInstance;
   instances: RepeatItemInstance[];
   rootTag: string | null;
-  attrMap: Record<string, string>;
-  rootBindings: CompiledAttrMeta[];
+  keyAttribute?: string;
+  keyPath?: string;
   /** Set to true once the collection has been explicitly set by client code. */
   synced?: boolean;
 }

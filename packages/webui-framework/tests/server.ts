@@ -57,7 +57,7 @@ startFixtureServer({
       }
     }
 
-    // Fall back to static files (bundled JS, legacy fixtures, etc.)
+    // Serve static files for bundled JS, authored fixture HTML, and assets.
     return serveStatic(url.pathname);
   },
 });

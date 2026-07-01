@@ -320,6 +320,9 @@ MyComponent.define('my-component');
 HTML-only components can omit the `.ts` file when they have no event handlers or
 custom client logic. Create a custom element only for an Interactive Island:
 events, custom lifecycle code, imperative methods, or JavaScript-owned state.
+Apps with HTML-only components that receive server or route state call
+`installAutoElementRuntime()` once from
+`@microsoft/webui-framework/auto-element.js`.
 
 `@observable` and `@attr` are optional. Use them when TypeScript code reads or
 mutates the value directly, or when the value is part of the component's public
@@ -342,7 +345,7 @@ API.
 | `this.$update()` | Force a reactive update cycle |
 | `this.$flushUpdates()` | Synchronously flush pending updates |
 | `static define(tagName)` | Register as a custom element |
-| `defineComponentAssets(manifest)` | Define lazy component assets and load asset/module/data work in parallel |
+| `defineComponentAssets(manifest)` | Define lazy component assets with `preload(tag)` and `create(tag)` |
 
 ### Emitting custom events
 
@@ -451,8 +454,9 @@ CSS module importmaps. The `.webui.js` asset is a browser-native ESM module that
 carries the component template and style payload in one request. Concurrent calls
 for the same URL share one in-flight request, and CSS module styles are deduped.
 The manifest helper lets the shell start the template asset, JS chunk, and data
-fetch in parallel as soon as the user expresses intent; `create(tag)` waits for
-only the template asset and JS module by default, then creates the element. Use
+fetch in parallel as soon as the user expresses intent via `preload(tag)`;
+`create(tag)` waits for only the template asset and JS module by default, then
+creates the element. Use
 `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component
 must wait briefly for state before mounting.
 
