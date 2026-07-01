@@ -30,7 +30,6 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "typecheck:e2e": "tsc -p tsconfig.test.json --noEmit",
-    "size": "node scripts/size-report.mjs",
     "test": "pnpm test:unit && pnpm test:e2e",
     "test:unit": "tsc -p tsconfig.unit-test.json && node --test \"dist/**/*.test.js\"",
     "test:e2e": "pnpm typecheck:e2e && playwright test",
@@ -41,7 +40,6 @@
     "@microsoft/webui-test-support": "workspace:*",
     "@playwright/test": "catalog:",
     "@types/node": "catalog:",
-    "esbuild": "catalog:",
     "typescript": "catalog:"
   }
 }
