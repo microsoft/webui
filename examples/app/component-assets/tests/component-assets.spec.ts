@@ -44,24 +44,58 @@ test.describe('static component assets', () => {
     await page.goto('/');
     await expect(page.getByRole('button', { name: 'Load lazy panel' })).toBeVisible();
     await expect(page.locator('lazy-panel')).toHaveCount(0);
+    const badge = page.locator('asset-badge').first();
+    await expect(
+      badge.evaluate((el) => {
+        const component = el as HTMLElement & { $ready?: boolean; setState?: unknown };
+
+        return {
+          ready: component.$ready === true,
+          setState: typeof component.setState === 'function',
+        };
+      }),
+    ).resolves.toEqual({ ready: true, setState: true });
 
     expect(lazyRequests).toEqual([]);
     expect(await loadedTemplateNames(page)).not.toContain('lazy-panel');
 
     await page.getByRole('button', { name: 'Load lazy panel' }).click();
     await expect(page.locator('lazy-panel')).toHaveCount(1);
+    const lazyPanel = page.locator('lazy-panel').first();
+    await expect(
+      lazyPanel.evaluate((el) => {
+        const component = el as HTMLElement & { $ready?: boolean; setState?: unknown };
+
+        return {
+          ready: component.$ready === true,
+          setState: typeof component.setState === 'function',
+        };
+      }),
+    ).resolves.toEqual({ ready: true, setState: true });
     await expect(page.getByText('Static asset template is active')).toBeVisible();
     await expect(page.getByText('Loaded from component fetch')).toBeVisible();
 
+    await lazyPanel.evaluate((el) => {
+      const component = el as HTMLElement & { setState(state: unknown): void };
+      component.setState({
+        status: 'Updated',
+        heading: 'Fallback lazy panel',
+        message: 'Updated through setState()',
+        hasDetails: true,
+        details: 'No authored lazy panel class required.',
+      });
+    });
+    await expect(lazyPanel).toContainText('Fallback lazy panel');
+    await expect(lazyPanel).toContainText('No authored lazy panel class required.');
+
     expect(await loadedTemplateNames(page)).toContain('lazy-panel');
     expect(countLazyRequests(lazyRequests, 'asset')).toBe(1);
-    expect(countLazyRequests(lazyRequests, 'module')).toBe(1);
+    expect(countLazyRequests(lazyRequests, 'module')).toBe(0);
     expect(countLazyRequests(lazyRequests, 'data')).toBe(1);
     expect(countLazyRequests(lazyRequests, 'css')).toBeGreaterThanOrEqual(1);
 
     const firstLoadCounts = {
       asset: countLazyRequests(lazyRequests, 'asset'),
-      module: countLazyRequests(lazyRequests, 'module'),
       data: countLazyRequests(lazyRequests, 'data'),
     };
 
@@ -70,7 +104,7 @@ test.describe('static component assets', () => {
     await expect(page.getByText('Static asset template is active')).toBeVisible();
 
     expect(countLazyRequests(lazyRequests, 'asset')).toBe(firstLoadCounts.asset);
-    expect(countLazyRequests(lazyRequests, 'module')).toBe(firstLoadCounts.module);
+    expect(countLazyRequests(lazyRequests, 'module')).toBe(0);
     expect(countLazyRequests(lazyRequests, 'data')).toBe(firstLoadCounts.data);
   });
 });

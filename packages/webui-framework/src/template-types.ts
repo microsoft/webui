@@ -67,4 +67,6 @@ export interface TemplateMeta extends TemplateBlockMeta {
   re?: [string, string, CompiledEventArgs][];
   /** Shadow DOM flag — when true, client-created components use shadow root. */
   sd?: boolean;
+  /** Auto-element flag — true when the compiler found no authored script. */
+  ae?: boolean | 1;
 }

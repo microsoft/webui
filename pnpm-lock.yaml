@@ -411,6 +411,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 25.3.5
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.28.1
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
@@ -421,9 +424,6 @@ importers:
 
   packages/webui-router:
     devDependencies:
-      '@microsoft/webui-framework':
-        specifier: workspace:*
-        version: link:../webui-framework
       '@microsoft/webui-router':
         specifier: workspace:*
         version: 'link:'

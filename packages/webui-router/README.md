@@ -83,7 +83,14 @@ window.addEventListener('webui:hydration-complete', () => {
 });
 ```
 
-Components in `loaders` are lazy-loaded on first navigation. Components not listed are assumed eagerly loaded.
+Components in `loaders` are lazy-loaded on first navigation. Components not
+listed are assumed eagerly loaded when already registered. The router has no
+dependency on `@microsoft/webui-framework`; it publishes
+`webui:templates-registered` for initial SSR templates and later partial
+response templates. The framework can claim compiler-marked HTML-only tags from
+that event, but the router remains platform-independent. If no loader or runtime
+registers a tag, the router uses a passive no-op stub for static server-rendered
+route content.
 
 ## Nested Routes
 

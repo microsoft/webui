@@ -87,6 +87,17 @@ Build with `--dom=shadow` (default) to wrap in a declarative shadow root, or `--
 <counter-card label="Taps"></counter-card>
 ```
 
+### HTML-only components
+
+If a component has no event handlers, custom lifecycle code, or client-only
+methods, it can ship only `component.html` and optional `component.css`.
+
+The compiler marks scriptless templates in metadata, and the framework
+automatically defines missing template tags after metadata is available. The
+fallback hydrates SSR output, observes attributes for template binding roots,
+and accepts `setState()` from routers or asset loaders. A developer-authored
+class still wins whenever it calls `WebUIElement.define(tagName)` first.
+
 ### Build with the WebUI plugin
 
 ```bash
@@ -135,7 +146,7 @@ Base class for framework components.
 | `static define(tagName)` | Register the class as a custom element |
 | `$emit(name, detail?)` | Dispatch a bubbling, composed `CustomEvent` |
 | `$update()` | Force a reactive update (normally called automatically) |
-| `setState(state)` | Populate `@observable` properties from router/server state |
+| `setState(state)` | Apply router/server state to decorated properties and internal template state |
 | `disconnectedCallback()` | Override for cleanup (global listeners, etc.) |
 
 In most components you do not call `$update()` directly. Property changes through `@observable` and `@attr` trigger updates for you.
@@ -177,8 +188,11 @@ when a component must wait briefly for state before mounting.
 
 ### `@observable`
 
-Marks a property as reactive.  When the value changes, the framework
-re-evaluates the compiled bindings that reference it.
+Marks a property as reactive. When the value changes, the framework
+re-evaluates the compiled bindings that reference it. Use it for state that
+TypeScript code reads or mutates; values supplied only by SSR, router
+`setState()`, or component asset data can be omitted and stay in internal
+template state.
 
 ```ts
 class SearchPanel extends WebUIElement {
@@ -205,7 +219,7 @@ Notes:
 
 - default attribute names use kebab-case
 - attribute values arrive as strings
-- use `@observable` for richer client-only state
+- use `@observable` for state that client code reads or mutates
 
 ### `@volatile`
 
@@ -257,11 +271,15 @@ Root-level events (e.g. `@toggle-item="{onToggleItem(e)}"`) can be declared on t
 
 ## Recommended Patterns
 
-- Treat decorated properties as the source of truth.
+- Treat decorated properties as the source of truth for state used by
+  TypeScript code.
 - Update state with property assignments such as `this.open = !this.open`.
 - Use `$emit()` for child-to-parent communication.
 - Use `w-ref` for true DOM-only concerns like focus or reading input values.
-- Prefer `@observable someValue!: T;` when a value is expected to be seeded externally after construction.
+- Omit `@observable` for values that are only read by the template and seeded
+  externally after construction.
+- Omit the TypeScript class for HTML-only components that only need compiled
+  template bindings and router/server state.
 
 Avoid imperative DOM mutation for application state that can be represented by reactive properties.
 
@@ -442,7 +460,7 @@ sequenceDiagram
     CE->>CE: attributeChangedCallback (pre-existing attrs)
     CE->>FW: connectedCallback() → $mount()
     FW->>FW: SSR DOM detected (shadow root or children exist)
-    FW->>FW: $applySSRState() — seed observables from __webui.state
+    FW->>FW: $applySSRState() — seed decorated + template state
     FW->>FW: $hydrate() — template-parallel path resolution
     FW->>FW: $resolveSSR() — match SSR nodes via ordinal traversal
     FW->>FW: $wireEvents() + $wireRefs()
@@ -498,6 +516,7 @@ interface TemplateMeta {
   sa?: string;                         // Adopted stylesheet specifier
   sd?: boolean;                        // Shadow DOM flag for client-created
   re?: [event, handler, argSpecs][];    // Root-level events
+  ae?: 1;                               // Auto-element eligible (no script)
 }
 ```
 
@@ -558,15 +577,16 @@ sequenceDiagram
 ### Why Updates Are O(affected)
 
 After hydration, every dynamic value in the template is connected to a direct
-DOM node reference stored in a binding array.  A per-path index maps each
-`@observable` property name to the subset of bindings that reference it.
+DOM node reference stored in a binding array. A per-path index maps each
+decorated property or compiled template root to the subset of bindings that
+reference it.
 
 When `this.count = 5` fires, the `@observable` setter calls `$update('count')`,
 which looks up `'count'` in the index and only patches the bindings that
 actually depend on `count` — not every binding in the component.
 
-Computed/volatile getters (paths not in the `@observable` set) are stored
-under a wildcard key and always included in targeted updates.
+Computed/volatile getters and other paths that are not known state roots are
+stored under a wildcard key and always included in targeted updates.
 
 ```typescript
 // Targeted update (simplified):
@@ -588,27 +608,29 @@ path index ensures only affected pointers are visited.
 
 ## SSR State Seeding
 
-When the server renders `<span>42</span>` for `@observable count = 0`, the
-browser sees `42` in the DOM but the JavaScript property `this.count` is still
-`0` (the class default).  Without seeding, the first `$update()` would
-overwrite the SSR content with the wrong value.
+When the server renders `<span>42</span>` for a template binding, the browser
+sees `42` in the DOM before the component's JavaScript state exists. Without
+seeding, the first `$update()` would overwrite the SSR content with the wrong
+value.
 
 State seeding uses `window.__webui.state` — a JSON object loaded from the
 server-emitted `#webui-data` block.  Like Preact's props, this delivers the
-same data used for SSR rendering to the client.  During `$mount()`,
-`$applySSRState()` writes matching keys directly to observable backing fields
-before any bindings are wired:
+same data used for SSR rendering to the client. During `$mount()`,
+`$applySSRState()` writes matching decorated keys directly to observable backing
+fields and stores undecorated template roots in hidden framework state before
+any bindings are wired:
 
 ```mermaid
 flowchart LR
     SCRIPT["&lt;script type='application/json' id='webui-data'&gt;<br/>{ state: { count: 42, title: 'Hello' } }"] --> APPLY["$applySSRState()"]
-    APPLY --> SEED["Write to backing fields:<br/>this._count = 42<br/>this._title = 'Hello'"]
+    APPLY --> SEED["Write decorated fields + hidden template state"]
     SEED --> HYDRATE["$hydrate() — bindings match<br/>server-rendered DOM"]
 ```
 
-`$applySSRState()` only sets properties that exist in the component's
-`@observable` set — unknown keys are ignored.  Writes go to the backing
-field (`_prop`) directly, avoiding reactive updates before bindings are wired.
+`$applySSRState()` only accepts keys that are decorated properties or compiled
+template roots. Unknown keys are ignored. Decorated writes go to the backing
+field (`_prop`) directly, and undecorated template roots stay internal, avoiding
+reactive updates before bindings are wired.
 
 ---
 

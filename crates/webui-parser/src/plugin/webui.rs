@@ -77,6 +77,7 @@ struct TrackedComponent {
     tag_name: String,
     template_html: String,
     root_event_source: String,
+    auto_element: bool,
 }
 
 /// WebUI Framework parser plugin.
@@ -130,6 +131,7 @@ impl WebUIParserPlugin {
                 &c.template_html,
                 &c.root_event_source,
                 use_shadow,
+                c.auto_element,
             )?;
             out.push(ComponentTemplateArtifact::webui(
                 c.tag_name.clone(),
@@ -145,19 +147,21 @@ impl WebUIParserPlugin {
         tag_name: &str,
         template_html: &str,
         root_event_source: &str,
+        auto_element: bool,
     ) {
         if let Some(component) = self.components.iter_mut().find(|c| c.tag_name == tag_name) {
             component.template_html.clear();
             component.template_html.push_str(template_html);
             component.root_event_source.clear();
             component.root_event_source.push_str(root_event_source);
+            component.auto_element = auto_element;
             return;
         }
-
         self.components.push(TrackedComponent {
             tag_name: tag_name.to_string(),
             template_html: template_html.to_string(),
             root_event_source: root_event_source.to_string(),
+            auto_element,
         });
     }
 }
@@ -192,7 +196,12 @@ impl ParserPlugin for WebUIParserPlugin {
         component: &Component,
         processed_template: &str,
     ) -> Result<()> {
-        self.store_component_template(tag_name, processed_template, &component.html_content);
+        self.store_component_template(
+            tag_name,
+            processed_template,
+            &component.html_content,
+            !component.has_script,
+        );
         Ok(())
     }
 
@@ -407,10 +416,14 @@ impl ConditionFunctionEmitter {
 /// Returns [`crate::ParserError::Template`] if the template contains an invalid
 /// `@event` handler or a non-braced `w-ref` binding.
 pub fn generate_compiled_template(tag_name: &str, html_content: &str) -> Result<String> {
-    Ok(
-        generate_compiled_template_with_root_source(tag_name, html_content, html_content, false)?
-            .template_json,
-    )
+    Ok(generate_compiled_template_with_root_source(
+        tag_name,
+        html_content,
+        html_content,
+        false,
+        false,
+    )?
+    .template_json)
 }
 
 fn generate_compiled_template_with_root_source(
@@ -418,6 +431,7 @@ fn generate_compiled_template_with_root_source(
     html_content: &str,
     root_event_source: &str,
     shadow_dom: bool,
+    auto_element: bool,
 ) -> Result<CompiledTemplatePayload> {
     let trimmed = html_content.trim();
     let root_events = extract_root_events(tag_name, root_event_source.trim())?;
@@ -429,6 +443,7 @@ fn generate_compiled_template_with_root_source(
         &meta,
         adopted_stylesheet.as_deref(),
         shadow_dom,
+        auto_element,
     ))
 }
 
@@ -437,6 +452,7 @@ fn emit_compiled_template_payload(
     meta: &TemplateMeta,
     adopted_stylesheet: Option<&str>,
     shadow_dom: bool,
+    auto_element: bool,
 ) -> CompiledTemplatePayload {
     let mut conditions = ConditionFunctionEmitter::new(128);
     let mut out = String::with_capacity(512 + html_content.len());
@@ -452,6 +468,10 @@ fn emit_compiled_template_payload(
     // sd: shadow DOM flag — tells the client runtime to use shadow root
     if shadow_dom {
         out.push_str(",\"sd\":1");
+    }
+
+    if auto_element {
+        out.push_str(",\"ae\":1");
     }
 
     // re: root events
@@ -2681,6 +2701,7 @@ mod tests {
             html_content,
             html_content,
             false,
+            false,
         )
         .expect("valid template compiles")
     }
@@ -3105,6 +3126,7 @@ mod tests {
             css_fallback_chains: Vec::new(),
             source_path: std::path::PathBuf::new(),
             class_name: None,
+            has_script: false,
         };
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
@@ -3113,6 +3135,36 @@ mod tests {
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();
         assert_eq!(plugin.take_component_templates().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_scriptless_component_template_is_auto_element_marked() {
+        let mut plugin = WebUIParserPlugin::new();
+        let mut comp = Component {
+            tag_name: "test-el".to_string(),
+            html_content: "<p>hi</p>".to_string(),
+            css_content: None,
+            css_tokens: Vec::new(),
+            css_definitions: Vec::new(),
+            css_fallback_chains: Vec::new(),
+            source_path: std::path::PathBuf::new(),
+            class_name: None,
+            has_script: false,
+        };
+
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        assert!(templates[0].template_json.contains(r#","ae":1"#));
+
+        comp.has_script = true;
+        let mut plugin = WebUIParserPlugin::new();
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        assert!(!templates[0].template_json.contains(r#","ae":1"#));
     }
 
     #[test]
@@ -3158,6 +3210,7 @@ mod tests {
             css_fallback_chains: Vec::new(),
             source_path: std::path::PathBuf::new(),
             class_name: None,
+            has_script: false,
         };
 
         plugin
@@ -3191,6 +3244,7 @@ mod tests {
             css_fallback_chains: Vec::new(),
             source_path: std::path::PathBuf::new(),
             class_name: None,
+            has_script: false,
         };
 
         plugin
@@ -3220,6 +3274,7 @@ mod tests {
             css_fallback_chains: Vec::new(),
             source_path: std::path::PathBuf::new(),
             class_name: None,
+            has_script: false,
         };
 
         plugin

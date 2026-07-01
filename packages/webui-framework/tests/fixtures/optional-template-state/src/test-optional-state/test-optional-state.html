@@ -1,0 +1,15 @@
+<section class="optional-state">
+  <h1 class="heading">{{heading}}</h1>
+  <p class="count">Count: {{count}}</p>
+  <p class="selected">Selected: {{selected}}</p>
+  <button class="toggle" type="button" @click="{toggle()}">Toggle selected</button>
+  <a class="details-link" href="/items/{{selectedId}}">Details</a>
+  <ul class="items">
+    <for each="item in items">
+      <li class="item">{{item.name}}</li>
+    </for>
+  </ul>
+  <if condition="showDetails">
+    <p class="details">{{details}}</p>
+  </if>
+</section>

@@ -6,7 +6,6 @@
  * modules and resolution of static `loader()` methods on route
  * component constructors.
  */
-
 import type { RouteLoaderContext } from './types.js';
 import type { RouteChainEntry } from './cache.js';
 
@@ -23,10 +22,10 @@ export const NOOP_SIGNAL: AbortSignal = new AbortController().signal;
  * most once.
  *
  * When no loader exists and the tag is not yet registered, a passive
- * stub element is auto-defined. This implements the islands
- * architecture pattern: only interactive components need explicit
- * class definitions — passive route targets (pages with no client-side
- * logic) are handled automatically by the framework.
+ * stub element is auto-defined. Framework runtimes can register richer
+ * template-backed elements before this point; the router stays platform
+ * independent and only falls back to a no-op host when no runtime claimed
+ * the tag.
  */
 export async function ensureComponentLoaded(
   tag: string,

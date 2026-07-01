@@ -64,7 +64,10 @@ function renderOne(fixturePath: string, name: string): RenderedFixture | null {
 
   let html = render(result.protocol, state, { plugin: 'webui' });
 
-  const scriptTag = `<script src="/dist/${name}/element.js"></script>`;
+  const scriptPath = existsSync(resolve(fixturePath, 'element.ts'))
+    ? `/dist/${name}/element.js`
+    : '/dist/auto-elements.js';
+  const scriptTag = `<script src="${scriptPath}"></script>`;
   const bodyEnd = html.lastIndexOf('</body>');
   if (bodyEnd !== -1) {
     html = html.slice(0, bodyEnd) + scriptTag + html.slice(bodyEnd);

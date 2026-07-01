@@ -10,6 +10,7 @@ A full-featured commerce demo built with WebUI — server-side rendered with cli
 - **Nested routing** with `<route>` and `<outlet />`
 - **Client-side navigation** via `@microsoft/webui-router`
 - **SSR + hydration** with WebUI Framework
+- **Declarative-only components** that auto-upgrade without authored TypeScript stubs
 - **View transitions** for smooth page changes
 - **Category filtering** and **sort options**
 - **Product gallery** with thumbnail navigation
@@ -63,7 +64,7 @@ commerce/
 │       ├── frontend.rs     # WebUI protocol rendering
 │       └── state/          # State resolution per route
 ├── tests/                  # Playwright E2E tests
-│   └── commerce.spec.ts    # 42 tests (desktop + mobile)
+│   └── commerce.spec.ts    # 43 tests (desktop + mobile)
 ├── dist/                   # Built client bundle
 └── playwright.config.ts    # Test config (chromium + mobile)
 ```

@@ -214,7 +214,7 @@ The router provides four mechanisms for controlling how state flows to your comp
 
 | Need | Mechanism | What happens |
 |------|-----------|-------------|
-| **Server provides all state** | Default (no changes) | `setState(state)` on every navigation |
+| **Server provides all state** | Default (no changes) | `setState(state)` on every navigation. HTML-only route components use the explicit framework fallback when the app opts those tags in |
 | **I fetch my own data** | `static loader()` on component | Loader runs pre-commit, result passed to `setState()` |
 | **Preserve local state** | `keep-alive` on route | Params/query attrs updated, `setState()` skipped |
 | **Preserve DOM + refresh data** | `keep-alive` + `static loader()` | DOM preserved, loader result applied via `setState()` |
@@ -229,6 +229,16 @@ app.get('*', async (req, res) => {
   res.json(partial);
 });
 ```
+
+Route components that only have `.html` and optional `.css` files do not need a
+JavaScript loader or empty class. When initial SSR data or a later partial
+response includes template metadata for an unregistered route tag, the router
+publishes a `webui:templates-registered` event and stays otherwise platform
+independent. The framework automatically claims compiler-marked HTML-only route
+tags, so params, query attributes, and server state still update the template.
+If no framework runtime claims the tag, the router keeps its legacy passive stub with a no-op
+`setState()` so static server-rendered route content can still participate in
+chain reconciliation.
 
 ### Tagged Cache
 

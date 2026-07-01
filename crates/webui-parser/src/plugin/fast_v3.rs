@@ -681,6 +681,7 @@ mod tests {
             css_fallback_chains: Vec::new(),
             source_path: PathBuf::from("/test"),
             class_name: None,
+            has_script: false,
         }
     }
 

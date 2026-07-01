@@ -1,0 +1,12 @@
+{
+  "heading": "Server heading",
+  "count": 2,
+  "selected": "off",
+  "selectedId": "42",
+  "items": [
+    { "name": "Ada" },
+    { "name": "Grace" }
+  ],
+  "showDetails": false,
+  "details": "SSR details"
+}

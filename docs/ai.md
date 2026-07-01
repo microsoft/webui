@@ -50,7 +50,7 @@ webui build         + JSON state          hydrate as islands
    takes over after hydration for user interactions.
 
 4. **Static content never ships JavaScript.** Only components with event
-   handlers, reactive state, or user input need client-side code.
+   handlers, client-mutated state, or user input need client-side code.
 
 ## Project Structure
 
@@ -317,13 +317,26 @@ export class MyComponent extends WebUIElement {
 MyComponent.define('my-component');
 ```
 
+HTML-only components can omit the `.ts` file when they have no event handlers or
+custom client logic. The compiler marks those scriptless templates in metadata,
+and the framework automatically defines hydrating fallbacks when the metadata is
+available. The fallback hydrates SSR output, observes template-relevant host
+attributes, and accepts `setState()` for compiled binding roots. Routers and
+asset loaders notify the framework about initial SSR or newly loaded metadata
+with `webui:templates-registered`.
+
+Authored components can also omit `@observable` for values that are only read by
+the template and supplied by SSR, router `setState()`, or component asset data.
+The framework stores those template-only values internally. Use `@observable`
+only when TypeScript code reads or mutates the value directly.
+
 ### Decorator reference
 
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |-----------|---------|------|---------------------|
 | `@attr` | HTML attribute reflection | Yes (from JSON state) | Yes |
 | `@attr({ mode: 'boolean' })` | Boolean attribute (present/absent) | Yes | Yes |
-| `@observable` | Reactive internal state | Yes (from JSON state) | Yes |
+| `@observable` | Reactive state used by TypeScript code | Yes (from JSON state) | Yes |
 
 
 ### Component API
@@ -923,7 +936,7 @@ The handler resolves `tokens.light` from the state, outputting:
 
 7. **No computed getters for SSR state.** If a value appears in the
    template, it must be in the server state JSON. Use `@observable`
-   with explicit updates in event handlers.
+   only when event handlers or other TypeScript code read or change it.
 
 8. **Components inside `<for>` loops do NOT inherit loop variables.**
    Pass data explicitly via attributes.
@@ -931,9 +944,9 @@ The handler resolves `tokens.light` from the state, outputting:
 9. **No `import` or `require` in templates.** Components are discovered
    by file naming convention, not imports.
 
-10. **No `this.querySelector()` for reactive state.** Use `@observable` and
-    template bindings. Use `w-ref` only for imperative DOM access (focus,
-    scroll, etc.).
+10. **No `this.querySelector()` for reactive state.** Use `@observable` for
+    state your TypeScript changes, and use template bindings for DOM output.
+    Use `w-ref` only for imperative DOM access (focus, scroll, etc.).
 
 ## Common Patterns
 

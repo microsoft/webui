@@ -43,6 +43,7 @@ import type {
   TemplateCondition,
   TemplateMeta,
 } from './template-types.js';
+import { dispatchTemplatesRegistered } from './template-events.js';
 
 const WEBUI_DATA_ID = 'webui-data';
 const normalizedTemplates = new WeakSet<TemplateMeta>();
@@ -70,6 +71,11 @@ export function getTemplate(name: string): TemplateMeta | undefined {
   return meta;
 }
 
+export function getTemplateRegistry(): Record<string, TemplateMeta> | undefined {
+  loadWebUIDataBlock();
+  return window.__webui?.templates;
+}
+
 export function registerTemplateData(
   templates: Record<string, TemplateMeta>,
   templateFns?: Record<string, CompiledConditionFn[]>,
@@ -86,12 +92,15 @@ export function registerTemplateData(
     }
   }
   const names = Object.keys(templates);
+  let hasTemplates = false;
   for (let i = 0; i < names.length; i++) {
     const tag = names[i];
     const meta = templates[tag];
     w.__webui.templates[tag] = meta;
     normalizeTemplate(tag, meta);
+    hasTemplates = true;
   }
+  if (hasTemplates) dispatchTemplatesRegistered(templates);
 }
 
 function loadWebUIDataBlock(): void {

@@ -2,6 +2,10 @@
 
 A full-featured contact book manager built with **WebUI SSR** and WebUI Framework client hydration. Demonstrates Atomic Design component architecture, IndexedDB offline storage, client-side routing, and responsive layout - all rendered server-side with the `--plugin=webui` pipeline.
 
+Only components with custom event handlers ship TypeScript. Declarative pages,
+display atoms, and list/card components are HTML-only and are claimed by the
+explicit framework fallback runtime from compiled template metadata.
+
 ## Quick Start
 
 ```bash
@@ -21,4 +25,3 @@ cargo xtask dev contact-book-manager
 ```
 
 Then open [http://localhost:3003](http://localhost:3003).
-

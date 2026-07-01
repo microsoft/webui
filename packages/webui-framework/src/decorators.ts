@@ -5,11 +5,20 @@
  * Reactive decorators for WebUIElement properties.
  *
  * Uses TypeScript's `experimentalDecorators` emit, matching the FAST ecosystem
- * conventions.
+ * conventions. This module holds both the reactive metadata registries (the
+ * read side that {@link WebUIElement} consults to route `setState`/SSR seeding)
+ * and the `@observable`/`@attr` decorators (the write side that populates them).
+ *
+ * Note on bundling: esbuild — the bundler every WebUI app and example uses —
+ * performs function-level dead-code elimination, so an HTML-only app that never
+ * references `@observable`/`@attr` already tree-shakes the write side away while
+ * keeping only the read helpers the engine imports. Splitting this module would
+ * add files without removing a single shipped byte, so it deliberately stays
+ * one unit.
  */
 
 // ---------------------------------------------------------------------------
-// Internal helpers
+// kebab-case attribute naming
 // ---------------------------------------------------------------------------
 
 /**
@@ -20,7 +29,6 @@
  * with irregular mappings (concatenated lowercase) need explicit entries.
  */
 const propertyToAttribute: Record<string, string> = Object.assign(Object.create(null) as Record<string, string>, {
-  // --- HTML global/element attributes ---
   accessKey: 'accesskey',
   autoCapitalize: 'autocapitalize',
   contentEditable: 'contenteditable',
@@ -47,31 +55,10 @@ const propertyToAttribute: Record<string, string> = Object.assign(Object.create(
 /**
  * Convert a camelCase DOM property name into its kebab-case HTML attribute form.
  *
- * This function is optimized for framework-level hot paths where attribute
- * normalization may run thousands of times per render. It performs three
- * progressively cheaper checks:
- *
- * 1. **Direct lookup for irregular mappings**  
- *    Many DOM properties (e.g., `readOnly`, `tabIndex`, `crossOrigin`) do not
- *    follow simple camelCase → kebab-case rules. These are resolved through a
- *    precomputed `propertyToAttribute` map for O(1) returns with no string
- *    processing.
- *
- * 2. **Fast path for ARIA attributes**  
- *    ARIA properties always begin with `aria` followed by an uppercase letter
- *    (e.g., `ariaDescribedBy`). These map to `aria-` + the lowercase remainder.
- *    This branch avoids the general loop and uses the engine-optimized
- *    `.toLowerCase()` for the suffix.
- *
- * 3. **General camelCase → kebab-case conversion**  
- *    For all other inputs, the function performs a tight ASCII-only scan:
- *    uppercase A–Z (65–90) are converted to lowercase and prefixed with `-`,
- *    while all other characters are copied as-is. This avoids regex engines,
- *    callback allocations, and match objects, producing predictable,
- *    allocation-minimal performance ideal for DOM attribute reflection.
- *
- * The result is a predictable, JIT-friendly transformation suitable for
- * attribute diffing, SSR serialization, and runtime DOM patching.
+ * Optimized for framework-level hot paths where attribute normalization may run
+ * thousands of times per render. It performs three progressively cheaper checks:
+ * a direct lookup for irregular mappings, a fast path for ARIA attributes, then
+ * a tight ASCII-only scan. No regex engines, callbacks, or match objects.
  */
 export function toKebabCase(str: string): string {
   const mapped = propertyToAttribute[str];
@@ -88,59 +75,109 @@ export function toKebabCase(str: string): string {
   return out;
 }
 
-/**
- * Shared logic for installing a reactive getter/setter on a class prototype.
- * The backing value is stored in a private `_prop` field on the instance.
- */
+// ---------------------------------------------------------------------------
+// Reactive metadata registries (read side)
+// ---------------------------------------------------------------------------
+
+type ReactiveInstance = Record<string | symbol, unknown>;
+
 interface AttrDefinition {
   attribute: string;
   property: string;
   boolean: boolean;
 }
 
-type ReactiveInstance = Record<string | symbol, unknown>;
-
+/** Marks the attribute currently being reflected so the reverse
+ *  attributeChangedCallback path does not echo it back into the property. */
 const reflectingAttribute = Symbol('webui.reflectingAttribute');
+
+const EMPTY_SET: Set<string> = Object.freeze(new Set<string>()) as Set<string>;
 
 function parentConstructor(ctor: Function): Function | null {
   const parent = Object.getPrototypeOf(ctor);
   return typeof parent === 'function' && parent !== Function.prototype ? parent : null;
 }
 
-function createReactiveProperty(
-  proto: Record<string, unknown>,
-  name: string,
-  attrDefinition?: AttrDefinition,
-): void {
-  const backingKey = `_${name}`;
-  const changedKey = `${name}Changed`;
+/** Per-class registry of @observable property names. */
+const observableRegistry = new WeakMap<Function, Set<string>>();
 
-  Object.defineProperty(proto, name, {
-    get(this: ReactiveInstance) {
-      return this[backingKey];
-    },
-    set(this: ReactiveInstance, newValue: unknown) {
-      const oldValue = this[backingKey];
-      if (Object.is(oldValue, newValue)) return;
-      this[backingKey] = newValue;
+/** Get the set of @observable property names registered for a class. */
+export function getObservableNames(ctor: Function): Set<string> {
+  const names = observableRegistry.get(ctor);
+  if (names) return names;
 
-      if (attrDefinition && this['$ready'] === true) {
-        reflectPropertyToAttribute(this, attrDefinition, newValue);
-      }
+  const parent = parentConstructor(ctor);
+  return parent ? getObservableNames(parent) : EMPTY_SET;
+}
 
-      const cb = this[changedKey];
-      if (typeof cb === 'function') {
-        (cb as (old: unknown, next: unknown) => void).call(this, oldValue, newValue);
-      }
+function registerObservableProperty(ctor: Function, name: string): void {
+  let names = observableRegistry.get(ctor);
+  if (!names) {
+    const parent = parentConstructor(ctor);
+    const inherited = parent ? getObservableNames(parent) : EMPTY_SET;
+    names = inherited.size > 0 ? new Set(inherited) : new Set();
+    observableRegistry.set(ctor, names);
+  }
+  names.add(name);
+}
 
-      if ((this as unknown as HTMLElement).isConnected) {
-        const upd = this['$update'] as ((path?: string) => void) | undefined;
-        if (upd) upd.call(this, name);
-      }
-    },
-    enumerable: true,
-    configurable: true,
-  });
+/** Registry of attribute-name → property-name mappings per constructor.
+ *  Used by `attributeChangedCallback` to route attribute changes to properties. */
+const attrByAttribute = new WeakMap<Function, Map<string, AttrDefinition>>();
+
+/** Registry of property-name → attribute metadata, used for mount-time sync. */
+const attrByProperty = new WeakMap<Function, Map<string, AttrDefinition>>();
+
+function inheritedAttrMap(
+  registry: WeakMap<Function, Map<string, AttrDefinition>>,
+  ctor: Function,
+): Map<string, AttrDefinition> | undefined {
+  let current = parentConstructor(ctor);
+  while (current) {
+    const map = registry.get(current);
+    if (map) return map;
+    current = parentConstructor(current);
+  }
+  return undefined;
+}
+
+function attrDefinitionFor(
+  ctor: Function,
+  attribute: string,
+): AttrDefinition | undefined {
+  let current: Function | null = ctor;
+  while (current) {
+    const definition = attrByAttribute.get(current)?.get(attribute);
+    if (definition) return definition;
+    current = parentConstructor(current);
+  }
+  return undefined;
+}
+
+function attrPropertyMapFor(ctor: Function): Map<string, AttrDefinition> | undefined {
+  let current: Function | null = ctor;
+  while (current) {
+    const map = attrByProperty.get(current);
+    if (map) return map;
+    current = parentConstructor(current);
+  }
+  return undefined;
+}
+
+export function isAttributeProperty(ctor: Function, property: string): boolean {
+  return attrPropertyMapFor(ctor)?.has(property) === true;
+}
+
+// ---------------------------------------------------------------------------
+// Attribute reflection
+// ---------------------------------------------------------------------------
+
+function setReflectingAttribute(instance: ReactiveInstance, attrName: string): void {
+  instance[reflectingAttribute] = attrName;
+}
+
+function restoreReflectingAttribute(instance: ReactiveInstance): void {
+  instance[reflectingAttribute] = undefined;
 }
 
 function reflectPropertyToAttribute(
@@ -185,43 +222,63 @@ function reflectPropertyToAttribute(
   }
 }
 
-function setReflectingAttribute(instance: ReactiveInstance, attrName: string): void {
-  instance[reflectingAttribute] = attrName;
-}
+/** Reflect every @attr property of an instance to its attribute at mount. */
+export function syncAttrProperties(instance: object, ctor: Function): void {
+  const attrs = attrPropertyMapFor(ctor);
+  if (!attrs) return;
 
-function restoreReflectingAttribute(instance: ReactiveInstance): void {
-  instance[reflectingAttribute] = undefined;
+  const reactiveInstance = instance as ReactiveInstance;
+  for (const definition of attrs.values()) {
+    reflectPropertyToAttribute(
+      reactiveInstance,
+      definition,
+      reactiveInstance[definition.property],
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
-// @observable
+// Decorators (write side)
 // ---------------------------------------------------------------------------
-
-/** Per-class registry of @observable property names. */
-const observableRegistry = new WeakMap<Function, Set<string>>();
 
 /**
- * Get the set of @observable property names registered for a class.
+ * Shared logic for installing a reactive getter/setter on a class prototype.
+ * The backing value is stored in a private `_prop` field on the instance.
  */
-const EMPTY_SET: Set<string> = Object.freeze(new Set<string>()) as Set<string>;
+function createReactiveProperty(
+  proto: Record<string, unknown>,
+  name: string,
+  attrDefinition?: AttrDefinition,
+): void {
+  const backingKey = `_${name}`;
+  const changedKey = `${name}Changed`;
 
-export function getObservableNames(ctor: Function): Set<string> {
-  const names = observableRegistry.get(ctor);
-  if (names) return names;
+  Object.defineProperty(proto, name, {
+    get(this: ReactiveInstance) {
+      return this[backingKey];
+    },
+    set(this: ReactiveInstance, newValue: unknown) {
+      const oldValue = this[backingKey];
+      if (Object.is(oldValue, newValue)) return;
+      this[backingKey] = newValue;
 
-  const parent = parentConstructor(ctor);
-  return parent ? getObservableNames(parent) : EMPTY_SET;
-}
+      if (attrDefinition && this['$ready'] === true) {
+        reflectPropertyToAttribute(this, attrDefinition, newValue);
+      }
 
-function registerObservableProperty(ctor: Function, name: string): void {
-  let names = observableRegistry.get(ctor);
-  if (!names) {
-    const parent = parentConstructor(ctor);
-    const inherited = parent ? getObservableNames(parent) : EMPTY_SET;
-    names = inherited.size > 0 ? new Set(inherited) : new Set();
-    observableRegistry.set(ctor, names);
-  }
-  names.add(name);
+      const cb = this[changedKey];
+      if (typeof cb === 'function') {
+        (cb as (old: unknown, next: unknown) => void).call(this, oldValue, newValue);
+      }
+
+      if ((this as unknown as HTMLElement).isConnected) {
+        const upd = this['$update'] as ((path?: string) => void) | undefined;
+        if (upd) upd.call(this, name);
+      }
+    },
+    enumerable: true,
+    configurable: true,
+  });
 }
 
 /**
@@ -234,59 +291,6 @@ export function observable(target: object, name: string): void {
   const ctor = (target as Record<string, unknown>).constructor as Function;
   registerObservableProperty(ctor, name);
   createReactiveProperty(target as Record<string, unknown>, name);
-}
-
-// ---------------------------------------------------------------------------
-// @attr
-// ---------------------------------------------------------------------------
-
-/**
- * Registry of attribute-name → property-name mappings per constructor.
- * Used by `attributeChangedCallback` to route attribute changes to properties.
- */
-const attrByAttribute = new WeakMap<Function, Map<string, AttrDefinition>>();
-
-/** Registry of property-name → attribute metadata, used for mount-time sync. */
-const attrByProperty = new WeakMap<Function, Map<string, AttrDefinition>>();
-
-function inheritedAttrMap(
-  registry: WeakMap<Function, Map<string, AttrDefinition>>,
-  ctor: Function,
-): Map<string, AttrDefinition> | undefined {
-  let current = parentConstructor(ctor);
-  while (current) {
-    const map = registry.get(current);
-    if (map) return map;
-    current = parentConstructor(current);
-  }
-  return undefined;
-}
-
-function attrDefinitionFor(
-  ctor: Function,
-  attribute: string,
-): AttrDefinition | undefined {
-  let current: Function | null = ctor;
-  while (current) {
-    const definition = attrByAttribute.get(current)?.get(attribute);
-    if (definition) return definition;
-    current = parentConstructor(current);
-  }
-  return undefined;
-}
-
-function attrPropertyMapFor(ctor: Function): Map<string, AttrDefinition> | undefined {
-  let current: Function | null = ctor;
-  while (current) {
-    const map = attrByProperty.get(current);
-    if (map) return map;
-    current = parentConstructor(current);
-  }
-  return undefined;
-}
-
-export function isAttributeProperty(ctor: Function, property: string): boolean {
-  return attrPropertyMapFor(ctor)?.has(property) === true;
 }
 
 /**
@@ -391,23 +395,6 @@ function applyAttr(
   }
 
   ctor._observedAttrs!.push(attrName);
-}
-
-export function syncAttrProperties(
-  instance: object,
-  ctor: Function,
-): void {
-  const attrs = attrPropertyMapFor(ctor);
-  if (!attrs) return;
-
-  const reactiveInstance = instance as ReactiveInstance;
-  for (const definition of attrs.values()) {
-    reflectPropertyToAttribute(
-      reactiveInstance,
-      definition,
-      reactiveInstance[definition.property],
-    );
-  }
 }
 
 export function attr(target: object, name: string): void;

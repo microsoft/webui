@@ -49,6 +49,32 @@ test.describe('SSR pages', () => {
     expect(count).toBeGreaterThanOrEqual(10);
   });
 
+  test('declarative-only components auto-upgrade without authored stubs', async ({ page }) => {
+    await page.goto('/search/shirts');
+    await expect(page.locator('mp-product-grid mp-product-card')).toHaveCount(3);
+
+    const componentState = async (selector: string) =>
+      page.locator(selector).first().evaluate((el) => {
+        const component = el as HTMLElement & { $ready?: boolean; setState?: unknown };
+
+        return {
+          ready: component.$ready === true,
+          setState: typeof component.setState === 'function',
+        };
+      });
+
+    await expect(componentState('mp-page-search')).resolves.toEqual({ ready: true, setState: true });
+    await expect(componentState('mp-product-grid')).resolves.toEqual({ ready: true, setState: true });
+    await expect(componentState('mp-price')).resolves.toEqual({ ready: true, setState: true });
+
+    const grid = page.locator('mp-product-grid').first();
+    await grid.evaluate((el) => {
+      const component = el as HTMLElement & { setState(state: unknown): void };
+      component.setState({ products: [], query: 'fallback update' });
+    });
+    await expect(grid).toContainText('fallback update');
+  });
+
   test('category page renders filtered products', async ({ page }) => {
     await page.goto('/search/shirts');
     await expect(page.getByRole('heading', { name: 'Collections' })).toBeVisible();

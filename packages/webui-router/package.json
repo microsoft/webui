@@ -1,7 +1,6 @@
 {
   "description": "Lightweight client-side router for WebUI apps. Intercepts navigation, matches routes locally or via server route-data, and hydrates components.",
   "devDependencies": {
-    "@microsoft/webui-framework": "workspace:*",
     "@microsoft/webui-router": "workspace:*",
     "@playwright/test": "catalog:",
     "@types/dom-navigation": "catalog:",

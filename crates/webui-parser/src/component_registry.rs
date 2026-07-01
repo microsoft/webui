@@ -16,6 +16,8 @@ use std::path::PathBuf;
 use walkdir::WalkDir;
 
 type ProcessedCss = (String, Vec<String>, Vec<String>, Vec<CssFallbackChain>);
+#[cfg(feature = "fs")]
+const COMPONENT_SCRIPT_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs"];
 
 /// Represents a web component in the registry.
 #[derive(Debug, Clone)]
@@ -44,6 +46,9 @@ pub struct Component {
 
     /// The class name that implements this component (if available)
     pub class_name: Option<String>,
+
+    /// Whether this component has an authored client script next to its HTML.
+    pub has_script: bool,
 }
 
 /// Registry of web components.
@@ -55,6 +60,16 @@ pub struct ComponentRegistry {
     css_parser: CssParser,
     /// Legal comment preservation policy for component CSS.
     legal_comments: LegalComments,
+}
+
+#[cfg(feature = "fs")]
+fn component_has_script(html_path: &Path) -> bool {
+    for extension in COMPONENT_SCRIPT_EXTENSIONS {
+        if html_path.with_extension(extension).exists() {
+            return true;
+        }
+    }
+    false
 }
 
 impl Default for ComponentRegistry {
@@ -180,6 +195,7 @@ impl ComponentRegistry {
             css_fallback_chains,
             source_path: html_path.to_path_buf(),
             class_name: None,
+            has_script: component_has_script(html_path),
         };
 
         self.components.insert(tag_name.to_string(), component);
@@ -228,6 +244,7 @@ impl ComponentRegistry {
             css_fallback_chains,
             source_path: PathBuf::new(), // Empty path since it's not from a file
             class_name: None,
+            has_script: false,
         };
 
         // Register the component
@@ -317,6 +334,25 @@ mod tests {
             .expect("Failed to retrieve registered component");
         assert_eq!(component.html_content, html_content);
         assert_eq!(component.css_content.as_deref(), Some(css_content));
+        assert!(!component.has_script);
+    }
+
+    #[test]
+    fn test_register_component_detects_sibling_script() {
+        let mut fs = TestFileSystem::new();
+        let html_path = fs.add_file("components/scripted-card.html", "<p>Scripted</p>");
+        std::fs::write(html_path.with_extension("ts"), "export {};")
+            .expect("Failed to write sibling script");
+
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_component_from_paths(&html_path, None::<&str>)
+            .expect("register failed");
+
+        let component = registry
+            .get("scripted-card")
+            .expect("Failed to retrieve registered component");
+        assert!(component.has_script);
     }
 
     #[test]

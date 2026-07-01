@@ -109,7 +109,9 @@ describe('WebUIRouter', () => {
       const origQuerySelectorAll = (globalThis as any).document.querySelectorAll;
       const origAddEventListener = (globalThis as any).document.addEventListener;
       const origRemoveEventListener = (globalThis as any).document.removeEventListener;
+      const origDispatchEvent = (globalThis as any).window.dispatchEvent;
       let removed = false;
+      let notifiedTemplates: Record<string, unknown> | undefined;
 
       globals().__webui = {
         templateFns: { greeting: [() => true] },
@@ -126,6 +128,12 @@ describe('WebUIRouter', () => {
       (globalThis as any).document.querySelectorAll = () => [];
       (globalThis as any).document.addEventListener = () => {};
       (globalThis as any).document.removeEventListener = () => {};
+      (globalThis as any).window.dispatchEvent = (event: Event) => {
+        if (event.type === 'webui:templates-registered') {
+          notifiedTemplates = (event as CustomEvent<{ templates: Record<string, unknown> }>).detail.templates;
+        }
+        return true;
+      };
 
       try {
         const router = new WebUIRouter();
@@ -136,6 +144,11 @@ describe('WebUIRouter', () => {
         assert.deepEqual(globals().__webui!.state, { title: 'Hello' });
         assert.ok(globals().__webui!.templates?.greeting, 'template metadata should be loaded');
         assert.ok(globals().__webui!.templateFns?.greeting, 'existing templateFns should be preserved');
+        assert.deepEqual(
+          notifiedTemplates,
+          { greeting: { h: '<p></p>' } },
+          'initial SSR templates should notify optional framework runtimes',
+        );
         assert.equal(removed, true);
         router.destroy();
       } finally {
@@ -144,6 +157,7 @@ describe('WebUIRouter', () => {
         (globalThis as any).document.querySelectorAll = origQuerySelectorAll;
         (globalThis as any).document.addEventListener = origAddEventListener;
         (globalThis as any).document.removeEventListener = origRemoveEventListener;
+        (globalThis as any).window.dispatchEvent = origDispatchEvent;
       }
     });
   });
@@ -242,6 +256,29 @@ describe('WebUIRouter', () => {
       } finally {
         (globalThis as any).document.createElement = origCreateElement;
         (globalThis as any).document.head = origHead;
+      }
+    });
+
+    test('template registration notifies optional framework runtimes', () => {
+      const origDispatchEvent = (globalThis as any).window.dispatchEvent;
+      let notifiedTemplates: Record<string, unknown> | undefined;
+
+      (globalThis as any).window.dispatchEvent = (event: Event) => {
+        if (event.type === 'webui:templates-registered') {
+          notifiedTemplates = (event as CustomEvent<{ templates: Record<string, unknown> }>).detail.templates;
+        }
+        return true;
+      };
+
+      try {
+        const template = { h: '<p>Notified</p>' };
+        registerTemplatesAndStyles({
+          templates: { 'notified-comp': template },
+        }, '', new Set(), () => {});
+
+        assert.deepEqual(notifiedTemplates, { 'notified-comp': template });
+      } finally {
+        (globalThis as any).window.dispatchEvent = origDispatchEvent;
       }
     });
 

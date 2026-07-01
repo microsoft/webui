@@ -3,8 +3,6 @@
 
 import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
 
-import '#atoms/mp-product-image/mp-product-image.js';
-
 interface GalleryImage {
   index: number;
   gradient: string;

@@ -71,6 +71,7 @@ import {
   ATTR_KIND_COMPLEX,
   ATTR_KIND_TEMPLATE,
 } from './element/types.js';
+import { getTemplateAttributeMap, getTemplateRootSet } from './template-roots.js';
 import type {
   AttrBinding,
   CondBinding,
@@ -115,6 +116,16 @@ function getTplOrdinals(tplNode: Node): Map<number, [number, number]> {
 // ── Sentinels ───────────────────────────────────────────────────
 
 const EMPTY_ARR: readonly never[] = [];
+const EMPTY_SET: ReadonlySet<string> = Object.freeze(new Set<string>()) as ReadonlySet<string>;
+const EMPTY_ATTR_MAP: ReadonlyMap<string, string> = Object.freeze(new Map<string, string>()) as ReadonlyMap<string, string>;
+const WEBUI_SET_STATE_KEY = Symbol.for('microsoft.webui.setStateKey');
+
+const templateAttributeMaps = new WeakMap<Function, ReadonlyMap<string, string>>();
+const templateRootSets = new WeakMap<Function, ReadonlySet<string>>();
+
+type TemplateObservedConstructor = CustomElementConstructor & {
+  readonly observedAttributes?: readonly string[];
+};
 
 // ── Helper: snapshot child nodes into a pre-allocated array ──────
 
@@ -137,15 +148,66 @@ function getTemplateDom(meta: TemplateBlockMeta): Element {
   return div;
 }
 
+function installTemplateObservedAttributes(ctor: TemplateObservedConstructor, tagName: string): void {
+  const meta = getTemplate(tagName);
+  if (!meta) return;
+
+  const attrMap = getTemplateAttributeMap(meta);
+  templateRootSets.set(ctor, getTemplateRootSet(meta));
+  if (attrMap.size === 0) return;
+  templateAttributeMaps.set(ctor, attrMap);
+
+  const existing = ctor.observedAttributes ?? EMPTY_ARR;
+  const merged = new Array<string>(existing.length + attrMap.size);
+  let count = 0;
+  for (let i = 0; i < existing.length; i++) {
+    merged[count] = existing[i];
+    count += 1;
+  }
+  for (const attrName of attrMap.keys()) {
+    let found = false;
+    for (let i = 0; i < count; i++) {
+      if (merged[i] === attrName) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      merged[count] = attrName;
+      count += 1;
+    }
+  }
+  merged.length = count;
+
+  Object.defineProperty(ctor, 'observedAttributes', {
+    get() {
+      return merged;
+    },
+    configurable: true,
+  });
+}
+
+function hasAuthoredMember(instance: object, key: string): boolean {
+  if (Object.prototype.hasOwnProperty.call(instance, key)) return true;
+
+  let proto = Object.getPrototypeOf(instance) as object | null;
+  while (proto && proto !== CoreElement.prototype) {
+    if (Object.prototype.hasOwnProperty.call(proto, key)) return true;
+    proto = Object.getPrototypeOf(proto) as object | null;
+  }
+  return false;
+}
+
 // ═══════════════════════════════════════════════════════════════════
-//  WebUIElement
+//  CoreElement — static rendering core (no events / refs / emit)
 // ═══════════════════════════════════════════════════════════════════
 
-export class WebUIElement extends HTMLElement {
+export class CoreElement extends HTMLElement {
   private $root: TemplateInstance | null = null;
   private $meta?: TemplateMeta;
   private $ready = false;
   private $hydrated = false;
+  private $templateState: Record<string, unknown> | null = null;
   private $dirtyPaths: Set<string> | null = null;
   private $pendingFlush = false;
   /** Cached condition resolver — avoids allocating a closure per evaluation. */
@@ -164,7 +226,12 @@ export class WebUIElement extends HTMLElement {
     repeats: RepeatBinding[];
   } | null;
 
+  [WEBUI_SET_STATE_KEY](key: string, value: unknown): void {
+    this.$setStateKey(key, value);
+  }
+
   static define(tagName: string): void {
+    installTemplateObservedAttributes(this as TemplateObservedConstructor, tagName);
     customElements.define(tagName, this);
   }
 
@@ -322,35 +389,90 @@ export class WebUIElement extends HTMLElement {
     instance.repeats.length = 0;
   }
 
-  /** Dispatch a bubbling custom event. Uses composed:true when in shadow DOM. */
-  $emit(name: string, detail?: unknown): boolean {
-    return this.dispatchEvent(
-      new CustomEvent(name, {
-        bubbles: true,
-        cancelable: true,
-        composed: !!this.shadowRoot,
-        detail,
-      }),
-    );
+  attributeChangedCallback(
+    name: string,
+    oldValue: string | null,
+    newValue: string | null,
+  ): void {
+    if (Object.is(oldValue, newValue)) return;
+    const property = this.$templateAttributeMap().get(name);
+    if (property && this.$usesTemplateState(property)) {
+      this.$setTemplateState(property, newValue);
+    }
   }
 
-  /** Populate @observable properties from server or router state.
+  /** Populate component state from server or router state.
    *
-   * Each property is set through its reactive setter, which coalesces
-   * updates into a single pending microtask. We then synchronously
-   * flush those pending path updates so the DOM is current before any
-   * view-transition snapshot captures it.
+   * Decorated properties are set through their reactive setters. Template-only
+   * bindings are stored internally so app code does not need public
+   * `@observable` fields just to receive server state.
    */
   setState(state: Record<string, unknown>): void {
-    const names = getObservableNames(this.constructor as Function);
     const keys = Object.keys(state);
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i];
-      if (names.has(key)) {
-        (this as Record<string, unknown>)[key] = state[key];
-      }
+      this.$setStateKey(key, state[key]);
     }
     this.$flushUpdates();
+  }
+
+  protected $observableNames(): Set<string> {
+    return getObservableNames(this.constructor as Function);
+  }
+
+  protected $shouldApplySSRState(key: string): boolean {
+    return !isAttributeProperty(this.constructor as Function, key);
+  }
+
+  protected $shouldApplyTemplateStateFromSSR(_key: string): boolean {
+    return true;
+  }
+
+  protected $setTemplateState(key: string, value: unknown): void {
+    if (this.$writeTemplateState(key, value)) {
+      this.$update(key);
+    }
+  }
+
+  private $writeTemplateState(key: string, value: unknown): boolean {
+    if (!this.$templateState) {
+      this.$templateState = Object.create(null) as Record<string, unknown>;
+    }
+    if (Object.is(this.$templateState[key], value)) return false;
+    this.$templateState[key] = value;
+    return true;
+  }
+
+  private $templateStateNames(): ReadonlySet<string> {
+    const fromCtor = templateRootSets.get(this.constructor as Function);
+    if (fromCtor) return fromCtor;
+    if (this.$meta) return getTemplateRootSet(this.$meta);
+    const tagName = this.tagName;
+    if (!tagName) return EMPTY_SET;
+    const meta = getTemplate(tagName.toLowerCase());
+    return meta ? getTemplateRootSet(meta) : EMPTY_SET;
+  }
+
+  private $templateAttributeMap(): ReadonlyMap<string, string> {
+    const fromCtor = templateAttributeMaps.get(this.constructor as Function);
+    if (fromCtor) return fromCtor;
+    if (!this.$meta) {
+      const meta = getTemplate(this.tagName.toLowerCase());
+      return meta ? getTemplateAttributeMap(meta) : EMPTY_ATTR_MAP;
+    }
+    return getTemplateAttributeMap(this.$meta);
+  }
+
+  private $usesTemplateState(key: string): boolean {
+    return this.$templateStateNames().has(key) && !hasAuthoredMember(this, key);
+  }
+
+  private $setStateKey(key: string, value: unknown): void {
+    if (this.$observableNames().has(key)) {
+      (this as Record<string, unknown>)[key] = value;
+    } else if (this.$usesTemplateState(key)) {
+      this.$setTemplateState(key, value);
+    }
   }
 
   /**
@@ -367,12 +489,16 @@ export class WebUIElement extends HTMLElement {
   private $applySSRState(): void {
     const state = window.__webui?.state;
     if (!state || typeof state !== 'object') return;
-    const ctor = this.constructor as Function;
-    const names = getObservableNames(ctor);
-    for (const key of Object.keys(state)) {
-      if (names.has(key) && !isAttributeProperty(ctor, key)) {
+    const observableNames = this.$observableNames();
+    const keys = Object.keys(state);
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (observableNames.has(key)) {
+        if (!this.$shouldApplySSRState(key)) continue;
         // Write to backing field directly — no reactive update yet
         (this as Record<string, unknown>)[`_${key}`] = state[key];
+      } else if (this.$usesTemplateState(key) && this.$shouldApplyTemplateStateFromSSR(key)) {
+        this.$writeTemplateState(key, state[key]);
       }
     }
   }
@@ -1122,99 +1248,19 @@ export class WebUIElement extends HTMLElement {
     }
   }
 
-  /** Wire events + root events + refs (shared by $wire and $hydrate). */
-  private $finalize(
-    root: Node,
-    meta: TemplateBlockMeta,
-    resolver: (root: Node, path: TemplateNodePath) => Node | null,
-    scope?: ScopeFrame,
-  ): void {
-    this.$wireEvents(root, meta, resolver, scope);
-    if ((meta as TemplateMeta).re) this.$wireRoot((meta as TemplateMeta).re!);
-    this.$wireRefs(root);
-  }
+  /**
+   * Hook for wiring interactivity (events + refs). The static rendering core
+   * does nothing here; the interactive {@link WebUIElement} subclass overrides
+   * it. Auto-elements — which can never carry event handlers — use this empty
+   * core hook and tree-shake every event/ref helper away.
+   */
+  protected $finalize(
+    _root: Node,
+    _meta: TemplateBlockMeta,
+    _resolver: (root: Node, path: TemplateNodePath) => Node | null,
+    _scope?: ScopeFrame,
+  ): void {}
 
-  /** Wire events using a resolver function (works for both client and SSR). */
-  private $wireEvents(
-    root: Node,
-    meta: TemplateBlockMeta,
-    resolver: (root: Node, path: TemplateNodePath) => Node | null,
-    scope?: ScopeFrame,
-  ): void {
-    if (!meta.e) return;
-    for (let i = 0; i < meta.e.length; i++) {
-      const [eventName, handlerName, args, target] = meta.e[i];
-      const el = resolver(root, target);
-      if (!el || el.nodeType !== 1) continue;
-      this.$addEvent(el as Element, eventName, handlerName, args, scope);
-    }
-  }
-
-  /** Wire root-level events on the host element (or shadow root when present). */
-  private $wireRoot(re: [string, string, CompiledEventArgs][]): void {
-    const target = this.shadowRoot ?? this;
-    for (let i = 0; i < re.length; i++) {
-      this.$addEvent(target, re[i][0], re[i][1], re[i][2], undefined);
-    }
-  }
-
-  /** Attach a single event listener. */
-  private $addEvent(
-    target: EventTarget,
-    eventName: string,
-    handlerName: string,
-    args: CompiledEventArgs,
-    scope?: ScopeFrame,
-  ): void {
-    const method = (this as Record<string, unknown>)[handlerName];
-    if (typeof method !== 'function') return;
-    if (args.length === 0) {
-      target.addEventListener(eventName, () => {
-        (method as Function).call(this);
-      });
-      return;
-    }
-    if (args.length === 1 && args[0][0] === 'e') {
-      target.addEventListener(eventName, (event) => {
-        (method as Function).call(this, event);
-      });
-      return;
-    }
-    target.addEventListener(eventName, (event) => {
-      (method as Function).apply(this, this.$resolveEventArgs(args, event, scope));
-    });
-  }
-
-  private $resolveEventArgs(args: CompiledEventArgs, event: Event, scope?: ScopeFrame): unknown[] {
-    const resolved: unknown[] = [];
-    for (let i = 0; i < args.length; i++) {
-      resolved.push(this.$resolveEventArg(args[i], event, scope));
-    }
-    return resolved;
-  }
-
-  private $resolveEventArg(arg: CompiledEventArg, event: Event, scope?: ScopeFrame): unknown {
-    switch (arg[0]) {
-      case 'e': return event;
-      case 'p': return this.$resolveValue(arg[1], scope);
-      case 's': return arg[1];
-      case 'n': return arg[1];
-      case 'b': return !!arg[1];
-      case 'z': return null;
-    }
-  }
-
-  /** Find w-ref attributes and assign to component properties. */
-  private $wireRefs(root: Node): void {
-    if (root.nodeType !== 1 && root.nodeType !== 11) return;
-    const refs = (root as Element).querySelectorAll('[w-ref]');
-    for (let i = 0; i < refs.length; i++) {
-      const raw = refs[i].getAttribute('w-ref');
-      if (!raw || raw.charCodeAt(0) !== 123) continue;
-      const name = raw.slice(1, -1);
-      if (name) (this as Record<string, unknown>)[name] = refs[i];
-    }
-  }
 
   /** Create an AttrBinding from compiled metadata. */
   private $makeAttr(el: Element, entry: CompiledAttrMeta, scope?: ScopeFrame): AttrBinding {
@@ -1270,7 +1316,7 @@ export class WebUIElement extends HTMLElement {
 
   private $buildPathIndex(): void {
     if (!this.$root) return;
-    const observableNames = getObservableNames(this.constructor as Function);
+    const observableNames = this.$observableNames();
     const index = new Map<string, {
       texts: TextBinding[]; attrs: AttrBinding[];
       conds: CondBinding[]; repeats: RepeatBinding[];
@@ -1285,7 +1331,7 @@ export class WebUIElement extends HTMLElement {
     const keyFor = (path: string) => {
       const dot = path.indexOf('.');
       const root = dot > -1 ? path.slice(0, dot) : path;
-      return observableNames.has(root) ? root : '*';
+      return observableNames.has(root) || this.$usesTemplateState(root) ? root : '*';
     };
 
     const isLocalPath = (path: string, scope?: ScopeFrame): boolean => {
@@ -1395,13 +1441,15 @@ export class WebUIElement extends HTMLElement {
     switch (b.kind) {
       case ATTR_KIND_COMPLEX: {
         const v = this.$resolveValue(b.path!, b.scope);
-        (el as unknown as Record<string, unknown>)[b.name] = v;
-        // If the target is a WebUIElement, flush its pending updates
-        // synchronously so child <for> loops re-render immediately.
-        // Without this, the child's microtask-coalesced update runs
-        // too late for view transitions that snapshot the DOM.
-        const flush = (el as unknown as Record<string, unknown>)['$flushUpdates'];
-        if (typeof flush === 'function') (flush as () => void).call(el);
+        const target = el as unknown as Record<string | symbol, unknown>;
+        const setStateKey = target[WEBUI_SET_STATE_KEY];
+        if (typeof setStateKey === 'function') {
+          (setStateKey as (key: string, value: unknown) => void).call(el, b.name, v);
+          const flush = target['$flushUpdates'];
+          if (typeof flush === 'function') (flush as () => void).call(el);
+        } else {
+          target[b.name] = v;
+        }
         break;
       }
       case ATTR_KIND_BOOLEAN: {
@@ -1468,8 +1516,20 @@ export class WebUIElement extends HTMLElement {
     }
     // Resolve against component — fast path for single-segment (no dot)
     const dot = path.indexOf('.');
-    if (dot === -1) return (this as Record<string, unknown>)[path];
-    return dotWalk((this as Record<string, unknown>)[path.substring(0, dot)], path, dot + 1);
+    if (dot === -1) return this.$resolveComponentRoot(path);
+    return dotWalk(this.$resolveComponentRoot(path.substring(0, dot)), path, dot + 1);
+  }
+
+  private $resolveComponentRoot(root: string): unknown {
+    const instance = this as Record<string, unknown>;
+    if (
+      this.$templateState &&
+      Object.prototype.hasOwnProperty.call(this.$templateState, root) &&
+      !hasAuthoredMember(this, root)
+    ) {
+      return this.$templateState[root];
+    }
+    return instance[root];
   }
 
   private $resolveParts(parts: CompiledAttrPart[], scope?: ScopeFrame): string {
@@ -1533,5 +1593,124 @@ export class WebUIElement extends HTMLElement {
       path = p[0]; seen = true;
     }
     return seen ? { path, prefix, suffix } : null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  WebUIElement — interactive superset (events + refs + emit)
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * The interactive element base. Authored components extend this to gain event
+ * binding (`@click`, root events), `w-ref` wiring, and `$emit`. HTML-only
+ * components never reach this class: the auto-element runtime extends
+ * {@link CoreElement} directly, so a purely static app tree-shakes everything
+ * below out of its bundle.
+ */
+export class WebUIElement extends CoreElement {
+  /** Dispatch a bubbling custom event. Uses composed:true when in shadow DOM. */
+  $emit(name: string, detail?: unknown): boolean {
+    return this.dispatchEvent(
+      new CustomEvent(name, {
+        bubbles: true,
+        cancelable: true,
+        composed: !!this.shadowRoot,
+        detail,
+      }),
+    );
+  }
+
+  /** Wire events + root events + refs (shared by $wire and $hydrate). */
+  protected override $finalize(
+    root: Node,
+    meta: TemplateBlockMeta,
+    resolver: (root: Node, path: TemplateNodePath) => Node | null,
+    scope?: ScopeFrame,
+  ): void {
+    this.$wireEvents(root, meta, resolver, scope);
+    if ((meta as TemplateMeta).re) this.$wireRoot((meta as TemplateMeta).re!);
+    this.$wireRefs(root);
+  }
+
+  /** Wire events using a resolver function (works for both client and SSR). */
+  private $wireEvents(
+    root: Node,
+    meta: TemplateBlockMeta,
+    resolver: (root: Node, path: TemplateNodePath) => Node | null,
+    scope?: ScopeFrame,
+  ): void {
+    if (!meta.e) return;
+    for (let i = 0; i < meta.e.length; i++) {
+      const [eventName, handlerName, args, target] = meta.e[i];
+      const el = resolver(root, target);
+      if (!el || el.nodeType !== 1) continue;
+      this.$addEvent(el as Element, eventName, handlerName, args, scope);
+    }
+  }
+
+  /** Wire root-level events on the host element (or shadow root when present). */
+  private $wireRoot(re: [string, string, CompiledEventArgs][]): void {
+    const target = this.shadowRoot ?? this;
+    for (let i = 0; i < re.length; i++) {
+      this.$addEvent(target, re[i][0], re[i][1], re[i][2], undefined);
+    }
+  }
+
+  /** Attach a single event listener. */
+  private $addEvent(
+    target: EventTarget,
+    eventName: string,
+    handlerName: string,
+    args: CompiledEventArgs,
+    scope?: ScopeFrame,
+  ): void {
+    const method = (this as Record<string, unknown>)[handlerName];
+    if (typeof method !== 'function') return;
+    if (args.length === 0) {
+      target.addEventListener(eventName, () => {
+        (method as Function).call(this);
+      });
+      return;
+    }
+    if (args.length === 1 && args[0][0] === 'e') {
+      target.addEventListener(eventName, (event) => {
+        (method as Function).call(this, event);
+      });
+      return;
+    }
+    target.addEventListener(eventName, (event) => {
+      (method as Function).apply(this, this.$resolveEventArgs(args, event, scope));
+    });
+  }
+
+  private $resolveEventArgs(args: CompiledEventArgs, event: Event, scope?: ScopeFrame): unknown[] {
+    const resolved: unknown[] = [];
+    for (let i = 0; i < args.length; i++) {
+      resolved.push(this.$resolveEventArg(args[i], event, scope));
+    }
+    return resolved;
+  }
+
+  private $resolveEventArg(arg: CompiledEventArg, event: Event, scope?: ScopeFrame): unknown {
+    switch (arg[0]) {
+      case 'e': return event;
+      case 'p': return this.$resolveValue(arg[1], scope);
+      case 's': return arg[1];
+      case 'n': return arg[1];
+      case 'b': return !!arg[1];
+      case 'z': return null;
+    }
+  }
+
+  /** Find w-ref attributes and assign to component properties. */
+  private $wireRefs(root: Node): void {
+    if (root.nodeType !== 1 && root.nodeType !== 11) return;
+    const refs = (root as Element).querySelectorAll('[w-ref]');
+    for (let i = 0; i < refs.length; i++) {
+      const raw = refs[i].getAttribute('w-ref');
+      if (!raw || raw.charCodeAt(0) !== 123) continue;
+      const name = raw.slice(1, -1);
+      if (name) (this as Record<string, unknown>)[name] = refs[i];
+    }
   }
 }

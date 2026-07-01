@@ -15,7 +15,23 @@ my-counter/
 
 - **HTML** defines what the component renders and where dynamic values appear
 - **CSS** styles the component in isolation - Shadow DOM prevents leaking
-- **TypeScript** defines reactive properties, event handlers, and component logic
+- **TypeScript** defines JS-visible reactive properties, event handlers, and component logic
+
+HTML-only components can omit the TypeScript file when they do not handle
+events or run custom client logic:
+
+```
+product-card/
+├── product-card.html
+└── product-card.css
+```
+
+The compiler marks scriptless templates in metadata, and the framework
+automatically defines hydrating fallbacks for those tags when the metadata is
+available. The fallback hydrates SSR output, observes attributes that correspond
+to template bindings, and accepts router `setState()` data for those bindings.
+Add a TypeScript class only when the component needs event handlers, custom
+methods, custom lifecycle code, or state that TypeScript code reads or mutates.
 
 ## The Component Class
 
@@ -129,6 +145,13 @@ Use `@observable` for internal state that changes over time. When an observable 
 ```
 
 Observable changes are **synchronous and targeted** - only the specific DOM nodes bound to the changed property are updated.
+
+You do not need `@observable` for values that only come from SSR, router
+`setState()`, or component asset data and are only read by the template. The
+framework stores those template-only values internally and updates the compiled
+bindings without exposing public class fields. Add `@observable` when your
+TypeScript code needs to read or mutate the value, for example in an event
+handler.
 
 ### Derived State
 

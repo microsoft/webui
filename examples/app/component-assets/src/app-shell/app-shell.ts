@@ -7,7 +7,6 @@ import { defineComponentAssets } from '@microsoft/webui-framework/component-asse
 const assets = defineComponentAssets({
   'lazy-panel': {
     asset: './lazy-panel.webui.js',
-    module: () => import('../lazy-panel/lazy-panel.js'),
     data: async () => await (await fetch('./lazy-panel-data.json')).json(),
   },
 });

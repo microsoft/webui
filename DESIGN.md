@@ -1540,6 +1540,32 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   appending nodes to the connected DOM. Child components therefore observe
   initial parent `:` property bindings in `connectedCallback`, while later parent
   updates remain live.
+- Missing HTML-only custom elements are marked in compiled template metadata
+  with `ae: 1` when the component has no sibling client script. The framework
+  root runtime listens for template metadata and installs a static `CoreElement`
+  subclass only for compiler-marked tags when the tag is not already registered
+  and the compiled template contains no event handler metadata. `CoreElement` is
+  the static rendering core (hydration, template state, bindings, repeats,
+  conditionals, attribute reflection); the interactive `WebUIElement` superset
+  adds event wiring, `w-ref` wiring, and `$emit` on top. Because auto-elements
+  extend `CoreElement` — never `WebUIElement` — a purely static / HTML-only app
+  tree-shakes all event/ref/emit code out of its bundle.
+  The fallback derives reactive roots from `tx`, `a`, `c`, and `r`
+  metadata, observes the corresponding host attributes, seeds non-attribute
+  state from `window.__webui.state`, and supports router `setState()` updates
+  without developer-authored `@observable` / `@attr` stubs. The framework root
+  entrypoint stays side-effect free and tree-shakeable. Developer-authored
+  classes and lazy loaders own templates that contain event handlers.
+- Developer-authored `WebUIElement` classes also treat compiled template roots
+  as stateful. `setState()` and SSR seeding store any undecorated
+  template-bound roots in hidden framework state, so `@observable` is only
+  required when TypeScript code reads or mutates the property directly.
+- Template producers that bootstrap initial SSR metadata or load metadata after
+  initial SSR, including `@microsoft/webui-router`, publish a synchronous
+  `webui:templates-registered` event with `{ templates }` in `detail`. The
+  framework runtime listens for this optional platform-neutral event and claims
+  compiler-marked template-backed HTML-only tags before routers or asset loaders
+  create them.
 - Events are resolved from compiled `e[]` metadata entries using path indices. The runtime installs listeners on target elements and resolves handler arguments against the scope captured when that block was rendered. Root events from `re[]` attach directly to the host element.
 - The full package entrypoint supports repeat metadata (`r[]` / `rl[]`). The additive `@microsoft/webui-framework/element-no-repeat` entrypoint preserves the same public `WebUIElement` API but must reject compiled templates that contain repeat metadata.
 

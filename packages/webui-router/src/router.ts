@@ -40,7 +40,12 @@ import {
 
 import { NavigationCache } from './cache.js';
 import type { PartialResponse, RouteChainEntry } from './cache.js';
-import { registerTemplatesAndStyles, injectCssLinks, fetchComponentTemplates } from './templates.js';
+import {
+  registerTemplatesAndStyles,
+  injectCssLinks,
+  fetchComponentTemplates,
+  notifyTemplatesRegistered,
+} from './templates.js';
 import { readStreamingPartial, applyDeferredStates } from './streaming.js';
 import type { StreamingContext } from './streaming.js';
 import { setupFormInterception } from './actions.js';
@@ -125,6 +130,7 @@ export class WebUIRouter {
     if (!meta.css) meta.css = [];
     if (!meta.styles) meta.styles = [];
     if (!meta.templates) meta.templates = {};
+    notifyTemplatesRegistered(meta.templates);
 
     // Build O(1) lookup Sets from the global arrays, then free the arrays —
     // they were one-shot SSR data; the Sets are the live lookup structure.

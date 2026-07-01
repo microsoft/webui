@@ -26,7 +26,6 @@ function onHydrationComplete(): void {
     loaders: {
       'section-page': () => import('./section-page/section-page.js'),
       'topic-page': () => import('./topic-page/topic-page.js'),
-      'lesson-page': () => import('./lesson-page/lesson-page.js'),
     },
   });
 }
