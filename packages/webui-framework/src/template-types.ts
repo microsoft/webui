@@ -4,6 +4,10 @@
 /**
  * Template type definitions — shared across packages without pulling in
  * the global `Window` augmentation from `template.ts`.
+ *
+ * These tuple shapes mirror the compact payload emitted by the Rust parser.
+ * Keep them allocation-light and stable: the browser runtime indexes directly
+ * into these arrays on hot hydration/update paths.
  */
 
 export type CompiledAttrPart = string | [path: string];
@@ -67,6 +71,6 @@ export interface TemplateMeta extends TemplateBlockMeta {
   re?: [string, string, CompiledEventArgs][];
   /** Shadow DOM flag — when true, client-created components use shadow root. */
   sd?: boolean;
-  /** Auto-element flag — true when the compiler found no authored script. */
+  /** Internal auto-element flag — true when the parser found no authored script. */
   ae?: boolean | 1;
 }

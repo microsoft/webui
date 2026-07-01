@@ -61,6 +61,11 @@ pub struct ComponentRegistry {
 }
 
 #[cfg(feature = "fs")]
+/// Return true when a component has an authored browser module next to its HTML.
+///
+/// Only `.ts` and `.js` are recognized component implementations. Other
+/// extensions are intentionally ignored so auto-element eligibility is
+/// deterministic and matches the documented authoring model.
 fn component_has_script(html_path: &Path) -> bool {
     html_path.with_extension("ts").exists() || html_path.with_extension("js").exists()
 }

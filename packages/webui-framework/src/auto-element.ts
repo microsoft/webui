@@ -1,6 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+/**
+ * Automatic HTML-only component runtime.
+ *
+ * The parser marks component templates that have no sibling `.ts` / `.js`
+ * implementation. Importing the framework root installs this runtime so those
+ * scriptless templates still hydrate as real WebUI elements when server or route
+ * state changes. Authored custom elements always win, and templates with event
+ * metadata are refused because event handlers require developer code.
+ *
+ * Keep this module dependent on `CoreElement`, not `WebUIElement`: the whole
+ * point is that HTML-only pages can tree-shake event, ref, and `$emit` support.
+ */
+
 import { CoreElement } from './element.js';
 import { toKebabCase } from './decorators.js';
 import { getTemplateRegistry } from './template.js';
@@ -14,6 +27,7 @@ import type { TemplateMeta } from './template.js';
 let runtimeInstalled = false;
 let initialClaimQueued = false;
 
+/** Define the smallest hydrating element for a scriptless template. */
 function defineAutoElement(tag: string, meta: TemplateMeta): void {
   const w = window as Window;
   if (!w.__webui) w.__webui = {};
@@ -30,10 +44,10 @@ function defineAutoElement(tag: string, meta: TemplateMeta): void {
 }
 
 /**
- * Define a hydrating fallback element for one compiled template tag when safe.
+ * Define a hydrating auto-element for one compiled template tag when safe.
  *
  * Developer-authored custom elements take precedence: when a tag is already
- * registered, this function leaves it untouched and reports no fallback work.
+ * registered, this function leaves it untouched and reports no work.
  */
 function defineMissingTemplateElement(tag: string, meta: TemplateMeta): boolean {
   if (
@@ -49,6 +63,7 @@ function defineMissingTemplateElement(tag: string, meta: TemplateMeta): boolean 
   return true;
 }
 
+/** Claim every eligible template in a registry snapshot. */
 function defineAutoTemplateElements(templates = getTemplateRegistry()): void {
   if (!templates) return;
   const tags = Object.keys(templates);
@@ -59,6 +74,13 @@ function defineAutoTemplateElements(templates = getTemplateRegistry()): void {
   }
 }
 
+/**
+ * Defer the first page-wide claim by one microtask.
+ *
+ * This gives authored component modules in the same import graph a chance to
+ * call `customElements.define()` first, while router-delivered templates still
+ * claim synchronously through the registration event below.
+ */
 function queueInitialAutoElementClaim(): void {
   if (initialClaimQueued) return;
   initialClaimQueued = true;
@@ -69,7 +91,10 @@ function queueInitialAutoElementClaim(): void {
 }
 
 /**
- * Install the fallback runtime for compiler-marked HTML-only compiled templates.
+ * Install the runtime for compiler-marked HTML-only templates.
+ *
+ * This is called by the package root as a side effect, so app authors do not
+ * maintain tag lists or import an auto-element subpath.
  */
 export function installAutoElementRuntime(): void {
   if (runtimeInstalled) {

@@ -4,13 +4,24 @@
 /**
  * Template & CSS registration — shared by partial navigation and
  * `ensureLoaded()`.
+ *
+ * This module intentionally knows nothing about `@microsoft/webui-framework`.
+ * It only stores templates and announces that new WebUI template data exists;
+ * framework runtimes can listen and claim tags without making the router
+ * platform-specific.
  */
 
+/** Shared event name understood by optional framework runtimes. */
 const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
 
 /**
  * Register templates + inject CSS from a server response.
  * Shared by fetchPartial and fetchComponentTemplates.
+ *
+ * WebUI JSON template payloads are stored directly. FAST string templates are
+ * materialized as DOM. After JSON templates are registered, a DOM event lets
+ * auto-element runtimes upgrade scriptless component tags before the router
+ * falls back to passive stubs.
  */
 export function registerTemplatesAndStyles(
   data: {
@@ -177,6 +188,7 @@ export async function fetchComponentTemplates(
   registerTemplatesAndStyles(data, nonce, injectedStyles, updateInventory);
 }
 
+/** Announce newly registered WebUI templates without importing a framework. */
 export function notifyTemplatesRegistered(templates: Record<string, unknown> | undefined): void {
   if (
     !templates ||

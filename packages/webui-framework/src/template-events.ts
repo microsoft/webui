@@ -1,12 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+/**
+ * Template registration bridge shared by framework and router.
+ *
+ * `@microsoft/webui-router` must stay platform independent and cannot import the
+ * framework. It dispatches this DOM event after registering WebUI template data;
+ * the framework listens for the event and can claim HTML-only auto-elements.
+ */
+
 import type { TemplateMeta } from './template.js';
 
-/** Event emitted when compiled template metadata becomes available. */
+/** DOM event emitted when WebUI template data becomes available at runtime. */
 export const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
 
-/** Notify optional runtimes that compiled templates have been registered. */
+/**
+ * Notify optional runtimes that templates have been registered.
+ *
+ * The payload is intentionally just the template map so consumers can decide
+ * what to do without creating package dependencies between router and framework.
+ */
 export function dispatchTemplatesRegistered(templates: Record<string, TemplateMeta>): void {
   if (
     typeof window === 'undefined' ||

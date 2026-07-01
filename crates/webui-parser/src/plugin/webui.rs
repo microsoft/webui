@@ -77,6 +77,8 @@ struct TrackedComponent {
     tag_name: String,
     template_html: String,
     root_event_source: String,
+    /// Source fact from the component registry. Auto-element metadata is derived
+    /// as `!has_script` only when the final template payload is emitted.
     has_script: bool,
 }
 

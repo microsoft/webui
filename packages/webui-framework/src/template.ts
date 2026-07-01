@@ -16,6 +16,11 @@
  * - `sa` — adopted stylesheet specifier for CSS module strategy
  * - `sd` — shadow DOM flag for client-created components
  * - `re` — root events on the host element
+ * - `ae` — internal auto-element eligibility flag for scriptless templates
+ *
+ * Template registration also notifies optional runtimes, such as the
+ * auto-element runtime, so dynamically loaded route templates can be claimed
+ * without coupling the router package to the framework package.
  */
 
 export type {
@@ -61,6 +66,12 @@ declare global {
   }
 }
 
+/**
+ * Return the normalized template metadata for a component tag.
+ *
+ * The first lookup lazily loads the SSR data block so components can hydrate
+ * without every app eagerly parsing route/template metadata at startup.
+ */
 export function getTemplate(name: string): TemplateMeta | undefined {
   let meta = window.__webui?.templates?.[name];
   if (!meta) {
@@ -71,11 +82,18 @@ export function getTemplate(name: string): TemplateMeta | undefined {
   return meta;
 }
 
+/** Return the complete template registry, loading SSR data if needed. */
 export function getTemplateRegistry(): Record<string, TemplateMeta> | undefined {
   loadWebUIDataBlock();
   return window.__webui?.templates;
 }
 
+/**
+ * Register template metadata and optional condition closures at runtime.
+ *
+ * Used by component assets and tests. After registration, a DOM event is
+ * dispatched so auto-elements can claim newly available scriptless templates.
+ */
 export function registerTemplateData(
   templates: Record<string, TemplateMeta>,
   templateFns?: Record<string, CompiledConditionFn[]>,

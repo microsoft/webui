@@ -1,6 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+/**
+ * Bundle-size harness for framework reachability checks.
+ *
+ * The probes intentionally model the important client graphs:
+ * - root barrel: what a normal app import keeps alive
+ * - auto element: the HTML-only runtime path
+ * - authored probe: a component that uses decorators and events
+ * - html-only probe: a static app that only imports the framework root
+ *
+ * This lets framework refactors prove they changed shipped bytes, not just
+ * source layout. The script is dev-only and never participates in app bundles.
+ */
+
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

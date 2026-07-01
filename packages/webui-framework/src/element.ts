@@ -9,6 +9,12 @@
  * template path mapping.  Client-created components use exact childNode
  * indices from the compiled template HTML.
  *
+ * The runtime is split into `CoreElement` and `WebUIElement` for Interactive
+ * Islands. `CoreElement` owns hydration, template-only state, and DOM updates.
+ * `WebUIElement` adds authored interactivity: event handlers, root events,
+ * `w-ref`, and `$emit`. HTML-only auto-elements extend `CoreElement` directly
+ * so static components do not pull interactive code into their bundles.
+ *
  * ## SSR hydration markers
  *
  * The server-side handler plugin emits lightweight HTML comment markers
@@ -118,6 +124,8 @@ function getTplOrdinals(tplNode: Node): Map<number, [number, number]> {
 const EMPTY_ARR: readonly never[] = [];
 const EMPTY_SET: ReadonlySet<string> = Object.freeze(new Set<string>()) as ReadonlySet<string>;
 const EMPTY_ATTR_MAP: ReadonlyMap<string, string> = Object.freeze(new Map<string, string>()) as ReadonlyMap<string, string>;
+
+/** Branded single-key state writer used by framework bindings, not public duck typing. */
 const WEBUI_SET_STATE_KEY = Symbol.for('microsoft.webui.setStateKey');
 
 const templateAttributeMaps = new WeakMap<Function, ReadonlyMap<string, string>>();
@@ -148,6 +156,13 @@ function getTemplateDom(meta: TemplateBlockMeta): Element {
   return div;
 }
 
+/**
+ * Merge authored `observedAttributes` with template-read roots.
+ *
+ * This is the key that makes `@attr` optional for HTML-only values: if a template
+ * reads `title`, then a host `title="..."` mutation can update the hidden
+ * template state even when the class never declared an `@attr title` property.
+ */
 function installTemplateObservedAttributes(ctor: TemplateObservedConstructor, tagName: string): void {
   const meta = getTemplate(tagName);
   if (!meta) return;
@@ -187,6 +202,13 @@ function installTemplateObservedAttributes(ctor: TemplateObservedConstructor, ta
   });
 }
 
+/**
+ * Return true for properties intentionally provided by component code.
+ *
+ * Hidden template state must not shadow authored fields, accessors, or methods.
+ * The scan stops at `CoreElement.prototype`, so native `HTMLElement` properties
+ * like `title` and `id` do not block template-only state roots with those names.
+ */
 function hasAuthoredMember(instance: object, key: string): boolean {
   if (Object.prototype.hasOwnProperty.call(instance, key)) return true;
 
@@ -202,6 +224,14 @@ function hasAuthoredMember(instance: object, key: string): boolean {
 //  CoreElement — static rendering core (no events / refs / emit)
 // ═══════════════════════════════════════════════════════════════════
 
+/**
+ * Static WebUI rendering core.
+ *
+ * This class hydrates SSR output, creates client-side template instances, keeps
+ * template-only state for omitted `@observable` / `@attr` fields, and updates
+ * DOM bindings. It deliberately contains no event, ref, or custom-event emitter
+ * code so HTML-only auto-elements have the smallest reachable runtime.
+ */
 export class CoreElement extends HTMLElement {
   private $root: TemplateInstance | null = null;
   private $meta?: TemplateMeta;
@@ -226,10 +256,18 @@ export class CoreElement extends HTMLElement {
     repeats: RepeatBinding[];
   } | null;
 
+  /** Internal single-key state hook used by compiled parent-to-child bindings. */
   [WEBUI_SET_STATE_KEY](key: string, value: unknown): void {
     this.$setStateKey(key, value);
   }
 
+  /**
+   * Register this constructor for a tag and install template-derived observers.
+   *
+   * Authored components call this directly. Auto-elements also use it so
+   * scriptless templates observe only the host attributes referenced by their
+   * bindings.
+   */
   static define(tagName: string): void {
     installTemplateObservedAttributes(this as TemplateObservedConstructor, tagName);
     customElements.define(tagName, this);
@@ -420,14 +458,17 @@ export class CoreElement extends HTMLElement {
     return getObservableNames(this.constructor as Function);
   }
 
+  /** Decide whether a decorated property should be initialized from SSR state. */
   protected $shouldApplySSRState(key: string): boolean {
     return !isAttributeProperty(this.constructor as Function, key);
   }
 
+  /** Decide whether hidden template state should be initialized from SSR state. */
   protected $shouldApplyTemplateStateFromSSR(_key: string): boolean {
     return true;
   }
 
+  /** Write hidden template state and update bindings that read this root. */
   protected $setTemplateState(key: string, value: unknown): void {
     if (this.$writeTemplateState(key, value)) {
       this.$update(key);
@@ -467,6 +508,7 @@ export class CoreElement extends HTMLElement {
     return this.$templateStateNames().has(key) && !hasAuthoredMember(this, key);
   }
 
+  /** Route one external state key to an authored observable or hidden template state. */
   private $setStateKey(key: string, value: unknown): void {
     if (this.$observableNames().has(key)) {
       (this as Record<string, unknown>)[key] = value;
@@ -1522,6 +1564,7 @@ export class CoreElement extends HTMLElement {
 
   private $resolveComponentRoot(root: string): unknown {
     const instance = this as Record<string, unknown>;
+    // Template-only state wins only when the component did not author the member.
     if (
       this.$templateState &&
       Object.prototype.hasOwnProperty.call(this.$templateState, root) &&

@@ -22,10 +22,10 @@ export const NOOP_SIGNAL: AbortSignal = new AbortController().signal;
  * most once.
  *
  * When no loader exists and the tag is not yet registered, a passive
- * stub element is auto-defined. Framework runtimes can register richer
- * template-backed elements before this point; the router stays platform
- * independent and only falls back to a no-op host when no runtime claimed
- * the tag.
+ * stub element is auto-defined as a last resort. Framework runtimes can
+ * register richer template-backed elements before this point; the router stays
+ * platform independent and only falls back to a no-op host when no runtime
+ * claimed the tag.
  */
 export async function ensureComponentLoaded(
   tag: string,
@@ -51,14 +51,12 @@ export async function ensureComponentLoaded(
 }
 
 /**
- * Auto-define a passive stub custom element for tags that have no
- * registered class and no lazy loader.  The stub extends HTMLElement
- * directly (no hydration, no template, no bindings) and exposes a
- * no-op `setState()` so the router's `isStateful()` check passes.
- *
- * This is the core of the islands architecture: app code only defines
- * components that need interactivity.  Everything else is server-
- * rendered static HTML with zero client-side overhead.
+ * Auto-define a passive stub custom element for tags that have no registered
+ * class, no lazy loader, and no framework runtime claim. The stub extends
+ * `HTMLElement` directly: no hydration, no template binding, no dependency on
+ * a specific component framework. This preserves router compatibility for
+ * non-framework consumers while allowing WebUI Framework auto-elements to own
+ * HTML-only hydration when present.
  */
 function definePassiveStub(tag: string): void {
   if (customElements.get(tag)) return;

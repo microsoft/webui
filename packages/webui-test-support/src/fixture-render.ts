@@ -64,6 +64,9 @@ function renderOne(fixturePath: string, name: string): RenderedFixture | null {
 
   let html = render(result.protocol, state, { plugin: 'webui' });
 
+  // Fixtures with an authored element entry exercise interactive islands.
+  // Fixtures without one use the shared framework bootstrap to prove HTML-only
+  // templates do not need empty component stubs.
   const scriptPath = existsSync(resolve(fixturePath, 'element.ts'))
     ? `/dist/${name}/element.js`
     : '/dist/auto-elements.js';

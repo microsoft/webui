@@ -1,6 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+/**
+ * Template root analysis helpers.
+ *
+ * The compiled template tells the runtime which state roots are actually read by
+ * bindings. `CoreElement` uses that information to keep template-only state
+ * hidden when app code omits `@observable` / `@attr`, and auto-elements use it
+ * to observe only attributes that can affect DOM output.
+ */
+
 import { toKebabCase } from './decorators.js';
 import type {
   CompiledAttrPart,
@@ -23,11 +32,13 @@ const templateRootSetCache = new WeakMap<TemplateMeta, ReadonlySet<string>>();
 const templateAttributeCache = new WeakMap<TemplateMeta, ReadonlyMap<string, string>>();
 const templateEventCache = new WeakMap<TemplateMeta, boolean>();
 
+/** Return the top-level state key for a binding path. */
 function pathRoot(path: string): string {
   const dot = path.indexOf('.');
   return dot === -1 ? path : path.slice(0, dot);
 }
 
+/** Ignore repeat item aliases so they do not become component state roots. */
 function isScopedPath(path: string, scopes?: ScopeName): boolean {
   const root = pathRoot(path);
   let current = scopes;
@@ -38,11 +49,13 @@ function isScopedPath(path: string, scopes?: ScopeName): boolean {
   return false;
 }
 
+/** Add a binding path root unless it belongs to the current repeat scope. */
 function addRoot(roots: Set<string>, path: string, scopes?: ScopeName): void {
   if (!path || isScopedPath(path, scopes)) return;
   roots.add(pathRoot(path));
 }
 
+/** Add all dynamic roots from a mixed text or attribute binding. */
 function addPartRoots(roots: Set<string>, parts: CompiledAttrPart[], scopes?: ScopeName): void {
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
@@ -50,6 +63,13 @@ function addPartRoots(roots: Set<string>, parts: CompiledAttrPart[], scopes?: Sc
   }
 }
 
+/**
+ * Collect component-level state roots referenced by a template.
+ *
+ * This walks nested condition/repeat block metadata iteratively so deeply nested
+ * templates cannot overflow the stack. Repeat item variables are tracked as
+ * lexical scopes and excluded from the returned component root set.
+ */
 export function collectTemplateRoots(meta: TemplateMeta): readonly string[] {
   const cached = templateRootsCache.get(meta);
   if (cached) return cached;
@@ -114,6 +134,12 @@ export function collectTemplateRoots(meta: TemplateMeta): readonly string[] {
   return collected;
 }
 
+/**
+ * Return a cached `Set` view of template roots for fast membership checks.
+ *
+ * `CoreElement` calls this on SSR state and attribute updates to decide whether
+ * a key can live in hidden template state.
+ */
 export function getTemplateRootSet(meta: TemplateMeta): ReadonlySet<string> {
   let cached = templateRootSetCache.get(meta);
   if (cached) return cached;
@@ -122,6 +148,13 @@ export function getTemplateRootSet(meta: TemplateMeta): ReadonlySet<string> {
   return cached;
 }
 
+/**
+ * Map observed host attribute names back to template state roots.
+ *
+ * HTML-only components do not declare `@attr`, so this lets their host
+ * attributes still update template bindings. Authored members still take
+ * precedence in `CoreElement`.
+ */
 export function getTemplateAttributeMap(meta: TemplateMeta): ReadonlyMap<string, string> {
   let cached = templateAttributeCache.get(meta);
   if (cached) return cached;
@@ -135,6 +168,12 @@ export function getTemplateAttributeMap(meta: TemplateMeta): ReadonlyMap<string,
   return attrs;
 }
 
+/**
+ * Return true when the template requires authored JavaScript event handlers.
+ *
+ * Auto-elements must never claim these templates because no generated element
+ * can provide the developer's handler methods.
+ */
 export function templateHasEventHandlers(meta: TemplateMeta): boolean {
   const cached = templateEventCache.get(meta);
   if (cached !== undefined) return cached;
