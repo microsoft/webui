@@ -17,10 +17,16 @@ export const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
 /**
  * Notify optional runtimes that templates have been registered.
  *
- * The payload is intentionally just the template map so consumers can decide
- * what to do without creating package dependencies between router and framework.
+ * The payload is intentionally generic so consumers can decide what to do
+ * without creating package dependencies between router and framework. Routers
+ * may include `blockedTags` for tags owned by lazy component loaders; automatic
+ * template runtimes must not claim those tags before the loader module defines
+ * the authored element.
  */
-export function dispatchTemplatesRegistered(templates: Record<string, TemplateMeta>): void {
+export function dispatchTemplatesRegistered(
+  templates: Record<string, TemplateMeta>,
+  blockedTags?: readonly string[],
+): void {
   if (
     typeof window === 'undefined' ||
     typeof CustomEvent !== 'function' ||
@@ -30,7 +36,7 @@ export function dispatchTemplatesRegistered(templates: Record<string, TemplateMe
   }
 
   window.dispatchEvent(new CustomEvent(TEMPLATES_REGISTERED_EVENT, {
-    detail: { templates },
+    detail: { templates, blockedTags },
   }));
 }
 
@@ -41,4 +47,15 @@ export function templateRegistrationDetail(event: Event): Record<string, Templat
   return typeof templates === 'object' && templates !== null
     ? templates as Record<string, TemplateMeta>
     : undefined;
+}
+
+/** Read the optional loader-owned tag list from a template registration event. */
+export function templateRegistrationBlockedTags(event: Event): readonly string[] | undefined {
+  const detail = (event as CustomEvent<{ blockedTags?: unknown }>).detail;
+  const blockedTags = detail?.blockedTags;
+  if (!Array.isArray(blockedTags)) return undefined;
+  for (let i = 0; i < blockedTags.length; i++) {
+    if (typeof blockedTags[i] !== 'string') return undefined;
+  }
+  return blockedTags as readonly string[];
 }

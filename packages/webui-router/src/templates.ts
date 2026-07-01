@@ -33,6 +33,7 @@ export function registerTemplatesAndStyles(
   nonce: string,
   injectedStyles: Set<string>,
   updateInventory: (inv: string) => void,
+  blockedAutoElementTags?: readonly string[],
 ): void {
   if (data.inventory) {
     updateInventory(data.inventory);
@@ -143,7 +144,7 @@ export function registerTemplatesAndStyles(
     document.head.removeChild(script);
   }
 
-  notifyTemplatesRegistered(registeredTemplates);
+  notifyTemplatesRegistered(registeredTemplates, blockedAutoElementTags);
 }
 
 /** Inject CSS stylesheet links from a partial response. */
@@ -176,6 +177,7 @@ export async function fetchComponentTemplates(
   nonce: string,
   injectedStyles: Set<string>,
   updateInventory: (inv: string) => void,
+  blockedAutoElementTags?: readonly string[],
 ): Promise<void> {
   const url = `${templateEndpoint}?t=${tags.join(',')}&inv=${encodeURIComponent(inventoryHex)}`;
   const resp = await fetch(url);
@@ -185,11 +187,14 @@ export async function fetchComponentTemplates(
   const data = await resp.json();
 
   // Register using the same pipeline as partial navigation
-  registerTemplatesAndStyles(data, nonce, injectedStyles, updateInventory);
+  registerTemplatesAndStyles(data, nonce, injectedStyles, updateInventory, blockedAutoElementTags);
 }
 
 /** Announce newly registered WebUI templates without importing a framework. */
-export function notifyTemplatesRegistered(templates: Record<string, unknown> | undefined): void {
+export function notifyTemplatesRegistered(
+  templates: Record<string, unknown> | undefined,
+  blockedTags?: readonly string[],
+): void {
   if (
     !templates ||
     typeof window === 'undefined' ||
@@ -200,6 +205,6 @@ export function notifyTemplatesRegistered(templates: Record<string, unknown> | u
   }
 
   window.dispatchEvent(new CustomEvent(TEMPLATES_REGISTERED_EVENT, {
-    detail: { templates },
+    detail: { templates, blockedTags },
   }));
 }

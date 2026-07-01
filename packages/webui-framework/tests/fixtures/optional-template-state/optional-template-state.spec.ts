@@ -43,6 +43,7 @@ test.describe('optional template state fixture', () => {
           { name: 'Radia' },
           { name: 'Margaret' },
         ],
+        childPayload: { label: 'Updated child payload' },
         showDetails: true,
         details: 'Loaded from hidden state',
       });
@@ -51,6 +52,7 @@ test.describe('optional template state fixture', () => {
     await expect(page.locator('test-optional-state .heading')).toHaveText('Updated heading');
     await expect(page.locator('test-optional-state .count')).toHaveText('Count: 3');
     await expect(page.locator('test-optional-state .details-link')).toHaveAttribute('href', '/items/99');
+    await expect(page.locator('test-optional-state test-nonobservable-child')).toHaveAttribute('data-payload-label', 'Updated child payload');
     await expect(page.locator('test-optional-state .item')).toHaveText(['Linus', 'Radia', 'Margaret']);
     await expect(page.locator('test-optional-state .details')).toHaveText('Loaded from hidden state');
   });

@@ -242,7 +242,11 @@ impl ComponentRegistry {
             css_fallback_chains,
             source_path: PathBuf::new(), // Empty path since it's not from a file
             class_name: None,
-            has_script: false,
+            // Virtual registrations do not have a filesystem sibling scan.
+            // Treat them as authored so only real `.html` files discovered
+            // without a sibling `.ts` / `.js` are marked for browser
+            // auto-elements.
+            has_script: true,
         };
 
         // Register the component
@@ -443,6 +447,7 @@ mod tests {
             .expect("Failed to retrieve registered component");
         assert_eq!(component.html_content, html_content);
         assert_eq!(component.css_content.as_deref(), Some(css_content));
+        assert!(component.has_script);
     }
 
     #[test]

@@ -70,6 +70,13 @@ export interface TemplateInstance {
   attrs: AttrBinding[];
   conds: CondBinding[];
   repeats: RepeatBinding[];
+  /**
+   * Per-instance listener cleanup. Delegated event listeners attach to the
+   * component render root for correctness while detached blocks are moved into
+   * place, so nested conditional/repeat instances must explicitly unregister
+   * when their block leaves the DOM.
+   */
+  cleanups?: Array<() => void>;
 }
 
 /** Direct reference to a conditional block with anchor + nested compiled block. */

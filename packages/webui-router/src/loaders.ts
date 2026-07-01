@@ -17,9 +17,10 @@ export const NOOP_SIGNAL: AbortSignal = new AbortController().signal;
 
 /**
  * Ensure a component's JS module is loaded. If a lazy loader is
- * configured for this tag and the element isn't already registered,
- * invoke the loader. The promise is cached so each loader runs at
- * most once.
+ * configured for this tag, invoke the loader before consulting the registry.
+ * This gives authored lazy components precedence over compiler-marked
+ * auto-elements if template metadata is conservative or stale. The promise is
+ * cached so each loader runs at most once.
  *
  * When no loader exists and the tag is not yet registered, a passive
  * stub element is auto-defined as a last resort. Framework runtimes can
@@ -32,10 +33,9 @@ export async function ensureComponentLoaded(
   loaders: Record<string, () => Promise<unknown>>,
   loaderPromises: Map<string, Promise<void>>,
 ): Promise<void> {
-  if (customElements.get(tag)) return;
-
   const loader = loaders[tag];
   if (!loader) {
+    if (customElements.get(tag)) return;
     // No loader and not registered — auto-define a passive stub so
     // the router can create/query this element during SPA navigation.
     definePassiveStub(tag);

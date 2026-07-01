@@ -6,6 +6,7 @@ import { describe, test } from 'node:test';
 import type { TemplateMeta } from './template.js';
 
 const registry = new Map<string, CustomElementConstructor>();
+const windowListeners = new Map<string, Array<(event: Event) => void>>();
 
 Object.defineProperty(globalThis, 'HTMLElement', {
   value: class HTMLElement {
@@ -44,10 +45,35 @@ Object.defineProperty(globalThis, 'document', {
   configurable: true,
 });
 
+Object.defineProperty(globalThis, 'CustomEvent', {
+  value: class CustomEvent<T = unknown> extends Event {
+    detail: T;
+
+    constructor(type: string, init?: CustomEventInit<T>) {
+      super(type);
+      this.detail = init?.detail as T;
+    }
+  },
+  configurable: true,
+});
+
 Object.defineProperty(globalThis, 'window', {
   value: {
     __webui: { templates: {} },
-    addEventListener() {},
+    addEventListener(type: string, listener: (event: Event) => void) {
+      const listeners = windowListeners.get(type);
+      if (listeners) {
+        listeners.push(listener);
+      } else {
+        windowListeners.set(type, [listener]);
+      }
+    },
+    dispatchEvent(event: Event): boolean {
+      const listeners = windowListeners.get(event.type);
+      if (!listeners) return true;
+      for (let i = 0; i < listeners.length; i++) listeners[i](event);
+      return true;
+    },
   },
   configurable: true,
 });
@@ -145,6 +171,7 @@ describe('auto element fallback', () => {
 
     registerUnitTemplate(tag, {
       h: '<button></button>',
+      ae: 1,
       e: [['click', 'onClick', [], [0]]],
     });
     installAutoElementRuntime();
@@ -176,5 +203,34 @@ describe('auto element fallback', () => {
 
     assert.ok(customElements.get(allowed));
     assert.equal(customElements.get(skipped), undefined);
+  });
+
+  test('installAutoElementRuntime skips fully static scriptless templates', async () => {
+    const tag = `static-only-${Date.now()}`;
+    registerUnitTemplate(tag, {
+      h: '<p>Static content</p>',
+      ae: 1,
+    });
+
+    installAutoElementRuntime();
+    await new Promise<void>(resolve => queueMicrotask(resolve));
+
+    assert.equal(customElements.get(tag), undefined);
+  });
+
+  test('template registration event blocks loader-owned tags', async () => {
+    const tag = `loader-owned-${Date.now()}`;
+    const meta = registerUnitTemplate(tag, textTemplate('message'));
+
+    installAutoElementRuntime();
+    window.dispatchEvent(new CustomEvent('webui:templates-registered', {
+      detail: {
+        templates: { [tag]: meta },
+        blockedTags: [tag],
+      },
+    }));
+    await new Promise<void>(resolve => queueMicrotask(resolve));
+
+    assert.equal(customElements.get(tag), undefined);
   });
 });

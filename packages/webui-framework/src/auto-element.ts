@@ -17,15 +17,17 @@
 import { CoreElement } from './element.js';
 import { toKebabCase } from './decorators.js';
 import { getTemplateRegistry } from './template.js';
-import { templateHasEventHandlers } from './template-roots.js';
+import { templateNeedsAutoElement } from './template-roots.js';
 import {
   TEMPLATES_REGISTERED_EVENT,
   templateRegistrationDetail,
+  templateRegistrationBlockedTags,
 } from './template-events.js';
 import type { TemplateMeta } from './template.js';
 
 let runtimeInstalled = false;
 let initialClaimQueued = false;
+const blockedAutoElementTags = new Set<string>();
 
 /** Define the smallest hydrating element for a scriptless template. */
 function defineAutoElement(tag: string, meta: TemplateMeta): void {
@@ -53,9 +55,9 @@ function defineMissingTemplateElement(tag: string, meta: TemplateMeta): boolean 
   if (
     typeof customElements === 'undefined' ||
     typeof HTMLElement === 'undefined' ||
-    !meta.ae ||
-    customElements.get(tag) ||
-    templateHasEventHandlers(meta)
+    !templateNeedsAutoElement(meta) ||
+    blockedAutoElementTags.has(tag) ||
+    customElements.get(tag)
   ) {
     return false;
   }
@@ -105,6 +107,12 @@ export function installAutoElementRuntime(): void {
   runtimeInstalled = true;
 
   window.addEventListener(TEMPLATES_REGISTERED_EVENT, (event: Event) => {
+    const blockedTags = templateRegistrationBlockedTags(event);
+    if (blockedTags) {
+      for (let i = 0; i < blockedTags.length; i++) {
+        blockedAutoElementTags.add(blockedTags[i]);
+      }
+    }
     const templates = templateRegistrationDetail(event);
     if (templates) defineAutoTemplateElements(templates);
   });
@@ -112,7 +120,7 @@ export function installAutoElementRuntime(): void {
   if (document.readyState === 'loading') {
     document.addEventListener(
       'DOMContentLoaded',
-      () => defineAutoTemplateElements(),
+      () => queueInitialAutoElementClaim(),
       { once: true },
     );
     return;

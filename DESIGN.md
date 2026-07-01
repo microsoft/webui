@@ -1544,29 +1544,41 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   with `ae: 1` when the component has no sibling client script. The framework
   root runtime listens for template metadata and installs a static `CoreElement`
   subclass only for compiler-marked tags when the tag is not already registered
-  and the compiled template contains no event handler metadata. `CoreElement` is
-  the static rendering core (hydration, template state, bindings, repeats,
-  conditionals, attribute reflection); the interactive `WebUIElement` superset
-  adds event wiring, `w-ref` wiring, and `$emit` on top. Because auto-elements
-  extend `CoreElement` — never `WebUIElement` — a purely static / HTML-only app
-  tree-shakes all event/ref/emit code out of its bundle.
+  and the compiled template has dynamic bindings but no event handler metadata.
+  Fully static scriptless templates remain plain SSR DOM and are not upgraded.
+  `CoreElement` is the static rendering core (hydration, template state,
+  bindings, repeats, conditionals, attribute reflection); the interactive
+  `WebUIElement` superset adds event wiring, `w-ref` wiring, and `$emit` on top.
+  Because auto-elements extend `CoreElement` — never `WebUIElement` — a purely
+  static / HTML-only app tree-shakes all event/ref/emit code out of its bundle.
   The fallback derives reactive roots from `tx`, `a`, `c`, and `r`
   metadata, observes the corresponding host attributes, seeds non-attribute
   state from `window.__webui.state`, and supports router `setState()` updates
   without developer-authored `@observable` / `@attr` stubs. The framework root
-  entrypoint stays side-effect free and tree-shakeable. Developer-authored
-  classes and lazy loaders own templates that contain event handlers.
+  entrypoint installs this runtime as its one side effect; other framework
+  subpaths stay tree-shakeable. Developer-authored classes, lazy loaders, and
+  templates with event handlers own their custom element definitions.
 - Developer-authored `WebUIElement` classes also treat compiled template roots
   as stateful. `setState()` and SSR seeding store any undecorated
   template-bound roots in hidden framework state, so `@observable` is only
   required when TypeScript code reads or mutates the property directly.
 - Template producers that bootstrap initial SSR metadata or load metadata after
   initial SSR, including `@microsoft/webui-router`, publish a synchronous
-  `webui:templates-registered` event with `{ templates }` in `detail`. The
-  framework runtime listens for this optional platform-neutral event and claims
-  compiler-marked template-backed HTML-only tags before routers or asset loaders
-  create them.
-- Events are resolved from compiled `e[]` metadata entries using path indices. The runtime installs listeners on target elements and resolves handler arguments against the scope captured when that block was rendered. Root events from `re[]` attach directly to the host element.
+  `webui:templates-registered` event with `{ templates, blockedTags? }` in
+  `detail`. `blockedTags` are custom-element tags owned by lazy component
+  loaders; automatic runtimes must not claim them before the loader module
+  defines the authored element. The framework runtime listens for this optional
+  platform-neutral event and claims compiler-marked template-backed HTML-only
+  tags synchronously before routers fall back to passive stubs. The initial
+  document-wide auto-element scan is deferred one microtask at DOMContentLoaded
+  so authored modules and router loader exclusions can register first.
+- Events are resolved from compiled `e[]` metadata entries using path indices.
+  The runtime groups element events by event name and installs one delegated
+  listener per event name on the component render root, resolving handler
+  arguments against the scope captured when that block was rendered. Nested
+  conditional/repeat instances unregister their delegated listeners when removed
+  so detached DOM is not retained. Root events from `re[]` attach directly to the
+  host element or shadow root.
 - The full package entrypoint supports repeat metadata (`r[]` / `rl[]`). The additive `@microsoft/webui-framework/element-no-repeat` entrypoint preserves the same public `WebUIElement` API but must reject compiled templates that contain repeat metadata.
 
 Detailed component examples, decorators, and package entrypoint guidance live in [packages/webui-framework/README.md](packages/webui-framework/README.md) rather than being duplicated in this design spec.

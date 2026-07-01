@@ -88,6 +88,15 @@ import type {
   TextBinding,
 } from './element/types.js';
 
+type DelegatedEventEntry = {
+  target: Element;
+  method: EventHandler;
+  args: CompiledEventArgs;
+  scope?: ScopeFrame;
+};
+
+type EventHandler = (...args: unknown[]) => unknown;
+
 // ── Caches ──────────────────────────────────────────────────────
 
 /** Parsed template cache — cloneNode(true) is faster than re-parsing. */
@@ -257,8 +266,8 @@ export class CoreElement extends HTMLElement {
   } | null;
 
   /** Internal single-key state hook used by compiled parent-to-child bindings. */
-  [WEBUI_SET_STATE_KEY](key: string, value: unknown): void {
-    this.$setStateKey(key, value);
+  [WEBUI_SET_STATE_KEY](key: string, value: unknown): boolean {
+    return this.$setStateKey(key, value);
   }
 
   /**
@@ -409,6 +418,7 @@ export class CoreElement extends HTMLElement {
 
   /** Break all DOM references held by a binding instance and its nested blocks. */
   private $teardown(instance: TemplateInstance): void {
+    this.$teardownInstanceCleanups(instance);
     for (const c of instance.conds) {
       if (c.instance) this.$teardown(c.instance);
       c.instance = null;
@@ -425,6 +435,14 @@ export class CoreElement extends HTMLElement {
     instance.attrs.length = 0;
     instance.conds.length = 0;
     instance.repeats.length = 0;
+  }
+
+  /** Run listener cleanup attached directly to one template instance. */
+  private $teardownInstanceCleanups(instance: TemplateInstance): void {
+    const cleanups = instance.cleanups;
+    if (!cleanups) return;
+    for (let i = 0; i < cleanups.length; i++) cleanups[i]();
+    cleanups.length = 0;
   }
 
   attributeChangedCallback(
@@ -509,12 +527,16 @@ export class CoreElement extends HTMLElement {
   }
 
   /** Route one external state key to an authored observable or hidden template state. */
-  private $setStateKey(key: string, value: unknown): void {
+  private $setStateKey(key: string, value: unknown): boolean {
     if (this.$observableNames().has(key)) {
       (this as Record<string, unknown>)[key] = value;
-    } else if (this.$usesTemplateState(key)) {
-      this.$setTemplateState(key, value);
+      return true;
     }
+    if (this.$usesTemplateState(key)) {
+      this.$setTemplateState(key, value);
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -805,7 +827,7 @@ export class CoreElement extends HTMLElement {
     // Events + refs — resolve BEFORE anchors shift childNode indices.
     // Events target element nodes (not text/comment positions), but anchor
     // insertions still shift childNode indices for sibling elements.
-    this.$finalize(root, meta, (r, p) => this.$resolve(r, p), scope);
+    this.$finalize(instance, root, meta, (r, p) => this.$resolve(r, p), scope);
 
     // Now insert anchors using pre-resolved references
 
@@ -1102,7 +1124,7 @@ export class CoreElement extends HTMLElement {
     }
 
     // Events + refs — this is the last phase that uses $resolveSSR.
-    this.$finalize(ssrRoot, meta, (r, p) => this.$resolveSSR(r, tplDom, p, pathStart), scope);
+    this.$finalize(instance, ssrRoot, meta, (r, p) => this.$resolveSSR(r, tplDom, p, pathStart), scope);
 
     // All path-based resolution is complete. Remove the SSR markers that
     // were kept alive for structural-block skipping.  Start markers
@@ -1297,6 +1319,7 @@ export class CoreElement extends HTMLElement {
    * core hook and tree-shake every event/ref helper away.
    */
   protected $finalize(
+    _instance: TemplateInstance,
     _root: Node,
     _meta: TemplateBlockMeta,
     _resolver: (root: Node, path: TemplateNodePath) => Node | null,
@@ -1486,12 +1509,13 @@ export class CoreElement extends HTMLElement {
         const target = el as unknown as Record<string | symbol, unknown>;
         const setStateKey = target[WEBUI_SET_STATE_KEY];
         if (typeof setStateKey === 'function') {
-          (setStateKey as (key: string, value: unknown) => void).call(el, b.name, v);
-          const flush = target['$flushUpdates'];
-          if (typeof flush === 'function') (flush as () => void).call(el);
-        } else {
-          target[b.name] = v;
+          if ((setStateKey as (key: string, value: unknown) => boolean).call(el, b.name, v)) {
+            const flush = target['$flushUpdates'];
+            if (typeof flush === 'function') (flush as () => void).call(el);
+            break;
+          }
         }
+        target[b.name] = v;
         break;
       }
       case ATTR_KIND_BOOLEAN: {
@@ -1607,6 +1631,7 @@ export class CoreElement extends HTMLElement {
   }
 
   $removeInstance(instance: TemplateInstance): void {
+    this.$teardownInstanceCleanups(instance);
     for (const n of instance.nodes) n.parentNode?.removeChild(n);
     for (const c of instance.conds) {
       if (c.instance) this.$removeInstance(c.instance);
@@ -1665,42 +1690,116 @@ export class WebUIElement extends CoreElement {
 
   /** Wire events + root events + refs (shared by $wire and $hydrate). */
   protected override $finalize(
+    instance: TemplateInstance,
     root: Node,
     meta: TemplateBlockMeta,
     resolver: (root: Node, path: TemplateNodePath) => Node | null,
     scope?: ScopeFrame,
   ): void {
-    this.$wireEvents(root, meta, resolver, scope);
-    if ((meta as TemplateMeta).re) this.$wireRoot((meta as TemplateMeta).re!);
+    this.$wireEvents(instance, root, meta, resolver, scope);
+    if ((meta as TemplateMeta).re) this.$wireRoot(instance, (meta as TemplateMeta).re!);
     this.$wireRefs(root);
   }
 
-  /** Wire events using a resolver function (works for both client and SSR). */
+  /** Wire element events as one delegated listener per event name. */
   private $wireEvents(
+    instance: TemplateInstance,
     root: Node,
     meta: TemplateBlockMeta,
     resolver: (root: Node, path: TemplateNodePath) => Node | null,
     scope?: ScopeFrame,
   ): void {
     if (!meta.e) return;
+    const eventNames: string[] = [];
+    const buckets: DelegatedEventEntry[][] = [];
     for (let i = 0; i < meta.e.length; i++) {
       const [eventName, handlerName, args, target] = meta.e[i];
       const el = resolver(root, target);
       if (!el || el.nodeType !== 1) continue;
-      this.$addEvent(el as Element, eventName, handlerName, args, scope);
+      const method = (this as Record<string, unknown>)[handlerName];
+      if (typeof method !== 'function') continue;
+      let bucketIndex = -1;
+      for (let j = 0; j < eventNames.length; j++) {
+        if (eventNames[j] === eventName) {
+          bucketIndex = j;
+          break;
+        }
+      }
+      if (bucketIndex < 0) {
+        bucketIndex = eventNames.length;
+        eventNames.push(eventName);
+        buckets.push([]);
+      }
+      buckets[bucketIndex].push({
+        target: el as Element,
+        method: method as EventHandler,
+        args,
+        scope,
+      });
+    }
+    const delegateTarget = this.$eventDelegateTarget();
+    for (let i = 0; i < eventNames.length; i++) {
+      this.$addDelegatedEvent(instance, delegateTarget, eventNames[i], buckets[i]);
     }
   }
 
   /** Wire root-level events on the host element (or shadow root when present). */
-  private $wireRoot(re: [string, string, CompiledEventArgs][]): void {
+  private $wireRoot(instance: TemplateInstance, re: [string, string, CompiledEventArgs][]): void {
     const target = this.shadowRoot ?? this;
     for (let i = 0; i < re.length; i++) {
-      this.$addEvent(target, re[i][0], re[i][1], re[i][2], undefined);
+      this.$addEvent(instance, target, re[i][0], re[i][1], re[i][2], undefined);
     }
   }
 
-  /** Attach a single event listener. */
+  /** Stable delegation target for SSR and detached client-created blocks. */
+  private $eventDelegateTarget(): EventTarget {
+    return this.shadowRoot ?? this;
+  }
+
+  /** Attach one listener for all bindings of the same event name in an instance. */
+  private $addDelegatedEvent(
+    instance: TemplateInstance,
+    target: EventTarget,
+    eventName: string,
+    entries: DelegatedEventEntry[],
+  ): void {
+    if (entries.length === 0) return;
+    const listener = (event: Event): void => {
+      const path = typeof event.composedPath === 'function' ? event.composedPath() : null;
+      if (path) {
+        this.$dispatchDelegatedPath(entries, path, event);
+        return;
+      }
+      this.$dispatchDelegatedFallback(entries, event);
+    };
+    target.addEventListener(eventName, listener);
+    this.$addCleanup(instance, () => target.removeEventListener(eventName, listener));
+  }
+
+  private $dispatchDelegatedPath(entries: DelegatedEventEntry[], path: EventTarget[], event: Event): void {
+    for (let p = 0; p < path.length; p++) {
+      const target = path[p];
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        if (entry.target === target) this.$callEventHandler(entry.method, entry.args, event, entry.scope);
+      }
+    }
+  }
+
+  private $dispatchDelegatedFallback(entries: DelegatedEventEntry[], event: Event): void {
+    let current = event.target as Node | null;
+    while (current) {
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        if (entry.target === current) this.$callEventHandler(entry.method, entry.args, event, entry.scope);
+      }
+      current = current.parentNode;
+    }
+  }
+
+  /** Attach a direct listener for root-level event bindings. */
   private $addEvent(
+    instance: TemplateInstance,
     target: EventTarget,
     eventName: string,
     handlerName: string,
@@ -1709,21 +1808,25 @@ export class WebUIElement extends CoreElement {
   ): void {
     const method = (this as Record<string, unknown>)[handlerName];
     if (typeof method !== 'function') return;
+    const listener = (event: Event): void => this.$callEventHandler(method as EventHandler, args, event, scope);
+    target.addEventListener(eventName, listener);
+    this.$addCleanup(instance, () => target.removeEventListener(eventName, listener));
+  }
+
+  private $addCleanup(instance: TemplateInstance, cleanup: () => void): void {
+    (instance.cleanups ??= []).push(cleanup);
+  }
+
+  private $callEventHandler(method: EventHandler, args: CompiledEventArgs, event: Event, scope?: ScopeFrame): void {
     if (args.length === 0) {
-      target.addEventListener(eventName, () => {
-        (method as Function).call(this);
-      });
+      method.call(this);
       return;
     }
     if (args.length === 1 && args[0][0] === 'e') {
-      target.addEventListener(eventName, (event) => {
-        (method as Function).call(this, event);
-      });
+      method.call(this, event);
       return;
     }
-    target.addEventListener(eventName, (event) => {
-      (method as Function).apply(this, this.$resolveEventArgs(args, event, scope));
-    });
+    method.apply(this, this.$resolveEventArgs(args, event, scope));
   }
 
   private $resolveEventArgs(args: CompiledEventArgs, event: Event, scope?: ScopeFrame): unknown[] {

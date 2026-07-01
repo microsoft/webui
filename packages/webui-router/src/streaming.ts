@@ -23,6 +23,7 @@ export interface StreamingContext {
   readonly nonce: string;
   readonly injectedStyles: Set<string>;
   readonly injectedCss: Set<string>;
+  readonly blockedAutoElementTags?: readonly string[];
   setDeferredReader(reader: Promise<void> | null): void;
   setDeferredGeneration(gen: number): void;
   updateInventory(inv: string): void;
@@ -97,7 +98,13 @@ export async function readStreamingPartial(
   }
 
   // Register templates/styles from Chunk 1
-  registerTemplatesAndStyles(chunk1, ctx.nonce, ctx.injectedStyles, ctx.updateInventory);
+  registerTemplatesAndStyles(
+    chunk1,
+    ctx.nonce,
+    ctx.injectedStyles,
+    ctx.updateInventory,
+    ctx.blockedAutoElementTags,
+  );
   injectCssLinks(chunk1, ctx.injectedCss);
 
   // Spawn background reader for remaining chunks (Chunk 2 state)

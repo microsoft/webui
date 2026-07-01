@@ -66,6 +66,7 @@ export class WebUIRouter {
   private cleanupFns: Array<() => void> = [];
   private isInitialNavigation = true;
   private loaders: Record<string, () => Promise<unknown>> = {};
+  private loaderTags: readonly string[] | undefined;
   private loaderPromises = new Map<string, Promise<void>>();
   private activeChain: RouteChainEntry[] = [];
   private basePath = '';
@@ -102,6 +103,8 @@ export class WebUIRouter {
     this.started = true;
     this.config = config;
     this.loaders = config.loaders ?? {};
+    const loaderTags = Object.keys(this.loaders);
+    this.loaderTags = loaderTags.length === 0 ? undefined : loaderTags;
     this.basePath = document.querySelector('base')?.getAttribute('href')?.replace(/\/+$/, '') ?? '';
     this.excludePaths = config.excludePaths ?? [];
 
@@ -130,7 +133,7 @@ export class WebUIRouter {
     if (!meta.css) meta.css = [];
     if (!meta.styles) meta.styles = [];
     if (!meta.templates) meta.templates = {};
-    notifyTemplatesRegistered(meta.templates);
+    notifyTemplatesRegistered(meta.templates, this.loaderOwnedTags());
 
     // Build O(1) lookup Sets from the global arrays, then free the arrays —
     // they were one-shot SSR data; the Sets are the live lookup structure.
@@ -230,6 +233,7 @@ export class WebUIRouter {
       const fetchPromise = fetchComponentTemplates(
         missing, inv, endpoint, window.__webui!.nonce!, this.stylesSet,
         (inv) => this.updateInventory(inv),
+        this.loaderOwnedTags(),
       ).finally(() => {
         for (const tag of missing) this.loadPromises.delete(tag);
       });
@@ -267,6 +271,7 @@ export class WebUIRouter {
     this.loaderPromises.clear();
     this.loadPromises.clear();
     this.loaders = {};
+    this.loaderTags = undefined;
     this.activeChain = [];
     for (const fn of this.cleanupFns) fn();
     this.cleanupFns = [];
@@ -425,7 +430,13 @@ export class WebUIRouter {
 
     const data = await resp.json() as PartialResponse & { inventory?: string };
     if (signal?.aborted) return null;
-    registerTemplatesAndStyles(data, window.__webui!.nonce!, this.stylesSet, (inv) => this.updateInventory(inv));
+    registerTemplatesAndStyles(
+      data,
+      window.__webui!.nonce!,
+      this.stylesSet,
+      (inv) => this.updateInventory(inv),
+      this.loaderOwnedTags(),
+    );
     injectCssLinks(data, this.cssSet);
     return data;
   }
@@ -490,6 +501,7 @@ export class WebUIRouter {
       get nonce() { return window.__webui!.nonce!; },
       get injectedStyles() { return self.stylesSet; },
       get injectedCss() { return self.cssSet; },
+      get blockedAutoElementTags() { return self.loaderOwnedTags(); },
       setDeferredReader(r) { self.deferredReader = r; },
       setDeferredGeneration(g) { self.deferredGeneration = g; },
       updateInventory(inv) { self.updateInventory(inv); },
@@ -526,6 +538,11 @@ export class WebUIRouter {
         );
       }
     }
+  }
+
+  /** Tags with lazy component modules are owned by those modules, not auto-elements. */
+  private loaderOwnedTags(): readonly string[] | undefined {
+    return this.loaderTags;
   }
 
   private clearSsrPreloads(): void {

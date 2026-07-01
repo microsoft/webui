@@ -421,6 +421,9 @@ importers:
 
   packages/webui-router:
     devDependencies:
+      '@microsoft/webui-framework':
+        specifier: workspace:*
+        version: link:../webui-framework
       '@microsoft/webui-router':
         specifier: workspace:*
         version: 'link:'

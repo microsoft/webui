@@ -262,10 +262,16 @@ describe('WebUIRouter', () => {
     test('template registration notifies optional framework runtimes', () => {
       const origDispatchEvent = (globalThis as any).window.dispatchEvent;
       let notifiedTemplates: Record<string, unknown> | undefined;
+      let blockedTags: readonly string[] | undefined;
 
       (globalThis as any).window.dispatchEvent = (event: Event) => {
         if (event.type === 'webui:templates-registered') {
-          notifiedTemplates = (event as CustomEvent<{ templates: Record<string, unknown> }>).detail.templates;
+          const detail = (event as CustomEvent<{
+            templates: Record<string, unknown>;
+            blockedTags?: readonly string[];
+          }>).detail;
+          notifiedTemplates = detail.templates;
+          blockedTags = detail.blockedTags;
         }
         return true;
       };
@@ -274,9 +280,10 @@ describe('WebUIRouter', () => {
         const template = { h: '<p>Notified</p>' };
         registerTemplatesAndStyles({
           templates: { 'notified-comp': template },
-        }, '', new Set(), () => {});
+        }, '', new Set(), () => {}, ['lazy-owned']);
 
         assert.deepEqual(notifiedTemplates, { 'notified-comp': template });
+        assert.deepEqual(blockedTags, ['lazy-owned']);
       } finally {
         (globalThis as any).window.dispatchEvent = origDispatchEvent;
       }
