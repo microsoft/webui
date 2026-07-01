@@ -17,8 +17,7 @@ my-counter/
 - **CSS** styles the component in isolation - Shadow DOM prevents leaking
 - **TypeScript** defines JS-visible reactive properties, event handlers, and component logic
 
-HTML-only components can omit the TypeScript file when they do not handle
-events or run custom client logic:
+Components that do not need client-side behavior can omit the TypeScript file:
 
 ```
 product-card/
@@ -26,12 +25,10 @@ product-card/
 └── product-card.css
 ```
 
-The compiler marks scriptless templates in metadata, and the framework
-automatically defines hydrating fallbacks for those tags when the metadata is
-available. The fallback hydrates SSR output, observes attributes that correspond
-to template bindings, and accepts router `setState()` data for those bindings.
-Add a TypeScript class only when the component needs event handlers, custom
-methods, custom lifecycle code, or state that TypeScript code reads or mutates.
+Create a custom element only for an Interactive Island: event handlers, custom
+lifecycle code, imperative methods, or state that TypeScript code reads or
+mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
+to access the value or when the value is part of the component's public API.
 
 ## The Component Class
 
@@ -146,12 +143,9 @@ Use `@observable` for internal state that changes over time. When an observable 
 
 Observable changes are **synchronous and targeted** - only the specific DOM nodes bound to the changed property are updated.
 
-You do not need `@observable` for values that only come from SSR, router
-`setState()`, or component asset data and are only read by the template. The
-framework stores those template-only values internally and updates the compiled
-bindings without exposing public class fields. Add `@observable` when your
-TypeScript code needs to read or mutate the value, for example in an event
-handler.
+You do not need `@observable` for values that are only read by the template.
+Add `@observable` when TypeScript code needs to read or mutate the value, for
+example in an event handler.
 
 ### Derived State
 
@@ -384,9 +378,8 @@ webui build ./src --out ./dist --plugin=webui \
 ```
 
 Each requested root writes one ESM module such as `<tag>.webui.js` next to
-`protocol.bin`. The module carries template/style data, compiled condition
-functions, and the dependency closure for the root component; it does not contain
-inventory state.
+`protocol.bin`. The module carries the component's template, styles, and
+dependency closure; it does not contain route inventory state.
 
 During development, pass the same flag to `webui serve` so these roots are
 validated and served without a separate build step:
@@ -396,10 +389,10 @@ webui serve ./src --state ./data/state.json --plugin=webui \
   --emit-component-assets settings-dialog,mail-thread --watch
 ```
 
-The dev server parses and validates each root on every build — HTML and
+The dev server parses and validates each root on every build. HTML and
 theme-token errors in a lazily loaded component fail the build instead of being
-skipped because it is outside the SSR tree — and serves the compiled
-`<tag>.webui.js` from memory, rebuilding it on change.
+missed because the component is outside the initial route tree. The dev server
+serves `<tag>.webui.js` from memory and rebuilds it on change.
 
 Load the asset before creating or revealing the component:
 
@@ -430,15 +423,11 @@ export const settingsAssets = defineComponentAssets({
 });
 ```
 
-`defineComponentAssets()` imports the asset module, registers template metadata,
-and applies the current page CSP nonce to CSS module importmaps when needed.
-Components can then fetch their own data in their class code and attach it
-through observables or `setState()`. The loader skips importing when the root
-template is already present in `window.__webui.templates`, shares concurrent
-requests for the same URL, and dedupes CSS module styles against
-`window.__webui.styles`. `create(tag)` creates the element after template/module
-work is ready, then applies loaded data with `setState()` when the data promise
-resolves, matching the router state handoff model. Use
+`defineComponentAssets()` loads the component's template, styles, JavaScript
+module, and optional data together. Components can then fetch their own data in
+their class code and expose it through `@observable` fields when JavaScript needs
+to read or mutate it. Concurrent requests for the same asset share one in-flight
+load. `create(tag)` creates the element after template/module work is ready. Use
 `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
 wait briefly for state before mounting. Use a manifest helper when you want the
 fastest path: it lets the shell start the template asset, JS chunk, and data

@@ -242,9 +242,9 @@ In the TypeScript class: `searchInput!: HTMLInputElement;`
 All attributes are validated at build time. Referencing a non-existent `pending` or `error` component is a compile error.
 
 **State flow:**
-- `keep-alive` — preserves DOM and local state. On reactivation, only param/query attrs are updated - `setState()` is NOT called
+- `keep-alive` preserves DOM and local state. On reactivation, only param/query attrs are updated
 - Route loaders: `static loader({ params, query, signal })` on component class - fetches custom data instead of server state. Runs pre-commit. Falls back to server state on failure
-- Keep-alive + loader: DOM preserved, loader provides fresh data via `setState()` on reactivation
+- Keep-alive + loader: DOM preserved, loader refreshes data on reactivation
 - Route actions: `static action({ formData, params, signal })` on component class - handles `<form method="post">`. Returns `{ invalidateTags?, state? }`. Auto-invalidates cache with merged tags
 
 **Cache & preload:**
@@ -318,17 +318,12 @@ MyComponent.define('my-component');
 ```
 
 HTML-only components can omit the `.ts` file when they have no event handlers or
-custom client logic. The compiler marks those scriptless templates in metadata,
-and the framework automatically defines hydrating fallbacks when the metadata is
-available. The fallback hydrates SSR output, observes template-relevant host
-attributes, and accepts `setState()` for compiled binding roots. Routers and
-asset loaders notify the framework about initial SSR or newly loaded metadata
-with `webui:templates-registered`.
+custom client logic. Create a custom element only for an Interactive Island:
+events, custom lifecycle code, imperative methods, or JavaScript-owned state.
 
-Authored components can also omit `@observable` for values that are only read by
-the template and supplied by SSR, router `setState()`, or component asset data.
-The framework stores those template-only values internally. Use `@observable`
-only when TypeScript code reads or mutates the value directly.
+`@observable` and `@attr` are optional. Use them when TypeScript code reads or
+mutates the value directly, or when the value is part of the component's public
+API.
 
 ### Decorator reference
 
@@ -346,7 +341,6 @@ only when TypeScript code reads or mutates the value directly.
 | `this.$emit(name, detail?)` | Dispatch a CustomEvent that bubbles up |
 | `this.$update()` | Force a reactive update cycle |
 | `this.$flushUpdates()` | Synchronously flush pending updates |
-| `setState(state)` | Populate from router navigation state |
 | `static define(tagName)` | Register as a custom element |
 | `defineComponentAssets(manifest)` | Define lazy component assets and load asset/module/data work in parallel |
 
@@ -371,15 +365,15 @@ onItemSelected(e: CustomEvent): void {
 
 ### Dynamic Component Loading
 
-Components like dialogs, overlays, and drawers are declared as routes but
-loaded on demand — not during initial navigation. Declare them in the route
-tree so the build compiles them into the protocol:
+Components like dialogs, overlays, and drawers are declared as routes but loaded
+on demand, not during initial navigation. Declare them in the route tree so they
+can be loaded dynamically:
 
 ```html
 <route path="/" component="app-shell">
   <route path="" component="home-page" exact />
   <route path="users/:id" component="user-detail" exact />
-  <!-- Compiled into protocol, but only loaded when needed -->
+  <!-- Available for dynamic loading, but only loaded when needed -->
   <route path="settings" component="settings-dialog" exact />
 </route>
 ```
@@ -387,7 +381,7 @@ tree so the build compiles them into the protocol:
 Then load on demand with `Router.ensureLoaded` before creating the element:
 
 ```typescript
-// Fetches template + CSS from /_webui/templates — no FOUC
+// Fetches template + CSS from /_webui/templates before showing UI.
 await Router.ensureLoaded('settings-dialog');
 this.showSettings = true;
 
@@ -396,11 +390,10 @@ await Router.ensureLoaded('modal-a', 'modal-b', 'drawer-c');
 ```
 
 The component's template is **not** sent during initial SSR or partial
-navigation — `collect_inventoryable_components` only walks the matched
-route, not siblings. Zero cost until requested.
+navigation. It has zero client cost until requested.
 
 If a user navigates directly to `/settings` (deep link), the component
-renders normally in the outlet — it works both ways.
+renders normally in the outlet. It works both ways.
 
 Configure a custom endpoint if needed:
 
@@ -425,11 +418,11 @@ are returned in `BuildResult::component_asset_files` and written by
 `componentAssetFiles` (`[filename, content, ...]`) from `build()`.
 
 `webui serve` accepts the same `--emit-component-assets` flag and validates each
-root on every dev build — so HTML and theme-token errors in lazily loaded
-components (which are not part of the SSR tree) fail the build instead of being
-silently skipped — then serves the compiled `<tag>.webui.js` from memory,
-rebuilding it on change under `--watch`. No separate `webui build`/`--out` step
-is needed during development.
+root on every dev build. HTML and theme-token errors in lazily loaded components
+fail the build instead of being missed because the component is outside the
+initial route tree. The dev server serves `<tag>.webui.js` from memory and
+rebuilds it on change under `--watch`. No separate `webui build`/`--out` step is
+needed during development.
 
 ```typescript
 import { settingsAssets } from './lazy-assets.js';
@@ -453,17 +446,13 @@ export const settingsAssets = defineComponentAssets({
 });
 ```
 
-`defineComponentAssets()` uses the current page nonce from `window.__webui.nonce`
-or `<meta name="webui-nonce">` when it needs to append CSS module importmaps.
-The `.webui.js` asset is a browser-native ESM module that default-exports
-template/style metadata and compiled condition functions in one request. If the
-root template is already in `window.__webui.templates`, the loader skips
-importing. Concurrent calls for the same URL share one in-flight request, and
-CSS module styles are deduped against `window.__webui.styles`.
+`defineComponentAssets()` uses the current page CSP nonce when it needs to append
+CSS module importmaps. The `.webui.js` asset is a browser-native ESM module that
+carries the component template and style payload in one request. Concurrent calls
+for the same URL share one in-flight request, and CSS module styles are deduped.
 The manifest helper lets the shell start the template asset, JS chunk, and data
 fetch in parallel as soon as the user expresses intent; `create(tag)` waits for
-only the template asset and JS module by default, creates the element, then
-applies data later with `setState()`. Use
+only the template asset and JS module by default, then creates the element. Use
 `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component
 must wait briefly for state before mounting.
 
@@ -624,11 +613,10 @@ webui build ./src --out ./dist --plugin=webui \
   --emit-component-assets mail-thread,compose-page
 ```
 
-This writes `mail-thread.webui.js`. Requested roots are compiled through
-synthetic non-entry fragments, so they are not part of initial SSR unless the
-entry template also references them. The asset is standard ESM that carries
-template/style data and compiled condition functions with no inventory field.
-Load it with `defineComponentAssets()` before mounting the component. Use
+This writes `mail-thread.webui.js`. Requested roots stay outside initial SSR
+unless the entry template also references them. The asset is standard ESM that
+carries the component template and styles. Load it with
+`defineComponentAssets()` before mounting the component. Use
 `--asset-file-name-template "[name]-[hash].[ext]"` for CDN-cacheable filenames.
 Do not reference the lazy component tag from an SSR-reachable template unless you
 intentionally want it eligible for initial SSR.
@@ -998,7 +986,7 @@ button:not([data-active]) { background: transparent; }
 Declare the component as a route (so it's compiled), then load dynamically:
 
 ```html
-<!-- index.html — settings-dialog is in the protocol but not navigated to -->
+<!-- index.html - settings-dialog is available but not navigated to -->
 <route path="/" component="app-shell">
   <route path="" component="home-page" exact />
   <route path="settings" component="settings-dialog" exact />
@@ -1006,7 +994,7 @@ Declare the component as a route (so it's compiled), then load dynamically:
 ```
 
 ```typescript
-// Shell component — load template + CSS on demand
+// Shell component - load template + CSS on demand
 async onOpenSettings(): Promise<void> {
   await Router.ensureLoaded('settings-dialog');
   await import('./settings-dialog/settings-dialog.js');
@@ -1015,7 +1003,7 @@ async onOpenSettings(): Promise<void> {
 ```
 
 ```html
-<!-- Shell template — create the element dynamically -->
+<!-- Shell template - create the element dynamically -->
 <if condition="showSettings">
   <settings-dialog @close="{onCloseSettings()}"></settings-dialog>
 </if>
@@ -1176,6 +1164,6 @@ import { renderComponentTemplates } from '@microsoft/webui';
 const result = renderComponentTemplates(protocolBuf, ['settings-dialog'], invHex);
 ```
 
-The JSON response contains `templates` as component-tag-keyed metadata, `templateFunctions`
-as component-tag-keyed condition closure arrays, `templateStyles` for CSS module importmaps,
-and `inventory` with the updated component bitmask.
+The JSON response contains component-tag-keyed `templates`, matching
+`templateFunctions`, `templateStyles` for CSS module importmaps, and `inventory`
+with the updated component bitmask.

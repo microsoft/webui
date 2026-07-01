@@ -16,8 +16,6 @@ use std::path::PathBuf;
 use walkdir::WalkDir;
 
 type ProcessedCss = (String, Vec<String>, Vec<String>, Vec<CssFallbackChain>);
-#[cfg(feature = "fs")]
-const COMPONENT_SCRIPT_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs"];
 
 /// Represents a web component in the registry.
 #[derive(Debug, Clone)]
@@ -64,12 +62,7 @@ pub struct ComponentRegistry {
 
 #[cfg(feature = "fs")]
 fn component_has_script(html_path: &Path) -> bool {
-    for extension in COMPONENT_SCRIPT_EXTENSIONS {
-        if html_path.with_extension(extension).exists() {
-            return true;
-        }
-    }
-    false
+    html_path.with_extension("ts").exists() || html_path.with_extension("js").exists()
 }
 
 impl Default for ComponentRegistry {
@@ -338,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn test_register_component_detects_sibling_script() {
+    fn test_register_component_detects_ts_sibling_script() {
         let mut fs = TestFileSystem::new();
         let html_path = fs.add_file("components/scripted-card.html", "<p>Scripted</p>");
         std::fs::write(html_path.with_extension("ts"), "export {};")
@@ -353,6 +346,42 @@ mod tests {
             .get("scripted-card")
             .expect("Failed to retrieve registered component");
         assert!(component.has_script);
+    }
+
+    #[test]
+    fn test_register_component_detects_js_sibling_script() {
+        let mut fs = TestFileSystem::new();
+        let html_path = fs.add_file("components/scripted-card.html", "<p>Scripted</p>");
+        std::fs::write(html_path.with_extension("js"), "export {};")
+            .expect("Failed to write sibling script");
+
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_component_from_paths(&html_path, None::<&str>)
+            .expect("register failed");
+
+        let component = registry
+            .get("scripted-card")
+            .expect("Failed to retrieve registered component");
+        assert!(component.has_script);
+    }
+
+    #[test]
+    fn test_register_component_ignores_tsx_sibling_script() {
+        let mut fs = TestFileSystem::new();
+        let html_path = fs.add_file("components/scripted-card.html", "<p>Scripted</p>");
+        std::fs::write(html_path.with_extension("tsx"), "export {};")
+            .expect("Failed to write sibling script");
+
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_component_from_paths(&html_path, None::<&str>)
+            .expect("register failed");
+
+        let component = registry
+            .get("scripted-card")
+            .expect("Failed to retrieve registered component");
+        assert!(!component.has_script);
     }
 
     #[test]

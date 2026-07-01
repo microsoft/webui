@@ -6,9 +6,9 @@ This package is the browser-side runtime used by `webui build --plugin=webui`. I
 
 - `WebUIElement` for SSR hydration and client-created elements
 - `@observable`, `@attr`, and `@volatile` decorators
-- compiled template path mapping for direct DOM binding resolution
+- direct DOM binding updates
 - light DOM or shadow DOM rendering (`--dom=light|shadow` flag)
-- SSR state seeding from `window.__webui.state` (like Preact's props)
+- SSR state seeding
 
 If you are building WebUI apps in this repo, this is the component model used by examples like `examples/app/todo-webui`, `examples/app/commerce`, and `examples/app/contact-book-manager`.
 
@@ -92,11 +92,10 @@ Build with `--dom=shadow` (default) to wrap in a declarative shadow root, or `--
 If a component has no event handlers, custom lifecycle code, or client-only
 methods, it can ship only `component.html` and optional `component.css`.
 
-The compiler marks scriptless templates in metadata, and the framework
-automatically defines missing template tags after metadata is available. The
-fallback hydrates SSR output, observes attributes for template binding roots,
-and accepts `setState()` from routers or asset loaders. A developer-authored
-class still wins whenever it calls `WebUIElement.define(tagName)` first.
+Create a custom element only for an Interactive Island: event handlers, custom
+lifecycle code, imperative methods, or state that TypeScript code reads or
+mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
+to access the value or when the value is part of the component's public API.
 
 ### Build with the WebUI plugin
 
@@ -104,7 +103,8 @@ class still wins whenever it calls `WebUIElement.define(tagName)` first.
 cargo run -p microsoft-webui-cli -- build ./src --out ./dist --plugin=webui
 ```
 
-The compiler/plugin generates the template metadata and condition closure arrays consumed by the runtime. In normal app code, you should not need to hand-author `window.__webui.templates` or `window.__webui.templateFns`.
+The WebUI plugin prepares component templates for the browser. App code should
+only import the generated entrypoint and component modules.
 
 ### Property binding lifecycle
 
@@ -114,7 +114,11 @@ Property bindings use the `:` prefix to pass values directly to child DOM proper
 <profile-card :config="{{settings}}"></profile-card>
 ```
 
-For client-created component trees, the runtime upgrades the cloned child elements while they are still detached, wires bindings, and applies the first binding pass before appending them to the connected DOM. A child can read an initial parent-provided property in `connectedCallback`. If the parent value is not set, the child may initialize its own fallback there, and later parent updates still flow through the live binding.
+For client-created component trees, WebUI applies initial property bindings
+before child `connectedCallback` methods run. A child can read an initial
+parent-provided property in `connectedCallback`. If the parent value is not set,
+the child may initialize its own fallback there, and later parent updates still
+flow through the live binding.
 
 ### DOM strategy (`--dom`)
 
@@ -146,7 +150,6 @@ Base class for framework components.
 | `static define(tagName)` | Register the class as a custom element |
 | `$emit(name, detail?)` | Dispatch a bubbling, composed `CustomEvent` |
 | `$update()` | Force a reactive update (normally called automatically) |
-| `setState(state)` | Apply router/server state to decorated properties and internal template state |
 | `disconnectedCallback()` | Override for cleanup (global listeners, etc.) |
 
 In most components you do not call `$update()` directly. Property changes through `@observable` and `@attr` trigger updates for you.
@@ -177,22 +180,18 @@ export const settingsAssets = defineComponentAssets({
 });
 ```
 
-The asset module default-exports WebUI template/style metadata and compiled
-condition closures. CSS module importmaps use the current page nonce from
-`window.__webui.nonce` or `<meta name="webui-nonce">`. Asset loads skip importing
-when the root template is already in `window.__webui.templates`, share in-flight
-requests by URL, and dedupe CSS module styles against `window.__webui.styles`.
-`create(tag)` does not block on data by default; it applies data later with
-`setState()`. Use `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only
-when a component must wait briefly for state before mounting.
+The asset module carries the component's template and style payload. Asset
+loads share in-flight requests by URL and dedupe CSS module styles. `create(tag)`
+does not block on optional data by default. Use
+`create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
+wait briefly for state before mounting.
 
 ### `@observable`
 
 Marks a property as reactive. When the value changes, the framework
-re-evaluates the compiled bindings that reference it. Use it for state that
-TypeScript code reads or mutates; values supplied only by SSR, router
-`setState()`, or component asset data can be omitted and stay in internal
-template state.
+updates template bindings that reference it. Use it for state that TypeScript
+code reads or mutates. Values used only by the template do not need an
+`@observable` class field.
 
 ```ts
 class SearchPanel extends WebUIElement {
@@ -238,7 +237,7 @@ class CartSummary extends WebUIElement {
 
 ## Template Features
 
-The WebUI plugin compiles these template features into runtime metadata:
+The WebUI plugin supports these template features:
 
 - text bindings: `{{title}}`
 - attribute bindings: `href="{{item.href}}"`
@@ -278,8 +277,8 @@ Root-level events (e.g. `@toggle-item="{onToggleItem(e)}"`) can be declared on t
 - Use `w-ref` for true DOM-only concerns like focus or reading input values.
 - Omit `@observable` for values that are only read by the template and seeded
   externally after construction.
-- Omit the TypeScript class for HTML-only components that only need compiled
-  template bindings and router/server state.
+- Omit the TypeScript class for HTML-only components that only need template
+  bindings and router/server state.
 
 Avoid imperative DOM mutation for application state that can be represented by reactive properties.
 

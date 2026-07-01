@@ -77,7 +77,7 @@ struct TrackedComponent {
     tag_name: String,
     template_html: String,
     root_event_source: String,
-    auto_element: bool,
+    has_script: bool,
 }
 
 /// WebUI Framework parser plugin.
@@ -131,7 +131,7 @@ impl WebUIParserPlugin {
                 &c.template_html,
                 &c.root_event_source,
                 use_shadow,
-                c.auto_element,
+                !c.has_script,
             )?;
             out.push(ComponentTemplateArtifact::webui(
                 c.tag_name.clone(),
@@ -147,21 +147,21 @@ impl WebUIParserPlugin {
         tag_name: &str,
         template_html: &str,
         root_event_source: &str,
-        auto_element: bool,
+        has_script: bool,
     ) {
         if let Some(component) = self.components.iter_mut().find(|c| c.tag_name == tag_name) {
             component.template_html.clear();
             component.template_html.push_str(template_html);
             component.root_event_source.clear();
             component.root_event_source.push_str(root_event_source);
-            component.auto_element = auto_element;
+            component.has_script = has_script;
             return;
         }
         self.components.push(TrackedComponent {
             tag_name: tag_name.to_string(),
             template_html: template_html.to_string(),
             root_event_source: root_event_source.to_string(),
-            auto_element,
+            has_script,
         });
     }
 }
@@ -200,7 +200,7 @@ impl ParserPlugin for WebUIParserPlugin {
             tag_name,
             processed_template,
             &component.html_content,
-            !component.has_script,
+            component.has_script,
         );
         Ok(())
     }
@@ -431,7 +431,7 @@ fn generate_compiled_template_with_root_source(
     html_content: &str,
     root_event_source: &str,
     shadow_dom: bool,
-    auto_element: bool,
+    emit_auto_element: bool,
 ) -> Result<CompiledTemplatePayload> {
     let trimmed = html_content.trim();
     let root_events = extract_root_events(tag_name, root_event_source.trim())?;
@@ -443,7 +443,7 @@ fn generate_compiled_template_with_root_source(
         &meta,
         adopted_stylesheet.as_deref(),
         shadow_dom,
-        auto_element,
+        emit_auto_element,
     ))
 }
 
@@ -452,7 +452,7 @@ fn emit_compiled_template_payload(
     meta: &TemplateMeta,
     adopted_stylesheet: Option<&str>,
     shadow_dom: bool,
-    auto_element: bool,
+    emit_auto_element: bool,
 ) -> CompiledTemplatePayload {
     let mut conditions = ConditionFunctionEmitter::new(128);
     let mut out = String::with_capacity(512 + html_content.len());
@@ -470,7 +470,7 @@ fn emit_compiled_template_payload(
         out.push_str(",\"sd\":1");
     }
 
-    if auto_element {
+    if emit_auto_element {
         out.push_str(",\"ae\":1");
     }
 
