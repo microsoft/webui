@@ -41,21 +41,19 @@ export function dispatchTemplatesRegistered(
 }
 
 /** Read a template registration event payload without trusting arbitrary detail. */
-export function templateRegistrationDetail(event: Event): Record<string, TemplateMeta> | undefined {
-  const detail = (event as CustomEvent<{ templates?: unknown }>).detail;
+export function templateRegistrationDetail(event: Event): {
+  templates?: Record<string, TemplateMeta>;
+  blockedTags?: readonly string[];
+} | undefined {
+  const detail = (event as CustomEvent<{ templates?: unknown; blockedTags?: unknown }>).detail;
+  if (!detail || typeof detail !== 'object') return undefined;
   const templates = detail?.templates;
-  return typeof templates === 'object' && templates !== null
-    ? templates as Record<string, TemplateMeta>
-    : undefined;
-}
-
-/** Read the optional loader-owned tag list from a template registration event. */
-export function templateRegistrationBlockedTags(event: Event): readonly string[] | undefined {
-  const detail = (event as CustomEvent<{ blockedTags?: unknown }>).detail;
   const blockedTags = detail?.blockedTags;
-  if (!Array.isArray(blockedTags)) return undefined;
-  for (let i = 0; i < blockedTags.length; i++) {
-    if (typeof blockedTags[i] !== 'string') return undefined;
-  }
-  return blockedTags as readonly string[];
+  const payload = {
+    templates: typeof templates === 'object' && templates !== null
+      ? templates as Record<string, TemplateMeta>
+      : undefined,
+    blockedTags: Array.isArray(blockedTags) ? blockedTags as readonly string[] : undefined,
+  };
+  return payload.templates || payload.blockedTags ? payload : undefined;
 }

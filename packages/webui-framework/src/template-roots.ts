@@ -31,7 +31,6 @@ const templateRootsCache = new WeakMap<TemplateMeta, readonly string[]>();
 const templateRootSetCache = new WeakMap<TemplateMeta, ReadonlySet<string>>();
 const templateAttributeCache = new WeakMap<TemplateMeta, ReadonlyMap<string, string>>();
 const templateEventCache = new WeakMap<TemplateMeta, boolean>();
-const templateDynamicCache = new WeakMap<TemplateMeta, boolean>();
 
 /** Return the top-level state key for a binding path. */
 function pathRoot(path: string): string {
@@ -211,29 +210,5 @@ export function templateHasEventHandlers(meta: TemplateMeta): boolean {
  */
 export function templateNeedsAutoElement(meta: TemplateMeta): boolean {
   if (!meta.ae || templateHasEventHandlers(meta)) return false;
-
-  const cached = templateDynamicCache.get(meta);
-  if (cached !== undefined) return cached;
-
-  const stack: TemplateBlockMeta[] = [meta];
-  while (stack.length > 0) {
-    const block = stack.pop();
-    if (!block) continue;
-    if (
-      (block.tx && block.tx.length > 0) ||
-      (block.a && block.a.length > 0) ||
-      (block.c && block.c.length > 0) ||
-      (block.r && block.r.length > 0)
-    ) {
-      templateDynamicCache.set(meta, true);
-      return true;
-    }
-    const children = (block as TemplateMeta).b;
-    if (children) {
-      for (let i = 0; i < children.length; i++) stack.push(children[i]);
-    }
-  }
-
-  templateDynamicCache.set(meta, false);
-  return false;
+  return collectTemplateRoots(meta).length !== 0;
 }

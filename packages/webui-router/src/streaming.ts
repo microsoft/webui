@@ -23,7 +23,7 @@ export interface StreamingContext {
   readonly nonce: string;
   readonly injectedStyles: Set<string>;
   readonly injectedCss: Set<string>;
-  readonly blockedAutoElementTags?: readonly string[];
+  readonly blockedTags?: readonly string[];
   setDeferredReader(reader: Promise<void> | null): void;
   setDeferredGeneration(gen: number): void;
   updateInventory(inv: string): void;
@@ -103,7 +103,7 @@ export async function readStreamingPartial(
     ctx.nonce,
     ctx.injectedStyles,
     ctx.updateInventory,
-    ctx.blockedAutoElementTags,
+    ctx.blockedTags,
   );
   injectCssLinks(chunk1, ctx.injectedCss);
 

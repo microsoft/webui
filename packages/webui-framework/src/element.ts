@@ -1737,7 +1737,7 @@ export class WebUIElement extends CoreElement {
         scope,
       });
     }
-    const delegateTarget = this.$eventDelegateTarget();
+    const delegateTarget = this.shadowRoot ?? this;
     for (let i = 0; i < eventNames.length; i++) {
       this.$addDelegatedEvent(instance, delegateTarget, eventNames[i], buckets[i]);
     }
@@ -1751,11 +1751,6 @@ export class WebUIElement extends CoreElement {
     }
   }
 
-  /** Stable delegation target for SSR and detached client-created blocks. */
-  private $eventDelegateTarget(): EventTarget {
-    return this.shadowRoot ?? this;
-  }
-
   /** Attach one listener for all bindings of the same event name in an instance. */
   private $addDelegatedEvent(
     instance: TemplateInstance,
@@ -1765,28 +1760,13 @@ export class WebUIElement extends CoreElement {
   ): void {
     if (entries.length === 0) return;
     const listener = (event: Event): void => {
-      const path = typeof event.composedPath === 'function' ? event.composedPath() : null;
-      if (path) {
-        this.$dispatchDelegatedPath(entries, path, event);
-        return;
-      }
-      this.$dispatchDelegatedFallback(entries, event);
+      this.$dispatchDelegatedEvent(entries, event);
     };
     target.addEventListener(eventName, listener);
     this.$addCleanup(instance, () => target.removeEventListener(eventName, listener));
   }
 
-  private $dispatchDelegatedPath(entries: DelegatedEventEntry[], path: EventTarget[], event: Event): void {
-    for (let p = 0; p < path.length; p++) {
-      const target = path[p];
-      for (let i = 0; i < entries.length; i++) {
-        const entry = entries[i];
-        if (entry.target === target) this.$callEventHandler(entry.method, entry.args, event, entry.scope);
-      }
-    }
-  }
-
-  private $dispatchDelegatedFallback(entries: DelegatedEventEntry[], event: Event): void {
+  private $dispatchDelegatedEvent(entries: DelegatedEventEntry[], event: Event): void {
     let current = event.target as Node | null;
     while (current) {
       for (let i = 0; i < entries.length; i++) {

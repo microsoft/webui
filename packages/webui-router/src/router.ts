@@ -133,7 +133,7 @@ export class WebUIRouter {
     if (!meta.css) meta.css = [];
     if (!meta.styles) meta.styles = [];
     if (!meta.templates) meta.templates = {};
-    notifyTemplatesRegistered(meta.templates, this.loaderOwnedTags());
+    notifyTemplatesRegistered(meta.templates, this.loaderTags);
 
     // Build O(1) lookup Sets from the global arrays, then free the arrays —
     // they were one-shot SSR data; the Sets are the live lookup structure.
@@ -233,7 +233,7 @@ export class WebUIRouter {
       const fetchPromise = fetchComponentTemplates(
         missing, inv, endpoint, window.__webui!.nonce!, this.stylesSet,
         (inv) => this.updateInventory(inv),
-        this.loaderOwnedTags(),
+        this.loaderTags,
       ).finally(() => {
         for (const tag of missing) this.loadPromises.delete(tag);
       });
@@ -435,7 +435,7 @@ export class WebUIRouter {
       window.__webui!.nonce!,
       this.stylesSet,
       (inv) => this.updateInventory(inv),
-      this.loaderOwnedTags(),
+      this.loaderTags,
     );
     injectCssLinks(data, this.cssSet);
     return data;
@@ -501,7 +501,7 @@ export class WebUIRouter {
       get nonce() { return window.__webui!.nonce!; },
       get injectedStyles() { return self.stylesSet; },
       get injectedCss() { return self.cssSet; },
-      get blockedAutoElementTags() { return self.loaderOwnedTags(); },
+      get blockedTags() { return self.loaderTags; },
       setDeferredReader(r) { self.deferredReader = r; },
       setDeferredGeneration(g) { self.deferredGeneration = g; },
       updateInventory(inv) { self.updateInventory(inv); },
@@ -538,11 +538,6 @@ export class WebUIRouter {
         );
       }
     }
-  }
-
-  /** Tags with lazy component modules are owned by those modules, not auto-elements. */
-  private loaderOwnedTags(): readonly string[] | undefined {
-    return this.loaderTags;
   }
 
   private clearSsrPreloads(): void {

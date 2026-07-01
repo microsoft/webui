@@ -21,7 +21,6 @@ import { templateNeedsAutoElement } from './template-roots.js';
 import {
   TEMPLATES_REGISTERED_EVENT,
   templateRegistrationDetail,
-  templateRegistrationBlockedTags,
 } from './template-events.js';
 import type { TemplateMeta } from './template.js';
 
@@ -51,18 +50,15 @@ function defineAutoElement(tag: string, meta: TemplateMeta): void {
  * Developer-authored custom elements take precedence: when a tag is already
  * registered, this function leaves it untouched and reports no work.
  */
-function defineMissingTemplateElement(tag: string, meta: TemplateMeta): boolean {
+function defineMissingTemplateElement(tag: string, meta: TemplateMeta): void {
   if (
-    typeof customElements === 'undefined' ||
-    typeof HTMLElement === 'undefined' ||
     !templateNeedsAutoElement(meta) ||
     blockedAutoElementTags.has(tag) ||
     customElements.get(tag)
   ) {
-    return false;
+    return;
   }
   defineAutoElement(tag, meta);
-  return true;
 }
 
 /** Claim every eligible template in a registry snapshot. */
@@ -107,14 +103,15 @@ export function installAutoElementRuntime(): void {
   runtimeInstalled = true;
 
   window.addEventListener(TEMPLATES_REGISTERED_EVENT, (event: Event) => {
-    const blockedTags = templateRegistrationBlockedTags(event);
+    const detail = templateRegistrationDetail(event);
+    if (!detail) return;
+    const blockedTags = detail.blockedTags;
     if (blockedTags) {
       for (let i = 0; i < blockedTags.length; i++) {
         blockedAutoElementTags.add(blockedTags[i]);
       }
     }
-    const templates = templateRegistrationDetail(event);
-    if (templates) defineAutoTemplateElements(templates);
+    if (detail.templates) defineAutoTemplateElements(detail.templates);
   });
 
   if (document.readyState === 'loading') {
