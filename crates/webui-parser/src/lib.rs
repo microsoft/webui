@@ -15,6 +15,7 @@ mod css_parser;
 mod css_scan;
 mod diagnostic;
 mod error;
+mod fast_template_source;
 mod handlebars_parser;
 mod html_parser;
 pub mod plugin;
