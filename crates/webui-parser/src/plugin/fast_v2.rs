@@ -83,6 +83,10 @@ impl ParserPlugin for FastV2ParserPlugin {
         Ok(())
     }
 
+    fn uses_fast_template_artifacts(&self) -> bool {
+        true
+    }
+
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {
         if attr_name.starts_with('@')
             || attr_name == "f-ref"
