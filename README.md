@@ -12,6 +12,19 @@
 - **Server-side logic:** Conditions, loops, and expressions are evaluated on the server.
 - **Plugin-ready:** Parser and handler plugins support framework-specific hydration and directives.
 
+## FAST plugin authored templates
+
+The built-in FAST plugins (`fast`, `fast-v2`, and `fast-v3`) support component
+HTML authored as a single wrapping `<f-template>`. A `name` attribute on that
+wrapper overrides the filename-derived component tag; multiple `<f-template>`
+blocks in one component source are invalid. For build-time SSR, WebUI converts
+the inner FAST declarative template to WebUI syntax by rewriting `<f-repeat>` to
+`<for>`, rewriting `<f-when>` to `<if>`, unwrapping directive values, and
+removing client-only directives such as `@event`, `:prop`, `f-ref`,
+`f-slotted`, `f-children`, and similar attributes. The authored FAST template is
+preserved as the client artifact, and preserved artifacts still receive normal
+template processing, normalization, and CSS injection.
+
 ## Install
 
 ```bash

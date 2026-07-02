@@ -922,6 +922,14 @@ fn light_dom_slot_error(tag_name: &str, source: &str, offset: usize) -> ParserEr
         .into()
 }
 
+struct ComponentTemplateInput<'a> {
+    tag_name: &'a str,
+    html: &'a str,
+    plugin_html: Option<&'a str>,
+    css_content: Option<&'a str>,
+    artifact_needed: bool,
+}
+
 fn add_token_definitions(definitions: &[String], available_counts: &mut HashMap<String, usize>) {
     for definition in definitions {
         let count = available_counts.entry(definition.clone()).or_insert(0);
@@ -1251,6 +1259,12 @@ impl HtmlParser {
         if let Some(ref mut plugin) = self.plugin {
             plugin.configure(&self.options);
         }
+    }
+
+    fn uses_fast_template_artifacts(&self) -> bool {
+        self.plugin
+            .as_ref()
+            .is_some_and(|plugin| plugin.uses_fast_template_artifacts())
     }
 
     /// Get a mutable reference to the component registry.
@@ -3451,12 +3465,26 @@ impl HtmlParser {
         self.flush_raw_buffer(fragments);
 
         if let Some((html_content, css_content)) = template_source {
-            let built = self.build_component_templates(
-                element.name(),
-                &html_content,
-                css_content.as_deref(),
-                self.plugin.is_some(),
-            )?;
+            let uses_fast_template_artifacts = self.uses_fast_template_artifacts();
+            let html_content = self
+                .component_registry
+                .html_content_for_parse(element.name(), uses_fast_template_artifacts)
+                .unwrap_or(&html_content)
+                .to_string();
+            let plugin_template_artifact = if uses_fast_template_artifacts {
+                self.component_registry
+                    .plugin_template_artifact(element.name())
+                    .map(str::to_string)
+            } else {
+                None
+            };
+            let built = self.build_component_templates(ComponentTemplateInput {
+                tag_name: element.name(),
+                html: &html_content,
+                plugin_html: plugin_template_artifact.as_deref(),
+                css_content: css_content.as_deref(),
+                artifact_needed: self.plugin.is_some(),
+            })?;
 
             let context = built.context();
             if let Some(ref mut p) = self.plugin {
@@ -3602,8 +3630,16 @@ impl HtmlParser {
     ) -> Result<u32> {
         let mut first_dynamic_emitted = false;
         let mut binding_count: u32 = 0;
+        let uses_fast_template_artifacts = self.uses_fast_template_artifacts();
         for attr in attrs {
             let attr_name = attr.name;
+
+            if attr_name == ComponentRegistry::INTERNAL_FAST_BINDING_ATTR {
+                if uses_fast_template_artifacts {
+                    binding_count += 1;
+                }
+                continue;
+            }
 
             if let Some(ref mut p) = self.plugin {
                 match p.classify_attribute(attr_name) {
@@ -4311,7 +4347,7 @@ impl HtmlParser {
             return Ok(());
         }
 
-        let (html_content, css_content) = self
+        let component_data = self
             .component_registry
             .get(component)
             .ok_or_else(|| {
@@ -4320,20 +4356,29 @@ impl HtmlParser {
                     format!("unknown component <{component}>"),
                 )
                 .help(self.unknown_component_help(component))
-            })
-            .map(|component| {
-                (
-                    component.html_content.clone(),
-                    component.css_content.clone(),
-                )
-            })?;
+            })?
+            .clone();
+        let uses_fast_template_artifacts = self.uses_fast_template_artifacts();
+        let html_content = self
+            .component_registry
+            .html_content_for_parse(component, uses_fast_template_artifacts)
+            .unwrap_or(&component_data.html_content)
+            .to_string();
+        let plugin_template_artifact = if uses_fast_template_artifacts {
+            self.component_registry
+                .plugin_template_artifact(component)
+                .map(str::to_string)
+        } else {
+            None
+        };
 
-        let built = self.build_component_templates(
-            component,
-            &html_content,
-            css_content.as_deref(),
-            self.plugin.is_some(),
-        )?;
+        let built = self.build_component_templates(ComponentTemplateInput {
+            tag_name: component,
+            html: &html_content,
+            plugin_html: plugin_template_artifact.as_deref(),
+            css_content: component_data.css_content.as_deref(),
+            artifact_needed: self.plugin.is_some(),
+        })?;
 
         let context = built.context();
         if let Some(ref mut p) = self.plugin {
@@ -4378,11 +4423,11 @@ impl HtmlParser {
     /// Build both SSR-facing and plugin-facing component template views.
     fn build_component_templates(
         &mut self,
-        tag_name: &str,
-        html: &str,
-        css_content: Option<&str>,
-        artifact_needed: bool,
+        input: ComponentTemplateInput<'_>,
     ) -> Result<BuiltComponentTemplate> {
+        let tag_name = input.tag_name;
+        let html = input.html;
+        let css_content = input.css_content;
         let dom_analysis = self.analyze_component_dom(tag_name, html)?;
         let is_light = !dom_analysis.uses_shadow_dom;
         let mut inline_style_ranges = Vec::new();
@@ -4433,7 +4478,7 @@ impl HtmlParser {
             None => html,
         };
         let artifact_differs =
-            artifact_needed && Self::template_has_stripped_runtime_attrs(runtime_attr_source);
+            input.artifact_needed && Self::template_has_stripped_runtime_attrs(runtime_attr_source);
         // A `w-render`/`w-hydrate` component authors its policy on a plain
         // `<template>` wrapper. The policy lands on the host element as
         // generated CSS, so the wrapper itself must not survive into a Light
@@ -4445,7 +4490,16 @@ impl HtmlParser {
             dom_analysis,
             policy_wrapper,
         )?;
-        let artifact = if artifact_differs {
+        let artifact = if let Some(plugin_html) = input.plugin_html {
+            let plugin_dom_analysis =
+                analyze_component_dom(tag_name, plugin_html, self.options.dom_strategy)?;
+            Some(self.process_component_artifact_template_for_dom(
+                plugin_html,
+                adopted_specifier,
+                plugin_dom_analysis,
+                policy_wrapper,
+            )?)
+        } else if artifact_differs {
             Some(self.process_component_artifact_template_for_dom(
                 html,
                 adopted_specifier,
@@ -5900,6 +5954,103 @@ mod tests {
         assert!(
             matches!(last.fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("</my-component>"))
         );
+    }
+
+    fn assert_f_template_component_source(plugin: Box<dyn ParserPlugin>) {
+        let mut parser =
+            HtmlParser::with_plugin_options(plugin, (CssStrategy::Style, DomStrategy::Shadow));
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "file-card",
+                r#"<f-template name="named-card"><template><f-when value="{{visible}}"><f-repeat value="{{item in items}}"><button @click="{save()}" :config="{config}" title="{title}">{{item.label}}</button></f-repeat></f-when></template></f-template>"#,
+                Some(".root { color: red; }"),
+                true,
+            ))
+            .expect("register component");
+
+        parser
+            .parse("index.html", "<named-card></named-card>")
+            .expect("parse entry");
+        let records = parser.fragment_records.clone();
+        assert_stream!(
+            records,
+            "named-card",
+            [
+                raw("<template><style>.root { color: red; }</style>"),
+                if_cond("if-1"),
+                raw("</template>"),
+            ]
+        );
+        assert_stream!(records, "if-1", [for_loop("item", "items", "for-1"),]);
+        let for_fragments = &records["for-1"].fragments;
+        assert!(for_fragments.iter().any(|fragment| {
+            matches!(
+                fragment.fragment.as_ref(),
+                Some(Fragment::Plugin(data)) if data.data == 3u32.to_le_bytes()
+            )
+        }));
+        assert!(!for_fragments.iter().any(|fragment| {
+            matches!(
+                fragment.fragment.as_ref(),
+                Some(Fragment::Raw(raw)) if raw.value.contains(ComponentRegistry::INTERNAL_FAST_BINDING_ATTR)
+            )
+        }));
+
+        let artifacts = parser.take_plugin_artifacts().expect("artifacts");
+        let ParserPluginArtifacts::ComponentTemplates(templates) = artifacts else {
+            panic!("expected component template artifacts");
+        };
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].tag_name, "named-card");
+        let template = &templates[0].template;
+        assert!(template.contains(r#"<f-template name="named-card">"#));
+        assert!(template.contains("<style>.root { color: red; }</style>"));
+        assert!(template.contains(r#"<f-when value="{{visible}}">"#));
+        assert!(template.contains(r#"<f-repeat value="{{item in items}}">"#));
+        assert!(template.contains(r#"@click="{save()}""#));
+        assert!(template.contains(r#":config="{config}""#));
+        assert!(!template.contains("file-card"));
+    }
+
+    #[test]
+    fn fast_v2_plugin_uses_authored_f_template_source() {
+        assert_f_template_component_source(Box::new(plugin::fast_v2::FastV2ParserPlugin::new()));
+    }
+
+    #[test]
+    fn fast_v3_plugin_uses_authored_f_template_source() {
+        assert_f_template_component_source(Box::new(plugin::fast_v3::FastV3ParserPlugin::new()));
+    }
+
+    #[test]
+    fn webui_plugin_does_not_use_fast_template_artifact_path() {
+        let mut parser = HtmlParser::with_plugin(Box::new(plugin::webui::WebUIParserPlugin::new()));
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "file-card",
+                r#"<f-template name="named-card"><template><f-when value="{{visible}}"><button @click="{save()}" :config="{config}" title="{title}">Save</button></f-when></template></f-template>"#,
+                None,
+                true,
+            ))
+            .expect("register component");
+
+        parser
+            .parse("index.html", "<named-card></named-card>")
+            .expect("parse entry");
+        let artifacts = parser.take_plugin_artifacts().expect("artifacts");
+        let ParserPluginArtifacts::ComponentTemplates(templates) = artifacts else {
+            panic!("expected component template artifacts");
+        };
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].tag_name, "named-card");
+        assert!(templates[0].template.is_empty());
+        assert!(!templates[0].template_json.contains("<f-template"));
+        assert!(!templates[0].template_json.contains("@click"));
+        assert!(!templates[0]
+            .template_json
+            .contains(ComponentRegistry::INTERNAL_FAST_BINDING_ATTR));
     }
 
     #[test]
@@ -7716,12 +7867,13 @@ mod tests {
     fn light_component_inline_styles_remain_unscoped_and_unmarked() {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         let built = parser
-            .build_component_templates(
-                "my-card",
-                "<style>.label{color:red}</style><p class=\"label\">content</p>",
-                None,
-                false,
-            )
+            .build_component_templates(ComponentTemplateInput {
+                tag_name: "my-card",
+                html: "<style>.label{color:red}</style><p class=\"label\">content</p>",
+                plugin_html: None,
+                css_content: None,
+                artifact_needed: false,
+            })
             .expect("build Light component");
 
         assert_eq!(
@@ -7735,12 +7887,14 @@ mod tests {
     fn light_component_rejects_shadow_only_selectors() {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         for selector in [":host", ":host-context(body.dark)", "::slotted(*)"] {
-            let result = parser.build_component_templates(
-                "my-card",
-                &format!("<style>{selector}{{color:red}}</style><p>content</p>"),
-                None,
-                false,
-            );
+            let html = format!("<style>{selector}{{color:red}}</style><p>content</p>");
+            let result = parser.build_component_templates(ComponentTemplateInput {
+                tag_name: "my-card",
+                html: &html,
+                plugin_html: None,
+                css_content: None,
+                artifact_needed: false,
+            });
             let error = match result {
                 Ok(_) => panic!("Shadow-only selector must fail in Light DOM"),
                 Err(error) => error,
@@ -7779,12 +7933,13 @@ mod tests {
     fn shadow_component_inline_styles_remain_tree_local_and_unchanged() {
         let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
         let built = parser
-            .build_component_templates(
-                "my-card",
-                "<style>:host{display:block}.label{color:red}</style><p class=\"label\">content</p>",
-                None,
-                false,
-            )
+            .build_component_templates(ComponentTemplateInput {
+                tag_name: "my-card",
+                html: "<style>:host{display:block}.label{color:red}</style><p class=\"label\">content</p>",
+                plugin_html: None,
+                css_content: None,
+                artifact_needed: false,
+            })
             .expect("build Shadow component");
 
         assert!(built.ssr.contains(
@@ -7990,12 +8145,13 @@ mod tests {
     fn bare_template_is_unwrapped_as_explicit_light_dom() {
         let mut parser = HtmlParser::new();
         let built = parser
-            .build_component_templates(
-                "my-card",
-                "<template><div class=\"label\">hi</div></template>",
-                Some(".label{color:red}"),
-                false,
-            )
+            .build_component_templates(ComponentTemplateInput {
+                tag_name: "my-card",
+                html: "<template><div class=\"label\">hi</div></template>",
+                plugin_html: None,
+                css_content: Some(".label{color:red}"),
+                artifact_needed: false,
+            })
             .expect("bare template should select Light DOM");
         assert!(!built.uses_shadow_dom);
         assert_eq!(built.ssr, r#"<div class="label">hi</div>"#);
@@ -8005,12 +8161,13 @@ mod tests {
     fn attributed_template_keeps_the_shadow_fallback() {
         let mut parser = HtmlParser::new();
         let built = parser
-            .build_component_templates(
-                "my-card",
-                r#"<template data-purpose="content"><div>hi</div></template>"#,
-                None,
-                false,
-            )
+            .build_component_templates(ComponentTemplateInput {
+                tag_name: "my-card",
+                html: r#"<template data-purpose="content"><div>hi</div></template>"#,
+                plugin_html: None,
+                css_content: None,
+                artifact_needed: false,
+            })
             .expect("attributed template should remain ordinary content");
         assert!(built.uses_shadow_dom);
         assert_eq!(
@@ -8109,16 +8266,43 @@ mod tests {
         // applied to the host through generated CSS, so the wrapper must not
         // survive into a Light template.
         let html = r#"<template w-hydrate="lazy"><div>hi</div></template>"#;
+        let mut shadow = HtmlParser::with_options(DomStrategy::Shadow);
+        let shadow_built = shadow
+            .build_component_templates(ComponentTemplateInput {
+                tag_name: "my-comp",
+                html,
+                plugin_html: None,
+                css_content: None,
+                artifact_needed: true,
+            })
+            .expect("shadow policy wrapper should compile");
+        assert_eq!(
+            shadow_built.ssr,
+            r#"<template shadowrootmode="open"><div>hi</div></template>"#
+        );
+        assert!(!shadow_built.artifact().contains("w-hydrate"));
         let mut light = HtmlParser::with_options(DomStrategy::Light);
         let light_built = light
-            .build_component_templates("my-comp", html, None, true)
+            .build_component_templates(ComponentTemplateInput {
+                tag_name: "my-comp",
+                html,
+                plugin_html: None,
+                css_content: None,
+                artifact_needed: true,
+            })
             .expect("light policy wrapper should compile");
         assert_eq!(light_built.ssr, "<div>hi</div>");
         assert_eq!(light_built.artifact(), "<div>hi</div>");
 
         let mut implicit_shadow = HtmlParser::new();
         let shadow_built = implicit_shadow
-            .build_component_templates("my-comp", html, None, true)
+            .build_component_templates(ComponentTemplateInput {
+                tag_name: "my-comp",
+                html,
+                plugin_html: None,
+                css_content: None,
+                artifact_needed: true,
+            })
             .expect("default policy wrapper should compile as Shadow");
         assert_eq!(
             shadow_built.ssr,
@@ -8132,7 +8316,13 @@ mod tests {
             r#"<template shadowrootmode="open" w-hydrate="lazy"><div>hi</div></template>"#;
         let mut shadow = HtmlParser::new();
         let authored_shadow_built = shadow
-            .build_component_templates("my-comp", shadow_html, None, true)
+            .build_component_templates(ComponentTemplateInput {
+                tag_name: "my-comp",
+                html: shadow_html,
+                plugin_html: None,
+                css_content: None,
+                artifact_needed: true,
+            })
             .expect("shadow policy wrapper should compile");
         assert_eq!(
             authored_shadow_built.ssr,
@@ -8260,22 +8450,28 @@ mod tests {
 
     #[test]
     fn dev_template_module_strategy_appends_adopted_attr_and_preserves_root_attrs() {
-        let mut parser = HtmlParser::with_options(CssStrategy::Module);
-        let built = parser
-            .build_component_templates(
-                "my-comp",
-                r#"<template shadowrootmode="open" @click="{onClick()}">Hello</template>"#,
-                Some(":host { color: red; }"),
-                true,
-            )
-            .expect("authored Shadow template should support module CSS");
-        let artifact = built.artifact();
+        for dom_strategy in [DomStrategy::Shadow, DomStrategy::Light] {
+            let mut parser = HtmlParser::with_options((CssStrategy::Module, dom_strategy));
+            let built = match parser.build_component_templates(ComponentTemplateInput {
+                tag_name: "my-comp",
+                html: r#"<template shadowrootmode="open" @click="{onClick()}">Hello</template>"#,
+                plugin_html: None,
+                css_content: Some(":host { color: red; }"),
+                artifact_needed: true,
+            }) {
+                Ok(built) => built,
+                Err(err) => panic!(
+                    "dev-authored <template> should be accepted under {dom_strategy:?} with module CSS, got: {err}"
+                ),
+            };
+            let artifact = built.artifact();
 
-        assert!(artifact.contains(r#"shadowrootmode="open""#));
-        assert!(artifact.contains(r#"@click="{onClick()}""#));
-        assert!(artifact.contains(r#"shadowrootadoptedstylesheets="my-comp""#));
-        assert_eq!(artifact.matches("shadowrootadoptedstylesheets").count(), 1);
-        assert!(!built.ssr.contains("@click"));
+            assert!(artifact.contains(r#"shadowrootmode="open""#));
+            assert!(artifact.contains(r#"@click="{onClick()}""#));
+            assert!(artifact.contains(r#"shadowrootadoptedstylesheets="my-comp""#));
+            assert_eq!(artifact.matches("shadowrootadoptedstylesheets").count(), 1);
+            assert!(!built.ssr.contains("@click"));
+        }
     }
 
     #[test]
