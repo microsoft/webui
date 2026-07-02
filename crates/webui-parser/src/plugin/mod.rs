@@ -101,6 +101,15 @@ pub trait ParserPlugin {
         processed_template: &str,
     ) -> Result<()>;
 
+    /// Return true when this plugin consumes FAST `<f-template>` artifacts.
+    ///
+    /// FAST parser plugins use this to opt into authored `<f-template>` source
+    /// handling, including parser-only binding markers for stripped FAST client
+    /// directives. Other plugins receive the normal WebUI parse view.
+    fn uses_fast_template_artifacts(&self) -> bool {
+        false
+    }
+
     /// Decide how a framework-owned attribute should be handled.
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
 

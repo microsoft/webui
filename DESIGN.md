@@ -1072,6 +1072,7 @@ pub trait ParserPlugin {
         component: &Component,
         processed_template: &str,
     ) -> Result<()>;
+    fn uses_fast_template_artifacts(&self) -> bool { false }
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
     fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
     fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts>;
@@ -1083,6 +1084,7 @@ pub trait ParserPlugin {
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
 - **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean.
+- **FAST artifact opt-in**: `uses_fast_template_artifacts` returns `true` only for FAST parser plugins. It enables authored `<f-template>` handling, parser-only binding markers for stripped FAST client directives, and preserved FAST client artifacts. Other plugins receive the normal WebUI parse view.
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts. It is **fallible**: template-authoring mistakes found while compiling component templates (an invalid `@event` handler or a non-braced `w-ref`) surface as `ParserError::Template` instead of panicking, so every host (CLI, Node, FFI, WASM) can handle them.
 
 **Selecting parser plugins**
@@ -1095,6 +1097,38 @@ documentation for the current list. Each plugin defines:
 - The opaque `Plugin` fragment payload it emits per element
 - Any post-parse artifacts (e.g., client component templates) it injects at `</body>`
 - Any template-syntax conversions it performs inside component templates
+
+**Built-in FAST parser plugins**
+
+The built-in FAST parser plugins (`fast`, `fast-v2`, and `fast-v3`) opt into
+FAST template artifacts and support component source files authored as a single
+wrapping `<f-template>`. Component registration detects that wrapper before
+parsing. The wrapper's `name` attribute overrides the filename-derived component
+tag; if `name` is absent or empty, the filename-derived tag is used. Multiple
+`<f-template>` elements in one component source are unsupported and return a
+structured authoring diagnostic with code `unsupported-multiple-f-templates`.
+
+For build-time SSR parsing, WebUI converts the inner FAST declarative template
+to the WebUI parse view while keeping a separate plugin-facing client artifact:
+
+- `<f-repeat value="{{item in items}}">` converts to
+  `<for each="item in items">`.
+- `<f-when value="{{condition}}">` converts to
+  `<if condition="condition">`.
+- Directive values are unwrapped from `{{...}}` or `{...}` when moving to the
+  WebUI parse view.
+- Client-only FAST syntax that does not affect server-rendered output is removed
+  from the SSR parse view, including `@event`, `:prop`, `f-ref`, `f-slotted`,
+  `f-children`, and other client-only property/event directives.
+
+The original authored FAST template remains the client template artifact emitted
+by the FAST plugin. Parser-only markers carry the binding count for stripped
+client-only directives so FAST hydration indexes remain aligned, but those
+markers never appear in public component HTML or non-FAST plugin artifacts. The
+preserved artifact still runs through the normal component-template processing
+path before emission, including template wrapper normalization, selected
+CSS-strategy injection, module stylesheet adoption where applicable,
+legal-comment handling, and plugin artifact normalization.
 
 WebUI itself does not interpret plugin-emitted bytes; each parser plugin pairs with
 a matching handler plugin that consumes them at render time. See [packages/webui-framework/README.md](packages/webui-framework/README.md)

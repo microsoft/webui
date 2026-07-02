@@ -84,6 +84,54 @@ use webui_handler::plugin::webui::WebUIHydrationPlugin;
 let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
 ```
 
+### Using FAST Plugins
+
+The built-in FAST plugins are `fast`, `fast-v2`, and `fast-v3`:
+
+```bash
+webui build ./src --out ./dist --plugin=fast-v3
+webui serve ./src --state ./data/state.json --plugin=fast-v3 --watch
+```
+
+For FAST builds, a component HTML file may be authored as one wrapping
+`<f-template>`:
+
+```html
+<!-- src/components/file-card.html -->
+<f-template name="named-card">
+  <template>
+    <f-when value="{{visible}}">
+      <f-repeat value="{{item in items}}">
+        <button @click="{select(item)}" :config="{config}">
+          {{item.label}}
+        </button>
+      </f-repeat>
+    </f-when>
+  </template>
+</f-template>
+```
+
+`<f-template name="named-card">` registers the component as `named-card` instead
+of deriving `file-card` from the filename. If the `name` attribute is omitted,
+the filename-derived tag is used. Multiple `<f-template>` elements in one
+component source are unsupported and fail the build with an authoring error.
+
+WebUI uses two views of this source:
+
+- **SSR parse view:** the inner FAST declarative template is converted to WebUI
+  syntax for build-time parsing. `<f-repeat value="{{item in items}}">` becomes
+  `<for each="item in items">`; `<f-when value="{{condition}}">` becomes
+  `<if condition="condition">`; directive values are unwrapped; client-only FAST
+  syntax that does not affect server-rendered output is removed, including
+  `@event`, `:prop`, `f-ref`, `f-slotted`, `f-children`, and similar
+  client-only directives. FAST plugins receive parser-only binding markers for
+  those stripped directives so hydration binding indexes remain aligned.
+- **Client artifact view:** the authored FAST template is preserved and emitted
+  as the client `<f-template>` payload. It still goes through normal component
+  processing and normalization, including wrapper handling and CSS injection for
+  the selected CSS strategy. Non-FAST plugins receive the normal WebUI parse
+  view instead of FAST artifacts.
+
 ## Writing Custom Plugins
 
 To create a custom plugin, implement the `ParserPlugin` and/or `HandlerPlugin` traits:
@@ -103,6 +151,11 @@ pub trait ParserPlugin {
         component: &Component,
         processed_template: &str,
     ) -> Result<()>;
+
+    /// Return true only for plugins that consume FAST `<f-template>` artifacts.
+    fn uses_fast_template_artifacts(&self) -> bool {
+        false
+    }
 
     /// Decide how a framework-owned attribute should be handled.
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
