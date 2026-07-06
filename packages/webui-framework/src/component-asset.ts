@@ -32,12 +32,6 @@ export interface ComponentAsset {
   templateFunctions?: Record<string, CompiledConditionFn[]>;
 }
 
-/** Options for loading or registering a static component asset. */
-export interface ComponentAssetOptions {
-  /** CSP nonce for importmap style scripts. Defaults to WebUI SSR metadata. */
-  nonce?: string;
-}
-
 /** State payload returned by a lazy component data loader. */
 export type ComponentAssetState = Record<string, unknown>;
 
@@ -77,10 +71,7 @@ export interface ComponentAssetRegistry {
   /** Start asset, module, and optional data work for a component. */
   preload<Data extends ComponentAssetState = ComponentAssetState>(tag: string): ComponentAssetPreload<Data>;
   /** Create a component element and apply loaded data via setState(), if present. */
-  create<Data extends ComponentAssetState = ComponentAssetState>(
-    tag: string,
-    options?: ComponentAssetCreateOptions,
-  ): Promise<HTMLElement>;
+  create(tag: string, options?: ComponentAssetCreateOptions): Promise<HTMLElement>;
 }
 
 interface WebUIAssetGlobal {
@@ -122,11 +113,11 @@ export function defineComponentAssets(manifest: ComponentAssetManifest): Compone
     return next;
   }
 
-  async function create<Data extends ComponentAssetState = ComponentAssetState>(
+  async function create(
     tag: string,
     options: ComponentAssetCreateOptions = {},
   ): Promise<HTMLElement> {
-    const pending = preload<Data>(tag);
+    const pending = preload(tag);
     await waitForElementResources(pending);
     const element = document.createElement(tag);
     if (pending.data) {
@@ -186,7 +177,6 @@ function dataWithTimeout<Data extends ComponentAssetState>(
 function loadComponentAsset(
   tag: string,
   url: string | URL,
-  options: ComponentAssetOptions = {},
 ): Promise<void> {
   if (getTemplate(tag)) return Promise.resolve();
 
@@ -195,7 +185,7 @@ function loadComponentAsset(
   let promise = assetLoadPromises.get(href);
   if (promise) return promise;
 
-  promise = importAndRegisterComponentAsset(assetUrl, options)
+  promise = importAndRegisterComponentAsset(assetUrl)
     .finally(() => {
       assetLoadPromises.delete(href);
     });
@@ -206,12 +196,11 @@ function loadComponentAsset(
 /** Register a static component asset object that has already been imported. */
 function registerComponentAsset(
   asset: ComponentAsset,
-  options: ComponentAssetOptions = {},
 ): void {
   validateAsset(asset);
   if (asset.templates && templatesAlreadyRegistered(asset.templates)) return;
 
-  registerAssetStyles(asset.templateStyles, options.nonce ?? readNonce());
+  registerAssetStyles(asset.templateStyles, readNonce());
 
   if (asset.templates) {
     registerTemplateData(asset.templates, asset.templateFunctions);
@@ -220,10 +209,9 @@ function registerComponentAsset(
 
 async function importAndRegisterComponentAsset(
   assetUrl: URL,
-  options: ComponentAssetOptions,
 ): Promise<void> {
   const imported: unknown = await import(assetUrl.href);
-  registerComponentAsset(readComponentAssetModule(imported), options);
+  registerComponentAsset(readComponentAssetModule(imported));
 }
 
 function readComponentAssetModule(module: unknown): ComponentAsset {

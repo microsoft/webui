@@ -7,12 +7,9 @@
  */
 
 import { Router } from '@microsoft/webui-router';
-import { installAutoElementRuntime } from '@microsoft/webui-framework/auto-element.js';
 
 // Shell component — eagerly loaded.
 import './cb-app/cb-app.js';
-
-installAutoElementRuntime();
 
 // Listen for the framework's global hydration-complete event.
 window.addEventListener('webui:hydration-complete', onHydrationComplete);

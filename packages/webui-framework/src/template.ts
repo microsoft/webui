@@ -11,19 +11,18 @@
  * - `ag` — attribute target groups `[path, startIndex, count]`
  * - `c`  — conditional blocks `[conditionRef, blockIndex, slot]`
  * - `r`  — repeat/for blocks `[collection, itemVar, blockIndex, slot]`
- * - `e`  — element events `[eventName, handlerName, argSpecs, targetPath]`
+ * - `eg` — grouped element events `[eventName, [[handlerName, argSpecs, targetPath, usesEvent?]]]`
  * - `b`  — nested compiled block metadata
  * - `sa` — adopted stylesheet specifier for CSS module strategy
  * - `sd` — shadow DOM flag for client-created components
  * - `re` — root events on the host element
  * - `tr` — state roots referenced by the compiled template
- * - `ta` — observed host attributes for those roots, flat `[attr, root]` pairs
- * - `tf` — compiler feature bitmask
- * - `ae` — internal auto-element eligibility flag for scriptless templates
+ * - `ta` — observed host attributes index-aligned with `tr`
+ * - `th` — internal static TemplateElement host ownership flag
  *
- * Template registration also notifies optional runtimes, such as the
- * auto-element runtime, so dynamically loaded route templates can be claimed
- * without coupling the router package to the framework package.
+ * Template registration also notifies optional runtimes so dynamically loaded
+ * route templates can be claimed without coupling the router package to the
+ * framework package.
  */
 
 export type {
@@ -35,6 +34,8 @@ export type {
   CompiledConditionalMeta,
   CompiledEventArg,
   CompiledEventArgs,
+  CompiledEventBindingMeta,
+  CompiledEventGroupMeta,
   SerializedCompiledCondition,
   TemplateCondition,
   CompiledTextRunMeta,
@@ -95,7 +96,7 @@ export function getTemplateRegistry(): Record<string, TemplateMeta> | undefined 
  * Register template metadata and optional condition closures at runtime.
  *
  * Used by component assets and tests. After registration, a DOM event is
- * dispatched so auto-elements can claim newly available scriptless templates.
+ * dispatched so static hosts can claim newly available scriptless templates.
  */
 export function registerTemplateData(
   templates: Record<string, TemplateMeta>,

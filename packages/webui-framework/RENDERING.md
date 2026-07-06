@@ -126,7 +126,7 @@ The compiler emits one JSON-safe `TemplateMeta` per component plus a small compo
       "ag": [],
       "c": [[[0, ["items.length"]], 0, [[], 0]]],
       "r": [["items", "item", 1, [[0], 0]]],
-      "e": [],
+      "eg": [],
       "b": [],
       "sa": "todo-app",
       "sd": 1,
@@ -145,7 +145,7 @@ The matching executable payload is stored under `window.__webui.templateFns['tod
 | `a` / `ag` | Attribute bindings and the elements they target. |
 | `c` | Conditional blocks with `[conditionRef, blockIndex, slot]`. |
 | `r` | Repeat blocks with `[collection, itemVar, blockIndex, slot]`. |
-| `e` | Event bindings with handler argument specs and target paths. |
+| `eg` | Event bindings grouped by event name, with handler argument specs and target paths. |
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
 | `sa` | Adopted-stylesheet specifier (CSS module). |
 | `sd` | Truthy when client-created instances should attach a shadow root. |
@@ -315,7 +315,7 @@ On reactive flip:
 
 Two flavours:
 
-- **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `[event, handler, argSpecs, targetPath]`. Hydration resolves `targetPath` to the real element, installs the listener there, and captures the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time.
+- **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `eg` groups shaped as `[event, [[handler, argSpecs, targetPath, usesEvent?]]]`. Hydration resolves `targetPath` to the real element, installs one delegated listener per event name, and captures the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time.
 - **Root events** (`re` field): attached to the host element rather than the shadow root. Used for `@custom-event` on the component's `<template>` root.
 
 Listener cleanup is automatic. `$destroy` (called from `disconnectedCallback` via a microtask, so repeat reconciliation moves don't trigger teardown) removes everything wired during `$mount`.

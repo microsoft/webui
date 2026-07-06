@@ -9,8 +9,6 @@
 
 import {
   ROUTE_SELECTOR,
-  isExact,
-  routeComponent,
   activateRoute,
   renderRoot,
   createRouteStub,
@@ -181,37 +179,4 @@ export function paramsEqual(
     if (a[aKeys[i]] !== b[aKeys[i]]) return false;
   }
   return true;
-}
-
-/**
- * Find top-level route elements — direct children of `<body>`.
- */
-export function discoverTopRoutes(): HTMLElement[] {
-  const results: HTMLElement[] = [];
-  for (const child of document.body.children) {
-    if (child.tagName === 'WEBUI-ROUTE') {
-      results.push(child as HTMLElement);
-    }
-  }
-  return results;
-}
-
-/**
- * Find child route elements inside a parent route's component.
- * Traverses: parent route → component → component's render root → `<webui-route>` elements.
- */
-export function discoverChildRoutes(parentRoute: HTMLElement): HTMLElement[] {
-  const results: HTMLElement[] = [];
-  const comp = routeComponent(parentRoute);
-  if (!comp) return results;
-
-  const compEl = parentRoute.querySelector(comp);
-  if (!compEl) return results;
-
-  const root = renderRoot(compEl);
-  for (const child of root.querySelectorAll(ROUTE_SELECTOR)) {
-    results.push(child as HTMLElement);
-  }
-
-  return results;
 }

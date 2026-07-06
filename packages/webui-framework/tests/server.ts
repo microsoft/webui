@@ -25,10 +25,10 @@ await buildFixtureEntries({
   tsconfig,
   emptyMessage: `No fixture entry points found in ${fixturesRoot}`,
   extraBuilds: [{
-    entryPoints: [resolve(here, 'auto-elements.ts')],
+    entryPoints: [resolve(here, 'static-host.ts')],
     bundle: true,
     format: 'iife',
-    outfile: resolve(outDir, 'auto-elements.js'),
+    outfile: resolve(outDir, 'static-host.js'),
     platform: 'browser',
     target: 'es2022',
     supported: { 'import-attributes': true },

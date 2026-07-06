@@ -406,8 +406,12 @@ Create a production build:
 npx webui build ./src --out ./dist --plugin=webui
 ```
 
-The output in `./dist` contains the compiled protocol binary and CSS files
-ready for deployment with any handler (Rust, Node.js, C#, Python, Go).
+The output in `./dist` contains the compiled protocol binary and CSS files.
+Bundle your browser source entry directly. If the app has no authored
+components but still uses HTML-only components that receive server or route
+state, import `@microsoft/webui-framework` once from that browser entry. The
+protocol and CSS are ready for deployment with any handler (Rust, Node.js, C#,
+Python, Go).
 
 ---
 

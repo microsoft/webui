@@ -79,20 +79,20 @@ Object.defineProperty(globalThis, 'window', {
 });
 
 const {
-  installAutoElementRuntime,
-} = await import('./auto-element.js');
+  installTemplateElementRuntime,
+} = await import('./static-host.js');
 
 type ObservedElementConstructor = CustomElementConstructor & {
   readonly observedAttributes: readonly string[];
 };
 
-function textTemplate(path: string, autoElement = true): TemplateMeta {
+function textTemplate(path: string, staticHost = true): TemplateMeta {
   const attr = path.replace(/[A-Z]/g, value => `-${value.toLowerCase()}`);
   return {
     h: '<p></p>',
-    ae: autoElement ? 1 : undefined,
+    th: staticHost ? 1 : undefined,
     tr: [path],
-    ta: [attr, path],
+    ta: [attr],
     tx: [[
       [[], 0],
       [[path]],
@@ -107,12 +107,12 @@ function registerUnitTemplate(tag: string, meta: TemplateMeta): TemplateMeta {
   return meta;
 }
 
-describe('auto element fallback', () => {
-  test('installAutoElementRuntime registers a CoreElement fallback for metadata roots', async () => {
+describe('static template host runtime', () => {
+  test('installTemplateElementRuntime registers a TemplateElement fallback for metadata roots', async () => {
     const tag = `auto-unit-${Date.now()}`;
 
     registerUnitTemplate(tag, textTemplate('displayValue'));
-    installAutoElementRuntime();
+    installTemplateElementRuntime();
     await new Promise<void>(resolve => queueMicrotask(resolve));
 
     const ctor = registry.get(tag);
@@ -130,8 +130,8 @@ describe('auto element fallback', () => {
 
     instance.attributeChangedCallback('display-value', 'Loaded', 'From attribute');
     assert.equal(instance.displayValue, undefined);
-    // Auto-elements extend the static CoreElement, so interactive helpers like
-    // $emit are tree-shaken away — an HTML-only fallback never needs them.
+    // Static hosts extend TemplateElement, so interactive helpers like $emit are
+    // tree-shaken away - an HTML-only fallback never needs them.
     assert.equal(typeof instance.$emit, 'undefined');
   });
 
@@ -139,7 +139,7 @@ describe('auto element fallback', () => {
     const tag = `auto-native-title-${Date.now()}`;
 
     registerUnitTemplate(tag, textTemplate('title'));
-    installAutoElementRuntime();
+    installTemplateElementRuntime();
     await new Promise<void>(resolve => queueMicrotask(resolve));
 
     const ctor = registry.get(tag);
@@ -158,83 +158,79 @@ describe('auto element fallback', () => {
     assert.equal(instance.$resolveValue('title'), 'Loaded from attr');
   });
 
-  test('installAutoElementRuntime does not overwrite an existing custom element', async () => {
+  test('installTemplateElementRuntime does not overwrite an existing custom element', async () => {
     const tag = `existing-unit-${Date.now()}`;
     const existing = class ExistingElement extends HTMLElement {};
     customElements.define(tag, existing);
 
     registerUnitTemplate(tag, textTemplate('title'));
-    installAutoElementRuntime();
+    installTemplateElementRuntime();
     await new Promise<void>(resolve => queueMicrotask(resolve));
     assert.equal(customElements.get(tag), existing);
   });
 
-  test('installAutoElementRuntime skips templates with event handlers', async () => {
+  test('installTemplateElementRuntime only claims compiler-owned static hosts', async () => {
     const tag = `interactive-unit-${Date.now()}`;
 
     registerUnitTemplate(tag, {
       h: '<button></button>',
-      ae: 1,
-      tf: 1,
-      e: [['click', 'onClick', [], [0]]],
+      eg: [['click', [['onClick', [], [0]]]]],
     });
-    installAutoElementRuntime();
+    installTemplateElementRuntime();
     await new Promise<void>(resolve => queueMicrotask(resolve));
     assert.equal(customElements.get(tag), undefined);
   });
 
-  test('installAutoElementRuntime registers each missing template', async () => {
+  test('installTemplateElementRuntime registers each missing template', async () => {
     const first = `auto-all-a-${Date.now()}`;
     const second = `auto-all-b-${Date.now()}`;
 
     registerUnitTemplate(first, textTemplate('title'));
     registerUnitTemplate(second, textTemplate('itemCount'));
-    installAutoElementRuntime();
+    installTemplateElementRuntime();
     await new Promise<void>(resolve => queueMicrotask(resolve));
 
     assert.ok(customElements.get(first));
     assert.ok(customElements.get(second));
   });
 
-  test('installAutoElementRuntime only claims compiler-marked auto elements', async () => {
+  test('installTemplateElementRuntime only claims compiler-marked static hosts', async () => {
     const allowed = `runtime-allowed-${Date.now()}`;
     const skipped = `runtime-skipped-${Date.now()}`;
     registerUnitTemplate(allowed, textTemplate('title'));
     registerUnitTemplate(skipped, textTemplate('title', false));
 
-    installAutoElementRuntime();
+    installTemplateElementRuntime();
     await new Promise<void>(resolve => queueMicrotask(resolve));
 
     assert.ok(customElements.get(allowed));
     assert.equal(customElements.get(skipped), undefined);
   });
 
-  test('installAutoElementRuntime skips fully static scriptless templates', async () => {
+  test('installTemplateElementRuntime skips fully static scriptless templates', async () => {
     const tag = `static-only-${Date.now()}`;
     registerUnitTemplate(tag, {
       h: '<p>Static content</p>',
-      ae: 1,
     });
 
-    installAutoElementRuntime();
+    installTemplateElementRuntime();
     await new Promise<void>(resolve => queueMicrotask(resolve));
 
     assert.equal(customElements.get(tag), undefined);
   });
 
-  test('template registration event blocks loader-owned tags', async () => {
-    const tag = `loader-owned-${Date.now()}`;
+  test('template registration event claims compiler-owned static hosts', async () => {
+    const tag = `event-owned-${Date.now()}`;
     const meta = registerUnitTemplate(tag, textTemplate('message'));
 
-    installAutoElementRuntime();
+    installTemplateElementRuntime();
     window.dispatchEvent(new CustomEvent('webui:templates-registered', {
       detail: {
         templates: { [tag]: meta },
-        blockedTags: [tag],
       },
     }));
     await new Promise<void>(resolve => queueMicrotask(resolve));
 
-    assert.equal(customElements.get(tag), undefined);
+    assert.ok(customElements.get(tag));
   });
 });

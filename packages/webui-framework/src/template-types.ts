@@ -53,7 +53,13 @@ export type CompiledEventArg =
   | ['b', number]
   | ['z'];
 export type CompiledEventArgs = CompiledEventArg[];
-export type CompiledEventMeta = [name: string, handler: string, args: CompiledEventArgs, target: TemplateNodePath];
+export type CompiledEventBindingMeta = [
+  handler: string,
+  args: CompiledEventArgs,
+  target: TemplateNodePath,
+  usesEvent?: 1,
+];
+export type CompiledEventGroupMeta = [name: string, bindings: CompiledEventBindingMeta[]];
 
 export interface TemplateBlockMeta {
   h: string;
@@ -62,7 +68,7 @@ export interface TemplateBlockMeta {
   ag?: CompiledAttrGroupMeta[];
   c?: CompiledConditionalMeta[];
   r?: CompiledRepeatMeta[];
-  e?: CompiledEventMeta[];
+  eg?: CompiledEventGroupMeta[];
 }
 
 export interface TemplateMeta extends TemplateBlockMeta {
@@ -71,12 +77,10 @@ export interface TemplateMeta extends TemplateBlockMeta {
   re?: [string, string, CompiledEventArgs][];
   /** Component-level state roots referenced by template bindings. */
   tr?: string[];
-  /** Flat observed-attribute map: `[attrName, stateRoot, ...]`. */
+  /** Observed host attributes index-aligned with `tr`. */
   ta?: string[];
-  /** Template feature bitmask emitted by the compiler. */
-  tf?: number;
   /** Shadow DOM flag — when true, client-created components use shadow root. */
   sd?: boolean;
-  /** Internal auto-element flag — true when the parser found no authored script. */
-  ae?: boolean | 1;
+  /** Internal static host flag — true when the compiler owns a TemplateElement host. */
+  th?: boolean | 1;
 }

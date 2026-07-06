@@ -29,6 +29,11 @@ Create a custom element only for an Interactive Island: event handlers, custom
 lifecycle code, imperative methods, or state that TypeScript code reads or
 mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
 to access the value or when the value is part of the component's public API.
+When HTML-only components receive server or route state, make sure the browser
+entry imports `@microsoft/webui-framework` somewhere. The framework root
+installs the minimal static host runtime and only claims compiler-owned
+HTML-only components whose templates need hidden state or observed host
+attributes. Fully static HTML-only components stay as plain SSR DOM.
 
 ## The Component Class
 
@@ -196,6 +201,9 @@ Attach event handlers with `@event` syntax:
   Hover me
 </div>
 ```
+
+Components that use `@event` must have authored `.ts` or `.js` code that
+defines a `WebUIElement` for the tag; HTML-only components are declarative only.
 
 Event handlers use method-call syntax only. Arguments can be:
 

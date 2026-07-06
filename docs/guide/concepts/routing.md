@@ -63,6 +63,11 @@ Router.start();
 
 The server SSRs the matched route on first load. The router handles clicks on `<a>` tags for subsequent navigations - no full page reloads.
 
+The router never imports framework code. If route components are HTML-only but
+need server or route state, make sure the browser entry imports
+`@microsoft/webui-framework` somewhere so compiler-owned route tags can be
+claimed by the framework static host runtime.
+
 ## Nested Routes
 
 Routes nest to any depth. Each parent component uses `<outlet />` where its child route renders:
@@ -184,6 +189,9 @@ How it works:
 
 Only mouse pointers trigger preload — touch taps fire simultaneously with the click event, making speculative fetching pointless.
 
+Preload is an optional runtime tier. Apps that do not enable it do not load the
+preload listener or navigation cache implementation.
+
 ### Route Loaders
 
 Define a static `loader()` method on a component class to fetch data from a custom source instead of using server-provided state:
@@ -214,7 +222,7 @@ The router provides four mechanisms for controlling how state flows to your comp
 
 | Need | Mechanism | What happens |
 |------|-----------|-------------|
-| **Server provides all state** | Default (no changes) | Fresh route state is applied when the component mounts. HTML-only route components do not need empty classes |
+| **Server provides all state** | Default (no changes) | Fresh route state is applied when the component mounts. HTML-only route components do not need empty classes; import `@microsoft/webui-framework` when compiler-owned stateful templates are present |
 | **I fetch my own data** | `static loader()` on component | Loader runs before the route commits and supplies route data |
 | **Preserve local state** | `keep-alive` on route | Params/query attrs update while local state is preserved |
 | **Preserve DOM + refresh data** | `keep-alive` + `static loader()` | DOM is preserved and loader data refreshes the component |
@@ -238,6 +246,9 @@ methods, or JavaScript-owned state.
 ### Tagged Cache
 
 The router caches partial responses and tags them with server-provided cache tags for precise invalidation. Enable caching at startup:
+
+The cache is opt-in. The default `Router.start()` path does not load the cache
+module; enabling `cache` or `preload` loads it on demand.
 
 ```typescript
 Router.start({
@@ -302,7 +313,7 @@ Router.invalidate();                             // evict everything
 
 ### Mutation Actions
 
-The write counterpart to `static loader()`. Components define `static action()` to handle form submissions, and the router auto-invalidates the cache:
+The write counterpart to `static loader()`. Components define `static action()` to handle form submissions, and the router auto-invalidates the cache. Enable this optional runtime with `Router.start({ actions: true })`:
 
 ```typescript
 import { WebUIElement } from '@microsoft/webui-framework';
@@ -470,6 +481,7 @@ Starts the router. Call after hydration completes.
 Router.start({
   loaders: { ... },           // lazy-loading map (component tag -> async import)
   preload: true,              // speculative fetch on link hover
+  actions: true,              // intercept POST forms and call static action()
   ssrFresh: true,             // skip initial loader replay (default: true)
   cache: {                    // tagged navigation cache
     staleTime: 30_000,        // ms before refetch (0 = disabled)

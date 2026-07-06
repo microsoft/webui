@@ -13,7 +13,7 @@ import { registerTemplatesAndStyles, injectCssLinks } from './templates.js';
 import type { PartialResponse, RouteChainEntry } from './cache.js';
 
 /** Maximum buffered NDJSON line size before aborting the stream (256 KiB). */
-export const MAX_NDJSON_BUFFER = 256 * 1024;
+const MAX_NDJSON_BUFFER = 256 * 1024;
 
 /** Context needed by the streaming reader to interact with router state. */
 export interface StreamingContext {
@@ -23,7 +23,6 @@ export interface StreamingContext {
   readonly nonce: string;
   readonly injectedStyles: Set<string>;
   readonly injectedCss: Set<string>;
-  readonly blockedTags?: readonly string[];
   setDeferredReader(reader: Promise<void> | null): void;
   setDeferredGeneration(gen: number): void;
   updateInventory(inv: string): void;
@@ -40,7 +39,6 @@ export async function readStreamingPartial(
   requestPath: string,
   ctx: StreamingContext,
   signal?: AbortSignal,
-  speculative?: boolean,
 ): Promise<(PartialResponse & { inventory?: string }) | null> {
   const reader = resp.body!.getReader();
   const decoder = new TextDecoder();
@@ -103,7 +101,6 @@ export async function readStreamingPartial(
     ctx.nonce,
     ctx.injectedStyles,
     ctx.updateInventory,
-    ctx.blockedTags,
   );
   injectCssLinks(chunk1, ctx.injectedCss);
 

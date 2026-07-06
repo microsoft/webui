@@ -13,20 +13,18 @@ import type { RouteChainEntry } from './cache.js';
 export const LOADER_FAILED: unique symbol = Symbol('LOADER_FAILED');
 
 /** Shared never-aborted signal for loaders called without an external signal. */
-export const NOOP_SIGNAL: AbortSignal = new AbortController().signal;
+const NOOP_SIGNAL = new AbortController().signal;
 
 /**
  * Ensure a component's JS module is loaded. If a lazy loader is
  * configured for this tag, invoke the loader before consulting the registry.
  * This gives authored lazy components precedence over compiler-marked
- * auto-elements if template metadata is conservative or stale. The promise is
+ * static hosts if template metadata is conservative or stale. The promise is
  * cached so each loader runs at most once.
  *
- * When no loader exists and the tag is not yet registered, a passive
- * stub element is auto-defined as a last resort. Framework runtimes can
- * register richer template-backed elements before this point; the router stays
- * platform independent and only falls back to a no-op host when no runtime
- * claimed the tag.
+ * When no loader exists, the router leaves registration to the app's selected
+ * runtime tier. HTML-only WebUI components are claimed by the framework static
+ * host tier; authored components register themselves.
  */
 export async function ensureComponentLoaded(
   tag: string,
@@ -35,34 +33,21 @@ export async function ensureComponentLoaded(
 ): Promise<void> {
   const loader = loaders[tag];
   if (!loader) {
-    if (customElements.get(tag)) return;
-    // No loader and not registered — auto-define a passive stub so
-    // the router can create/query this element during SPA navigation.
-    definePassiveStub(tag);
     return;
   }
+  if (customElements.get(tag)) return;
 
   let promise = loaderPromises.get(tag);
   if (!promise) {
-    promise = loader().then(() => {}).finally(() => { loaderPromises.delete(tag); });
+    promise = loader()
+      .then(() => {})
+      .catch((error: unknown) => {
+        loaderPromises.delete(tag);
+        throw error;
+      });
     loaderPromises.set(tag, promise);
   }
   await promise;
-}
-
-/**
- * Auto-define a passive stub custom element for tags that have no registered
- * class, no lazy loader, and no framework runtime claim. The stub extends
- * `HTMLElement` directly: no hydration, no template binding, no dependency on
- * a specific component framework. This preserves router compatibility for
- * non-framework consumers while allowing WebUI Framework auto-elements to own
- * HTML-only hydration when present.
- */
-function definePassiveStub(tag: string): void {
-  if (customElements.get(tag)) return;
-  customElements.define(tag, class extends HTMLElement {
-    setState(_s: Record<string, unknown>): void { /* SSR-only: no-op */ }
-  });
 }
 
 /**
@@ -117,7 +102,6 @@ export async function resolveLoaders(
   // Early exit — no loaders in this chain
   if (loaderEntries.length === 0) return results;
 
-  // Create a single fallback signal (not per-task)
   const effectiveSignal = signal ?? NOOP_SIGNAL;
 
   await Promise.all(loaderEntries.map(async ({ component, params, loaderFn }) => {

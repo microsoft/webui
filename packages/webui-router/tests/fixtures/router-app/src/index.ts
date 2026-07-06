@@ -4,6 +4,8 @@
 import { WebUIElement, observable, attr } from '@microsoft/webui-framework';
 import { Router } from '@microsoft/webui-router';
 import type { RouteLoaderContext } from '@microsoft/webui-router';
+import { ErrorDisplay } from './error-display/error-display';
+import { PageKeepAlive } from './page-keepalive/page-keepalive';
 
 // ── Shell component ──────────────────────────────────────────────
 
@@ -36,16 +38,6 @@ export class PageCompose extends WebUIElement {
 }
 PageCompose.define('page-compose');
 
-// ── Keep-alive test component ────────────────────────────────────
-// Has local state (clickCount) that should survive keep-alive reactivation.
-
-export class PageKeepAlive extends WebUIElement {
-  @observable clickCount = 0;
-
-  onIncrement = (): void => {
-    this.clickCount++;
-  };
-}
 PageKeepAlive.define('page-keepalive');
 
 // ── Loader test component ────────────────────────────────────────
@@ -74,16 +66,6 @@ LoadingSkeleton.define('loading-skeleton');
 export class PageSlow extends WebUIElement {}
 PageSlow.define('page-slow');
 
-// ── Error boundary test: error display component ─────────────────
-
-export class ErrorDisplay extends WebUIElement {
-  @observable errorMessage = '';
-  @observable errorPath = '';
-
-  onRetry = (): void => {
-    (window as any).navigation.navigate('/');
-  };
-}
 ErrorDisplay.define('error-display');
 
 // ── Error boundary test: failing page component ──────────────────

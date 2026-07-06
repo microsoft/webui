@@ -5,10 +5,10 @@
  * Template & CSS registration — shared by partial navigation and
  * `ensureLoaded()`.
  *
- * This module intentionally knows nothing about `@microsoft/webui-framework`.
- * It only stores templates and announces that new WebUI template data exists;
- * framework runtimes can listen and claim tags without making the router
- * platform-specific.
+ * This module stores templates and announces that new WebUI template data
+ * exists. The router stays platform-independent and never imports framework
+ * code; framework runtimes decide whether registered templates need static
+ * hosts.
  */
 
 /** Shared event name understood by optional framework runtimes. */
@@ -20,8 +20,8 @@ const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
  *
  * WebUI JSON template payloads are stored directly. FAST string templates are
  * materialized as DOM. After JSON templates are registered, a DOM event lets
- * auto-element runtimes upgrade scriptless component tags before the router
- * falls back to passive stubs.
+ * framework runtimes can define compiler-owned static hosts before navigation
+ * state is applied.
  */
 export function registerTemplatesAndStyles(
   data: {
@@ -33,7 +33,6 @@ export function registerTemplatesAndStyles(
   nonce: string,
   injectedStyles: Set<string>,
   updateInventory: (inv: string) => void,
-  blockedTags?: readonly string[],
 ): void {
   if (data.inventory) {
     updateInventory(data.inventory);
@@ -144,7 +143,7 @@ export function registerTemplatesAndStyles(
     document.head.removeChild(script);
   }
 
-  notifyTemplatesRegistered(registeredTemplates, blockedTags);
+  notifyTemplatesRegistered(registeredTemplates);
 }
 
 /** Inject CSS stylesheet links from a partial response. */
@@ -177,7 +176,6 @@ export async function fetchComponentTemplates(
   nonce: string,
   injectedStyles: Set<string>,
   updateInventory: (inv: string) => void,
-  blockedTags?: readonly string[],
 ): Promise<void> {
   const url = `${templateEndpoint}?t=${tags.join(',')}&inv=${encodeURIComponent(inventoryHex)}`;
   const resp = await fetch(url);
@@ -187,13 +185,12 @@ export async function fetchComponentTemplates(
   const data = await resp.json();
 
   // Register using the same pipeline as partial navigation
-  registerTemplatesAndStyles(data, nonce, injectedStyles, updateInventory, blockedTags);
+  registerTemplatesAndStyles(data, nonce, injectedStyles, updateInventory);
 }
 
-/** Announce newly registered WebUI templates without importing a framework. */
+/** Announce newly registered WebUI templates. */
 export function notifyTemplatesRegistered(
   templates: Record<string, unknown> | undefined,
-  blockedTags?: readonly string[],
 ): void {
   if (
     !templates ||
@@ -203,8 +200,13 @@ export function notifyTemplatesRegistered(
   ) {
     return;
   }
+  dispatchTemplatesRegistered(templates);
+}
 
+function dispatchTemplatesRegistered(
+  templates: Record<string, unknown>,
+): void {
   window.dispatchEvent(new CustomEvent(TEMPLATES_REGISTERED_EVENT, {
-    detail: { templates, blockedTags },
+    detail: { templates },
   }));
 }

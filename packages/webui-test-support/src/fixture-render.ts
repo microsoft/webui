@@ -48,7 +48,10 @@ function renderOne(fixturePath: string, name: string): RenderedFixture | null {
     ? JSON.parse(readFileSync(configFile, 'utf-8'))
     : {};
 
-  const buildOptions: Parameters<typeof build>[0] = { appDir: srcDir, plugin: 'webui' };
+  const hasAuthoredEntry = existsSync(resolve(fixturePath, 'element.ts'));
+  const buildOptions: Parameters<typeof build>[0] = hasAuthoredEntry
+    ? { appDir: fixturePath, entry: 'src/index.html', plugin: 'webui' }
+    : { appDir: srcDir, plugin: 'webui' };
   if (fixtureConfig.css === 'link' || fixtureConfig.css === 'style' || fixtureConfig.css === 'module') {
     buildOptions.css = fixtureConfig.css;
   }
@@ -62,14 +65,15 @@ function renderOne(fixturePath: string, name: string): RenderedFixture | null {
     );
   }
 
-  let html = render(result.protocol, state, { plugin: 'webui' });
+  const renderEntry = hasAuthoredEntry ? 'src/index.html' : 'index.html';
+  let html = render(result.protocol, state, { entry: renderEntry, plugin: 'webui' });
 
   // Fixtures with an authored element entry exercise interactive islands.
-  // Fixtures without one use the shared framework bootstrap to prove HTML-only
-  // templates do not need empty component stubs.
-  const scriptPath = existsSync(resolve(fixturePath, 'element.ts'))
+  // Fixtures without one use the shared framework root bootstrap to prove
+  // HTML-only templates do not need empty component stubs.
+  const scriptPath = hasAuthoredEntry
     ? `/dist/${name}/element.js`
-    : '/dist/auto-elements.js';
+    : '/dist/static-host.js';
   const scriptTag = `<script src="${scriptPath}"></script>`;
   const bodyEnd = html.lastIndexOf('</body>');
   if (bodyEnd !== -1) {

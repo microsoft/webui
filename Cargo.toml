@@ -57,8 +57,8 @@ notify-debouncer-mini = "0.7.0"
 percent-encoding = "2.3.2"
 walkdir = "2.5.0"
 toml = "0.9.8"
-comrak = { version = "0.52.0", default-features = false, features = ["syntect"] }
-syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "html", "plist-load", "regex-onig"] }
+comrak = { version = "0.52.0", default-features = false }
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "html", "regex-onig"] }
 serde_yaml = "0.9"
 libc = "0.2.186"
 time = { version = "0.3", features = ["local-offset", "formatting", "macros"] }

@@ -49,8 +49,11 @@ webui build         + JSON state          hydrate as islands
 3. **The server is the source of truth for the initial render.** The client
    takes over after hydration for user interactions.
 
-4. **Static content never ships JavaScript.** Only components with event
-   handlers, client-mutated state, or user input need client-side code.
+4. **Fully static content never ships JavaScript.** HTML-only components with
+   server or route state use the static host runtime installed by
+   `@microsoft/webui-framework`; the runtime only claims compiler-owned
+   stateful templates. Components with event handlers, client-mutated state, or
+   user input need authored client-side code.
 
 ## Project Structure
 
@@ -245,11 +248,12 @@ All attributes are validated at build time. Referencing a non-existent `pending`
 - `keep-alive` preserves DOM and local state. On reactivation, only param/query attrs are updated
 - Route loaders: `static loader({ params, query, signal })` on component class - fetches custom data instead of server state. Runs pre-commit. Falls back to server state on failure
 - Keep-alive + loader: DOM preserved, loader refreshes data on reactivation
-- Route actions: `static action({ formData, params, signal })` on component class - handles `<form method="post">`. Returns `{ invalidateTags?, state? }`. Auto-invalidates cache with merged tags
+- Route actions: `Router.start({ actions: true })` enables `static action({ formData, params, signal })` on component class - handles `<form method="post">`. Returns `{ invalidateTags?, state? }`. Auto-invalidates cache with merged tags
 
 **Cache & preload:**
 - Preload on hover: `Router.start({ preload: true })` - speculatively fetches on link hover
 - Tagged cache: `Router.start({ cache: { staleTime, gcTime, maxEntries } })` - responses cached by path, tagged with `cacheTags`
+- Cache/preload are optional runtime tiers; default `Router.start()` does not load the cache module
 - `Router.invalidateTags(tags)` - evict cache entries by tag
 - `Router.invalidate(path?)` - evict by path or all
 
@@ -320,9 +324,10 @@ MyComponent.define('my-component');
 HTML-only components can omit the `.ts` file when they have no event handlers or
 custom client logic. Create a custom element only for an Interactive Island:
 events, custom lifecycle code, imperative methods, or JavaScript-owned state.
-Apps with HTML-only components that receive server or route state call
-`installAutoElementRuntime()` once from
-`@microsoft/webui-framework/auto-element.js`.
+Import `@microsoft/webui-framework` from the browser entry to install the
+minimal static host runtime. The runtime only claims compiler-owned HTML-only
+components whose templates need server or route state; fully static HTML-only
+components stay as plain SSR DOM.
 
 `@observable` and `@attr` are optional. Use them when TypeScript code reads or
 mutates the value directly, or when the value is part of the component's public
@@ -596,6 +601,10 @@ With `--css module`, WebUI appends
 wrappers when needed. If you author the wrapper yourself for root events, keep
 your attributes there; WebUI preserves them for client/plugin templates.
 
+For framework apps that bundle browser code, bundle your source browser entry
+directly. Import `@microsoft/webui-framework` once so authored elements and
+compiler-owned static hosts share the same runtime.
+
 For CDN/browser caching in `link` mode, prefer:
 
 ```bash
@@ -762,9 +771,15 @@ The package's `package.json` must have:
 | `exports["./styles.css"]` | No | Component CSS |
 | `customElements` | Yes | Path to Custom Elements Manifest (provides tag name) |
 
+Packages with a root JavaScript entry (`exports["."]`, `main`, `module`, or
+`browser`) are authored custom-element packages. Packages with only WebUI
+template/style exports are HTML-only libraries; dynamic templates can use
+compiler-owned static hosts.
+
 **Local path scanning** works like app directory scanning: HTML files with
 hyphenated names are registered as components, matching CSS files are
-auto-paired.
+auto-paired. A sibling `.ts` or `.js` file marks the component as authored and
+interactive.
 
 **Caching:** npm results are cached at `~/.webui/cache/components/` and
 invalidated when `package.json` changes. Local paths are always re-scanned.

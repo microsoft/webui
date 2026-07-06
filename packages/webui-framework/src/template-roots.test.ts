@@ -8,9 +8,8 @@ import type { TemplateMeta } from './template.js';
 import {
   collectTemplateRoots,
   templateAttributeForRoot,
-  templateHasEventHandlers,
   templateHasRoot,
-  templateNeedsAutoElement,
+  templateNeedsStaticHost,
   templateRootForAttribute,
 } from './template-roots.js';
 
@@ -18,9 +17,9 @@ describe('template root metadata helpers', () => {
   test('use compiler-emitted roots and attributes without scanning bindings', () => {
     const meta: TemplateMeta = {
       h: '<p></p>',
-      ae: 1,
+      th: 1,
       tr: ['displayValue', 'readOnly'],
-      ta: ['display-value', 'displayValue', 'readonly', 'readOnly'],
+      ta: ['display-value', 'readonly'],
       tx: [[
         [[], 0],
         [['ignoredByHelpers']],
@@ -31,19 +30,16 @@ describe('template root metadata helpers', () => {
     assert.equal(templateHasRoot(meta, 'displayValue'), true);
     assert.equal(templateRootForAttribute(meta, 'readonly'), 'readOnly');
     assert.equal(templateAttributeForRoot(meta, 'displayValue'), 'display-value');
-    assert.equal(templateNeedsAutoElement(meta), true);
+    assert.equal(templateNeedsStaticHost(meta), true);
   });
 
-  test('feature flags mark interactive templates without walking nested blocks', () => {
+  test('missing static host flag skips template host ownership', () => {
     const meta: TemplateMeta = {
       h: '<button></button>',
-      ae: 1,
       tr: ['title'],
-      ta: ['title', 'title'],
-      tf: 1,
+      ta: ['title'],
     };
 
-    assert.equal(templateHasEventHandlers(meta), true);
-    assert.equal(templateNeedsAutoElement(meta), false);
+    assert.equal(templateNeedsStaticHost(meta), false);
   });
 });

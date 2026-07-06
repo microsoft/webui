@@ -45,7 +45,7 @@ pub struct Component {
     /// The class name that implements this component (if available)
     pub class_name: Option<String>,
 
-    /// Whether this component has an authored client script next to its HTML.
+    /// Whether this component has an authored client script.
     pub has_script: bool,
 }
 
@@ -64,7 +64,7 @@ pub struct ComponentRegistry {
 /// Return true when a component has an authored browser module next to its HTML.
 ///
 /// Only `.ts` and `.js` are recognized component implementations. Other
-/// extensions are intentionally ignored so auto-element eligibility is
+/// extensions are intentionally ignored so static-host eligibility is
 /// deterministic and matches the documented authoring model.
 fn component_has_script(html_path: &Path) -> bool {
     html_path.with_extension("ts").exists() || html_path.with_extension("js").exists()
@@ -207,6 +207,22 @@ impl ComponentRegistry {
         html_content: &str,
         css_content: Option<&str>,
     ) -> Result<()> {
+        self.register_component_with_script(tag_name, html_content, css_content, true)
+    }
+
+    /// Register a component directly and specify whether authored browser code
+    /// owns the tag.
+    ///
+    /// Virtual callers that can derive source ownership from their file map
+    /// should use this instead of conservatively marking every component as
+    /// scripted.
+    pub fn register_component_with_script(
+        &mut self,
+        tag_name: &str,
+        html_content: &str,
+        css_content: Option<&str>,
+        has_script: bool,
+    ) -> Result<()> {
         // Validate component name (must contain a hyphen)
         if !tag_name.contains('-') {
             return Err(ParserError::Component(format!(
@@ -242,11 +258,7 @@ impl ComponentRegistry {
             css_fallback_chains,
             source_path: PathBuf::new(), // Empty path since it's not from a file
             class_name: None,
-            // Virtual registrations do not have a filesystem sibling scan.
-            // Treat them as authored so only real `.html` files discovered
-            // without a sibling `.ts` / `.js` are marked for browser
-            // auto-elements.
-            has_script: true,
+            has_script,
         };
 
         // Register the component
@@ -295,6 +307,13 @@ impl ComponentRegistry {
     /// tag is encountered during parsing.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.components.keys().map(String::as_str)
+    }
+
+    /// Mark a registered component as implemented by authored browser code.
+    pub fn mark_scripted(&mut self, tag_name: &str) {
+        if let Some(component) = self.components.get_mut(tag_name) {
+            component.has_script = true;
+        }
     }
 
     /// Get the number of registered components.

@@ -3,9 +3,9 @@
 
 import { expect, test } from '@playwright/test';
 
-test.describe('html-only auto element fixture', () => {
+test.describe('html-only static host fixture', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/html-only-auto-element/fixture.html');
+    await page.goto('/html-only-static-host/fixture.html');
     await page.waitForFunction(() => {
       const el = document.querySelector('test-html-only');
       return el && (el as unknown as { $ready?: boolean }).$ready === true;
@@ -13,7 +13,7 @@ test.describe('html-only auto element fixture', () => {
   });
 
   test('hydrates an HTML-only component without a component stub', async ({ page }) => {
-    await expect(page.locator('script[src="/dist/html-only-auto-element/element.js"]')).toHaveCount(0);
+    await expect(page.locator('script[src="/dist/html-only-static-host/element.js"]')).toHaveCount(0);
 
     const hasFallback = await page.evaluate(() => {
       const el = document.querySelector('test-html-only') as {

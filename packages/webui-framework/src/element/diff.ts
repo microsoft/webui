@@ -35,22 +35,6 @@ export function dotWalk(cursor: unknown, path: string, from: number): unknown {
   return cursor;
 }
 
-/**
- * Resolve a dotted path against a repeat scope variable.
- *
- * When a binding inside `@for(item of items)` references `item.title`,
- * this function looks up `title` on the current scope value.
- */
-export function resolveRepeatValue(
-  scopeVar: string,
-  scope: unknown,
-  path: string,
-): unknown {
-  if (path === scopeVar) return scope;
-  if (path.length <= scopeVar.length || path.charCodeAt(scopeVar.length) !== 46 /* '.' */ || !path.startsWith(scopeVar)) return undefined;
-  return dotWalk(scope, path, scopeVar.length + 1);
-}
-
 /** Compute a key for an item using the cached key path, or null. */
 function itemKey(item: unknown, keyPath: string | undefined): string | null {
   if (keyPath === undefined || keyPath === '') return null;

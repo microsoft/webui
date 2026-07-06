@@ -72,7 +72,7 @@ test.describe('SSR pages', () => {
 // ── Client-side navigation tests ─────────────────────────────────
 
 test.describe('client-side navigation', () => {
-  test('HTML-only components hydrate and update through fallback elements', async ({ page }) => {
+  test('HTML-only components hydrate and update through static hosts', async ({ page }) => {
     await page.goto('/contacts');
 
     await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(15);
