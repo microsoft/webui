@@ -1,16 +1,16 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
+ * Return component template payloads for requested component tags.
+ */
+export function render_component_templates(protocol_bytes: Uint8Array, component_tags_json: string, inventory_hex: string): string;
+/**
  * Extract the CSS token name list from protocol protobuf bytes.
  *
  * Returns a JavaScript array of token name strings, preserving the original
  * order from the build step.
  */
 export function protocol_tokens(protocol_bytes: Uint8Array): any;
-/**
- * Return component template payloads for requested component tags.
- */
-export function render_component_templates(protocol_bytes: Uint8Array, component_tags_json: string, inventory_hex: string): string;
 /**
  * Produce a complete JSON partial response for client-side navigation.
  *
