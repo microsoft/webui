@@ -669,18 +669,13 @@ mod tests {
     #![allow(clippy::disallowed_methods)]
 
     use super::*;
-    use std::path::PathBuf;
-
     fn make_component(tag: &str, html: &str, css: Option<&str>) -> Component {
         Component {
             tag_name: tag.to_string(),
             html_content: html.to_string(),
             css_content: css.map(ToString::to_string),
-            css_tokens: Vec::new(),
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
-            source_path: PathBuf::from("/test"),
-            class_name: None,
             has_script: false,
         }
     }

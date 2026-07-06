@@ -11,11 +11,10 @@ use std::collections::HashMap;
 use std::fs;
 #[cfg(feature = "fs")]
 use std::path::Path;
-use std::path::PathBuf;
 #[cfg(feature = "fs")]
 use walkdir::WalkDir;
 
-type ProcessedCss = (String, Vec<String>, Vec<String>, Vec<CssFallbackChain>);
+type ProcessedCss = (String, Vec<String>, Vec<CssFallbackChain>);
 
 /// Represents a web component in the registry.
 #[derive(Debug, Clone)]
@@ -29,21 +28,11 @@ pub struct Component {
     /// The CSS content of the component, if any
     pub css_content: Option<String>,
 
-    /// CSS custom property token names extracted from this component's CSS
-    /// (sorted, deduplicated, without `--` prefix).
-    pub css_tokens: Vec<String>,
-
     /// CSS custom property definitions from this component's CSS.
     pub css_definitions: Vec<String>,
 
     /// CSS `var()` fallback chains from this component's CSS.
     pub css_fallback_chains: Vec<CssFallbackChain>,
-
-    /// The file path where this component is defined
-    pub source_path: PathBuf,
-
-    /// The class name that implements this component (if available)
-    pub class_name: Option<String>,
 
     /// Whether this component has an authored client script.
     pub has_script: bool,
@@ -163,36 +152,30 @@ impl ComponentRegistry {
             source,
         })?;
 
-        // Read CSS content and extract tokens if available
-        let (css_content, css_tokens, css_definitions, css_fallback_chains) =
-            if let Some(css_path) = css_path {
-                let css_path = css_path.as_ref();
-                if css_path.exists() {
-                    let content =
-                        fs::read_to_string(css_path).map_err(|source| ParserError::IO {
-                            context: format!("Failed to read CSS file: {}", css_path.display()),
-                            source,
-                        })?;
-                    let (content, tokens, definitions, requirements) =
-                        self.process_css_content(&content)?;
-                    (Some(content), tokens, definitions, requirements)
-                } else {
-                    (None, Vec::new(), Vec::new(), Vec::new())
-                }
+        // Read CSS content and extract definitions/fallback requirements if available
+        let (css_content, css_definitions, css_fallback_chains) = if let Some(css_path) = css_path {
+            let css_path = css_path.as_ref();
+            if css_path.exists() {
+                let content = fs::read_to_string(css_path).map_err(|source| ParserError::IO {
+                    context: format!("Failed to read CSS file: {}", css_path.display()),
+                    source,
+                })?;
+                let (content, definitions, requirements) = self.process_css_content(&content)?;
+                (Some(content), definitions, requirements)
             } else {
-                (None, Vec::new(), Vec::new(), Vec::new())
-            };
+                (None, Vec::new(), Vec::new())
+            }
+        } else {
+            (None, Vec::new(), Vec::new())
+        };
 
         // Create and register the component
         let component = Component {
             tag_name: tag_name.to_string(),
             html_content,
             css_content,
-            css_tokens,
             css_definitions,
             css_fallback_chains,
-            source_path: html_path.to_path_buf(),
-            class_name: None,
             has_script: component_has_script(html_path),
         };
 
@@ -224,25 +207,21 @@ impl ComponentRegistry {
             )));
         }
 
-        // Extract CSS tokens if CSS content is provided
-        let (css_content, css_tokens, css_definitions, css_fallback_chains) = match css_content {
+        // Extract CSS definitions/fallback requirements if CSS content is provided
+        let (css_content, css_definitions, css_fallback_chains) = match css_content {
             Some(css) => {
-                let (content, tokens, definitions, requirements) = self.process_css_content(css)?;
-                (Some(content), tokens, definitions, requirements)
+                let (content, definitions, requirements) = self.process_css_content(css)?;
+                (Some(content), definitions, requirements)
             }
-            None => (None, Vec::new(), Vec::new(), Vec::new()),
+            None => (None, Vec::new(), Vec::new()),
         };
 
-        // Create component with dummy path since it's coming from string content
         let component: Component = Component {
             tag_name: tag_name.to_string(),
             html_content: html_content.to_string(),
             css_content,
-            css_tokens,
             css_definitions,
             css_fallback_chains,
-            source_path: PathBuf::new(), // Empty path since it's not from a file
-            class_name: None,
             has_script,
         };
 
@@ -251,24 +230,17 @@ impl ComponentRegistry {
         Ok(())
     }
 
-    /// Extract CSS tokens from content and return as a sorted `Vec`.
+    /// Strip comments and extract CSS definitions/fallback requirements.
     fn process_css_content(&mut self, css_content: &str) -> Result<ProcessedCss> {
-        let (tokens, definitions, requirements, stripped) = self
+        let (_tokens, definitions, requirements, stripped) = self
             .css_parser
             .extract_tokens_definitions_requirements_and_strip_comments(
                 css_content,
                 self.legal_comments,
             )?;
-        let mut sorted: Vec<String> = tokens.into_iter().collect();
-        sorted.sort();
         let mut sorted_definitions: Vec<String> = definitions.into_iter().collect();
         sorted_definitions.sort();
-        Ok((
-            stripped.into_owned(),
-            sorted,
-            sorted_definitions,
-            requirements,
-        ))
+        Ok((stripped.into_owned(), sorted_definitions, requirements))
     }
 
     /// Check if a tag name is registered as a component.
@@ -294,19 +266,12 @@ impl ComponentRegistry {
         self.components.keys().map(String::as_str)
     }
 
-    /// Mark a registered component as implemented by authored browser code.
-    pub fn mark_scripted(&mut self, tag_name: &str) {
-        if let Some(component) = self.components.get_mut(tag_name) {
-            component.has_script = true;
-        }
-    }
-
     /// Get the number of registered components.
     pub fn len(&self) -> usize {
         self.components.len()
     }
 
-    /// Check if the registry is empty.
+    /// Check if the registry has no registered components.
     pub fn is_empty(&self) -> bool {
         self.components.is_empty()
     }
@@ -473,7 +438,7 @@ mod tests {
             component.css_content.as_deref(),
             Some(" p { color: var(--textColor); } ")
         );
-        assert_eq!(component.css_tokens, vec!["textColor"]);
+        assert_eq!(component.css_fallback_chains.len(), 1);
     }
 
     #[test]
@@ -719,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn test_register_component_extracts_css_tokens() {
+    fn test_register_component_extracts_css_fallback_requirements() {
         let mut registry = ComponentRegistry::new();
         registry
             .register_component(
@@ -731,22 +696,22 @@ mod tests {
             .expect("register failed");
 
         let component = registry.get("my-btn").expect("component not found");
-        assert_eq!(component.css_tokens, vec!["spacing-m", "text-color"]);
+        assert_eq!(component.css_fallback_chains.len(), 2);
     }
 
     #[test]
-    fn test_register_component_no_css_no_tokens() {
+    fn test_register_component_no_css_no_requirements() {
         let mut registry = ComponentRegistry::new();
         registry
             .register_component("my-card", "<div>Card</div>", None, true)
             .expect("register failed");
 
         let component = registry.get("my-card").expect("component not found");
-        assert!(component.css_tokens.is_empty());
+        assert!(component.css_fallback_chains.is_empty());
     }
 
     #[test]
-    fn test_register_component_excludes_local_defs_from_tokens() {
+    fn test_register_component_tracks_css_fallback_requirements() {
         let mut registry = ComponentRegistry::new();
         registry
             .register_component(
@@ -758,7 +723,6 @@ mod tests {
             .expect("register failed");
 
         let component = registry.get("my-widget").expect("component not found");
-        // --local is defined locally so excluded; only --external is a token
-        assert_eq!(component.css_tokens, vec!["external"]);
+        assert_eq!(component.css_fallback_chains.len(), 2);
     }
 }

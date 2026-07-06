@@ -3402,11 +3402,8 @@ mod tests {
             tag_name: "test-el".to_string(),
             html_content: "<p>hi</p>".to_string(),
             css_content: None,
-            css_tokens: Vec::new(),
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
             has_script: false,
         };
         plugin
@@ -3425,11 +3422,8 @@ mod tests {
             tag_name: "test-el".to_string(),
             html_content: "<p>{{name}}</p>".to_string(),
             css_content: None,
-            css_tokens: Vec::new(),
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
             has_script: false,
         };
 
@@ -3455,11 +3449,8 @@ mod tests {
             tag_name: "test-el".to_string(),
             html_content: "<p>hi</p>".to_string(),
             css_content: None,
-            css_tokens: Vec::new(),
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
             has_script: false,
         };
 
@@ -3477,11 +3468,8 @@ mod tests {
             tag_name: "test-el".to_string(),
             html_content: r#"<button @click="{onClick()}">{{name}}</button>"#.to_string(),
             css_content: None,
-            css_tokens: Vec::new(),
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
             has_script: false,
         };
 
@@ -3536,11 +3524,8 @@ mod tests {
             tag_name: "test-el".to_string(),
             html_content: "<p>hi</p>".to_string(),
             css_content: Some(".root { color: red; }".to_string()),
-            css_tokens: Vec::new(),
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
             has_script: true,
         };
 
@@ -3570,11 +3555,8 @@ mod tests {
                 r#"<template shadowrootmode="open" @click="{onClick(e)}"><p>hi</p></template>"#
                     .to_string(),
             css_content: Some(".root { color: red; }".to_string()),
-            css_tokens: Vec::new(),
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
             has_script: true,
         };
 
@@ -3600,11 +3582,8 @@ mod tests {
             tag_name: "test-el".to_string(),
             html_content: "<p>hi</p>".to_string(),
             css_content: Some(".root { color: red; }".to_string()),
-            css_tokens: Vec::new(),
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
             has_script: false,
         };
 

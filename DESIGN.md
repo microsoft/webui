@@ -928,8 +928,12 @@ pub struct Component {
     pub name: String,
     pub html_content: String,
     pub css_content: Option<String>,
-    /// Sorted, deduplicated CSS token names extracted from css_content.
-    pub css_tokens: Vec<String>,
+    /// CSS custom property definitions from this component's CSS.
+    pub css_definitions: Vec<String>,
+    /// CSS `var()` fallback chains from this component's CSS.
+    pub css_fallback_chains: Vec<CssFallbackChain>,
+    /// Whether this component has an authored client script.
+    pub has_script: bool,
 }
 ```
 

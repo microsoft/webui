@@ -130,13 +130,13 @@ export function findOrCreateRouteElement(
           return child as HTMLElement;
         }
       }
-      // Fallback: match by component only (backwards compat)
+      // Reuse the compiler-emitted route placeholder for this nested
+      // component when hydration has already normalized the route container.
       for (const child of allRoutes) {
         if (child.getAttribute('component') === entry.component) {
           return child as HTMLElement;
         }
       }
-
       // Not found — create stub and place in the correct container
       const stub = createRouteStub(entry);
 
