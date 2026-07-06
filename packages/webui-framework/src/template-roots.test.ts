@@ -6,7 +6,6 @@ import { describe, test } from 'node:test';
 
 import type { TemplateMeta } from './template.js';
 import {
-  collectTemplateRoots,
   templateAttributeForRoot,
   templateHasRoot,
   templateNeedsStaticHost,
@@ -23,10 +22,9 @@ describe('template root metadata helpers', () => {
       tx: [[
         [[], 0],
         [['ignoredByHelpers']],
-      ]],
+      ]      ],
     };
 
-    assert.deepEqual(collectTemplateRoots(meta), ['displayValue', 'readOnly']);
     assert.equal(templateHasRoot(meta, 'displayValue'), true);
     assert.equal(templateRootForAttribute(meta, 'readonly'), 'readOnly');
     assert.equal(templateAttributeForRoot(meta, 'displayValue'), 'display-value');

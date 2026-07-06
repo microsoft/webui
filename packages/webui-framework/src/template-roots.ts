@@ -13,13 +13,6 @@
 
 import type { TemplateMeta } from './template.js';
 
-const EMPTY_ROOTS: readonly string[] = Object.freeze([]);
-
-/** Collect component-level state roots referenced by a template. */
-export function collectTemplateRoots(meta: TemplateMeta): readonly string[] {
-  return meta.tr ?? EMPTY_ROOTS;
-}
-
 /** Return true when a compiler-emitted root list contains `root`. */
 export function templateHasRoot(meta: TemplateMeta, root: string): boolean {
   const roots = meta.tr;

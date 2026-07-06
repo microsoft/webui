@@ -20,7 +20,6 @@ import {
 import type { TemplateMeta } from './template.js';
 
 let runtimeInstalled = false;
-let initialClaimQueued = false;
 
 /** Define the smallest hydrating element for a compiler-owned static template. */
 function defineTemplateHost(tag: string, meta: TemplateMeta): void {
@@ -62,22 +61,6 @@ function defineTemplateHosts(templates = getTemplateRegistry()): void {
 }
 
 /**
- * Defer the first page-wide claim by one microtask.
- *
- * This gives authored component modules in the same import graph a chance to
- * call `customElements.define()` first, while router-delivered templates still
- * claim synchronously through the registration event below.
- */
-function queueInitialStaticHostClaim(): void {
-  if (initialClaimQueued) return;
-  initialClaimQueued = true;
-  queueMicrotask(() => {
-    initialClaimQueued = false;
-    defineTemplateHosts();
-  });
-}
-
-/**
  * Install the runtime for compiler-owned static template hosts.
  *
  * Called once by the framework root. The compiler decides ownership per
@@ -85,7 +68,7 @@ function queueInitialStaticHostClaim(): void {
  */
 export function installTemplateElementRuntime(): void {
   if (runtimeInstalled) {
-    queueInitialStaticHostClaim();
+    defineTemplateHosts();
     return;
   }
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
@@ -100,11 +83,11 @@ export function installTemplateElementRuntime(): void {
   if (document.readyState === 'loading') {
     document.addEventListener(
       'DOMContentLoaded',
-      () => queueInitialStaticHostClaim(),
+      () => defineTemplateHosts(),
       { once: true },
     );
     return;
   }
 
-  queueInitialStaticHostClaim();
+  defineTemplateHosts();
 }
