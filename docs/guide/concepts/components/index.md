@@ -217,6 +217,12 @@ The Custom Elements Manifest provides the component's tag name:
 
 **Scoped packages:** When you pass a bare scope like `@reactive-ui`, all sub-packages under `node_modules/@reactive-ui/` are discovered and each is checked for WebUI component exports.
 
+Packages that also expose a root JavaScript entry (`exports["."]`, `main`,
+`module`, or `browser`) are treated as authored custom-element packages. Packages
+with only WebUI template/style exports are treated as HTML-only component
+libraries; dynamic templates can be hosted by the framework without empty
+`WebUIElement` stubs.
+
 ### Local Paths
 
 You can also point to directories outside your app folder:
@@ -225,7 +231,9 @@ You can also point to directories outside your app folder:
 webui build ./my-app --out ./dist --components ./shared/components
 ```
 
-Local path discovery works identically to app directory scanning - HTML files with hyphenated names are registered as components, with matching CSS files auto-paired.
+Local path discovery works identically to app directory scanning - HTML files with
+hyphenated names are registered as components, matching CSS files are auto-paired,
+and a sibling `.ts` or `.js` file marks that component as authored/interactive.
 
 ### Caching
 

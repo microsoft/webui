@@ -6,9 +6,9 @@ This package is the browser-side runtime used by `webui build --plugin=webui`. I
 
 - `WebUIElement` for SSR hydration and client-created elements
 - `@observable`, `@attr`, and `@volatile` decorators
-- compiled template path mapping for direct DOM binding resolution
+- direct DOM binding updates
 - light DOM or shadow DOM rendering (`--dom=light|shadow` flag)
-- SSR state seeding from `window.__webui.state` (like Preact's props)
+- SSR state seeding
 
 If you are building WebUI apps in this repo, this is the component model used by examples like `examples/app/todo-webui`, `examples/app/commerce`, and `examples/app/contact-book-manager`.
 
@@ -87,13 +87,33 @@ Build with `--dom=shadow` (default) to wrap in a declarative shadow root, or `--
 <counter-card label="Taps"></counter-card>
 ```
 
+### HTML-only components
+
+If a component has no event handlers, custom lifecycle code, or client-only
+methods, it can ship only `component.html` and optional `component.css`.
+
+When HTML-only components receive server or route state, import
+`@microsoft/webui-framework` somewhere in the browser entry. The framework root
+installs the static host runtime, which only claims compiler-owned HTML-only
+components whose templates need hidden state or observed host attributes. Fully
+static HTML-only components stay as plain SSR DOM.
+
+Create a custom element only for an Interactive Island: event handlers, custom
+lifecycle code, imperative methods, or state that TypeScript code reads or
+mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
+to access the value or when the value is part of the component's public API.
+
 ### Build with the WebUI plugin
 
 ```bash
 cargo run -p microsoft-webui-cli -- build ./src --out ./dist --plugin=webui
 ```
 
-The compiler/plugin generates the template metadata and condition closure arrays consumed by the runtime. In normal app code, you should not need to hand-author `window.__webui.templates` or `window.__webui.templateFns`.
+The WebUI plugin prepares component templates for the browser. Bundle your
+source browser entry directly. Import `@microsoft/webui-framework` from authored
+component modules, or once from the browser entry when the app has no authored
+components but still uses HTML-only components that receive server or route
+state.
 
 ### Property binding lifecycle
 
@@ -103,7 +123,11 @@ Property bindings use the `:` prefix to pass values directly to child DOM proper
 <profile-card :config="{{settings}}"></profile-card>
 ```
 
-For client-created component trees, the runtime upgrades the cloned child elements while they are still detached, wires bindings, and applies the first binding pass before appending them to the connected DOM. A child can read an initial parent-provided property in `connectedCallback`. If the parent value is not set, the child may initialize its own fallback there, and later parent updates still flow through the live binding.
+For client-created component trees, WebUI applies initial property bindings
+before child `connectedCallback` methods run. A child can read an initial
+parent-provided property in `connectedCallback`. If the parent value is not set,
+the child may initialize its own fallback there, and later parent updates still
+flow through the live binding.
 
 ### DOM strategy (`--dom`)
 
@@ -135,7 +159,6 @@ Base class for framework components.
 | `static define(tagName)` | Register the class as a custom element |
 | `$emit(name, detail?)` | Dispatch a bubbling, composed `CustomEvent` |
 | `$update()` | Force a reactive update (normally called automatically) |
-| `setState(state)` | Populate `@observable` properties from router/server state |
 | `disconnectedCallback()` | Override for cleanup (global listeners, etc.) |
 
 In most components you do not call `$update()` directly. Property changes through `@observable` and `@attr` trigger updates for you.
@@ -166,19 +189,20 @@ export const settingsAssets = defineComponentAssets({
 });
 ```
 
-The asset module default-exports WebUI template/style metadata and compiled
-condition closures. CSS module importmaps use the current page nonce from
-`window.__webui.nonce` or `<meta name="webui-nonce">`. Asset loads skip importing
-when the root template is already in `window.__webui.templates`, share in-flight
-requests by URL, and dedupe CSS module styles against `window.__webui.styles`.
-`create(tag)` does not block on data by default; it applies data later with
-`setState()`. Use `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only
-when a component must wait briefly for state before mounting.
+The asset module carries the component's template and style payload. Use
+`preload(tag)` to start template, module, and optional data work early, then
+`create(tag)` to create the element after template/module work is ready.
+Concurrent asset requests share one in-flight load and CSS module styles are
+deduped. `create(tag)` does not block on optional data by default. Use
+`create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
+wait briefly for state before mounting.
 
 ### `@observable`
 
-Marks a property as reactive.  When the value changes, the framework
-re-evaluates the compiled bindings that reference it.
+Marks a property as reactive. When the value changes, the framework
+updates template bindings that reference it. Use it for state that TypeScript
+code reads or mutates. Values used only by the template do not need an
+`@observable` class field.
 
 ```ts
 class SearchPanel extends WebUIElement {
@@ -205,7 +229,7 @@ Notes:
 
 - default attribute names use kebab-case
 - attribute values arrive as strings
-- use `@observable` for richer client-only state
+- use `@observable` for state that client code reads or mutates
 
 ### `@volatile`
 
@@ -224,7 +248,7 @@ class CartSummary extends WebUIElement {
 
 ## Template Features
 
-The WebUI plugin compiles these template features into runtime metadata:
+The WebUI plugin supports these template features:
 
 - text bindings: `{{title}}`
 - attribute bindings: `href="{{item.href}}"`
@@ -232,6 +256,9 @@ The WebUI plugin compiles these template features into runtime metadata:
 - refs: `w-ref="addInput"`
 - conditionals: `<if condition="...">`
 - repeats: `<for each="item in items">`
+
+Components that use `@event` must have authored `.ts` or `.js` code that
+defines a `WebUIElement` for the tag; HTML-only components are declarative only.
 
 Example from `examples/app/todo-webui`:
 
@@ -257,11 +284,15 @@ Root-level events (e.g. `@toggle-item="{onToggleItem(e)}"`) can be declared on t
 
 ## Recommended Patterns
 
-- Treat decorated properties as the source of truth.
+- Treat decorated properties as the source of truth for state used by
+  TypeScript code.
 - Update state with property assignments such as `this.open = !this.open`.
 - Use `$emit()` for child-to-parent communication.
 - Use `w-ref` for true DOM-only concerns like focus or reading input values.
-- Prefer `@observable someValue!: T;` when a value is expected to be seeded externally after construction.
+- Omit `@observable` for values that are only read by the template and seeded
+  externally after construction.
+- Omit the TypeScript class for HTML-only components that only need template
+  bindings and router/server state.
 
 Avoid imperative DOM mutation for application state that can be represented by reactive properties.
 
@@ -442,7 +473,7 @@ sequenceDiagram
     CE->>CE: attributeChangedCallback (pre-existing attrs)
     CE->>FW: connectedCallback() → $mount()
     FW->>FW: SSR DOM detected (shadow root or children exist)
-    FW->>FW: $applySSRState() — seed observables from __webui.state
+    FW->>FW: $applySSRState() — seed decorated + template state
     FW->>FW: $hydrate() — template-parallel path resolution
     FW->>FW: $resolveSSR() — match SSR nodes via ordinal traversal
     FW->>FW: $wireEvents() + $wireRefs()
@@ -489,15 +520,14 @@ interface TemplateMeta {
   tx?: [slot, parts][];                // Text run locators
   a?: CompiledAttrMeta[];              // Attribute bindings
   ag?: [path, start, count][];         // Attribute target groups
-  c?: [conditionAST, blockIndex][];    // Conditional blocks
-  cl?: SlotPath[];                     // Conditional anchor slots
-  r?: [collection, itemVar, blockIdx][];// Repeat blocks
-  rl?: SlotPath[];                     // Repeat anchor slots
-  e?: [event, handler, argSpecs, targetPath][]; // Events
+  c?: [conditionAST, blockIndex, slot][]; // Conditional blocks
+  r?: [collection, itemVar, blockIdx, slot][]; // Repeat blocks
+  eg?: [event, [[handler, argSpecs, targetPath, usesEvent?]]][]; // Events
   b?: TemplateBlockMeta[];             // Nested block metadata
   sa?: string;                         // Adopted stylesheet specifier
   sd?: boolean;                        // Shadow DOM flag for client-created
   re?: [event, handler, argSpecs][];    // Root-level events
+  th?: 1;                               // Compiler-owned static host
 }
 ```
 
@@ -517,7 +547,7 @@ Compiled metadata:
     [[[0], 0], [["title"]]],           // slot in <h1>, dynamic "title"
     [[[1], 1], ["Count: ", ["count"]]]  // slot in <button>, static + dynamic
   ],
-  e: [["click", "increment", [], [1]]] // click -> increment, no event args
+  eg: [["click", [["increment", [], [1]]]]] // click -> increment, no event args
 }
 ```
 
@@ -558,15 +588,16 @@ sequenceDiagram
 ### Why Updates Are O(affected)
 
 After hydration, every dynamic value in the template is connected to a direct
-DOM node reference stored in a binding array.  A per-path index maps each
-`@observable` property name to the subset of bindings that reference it.
+DOM node reference stored in a binding array. A per-path index maps each
+decorated property or compiled template root to the subset of bindings that
+reference it.
 
 When `this.count = 5` fires, the `@observable` setter calls `$update('count')`,
 which looks up `'count'` in the index and only patches the bindings that
 actually depend on `count` — not every binding in the component.
 
-Computed/volatile getters (paths not in the `@observable` set) are stored
-under a wildcard key and always included in targeted updates.
+Computed/volatile getters and other paths that are not known state roots are
+stored under a wildcard key and always included in targeted updates.
 
 ```typescript
 // Targeted update (simplified):
@@ -588,27 +619,29 @@ path index ensures only affected pointers are visited.
 
 ## SSR State Seeding
 
-When the server renders `<span>42</span>` for `@observable count = 0`, the
-browser sees `42` in the DOM but the JavaScript property `this.count` is still
-`0` (the class default).  Without seeding, the first `$update()` would
-overwrite the SSR content with the wrong value.
+When the server renders `<span>42</span>` for a template binding, the browser
+sees `42` in the DOM before the component's JavaScript state exists. Without
+seeding, the first `$update()` would overwrite the SSR content with the wrong
+value.
 
 State seeding uses `window.__webui.state` — a JSON object loaded from the
 server-emitted `#webui-data` block.  Like Preact's props, this delivers the
-same data used for SSR rendering to the client.  During `$mount()`,
-`$applySSRState()` writes matching keys directly to observable backing fields
-before any bindings are wired:
+same data used for SSR rendering to the client. During `$mount()`,
+`$applySSRState()` writes matching decorated keys directly to observable backing
+fields and stores undecorated template roots in hidden framework state before
+any bindings are wired:
 
 ```mermaid
 flowchart LR
     SCRIPT["&lt;script type='application/json' id='webui-data'&gt;<br/>{ state: { count: 42, title: 'Hello' } }"] --> APPLY["$applySSRState()"]
-    APPLY --> SEED["Write to backing fields:<br/>this._count = 42<br/>this._title = 'Hello'"]
+    APPLY --> SEED["Write decorated fields + hidden template state"]
     SEED --> HYDRATE["$hydrate() — bindings match<br/>server-rendered DOM"]
 ```
 
-`$applySSRState()` only sets properties that exist in the component's
-`@observable` set — unknown keys are ignored.  Writes go to the backing
-field (`_prop`) directly, avoiding reactive updates before bindings are wired.
+`$applySSRState()` only accepts keys that are decorated properties or compiled
+template roots. Unknown keys are ignored. Decorated writes go to the backing
+field (`_prop`) directly, and undecorated template roots stay internal, avoiding
+reactive updates before bindings are wired.
 
 ---
 

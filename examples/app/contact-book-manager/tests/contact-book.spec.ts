@@ -72,6 +72,28 @@ test.describe('SSR pages', () => {
 // ── Client-side navigation tests ─────────────────────────────────
 
 test.describe('client-side navigation', () => {
+  test('HTML-only components hydrate and update through static hosts', async ({ page }) => {
+    await page.goto('/contacts');
+
+    await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(15);
+    await expectSidebarGroupsStable(page);
+
+    const autoDefined = await page.evaluate((tags) => {
+      const results: boolean[] = [];
+      for (let i = 0; i < tags.length; i++) {
+        results.push(customElements.get(tags[i] ?? '') !== undefined);
+      }
+      return results;
+    }, ['cb-sidebar', 'cb-page-contacts', 'cb-contact-card']);
+
+    expect(autoDefined).toEqual([true, true, true]);
+
+    await page.locator('cb-sidebar').getByRole('link', { name: 'Work' }).click();
+    await expect(page).toHaveURL('/groups/Work');
+    await expect(page.locator('cb-page-group .page-title')).toContainText('Work');
+    await expectActiveSidebarNav(page, 'Work');
+  });
+
   test('navigate dashboard to contacts', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('cb-page-dashboard .page-title')).toHaveText('Dashboard');

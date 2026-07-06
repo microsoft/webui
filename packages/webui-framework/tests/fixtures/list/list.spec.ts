@@ -131,7 +131,7 @@ test.describe('list fixture', () => {
     await expect(page.locator('test-list .last-loop-arg')).toHaveText('arg=2 typeof=string args.length=1');
 
     await page.locator('test-list .loop-arg-event').nth(0).click();
-    await expect(page.locator('test-list .last-loop-arg')).toHaveText('arg=1 event=click args.length=2');
+    await expect(page.locator('test-list .last-loop-arg')).toHaveText('arg=1 event=click current=loop-arg-event args.length=2');
   });
 
   test('hydrates empty text slots after repeat content at the correct position', async ({ page }) => {

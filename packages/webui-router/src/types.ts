@@ -78,6 +78,15 @@ export interface RouterConfig {
   preload?: boolean;
 
   /**
+   * Intercept same-origin POST forms and dispatch component `static action()`
+   * handlers. Disabled by default so the core router does not load the action
+   * runtime unless an app opts into route actions.
+   *
+   * @default false
+   */
+  actions?: boolean;
+
+  /**
    * Path prefixes that the router should NOT intercept.
    * Navigations to these paths are handled as full-page loads by the browser.
    * Useful for server-side auth endpoints (e.g. `/auth/`) that are not SPA routes.

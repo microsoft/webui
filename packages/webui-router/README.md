@@ -10,7 +10,7 @@ Uses the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navig
 
 1. **Server renders the full page** - the matched route chain is SSR'd with declarative shadow roots. The page is interactive before JavaScript loads.
 2. **Hydration completes** - WebUI Framework hydrates shell components.
-3. **Router starts** - lazily loads the SSR chain and metadata from `#webui-data` into `window.__webui`, then intercepts link clicks via the Navigation API.
+3. **Router starts** - reads the SSR route bootstrap data and intercepts link clicks via the Navigation API. The router never imports framework code; apps with compiler-owned HTML-only route components import `@microsoft/webui-framework` somewhere in their browser entry graph.
 4. **Client-side navigation** - fetches a JSON partial from the server, which includes the matched route chain. The client diffs old vs new chain and mounts only the changed component. Parent components stay mounted.
 
 No full page reloads. The shell stays in place. Only route content changes.
@@ -83,7 +83,14 @@ window.addEventListener('webui:hydration-complete', () => {
 });
 ```
 
-Components in `loaders` are lazy-loaded on first navigation. Components not listed are assumed eagerly loaded.
+Components in `loaders` are lazy-loaded on first navigation. Components not
+listed are assumed eagerly loaded when already registered. Route components can
+be HTML-only when they do not need interactivity; create a custom element only
+for event handlers, custom lifecycle code, imperative methods, or
+JavaScript-owned state. When route templates include compiler-marked HTML-only
+state roots, import `@microsoft/webui-framework` somewhere in the browser entry
+graph so the static-host runtime is installed before the router starts applying
+server state.
 
 ## Nested Routes
 
@@ -119,9 +126,9 @@ Preserve a component across navigations instead of destroying and recreating it:
 <route path="calendar" component="calendar-page" exact keep-alive />
 ```
 
-When the user navigates away from a `keep-alive` route and returns, the existing component is reused — its DOM and local state (scroll position, input values, timers) survive the round trip.
+When the user navigates away from a `keep-alive` route and returns, the existing component is reused. Its DOM and local state (scroll position, input values, timers) survive the round trip.
 
-**State is preserved by default.** The router only updates route param and query param attributes on reactivation — it does NOT call `setState()` with server data. This means your component's `@observable` properties, scroll position, form inputs, and any client-computed state all survive.
+**State is preserved by default.** The router only updates route param and query param attributes on reactivation. This means your component's `@observable` properties, scroll position, form inputs, and any client-computed state all survive.
 
 To refresh data on reactivation, define a [route loader](#route-loaders):
 
@@ -197,6 +204,9 @@ When enabled, the router prefetches JSON partials (templates, CSS, state) when t
 
 Cache partial responses with server-provided tags for precise invalidation:
 
+Cache and preload are optional runtime tiers. The default `Router.start()` path
+does not import the cache implementation until `cache` or `preload` opts in.
+
 ```typescript
 Router.start({
   cache: {
@@ -235,7 +245,7 @@ Router.invalidate();                             // evict everything
 
 ### Mutation Actions
 
-The write counterpart to `static loader()`. The router intercepts `<form method="post">` and auto-invalidates the cache:
+The write counterpart to `static loader()`. Enable `Router.start({ actions: true })` to make the router intercept `<form method="post">` and auto-invalidate the cache:
 
 ```typescript
 import type { RouteActionContext, RouteActionResult } from '@microsoft/webui-router';
@@ -277,7 +287,7 @@ The error component receives `{ error, status, path }` as state. It can call `Ro
 
 | Need | Mechanism |
 |------|-----------|
-| **Server provides all state** (default) | No changes needed |
+| **Server provides all state** (default) | No changes needed once the app imports `@microsoft/webui-framework`; HTML-only stateful routes use framework static hosts instead of empty classes |
 | **I fetch my own data** | `static loader()` on component class |
 | **Preserve local state** | `keep-alive` on route |
 | **Preserve DOM, refresh data** | `keep-alive` + `static loader()` |
@@ -298,6 +308,7 @@ Start the router. Call after hydration completes.
 | `templateEndpoint` | `string` | URL for `ensureLoaded()` requests (default: `"/_webui/templates"`) |
 | `dev` | `boolean` | Enable development mode warnings |
 | `preload` | `boolean` | Preload routes on link hover for instant navigation |
+| `actions` | `boolean` | Intercept same-origin POST forms and call component `static action()` handlers |
 | `ssrFresh` | `boolean` | Skip initial loader replay on SSR bootstrap (default: `true`). Components with `static ssrLoader = true` still run their loader. |
 | `cache` | `CacheConfig` | Tagged navigation cache: `{ staleTime, gcTime, maxEntries }` |
 
@@ -399,18 +410,17 @@ Tear down the router and remove event listeners.
 
 ### `Router.gc(tags?)`
 
-Release cached component templates to free memory. Removes entries from
-`window.__webui.templates` and `window.__webui.templateFns`, then clears
-their inventory bits so the server will re-send them on the next navigation
-that needs them.
+Release cached component templates to free memory. The router clears their
+inventory bits so the server will re-send them on the next navigation that needs
+them.
 
 ```typescript
 // Release all cached templates
 Router.gc();
 ```
 
-The framework's internal `templateCache` (`WeakMap`) is keyed by the same
-meta objects, so its entries become GC-eligible automatically.
+Framework template caches become GC-eligible after the router releases the
+matching templates.
 
 ### Navigation Events
 
@@ -507,22 +517,23 @@ The router is organized into 13 internal modules, each handling a single concern
 | Module | Responsibility |
 |--------|---------------|
 | `router` | Core router lifecycle, Navigation API integration |
-| `chain` | SSR chain parsing, `window.__webui` bootstrap, `data-ri` binding |
+| `chain` | SSR route bootstrap and active route binding |
 | `navigation-path` | Path matching and parameter extraction |
 | `route-element` | `<webui-route>` custom element and query param handling |
 | `loaders` | Static `loader()` resolution with `ssrFresh` support |
-| `actions` | Form submission interception and `static action()` dispatch |
+| `actions` | Optional form submission interception and `static action()` dispatch |
 | `cache` | Tagged LRU navigation cache |
-| `pending` | Pending UI threshold and lifecycle |
-| `preload` | Hover-based speculative prefetching |
+| `pending` | Lazy pending/error UI lifecycle |
+| `preload` | Optional hover-based speculative prefetching |
 | `templates` | Template injection and inventory management |
 | `streaming` | NDJSON streaming partial responses |
 | `browser-shim` | Navigation API type shims |
 | `types` | Public type definitions and type guards |
 
-## SSR metadata (`window.__webui`)
+## SSR bootstrap data
 
-On first load, the server emits inert SSR metadata in `#webui-data`. The router first reads any existing `window.__webui`, then lazily parses and removes the data block into `window.__webui` during startup:
+On first load, the server emits inert route bootstrap data in `#webui-data`. The
+router reads it during startup:
 
 ```html
 <script type="application/json" id="webui-data">
@@ -537,8 +548,6 @@ On first load, the server emits inert SSR metadata in `#webui-data`. The router 
 </script>
 ```
 
-With the WebUI framework plugin, the same data block can also include JSON-safe `templates`, and a small executable side-channel installs component-local condition closures in `window.__webui.templateFns`. FAST plugins use `<f-template>` tags instead and only need the shared router metadata.
-
 The router reads this at startup, eliminating DOM walking and URLPattern usage.
 
 ## Exports
@@ -552,8 +561,8 @@ The package exports the following:
 | `WebUIRouteElement` | class | `<webui-route>` custom element |
 | `parseQuery` | function | Parse URL query string into a record |
 | `filterQuery` | function | Filter query params by an allowlist |
-| `isStateful` | function | Type guard - checks if an element implements `setState()` |
-| `StatefulElement` | type | Interface for elements with `setState()` support |
+| `isStateful` | function | Type guard - checks if an element accepts route state |
+| `StatefulElement` | type | Interface for elements that accept route state |
 | `RouterConfig` | type | Configuration for `Router.start()` |
 | `RouteLoaderContext` | type | Context passed to `static loader()` methods |
 | `RouteActionContext` | type | Context passed to `static action()` methods |

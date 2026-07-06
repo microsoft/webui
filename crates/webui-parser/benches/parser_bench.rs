@@ -339,25 +339,25 @@ fn parser_with_bench_components_and_fast_plugin() -> HtmlParser {
 fn register_bench_components(parser: &mut HtmlParser) {
     let registry = parser.component_registry_mut();
     registry
-        .register_component("x-bench-button", "<slot></slot>", None)
+        .register_component("x-bench-button", "<slot></slot>", None, true)
         .unwrap_or_else(|error| panic!("failed to register x-bench-button: {error}"));
     registry
-        .register_component("x-card", "<slot></slot>", None)
+        .register_component("x-card", "<slot></slot>", None, true)
         .unwrap_or_else(|error| panic!("failed to register x-card: {error}"));
     registry
-        .register_component("x-panel", "<slot></slot>", None)
+        .register_component("x-panel", "<slot></slot>", None, true)
         .unwrap_or_else(|error| panic!("failed to register x-panel: {error}"));
     registry
-        .register_component("x-banner", "<slot></slot>", None)
+        .register_component("x-banner", "<slot></slot>", None, true)
         .unwrap_or_else(|error| panic!("failed to register x-banner: {error}"));
     registry
-        .register_component("x-dialog", "<slot></slot>", None)
+        .register_component("x-dialog", "<slot></slot>", None, true)
         .unwrap_or_else(|error| panic!("failed to register x-dialog: {error}"));
     registry
-        .register_component("x-item", "<slot></slot>", None)
+        .register_component("x-item", "<slot></slot>", None, true)
         .unwrap_or_else(|error| panic!("failed to register x-item: {error}"));
     registry
-        .register_component("x-stats-card", "<slot></slot>", None)
+        .register_component("x-stats-card", "<slot></slot>", None, true)
         .unwrap_or_else(|error| panic!("failed to register x-stats-card: {error}"));
 }
 

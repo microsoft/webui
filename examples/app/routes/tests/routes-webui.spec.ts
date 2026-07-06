@@ -60,6 +60,35 @@ test.describe('SSR routing', () => {
     );
   });
 
+  test('declarative-only lesson page auto-upgrades without an authored stub', async ({ page }) => {
+    await page.goto('/sections/frontend/topics/react/lessons/hooks');
+    const lesson = page.locator('lesson-page');
+    await expect(lesson).toBeVisible();
+
+    await expect(
+      lesson.evaluate((el) => {
+        const component = el as HTMLElement & { $ready?: boolean; setState?: unknown };
+
+        return {
+          ready: component.$ready === true,
+          setState: typeof component.setState === 'function',
+        };
+      }),
+    ).resolves.toEqual({ ready: true, setState: true });
+
+    await lesson.evaluate((el) => {
+      const component = el as HTMLElement & { setState(state: unknown): void };
+      component.setState({
+        sectionName: 'Frontend',
+        topicName: 'React',
+        lessonName: 'Fallback lesson',
+        lessonContent: 'Updated through router fallback state.',
+      });
+    });
+    await expect(lesson).toContainText('Fallback lesson');
+    await expect(lesson).toContainText('Updated through router fallback state.');
+  });
+
   test('webui-route elements have correct active state in SSR', async ({ page }) => {
     const html = await (await page.goto('/sections/frontend'))!.text();
     expect(html).toContain('path="/" component="routes-app" data-ri="0" active>');

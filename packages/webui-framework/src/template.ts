@@ -11,11 +11,18 @@
  * - `ag` — attribute target groups `[path, startIndex, count]`
  * - `c`  — conditional blocks `[conditionRef, blockIndex, slot]`
  * - `r`  — repeat/for blocks `[collection, itemVar, blockIndex, slot]`
- * - `e`  — element events `[eventName, handlerName, argSpecs, targetPath]`
+ * - `eg` — grouped element events `[eventName, [[handlerName, argSpecs, targetPath, usesEvent?]]]`
  * - `b`  — nested compiled block metadata
  * - `sa` — adopted stylesheet specifier for CSS module strategy
  * - `sd` — shadow DOM flag for client-created components
  * - `re` — root events on the host element
+ * - `tr` — state roots referenced by the compiled template
+ * - `ta` — observed host attributes index-aligned with `tr`
+ * - `th` — internal static TemplateElement host ownership flag
+ *
+ * Template registration also notifies optional runtimes so dynamically loaded
+ * route templates can be claimed without coupling the router package to the
+ * framework package.
  */
 
 export type {
@@ -27,6 +34,8 @@ export type {
   CompiledConditionalMeta,
   CompiledEventArg,
   CompiledEventArgs,
+  CompiledEventBindingMeta,
+  CompiledEventGroupMeta,
   SerializedCompiledCondition,
   TemplateCondition,
   CompiledTextRunMeta,
@@ -43,6 +52,7 @@ import type {
   TemplateCondition,
   TemplateMeta,
 } from './template-types.js';
+import { dispatchTemplatesRegistered } from './template-events.js';
 
 const WEBUI_DATA_ID = 'webui-data';
 const normalizedTemplates = new WeakSet<TemplateMeta>();
@@ -60,6 +70,12 @@ declare global {
   }
 }
 
+/**
+ * Return the normalized template metadata for a component tag.
+ *
+ * The first lookup lazily loads the SSR data block so components can hydrate
+ * without every app eagerly parsing route/template metadata at startup.
+ */
 export function getTemplate(name: string): TemplateMeta | undefined {
   let meta = window.__webui?.templates?.[name];
   if (!meta) {
@@ -70,6 +86,18 @@ export function getTemplate(name: string): TemplateMeta | undefined {
   return meta;
 }
 
+/** Return the complete template registry, loading SSR data if needed. */
+export function getTemplateRegistry(): Record<string, TemplateMeta> | undefined {
+  loadWebUIDataBlock();
+  return window.__webui?.templates;
+}
+
+/**
+ * Register template metadata and optional condition closures at runtime.
+ *
+ * Used by component assets and tests. After registration, a DOM event is
+ * dispatched so static hosts can claim newly available scriptless templates.
+ */
 export function registerTemplateData(
   templates: Record<string, TemplateMeta>,
   templateFns?: Record<string, CompiledConditionFn[]>,
@@ -86,12 +114,15 @@ export function registerTemplateData(
     }
   }
   const names = Object.keys(templates);
+  let hasTemplates = false;
   for (let i = 0; i < names.length; i++) {
     const tag = names[i];
     const meta = templates[tag];
     w.__webui.templates[tag] = meta;
     normalizeTemplate(tag, meta);
+    hasTemplates = true;
   }
+  if (hasTemplates) dispatchTemplatesRegistered(templates);
 }
 
 function loadWebUIDataBlock(): void {

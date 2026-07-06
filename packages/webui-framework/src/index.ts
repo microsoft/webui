@@ -21,6 +21,10 @@
  * @packageDocumentation
  */
 
+import { installTemplateElementRuntime } from './static-host.js';
+
+installTemplateElementRuntime();
+
 export { WebUIElement } from './element.js';
 export { observable, attr } from './decorators.js';
 export { getTemplate, registerTemplateData } from './template.js';

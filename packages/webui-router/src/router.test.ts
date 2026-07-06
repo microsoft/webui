@@ -109,7 +109,9 @@ describe('WebUIRouter', () => {
       const origQuerySelectorAll = (globalThis as any).document.querySelectorAll;
       const origAddEventListener = (globalThis as any).document.addEventListener;
       const origRemoveEventListener = (globalThis as any).document.removeEventListener;
+      const origDispatchEvent = (globalThis as any).window.dispatchEvent;
       let removed = false;
+      let notifiedTemplates: Record<string, unknown> | undefined;
 
       globals().__webui = {
         templateFns: { greeting: [() => true] },
@@ -126,6 +128,12 @@ describe('WebUIRouter', () => {
       (globalThis as any).document.querySelectorAll = () => [];
       (globalThis as any).document.addEventListener = () => {};
       (globalThis as any).document.removeEventListener = () => {};
+      (globalThis as any).window.dispatchEvent = (event: Event) => {
+        if (event.type === 'webui:templates-registered') {
+          notifiedTemplates = (event as CustomEvent<{ templates: Record<string, unknown> }>).detail.templates;
+        }
+        return true;
+      };
 
       try {
         const router = new WebUIRouter();
@@ -136,6 +144,11 @@ describe('WebUIRouter', () => {
         assert.deepEqual(globals().__webui!.state, { title: 'Hello' });
         assert.ok(globals().__webui!.templates?.greeting, 'template metadata should be loaded');
         assert.ok(globals().__webui!.templateFns?.greeting, 'existing templateFns should be preserved');
+        assert.deepEqual(
+          notifiedTemplates,
+          { greeting: { h: '<p></p>' } },
+          'initial SSR templates should notify optional framework runtimes',
+        );
         assert.equal(removed, true);
         router.destroy();
       } finally {
@@ -144,6 +157,7 @@ describe('WebUIRouter', () => {
         (globalThis as any).document.querySelectorAll = origQuerySelectorAll;
         (globalThis as any).document.addEventListener = origAddEventListener;
         (globalThis as any).document.removeEventListener = origRemoveEventListener;
+        (globalThis as any).window.dispatchEvent = origDispatchEvent;
       }
     });
   });
@@ -242,6 +256,32 @@ describe('WebUIRouter', () => {
       } finally {
         (globalThis as any).document.createElement = origCreateElement;
         (globalThis as any).document.head = origHead;
+      }
+    });
+
+    test('template registration notifies optional framework runtimes', () => {
+      const origDispatchEvent = (globalThis as any).window.dispatchEvent;
+      let notifiedTemplates: Record<string, unknown> | undefined;
+
+      (globalThis as any).window.dispatchEvent = (event: Event) => {
+        if (event.type === 'webui:templates-registered') {
+          const detail = (event as CustomEvent<{
+            templates: Record<string, unknown>;
+          }>).detail;
+          notifiedTemplates = detail.templates;
+        }
+        return true;
+      };
+
+      try {
+        const template = { h: '<p>Notified</p>' };
+        registerTemplatesAndStyles({
+          templates: { 'notified-comp': template },
+        }, '', new Set(), () => {});
+
+        assert.deepEqual(notifiedTemplates, { 'notified-comp': template });
+      } finally {
+        (globalThis as any).window.dispatchEvent = origDispatchEvent;
       }
     });
 
@@ -914,7 +954,18 @@ describe('WebUIRouter', () => {
 
       router.destroy();
 
-      assert.ok(!priv.navCache.has('/test'), 'cache should be cleared');
+      assert.equal(priv.navCache, null, 'destroy should release the optional cache instance');
+    });
+
+    test('destroy prevents pending cache import from restoring cache state', async () => {
+      const router = new WebUIRouter();
+      const priv = router as any;
+
+      const load = priv.ensureNavigationCache();
+      router.destroy();
+      await load;
+
+      assert.equal(priv.navCache, null, 'pending optional cache load should not survive destroy');
     });
 
     test('setupPreloadListeners registers pointermove listener on document', () => {
@@ -951,15 +1002,14 @@ describe('WebUIRouter', () => {
       const router = new WebUIRouter();
       const source = (router as any).handleNavigation.toString() as string;
 
-      // After extraction, the cache lookup is via navCache.lookup
-      const cacheIdx = source.indexOf('navCache.lookup');
+      const cacheIdx = source.indexOf('lookup(requestPath)');
       const fetchIdx = source.indexOf('fetchPartial');
 
-      assert.ok(cacheIdx > -1, 'handleNavigation should reference navCache.lookup');
+      assert.ok(cacheIdx > -1, 'handleNavigation should look up the optional cache');
       assert.ok(fetchIdx > -1, 'handleNavigation should reference fetchPartial');
       assert.ok(
         cacheIdx < fetchIdx,
-        'navCache.lookup check should come before fetchPartial call',
+        'optional cache lookup should come before fetchPartial call',
       );
     });
   });
@@ -1209,20 +1259,32 @@ describe('WebUIRouter', () => {
   });
 
   describe('loaderPromises cleanup', () => {
-    test('loaderPromises entries are deleted after loader completes', async () => {
-      const loaders: Record<string, () => Promise<unknown>> = { 'lazy-comp': () => Promise.resolve() };
+    test('successful loaders are cached and skipped after component registration', async () => {
+      const tag = 'lazy-loaded-once-' + Date.now();
+      let calls = 0;
+      const loaders: Record<string, () => Promise<unknown>> = {
+        [tag]: () => {
+          calls += 1;
+          if (!customElements.get(tag)) {
+            customElements.define(tag, class extends HTMLElement {});
+          }
+          return Promise.resolve();
+        },
+      };
       const loaderPromises = new Map<string, Promise<void>>();
 
       // Before loading, map is empty
       assert.equal(loaderPromises.size, 0, 'should start empty');
 
       // Call ensureComponentLoaded — adds entry to loaderPromises
-      const loadPromise = ensureComponentLoaded('lazy-comp', loaders, loaderPromises);
+      const loadPromise = ensureComponentLoaded(tag, loaders, loaderPromises);
       assert.equal(loaderPromises.size, 1, 'should have in-flight entry');
 
-      // After the loader resolves, the entry should be cleaned up
       await loadPromise;
-      assert.equal(loaderPromises.size, 0, 'entry should be deleted after completion');
+      assert.equal(loaderPromises.size, 1, 'successful loader entry should stay cached');
+
+      await ensureComponentLoaded(tag, loaders, loaderPromises);
+      assert.equal(calls, 1, 'successful loader should run only once');
     });
 
     test('loaderPromises entries are deleted even when loader rejects', async () => {
@@ -1238,35 +1300,17 @@ describe('WebUIRouter', () => {
     });
   });
 
-  describe('passive stub auto-registration', () => {
-    test('auto-defines a passive HTMLElement stub for unknown tags with no loader', async () => {
-      const tag = 'auto-stub-' + Date.now();
+  describe('component registration policy', () => {
+    test('does not define a fallback element for unknown tags with no loader', async () => {
+      const tag = 'no-fallback-' + Date.now();
       const loaders: Record<string, () => Promise<unknown>> = {};
       const loaderPromises = new Map<string, Promise<void>>();
 
-      // Tag is not registered before the call
       assert.equal(customElements.get(tag), undefined, 'tag should not be registered initially');
 
       await ensureComponentLoaded(tag, loaders, loaderPromises);
 
-      // Tag is now registered
-      const ctor = customElements.get(tag);
-      assert.ok(ctor, 'tag should be auto-registered after ensureComponentLoaded');
-    });
-
-    test('auto-defined stub has a no-op setState method', async () => {
-      const tag = 'stub-setstate-' + Date.now();
-      const loaders: Record<string, () => Promise<unknown>> = {};
-      const loaderPromises = new Map<string, Promise<void>>();
-
-      await ensureComponentLoaded(tag, loaders, loaderPromises);
-
-      const ctor = customElements.get(tag) as new () => HTMLElement;
-      const instance = new ctor();
-      assert.equal(typeof (instance as any).setState, 'function', 'stub should have setState');
-
-      // setState should not throw
-      (instance as any).setState({ foo: 'bar' });
+      assert.equal(customElements.get(tag), undefined, 'router should not install no-op fallback elements');
     });
 
     test('does not auto-define when a loader exists', async () => {
@@ -1292,7 +1336,6 @@ describe('WebUIRouter', () => {
 
       await ensureComponentLoaded(tag, loaders, loaderPromises);
 
-      // Should still be the original class, not a stub
       assert.equal(customElements.get(tag), original, 'should not overwrite existing registration');
     });
   });

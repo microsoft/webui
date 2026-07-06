@@ -4,10 +4,9 @@
 /**
  * Static component asset example.
  *
- * The initial bundle registers <app-shell> and the shared <asset-badge>.
- * Clicking the button loads lazy-panel.webui.js, then imports the lazy
- * component class chunk.
+ * The initial bundle registers <app-shell>. Importing the framework through
+ * that component also installs static hosts, which claim HTML-only component
+ * assets when their templates are registered.
  */
 
 import './app-shell/app-shell.js';
-import './asset-badge/asset-badge.js';

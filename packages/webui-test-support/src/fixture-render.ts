@@ -11,9 +11,24 @@
  * files and manual TemplateMeta construction.
  */
 
-import { existsSync, readFileSync, readdirSync, writeFileSync, watch } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+  watch,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { build, render } from '@microsoft/webui';
+
+const MARKER_SOURCE = `// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+`;
 
 export interface RenderedFixture {
   /** Fixture directory name (e.g. "counter"). */
@@ -48,12 +63,27 @@ function renderOne(fixturePath: string, name: string): RenderedFixture | null {
     ? JSON.parse(readFileSync(configFile, 'utf-8'))
     : {};
 
-  const buildOptions: Parameters<typeof build>[0] = { appDir: srcDir, plugin: 'webui' };
+  const hasAuthoredEntry = existsSync(resolve(fixturePath, 'element.ts'));
+  const authoredTags = hasAuthoredEntry
+    ? collectDefinedTags(readFileSync(resolve(fixturePath, 'element.ts'), 'utf-8'))
+    : new Set<string>();
+  const authoredSource = hasAuthoredEntry ? createAuthoredSourceMirror(srcDir, authoredTags) : null;
+  const buildOptions: Parameters<typeof build>[0] = hasAuthoredEntry
+    ? { appDir: authoredSource?.fixturePath ?? fixturePath, entry: 'src/index.html', plugin: 'webui' }
+    : { appDir: srcDir, plugin: 'webui' };
   if (fixtureConfig.css === 'link' || fixtureConfig.css === 'style' || fixtureConfig.css === 'module') {
     buildOptions.css = fixtureConfig.css;
   }
 
-  const result = build(buildOptions);
+  const result = (() => {
+    try {
+      return build(buildOptions);
+    } finally {
+      if (authoredSource) {
+        rmSync(authoredSource.rootPath, { recursive: true, force: true });
+      }
+    }
+  })();
 
   if (!result.protocol || result.protocol.length === 0) {
     throw new Error(
@@ -62,9 +92,16 @@ function renderOne(fixturePath: string, name: string): RenderedFixture | null {
     );
   }
 
-  let html = render(result.protocol, state, { plugin: 'webui' });
+  const renderEntry = hasAuthoredEntry ? 'src/index.html' : 'index.html';
+  let html = render(result.protocol, state, { entry: renderEntry, plugin: 'webui' });
 
-  const scriptTag = `<script src="/dist/${name}/element.js"></script>`;
+  // Fixtures with an authored element entry exercise interactive islands.
+  // Fixtures without one use the shared framework root bootstrap to prove
+  // HTML-only templates do not need empty component stubs.
+  const scriptPath = hasAuthoredEntry
+    ? `/dist/${name}/element.js`
+    : '/dist/static-host.js';
+  const scriptTag = `<script src="${scriptPath}"></script>`;
   const bodyEnd = html.lastIndexOf('</body>');
   if (bodyEnd !== -1) {
     html = html.slice(0, bodyEnd) + scriptTag + html.slice(bodyEnd);
@@ -73,6 +110,81 @@ function renderOne(fixturePath: string, name: string): RenderedFixture | null {
   }
 
   return { name, html };
+}
+
+interface AuthoredSourceMirror {
+  rootPath: string;
+  fixturePath: string;
+}
+
+function createAuthoredSourceMirror(srcDir: string, authoredTags: Set<string>): AuthoredSourceMirror {
+  const rootPath = mkdtempSync(resolve(tmpdir(), 'webui-fixture-'));
+  const fixturePath = resolve(rootPath, 'fixture');
+  const mirroredSrcDir = resolve(fixturePath, 'src');
+  cpSync(srcDir, mirroredSrcDir, { recursive: true });
+  writeAuthoredComponentMarkers(mirroredSrcDir, authoredTags);
+  return { rootPath, fixturePath };
+}
+
+function collectDefinedTags(source: string): Set<string> {
+  const tags = new Set<string>();
+  let cursor = 0;
+  while (cursor < source.length) {
+    const defineIndex = source.indexOf('.define(', cursor);
+    if (defineIndex === -1) {
+      break;
+    }
+    let valueStart = defineIndex + '.define('.length;
+    while (valueStart < source.length && source[valueStart] === ' ') {
+      valueStart++;
+    }
+    const quote = source[valueStart];
+    if (quote !== '\'' && quote !== '"' && quote !== '`') {
+      cursor = valueStart + 1;
+      continue;
+    }
+    const valueEnd = source.indexOf(quote, valueStart + 1);
+    if (valueEnd === -1) {
+      break;
+    }
+    const tagName = source.slice(valueStart + 1, valueEnd);
+    if (tagName.includes('-')) {
+      tags.add(tagName);
+    }
+    cursor = valueEnd + 1;
+  }
+  return tags;
+}
+
+function writeAuthoredComponentMarkers(srcDir: string, authoredTags: Set<string>): void {
+  const stack = [srcDir];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    if (!dir) {
+      continue;
+    }
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const path = resolve(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(path);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.html')) {
+        continue;
+      }
+      const tagName = entry.name.slice(0, -'.html'.length);
+      if (!authoredTags.has(tagName)) {
+        continue;
+      }
+      const tsPath = resolve(dir, `${tagName}.ts`);
+      const jsPath = resolve(dir, `${tagName}.js`);
+      if (!existsSync(tsPath) && !existsSync(jsPath)) {
+        writeFileSync(tsPath, MARKER_SOURCE, 'utf-8');
+      }
+    }
+  }
 }
 
 /**

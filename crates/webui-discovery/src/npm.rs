@@ -20,6 +20,16 @@ const MAX_MANIFEST_SIZE: u64 = 10 * 1024 * 1024;
 /// Conditional export keys in priority order for fallback resolution.
 const EXPORT_PRIORITY: &[&str] = &["default", "import", "require"];
 
+/// Package fields that conventionally point to a browser/module entry.
+const SCRIPT_ENTRY_FIELDS: &[&str] = &["main", "module", "browser"];
+
+/// WebUI asset exports that do not imply authored browser code.
+const WEBUI_ASSET_EXPORTS: &[&str] = &[
+    "./template-webui.html",
+    "./styles.css",
+    "./component-asset.js",
+];
+
 /// Find `node_modules/` by walking up from `start` directory.
 fn find_node_modules(start: &Path) -> Result<PathBuf> {
     let mut current = Some(start);
@@ -236,6 +246,8 @@ fn resolve_single(
         _ => None,
     };
 
+    let has_script = package_has_authored_script(&pkg_json);
+
     // Create one DiscoveredComponent per tag name
     let components: Vec<DiscoveredComponent> = tag_names
         .into_iter()
@@ -243,6 +255,7 @@ fn resolve_single(
             tag_name,
             html_content: html_content.clone(),
             css_content: css_content.clone(),
+            has_script,
             source: name.to_string(),
         })
         .collect();
@@ -272,6 +285,55 @@ fn resolve_export(exports: &serde_json::Value, key: &str) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn package_has_authored_script(pkg_json: &serde_json::Value) -> bool {
+    for field in SCRIPT_ENTRY_FIELDS {
+        match pkg_json.get(*field) {
+            Some(serde_json::Value::String(path)) if is_script_path(path) => return true,
+            Some(serde_json::Value::Object(map)) if map.values().any(export_value_has_script) => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    let Some(exports) = pkg_json.get("exports") else {
+        return false;
+    };
+    match exports {
+        serde_json::Value::String(path) => is_script_path(path),
+        serde_json::Value::Array(values) => values.iter().any(export_value_has_script),
+        serde_json::Value::Object(map) => {
+            if let Some(root) = map.get(".") {
+                return export_value_has_script(root);
+            }
+            map.iter()
+                .any(|(key, value)| !is_webui_asset_export(key) && export_value_has_script(value))
+        }
+        _ => false,
+    }
+}
+
+fn export_value_has_script(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(path) => is_script_path(path),
+        serde_json::Value::Array(values) => values.iter().any(export_value_has_script),
+        serde_json::Value::Object(map) => map.values().any(export_value_has_script),
+        _ => false,
+    }
+}
+
+fn is_webui_asset_export(key: &str) -> bool {
+    WEBUI_ASSET_EXPORTS.contains(&key)
+}
+
+fn is_script_path(path: &str) -> bool {
+    let path = path.split_once('?').map_or(path, |(prefix, _)| prefix);
+    path.ends_with(".js")
+        || path.ends_with(".mjs")
+        || path.ends_with(".cjs")
+        || path.ends_with(".ts")
 }
 
 /// Parse a Custom Elements Manifest JSON file to extract component tag names.
@@ -466,6 +528,33 @@ mod tests {
             components[0].css_content.as_deref(),
             Some(".widget { color: blue; }")
         );
+        assert!(!components[0].has_script);
+    }
+
+    #[test]
+    fn test_package_script_ownership_uses_manifest_entrypoints() {
+        let static_pkg = serde_json::json!({
+            "exports": {
+                "./template-webui.html": "./template-webui.html",
+                "./styles.css": "./styles.css"
+            }
+        });
+        let interactive_pkg = serde_json::json!({
+            "exports": {
+                ".": { "import": "./dist/index.js" },
+                "./template-webui.html": "./template-webui.html"
+            }
+        });
+        let module_pkg = serde_json::json!({
+            "module": "./dist/index.mjs",
+            "exports": {
+                "./template-webui.html": "./template-webui.html"
+            }
+        });
+
+        assert!(!package_has_authored_script(&static_pkg));
+        assert!(package_has_authored_script(&interactive_pkg));
+        assert!(package_has_authored_script(&module_pkg));
     }
 
     #[test]

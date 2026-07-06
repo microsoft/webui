@@ -42,13 +42,20 @@ fn register_components(
             if tag_name.contains('-') {
                 let css_key = format!("{tag_name}.css");
                 let css = files.get(&css_key).map(String::as_str);
-                parser
-                    .component_registry_mut()
-                    .register_component(tag_name, content, css)?;
+                parser.component_registry_mut().register_component(
+                    tag_name,
+                    content,
+                    css,
+                    has_script(files, tag_name),
+                )?;
             }
         }
     }
     Ok(())
+}
+
+fn has_script(files: &HashMap<String, String>, tag_name: &str) -> bool {
+    files.contains_key(&format!("{tag_name}.ts")) || files.contains_key(&format!("{tag_name}.js"))
 }
 
 /// Parse virtual files into a `WebUIProtocol` using the real `webui-parser`

@@ -10,7 +10,6 @@
  *       ./topics/:topicId → topic-page (lessons list)
  *         ./lessons/:lessonId → lesson-page (lesson content)
  */
-
 import { Router } from '@microsoft/webui-router';
 
 // Listen for the framework's global hydration-complete event.
@@ -26,7 +25,6 @@ function onHydrationComplete(): void {
     loaders: {
       'section-page': () => import('./section-page/section-page.js'),
       'topic-page': () => import('./topic-page/topic-page.js'),
-      'lesson-page': () => import('./lesson-page/lesson-page.js'),
     },
   });
 }

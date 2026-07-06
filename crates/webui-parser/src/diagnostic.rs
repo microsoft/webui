@@ -75,6 +75,8 @@ pub mod codes {
     pub const UNKNOWN_COMPONENT: &str = "unknown-component";
     /// An `@event` handler value is not a valid `{handler()}` expression.
     pub const INVALID_EVENT_HANDLER: &str = "invalid-event-handler";
+    /// A scriptless HTML component contains event bindings and needs authored JS.
+    pub const SCRIPTLESS_EVENT_HANDLER: &str = "scriptless-event-handler";
     /// A `w-ref` binding is missing its required `{braces}`.
     pub const INVALID_W_REF: &str = "invalid-w-ref";
     /// An HTML element is missing its closing tag.

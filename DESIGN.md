@@ -284,7 +284,7 @@ When the handler encounters `Fragment::Outlet`:
 3. Emit `<webui-outlet>` containing matched child `<webui-route>` with component, and hidden stubs for siblings.
 
 For plugins that participate in client routing, the handler also emits a
-`<meta name="webui-nonce">` tag in `<head>` for backward compatibility, an inert
+`<meta name="webui-nonce">` tag in `<head>` for CSP nonce discovery, an inert
 `<script type="application/json" id="webui-data">` data block containing shared
 non-executable SSR metadata:
 
@@ -386,23 +386,32 @@ template asset, component class chunk, and component data request can all start
 in parallel from the manifest. CSS module importmaps still use the page's current
 CSP nonce when materialized by the optional
 `@microsoft/webui-framework/component-asset.js` `defineComponentAssets()`
-manifest loader. This loader is not re-exported from the framework root package
-entrypoint, keeping it out of normal framework bundles unless an app imports the
-optional subpath. The loader uses the manifest tag as the registered-template
-fast path, so hashed asset filenames still skip importing when
+manifest loader. The manifest loader exposes `preload(tag)` to start asset,
+module, and data work, and `create(tag)` to create the element after
+template/module work is ready. This loader is not re-exported from the framework
+root package entrypoint, keeping it out of normal framework bundles unless an app
+imports the optional subpath. The loader uses the manifest tag as the
+registered-template fast path, so hashed asset filenames still skip importing when
 `window.__webui.templates[tag]` already exists. Otherwise it deduplicates
 in-flight imports by resolved asset URL and deduplicates module-style importmaps
 against `window.__webui.styles` plus previously injected asset styles.
-`defineComponentAssets().create(tag)` waits for the asset/module, mounts without
-blocking on data by default, and applies data later with `setState()`; callers
-can opt into bounded data blocking with `{ awaitData: true, dataTimeoutMs }`.
+`create(tag)` waits for the asset/module, mounts without blocking on data by
+default, and applies data later; callers can opt into bounded data blocking with
+`{ awaitData: true, dataTimeoutMs }`.
 
 FAST plugin builds can emit the same ESM asset shape with trusted `<f-template>`
 payloads in `templates`; those assets require a FAST-owned runtime loader.
 
-**Navigation cache:** The client router maintains a tagged navigation cache. Partial responses are stored keyed by request path and tagged with `cacheTags`. On revisit within `staleTime`, the cache is used and the network fetch is skipped. After a mutation action, `Router.invalidateTags()` evicts all entries whose tags overlap with the invalidated tags. Configuration: `Router.start({ cache: { staleTime, gcTime, maxEntries } })`.
+**Navigation cache:** The client router exposes an optional tagged navigation
+cache tier. The default `Router.start()` path does not import or instantiate the
+cache. `Router.start({ cache: { staleTime, gcTime, maxEntries } })` enables
+path-keyed partial-response caching with server-provided `cacheTags`; revisits
+within `staleTime` skip the network. `Router.start({ preload: true })` also
+loads the cache tier because hover preloads store speculative responses there.
+After a mutation action, `Router.invalidateTags()` evicts all entries whose tags
+overlap with the invalidated tags.
 
-**Mutation actions:** Components can declare `static action(ctx: RouteActionContext)` as the write counterpart to `static loader()`. The router intercepts `<form method="post">` submissions, finds the nearest route component's `static action()`, calls it, and auto-invalidates the cache using both the action's returned tags and the route's build-time `invalidates` attribute. This ensures the compiler-declared invalidation graph is always respected — developers cannot forget.
+**Mutation actions:** Components can declare `static action(ctx: RouteActionContext)` as the write counterpart to `static loader()`. `Router.start({ actions: true })` opts into the action runtime; otherwise the router core does not import form interception code. When enabled, the router intercepts `<form method="post">` submissions, finds the nearest route component's `static action()`, calls it, and auto-invalidates the cache using both the action's returned tags and the route's build-time `invalidates` attribute. This ensures the compiler-declared invalidation graph is always respected — developers cannot forget.
 
 **Pending UI:** Routes with a `pending` attribute show a loading component during slow navigations (>150ms). The pending component is a normal WebUI component — SSR'd and build-time validated. Keep-alive and cached routes skip pending (no delay to show).
 
@@ -919,14 +928,18 @@ pub struct Component {
     pub name: String,
     pub html_content: String,
     pub css_content: Option<String>,
-    /// Sorted, deduplicated CSS token names extracted from css_content.
-    pub css_tokens: Vec<String>,
+    /// CSS custom property definitions from this component's CSS.
+    pub css_definitions: Vec<String>,
+    /// CSS `var()` fallback chains from this component's CSS.
+    pub css_fallback_chains: Vec<CssFallbackChain>,
+    /// Whether this component has an authored client script.
+    pub has_script: bool,
 }
 ```
 
 #### Registration Methods
 ```rust
-pub fn register_component(&mut self, name: &str, html: &str, css: Option<&str>) -> Result<(), ParserError>
+pub fn register_component(&mut self, name: &str, html: &str, css: Option<&str>, has_script: bool) -> Result<(), ParserError>
 pub fn register_directory(&mut self, directory: &Path) -> Result<(), ParserError>
 pub fn contains(&self, name: &str) -> bool
 pub fn get(&self, name: &str) -> Option<&Component>
@@ -960,11 +973,12 @@ pub fn discover_source(source: &str, search_dir: &Path) -> Result<DiscoveryResul
 /// Collect resolved local paths for file watching.
 pub fn collect_watch_paths(sources: &[String], search_dir: &Path) -> Vec<PathBuf>
 
-/// A discovered component (tag name, HTML template, optional CSS).
+/// A discovered component (tag name, HTML template, optional CSS, ownership).
 pub struct DiscoveredComponent {
     pub tag_name: String,
     pub html_content: String,
     pub css_content: Option<String>,
+    pub has_script: bool,
     pub source: String,
 }
 ```
@@ -976,10 +990,17 @@ pub struct DiscoveredComponent {
    - `exports["./template-webui.html"]` → template HTML path
    - `exports["./styles.css"]` → styles CSS path (optional)
    - `customElements` → path to Custom Elements Manifest
+   - root JS entry (`exports["."]`, `main`, `module`, or `browser`) → authored component ownership
 4. Parse the Custom Elements Manifest for `modules[].declarations[].tagName`
-5. Return `DiscoveredComponent` structs (callers handle registration)
+5. Return `DiscoveredComponent` structs with `has_script` set from source metadata (callers handle registration)
 
 Conditional exports are resolved with deterministic priority: `default` → `import` → `require`.
+
+Script ownership is metadata-only: discovery never scans package JavaScript to find
+`customElements.define()` calls. Packages without a root JS entry are treated as
+HTML-only component libraries, so dynamic templates can use compiler-owned static
+hosts. Packages with a root JS entry own their custom elements and do not receive
+static-host metadata.
 
 #### Security
 - **Path traversal**: Export paths are validated — absolute paths and `..` components are rejected
@@ -994,6 +1015,10 @@ Conditional exports are resolved with deterministic priority: `default` → `imp
 - Corrupt cache files are silently ignored (graceful fallback)
 
 #### Local Path Resolution
+Local paths use the same sibling-file rule as app components: `my-card.html`
+paired with `my-card.ts` or `my-card.js` is authored/interactive; otherwise it is
+HTML-only and eligible for compiler-owned static hosts when the template has
+dynamic roots.
 Local paths perform a recursive WalkDir scan for HTML files with hyphenated names, pairing matching CSS files — the same convention used by the parser's `ComponentRegistry`.
 
 ### HTML Parser
@@ -1432,10 +1457,14 @@ update hot paths still call the function directly.
 | `ag`  | `[elementPath, start, count][]`   | Attribute-target groups for `a[]`                  |
 | `c`   | `[ConditionRef, blockIndex, slot][]` | Conditional blocks                              |
 | `r`   | `[collection, itemVar, blockIndex, slot][]` | Repeat blocks                            |
-| `e`   | `[event, handler, argSpecs, targetPath][]` | Body events                              |
+| `eg`  | `[event, [[handler, argSpecs, targetPath, usesEvent?]]][]` | Body events grouped by event name |
 | `b`   | `TemplateBlockMeta[]`             | Nested compiled block table referenced by `c` / `r` |
 | `sa`  | `string`                          | Optional module-mode adopted stylesheet specifier copied from `shadowrootadoptedstylesheets` |
 | `re`  | `[event, handler, argSpecs][]`    | Root events, attached to the host element          |
+| `tr`  | `string[]`                        | Component-level state roots referenced by the template, excluding repeat item variables |
+| `ta`  | `string[]`                        | Observed host attributes index-aligned with `tr` |
+| `sd`  | `1`                               | Shadow DOM flag for client-created components      |
+| `th`  | `1`                               | Internal static TemplateElement host ownership flag for compiler-owned HTML-only components |
 
 All arrays are optional — omitted from the output when empty to minimize payload.
 
@@ -1454,6 +1483,14 @@ Logical operators also match the protocol enum values:
 
 - `1` = `AND`
 - `2` = `OR`
+
+`tr` and `ta` are emitted by the compiler so the browser runtime does not walk
+every binding at startup to rediscover roots or observed attributes. `ta` is
+index-aligned with `tr`: `ta[i]` is the host attribute observed for template
+root `tr[i]`. Metadata generated by `--plugin=webui` must include these fields
+when applicable; runtimes treat missing fields as empty. `th` is emitted only
+when the compiler owns a missing static host for an HTML-only component; fully
+static HTML-only components and authored interactive components omit it.
 
 `a[]` uses compact tuple forms to avoid runtime parsing:
 
@@ -1481,14 +1518,14 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 | `class="item {{state}}"`             | `a[]` + `ag[]`         | element kept marker-free          |
 | `?disabled="{{expr}}"`               | `a[]` + `ag[]`         | element kept marker-free          |
 | `:config="{{settings}}"`, `:value="{{searchQuery}}"` | `a[]` + `ag[]` | element kept marker-free |
-| `<if condition="expr">body</if>`     | `c[]` + `cl[]` + `b[]` | block removed; anchor slot stored |
-| `<for each="v in coll">body</for>`   | `r[]` + `rl[]` + `b[]` | block removed; anchor slot stored |
-| `@event="{handler(item.id, e)}"`     | `e[]`                  | element kept marker-free          |
+| `<if condition="expr">body</if>`     | `c[]` + `b[]`          | block removed; anchor slot stored |
+| `<for each="v in coll">body</for>`   | `r[]` + `b[]`          | block removed; anchor slot stored |
+| `@event="{handler(item.id, e)}"`     | `eg[]`                 | element kept marker-free          |
 | `@event` on `<template>` wrapper     | `re[N]`                | *(stripped)*                      |
 | `w-ref="{name}"`                     | *(stays)*              | *(unchanged)*                     |
 | `<outlet />`                         | *(stays)*              | `<outlet></outlet>`               |
 
-**Authoring validation.** Build-time authoring mistakes are returned as a structured `ParserError::Template(Box<Diagnostic>)`, never panicked. This covers invalid `@event` handlers (e.g. `@click="e.preventDefault()"`, or a bare `@click="{closeMenu}"`), non-braced `w-ref` (`w-ref="name"` instead of `w-ref="{name}"`), core-parser mistakes — an invalid `<for each>` expression, a missing/invalid `<if condition>`, an unknown component tag, a recursive template reference — malformed CSS in a `<style>` block, and structural HTML well-formedness errors (unclosed/malformed tags, unterminated comments/declarations, unexpected closing tags, excessive nesting), so every build error renders identically. The `Diagnostic` is plain, actionable data — a **stable machine-readable `code`** (e.g. `invalid-for-each`; see `diagnostic::codes`), title, source location (rendered rustc-style as `--> owner:line:column` when the offending byte offset is known, otherwise `in component <c> · element <e>`), offending snippet, and a `help:` fix — and carries **no color**: `webui-cli` styles it with `console`, while Node/FFI/WASM forward the plain `Display` text through their native error channel. Where a fix is likely a typo, the `help:` offers a **"did you mean …?" suggestion** via an iterative Levenshtein match (`suggest::closest_match`): a misspelled directive attribute (`eahc` → `each`), or an unregistered custom-element tag that closely matches a registered component **in the same namespace** (`<mp-buton>` → `<mp-button>`; cross-namespace tags like `<md-button>` still pass through as genuine custom elements).
+**Authoring validation.** Build-time authoring mistakes are returned as a structured `ParserError::Template(Box<Diagnostic>)`, never panicked. This covers invalid `@event` handlers (e.g. `@click="e.preventDefault()"`, or a bare `@click="{closeMenu}"`), scriptless components that contain `@event` bindings, non-braced `w-ref` (`w-ref="name"` instead of `w-ref="{name}"`), core-parser mistakes — an invalid `<for each>` expression, a missing/invalid `<if condition>`, an unknown component tag, a recursive template reference — malformed CSS in a `<style>` block, and structural HTML well-formedness errors (unclosed/malformed tags, unterminated comments/declarations, unexpected closing tags, excessive nesting), so every build error renders identically. The `Diagnostic` is plain, actionable data — a **stable machine-readable `code`** (e.g. `invalid-for-each` or `scriptless-event-handler`; see `diagnostic::codes`), title, source location (rendered rustc-style as `--> owner:line:column` when the offending byte offset is known, otherwise `in component <c> · element <e>`), offending snippet, and a `help:` fix — and carries **no color**: `webui-cli` styles it with `console`, while Node/FFI/WASM forward the plain `Display` text through their native error channel. Where a fix is likely a typo, the `help:` offers a **"did you mean …?" suggestion** via an iterative Levenshtein match (`suggest::closest_match`): a misspelled directive attribute (`eahc` → `each`), or an unregistered custom-element tag that closely matches a registered component **in the same namespace** (`<mp-buton>` → `<mp-button>`; cross-namespace tags like `<md-button>` still pass through as genuine custom elements).
 
 **Machine-readable diagnostics.** `webui-cli` accepts a global `--format <human|json>` flag. In `json` mode the colorized terminal output is suppressed and each error is emitted as a single JSON object on **stdout** (`{severity, code, message, file, line, column, snippet, help, chain}`), so editors, CI, and AI assistants consume diagnostics without scraping ANSI text. The process exit code follows BSD `sysexits.h` so callers can branch on the cause: `65` (`EX_DATAERR`) for a template/authoring error, `66` (`EX_NOINPUT`) for a missing app folder / state file / serve dir / entry, `69` (`EX_UNAVAILABLE`) for an occupied port, `74` (`EX_IOERR`) for other I/O failures, `2` for argument/usage errors (clap), and `1` otherwise.
 
@@ -1506,14 +1543,14 @@ The current WebUI parser emits a 12-byte `Plugin` fragment (`WebUIElementData`) 
 
 ```
 Bytes 0–3:  binding_count   (u32 LE)  — number of dynamic attribute bindings
-Bytes 4–7:  event_start_idx (u32 LE)  — global index into metadata `e[]`
+Bytes 4–7:  event_start_idx (u32 LE)  — global index into the parser event list
 Bytes 8–11: event_count     (u32 LE)  — number of @event attrs on this element
 ```
 
 The handler decodes this in `on_element_data` and emits SSR-only markers:
 
 - `data-w-b-N` for one bound attribute, or `data-w-c-START-COUNT` for multiple `a[]` entries on the same element
-- `data-ev="COUNT"` once per element, where `COUNT` is the number of consecutive entries in the metadata `e[]` array that belong to that element
+- `data-ev="COUNT"` once per element, where `COUNT` is the number of consecutive parser event entries that belong to that element
 
 WebUI SSR marker formats are:
 
@@ -1540,7 +1577,42 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   appending nodes to the connected DOM. Child components therefore observe
   initial parent `:` property bindings in `connectedCallback`, while later parent
   updates remain live.
-- Events are resolved from compiled `e[]` metadata entries using path indices. The runtime installs listeners on target elements and resolves handler arguments against the scope captured when that block was rendered. Root events from `re[]` attach directly to the host element.
+- Missing HTML-only custom elements that need host attribute or router state
+  reactivity are marked in compiled template metadata with `th: 1`. Importing
+  `@microsoft/webui-framework` installs the static host runtime; the router
+  remains framework-independent and never imports framework code. The runtime installs a static
+  `TemplateElement` subclass only for compiler-owned `th` tags that are not
+  already registered. Fully static scriptless templates remain plain SSR DOM and
+  are not upgraded.
+  `TemplateElement` is the static rendering core (hydration, template state,
+  bindings, repeats, conditionals, attribute reflection); the interactive
+  `WebUIElement` superset adds event wiring, `w-ref` wiring, and `$emit` on top.
+  The fallback uses compiler-emitted `tr` and `ta` metadata to determine
+  reactive roots and observed host attributes. It seeds non-attribute state from
+  `window.__webui.state` and supports router state updates without
+  developer-authored `@observable` / `@attr` stubs. Developer-authored classes,
+  lazy loaders, and templates with event handlers own their custom element
+  definitions.
+- Developer-authored `WebUIElement` classes also treat compiled template roots
+  as stateful. `setState()` and SSR seeding store any undecorated
+  template-bound roots in hidden framework state, so `@observable` is only
+  required when TypeScript code reads or mutates the property directly.
+- Template producers that bootstrap initial SSR metadata or load metadata after
+  initial SSR, including `@microsoft/webui-router`, synchronously publish
+  `webui:templates-registered` with `{ templates }` in `detail`. The static
+  host tier claims compiler-owned template-backed HTML-only tags when the event
+  fires. The router does not install no-op fallback elements; missing component
+  registrations indicate that the app omitted the required runtime tier or lazy
+  loader.
+- Events are resolved from compiler-grouped `eg[]` metadata entries using path
+  indices. The compiler groups element events by event name and marks handlers
+  that receive `e`, so the runtime installs one delegated listener per event
+  name on the component render root without regrouping or scanning event
+  arguments during hydration. It resolves handler
+  arguments against the scope captured when that block was rendered. Nested
+  conditional/repeat instances unregister their delegated listeners when removed
+  so detached DOM is not retained. Root events from `re[]` attach directly to the
+  host element or shadow root.
 - The full package entrypoint supports repeat metadata (`r[]` / `rl[]`). The additive `@microsoft/webui-framework/element-no-repeat` entrypoint preserves the same public `WebUIElement` API but must reject compiled templates that contain repeat metadata.
 
 Detailed component examples, decorators, and package entrypoint guidance live in [packages/webui-framework/README.md](packages/webui-framework/README.md) rather than being duplicated in this design spec.

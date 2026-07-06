@@ -4,6 +4,10 @@
 /**
  * Template type definitions — shared across packages without pulling in
  * the global `Window` augmentation from `template.ts`.
+ *
+ * These tuple shapes mirror the compact payload emitted by the Rust parser.
+ * Keep them allocation-light and stable: the browser runtime indexes directly
+ * into these arrays on hot hydration/update paths.
  */
 
 export type CompiledAttrPart = string | [path: string];
@@ -49,7 +53,13 @@ export type CompiledEventArg =
   | ['b', number]
   | ['z'];
 export type CompiledEventArgs = CompiledEventArg[];
-export type CompiledEventMeta = [name: string, handler: string, args: CompiledEventArgs, target: TemplateNodePath];
+export type CompiledEventBindingMeta = [
+  handler: string,
+  args: CompiledEventArgs,
+  target: TemplateNodePath,
+  usesEvent?: 1,
+];
+export type CompiledEventGroupMeta = [name: string, bindings: CompiledEventBindingMeta[]];
 
 export interface TemplateBlockMeta {
   h: string;
@@ -58,13 +68,19 @@ export interface TemplateBlockMeta {
   ag?: CompiledAttrGroupMeta[];
   c?: CompiledConditionalMeta[];
   r?: CompiledRepeatMeta[];
-  e?: CompiledEventMeta[];
+  eg?: CompiledEventGroupMeta[];
 }
 
 export interface TemplateMeta extends TemplateBlockMeta {
   b?: TemplateBlockMeta[];
   sa?: string;
   re?: [string, string, CompiledEventArgs][];
+  /** Component-level state roots referenced by template bindings. */
+  tr?: string[];
+  /** Observed host attributes index-aligned with `tr`. */
+  ta?: string[];
   /** Shadow DOM flag — when true, client-created components use shadow root. */
   sd?: boolean;
+  /** Internal static host flag — true when the compiler owns a TemplateElement host. */
+  th?: boolean | 1;
 }

@@ -4,11 +4,24 @@
 /**
  * Template & CSS registration — shared by partial navigation and
  * `ensureLoaded()`.
+ *
+ * This module stores templates and announces that new WebUI template data
+ * exists. The router stays platform-independent and never imports framework
+ * code; framework runtimes decide whether registered templates need static
+ * hosts.
  */
+
+/** Shared event name understood by optional framework runtimes. */
+const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
 
 /**
  * Register templates + inject CSS from a server response.
  * Shared by fetchPartial and fetchComponentTemplates.
+ *
+ * WebUI JSON template payloads are stored directly. FAST string templates are
+ * materialized as DOM. After JSON templates are registered, a DOM event lets
+ * framework runtimes can define compiler-owned static hosts before navigation
+ * state is applied.
  */
 export function registerTemplatesAndStyles(
   data: {
@@ -69,6 +82,7 @@ export function registerTemplatesAndStyles(
   }
 
   let executableTemplateBody = '';
+  let registeredTemplates: Record<string, unknown> | undefined;
 
   // 2. Template closures: execute only the component-local condition arrays.
   //    TRUST BOUNDARY: closure scripts come from the same-origin server
@@ -115,6 +129,8 @@ export function registerTemplatesAndStyles(
         }
       } else {
         w.__webui.templates[tag] = template;
+        if (!registeredTemplates) registeredTemplates = {};
+        registeredTemplates[tag] = template;
       }
     }
   }
@@ -126,6 +142,8 @@ export function registerTemplatesAndStyles(
     document.head.appendChild(script);
     document.head.removeChild(script);
   }
+
+  notifyTemplatesRegistered(registeredTemplates);
 }
 
 /** Inject CSS stylesheet links from a partial response. */
@@ -168,4 +186,27 @@ export async function fetchComponentTemplates(
 
   // Register using the same pipeline as partial navigation
   registerTemplatesAndStyles(data, nonce, injectedStyles, updateInventory);
+}
+
+/** Announce newly registered WebUI templates. */
+export function notifyTemplatesRegistered(
+  templates: Record<string, unknown> | undefined,
+): void {
+  if (
+    !templates ||
+    typeof window === 'undefined' ||
+    typeof CustomEvent !== 'function' ||
+    typeof window.dispatchEvent !== 'function'
+  ) {
+    return;
+  }
+  dispatchTemplatesRegistered(templates);
+}
+
+function dispatchTemplatesRegistered(
+  templates: Record<string, unknown>,
+): void {
+  window.dispatchEvent(new CustomEvent(TEMPLATES_REGISTERED_EVENT, {
+    detail: { templates },
+  }));
 }

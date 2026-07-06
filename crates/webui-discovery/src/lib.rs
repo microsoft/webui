@@ -26,6 +26,8 @@ pub struct DiscoveredComponent {
     pub html_content: String,
     /// The CSS content, if any
     pub css_content: Option<String>,
+    /// Whether authored browser code owns this custom element tag.
+    pub has_script: bool,
     /// The original source identifier (for display/diagnostics)
     pub source: String,
 }
@@ -137,6 +139,7 @@ fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
                         tag_name: filename.to_string(),
                         html_content,
                         css_content,
+                        has_script: has_sibling_script(path),
                         source: source.clone(),
                     });
                 }
@@ -145,6 +148,10 @@ fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
     }
 
     Ok(components)
+}
+
+fn has_sibling_script(html_path: &Path) -> bool {
+    html_path.with_extension("ts").exists() || html_path.with_extension("js").exists()
 }
 
 /// Collect the resolved local paths from source strings for file watching.
@@ -230,5 +237,30 @@ mod tests {
         assert!(!is_local_source("my-widget"));
         assert!(!is_local_source("@reactive-ui"));
         assert!(!is_local_source("@scope/button"));
+    }
+
+    #[test]
+    fn test_discover_from_path_preserves_script_ownership() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("plain-card.html"), "<p>{{title}}</p>").unwrap();
+        std::fs::write(
+            tmp.path().join("interactive-card.html"),
+            "<button>go</button>",
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("interactive-card.ts"), "export {};").unwrap();
+
+        let components = discover_from_path(tmp.path()).unwrap();
+        let plain = components
+            .iter()
+            .find(|component| component.tag_name == "plain-card")
+            .unwrap();
+        let interactive = components
+            .iter()
+            .find(|component| component.tag_name == "interactive-card")
+            .unwrap();
+
+        assert!(!plain.has_script);
+        assert!(interactive.has_script);
     }
 }

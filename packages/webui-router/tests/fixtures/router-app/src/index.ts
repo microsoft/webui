@@ -1,94 +1,52 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { WebUIElement, observable, attr } from '@microsoft/webui-framework';
 import { Router } from '@microsoft/webui-router';
-import type { RouteLoaderContext } from '@microsoft/webui-router';
+import { ErrorDisplay } from './error-display/error-display';
+import { LoadingSkeleton } from './loading-skeleton/loading-skeleton';
+import { PageAlpha } from './page-alpha/page-alpha';
+import { PageBeta } from './page-beta/page-beta';
+import { PageCompose } from './page-compose/page-compose';
+import { PageDetail } from './page-detail/page-detail';
+import { PageFailing } from './page-failing/page-failing';
+import { PageKeepAlive } from './page-keepalive/page-keepalive';
+import { PageLoader } from './page-loader/page-loader';
+import { PageSlow } from './page-slow/page-slow';
+import { RouteShell } from './route-shell/route-shell';
 
 // ── Shell component ──────────────────────────────────────────────
 
-export class RouteShell extends WebUIElement {
-  @observable isHome = false;
-  @observable isAlpha = false;
-  @observable isBeta = false;
-  @observable isItem1 = false;
-  @observable isItem2 = false;
-}
 RouteShell.define('route-shell');
 
 // ── Page components ──────────────────────────────────────────────
 
-export class PageAlpha extends WebUIElement {}
 PageAlpha.define('page-alpha');
 
-export class PageBeta extends WebUIElement {}
 PageBeta.define('page-beta');
 
-export class PageDetail extends WebUIElement {
-  @observable itemId = '';
-}
 PageDetail.define('page-detail');
 
-export class PageCompose extends WebUIElement {
-  @attr action = '';
-  @attr to = '';
-  @attr subject = '';
-}
 PageCompose.define('page-compose');
 
-// ── Keep-alive test component ────────────────────────────────────
-// Has local state (clickCount) that should survive keep-alive reactivation.
-
-export class PageKeepAlive extends WebUIElement {
-  @observable clickCount = 0;
-
-  onIncrement = (): void => {
-    this.clickCount++;
-  };
-}
 PageKeepAlive.define('page-keepalive');
 
 // ── Loader test component ────────────────────────────────────────
 // Has a static loader() that provides client-side state.
 
-export class PageLoader extends WebUIElement {
-  @observable source = '';
-  @observable loaderMessage = '';
-
-  static async loader(_ctx: RouteLoaderContext): Promise<Record<string, unknown>> {
-    return {
-      source: 'client-loader',
-      loaderMessage: 'Data fetched by static loader',
-    };
-  }
-}
 PageLoader.define('page-loader');
 
 // ── Pending UI test: skeleton component ──────────────────────────
 
-export class LoadingSkeleton extends WebUIElement {}
 LoadingSkeleton.define('loading-skeleton');
 
 // ── Pending UI test: slow-loading page component ─────────────────
 
-export class PageSlow extends WebUIElement {}
 PageSlow.define('page-slow');
 
-// ── Error boundary test: error display component ─────────────────
-
-export class ErrorDisplay extends WebUIElement {
-  @observable errorMessage = '';
-  @observable errorPath = '';
-
-  onRetry = (): void => {
-    (window as any).navigation.navigate('/');
-  };
-}
 ErrorDisplay.define('error-display');
 
 // ── Error boundary test: failing page component ──────────────────
 
-export class PageFailing extends WebUIElement {}
 PageFailing.define('page-failing');
 
 // ── Start router after hydration ─────────────────────────────────

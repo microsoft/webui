@@ -10,76 +10,10 @@ import { isStateful } from './types.js';
 import { ROUTE_SELECTOR } from './route-element.js';
 import type { RouteChainEntry } from './cache.js';
 
-/**
- * Find the pending component for a target route.
- * Walks active chain looking for `pendingComponent`, preferring the deepest match.
- * Falls back to scanning SSR'd stubs scoped to the deepest active leaf's children.
- */
-export function findPendingComponent(
-  activeChain: RouteChainEntry[],
-  _requestPath: string,
-): string | null {
-  // Check active chain (parent routes that already have metadata from partial)
-  for (let i = activeChain.length - 1; i >= 0; i--) {
-    if (activeChain[i].pendingComponent) {
-      return activeChain[i].pendingComponent!;
-    }
-  }
-  // Walk SSR'd route stubs scoped to the deepest active leaf's children
-  const leaf = activeChain[activeChain.length - 1];
-  if (leaf?.el) {
-    const compEl = leaf.compEl ?? leaf.el.querySelector(leaf.component);
-    if (compEl) {
-      const root = (compEl as HTMLElement).shadowRoot ?? compEl;
-      for (const el of root.querySelectorAll(ROUTE_SELECTOR)) {
-        const pending = el.getAttribute('pending');
-        if (pending) return pending;
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * Find the error component for a target route.
- * Same scoping strategy as findPendingComponent.
- */
-export function findErrorComponent(
-  activeChain: RouteChainEntry[],
-  _requestPath: string,
-): string | null {
-  for (let i = activeChain.length - 1; i >= 0; i--) {
-    if (activeChain[i].errorComponent) {
-      return activeChain[i].errorComponent!;
-    }
-  }
-  const leaf = activeChain[activeChain.length - 1];
-  if (leaf?.el) {
-    const compEl = leaf.compEl ?? leaf.el.querySelector(leaf.component);
-    if (compEl) {
-      const root = (compEl as HTMLElement).shadowRoot ?? compEl;
-      for (const el of root.querySelectorAll(ROUTE_SELECTOR)) {
-        const error = el.getAttribute('error');
-        if (error) return error;
-      }
-    }
-  }
-  return null;
-}
-
 /** State holder for pending/error elements — tracks mounted elements for O(1) cleanup. */
 export class PendingState {
   pendingElement: HTMLElement | null = null;
   errorElement: HTMLElement | null = null;
-  pendingTimer: ReturnType<typeof setTimeout> | null = null;
-
-  /** Clear the pending UI timer. */
-  clearTimer(): void {
-    if (this.pendingTimer) {
-      clearTimeout(this.pendingTimer);
-      this.pendingTimer = null;
-    }
-  }
 
   /** Remove any pending/error elements left over from a previous navigation. */
   clearElements(): void {
@@ -167,10 +101,8 @@ export class PendingState {
 
   /** Clean up all pending state. */
   destroy(): void {
-    this.clearTimer();
     this.pendingElement = null;
     this.errorElement = null;
   }
 }
-
 

@@ -24,6 +24,16 @@ await buildFixtureEntries({
   outDir,
   tsconfig,
   emptyMessage: `No fixture entry points found in ${fixturesRoot}`,
+  extraBuilds: [{
+    entryPoints: [resolve(here, 'static-host.ts')],
+    bundle: true,
+    format: 'iife',
+    outfile: resolve(outDir, 'static-host.js'),
+    platform: 'browser',
+    target: 'es2022',
+    supported: { 'import-attributes': true },
+    tsconfig,
+  }],
 });
 
 startFixtureServer({
@@ -47,7 +57,7 @@ startFixtureServer({
       }
     }
 
-    // Fall back to static files (bundled JS, legacy fixtures, etc.)
+    // Serve static files for bundled JS, authored fixture HTML, and assets.
     return serveStatic(url.pathname);
   },
 });

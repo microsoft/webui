@@ -5,8 +5,9 @@
  * WebUI Store — WebUI Framework hydration + client-side routing.
  *
  * The server pre-renders all HTML via WebUI's binary protocol (--plugin=webui).
- * This script registers interactive custom elements, triggers hydration,
- * and activates the WebUI Router for SPA page transitions.
+ * This script registers interactive custom elements and activates the WebUI
+ * Router. Importing the framework through those components also installs static
+ * hosts for declarative HTML-only components without custom element stubs.
  *
  * Navigation flow:
  *  1. Initial page load → full SSR + WebUI Framework hydration
@@ -14,8 +15,13 @@
  *     fetches JSON partial with state + templates, mounts page component
  *  3. Shell (mp-app: navbar, footer, cart) persists across navigations
  */
-
 import { Router } from '@microsoft/webui-router';
+
+// Shell and interactive children — eagerly loaded.
+import '#organisms/mp-app/mp-app.js';
+import '#organisms/mp-category-nav/mp-category-nav.js';
+import '#organisms/mp-filter-list/mp-filter-list.js';
+import '#organisms/mp-product-card/mp-product-card.js';
 
 // Listen for the framework's global hydration-complete event.
 // NOTE: ES module imports are hoisted, so hydration may complete before
@@ -26,29 +32,15 @@ function onHydrationComplete(): void {
   const total = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];
   console.log(`WebUI Store hydration complete in ${total?.duration.toFixed(1)}ms`);
 
-  // Start client-side router after hydration — page components lazy-loaded
+  // Start client-side router after hydration. HTML-only routes use static hosts;
+  // the product page keeps its authored interactive class.
   Router.start({
     preload: true,
     loaders: {
-      'mp-page-home': () => import('#pages/mp-page-home/mp-page-home.js'),
-      'mp-page-search': () => import('#pages/mp-page-search/mp-page-search.js'),
-      'mp-product-grid': () => import('#organisms/mp-product-grid/mp-product-grid.js'),
       'mp-page-product': () => import('#pages/mp-page-product/mp-page-product.js'),
-      'mp-page-about': () => import('#pages/mp-page-about/mp-page-about.js'),
-      'mp-page-terms': () => import('#pages/mp-page-terms/mp-page-terms.js'),
-      'mp-page-shipping': () => import('#pages/mp-page-shipping/mp-page-shipping.js'),
-      'mp-page-privacy': () => import('#pages/mp-page-privacy/mp-page-privacy.js'),
-      'mp-page-faq': () => import('#pages/mp-page-faq/mp-page-faq.js'),
     },
   });
 }
-
-// Shell component — eagerly loaded (child imports are co-located in each component)
-import '#organisms/mp-app/mp-app.js';
-
-// Search page components — eagerly loaded for SSR hydration of nested routes.
-import '#pages/mp-page-search/mp-page-search.js';
-import '#organisms/mp-product-grid/mp-product-grid.js';
 
 // Fallback: if hydration already completed before the listener, log now
 if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {

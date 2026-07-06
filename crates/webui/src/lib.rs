@@ -329,6 +329,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
                     &comp.tag_name,
                     &comp.html_content,
                     comp.css_content.as_deref(),
+                    comp.has_script,
                 )
                 .map_err(|e| {
                     WebUIError::ComponentRegistration(format!(
@@ -400,7 +401,6 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             ParserPluginArtifacts::None => Vec::new(),
             ParserPluginArtifacts::ComponentTemplates(templates) => templates,
         };
-
     // Build protocol (consumes parser)
     let mut fragment_records = parser.into_fragment_records();
     for fragment_id in synthetic_asset_fragments {
@@ -609,6 +609,72 @@ mod tests {
         assert!(result.stats.fragment_count > 0);
         assert!(result.stats.protocol_size_bytes > 0);
         assert!(!result.stats.duration.is_zero());
+    }
+
+    #[test]
+    fn test_build_marks_stateful_html_only_component_as_template_host() {
+        let app = create_app_dir(&[
+            ("index.html", "<demo-card></demo-card>"),
+            ("demo-card.html", "<p>{{name}}</p>"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        let result = build(options).unwrap();
+
+        assert!(result
+            .component_templates
+            .iter()
+            .any(|template| template.tag_name == "demo-card"
+                && template.template_json.contains(r#""th":1"#)));
+        assert!(result.protocol.components.contains_key("demo-card"));
+    }
+
+    #[test]
+    fn test_build_treats_sibling_component_script_as_scripted() {
+        let app = create_app_dir(&[
+            ("index.html", "<demo-card></demo-card>"),
+            (
+                "demo-card.html",
+                r#"<button @click="{onClick()}">{{name}}</button>"#,
+            ),
+            (
+                "demo-card.ts",
+                "import { WebUIElement } from '@microsoft/webui-framework';\n\
+                 class DemoCard extends WebUIElement { onClick() {} }\n\
+                 DemoCard.define('demo-card');",
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        let result = build(options).unwrap();
+
+        let template = result
+            .component_templates
+            .iter()
+            .find(|template| template.tag_name == "demo-card")
+            .unwrap();
+        assert!(!template.template_json.contains(r#""th":1"#));
+        assert!(template.template_json.contains(r#""eg":[["click""#));
+    }
+
+    #[test]
+    fn test_build_rejects_scriptless_event_component() {
+        let app = create_app_dir(&[
+            ("index.html", "<demo-card></demo-card>"),
+            (
+                "demo-card.html",
+                r#"<button @click="{onClick()}">Click</button>"#,
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        let err = build(options).expect_err("scriptless events should fail");
+
+        let message = err.chain_message();
+        assert!(
+            message.contains("scriptless-event-handler"),
+            "msg: {message}"
+        );
     }
 
     #[test]
@@ -1279,6 +1345,37 @@ mod tests {
         assert!(result.protocol.fragments.contains_key("index.html"));
         assert_eq!(result.css_files.len(), 1);
         assert!(result.css_files[0].1.contains("border"));
+    }
+
+    #[test]
+    fn test_build_with_scriptless_component_path_emits_static_host() {
+        let app = create_app_dir(&[("index.html", "<ext-card></ext-card>")]);
+        let ext_dir = TempDir::new().unwrap();
+        fs::write(ext_dir.path().join("ext-card.html"), "<p>{{title}}</p>").unwrap();
+
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.components = vec![ext_dir.path().to_string_lossy().to_string()];
+
+        let result = build(options).unwrap();
+        let template = &result.protocol.components["ext-card"].template_json;
+        assert!(template.contains(r#""th":1"#), "template: {template}");
+    }
+
+    #[test]
+    fn test_build_with_scripted_component_path_skips_static_host() {
+        let app = create_app_dir(&[("index.html", "<ext-card></ext-card>")]);
+        let ext_dir = TempDir::new().unwrap();
+        fs::write(ext_dir.path().join("ext-card.html"), "<p>{{title}}</p>").unwrap();
+        fs::write(ext_dir.path().join("ext-card.ts"), "export {};").unwrap();
+
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.components = vec![ext_dir.path().to_string_lossy().to_string()];
+
+        let result = build(options).unwrap();
+        let template = &result.protocol.components["ext-card"].template_json;
+        assert!(!template.contains(r#""th":1"#), "template: {template}");
     }
 
     #[test]

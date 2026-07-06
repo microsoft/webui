@@ -12,7 +12,7 @@
 //! router registers the JSON data directly and evaluates only the closures.
 //! Each metadata object contains
 //! **marker-free static HTML** plus locator arrays for client-created DOM
-//! (`tx`, `ag`, `c`/`r` slots) and semantic arrays (`a`, `c`, `r`, `e`,
+//! (`tx`, `ag`, `c`/`r` slots) and semantic arrays (`a`, `c`, `r`, `eg`,
 //! `re`, `b`). The client runtime resolves those locators once and then
 //! patches direct node references — **no template string parsing, no regex,
 //! no DOM scanning** on the client-created path.
@@ -26,7 +26,7 @@
 //!   "a": [["title", 0, "title"]],
 //!   "ag": [[[0], 0, 1]],
 //!   "c": [[[0, ["state"]], 0, [[0], 1]]],
-//!   "e": [["click", "onClick", [], [0]]],
+//!   "eg": [["click", [["onClick", [], [0]]]]],
 //!   "b": [{ "h": "<span class=\"check\">✓</span>" }],
 //!   "sa": "my-component",
 //!   "re": [["submit", "onSubmit", [["e"]]]]
@@ -63,7 +63,7 @@
 use super::{AttributeAction, ComponentTemplateArtifact, ParserPlugin, ParserPluginArtifacts};
 use crate::comment_policy;
 use crate::component_registry::Component;
-use crate::diagnostic::Diagnostic;
+use crate::diagnostic::{codes, Diagnostic};
 use crate::html_parser::{find_tag_close, style_element_bounds};
 use crate::{ConditionParser, DomStrategy, ParserOptions, Result};
 use std::cell::Cell;
@@ -77,6 +77,9 @@ struct TrackedComponent {
     tag_name: String,
     template_html: String,
     root_event_source: String,
+    /// Source fact from the component registry. Static-host metadata is derived
+    /// as `!has_script` only when the final template payload is emitted.
+    has_script: bool,
 }
 
 /// WebUI Framework parser plugin.
@@ -130,6 +133,7 @@ impl WebUIParserPlugin {
                 &c.template_html,
                 &c.root_event_source,
                 use_shadow,
+                !c.has_script,
             )?;
             out.push(ComponentTemplateArtifact::webui(
                 c.tag_name.clone(),
@@ -145,19 +149,21 @@ impl WebUIParserPlugin {
         tag_name: &str,
         template_html: &str,
         root_event_source: &str,
+        has_script: bool,
     ) {
         if let Some(component) = self.components.iter_mut().find(|c| c.tag_name == tag_name) {
             component.template_html.clear();
             component.template_html.push_str(template_html);
             component.root_event_source.clear();
             component.root_event_source.push_str(root_event_source);
+            component.has_script = has_script;
             return;
         }
-
         self.components.push(TrackedComponent {
             tag_name: tag_name.to_string(),
             template_html: template_html.to_string(),
             root_event_source: root_event_source.to_string(),
+            has_script,
         });
     }
 }
@@ -192,7 +198,12 @@ impl ParserPlugin for WebUIParserPlugin {
         component: &Component,
         processed_template: &str,
     ) -> Result<()> {
-        self.store_component_template(tag_name, processed_template, &component.html_content);
+        self.store_component_template(
+            tag_name,
+            processed_template,
+            &component.html_content,
+            component.has_script,
+        );
         Ok(())
     }
 
@@ -339,6 +350,27 @@ struct CompiledTemplatePayload {
     template_functions: String,
 }
 
+struct TemplateBuildMetadata {
+    roots: Vec<String>,
+    has_events: bool,
+}
+
+struct TemplatePayloadOptions<'a> {
+    adopted_stylesheet: Option<&'a str>,
+    shadow_dom: bool,
+    emit_static_host: bool,
+}
+
+struct RootScope<'a> {
+    name: &'a str,
+    parent: Option<usize>,
+}
+
+struct RootVisit<'a> {
+    block: &'a TemplateSectionMeta,
+    scope: Option<usize>,
+}
+
 struct ConditionFunctionEmitter {
     functions: String,
     count: usize,
@@ -398,7 +430,7 @@ impl ConditionFunctionEmitter {
 /// | `<for each="v in coll">body</for>`    | `r[]` + `rl[]` + `b[]`     | block removed; anchor slot stored |
 /// | `<link>` / `<style>` child nodes      | `h`                        | preserved in static HTML          |
 /// | module adopted stylesheet specifier   | `sa`                       | stored from `<template>` wrapper  |
-/// | `@event="{handler(e)}"`               | `e[]`                      | element kept marker-free          |
+/// | `@event="{handler(e)}"`               | `eg[]`                     | element kept marker-free          |
 /// | `w-ref="name"` / `w-ref={name}`       | *(stays in HTML)*          | *(unchanged)*                     |
 /// | `<outlet />` / `<outlet>`             | *(stays in HTML)*          | `<outlet></outlet>`               |
 ///
@@ -407,10 +439,14 @@ impl ConditionFunctionEmitter {
 /// Returns [`crate::ParserError::Template`] if the template contains an invalid
 /// `@event` handler or a non-braced `w-ref` binding.
 pub fn generate_compiled_template(tag_name: &str, html_content: &str) -> Result<String> {
-    Ok(
-        generate_compiled_template_with_root_source(tag_name, html_content, html_content, false)?
-            .template_json,
-    )
+    Ok(generate_compiled_template_with_root_source(
+        tag_name,
+        html_content,
+        html_content,
+        false,
+        false,
+    )?
+    .template_json)
 }
 
 fn generate_compiled_template_with_root_source(
@@ -418,25 +454,34 @@ fn generate_compiled_template_with_root_source(
     html_content: &str,
     root_event_source: &str,
     shadow_dom: bool,
+    emit_static_host: bool,
 ) -> Result<CompiledTemplatePayload> {
     let trimmed = html_content.trim();
     let root_events = extract_root_events(tag_name, root_event_source.trim())?;
     let adopted_stylesheet = extract_adopted_stylesheet_specifier(trimmed);
     let body = strip_template_wrapper(trimmed);
     let meta = compile_to_metadata(tag_name, body, root_events)?;
+    let build_meta = collect_template_build_metadata(&meta);
+    if emit_static_host && build_meta.has_events {
+        return Err(scriptless_component_events(tag_name).into());
+    }
     Ok(emit_compiled_template_payload(
         html_content,
         &meta,
-        adopted_stylesheet.as_deref(),
-        shadow_dom,
+        &build_meta,
+        TemplatePayloadOptions {
+            adopted_stylesheet: adopted_stylesheet.as_deref(),
+            shadow_dom,
+            emit_static_host,
+        },
     ))
 }
 
 fn emit_compiled_template_payload(
     html_content: &str,
     meta: &TemplateMeta,
-    adopted_stylesheet: Option<&str>,
-    shadow_dom: bool,
+    build_meta: &TemplateBuildMetadata,
+    options: TemplatePayloadOptions<'_>,
 ) -> CompiledTemplatePayload {
     let mut conditions = ConditionFunctionEmitter::new(128);
     let mut out = String::with_capacity(512 + html_content.len());
@@ -444,14 +489,18 @@ fn emit_compiled_template_payload(
 
     emit_json_template_section(&meta.root, &mut out, &mut conditions);
 
-    if let Some(adopted_stylesheet) = adopted_stylesheet {
+    if let Some(adopted_stylesheet) = options.adopted_stylesheet {
         out.push_str(",\"sa\":");
         emit_js_string(adopted_stylesheet, &mut out);
     }
 
     // sd: shadow DOM flag — tells the client runtime to use shadow root
-    if shadow_dom {
+    if options.shadow_dom {
         out.push_str(",\"sd\":1");
+    }
+
+    if options.emit_static_host && !build_meta.roots.is_empty() {
+        out.push_str(",\"th\":1");
     }
 
     // re: root events
@@ -468,6 +517,25 @@ fn emit_compiled_template_payload(
             out.push(',');
             emit_js_event_args(args, &mut out);
             out.push(']');
+        }
+        out.push(']');
+    }
+
+    if !build_meta.roots.is_empty() {
+        out.push_str(",\"tr\":[");
+        for (i, root) in build_meta.roots.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            emit_js_string(root, &mut out);
+        }
+        out.push_str("],\"ta\":[");
+        for (i, root) in build_meta.roots.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let attr = webui_protocol::attrs::camel_to_kebab(root);
+            emit_js_string(&attr, &mut out);
         }
         out.push(']');
     }
@@ -565,6 +633,70 @@ fn emit_js_event_args(args: &[EventArg], out: &mut String) {
     out.push(']');
 }
 
+fn event_args_use_event(args: &[EventArg]) -> bool {
+    for arg in args {
+        if matches!(arg, EventArg::Event) {
+            return true;
+        }
+    }
+    false
+}
+
+struct EventGroup<'a> {
+    event: &'a str,
+    bindings: Vec<usize>,
+}
+
+fn emit_js_event_groups(events: &[EventBinding], targets: &[Vec<usize>], out: &mut String) {
+    let groups = collect_event_groups(events);
+    out.push_str(",\"eg\":[");
+    for (group_index, group) in groups.iter().enumerate() {
+        if group_index > 0 {
+            out.push(',');
+        }
+        out.push('[');
+        emit_js_string(group.event, out);
+        out.push_str(",[");
+        for (binding_index, event_index) in group.bindings.iter().enumerate() {
+            if binding_index > 0 {
+                out.push(',');
+            }
+            let (_, handler, args) = &events[*event_index];
+            let target = &targets[*event_index];
+            out.push('[');
+            emit_js_string(handler, out);
+            out.push(',');
+            emit_js_event_args(args, out);
+            out.push(',');
+            emit_js_node_path(target, out);
+            if event_args_use_event(args) {
+                out.push_str(",1");
+            }
+            out.push(']');
+        }
+        out.push_str("]]");
+    }
+    out.push(']');
+}
+
+fn collect_event_groups(events: &[EventBinding]) -> Vec<EventGroup<'_>> {
+    let mut groups: Vec<EventGroup<'_>> = Vec::with_capacity(events.len());
+    let mut group_indices = std::collections::HashMap::<&str, usize>::with_capacity(events.len());
+    for (index, (event, _, _)) in events.iter().enumerate() {
+        let event_name = event.as_str();
+        if let Some(group_index) = group_indices.get(event_name).copied() {
+            groups[group_index].bindings.push(index);
+            continue;
+        }
+        group_indices.insert(event_name, groups.len());
+        groups.push(EventGroup {
+            event: event_name,
+            bindings: vec![index],
+        });
+    }
+    groups
+}
+
 fn emit_json_attr_binding(
     binding: &CompiledAttrBinding,
     out: &mut String,
@@ -607,6 +739,164 @@ fn emit_json_attr_binding(
         }
     }
     out.push(']');
+}
+
+fn collect_template_build_metadata(meta: &TemplateMeta) -> TemplateBuildMetadata {
+    let mut roots = Vec::new();
+    let mut scopes = Vec::<RootScope<'_>>::new();
+    let mut stack = Vec::with_capacity(1 + meta.blocks.len());
+    let mut has_events = !meta.root_events.is_empty();
+    stack.push(RootVisit {
+        block: &meta.root,
+        scope: None,
+    });
+
+    while let Some(visit) = stack.pop() {
+        let block = visit.block;
+        if !block.events.is_empty() {
+            has_events = true;
+        }
+
+        for (_, parts, _) in &block.text_runs {
+            add_part_roots(&mut roots, parts, &scopes, visit.scope);
+        }
+
+        for binding in &block.attr_bindings {
+            match binding {
+                CompiledAttrBinding::Simple { value, .. }
+                | CompiledAttrBinding::Complex { value, .. } => {
+                    add_root(&mut roots, value, &scopes, visit.scope);
+                }
+                CompiledAttrBinding::Boolean { condition, .. } => {
+                    add_condition_roots(&mut roots, condition, &scopes, visit.scope);
+                }
+                CompiledAttrBinding::Template { parts, .. } => {
+                    add_part_roots(&mut roots, parts, &scopes, visit.scope);
+                }
+            }
+        }
+
+        for (condition, block_index) in &block.conditionals {
+            add_condition_roots(&mut roots, condition, &scopes, visit.scope);
+            if let Some(child) = meta.blocks.get(*block_index) {
+                stack.push(RootVisit {
+                    block: child,
+                    scope: visit.scope,
+                });
+            }
+        }
+
+        for (collection, item_var, block_index) in &block.repeats {
+            add_root(&mut roots, collection, &scopes, visit.scope);
+            if let Some(child) = meta.blocks.get(*block_index) {
+                let scope = scopes.len();
+                scopes.push(RootScope {
+                    name: item_var,
+                    parent: visit.scope,
+                });
+                stack.push(RootVisit {
+                    block: child,
+                    scope: Some(scope),
+                });
+            }
+        }
+    }
+
+    TemplateBuildMetadata { roots, has_events }
+}
+
+fn path_root(path: &str) -> &str {
+    match path.find('.') {
+        Some(dot) => &path[..dot],
+        None => path,
+    }
+}
+
+fn is_scoped_path(path: &str, scopes: &[RootScope<'_>], scope: Option<usize>) -> bool {
+    let root = path_root(path);
+    let mut current = scope;
+    while let Some(index) = current {
+        let Some(frame) = scopes.get(index) else {
+            return false;
+        };
+        if frame.name == root {
+            return true;
+        }
+        current = frame.parent;
+    }
+    false
+}
+
+fn add_root(roots: &mut Vec<String>, path: &str, scopes: &[RootScope<'_>], scope: Option<usize>) {
+    if path.is_empty() || is_scoped_path(path, scopes, scope) {
+        return;
+    }
+    let root = path_root(path);
+    if roots.iter().any(|existing| existing == root) {
+        return;
+    }
+    roots.push(root.to_string());
+}
+
+fn add_part_roots(
+    roots: &mut Vec<String>,
+    parts: &[CompiledAttrPart],
+    scopes: &[RootScope<'_>],
+    scope: Option<usize>,
+) {
+    for part in parts {
+        if let CompiledAttrPart::Dynamic(path) = part {
+            add_root(roots, path, scopes, scope);
+        }
+    }
+}
+
+fn is_condition_literal(value: &str) -> bool {
+    (value.starts_with('"') && value.ends_with('"'))
+        || (value.starts_with('\'') && value.ends_with('\''))
+        || value == "true"
+        || value == "false"
+        || (!value.is_empty()
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b == b'.' || b == b'-'))
+}
+
+fn add_condition_roots(
+    roots: &mut Vec<String>,
+    condition: &ConditionExpr,
+    scopes: &[RootScope<'_>],
+    scope: Option<usize>,
+) {
+    let mut stack = Vec::with_capacity(1);
+    stack.push(condition);
+    while let Some(current) = stack.pop() {
+        match &current.expr {
+            Some(condition_expr::Expr::Identifier(id)) => {
+                add_root(roots, &id.value, scopes, scope);
+            }
+            Some(condition_expr::Expr::Predicate(pred)) => {
+                add_root(roots, &pred.left, scopes, scope);
+                if !is_condition_literal(&pred.right) {
+                    add_root(roots, &pred.right, scopes, scope);
+                }
+            }
+            Some(condition_expr::Expr::Not(not_cond)) => {
+                if let Some(inner) = not_cond.condition.as_ref() {
+                    stack.push(inner);
+                }
+            }
+            Some(condition_expr::Expr::Compound(compound)) => {
+                if let Some(left) = compound.left.as_ref() {
+                    stack.push(left);
+                }
+                if let Some(right) = compound.right.as_ref() {
+                    stack.push(right);
+                }
+            }
+            None => {}
+        }
+    }
 }
 
 /// Emit a compiled condition function as `function(v,s){return EXPR}`.
@@ -908,27 +1198,7 @@ fn emit_json_template_section(
     }
 
     if !meta.events.is_empty() {
-        out.push_str(",\"e\":[");
-        for (i, ((event, handler, args), target)) in meta
-            .events
-            .iter()
-            .zip(meta.event_targets.iter())
-            .enumerate()
-        {
-            if i > 0 {
-                out.push(',');
-            }
-            out.push('[');
-            emit_js_string(event, out);
-            out.push(',');
-            emit_js_string(handler, out);
-            out.push(',');
-            emit_js_event_args(args, out);
-            out.push(',');
-            emit_js_node_path(target, out);
-            out.push(']');
-        }
-        out.push(']');
+        emit_js_event_groups(&meta.events, &meta.event_targets, out);
     }
 }
 
@@ -946,7 +1216,7 @@ fn emit_json_template_section(
 /// - **`<if condition="…">`** — parsed via [`parse_if_block`] → conditional slot.
 /// - **`<for each="v in coll">`** — parsed via [`parse_for_block`] → repeat slot.
 /// - **`<outlet …>`** — normalized to `<outlet></outlet>`.
-/// - **`@event="…"`** (inside a tag) — parsed into `e[]` entries plus
+/// - **`@event="…"`** (inside a tag) — parsed into grouped `eg[]` entries plus
 ///   SSR `data-ev="COUNT"` markers that are later replaced by client locators.
 /// - **Everything else** — copied verbatim to the intermediate static HTML.
 ///
@@ -2075,6 +2345,17 @@ fn invalid_event_handler(
     diag
 }
 
+#[cold]
+#[inline(never)]
+fn scriptless_component_events(component: &str) -> Diagnostic {
+    Diagnostic::error("scriptless component contains event bindings")
+        .code(codes::SCRIPTLESS_EVENT_HANDLER)
+        .component(component)
+        .help(
+            "add a .ts or .js file that defines a WebUIElement for this tag, or remove the @event binding",
+        )
+}
+
 /// Parse `@event="{handler()}"` or `@event={handler()}` into event metadata.
 ///
 /// Supports three value quoting styles:
@@ -2681,6 +2962,7 @@ mod tests {
             html_content,
             html_content,
             false,
+            false,
         )
         .expect("valid template compiles")
     }
@@ -2726,6 +3008,26 @@ mod tests {
         assert!(result.contains("\"title\""));
         assert!(result.contains(r#","tx":[[[[0],0],[["title"]]]]"#));
         assert!(!result.contains("{{"));
+    }
+
+    #[test]
+    fn test_metadata_emits_template_roots_and_observed_attrs() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<h1>{{displayValue}}</h1><input ?readonly="{{readOnly}}" />"#,
+        );
+
+        assert!(result.contains(r#","tr":["displayValue","readOnly"]"#));
+        assert!(result.contains(r#","ta":["display-value","readonly"]"#));
+    }
+
+    #[test]
+    fn test_metadata_excludes_repeat_scope_roots() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><p>{{item.title}} {{heading}}</p></for>"#,
+        );
+        assert!(result.contains(r#","tr":["items","heading"]"#));
     }
 
     #[test]
@@ -3100,11 +3402,9 @@ mod tests {
             tag_name: "test-el".to_string(),
             html_content: "<p>hi</p>".to_string(),
             css_content: None,
-            css_tokens: Vec::new(),
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
+            has_script: false,
         };
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
@@ -3113,6 +3413,77 @@ mod tests {
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();
         assert_eq!(plugin.take_component_templates().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_scriptless_stateful_component_template_is_static_host_marked() {
+        let mut plugin = WebUIParserPlugin::new();
+        let mut comp = Component {
+            tag_name: "test-el".to_string(),
+            html_content: "<p>{{name}}</p>".to_string(),
+            css_content: None,
+            css_definitions: Vec::new(),
+            css_fallback_chains: Vec::new(),
+            has_script: false,
+        };
+
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        assert!(templates[0].template_json.contains(r#","th":1"#));
+
+        comp.has_script = true;
+        let mut plugin = WebUIParserPlugin::new();
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        assert!(!templates[0].template_json.contains(r#","th":1"#));
+    }
+
+    #[test]
+    fn test_scriptless_static_component_template_is_not_static_host_marked() {
+        let mut plugin = WebUIParserPlugin::new();
+        let comp = Component {
+            tag_name: "test-el".to_string(),
+            html_content: "<p>hi</p>".to_string(),
+            css_content: None,
+            css_definitions: Vec::new(),
+            css_fallback_chains: Vec::new(),
+            has_script: false,
+        };
+
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        assert!(!templates[0].template_json.contains(r#","th":1"#));
+    }
+
+    #[test]
+    fn test_scriptless_event_component_template_fails() {
+        let mut plugin = WebUIParserPlugin::new();
+        let comp = Component {
+            tag_name: "test-el".to_string(),
+            html_content: r#"<button @click="{onClick()}">{{name}}</button>"#.to_string(),
+            css_content: None,
+            css_definitions: Vec::new(),
+            css_fallback_chains: Vec::new(),
+            has_script: false,
+        };
+
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let err = plugin
+            .take_component_templates()
+            .expect_err("scriptless event templates should fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("scriptless-event-handler"),
+            "msg: {message}"
+        );
     }
 
     #[test]
@@ -3153,11 +3524,9 @@ mod tests {
             tag_name: "test-el".to_string(),
             html_content: "<p>hi</p>".to_string(),
             css_content: Some(".root { color: red; }".to_string()),
-            css_tokens: Vec::new(),
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
+            has_script: true,
         };
 
         plugin
@@ -3186,11 +3555,9 @@ mod tests {
                 r#"<template shadowrootmode="open" @click="{onClick(e)}"><p>hi</p></template>"#
                     .to_string(),
             css_content: Some(".root { color: red; }".to_string()),
-            css_tokens: Vec::new(),
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
+            has_script: true,
         };
 
         plugin
@@ -3215,11 +3582,9 @@ mod tests {
             tag_name: "test-el".to_string(),
             html_content: "<p>hi</p>".to_string(),
             css_content: Some(".root { color: red; }".to_string()),
-            css_tokens: Vec::new(),
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
-            source_path: std::path::PathBuf::new(),
-            class_name: None,
+            has_script: false,
         };
 
         plugin
@@ -3345,7 +3710,7 @@ mod tests {
         assert!(!result.contains(r#","tx":"#), "no text bindings");
         assert!(!result.contains(r#","c":"#), "no conditionals");
         assert!(!result.contains(r#","r":"#), "no repeats");
-        assert!(!result.contains(r#","e":"#), "no events");
+        assert!(!result.contains(r#","eg":"#), "no events");
         assert!(!result.contains(r#","re":"#), "no root events");
     }
 
@@ -3434,8 +3799,27 @@ mod tests {
         let result =
             generate_compiled_template("my-comp", r#"<button @click="{onClick()}">Go</button>"#);
         assert!(
-            result.contains(r#"["click","onClick",[],[0]]"#),
+            result.contains(r#"["click",[["onClick",[],[0]]]]"#),
             "empty argument list should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_event_groups_preserve_first_seen_order() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<button @click="{onA()}"></button><a @mouseover="{onHover()}"></a><button @click="{onB(e)}"></button>"#,
+        );
+
+        let click_pos = result.find(r#"["click","#).unwrap();
+        let hover_pos = result.find(r#"["mouseover","#).unwrap();
+        assert!(
+            click_pos < hover_pos,
+            "event groups should preserve first-seen order: {result}"
+        );
+        assert!(
+            result.contains(r#"["click",[["onA",[],[0]],["onB",[["e"]],[2],1]]]"#),
+            "duplicate click handlers should share one group: {result}"
         );
     }
 

@@ -38,14 +38,15 @@ import {
   WebUIRouteElement,
 } from './route-element.js';
 
-import { NavigationCache } from './cache.js';
 import type { PartialResponse, RouteChainEntry } from './cache.js';
-import { registerTemplatesAndStyles, injectCssLinks, fetchComponentTemplates } from './templates.js';
-import { readStreamingPartial, applyDeferredStates } from './streaming.js';
+import type { PendingState } from './pending.js';
+import {
+  registerTemplatesAndStyles,
+  injectCssLinks,
+  fetchComponentTemplates,
+  notifyTemplatesRegistered,
+} from './templates.js';
 import type { StreamingContext } from './streaming.js';
-import { setupFormInterception } from './actions.js';
-import { PendingState, findPendingComponent, findErrorComponent } from './pending.js';
-import { setupPreloadListeners } from './preload.js';
 import { ensureComponentLoaded, resolveLoaders, LOADER_FAILED } from './loaders.js';
 import { buildChainFromSSR, findChangeLevel, findOrCreateRouteElement } from './chain.js';
 
@@ -69,12 +70,16 @@ export class WebUIRouter {
   private stylesSet = new Set<string>();
   private navGeneration = 0;
   private currentRequestPath = '/';
-  private navCache!: NavigationCache;
+  private navCache: import('./cache.js').NavigationCache | null = null;
+  private navCacheLoad: Promise<import('./cache.js').NavigationCache> | null = null;
+  private cacheLoadGeneration = 0;
+  private cacheEnabled = false;
   private cacheConfig: Required<CacheConfig> = { staleTime: 0, gcTime: 300_000, maxEntries: 50 };
   private actionController: AbortController | null = null;
   private deferredReader: Promise<void> | null = null;
   private deferredGeneration = 0;
-  private pending = new PendingState();
+  private pending: PendingState | null = null;
+  private pendingTimer: ReturnType<typeof setTimeout> | null = null;
   private excludePaths: string[] = [];
   private loadPromises = new Map<string, Promise<void>>();
   private ssrPreloadsCleared = false;
@@ -83,6 +88,30 @@ export class WebUIRouter {
   get activeComponent(): string {
     const leaf = this.activeChain[this.activeChain.length - 1];
     return leaf?.component ?? '';
+  }
+
+  private async pendingState(): Promise<PendingState> {
+    if (this.pending) return this.pending;
+    const { PendingState } = await import('./pending.js');
+    this.pending = new PendingState();
+    return this.pending;
+  }
+
+  private clearPendingTimer(): void {
+    if (this.pendingTimer) {
+      clearTimeout(this.pendingTimer);
+      this.pendingTimer = null;
+    }
+  }
+
+  private clearPendingElements(): void {
+    this.pending?.clearElements();
+  }
+
+  private destroyPending(): void {
+    this.clearPendingTimer();
+    this.pending?.destroy();
+    this.pending = null;
   }
 
   /** The bound params of the currently active leaf route. */
@@ -99,6 +128,7 @@ export class WebUIRouter {
     this.loaders = config.loaders ?? {};
     this.basePath = document.querySelector('base')?.getAttribute('href')?.replace(/\/+$/, '') ?? '';
     this.excludePaths = config.excludePaths ?? [];
+    this.cacheEnabled = config.cache !== undefined || config.preload === true;
 
     if (config.cache) {
       this.cacheConfig = {
@@ -107,7 +137,7 @@ export class WebUIRouter {
         maxEntries: config.cache.maxEntries ?? 50,
       };
     }
-    this.navCache = new NavigationCache(this.cacheConfig);
+    if (this.cacheEnabled) void this.ensureNavigationCache();
 
     if (!customElements.get(ROUTE_SELECTOR)) {
       customElements.define(ROUTE_SELECTOR, WebUIRouteElement);
@@ -158,27 +188,48 @@ export class WebUIRouter {
 
     if (config.preload) {
       const self = this;
-      const cleanup = setupPreloadListeners({
-        basePath: this.basePath,
-        excludePaths: this.excludePaths,
-        get currentRequestPath() { return self.currentRequestPath; },
-        get inventory() { return window.__webui!.inventory!; },
-        hasCache: (p) => this.navCache.has(p),
-        storeCache: (p, d, pre) => this.navCache.store(p, d, pre),
-        fetchPartial: (p, s, spec) => this.fetchPartial(p, s, spec),
+      let cleanup: (() => void) | undefined;
+      let cancelled = false;
+      this.cleanupFns.push(() => {
+        cancelled = true;
+        cleanup?.();
       });
-      this.cleanupFns.push(cleanup);
+      void Promise.all([this.ensureNavigationCache(), import('./preload.js')]).then(([cache, { setupPreloadListeners }]) => {
+        if (cancelled || !this.started) return;
+        cleanup = setupPreloadListeners({
+          basePath: this.basePath,
+          excludePaths: this.excludePaths,
+          get currentRequestPath() { return self.currentRequestPath; },
+          get inventory() { return window.__webui!.inventory!; },
+          hasCache: (p) => cache.has(p),
+          storeCache: (p, d, pre) => cache.store(p, d, pre),
+          fetchPartial: (p, s, spec) => this.fetchPartial(p, s, spec),
+        });
+        if (cancelled) cleanup();
+      });
     }
 
-    const selfAction = this;
-    this.cleanupFns.push(setupFormInterception({
-      get activeChain() { return selfAction.activeChain; },
-      get currentRequestPath() { return selfAction.currentRequestPath; },
-      setActionController: (c) => { this.actionController = c; },
-      invalidateTags: (tags) => this.invalidateTags(tags),
-    }));
+    if (config.actions) {
+      const selfAction = this;
+      let cleanup: (() => void) | undefined;
+      let cancelled = false;
+      this.cleanupFns.push(() => {
+        cancelled = true;
+        cleanup?.();
+      });
+      void import('./actions.js').then(({ setupFormInterception }) => {
+        if (cancelled || !this.started) return;
+        cleanup = setupFormInterception({
+          get activeChain() { return selfAction.activeChain; },
+          get currentRequestPath() { return selfAction.currentRequestPath; },
+          setActionController: (c) => { this.actionController = c; },
+          invalidateTags: (tags) => this.invalidateTags(tags),
+        });
+        if (cancelled) cleanup();
+      });
+    }
 
-    this.handleNavigation(this.currentTarget());
+    this.startInitialNavigation(meta.templates);
   }
 
   /** Navigate to a new path. */
@@ -194,12 +245,12 @@ export class WebUIRouter {
 
   /** Invalidate all cache entries whose tags overlap with the given tags. */
   invalidateTags(tags: string[]): void {
-    this.navCache.invalidateTags(tags);
+    this.navCache?.invalidateTags(tags);
   }
 
   /** Invalidate cache entries by path, or all entries if no path is given. */
   invalidate(path?: string): void {
-    this.navCache.invalidate(path);
+    this.navCache?.invalidate(path);
   }
 
   /**
@@ -270,10 +321,15 @@ export class WebUIRouter {
     this.stylesSet.clear();
 
     this.currentRequestPath = '/';
-    this.navCache.clear();
+    this.navCache?.clear();
+    this.navCache = null;
+    this.navCacheLoad = null;
+    this.cacheLoadGeneration += 1;
+    this.cacheEnabled = false;
+    this.cacheConfig = { staleTime: 0, gcTime: 300_000, maxEntries: 50 };
     this.actionController?.abort();
     this.actionController = null;
-    this.pending.destroy();
+    this.destroyPending();
     this.deferredReader = null;
   }
 
@@ -324,29 +380,35 @@ export class WebUIRouter {
       this.clearSsrPreloads();
       this.actionController?.abort();
       this.actionController = null;
-      this.pending.clearElements();
-      this.navCache.gc();
+      this.clearPendingElements();
       const thisGen = ++this.navGeneration;
+      const navCache = this.cacheEnabled ? await this.ensureNavigationCache() : null;
+      if (thisGen !== this.navGeneration) return;
+      navCache?.gc();
 
       let partialData: (PartialResponse & { inventory?: string }) | null = null;
-      const cached = this.navCache.lookup(requestPath);
+      const cached = navCache?.lookup(requestPath) ?? null;
       if (cached) {
         partialData = cached;
       } else {
         const pendingTag = findPendingComponent(this.activeChain, requestPath);
         if (pendingTag) {
-          this.pending.pendingTimer = setTimeout(() => {
-            this.pending.mountPending(pendingTag, this.activeChain);
+          this.pendingTimer = setTimeout(() => {
+            this.pendingTimer = null;
+            void this.pendingState().then((pending) => {
+              if (thisGen === this.navGeneration) pending.mountPending(pendingTag, this.activeChain);
+            });
           }, 150);
         }
 
         partialData = await this.fetchPartial(requestPath, signal);
-        this.pending.clearTimer();
+        this.clearPendingTimer();
 
         if (!partialData && !signal?.aborted && thisGen === this.navGeneration) {
           const errorTag = findErrorComponent(this.activeChain, requestPath);
           if (errorTag) {
-            this.pending.mountError(errorTag, {
+            const pending = await this.pendingState();
+            pending.mountError(errorTag, {
               error: 'Navigation failed',
               status: 0,
               path: requestPath,
@@ -370,13 +432,14 @@ export class WebUIRouter {
 
       if (!cached) {
         const isStreaming = this.deferredReader !== null && this.deferredGeneration === thisGen;
-        this.navCache.store(requestPath, partialData, undefined, isStreaming);
+        navCache?.store(requestPath, partialData, undefined, isStreaming);
       }
 
       await this.commitWithData(partialData, requestPath, query, signal, thisGen);
 
       const deferredStates = (partialData as any)._deferredStates;
       if (deferredStates) {
+        const { applyDeferredStates } = await import('./streaming.js');
         applyDeferredStates(deferredStates, requestPath, this.streamingContext());
       }
     }
@@ -414,12 +477,19 @@ export class WebUIRouter {
     }
 
     if (contentType.includes('ndjson') && resp.body) {
-      return readStreamingPartial(resp, requestPath, this.streamingContext(), signal, speculative);
+      const { readStreamingPartial } = await import('./streaming.js');
+      return readStreamingPartial(resp, requestPath, this.streamingContext(), signal);
     }
 
     const data = await resp.json() as PartialResponse & { inventory?: string };
     if (signal?.aborted) return null;
-    registerTemplatesAndStyles(data, window.__webui!.nonce!, this.stylesSet, (inv) => this.updateInventory(inv));
+    registerTemplatesAndStyles(
+      data,
+      window.__webui!.nonce!,
+      this.stylesSet,
+      (inv) => this.updateInventory(inv),
+    );
+    if (signal?.aborted) return null;
     injectCssLinks(data, this.cssSet);
     return data;
   }
@@ -488,10 +558,26 @@ export class WebUIRouter {
       setDeferredGeneration(g) { self.deferredGeneration = g; },
       updateInventory(inv) { self.updateInventory(inv); },
       markCacheComplete(p) {
-        const entry = self.navCache.getEntry(p);
+        const entry = self.navCache?.getEntry(p);
         if (entry) entry.complete = true;
       },
     };
+  }
+
+  private ensureNavigationCache(): Promise<import('./cache.js').NavigationCache> {
+    if (this.navCache) return Promise.resolve(this.navCache);
+    if (!this.navCacheLoad) {
+      const config = this.cacheConfig;
+      const generation = this.cacheLoadGeneration;
+      this.navCacheLoad = import('./cache.js').then(({ NavigationCache }) => {
+        const cache = new NavigationCache(config);
+        if (generation === this.cacheLoadGeneration) {
+          this.navCache = cache;
+        }
+        return cache;
+      });
+    }
+    return this.navCacheLoad;
   }
 
   private validateRoutes(): void {
@@ -536,6 +622,11 @@ export class WebUIRouter {
 
   private updateInventory(serverInventory: string): void {
     window.__webui!.inventory = serverInventory;
+  }
+
+  private startInitialNavigation(templates: Record<string, unknown>): void {
+    notifyTemplatesRegistered(templates);
+    this.handleNavigation(this.currentTarget());
   }
 
   // ── Commit ─────────────────────────────────────────────────────
@@ -693,3 +784,45 @@ function loadWebUIDataBlock(): void {
 
 /** Singleton router instance. */
 export const Router = new WebUIRouter();
+
+function findPendingComponent(
+  activeChain: RouteChainEntry[],
+  _requestPath: string,
+): string | null {
+  for (let i = activeChain.length - 1; i >= 0; i--) {
+    if (activeChain[i].pendingComponent) return activeChain[i].pendingComponent!;
+  }
+  const leaf = activeChain[activeChain.length - 1];
+  if (leaf?.el) {
+    const compEl = leaf.compEl ?? leaf.el.querySelector(leaf.component);
+    if (compEl) {
+      const root = (compEl as HTMLElement).shadowRoot ?? compEl;
+      for (const el of root.querySelectorAll(ROUTE_SELECTOR)) {
+        const pending = el.getAttribute('pending');
+        if (pending) return pending;
+      }
+    }
+  }
+  return null;
+}
+
+function findErrorComponent(
+  activeChain: RouteChainEntry[],
+  _requestPath: string,
+): string | null {
+  for (let i = activeChain.length - 1; i >= 0; i--) {
+    if (activeChain[i].errorComponent) return activeChain[i].errorComponent!;
+  }
+  const leaf = activeChain[activeChain.length - 1];
+  if (leaf?.el) {
+    const compEl = leaf.compEl ?? leaf.el.querySelector(leaf.component);
+    if (compEl) {
+      const root = (compEl as HTMLElement).shadowRoot ?? compEl;
+      for (const el of root.querySelectorAll(ROUTE_SELECTOR)) {
+        const error = el.getAttribute('error');
+        if (error) return error;
+      }
+    }
+  }
+  return null;
+}
