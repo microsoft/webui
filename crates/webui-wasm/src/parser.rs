@@ -42,14 +42,12 @@ fn register_components(
             if tag_name.contains('-') {
                 let css_key = format!("{tag_name}.css");
                 let css = files.get(&css_key).map(String::as_str);
-                parser
-                    .component_registry_mut()
-                    .register_component_with_script(
-                        tag_name,
-                        content,
-                        css,
-                        has_script(files, tag_name),
-                    )?;
+                parser.component_registry_mut().register_component(
+                    tag_name,
+                    content,
+                    css,
+                    has_script(files, tag_name),
+                )?;
             }
         }
     }

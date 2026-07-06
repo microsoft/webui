@@ -325,7 +325,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         for comp in &result.components {
             parser
                 .component_registry_mut()
-                .register_component_with_script(
+                .register_component(
                     &comp.tag_name,
                     &comp.html_content,
                     comp.css_content.as_deref(),

@@ -935,7 +935,7 @@ pub struct Component {
 
 #### Registration Methods
 ```rust
-pub fn register_component(&mut self, name: &str, html: &str, css: Option<&str>) -> Result<(), ParserError>
+pub fn register_component(&mut self, name: &str, html: &str, css: Option<&str>, has_script: bool) -> Result<(), ParserError>
 pub fn register_directory(&mut self, directory: &Path) -> Result<(), ParserError>
 pub fn contains(&self, name: &str) -> bool
 pub fn get(&self, name: &str) -> Option<&Component>
