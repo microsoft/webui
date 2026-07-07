@@ -82,6 +82,11 @@ import type {
   TemplateInstance,
   TextBinding,
 } from './element/types.js';
+import {
+  bindingsDisagreeWithDom,
+  warnHydrationMismatch,
+  type MismatchContext,
+} from './hydration-mismatch.js';
 
 // ── Caches ──────────────────────────────────────────────────────
 
@@ -650,17 +655,10 @@ export class TemplateElement extends HTMLElement {
   // A reactive write that runs while the element is connected but before
   // hydration finishes (constructor, `@observable` field initializer, or
   // before `super.connectedCallback()`) is dropped by `$update`'s pre-ready
-  // guard: the backing field changes, but the SSR DOM is trusted and left
-  // untouched. That leaves the element's own observable disagreeing with its
-  // DOM — silently, and inconsistently with client-side rendering.
-  //
-  // The framework does not reconcile trusted SSR content here: patching the
-  // DOM would only repair the post-hydration state while leaving the first
-  // server paint wrong, and it would erode the SSR-trust invariant (#286).
-  // Instead it records the pre-ready writes and, once hydrated, reports any
-  // that disagree with the server-rendered DOM — the same hydration-mismatch
-  // signal React, Vue, Svelte, and Solid emit. The check is read-only and
-  // runs only when a connected pre-ready write was recorded.
+  // guard. Record such writes and, once hydrated, report any that disagree
+  // with the trusted SSR DOM. The read-only comparison lives in
+  // `hydration-mismatch.ts` (see that module for the full rationale); this
+  // class only records the writes and supplies a resolver context.
 
   private $recordPreReadyWrite(path: string): void {
     if (!this.$preReadyWrites) this.$preReadyWrites = new Set();
@@ -672,80 +670,21 @@ export class TemplateElement extends HTMLElement {
     this.$preReadyWrites = null;
     if (!writes || writes.size === 0 || !this.$root) return;
     if (!this.$pathIndex) this.$buildPathIndex();
+    const index = this.$pathIndex;
+    if (!index) return;
+    const ctx: MismatchContext = {
+      resolver: this.$resolver,
+      resolveParts: (parts, scope) => this.$resolveParts(parts, scope),
+      resolveValue: (path, scope) => this.$resolveValue(path, scope),
+    };
     const mismatched: string[] = [];
     for (const path of writes) {
-      const entry = this.$pathIndex?.get(path);
-      if (entry && this.$bindingsDisagreeWithDom(entry)) mismatched.push(path);
+      const entry = index.get(path);
+      if (entry && bindingsDisagreeWithDom(entry, ctx)) mismatched.push(path);
     }
-    if (mismatched.length !== 0) this.$warnHydrationMismatch(mismatched);
-  }
-
-  private $bindingsDisagreeWithDom(entry: {
-    texts: TextBinding[]; attrs: AttrBinding[];
-    conds: CondBinding[]; repeats: RepeatBinding[];
-  }): boolean {
-    const { texts, attrs, conds, repeats } = entry;
-    for (let i = 0; i < texts.length; i++) if (this.$textDiffersFromDom(texts[i])) return true;
-    for (let i = 0; i < attrs.length; i++) if (this.$attrDiffersFromDom(attrs[i])) return true;
-    for (let i = 0; i < conds.length; i++) if (this.$condDiffersFromDom(conds[i])) return true;
-    for (let i = 0; i < repeats.length; i++) if (this.$repeatDiffersFromDom(repeats[i])) return true;
-    return false;
-  }
-
-  private $textDiffersFromDom(b: TextBinding): boolean {
-    let expected: string;
-    if (b.parts) {
-      expected = this.$resolveParts(b.parts, b.scope);
-    } else if (b.path) {
-      const raw = this.$resolveValue(b.path, b.scope);
-      expected = raw == null ? '' : String(raw);
-    } else {
-      return false;
+    if (mismatched.length !== 0) {
+      warnHydrationMismatch(this.tagName.toLowerCase(), mismatched);
     }
-    const actual = b.raw && b.rawParent ? b.rawParent.innerHTML : b.node.data;
-    return actual !== expected;
-  }
-
-  private $attrDiffersFromDom(b: AttrBinding): boolean {
-    const el = b.element;
-    switch (b.kind) {
-      // Complex `:prop` bindings carry parent-delayed object data that a child
-      // legitimately hydrates before the parent sets it — SSR is trusted (#286).
-      case ATTR_KIND_COMPLEX:
-        return false;
-      case ATTR_KIND_BOOLEAN:
-        return el.hasAttribute(b.name) !== !!b.condition![0](this.$resolver, b.scope);
-      case ATTR_KIND_TEMPLATE:
-        return (el.getAttribute(b.name) ?? '') !== this.$resolveParts(b.parts!, b.scope);
-      default: {
-        // Form-control properties diverge from their attribute after user
-        // interaction, so an attribute comparison would be misleading.
-        if (b.name === 'value' || b.name === 'checked' || b.name === 'selected') return false;
-        const v = this.$resolveValue(b.path!, b.scope);
-        return (el.getAttribute(b.name) ?? '') !== (v == null ? '' : String(v));
-      }
-    }
-  }
-
-  private $condDiffersFromDom(c: CondBinding): boolean {
-    return (c.instance != null) !== !!c.condition[0](this.$resolver, c.scope);
-  }
-
-  private $repeatDiffersFromDom(r: RepeatBinding): boolean {
-    const resolved = this.$resolveValue(r.collection, r.scope);
-    const expectedLength = Array.isArray(resolved) ? resolved.length : 0;
-    return expectedLength !== r.instances.length;
-  }
-
-  private $warnHydrationMismatch(paths: string[]): void {
-    const list = paths.map((p) => `"${p}"`).join(', ');
-    console.warn(
-      `[WebUI] Hydration mismatch on <${this.tagName.toLowerCase()}>: ` +
-      `${list} changed at or before super.connectedCallback() to a value that ` +
-      `differs from the server-rendered DOM. The DOM keeps the server value ` +
-      `(SSR content is trusted), so the element's state and DOM disagree. ` +
-      `Add the value to the SSR state, or assign it after super.connectedCallback().`,
-    );
   }
 
   // ── DOM resolution: client-created path ───────────────────────
