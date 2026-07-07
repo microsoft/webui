@@ -363,8 +363,28 @@ pub(crate) struct BundleOptions<'a> {
     pub(crate) content_dir: &'a Path,
 }
 
+/// Convert a filesystem path to a forward-slash string for use as an ES module
+/// specifier or esbuild argument.
+///
+/// On Windows, [`Path::canonicalize`] returns verbatim (`\\?\`-prefixed) paths.
+/// Emitting one as-is normalizes to `//?/C:/…`, which neither esbuild nor the
+/// browser can resolve, so bundled component scripts silently fail to load and
+/// custom elements never register. Strip the verbatim prefix first so esbuild
+/// resolves and inlines the entry exactly as it does with clean Unix paths. On
+/// non-Windows paths (no verbatim prefix) this is a plain separator swap.
 fn path_for_js(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    let raw = path.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        // `\\?\UNC\server\share\…` denotes the UNC path `\\server\share\…`.
+        let mut out = String::with_capacity(rest.len() + 2);
+        out.push_str("//");
+        for ch in rest.chars() {
+            out.push(if ch == '\\' { '/' } else { ch });
+        }
+        return out;
+    }
+    let body = raw.strip_prefix(r"\\?\").unwrap_or(raw.as_ref());
+    body.replace('\\', "/")
 }
 
 fn push_import_once(entry: &mut String, imports: &mut HashSet<String>, specifier: &str) {
@@ -1524,6 +1544,25 @@ mod tests {
 
     fn test_hash(s: &str) -> u64 {
         fxhash_bytes(s.as_bytes())
+    }
+
+    #[test]
+    fn path_for_js_strips_windows_verbatim_prefix() {
+        // `canonicalize()` on Windows yields `\\?\`-prefixed verbatim paths.
+        // Left intact they normalize to `//?/C:/…`, which esbuild and browsers
+        // cannot resolve, so component scripts never load. These are pure
+        // string transforms and assert identically on every platform.
+        assert_eq!(
+            path_for_js(Path::new(r"\\?\C:\tmp\webui-press\template\index.ts")),
+            "C:/tmp/webui-press/template/index.ts"
+        );
+        assert_eq!(
+            path_for_js(Path::new(r"\\?\UNC\server\share\index.ts")),
+            "//server/share/index.ts"
+        );
+        // Plain paths (no verbatim prefix) keep their existing behavior.
+        assert_eq!(path_for_js(Path::new(r"C:\a\b.ts")), "C:/a/b.ts");
+        assert_eq!(path_for_js(Path::new("/tmp/a/b.ts")), "/tmp/a/b.ts");
     }
 
     #[test]
