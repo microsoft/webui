@@ -519,6 +519,41 @@ The framework detects the existing Declarative Shadow DOM roots and upgrades ele
 
 From this point on, interactions are handled entirely on the client. Changes to `@observable` properties trigger targeted DOM updates without a server round-trip.
 
+### Setting observable state during setup
+
+The server owns the first paint, and the framework **trusts** the HTML it produced — hydration wires bindings to the existing DOM instead of re-rendering it. A value you write *before hydration finishes* — in an `@observable` field initializer, the `constructor`, or before you call `super.connectedCallback()` — updates the property's backing field but cannot touch the DOM yet, so it is dropped. Your element's state then silently disagrees with what is on screen.
+
+When the framework detects this it logs a development warning naming the properties, so the mismatch is never silent:
+
+```
+[WebUI] Hydration mismatch on <my-counter>: "count" changed at or before
+super.connectedCallback() to a value that differs from the server-rendered DOM…
+```
+
+Follow one rule to stay correct:
+
+- **A value that must appear in the first render belongs in the SSR state.** Provide it in the JSON state so the server renders it; the client then hydrates against a matching DOM.
+- **Assign anything else after `super.connectedCallback()`**, where `@observable` writes flow through live bindings.
+
+```ts
+export class MyCounter extends WebUIElement {
+  @observable count = 0;
+
+  connectedCallback(): void {
+    // ✗ Wrong: runs before hydration — dropped, and warns.
+    // this.count = 3;
+
+    super.connectedCallback();
+
+    // ✓ Correct: runs after hydration — updates the DOM reactively.
+    this.count = 3;
+  }
+}
+```
+
+If `count` should already read `3` in the server-rendered HTML, seed it in the SSR state instead of assigning it on the client at all.
+
+
 ## When NOT to Hydrate
 
 Not every component needs JavaScript. Hydrating a component that has no interactivity adds unnecessary bytes and processing time.
