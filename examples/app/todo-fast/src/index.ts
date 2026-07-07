@@ -14,11 +14,14 @@ performance.mark('todo-hydration-started');
 
 import { enableHydration } from '@microsoft/fast-element/hydration.js';
 
-enableHydration({
-  hydrationComplete() {
-    performance.measure('todo-hydration-completed', 'todo-hydration-started');
-    console.log('Hydration complete!');
-  },
+const hydration = enableHydration();
+
+// fast-element 3.0 replaced the `hydrationComplete` callback with a
+// `whenHydrated()` promise that resolves once the active hydration batch
+// finishes.
+void hydration.whenHydrated().then(() => {
+  performance.measure('todo-hydration-completed', 'todo-hydration-started');
+  console.log('Hydration complete!');
 });
 
 // Register custom elements after hydration is enabled.

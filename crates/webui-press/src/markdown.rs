@@ -4,7 +4,7 @@
 //! Markdown → HTML conversion with syntax highlighting.
 //! Uses comrak for GFM markdown and syntect for dual-theme code highlighting.
 
-use comrak::nodes::NodeValue;
+use comrak::nodes::{NodeHtmlBlock, NodeValue};
 use comrak::{parse_document, Arena, Options};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
@@ -247,11 +247,17 @@ pub fn render_markdown(
         let html = format!(
             "<h{level} id=\"{slug}\">{html_text} <a class=\"header-anchor\" href=\"#{slug}\">#</a></h{level}>"
         );
-        // Detach children first, then replace value
+        // Detach children first, then replace value. The heading is a
+        // block-level node, so its raw-HTML replacement must be an
+        // `HtmlBlock` (not `HtmlInline`) — comrak 0.53 validates that block
+        // containers only hold block-level children.
         while let Some(child) = node.first_child() {
             child.detach();
         }
-        node.data.borrow_mut().value = NodeValue::HtmlInline(html);
+        node.data.borrow_mut().value = NodeValue::HtmlBlock(NodeHtmlBlock {
+            block_type: 6,
+            literal: html,
+        });
     }
 
     // Pass 3: Replace code blocks and inline code after heading extraction,
@@ -266,7 +272,12 @@ pub fn render_markdown(
                     block.info.split_whitespace().next().unwrap_or("text")
                 };
                 let highlighted = highlighter.highlight_code(&block.literal, lang);
-                data.value = NodeValue::HtmlInline(highlighted);
+                // A code block is block-level: replace with an `HtmlBlock` so
+                // comrak 0.53's AST validation accepts it as a block child.
+                data.value = NodeValue::HtmlBlock(NodeHtmlBlock {
+                    block_type: 6,
+                    literal: highlighted,
+                });
             }
             NodeValue::Code(ref code) => {
                 // Replace inline code with pre-escaped HTML so `{{...}}` inside
