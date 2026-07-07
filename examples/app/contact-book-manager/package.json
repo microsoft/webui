@@ -14,26 +14,26 @@
     "start": "cargo xtask dev contact-book-manager",
     "test": "playwright test",
     "test:update-snapshots": "playwright test --update-snapshots"
-   },
-   "imports": {
+  },
+  "imports": {
     "#atoms/*": "./src/atoms/*",
     "#molecules/*": "./src/molecules/*",
     "#organisms/*": "./src/organisms/*",
     "#pages/*": "./src/pages/*",
     "#app/*": "./src/cb-app/*",
     "#api": "./src/api.ts"
-   },
+  },
   "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^5.1.0"
+    "cors": "^2.8.6",
+    "express": "^5.2.1"
   },
   "devDependencies": {
     "@microsoft/webui-examples-theme": "workspace:*",
     "@microsoft/webui-framework": "workspace:*",
     "@microsoft/webui-router": "workspace:*",
     "@playwright/test": "catalog:",
-    "@types/cors": "^2.8.17",
-    "@types/express": "^5.0.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "esbuild": "catalog:",
     "tslib": "catalog:",
     "typescript": "catalog:"

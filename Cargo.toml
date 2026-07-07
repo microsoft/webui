@@ -21,49 +21,49 @@ homepage = "https://microsoft.github.io/webui"
 
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+serde_json = "1.0.150"
 thiserror = "2.0.18"
-anyhow = "1.0.101"
-log = "0.4.29"
-env_logger = "0.11.9"
-tokio = { version = "1.52.1", features = ["full"] }
+anyhow = "1.0.103"
+log = "0.4.33"
+env_logger = "0.11.11"
+tokio = { version = "1.52.3", features = ["full"] }
 clap = { version = "4.6.1", features = ["derive", "color"] }
-console = "0.16.3"
+console = "0.16.4"
 rayon = "1.12.0"
-ctrlc = "3.4"
-prost = "0.14.3"
-napi = { version = "3.8.5", features = ["napi4"] }
-napi-derive = "3.5.4"
-wasm-bindgen = "=0.2.100"
-js-sys = "0.3.77"
+ctrlc = "3.5"
+prost = "0.14.4"
+napi = { version = "3.10.3", features = ["napi4"] }
+napi-derive = "3.5.9"
+wasm-bindgen = "=0.2.126"
+js-sys = "0.3.103"
 serde-wasm-bindgen = "0.6"
-actix-web = "4.11.0"
-rustls = "0.23.39"
-rcgen = "0.14.7"
+actix-web = "4.14.0"
+rustls = "0.23.41"
+rcgen = "0.14.8"
 awc = "3"
 hmac = "0.13.0"
 sha2 = "0.11.0"
 expand-tilde = "0.6.1"
 mime_guess = "2.0.5"
-html-escape = "0.2.13"
+html-escape = "0.2.14"
 include_dir = "0.7.4"
 async-stream = "0.3.6"
-futures-util = "0.3.31"
+futures-util = "0.3.32"
 tokio-stream = "0.1.18"
-bytes = "1.10.1"
-crossbeam-queue = "0.3.12"
-memchr = "2.8.0"
+bytes = "1.12.0"
+crossbeam-queue = "0.3.13"
+memchr = "2.8.2"
 notify = "8.2.0"
 notify-debouncer-mini = "0.7.0"
 percent-encoding = "2.3.2"
 walkdir = "2.5.0"
-toml = "0.9.8"
-comrak = { version = "0.52.0", default-features = false }
+toml = "1.1.2"
+comrak = { version = "0.53.0", default-features = false }
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "html", "regex-onig"] }
 serde_yaml = "0.9"
 libc = "0.2.186"
 time = { version = "0.3", features = ["local-offset", "formatting", "macros"] }
-which = "8.0.2"
+which = "8.0.4"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_System_ProcessStatus",
@@ -75,9 +75,9 @@ criterion = "0.8.2"
 tempfile = "3.27.0"
 
 # Build dependencies
-prost-build = "0.14.3"
+prost-build = "0.14.4"
 napi-build = "2"
-cbindgen = "0.29.2"
+cbindgen = "0.29.4"
 
 [workspace.lints.clippy]
 # Lint groups (lower priority so individual lints can override)
