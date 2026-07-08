@@ -12,7 +12,7 @@
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true' or '$(TF_BUILD)' == 'true'">true</ContinuousIntegrationBuild>
-    <Copyright>Copyright (c) Microsoft Corporation</Copyright>
+    <Copyright>© Microsoft Corporation. All rights reserved.</Copyright>
     <Description>WebUI — high-performance server-side rendering without JavaScript runtimes.</Description>
     <PackageTags>webui</PackageTags>
     <!-- PackageIcon will be set once an approved 128x128 transparent PNG is available. -->
