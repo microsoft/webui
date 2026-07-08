@@ -197,10 +197,18 @@ fn collect_node_text<'a>(
 
 /// Render markdown content to HTML with syntax-highlighted code blocks.
 /// Internal links (starting with `/`) are prefixed with `base_path`.
+///
+/// `page_url` is the current page's canonical URL path (base-prefixed, with a
+/// trailing slash — e.g. `/webui/guide/`). In-page fragment links (heading
+/// anchors and `[text](#section)` links) are emitted as absolute paths
+/// (`{page_url}#slug`) rather than bare `#slug`. A bare fragment would resolve
+/// against the document's `<base href>` — which points at the site root — and
+/// navigate away from the current page instead of scrolling within it.
 pub fn render_markdown(
     content: &str,
     highlighter: &Highlighter,
     base_path: &str,
+    page_url: &str,
 ) -> Result<String> {
     let arena = Arena::new();
     let mut options = Options::default();
@@ -220,8 +228,15 @@ pub fn render_markdown(
     for node in root.descendants() {
         let mut data = node.data.borrow_mut();
         if let NodeValue::Link(ref mut link) = data.value {
-            // Prepend base_path to absolute internal links
-            if link.url.starts_with('/') && !link.url.starts_with(base_path) && base_path != "/" {
+            if link.url.starts_with('#') {
+                // In-page fragment link. Make it absolute to the current page so
+                // it isn't resolved against `<base href>` (the site root).
+                link.url = format!("{page_url}{}", link.url);
+            } else if link.url.starts_with('/')
+                && !link.url.starts_with(base_path)
+                && base_path != "/"
+            {
+                // Prepend base_path to absolute internal links
                 link.url = format!("{}{}", base_path.trim_end_matches('/'), &link.url);
             }
         }
@@ -245,7 +260,7 @@ pub fn render_markdown(
         };
         let slug = slugify(&plain_text);
         let html = format!(
-            "<h{level} id=\"{slug}\">{html_text} <a class=\"header-anchor\" href=\"#{slug}\">#</a></h{level}>"
+            "<h{level} id=\"{slug}\">{html_text} <a class=\"header-anchor\" href=\"{page_url}#{slug}\">#</a></h{level}>"
         );
         // Detach children first, then replace value. The heading is a
         // block-level node, so its raw-HTML replacement must be an
@@ -330,7 +345,7 @@ mod tests {
         // must not be interpreted as a WebUI signal binding by the template
         // parser — escape `{` and `}` to HTML entities.
         let h = Highlighter::new();
-        let html = render_markdown("Use `{{value}}` for escaped output.", &h, "/").unwrap();
+        let html = render_markdown("Use `{{value}}` for escaped output.", &h, "/", "/").unwrap();
         assert!(
             html.contains("&#123;&#123;value&#125;&#125;"),
             "inline code braces should be escaped: {html}"
@@ -344,7 +359,7 @@ mod tests {
     #[test]
     fn heading_inline_code_survives_custom_anchor_rendering() {
         let h = Highlighter::new();
-        let html = match render_markdown("# `<for>` Loop Directive\n", &h, "/") {
+        let html = match render_markdown("# `<for>` Loop Directive\n", &h, "/", "/") {
             Ok(html) => html,
             Err(e) => panic!("render_markdown should succeed: {e}"),
         };
@@ -358,11 +373,36 @@ mod tests {
     }
 
     #[test]
+    fn in_page_anchors_are_absolute_to_the_page() {
+        // With a `<base href>` set on every page, bare `#slug` fragment links
+        // resolve against the site root and navigate away from the page.
+        // Heading anchors and `[text](#section)` links must be emitted as
+        // absolute paths to the current page.
+        let h = Highlighter::new();
+        let html = render_markdown(
+            "# Hello\n\nSee [below](#hello).\n",
+            &h,
+            "/webui/",
+            "/webui/guide/",
+        )
+        .unwrap();
+
+        assert!(
+            html.contains(r##"href="/webui/guide/#hello""##),
+            "heading anchor should be absolute to the page: {html}"
+        );
+        assert!(
+            html.contains(r##"<a href="/webui/guide/#hello">below</a>"##),
+            "in-content fragment link should be absolute to the page: {html}"
+        );
+    }
+
+    #[test]
     fn code_block_escapes_template_braces() {
         // Fenced code blocks must also escape braces so example template
         // snippets render literally instead of being parsed as bindings.
         let h = Highlighter::new();
-        let html = render_markdown("```html\n<p>{{name}}</p>\n```\n", &h, "/").unwrap();
+        let html = render_markdown("```html\n<p>{{name}}</p>\n```\n", &h, "/", "/").unwrap();
         assert!(
             html.contains("&#123;&#123;name&#125;&#125;"),
             "code block braces should be escaped: {html}"
