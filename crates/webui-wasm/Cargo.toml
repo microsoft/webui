@@ -25,9 +25,9 @@ handler = ["dep:microsoft-webui-handler"]
 parser = ["dep:microsoft-webui-parser"]
 
 [dependencies]
-microsoft-webui-parser = { path = "../webui-parser", version = "0.0.17", default-features = false, optional = true }
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.17", optional = true }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.17" }
+microsoft-webui-parser = { path = "../webui-parser", version = "0.0.18", default-features = false, optional = true }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.18", optional = true }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.18" }
 serde_json = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
