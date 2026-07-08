@@ -23,6 +23,7 @@ import {
   type MismatchContext,
   type PathBindings,
   repeatDiffersFromDom,
+  reportHydrationMismatch,
   resetHydrationMismatchWarnings,
   textDiffersFromDom,
   warnHydrationMismatch,
@@ -298,5 +299,75 @@ describe('warnHydrationMismatch', () => {
       warnHydrationMismatch('x-tag-b', ['show']);
     });
     assert.equal(calls.length, 2);
+  });
+});
+
+// ── reportHydrationMismatch (dynamic-import entry point) ─────────
+
+describe('reportHydrationMismatch', () => {
+  function captureWarn(fn: () => void): string[] {
+    const original = console.warn;
+    const calls: string[] = [];
+    console.warn = (msg?: unknown) => { calls.push(String(msg)); };
+    try {
+      fn();
+    } finally {
+      console.warn = original;
+    }
+    return calls;
+  }
+
+  function disagreeingEntry(): PathBindings {
+    return {
+      ...emptyEntry,
+      attrs: [{ element: fakeEl({ 'data-value': '' }), name: 'data-value', kind: ATTR_KIND_ATTRIBUTE, path: 'value' }],
+    };
+  }
+
+  function agreeingEntry(): PathBindings {
+    return {
+      ...emptyEntry,
+      attrs: [{ element: fakeEl({ 'data-value': '3' }), name: 'data-value', kind: ATTR_KIND_ATTRIBUTE, path: 'value' }],
+    };
+  }
+
+  test('warns once naming the diverged path when an entry disagrees', () => {
+    resetHydrationMismatchWarnings();
+    const index = new Map<string, PathBindings>([['value', disagreeingEntry()]]);
+    const calls = captureWarn(() => {
+      reportHydrationMismatch('x-report', new Set(['value']), index, makeCtx({ value: '3' }));
+    });
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /<x-report>/);
+    assert.match(calls[0], /"value"/);
+  });
+
+  test('stays silent when every recorded write agrees with the DOM', () => {
+    resetHydrationMismatchWarnings();
+    const index = new Map<string, PathBindings>([['value', agreeingEntry()]]);
+    const calls = captureWarn(() => {
+      reportHydrationMismatch('x-agree', new Set(['value']), index, makeCtx({ value: '3' }));
+    });
+    assert.equal(calls.length, 0);
+  });
+
+  test('stays silent when there are no recorded writes', () => {
+    resetHydrationMismatchWarnings();
+    const index = new Map<string, PathBindings>([['value', disagreeingEntry()]]);
+    const calls = captureWarn(() => {
+      reportHydrationMismatch('x-empty', new Set(), index, makeCtx({ value: '3' }));
+    });
+    assert.equal(calls.length, 0);
+  });
+
+  test('skips write paths absent from the index and reports only real divergences', () => {
+    resetHydrationMismatchWarnings();
+    const index = new Map<string, PathBindings>([['value', disagreeingEntry()]]);
+    const calls = captureWarn(() => {
+      reportHydrationMismatch('x-mixed', new Set(['missing', 'value']), index, makeCtx({ value: '3' }));
+    });
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /"value"/);
+    assert.doesNotMatch(calls[0], /missing/);
   });
 });

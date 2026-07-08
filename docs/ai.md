@@ -961,7 +961,10 @@ The handler resolves `tokens.light` from the state, outputting:
     `super.connectedCallback()` cannot reach the DOM — the write is dropped and
     the runtime logs a `[WebUI] Hydration mismatch` warning. If the value must
     appear in the first render, put it in the SSR state JSON; otherwise assign it
-    after `super.connectedCallback()`.
+    after `super.connectedCallback()`. The warning is development-only — it is
+    stripped from production bundles via the `__WEBUI_DEV__` compile-time flag
+    (`webui-press build` sets `__WEBUI_DEV__=false` automatically; self-bundled
+    apps add the define for production).
 
 ## Common Patterns
 

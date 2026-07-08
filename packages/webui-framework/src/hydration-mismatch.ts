@@ -61,6 +61,30 @@ export interface PathBindings {
 }
 
 /**
+ * Entry point invoked by `TemplateElement` through a dynamic `import()`.
+ *
+ * Compares each recorded pre-ready write path against the SSR DOM and, if any
+ * diverged, emits the hydration-mismatch warning once. Routing the element
+ * through this function keeps every comparator and the message string in this
+ * module, reached only via that dynamic import — so a production bundler drops
+ * the whole module when `__WEBUI_DEV__` folds `DEV` to `false` (see
+ * `template-element.ts`). The comparison is read-only; it never mutates the DOM.
+ */
+export function reportHydrationMismatch(
+  tag: string,
+  writes: ReadonlySet<string>,
+  index: ReadonlyMap<string, PathBindings>,
+  ctx: MismatchContext,
+): void {
+  const mismatched: string[] = [];
+  for (const path of writes) {
+    const entry = index.get(path);
+    if (entry && bindingsDisagreeWithDom(entry, ctx)) mismatched.push(path);
+  }
+  if (mismatched.length !== 0) warnHydrationMismatch(tag, mismatched);
+}
+
+/**
  * True when any binding for a recorded pre-ready write disagrees with the DOM.
  * Stops at the first disagreement — the caller only needs to know whether the
  * observable diverged, not every binding that did.

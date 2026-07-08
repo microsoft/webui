@@ -553,6 +553,29 @@ export class MyCounter extends WebUIElement {
 
 If `count` should already read `3` in the server-rendered HTML, seed it in the SSR state instead of assigning it on the client at all.
 
+#### The warning is development-only
+
+This diagnostic is a **development aid** — its comparison code *and* its message strings are removed from production bundles, so it never costs your users anything. It is gated by a compile-time flag, **`__WEBUI_DEV__`**, and loaded through a dynamic `import()`, so when the flag is `false` a bundler dead-code-eliminates the entire diagnostic module.
+
+The flag is **on by default**. You never enable it — you only turn it *off* for production:
+
+- **Using `webui-press`?** Nothing to do. `webui-press build` sets `__WEBUI_DEV__` to `false` for you, and `webui-press serve` leaves it on.
+- **Bundling client JavaScript yourself?** Define the flag as `false` in your **production** build. Leave it out of development builds — when the flag is absent the framework defaults it to on, so you always get the warning while developing.
+
+```bash
+# esbuild: production build only
+esbuild app.ts --bundle --minify --define:__WEBUI_DEV__=false
+```
+
+| Bundler | Production setting |
+| --- | --- |
+| esbuild | `--define:__WEBUI_DEV__=false` |
+| Vite / Rollup / rolldown | `define: { __WEBUI_DEV__: 'false' }` |
+| webpack / Rspack | `new DefinePlugin({ __WEBUI_DEV__: 'false' })` |
+| swc | `jsc.transform.optimizer.globals.vars: { __WEBUI_DEV__: 'false' }` |
+
+Only the literal `false` turns the diagnostics off. Any other value — or leaving the flag undefined — keeps them on, so a forgotten define can never silently hide a real mismatch during development.
+
 
 ## When NOT to Hydrate
 

@@ -1597,6 +1597,21 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   in the initial render belongs in the SSR state; assign anything else after
   `super.connectedCallback()`. Components that follow this rule allocate nothing
   on the hot path — the tracking `Set` stays `null` and the check early-returns.
+  The diagnostic is **development-only**. Its comparators and message string live
+  in `hydration-mismatch.ts` behind the `reportHydrationMismatch` entry point,
+  reached solely through a dynamic `import()` gated by the module-local `DEV`
+  constant — derived from the compile-time flag `__WEBUI_DEV__` as
+  `typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__`, so an **undefined** flag
+  defaults the diagnostic **on** (raw ESM, the framework's own `tsc` output, and
+  unit tests keep the warning without any bundler cooperation). When a bundler
+  folds `__WEBUI_DEV__` to `false`, `DEV` folds with it: `$checkHydrationMismatch`
+  empties and its lone `import()` is dead-code-eliminated, dropping the whole
+  diagnostic module — comparison code *and* strings — from the output. The dynamic
+  import is load-bearing: esbuild fixes static-import reachability before
+  constant-folding and never re-runs tree-shaking, so a static import would ship
+  even when its only caller folds away. `webui-press build` injects
+  `--define:__WEBUI_DEV__=false` automatically (and `serve` leaves it undefined);
+  apps that bundle their own client define the flag as `false` for production.
 - Missing HTML-only custom elements that need host attribute or router state
   reactivity are marked in compiled template metadata with `th: 1`. Importing
   `@microsoft/webui-framework` installs the static host runtime; the router
