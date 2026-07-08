@@ -659,6 +659,11 @@ export class TemplateElement extends HTMLElement {
   // with the trusted SSR DOM. The read-only comparison lives in
   // `hydration-mismatch.ts` (see that module for the full rationale); this
   // class only records the writes and supplies a resolver context.
+  //
+  // Note: `$applySSRState` (in `$mount`) has already overwritten the backing
+  // field of every observable present in the SSR state before this runs, so
+  // those reconcile to the server value and cannot disagree. In practice the
+  // diagnostic only fires for observables omitted from the SSR state.
 
   private $recordPreReadyWrite(path: string): void {
     if (!this.$preReadyWrites) this.$preReadyWrites = new Set();

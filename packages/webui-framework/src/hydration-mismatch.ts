@@ -74,8 +74,13 @@ export function bindingsDisagreeWithDom(entry: PathBindings, ctx: MismatchContex
   return false;
 }
 
-/** Text binding: compare the resolved value against the rendered text/HTML. */
+/** Text binding: compare the resolved value against the rendered text. */
 export function textDiffersFromDom(b: TextBinding, ctx: MismatchContext): boolean {
+  // Raw `{{{expr}}}` bindings render via innerHTML, which the browser
+  // re-serializes on read (quote style, entity/attribute normalization, void
+  // elements), so a value that truly matches SSR can compare unequal. Skip
+  // them rather than emit a false mismatch.
+  if (b.raw) return false;
   let expected: string;
   if (b.parts) {
     expected = ctx.resolveParts(b.parts, b.scope);
@@ -85,8 +90,7 @@ export function textDiffersFromDom(b: TextBinding, ctx: MismatchContext): boolea
   } else {
     return false;
   }
-  const actual = b.raw && b.rawParent ? b.rawParent.innerHTML : b.node.data;
-  return actual !== expected;
+  return b.node.data !== expected;
 }
 
 /** Attribute binding: compare per kind, skipping cases SSR legitimately owns. */
@@ -120,7 +124,14 @@ export function condDiffersFromDom(c: CondBinding, ctx: MismatchContext): boolea
   return (c.instance != null) !== !!c.condition[0](ctx.resolver, c.scope);
 }
 
-/** Repeat binding: compare the collection length against the rendered items. */
+/**
+ * Repeat binding: compare the collection length against the rendered item
+ * count. Length is an intentional proxy — a same-length content or order change
+ * is not flagged, which keeps this cold-path check O(1) per repeat. Non-array
+ * values coerce to length 0, mirroring the renderer (`element/diff.ts` and the
+ * hydration path both treat non-arrays as empty), so the comparison stays
+ * consistent with what was actually rendered.
+ */
 export function repeatDiffersFromDom(r: RepeatBinding, ctx: MismatchContext): boolean {
   const resolved = ctx.resolveValue(r.collection, r.scope);
   const expectedLength = Array.isArray(resolved) ? resolved.length : 0;
@@ -140,15 +151,25 @@ export function formatHydrationMismatch(tag: string, paths: string[]): string {
 }
 
 /**
- * Tags already warned about in this document. A mismatch shared by many
- * instances of the same component (e.g. a list of 100 identical items) is one
- * authoring bug, so it reports once per tag instead of per instance.
+ * `(tag, path-set)` pairs already warned about in this document. Deduping on
+ * the exact set of diverged paths — not just the tag — keeps a repeated
+ * instance of the same bug quiet while still letting a genuinely different
+ * later mismatch on the same component surface.
  */
-const warnedMismatchTags = new Set<string>();
+const warnedMismatches = new Set<string>();
 
-/** Emit the hydration-mismatch warning once per tag. */
+/** Emit the hydration-mismatch warning once per `(tag, diverged-path-set)`. */
 export function warnHydrationMismatch(tag: string, paths: string[]): void {
-  if (warnedMismatchTags.has(tag)) return;
-  warnedMismatchTags.add(tag);
+  const key = `${tag}\u0000${[...paths].sort().join('\u0000')}`;
+  if (warnedMismatches.has(key)) return;
+  warnedMismatches.add(key);
   console.warn(formatHydrationMismatch(tag, paths));
+}
+
+/**
+ * Clear the dedup cache. Test-only: warnings dedupe for the lifetime of the
+ * document, so tests call this to assert warning behavior in isolation.
+ */
+export function resetHydrationMismatchWarnings(): void {
+  warnedMismatches.clear();
 }

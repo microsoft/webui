@@ -23,6 +23,7 @@ import {
   type MismatchContext,
   type PathBindings,
   repeatDiffersFromDom,
+  resetHydrationMismatchWarnings,
   textDiffersFromDom,
   warnHydrationMismatch,
 } from './hydration-mismatch.js';
@@ -77,15 +78,15 @@ describe('textDiffersFromDom', () => {
     assert.equal(textDiffersFromDom(b, makeCtx({}, 'a-c')), true);
   });
 
-  test('raw binding compares against the parent innerHTML', () => {
+  test('raw bindings are skipped (innerHTML re-serialization is unreliable)', () => {
     const b = {
       node: { data: 'stale' } as unknown as Text,
       path: 'html',
       raw: true,
       rawParent: fakeEl({}, '<b>x</b>'),
     } as TextBinding;
-    assert.equal(textDiffersFromDom(b, makeCtx({ html: '<b>x</b>' })), false);
-    assert.equal(textDiffersFromDom(b, makeCtx({ html: '<b>y</b>' })), true);
+    // Even with a divergent value, raw bindings never report a mismatch.
+    assert.equal(textDiffersFromDom(b, makeCtx({ html: '<b>y</b>' })), false);
   });
 
   test('binding with neither path nor parts never differs', () => {
@@ -263,19 +264,38 @@ describe('warnHydrationMismatch', () => {
     return calls;
   }
 
-  test('warns once per tag even when called repeatedly', () => {
+  test('warns once per (tag, path-set) even when called repeatedly', () => {
+    resetHydrationMismatchWarnings();
     const calls = captureWarn(() => {
-      warnHydrationMismatch('x-dedup-a', ['show']);
-      warnHydrationMismatch('x-dedup-a', ['show']);
-      warnHydrationMismatch('x-dedup-a', ['value']);
+      warnHydrationMismatch('x-dedup', ['show']);
+      warnHydrationMismatch('x-dedup', ['show']);
     });
     assert.equal(calls.length, 1);
   });
 
-  test('warns separately for distinct tags', () => {
+  test('path-set order does not affect dedup', () => {
+    resetHydrationMismatchWarnings();
     const calls = captureWarn(() => {
-      warnHydrationMismatch('x-dedup-b', ['show']);
-      warnHydrationMismatch('x-dedup-c', ['show']);
+      warnHydrationMismatch('x-order', ['show', 'value']);
+      warnHydrationMismatch('x-order', ['value', 'show']);
+    });
+    assert.equal(calls.length, 1);
+  });
+
+  test('a genuinely different mismatch on the same tag still warns', () => {
+    resetHydrationMismatchWarnings();
+    const calls = captureWarn(() => {
+      warnHydrationMismatch('x-diff', ['show']);
+      warnHydrationMismatch('x-diff', ['value']);
+    });
+    assert.equal(calls.length, 2);
+  });
+
+  test('warns separately for distinct tags', () => {
+    resetHydrationMismatchWarnings();
+    const calls = captureWarn(() => {
+      warnHydrationMismatch('x-tag-a', ['show']);
+      warnHydrationMismatch('x-tag-b', ['show']);
     });
     assert.equal(calls.length, 2);
   });
