@@ -82,6 +82,36 @@ import type {
   TemplateInstance,
   TextBinding,
 } from './element/types.js';
+// Type-only import: erased at compile time, so it never creates a runtime edge
+// to the diagnostic module. That module's runtime code is reached solely through
+// the dynamic `import()` in `$checkHydrationMismatch`, which is what lets a
+// production bundler drop it (see the `__WEBUI_DEV__` note below).
+import type { MismatchContext } from './hydration-mismatch.js';
+
+// ── Development build flag ──────────────────────────────────────
+// `__WEBUI_DEV__` is a compile-time constant a bundler folds to a literal
+// (`esbuild --define:__WEBUI_DEV__=false`, webpack/rspack `DefinePlugin`, Vite
+// and Rollup/rolldown `define`, swc `globals.vars`). `webui-press` folds it to
+// `false` for `build` (production) and leaves it undefined for `serve` (dev).
+//
+// When it folds to `false`, `DEV` folds too: every `if (DEV)` / `if (!DEV)
+// return` branch below becomes dead code, and the *sole* dynamic `import()` of
+// `hydration-mismatch.ts` is DCE'd. Because that import is the only reference to
+// the module, dropping it orphans the chunk and the bundler removes the whole
+// diagnostic (comparators + message string) from the output — not just its
+// runtime cost. A static import would NOT strip: esbuild fixes module
+// reachability before constant-folding and never re-runs tree-shaking, so a
+// statically-imported module survives even when its only caller is folded away.
+//
+// The `typeof` guard keeps this safe when the flag is undefined (raw ESM, the
+// framework's own `tsc` output, unit tests, un-defined esbuild builds): `typeof`
+// on an undeclared identifier yields `"undefined"` instead of throwing a
+// ReferenceError, so `DEV` defaults to `true` (diagnostics on). Declared and
+// consumed module-locally on purpose — esbuild folds a module-local `const`
+// reliably, whereas an imported constant is not inlined across module
+// boundaries, which would defeat the stripping.
+declare const __WEBUI_DEV__: boolean;
+const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
 
 // ── Caches ──────────────────────────────────────────────────────
 
@@ -254,6 +284,12 @@ export class TemplateElement extends HTMLElement {
   private $templateState: Record<string, unknown> | null = null;
   private $dirtyPaths: Set<string> | null = null;
   private $pendingFlush = false;
+  /** Observable paths written while connected but before hydration finished
+   *  (constructor, `@observable` field initializer, or before
+   *  `super.connectedCallback()`). Checked against the SSR DOM at `$ready` to
+   *  surface hydration mismatches (issue #379). Stays `null` for components
+   *  that follow the lifecycle, so the common path allocates nothing. */
+  private $preReadyWrites: Set<string> | null = null;
   /** Cached condition resolver — avoids allocating a closure per evaluation. */
   private $resolver = (p: string, s?: unknown): unknown => this.$resolveValue(p, s as ScopeFrame | undefined);
   private $pathIndex?: Map<string, {
@@ -375,6 +411,13 @@ export class TemplateElement extends HTMLElement {
     this.$ready = true;
     this.$syncAuthoredAttributes();
 
+    // SSR only: warn when a pre-ready write left an observable disagreeing
+    // with the server-rendered DOM. Client-created components have no SSR
+    // content to diverge from. `DEV` gates the call so production bundles
+    // (`--define:__WEBUI_DEV__=false`) drop it entirely.
+    if (isSSR && DEV) this.$checkHydrationMismatch();
+    else this.$preReadyWrites = null;
+
     // Client-created components: flush current attr/observable values
     // into the freshly-wired template DOM. Call $updateInstance directly
     // to avoid the $update() path-index build — it will be lazy-built
@@ -414,6 +457,7 @@ export class TemplateElement extends HTMLElement {
     this.$wildcardBindings = undefined;
     this.$dirtyPaths = null;
     this.$pendingFlush = false;
+    this.$preReadyWrites = null;
     this.$ready = false;
   }
 
@@ -568,7 +612,14 @@ export class TemplateElement extends HTMLElement {
 
   /** Reactive update — called by @observable/@attr setters. */
   $update(path?: string): void {
-    if (!this.$ready || !this.$root) return;
+    if (!this.$ready || !this.$root) {
+      // A reactive write arrived while connected but before hydration
+      // completed. `$update` cannot touch the DOM yet, so record the path and
+      // check it against the SSR DOM once hydrated (see #379). `DEV` gates the
+      // recording so production bundles never allocate the tracking Set.
+      if (DEV && path && this.isConnected) this.$recordPreReadyWrite(path);
+      return;
+    }
 
     // Lazy-build path index on first update (deferred from hydration)
     if (!this.$pathIndex) this.$buildPathIndex();
@@ -625,6 +676,60 @@ export class TemplateElement extends HTMLElement {
     }
 
     this.$pendingFlush = false;
+  }
+
+  // ── Hydration mismatch diagnostic (#379) ──────────────────────
+  // A reactive write that runs while the element is connected but before
+  // hydration finishes (constructor, `@observable` field initializer, or
+  // before `super.connectedCallback()`) is dropped by `$update`'s pre-ready
+  // guard. Record such writes and, once hydrated, report any that disagree
+  // with the trusted SSR DOM. The read-only comparison lives in
+  // `hydration-mismatch.ts` (see that module for the full rationale); this
+  // class only records the writes and supplies a resolver context.
+  //
+  // Note: `$applySSRState` (in `$mount`) has already overwritten the backing
+  // field of every observable present in the SSR state before this runs, so
+  // those reconcile to the server value and cannot disagree. In practice the
+  // diagnostic only fires for observables omitted from the SSR state.
+  //
+  // Production stripping: the comparators and message string live in
+  // `hydration-mismatch.ts`, reached only through the dynamic `import()` in
+  // `$checkHydrationMismatch`. When a bundler folds `__WEBUI_DEV__` to `false`,
+  // `DEV` becomes a constant, the `if (!DEV) return` empties this method, and
+  // the now-dead `import()` is DCE'd — orphaning the diagnostic chunk so the
+  // bundler drops it. The `if (!DEV) return` is load-bearing: class methods are
+  // never tree-shaken, so without it the method body (and its `import()`) would
+  // survive. See the `__WEBUI_DEV__` note near the top of this file.
+
+  private $recordPreReadyWrite(path: string): void {
+    if (!this.$preReadyWrites) this.$preReadyWrites = new Set();
+    this.$preReadyWrites.add(path);
+  }
+
+  private $checkHydrationMismatch(): void {
+    if (!DEV) return;
+    const writes = this.$preReadyWrites;
+    this.$preReadyWrites = null;
+    if (!writes || writes.size === 0 || !this.$root) return;
+    if (!this.$pathIndex) this.$buildPathIndex();
+    const index = this.$pathIndex;
+    if (!index) return;
+    const ctx: MismatchContext = {
+      resolver: this.$resolver,
+      resolveParts: (parts, scope) => this.$resolveParts(parts, scope),
+      resolveValue: (path, scope) => this.$resolveValue(path, scope),
+    };
+    const tag = this.tagName.toLowerCase();
+    // Defer the read-only comparison to the dynamically-imported diagnostic
+    // module. `writes`, `index`, and `ctx` are captured synchronously here; the
+    // SSR DOM they compare against does not change between `$ready` and the
+    // microtask on which the import resolves, so the result is unaffected by the
+    // deferral. In production `DEV` folds to `false`, so this method's body — and
+    // therefore this sole `import()` — is eliminated, dropping the diagnostic
+    // module from the bundle (see the `__WEBUI_DEV__` note near the top).
+    void import('./hydration-mismatch.js').then((m) =>
+      m.reportHydrationMismatch(tag, writes, index, ctx),
+    );
   }
 
   // ── DOM resolution: client-created path ───────────────────────

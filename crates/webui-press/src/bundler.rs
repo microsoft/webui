@@ -1080,6 +1080,12 @@ fn esbuild_args(
     args.push("--log-level=warning".to_string());
     if !opts.dev_mode {
         args.push("--minify".to_string());
+        // Fold the framework's `__WEBUI_DEV__` flag to `false` for production
+        // builds so development-only diagnostics — e.g. the hydration-mismatch
+        // warning in `@microsoft/webui-framework` — and the modules they gate
+        // are dead-code eliminated from the bundle. Pushed before any user
+        // `define` entries below so an explicit `bundler.define` can override it.
+        args.push("--define:__WEBUI_DEV__=false".to_string());
     }
     if let Some(cfg) = opts.bundler_config {
         push_external_args(&mut args, &cfg.external, &aliases);
@@ -1619,6 +1625,58 @@ mod tests {
         let args = esbuild_args(&opts, &[], Path::new("/tmp/webui-press-bundle"));
 
         assert!(args.contains(&format!("--tsconfig-raw={WEBUI_TSCONFIG_RAW}")));
+    }
+
+    #[test]
+    fn esbuild_args_folds_webui_dev_flag_for_production_only() {
+        fn opts<'a>(
+            site_dir: &'a Path,
+            config_dir: &'a Path,
+            dev_mode: bool,
+            cfg: Option<&'a BundlerConfig>,
+        ) -> BundleOptions<'a> {
+            BundleOptions {
+                site_dir,
+                node_modules: None,
+                root_bundle: None,
+                page_bundles: &[],
+                bundler_config: cfg,
+                dev_mode,
+                config_dir,
+                content_dir: site_dir,
+            }
+        }
+        let site_dir = Path::new("/site");
+        let config_dir = Path::new("/site/.webui-press");
+        let tmp = Path::new("/tmp/b");
+        let define = "--define:__WEBUI_DEV__=false".to_string();
+
+        // Production build: the flag is folded to `false` so the framework's
+        // dev-only diagnostics (and the module gating them) tree-shake out.
+        let prod = esbuild_args(&opts(site_dir, config_dir, false, None), &[], tmp);
+        assert!(prod.contains(&define));
+
+        // Development build (`webui-press serve`): the flag is left undefined so
+        // the `typeof` guard defaults it to on and diagnostics run.
+        let dev = esbuild_args(&opts(site_dir, config_dir, true, None), &[], tmp);
+        assert!(!dev.iter().any(|arg| arg.contains("__WEBUI_DEV__")));
+
+        // A user-supplied define wins: esbuild honors the last `--define` for a
+        // key, so our production default must be emitted before user defines.
+        let mut cfg = BundlerConfig::default();
+        cfg.define
+            .insert("__WEBUI_DEV__".to_string(), "true".to_string());
+        let overridden = esbuild_args(&opts(site_dir, config_dir, false, Some(&cfg)), &[], tmp);
+        let ours = overridden.iter().position(|arg| arg == &define);
+        let theirs = overridden
+            .iter()
+            .position(|arg| arg == "--define:__WEBUI_DEV__=true");
+        assert!(ours.is_some(), "framework default define should be present");
+        assert!(theirs.is_some(), "user override define should be present");
+        assert!(
+            ours < theirs,
+            "framework default must precede the user override so esbuild's last-wins keeps the user's value",
+        );
     }
 
     #[test]

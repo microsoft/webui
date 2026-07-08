@@ -129,6 +129,17 @@ parent-provided property in `connectedCallback`. If the parent value is not set,
 the child may initialize its own fallback there, and later parent updates still
 flow through the live binding.
 
+During SSR hydration the framework trusts the server-rendered DOM and does not
+re-render it. An `@observable` written before hydration finishes — in a field
+initializer, the `constructor`, or before `super.connectedCallback()` — cannot
+update that DOM, so the write is dropped and the runtime logs a
+`[WebUI] Hydration mismatch` warning naming the properties. Seed such values in
+the SSR state, or assign them after `super.connectedCallback()`. The warning is
+development-only and is dead-code-eliminated from production bundles via the
+`__WEBUI_DEV__` compile-time flag (on by default; `webui-press build` sets it to
+`false`). See the
+[Interactivity Guide](https://microsoft.github.io/webui/guide/concepts/interactivity#setting-observable-state-during-setup).
+
 ### DOM strategy (`--dom`)
 
 The `--dom` flag controls how the server renders component content:

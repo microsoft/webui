@@ -101,7 +101,12 @@ function renderOne(fixturePath: string, name: string): RenderedFixture | null {
   const scriptPath = hasAuthoredEntry
     ? `/dist/${name}/element.js`
     : '/dist/static-host.js';
-  const scriptTag = `<script src="${scriptPath}"></script>`;
+  // Real WebUI apps load client islands as ES modules (`<script type="module">`),
+  // which are deferred until after the document is parsed. Fixtures can opt into
+  // that production-faithful timing with `"script": "module"` in webui.config.json;
+  // otherwise a classic (parser-blocking) script is injected for back-compat.
+  const scriptType = fixtureConfig.script === 'module' ? ' type="module"' : '';
+  const scriptTag = `<script${scriptType} src="${scriptPath}"></script>`;
   const bodyEnd = html.lastIndexOf('</body>');
   if (bodyEnd !== -1) {
     html = html.slice(0, bodyEnd) + scriptTag + html.slice(bodyEnd);
