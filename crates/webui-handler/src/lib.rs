@@ -6656,6 +6656,89 @@ mod tests {
     }
 
     #[test]
+    fn test_link_strategy_head_links_follow_document_order() {
+        // Regression for #381: Link-strategy <head> CSS <link> tags must be
+        // emitted in document/traversal order, not alphabetical tag order.
+        // Document order here is <z-widget> then <a-widget>; an alphabetical
+        // sort would (incorrectly) place a-widget first.
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    WebUIFragment::signal("head_end", true),
+                    WebUIFragment::raw("</head><body><z-widget>".to_string()),
+                    WebUIFragment::component("z-widget"),
+                    WebUIFragment::raw("</z-widget><a-widget>".to_string()),
+                    WebUIFragment::component("a-widget"),
+                    WebUIFragment::raw("</a-widget>".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        fragments.insert(
+            "z-widget".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<div>z</div>".to_string())],
+            },
+        );
+        fragments.insert(
+            "a-widget".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<div>a</div>".to_string())],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        protocol.set_dom_strategy(webui_protocol::DomStrategy::Light);
+
+        let z = protocol
+            .components
+            .entry("z-widget".to_string())
+            .or_default();
+        z.css_href = "z-widget.css".to_string();
+        z.template_json = r#"{"h":"<div>z</div>"}"#.to_string();
+
+        let a = protocol
+            .components
+            .entry("a-widget".to_string())
+            .or_default();
+        a.css_href = "a-widget.css".to_string();
+        a.template_json = r#"{"h":"<div>a</div>"}"#.to_string();
+
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        let html = writer.get_content();
+        let head_end = html.find("</head>").expect("</head> missing");
+        let head_section = &html[..head_end];
+
+        let z_pos = head_section
+            .find(r#"<link rel="stylesheet" href="z-widget.css">"#)
+            .expect("z-widget stylesheet link missing from <head>");
+        let a_pos = head_section
+            .find(r#"<link rel="stylesheet" href="a-widget.css">"#)
+            .expect("a-widget stylesheet link missing from <head>");
+
+        assert!(
+            z_pos < a_pos,
+            "CSS <link> tags must follow document order (z-widget before \
+             a-widget), not alphabetical order: {html}"
+        );
+    }
+
+    #[test]
     fn test_css_module_emitted_in_component_light_dom() {
         // CSS module <style> tags are emitted inline in the component's light DOM,
         // not in <head>. This keeps SSR output lean — only rendered components

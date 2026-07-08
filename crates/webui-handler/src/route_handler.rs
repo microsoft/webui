@@ -198,26 +198,32 @@ pub(crate) fn collect_reachable_components_for_request(
     request_path: &str,
     cache: &mut CompiledRouteCache,
 ) -> HashSet<String> {
+    // Callers here need set semantics (`.contains`, plugin `&HashSet` API);
+    // discovery order is irrelevant for reachable-template emission.
     collect_inventoryable_components(protocol, entry_id, Some(request_path), false, cache)
+        .into_iter()
+        .collect()
 }
 
 /// Filter components against the client's inventory bitfield using sequential indices.
 /// Zero collisions — each component has a unique bit.
 ///
+/// Expects `component_names` to already be unique. Input order is preserved
+/// in the returned `needed` vector (no alphabetical re-sort), so downstream
+/// `<head>` CSS `<link>` emission follows document/traversal order. The
+/// updated inventory hex is order-independent (bits are keyed by `index`).
+///
 /// Returns the missing component names and the updated inventory hex string.
 pub fn filter_needed_components(
-    component_names: &HashSet<String>,
+    component_names: &[String],
     inventory_hex: &str,
     index: &HashMap<String, u32>,
 ) -> Result<(Vec<String>, String), HandlerError> {
     let client_inv = parse_inventory(inventory_hex)?;
     let mut updated_inv = client_inv.clone();
 
-    let mut ordered_names: Vec<&String> = component_names.iter().collect();
-    ordered_names.sort_unstable();
-
-    let mut needed = Vec::with_capacity(ordered_names.len());
-    for name in ordered_names {
+    let mut needed = Vec::with_capacity(component_names.len());
+    for name in component_names {
         if let Some(&idx) = index.get(name.as_str()) {
             if !has_component(&client_inv, idx) {
                 needed.push(name.clone());
@@ -254,7 +260,8 @@ struct ChildWalkCtx<'a> {
     cache: &'a mut CompiledRouteCache,
 }
 
-/// Walk the fragment graph from `entry_id` and collect all inventoryable component names.
+/// Walk the fragment graph from `entry_id` and collect all inventoryable
+/// component names in document/traversal (first-discovery) order.
 ///
 /// Uses an iterative stack-based traversal. When `request_path` is provided,
 /// the walk follows only the best-matching route at each nesting level (route-aware).
@@ -269,9 +276,14 @@ fn collect_inventoryable_components(
     request_path: Option<&str>,
     root_inventoryable: bool,
     cache: &mut CompiledRouteCache,
-) -> HashSet<String> {
+) -> Vec<String> {
     let mut visited_fragments = HashSet::new();
-    let mut component_ids = HashSet::new();
+    // Preserve first-discovery (document/traversal) order so Link-strategy
+    // CSS `<link>` tags are emitted in source order, not alphabetically.
+    // `seen_components` dedups; `component_ids` keeps order (a plain
+    // `HashSet` would lose it).
+    let mut seen_components = HashSet::new();
+    let mut component_ids: Vec<String> = Vec::new();
     let mut stack = vec![QueuedFragment {
         id: entry_id.to_string(),
         inventoryable: root_inventoryable,
@@ -283,8 +295,8 @@ fn collect_inventoryable_components(
             continue;
         }
 
-        if queued.inventoryable {
-            component_ids.insert(queued.id.clone());
+        if queued.inventoryable && seen_components.insert(queued.id.clone()) {
+            component_ids.push(queued.id.clone());
         }
 
         if !visited_fragments.insert(queued.id.clone()) {
@@ -304,7 +316,9 @@ fn collect_inventoryable_components(
             )
         });
 
-        for frag in &frag_list.fragments {
+        // Reversed iteration so this LIFO stack pops children in document
+        // order, giving deterministic, source-ordered component discovery.
+        for frag in frag_list.fragments.iter().rev() {
             match frag.fragment.as_ref() {
                 Some(Fragment::Component(component)) => {
                     stack.push(QueuedFragment {
@@ -684,9 +698,14 @@ fn collect_inventory_and_chain(
     entry_id: &str,
     request_path: &str,
     index: &mut ProtocolIndex,
-) -> (HashSet<String>, Vec<RouteChainEntry>) {
+) -> (Vec<String>, Vec<RouteChainEntry>) {
     let mut visited_fragments = HashSet::new();
-    let mut component_ids = HashSet::new();
+    // Deduped ordered collection: `filter_needed_components` now takes a
+    // slice of unique names. Order is irrelevant for this consumer
+    // (`render_partial` re-sorts in `collect_component_assets`), but the
+    // list must stay duplicate-free.
+    let mut seen_components = HashSet::new();
+    let mut component_ids: Vec<String> = Vec::new();
     let mut chain = Vec::new();
     let mut stack = vec![QueuedFragment {
         id: entry_id.to_string(),
@@ -699,8 +718,8 @@ fn collect_inventory_and_chain(
             continue;
         }
 
-        if queued.inventoryable {
-            component_ids.insert(queued.id.clone());
+        if queued.inventoryable && seen_components.insert(queued.id.clone()) {
+            component_ids.push(queued.id.clone());
         }
 
         if !visited_fragments.insert(queued.id.clone()) {
@@ -999,7 +1018,13 @@ pub fn render_component_templates(
     inventory_hex: &str,
     index: &mut ProtocolIndex,
 ) -> Result<Value, HandlerError> {
-    let requested: HashSet<String> = component_tags.iter().map(|s| s.to_string()).collect();
+    // Deduplicate preserving caller order; filter expects unique names.
+    let mut seen: HashSet<&str> = HashSet::new();
+    let requested: Vec<String> = component_tags
+        .iter()
+        .filter(|s| seen.insert(**s))
+        .map(|s| (*s).to_string())
+        .collect();
     let (needed, updated_inv) =
         filter_needed_components(&requested, inventory_hex, &index.component_index)?;
 
@@ -1346,9 +1371,7 @@ mod tests {
         index.insert("o-button".to_string(), 1);
         index.insert("o-avatar".to_string(), 2);
 
-        let mut names = HashSet::new();
-        names.insert("email-message".to_string());
-        names.insert("o-button".to_string());
+        let names = vec!["email-message".to_string(), "o-button".to_string()];
 
         // Only o-button (index 1) is loaded — bit 1 set
         let mut inv = vec![0u8; 1];
