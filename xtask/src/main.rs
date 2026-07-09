@@ -180,6 +180,8 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
         Some("streaming-resource") => bench_resource(save_baseline, compare_baseline),
         Some("streaming-e2e-ttfb") => bench_e2e_ttfb(save_baseline, compare_baseline),
         Some("streaming-browser") => bench_browser(save_baseline, compare_baseline),
+        Some("state-cpu") => bench_state_cpu(save_baseline, compare_baseline),
+        Some("ffi-cpu") => bench_ffi_cpu(save_baseline, compare_baseline),
         Some("streaming-all") | Some("full") => {
             // The full bench suite: criterion micro + resource + e2e + browser.
             // Each phase passes through the baseline flags.
@@ -256,7 +258,7 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
                          Criterion targets: parser, handler, protocol, expressions, state, \
                          contact-book, streaming, all.\n\
                          Non-criterion targets: streaming-resource, streaming-e2e-ttfb, \
-                         streaming-browser, streaming-all (= full)."
+                         streaming-browser, state-cpu, ffi-cpu, streaming-all (= full)."
                     );
                     return ExitCode::FAILURE;
                 }
@@ -376,6 +378,88 @@ fn bench_e2e_ttfb(save: Option<String>, compare: Option<String>) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("streaming-e2e-ttfb bench failed: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn bench_state_cpu(save: Option<String>, compare: Option<String>) -> ExitCode {
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "--release".into(),
+        "--example".into(),
+        "state_cpu_bench".into(),
+        "-p".into(),
+        "microsoft-webui".into(),
+    ];
+    if save.is_some() || compare.is_some() {
+        args.push("--".into());
+        if let Some(name) = save {
+            args.push("--save".into());
+            args.push(name);
+        }
+        if let Some(name) = compare {
+            args.push("--compare".into());
+            args.push(name);
+        }
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    match run_command("cargo", &arg_refs, None) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("state-cpu bench failed: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// FFI CPU benchmark: build the Node native addon (release) and run the
+/// `process.cpuUsage()`-based harness against it. Measures the full
+/// per-request FFI cost — napi string marshalling + parse + render +
+/// per-chunk callback — which a pure-Rust bench cannot see.
+fn bench_ffi_cpu(save: Option<String>, compare: Option<String>) -> ExitCode {
+    // Build the addon first (produces target/release/webui_node.<dll|so|dylib>).
+    eprintln!(
+        "{} building native addon (microsoft-webui-node, release)…",
+        console::style("▸").cyan().bold()
+    );
+    if let Err(message) = run_command(
+        "cargo",
+        &["build", "-p", "microsoft-webui-node", "--release"],
+        None,
+    ) {
+        eprintln!("ffi-cpu bench: addon build failed: {message}");
+        return ExitCode::FAILURE;
+    }
+
+    let script = std::path::PathBuf::from("crates")
+        .join("webui-node")
+        .join("bench")
+        .join("ffi_cpu_bench.mjs");
+    if !script.exists() {
+        eprintln!("ffi-cpu bench: {} not found", script.display());
+        return ExitCode::FAILURE;
+    }
+
+    let script_str = script.to_string_lossy().into_owned();
+    let mut args: Vec<String> = vec![script_str];
+    if let Some(name) = save {
+        args.push("--save".into());
+        args.push(name);
+    }
+    if let Some(name) = compare {
+        args.push("--compare".into());
+        args.push(name);
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    match run_command("node", &arg_refs, None) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("ffi-cpu bench failed: {message}");
+            eprintln!(
+                "  (requires Node.js on PATH; the addon is built to \
+                 target/release/webui_node by this step)"
+            );
             ExitCode::FAILURE
         }
     }

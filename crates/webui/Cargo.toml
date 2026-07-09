@@ -65,5 +65,9 @@ path = "examples/streaming_resource_bench.rs"
 name = "streaming_e2e_ttfb_bench"
 path = "examples/streaming_e2e_ttfb_bench.rs"
 
+[[example]]
+name = "state_cpu_bench"
+path = "examples/state_cpu_bench.rs"
+
 [lints]
 workspace = true

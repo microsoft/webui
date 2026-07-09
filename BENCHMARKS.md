@@ -16,6 +16,8 @@ how to compare results.
 | `cargo xtask bench streaming` | criterion micro | ~60 s | writer-path wall-clock + first-chunk TTFB | inner-loop iteration on the streaming module |
 | `cargo xtask bench contact-book` | criterion micro | ~90 s | end-to-end render at 10/100/1000 contacts | inner-loop iteration on handler/state/expressions |
 | `cargo xtask bench streaming-resource` | example | ~30 s | exact alloc count + bytes + getrusage CPU + RSS | proving zero-alloc claims; allocation regression hunting |
+| `cargo xtask bench state-cpu` | example | ~20 s | user/sys CPU µs + **CPU%** + MiB/s for parse vs render vs parse+render at 1k/5k/10k state | attributing per-request CPU to JSON state parsing |
+| `cargo xtask bench ffi-cpu` | Node addon | ~40 s (incl. addon build) | full FFI per-request CPU via `process.cpuUsage()` — napi marshalling + parse + render + per-chunk callback | measuring the CPU the Node host actually burns |
 | `cargo xtask bench streaming-e2e-ttfb` | example | ~10 s | HTTP-level TTFB / TTLB through actix | confirming wire-level streaming win |
 | `cargo xtask bench streaming-browser` | Playwright | ~30 s | real Chromium TTFB / FCP / LCP / DCL / load | proving user-perceived paint improvement |
 | `cargo xtask bench full` (= `streaming-all`) | suite | ~3 min | runs all four streaming-related benches in sequence | full streaming evidence pack for a PR |
@@ -38,6 +40,8 @@ cargo xtask bench full --baseline before
 Baselines are stored at `target/bench-baselines/`:
 
 * `streaming-resource-<name>.json`  — alloc + RSS + CPU table
+* `state-cpu-<name>.json`           — parse/render CPU + CPU% table
+* `ffi-cpu-<name>.json`             — Node FFI CPU (process.cpuUsage) table
 * `e2e-ttfb-<name>.json`            — HTTP TTFB/TTLB table
 * `browser-<name>.json`             — browser metrics table
 * `target/criterion/<bench>/<name>` — criterion's native baseline
@@ -53,6 +57,8 @@ improvement; positive = regression.
 | criterion (well-isolated wall-clock) | < ±2% | > ±5% |
 | streaming-resource (alloc count) | exact — any change matters | any non-zero |
 | streaming-resource (bytes, CPU) | < ±2% | > ±5% |
+| state-cpu (user CPU µs, CPU%) | < ±3% | > ±5% |
+| ffi-cpu (user CPU µs) | < ±5% | > ±10% |
 | streaming-e2e-ttfb (loopback) | < ±10% | > ±20% |
 | streaming-browser (real Chromium) | < ±5% | > ±15% |
 
@@ -76,6 +82,36 @@ These integrate with criterion's HTML reports
 passes those flags through so you don't need to remember `cargo
 bench` invocation details.
 
+#### Large-JSON / state-parse coverage
+
+The Node/WASM hosts run `serde_json::from_str::<Value>` on the state
+object for **every** render, so that parse — not the template walk —
+dominates CPU on list/table-heavy pages with large state. Two groups
+target it directly:
+
+* `state_bench.rs → state_parse` — `serde_json::from_str` throughput
+  (bytes/s) across `wide_flat_keys` (100–10k top-level keys),
+  `catalog_items` (100–10k array-of-objects), and `deep_nesting`
+  (8–64 levels; note serde_json hard-caps parse recursion at 128).
+  `state_parse_and_lookup` adds a signal resolution so the gap vs
+  `state_parse` is the lookup share (near zero — parse dominates).
+  `state_large_object` sweeps object width 100–10k to expose the
+  BTreeMap `O(log n)` key lookup.
+* `handler_bench.rs → handler_large_state` — end-to-end `handle()` at
+  1k/5k items as `render_only` (pre-parsed `Value`) vs
+  `parse_and_render` (includes `from_str`). Shared byte-throughput
+  denominator, so the curve gap is exactly the parse overhead.
+  `handler_wide_state_signal` resolves one `{{signal}}` against a
+  100–10k-key state to isolate wide-object lookup cost.
+
+Run just these with:
+
+```bash
+cargo bench -p microsoft-webui-state   --bench state_bench   -- state_parse
+cargo bench -p microsoft-webui-handler --bench handler_bench -- handler_large_state
+```
+
+
 ### `streaming-resource` (counting allocator + getrusage)
 
 `crates/webui/examples/streaming_resource_bench.rs` installs a custom
@@ -95,6 +131,46 @@ Reports per (path × scale):
 This is the **only** bench in the suite that gives you exact
 allocation numbers. Use it to verify "zero per-write allocation"
 claims and to detect allocation-pressure regressions.
+
+### `state-cpu` (parse vs render CPU + CPU%)
+
+`crates/webui/examples/state_cpu_bench.rs` targets the exact cost the
+load-test traces blamed: **JSON processing of the state object**. It
+reuses the same cross-platform CPU reader as `streaming-resource`
+(`getrusage` on Unix, `GetProcessTimes` on Windows) but reports the
+CPU *split* across three stages at 1k / 5k / 10k catalog items:
+
+- **parse** — `serde_json::from_str::<Value>` only (the addon's step 1)
+- **render** — `WebUIHandler::render` on a pre-parsed `Value`
+- **parse+render** — parse **then** render (the real per-request cost)
+
+`parse+render − render ≈ parse CPU`, so the gap between those rows is
+the CPU attributable to JSON parsing. Each row reports allocs/op,
+bytes/op, wall µs/op, **user µs/op**, **sys µs/op**, **CPU%**
+(`(user+sys)/wall` — ~100% means pure compute), and state throughput
+(MiB/s normalized to the input JSON size). Use it to confirm where the
+per-request CPU goes and to measure parser-side optimizations
+(caching, splicing, a faster parser or map) before/after.
+
+### `ffi-cpu` (Node addon, `process.cpuUsage()`)
+
+`crates/webui-node/bench/ffi_cpu_bench.mjs` measures the **full FFI
+per-request CPU** as the Node host actually pays it — the one number a
+pure-Rust bench cannot produce, because it includes the boundary
+costs: napi copying `stateJson` out of V8, and every rendered chunk
+crossing back into JS (`content.to_owned()` per chunk + the `onChunk`
+call). `cargo xtask bench ffi-cpu` builds the addon
+(`cargo build -p microsoft-webui-node --release` →
+`target/release/webui_node.<dll|so|dylib>`), loads it via
+`process.dlopen`, compiles the contact-book protocol through the
+addon's own `build()`, then loops `render()` over 1k / 5k / 10k JSON
+state while sampling `process.cpuUsage()` (user + system µs).
+
+Reports per scale: **user µs/op**, **sys µs/op**, wall µs/op, **CPU%**,
+state MiB/s, output KiB/op, and chunks/op. Compare its `user µs/op`
+against `state-cpu`'s `parse+render` row to see how much extra CPU the
+FFI boundary itself adds on top of the Rust work. Requires Node.js on
+`PATH`.
 
 ### `streaming-e2e-ttfb` (HTTP-level)
 

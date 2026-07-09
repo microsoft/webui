@@ -511,12 +511,114 @@ fn handler_state_depth_bench(c: &mut Criterion) {
     group.finish();
 }
 
+fn handler_large_state_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("handler_large_state");
+    let protocol = build_mixed_protocol();
+
+    // Large list-heavy states. `render_only` feeds a pre-parsed Value (isolates
+    // the handler's per-signal resolve + per-item collection clone), while
+    // `parse_and_render` includes `serde_json::from_str` to model the real Node
+    // per-request cost. With a shared byte-throughput denominator, the gap
+    // between the two curves is exactly the JSON parse overhead.
+    for &count in &[1_000usize, 5_000] {
+        let state = build_state(count);
+        let state_json = serde_json::to_string(&state)
+            .unwrap_or_else(|error| panic!("state serialize failed: {error}"));
+
+        // Warm up once to size throughput by rendered-output bytes.
+        let handler = WebUIHandler::new();
+        let mut writer = BenchWriter::new(count * 80 + 1024);
+        handler
+            .handle(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap_or_else(|error| panic!("large state warmup failed for {count}: {error}"));
+        group.throughput(Throughput::Bytes(writer.len() as u64));
+
+        group.bench_with_input(BenchmarkId::new("render_only", count), &state, |b, st| {
+            let h = WebUIHandler::new();
+            let mut w = BenchWriter::new(count * 80 + 1024);
+            b.iter(|| {
+                w.clear();
+                h.handle(
+                    black_box(&protocol),
+                    black_box(st),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut w,
+                )
+                .unwrap_or_else(|error| panic!("large state render failed: {error}"));
+            });
+        });
+
+        group.bench_with_input(
+            BenchmarkId::new("parse_and_render", count),
+            &state_json,
+            |b, sj| {
+                let h = WebUIHandler::new();
+                let mut w = BenchWriter::new(count * 80 + 1024);
+                b.iter(|| {
+                    w.clear();
+                    let st: Value = serde_json::from_str(black_box(sj))
+                        .unwrap_or_else(|error| panic!("state parse failed: {error}"));
+                    h.handle(
+                        black_box(&protocol),
+                        &st,
+                        &RenderOptions::new("index.html", "/"),
+                        &mut w,
+                    )
+                    .unwrap_or_else(|error| panic!("parse+render failed: {error}"));
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn handler_wide_state_signal_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("handler_wide_state_signal");
+    // A single `{{target}}` signal resolved against a very wide state object.
+    // Exposes serde_json BTreeMap O(log n) key lookup as sibling-key count grows.
+    let protocol = build_signal_protocol("target");
+
+    for &width in &[100usize, 1_000, 10_000] {
+        let mut obj = serde_json::Map::with_capacity(width + 1);
+        for idx in 0..width {
+            obj.insert(format!("key_{idx}"), json!(format!("value_{idx}")));
+        }
+        obj.insert("target".to_string(), json!("resolved"));
+        let state = Value::Object(obj);
+
+        group.bench_with_input(BenchmarkId::new("keys", width), &state, |b, st| {
+            let h = WebUIHandler::new();
+            let mut w = BenchWriter::new(64);
+            b.iter(|| {
+                w.clear();
+                h.handle(
+                    black_box(&protocol),
+                    black_box(st),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut w,
+                )
+                .unwrap_or_else(|error| panic!("wide state signal render failed: {error}"));
+            });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     handler_plugin_fast_bench,
     handler_loop_scaling_bench,
     handler_condition_variety_bench,
     handler_nested_components_bench,
-    handler_state_depth_bench
+    handler_state_depth_bench,
+    handler_large_state_bench,
+    handler_wide_state_signal_bench
 );
 criterion_main!(benches);

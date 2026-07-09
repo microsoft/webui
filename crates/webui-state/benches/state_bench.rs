@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde_json::json;
+use serde_json::Value;
 use std::hint::black_box;
 use webui_state::find_value_by_dotted_path;
 
@@ -150,34 +151,55 @@ fn state_missing_paths_bench(c: &mut Criterion) {
 fn state_large_object_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("state_large_object");
 
-    // Build a state with many top-level keys
-    let mut obj = serde_json::Map::with_capacity(100);
-    for idx in 0..100 {
-        obj.insert(format!("key_{idx}"), json!(format!("value_{idx}")));
+    // Sweep object *width* to expose serde_json's BTreeMap O(log n) key lookup
+    // as top-level state grows. 100 → 10k models small pages up to very large
+    // dashboards / API payloads splatted into state.
+    for &width in &[100usize, 1_000, 10_000] {
+        let mut obj = serde_json::Map::with_capacity(width + 1);
+        for idx in 0..width {
+            obj.insert(format!("key_{idx}"), json!(format!("value_{idx}")));
+        }
+        // Add the target key at the end.
+        obj.insert("target".to_string(), json!("found"));
+        let large_state = Value::Object(obj);
+
+        // Lookup early key.
+        group.bench_with_input(
+            BenchmarkId::new("early_key", width),
+            &large_state,
+            |b, st| {
+                b.iter(|| find_value_by_dotted_path(black_box("key_0"), black_box(st)));
+            },
+        );
+
+        // Lookup middle key.
+        let middle_key = format!("key_{}", width / 2);
+        group.bench_with_input(
+            BenchmarkId::new("middle_key", width),
+            &large_state,
+            |b, st| {
+                b.iter(|| find_value_by_dotted_path(black_box(middle_key.as_str()), black_box(st)));
+            },
+        );
+
+        // Lookup late key.
+        group.bench_with_input(
+            BenchmarkId::new("late_key", width),
+            &large_state,
+            |b, st| {
+                b.iter(|| find_value_by_dotted_path(black_box("target"), black_box(st)));
+            },
+        );
+
+        // Missing key in large object.
+        group.bench_with_input(
+            BenchmarkId::new("missing_key", width),
+            &large_state,
+            |b, st| {
+                b.iter(|| find_value_by_dotted_path(black_box("nonexistent"), black_box(st)));
+            },
+        );
     }
-    // Add the target key at the end
-    obj.insert("target".to_string(), json!("found"));
-    let large_state = serde_json::Value::Object(obj);
-
-    // Lookup early key
-    group.bench_function("early_key", |b| {
-        b.iter(|| find_value_by_dotted_path(black_box("key_0"), black_box(&large_state)));
-    });
-
-    // Lookup late key
-    group.bench_function("late_key", |b| {
-        b.iter(|| find_value_by_dotted_path(black_box("target"), black_box(&large_state)));
-    });
-
-    // Lookup middle key
-    group.bench_function("middle_key", |b| {
-        b.iter(|| find_value_by_dotted_path(black_box("key_50"), black_box(&large_state)));
-    });
-
-    // Missing key in large object
-    group.bench_function("missing_key", |b| {
-        b.iter(|| find_value_by_dotted_path(black_box("nonexistent"), black_box(&large_state)));
-    });
 
     group.finish();
 }
@@ -231,6 +253,131 @@ fn state_loop_simulation_bench(c: &mut Criterion) {
     group.finish();
 }
 
+// ── Large-JSON parse benchmarks ──────────────────────────────────────────
+//
+// The Node/WASM hosts call `serde_json::from_str::<Value>` on the state object
+// for *every* render request. Traces on the SSR pipeline point at this parse
+// as the dominant per-request CPU cost, so these benches measure it directly as
+// state grows in width, depth, and array size. Throughput is reported in bytes
+// so results read as JSON parse MB/s.
+
+/// Wide flat object: `{"key_0": "value_0", ...}` — a large bag of top-level fields.
+fn wide_flat_json(width: usize) -> String {
+    let mut obj = serde_json::Map::with_capacity(width);
+    for idx in 0..width {
+        obj.insert(format!("key_{idx}"), json!(format!("value_{idx}")));
+    }
+    serde_json::to_string(&Value::Object(obj)).unwrap_or_else(|e| panic!("serialize failed: {e}"))
+}
+
+/// Array-of-objects catalog: `{"items": [{id, name, price, ...}, ...]}` — models
+/// the list/table-heavy pages that carry the largest state payloads.
+fn catalog_json(item_count: usize) -> String {
+    let items: Vec<Value> = (0..item_count)
+        .map(|idx| {
+            json!({
+                "id": idx,
+                "name": format!("Product {idx}"),
+                "price": idx * 3 + 99,
+                "inStock": idx % 2 == 0,
+                "tags": ["new", "sale", "featured"],
+                "description": "A high quality product with a reasonably long description.",
+            })
+        })
+        .collect();
+    serde_json::to_string(&json!({ "items": items }))
+        .unwrap_or_else(|e| panic!("serialize failed: {e}"))
+}
+
+/// Deeply nested object: `{"child": {"child": {... {"name": "Alice"}}}}`.
+fn deep_json(depth: usize) -> String {
+    let mut value = json!({ "name": "Alice" });
+    for _ in 0..depth {
+        value = json!({ "child": value });
+    }
+    serde_json::to_string(&value).unwrap_or_else(|e| panic!("serialize failed: {e}"))
+}
+
+fn state_parse_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("state_parse");
+
+    // Wide flat objects — allocation-per-key + BTreeMap insertion cost.
+    for &width in &[100usize, 1_000, 10_000] {
+        let source = wide_flat_json(width);
+        group.throughput(Throughput::Bytes(source.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("wide_flat_keys", width),
+            &source,
+            |b, s| {
+                b.iter(|| {
+                    serde_json::from_str::<Value>(black_box(s))
+                        .unwrap_or_else(|e| panic!("parse failed: {e}"))
+                });
+            },
+        );
+    }
+
+    // Array-of-objects catalogs — the realistic large-state shape.
+    for &item_count in &[100usize, 1_000, 10_000] {
+        let source = catalog_json(item_count);
+        group.throughput(Throughput::Bytes(source.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("catalog_items", item_count),
+            &source,
+            |b, s| {
+                b.iter(|| {
+                    serde_json::from_str::<Value>(black_box(s))
+                        .unwrap_or_else(|e| panic!("parse failed: {e}"))
+                });
+            },
+        );
+    }
+
+    // Deeply nested objects — traversal/recursion-depth cost in the parser.
+    // Capped below serde_json's hard 128-level recursion limit (a depth-128
+    // state actually fails to parse — a real constraint for host state shape).
+    for &depth in &[8usize, 32, 64] {
+        let source = deep_json(depth);
+        group.throughput(Throughput::Bytes(source.len() as u64));
+        group.bench_with_input(BenchmarkId::new("deep_nesting", depth), &source, |b, s| {
+            b.iter(|| {
+                serde_json::from_str::<Value>(black_box(s))
+                    .unwrap_or_else(|e| panic!("parse failed: {e}"))
+            });
+        });
+    }
+
+    group.finish();
+}
+
+fn state_parse_and_lookup_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("state_parse_and_lookup");
+
+    // Models the true per-request cost: parse the state, then resolve a signal
+    // from it. The gap versus `state_parse` alone is the lookup share; the gap
+    // versus `state_path_depth` is the parse share.
+    for &item_count in &[1_000usize, 10_000] {
+        let source = catalog_json(item_count);
+        group.throughput(Throughput::Bytes(source.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("catalog_items", item_count),
+            &source,
+            |b, s| {
+                b.iter(|| {
+                    let state: Value = serde_json::from_str(black_box(s))
+                        .unwrap_or_else(|e| panic!("parse failed: {e}"));
+                    black_box(find_value_by_dotted_path(
+                        black_box("items.length"),
+                        black_box(&state),
+                    ))
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     state_path_depth_bench,
@@ -238,6 +385,8 @@ criterion_group!(
     state_length_property_bench,
     state_missing_paths_bench,
     state_large_object_bench,
-    state_loop_simulation_bench
+    state_loop_simulation_bench,
+    state_parse_bench,
+    state_parse_and_lookup_bench
 );
 criterion_main!(benches);
