@@ -406,143 +406,31 @@ impl Serialize for ProjectedState<'_> {
     }
 }
 
-/// An [`std::io::Write`] adapter over a [`ResponseWriter`] that escapes the
-/// byte sequence `</` to `<\/` inline, so serialized JSON can be embedded in
-/// a `<script>` element in a single streaming pass — no intermediate buffer,
-/// no UTF-8 revalidation, and no second `</` scan.
+/// Write the SSR `state` into the bootstrap block, projected down to only the
+/// keys present in the build-time hydration `schema` and escaped so the JSON is
+/// safe inside a `<script>` element.
 ///
-/// The `<` and `/` of `</` may fall in separate `write` calls, so a trailing
-/// `<` is carried in `pending_lt` and resolved against the next chunk (or
-/// flushed by [`ScriptSafeWriter::finish`]).
-struct ScriptSafeWriter<'w> {
-    inner: &'w mut dyn ResponseWriter,
-    pending_lt: bool,
-    /// First [`ResponseWriter`] or UTF-8 error, surfaced after serialization
-    /// (an [`std::io::Error`] cannot carry a [`HandlerError`]).
-    error: Option<HandlerError>,
-}
-
-impl<'w> ScriptSafeWriter<'w> {
-    fn new(inner: &'w mut dyn ResponseWriter) -> Self {
-        Self {
-            inner,
-            pending_lt: false,
-            error: None,
-        }
-    }
-
-    /// Flush a carried trailing `<` (only reachable if the JSON ended on a
-    /// literal `<`, which serde_json never emits — defensive).
-    fn finish(&mut self) -> Result<()> {
-        if self.pending_lt {
-            self.pending_lt = false;
-            self.inner.write("<")?;
-        }
-        Ok(())
-    }
-
-    fn write_escaped(&mut self, chunk: &str) -> Result<()> {
-        let bytes = chunk.as_bytes();
-        let mut idx = 0;
-
-        // Resolve a `<` carried over from the previous chunk against this
-        // chunk's first byte.
-        if self.pending_lt {
-            self.pending_lt = false;
-            if bytes.first() == Some(&b'/') {
-                self.inner.write("<\\/")?;
-                idx = 1;
-            } else {
-                self.inner.write("<")?;
-            }
-        }
-
-        let mut run_start = idx;
-        while idx < bytes.len() {
-            if bytes[idx] == b'<' {
-                match bytes.get(idx + 1) {
-                    Some(&b'/') => {
-                        if idx > run_start {
-                            self.inner.write(&chunk[run_start..idx])?;
-                        }
-                        self.inner.write("<\\/")?;
-                        idx += 2;
-                        run_start = idx;
-                        continue;
-                    }
-                    Some(_) => idx += 1,
-                    None => {
-                        // `<` is the final byte of this chunk: carry it.
-                        if idx > run_start {
-                            self.inner.write(&chunk[run_start..idx])?;
-                        }
-                        self.pending_lt = true;
-                        return Ok(());
-                    }
-                }
-            } else {
-                idx += 1;
-            }
-        }
-
-        if run_start < bytes.len() {
-            self.inner.write(&chunk[run_start..])?;
-        }
-        Ok(())
-    }
-}
-
-impl std::io::Write for ScriptSafeWriter<'_> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        // serde_json emits valid UTF-8 in escape-aligned chunks (a multi-byte
-        // char is never split across chunks), so this validation always
-        // succeeds; it is retained only to uphold the `&str` contract without
-        // an unchecked conversion.
-        let chunk = match std::str::from_utf8(buf) {
-            Ok(chunk) => chunk,
-            Err(utf8_error) => {
-                self.error = Some(HandlerError::Rendering(format!(
-                    "invalid JSON UTF-8 while streaming state: {utf8_error}"
-                )));
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "invalid UTF-8",
-                ));
-            }
-        };
-        if let Err(handler_error) = self.write_escaped(chunk) {
-            self.error = Some(handler_error);
-            return Err(std::io::Error::other("response writer error"));
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Stream the SSR `state` into the bootstrap block, projected down to only the
-/// keys present in the build-time hydration `schema` and escaped inline so the
-/// JSON is safe inside a `<script>` element.
+/// [`ProjectedState`] serializes only the allowlisted keys, so for the typical
+/// payload — a large state with a small hydratable surface — serde ever only
+/// touches the projected subset. Serialization reuses the proven
+/// [`write_script_safe_json`] path (serde's fast `Vec<u8>` target plus a single
+/// SIMD-accelerated `</` escape pass), which matches the pre-projection cost
+/// when every key is hydratable and collapses to a few bytes when it is not.
+/// Buffering the projected bytes and escaping once is measurably faster than
+/// streaming through a per-token `io::Write` adapter, and the projected buffer
+/// is tiny in the common case.
 fn write_projected_state(
     writer: &mut dyn ResponseWriter,
     state: &Value,
     schema: &[String],
 ) -> Result<()> {
-    let mut adapter = ScriptSafeWriter::new(writer);
-    let projected = ProjectedState {
-        value: state,
-        schema,
-    };
-    let serialize_result = serde_json::to_writer(&mut adapter, &projected);
-    // Surface a stored ResponseWriter/UTF-8 error ahead of the serde wrapper.
-    if let Some(error) = adapter.error.take() {
-        return Err(error);
-    }
-    serialize_result
-        .map_err(|error| HandlerError::Rendering(format!("failed to serialize state: {error}")))?;
-    adapter.finish()
+    write_script_safe_json(
+        writer,
+        &ProjectedState {
+            value: state,
+            schema,
+        },
+    )
 }
 
 fn write_webui_bootstrap(
@@ -7409,21 +7297,6 @@ mod tests {
         assert!(output.contains(r#""name":"Alice""#));
         assert!(!output.contains(r#""tokens""#));
         Ok(())
-    }
-
-    #[test]
-    fn script_safe_writer_escapes_split_close_tag() {
-        use std::io::Write;
-        let mut sink = TestWriter::new();
-        {
-            let mut writer = ScriptSafeWriter::new(&mut sink);
-            // `<` and `/script>` arrive in separate writes: the escaper must
-            // carry the trailing `<` and still emit `<\/script>`.
-            writer.write_all(b"a<").unwrap();
-            writer.write_all(b"/script>b").unwrap();
-            writer.finish().unwrap();
-        }
-        assert_eq!(sink.get_content(), r"a<\/script>b");
     }
 
     #[test]
