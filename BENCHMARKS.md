@@ -16,8 +16,8 @@ how to compare results.
 | `cargo xtask bench streaming` | criterion micro | ~60 s | writer-path wall-clock + first-chunk TTFB | inner-loop iteration on the streaming module |
 | `cargo xtask bench contact-book` | criterion micro | ~90 s | end-to-end render at 10/100/1000 contacts | inner-loop iteration on handler/state/expressions |
 | `cargo xtask bench streaming-resource` | example | ~30 s | exact alloc count + bytes + getrusage CPU + RSS | proving zero-alloc claims; allocation regression hunting |
-| `cargo xtask bench state-cpu` | example | ~20 s | user/sys CPU µs + **CPU%** + MiB/s for parse vs render vs parse+render at 1k/5k/10k state | attributing per-request CPU to JSON state parsing |
-| `cargo xtask bench ffi-cpu` | Node addon | ~50 s (incl. addon build) | A/B per-request CPU via `process.cpuUsage()`: `webui (stringify+render)` vs `stringify only` vs `render only` vs a pure-JS `control`, at 1k/5k/10k | proving the FFI path is fast (or a regression) vs plain JS |
+| `cargo xtask bench state-cpu` | example | ~20 s | exact memory (allocs/op + bytes/op), latency (wall µs/op), CPU (user/sys µs + **CPU%**) and throughput (MiB/s) for parse vs render vs parse+render at 1k/5k/10k state | attributing per-request CPU + allocation to JSON state parsing |
+| `cargo xtask bench ffi-cpu` | Node addon | ~50 s (incl. addon build) | A/B per-request cpu (user/sys µs + **CPU%** + **core%@150**), latency (wall µs/op), throughput (**ops/s**) and a host RSS/heap memory probe via `process.cpuUsage()`: `webui (stringify+render)` vs `stringify only` vs `render only` vs a pure-JS `control`, at 1k/5k/10k | proving the FFI path is fast (or a regression) vs plain JS |
 | `cargo xtask bench streaming-e2e-ttfb` | example | ~10 s | HTTP-level TTFB / TTLB through actix | confirming wire-level streaming win |
 | `cargo xtask bench streaming-browser` | Playwright | ~30 s | real Chromium TTFB / FCP / LCP / DCL / load | proving user-perceived paint improvement |
 | `cargo xtask bench full` (= `streaming-all`) | suite | ~3 min | runs all four streaming-related benches in sequence | full streaming evidence pack for a PR |
@@ -145,12 +145,16 @@ CPU *split* across three stages at 1k / 5k / 10k catalog items:
 - **parse+render** — parse **then** render (the real per-request cost)
 
 `parse+render − render ≈ parse CPU`, so the gap between those rows is
-the CPU attributable to JSON parsing. Each row reports allocs/op,
-bytes/op, wall µs/op, **user µs/op**, **sys µs/op**, **CPU%**
-(`(user+sys)/wall` — ~100% means pure compute), and state throughput
-(MiB/s normalized to the input JSON size). Use it to confirm where the
-per-request CPU goes and to measure parser-side optimizations
-(caching, splicing, a faster parser or map) before/after.
+the CPU attributable to JSON parsing. Each row reports all four
+load-test dimensions deterministically: **memory** (exact allocs/op and
+bytes/op via a custom `GlobalAlloc`), **latency** (wall µs/op), **cpu**
+(**user µs/op**, **sys µs/op**, **CPU%** = `(user+sys)/wall` — ~100 %
+means pure compute), and **throughput** (state MiB/s normalized to the
+input JSON size). Unlike the Node `ffi-cpu` host-RSS probe, memory here
+is exact and reproducible, so this is the source of truth for per-op
+allocation. Use it to confirm where the per-request CPU goes and to
+measure parser-side optimizations (caching, splicing, a faster parser
+or map) before/after.
 
 ### `ffi-cpu` (Node addon, `process.cpuUsage()`) — A/B vs a JS control
 
@@ -185,8 +189,24 @@ the control reads as "0 µs".
 `process.dlopen`, compiles the contact-book protocol through the
 addon's own `build()`, then runs the arms at 1k / 5k / 10k while
 sampling `process.cpuUsage()` (user + system µs). Reports per scale and
-arm: **user µs/op**, **sys µs/op**, wall µs/op, **CPU%**, out KiB/op,
-plus a `webui = N× control` ratio. Requires Node.js on `PATH`.
+arm the four load-test dimensions:
+
+* **cpu** — **user µs/op**, **sys µs/op**, **CPU%** (on-core
+  saturation), and **`core%@150`** = the per-request CPU projected to
+  *% of one core at 150 RPS* — the number to hold against the load
+  test's ~60 % (webui) vs ~25 % (control).
+* **latency** — **wall µs/op** per render.
+* **throughput** — **ops/s** (single-thread renders per second).
+* **memory** — a host **RSS / V8-heap working-set** probe on the render
+  loop (informational; kept out of the regression snapshot because it is
+  GC-noisy). The per-request serde tree is allocated *and freed* inside
+  one synchronous native call, so it never surfaces in
+  `process.memoryUsage()`; **exact per-op allocs/op and bytes/op are
+  reported by `state-cpu`**. Run `node --expose-gc` (xtask does this
+  automatically) for stable RSS/heap figures.
+
+Plus a `webui = N× control` CPU ratio and the isolated stringify tax.
+Requires Node.js on `PATH`.
 
 ### `streaming-e2e-ttfb` (HTTP-level)
 

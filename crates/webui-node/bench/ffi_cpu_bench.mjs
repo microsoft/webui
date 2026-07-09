@@ -9,10 +9,10 @@
  * To *prove* whether the FFI path is fast or a regression vs "plain JS", this
  * harness measures three arms per request, all from the SAME live state object:
  *
- *   A. webui (stringify+render) — the TRUE per-request cost: the caller must
+ *   A. webui (stringify+render) — the true per-request cost: the caller must
  *      `JSON.stringify(state)` because `render()` takes a JSON string, then Rust
  *      re-parses it with `serde_json::from_str` into an owned `Value` tree and
- *      walks the protocol. This is what a Node host actually pays.
+ *      walks the protocol. This is what a Node host pays today.
  *   A'. webui (render only) — render on a *prebuilt* JSON string. This is what
  *      the old harness measured; the gap A − A' is the hidden `JSON.stringify`
  *      tax the old numbers omitted.
@@ -24,11 +24,16 @@
  * `recentContacts` cards), so the control's render work does NOT grow with the
  * contact count — but WebUI still parses the entire state on every request. The
  * A − C gap is therefore the JSON tax, and it is exactly the CPU the load test
- * saw. A future "object-in" arm (pass the object, read it lazily) lands with the
- * handler-side fix and slots in next to these.
+ * saw. This harness doubles as a regression gate for CPU utilisation, latency
+ * and throughput of the render path (compare with --save/--compare).
  *
- * Reports user µs/op, system µs/op, wall µs/op, CPU% and out KiB/op for each arm,
- * plus a "webui = N× control" CPU ratio and the isolated stringify tax.
+ * Reports user µs/op, system µs/op, wall µs/op (latency), ops/s (single-thread
+ * render throughput), CPU% (on-core saturation), core%@150 (projected % of one
+ * core at 150 RPS — the load-test framing) and out KiB/op for each arm, plus a
+ * "webui = N× control" CPU ratio, the isolated stringify tax, and a host memory
+ * (RSS/V8 heap) working-set probe on the render loop. Exact per-op render
+ * allocation (allocs/op, bytes/op) is deterministic and lives in the Rust
+ * `state-cpu` bench, since the serde tree is freed inside each native call.
  *
  * The addon is loaded directly from the cargo build output via `process.dlopen`
  * — no napi packaging step required. Build it first:
@@ -52,7 +57,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SNAPSHOT_SCHEMA = 2;
+const SNAPSHOT_SCHEMA = 3;
 const SCALES = [1_000, 5_000, 10_000];
 // Per-arm iteration counts are calibrated at runtime so each arm accumulates
 // enough CPU to clear the OS CPU-clock tick (~15 ms on Windows). Without this,
@@ -61,6 +66,11 @@ const SCALES = [1_000, 5_000, 10_000];
 const TARGET_MS = 1_500;
 const MIN_ITERS = 20;
 const MAX_ITERS = 2_000_000;
+// Load-test framing: the report was "~60% of a core vs ~25% at 150 RPS". At a
+// fixed request rate the share of ONE core an arm consumes is just its
+// per-request CPU time × RPS, so we project each arm's (user+sys) CPU into
+// "% of one core @ TARGET_RPS" — the number directly comparable to that report.
+const TARGET_RPS = 150;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // crates/webui-node/bench -> repo root
@@ -278,7 +288,38 @@ function runArm(thunk) {
   return measureThunk(thunk, calibrateIters(thunk));
 }
 
-/** Build the three measured arms for one scale. */
+/**
+ * Probe host memory for a render loop. The per-request serde tree is allocated
+ * AND freed inside one synchronous native `render()` call, so it never surfaces
+ * in `process.memoryUsage()` — what we can observe is the process **working
+ * set** (RSS) and V8 heap high-water under sustained load. Exact per-op render
+ * allocation (allocs/op, bytes/op) is deterministic and lives in the Rust
+ * `state-cpu` bench. GC is forced around the probe when `--expose-gc` is set so
+ * the baseline/settled figures are stable rather than GC-timing artefacts.
+ */
+function measureMemory(thunk, iters) {
+  if (global.gc) global.gc();
+  const base = process.memoryUsage();
+  let peakRss = base.rss;
+  let peakHeap = base.heapUsed;
+  for (let i = 0; i < iters; i += 1) {
+    thunk();
+    const m = process.memoryUsage();
+    if (m.rss > peakRss) peakRss = m.rss;
+    if (m.heapUsed > peakHeap) peakHeap = m.heapUsed;
+  }
+  if (global.gc) global.gc();
+  const settled = process.memoryUsage();
+  return {
+    gc: Boolean(global.gc),
+    baseRss: base.rss,
+    peakRss,
+    settledRss: settled.rss,
+    peakHeap,
+  };
+}
+
+/** Build the measured arms for one scale. */
 function measureScale(addon, protocol, entry, state) {
   const prebuilt = JSON.stringify(state);
   let chunkBytes = 0;
@@ -303,7 +344,19 @@ function measureScale(addon, protocol, entry, state) {
 
   const control = runArm(() => renderControl(state).length);
 
-  return { stateBytes: prebuilt.length, arms: { webuiTotal, stringifyOnly, webuiRender, control } };
+  // Host working-set probe on the full string-path render (the real per-request
+  // path). Kept out of the timed arms above so it never perturbs their CPU.
+  const memory = measureMemory(() => {
+    chunkBytes = 0;
+    const json = JSON.stringify(state);
+    addon.render(protocol, json, entry, "/", onChunk);
+  }, 300);
+
+  return {
+    stateBytes: prebuilt.length,
+    arms: { webuiTotal, stringifyOnly, webuiRender, control },
+    memory,
+  };
 }
 
 // ── Reporting ─────────────────────────────────────────────────────────
@@ -315,6 +368,13 @@ const ARM_LABELS = {
   control: "control (pure JS)",
 };
 
+/** Compact throughput formatting: 402000 → "402k", 1234 → "1.2k", 20 → "20". */
+function formatOps(ops) {
+  if (ops >= 10_000) return `${(ops / 1000).toFixed(0)}k`;
+  if (ops >= 1_000) return `${(ops / 1000).toFixed(1)}k`;
+  return ops.toFixed(0);
+}
+
 function printScale(scale, res) {
   console.log();
   console.log(
@@ -322,17 +382,21 @@ function printScale(scale, res) {
   );
   console.log(
     `| ${"arm".padEnd(24)} | ${"iters".padStart(8)} | ${"user µs/op".padStart(11)} | ${"sys µs/op".padStart(10)} | ` +
-      `${"wall µs/op".padStart(11)} | ${"CPU%".padStart(6)} | ${"out KiB/op".padStart(10)} |`,
+      `${"wall µs/op".padStart(11)} | ${"ops/s".padStart(9)} | ${"CPU%".padStart(6)} | ${"core%@150".padStart(10)} | ${"out KiB/op".padStart(10)} |`,
   );
   console.log(
-    `|${"-".repeat(26)}|${"-".repeat(10)}|${"-".repeat(13)}|${"-".repeat(12)}|${"-".repeat(13)}|${"-".repeat(8)}|${"-".repeat(12)}|`,
+    `|${"-".repeat(26)}|${"-".repeat(10)}|${"-".repeat(13)}|${"-".repeat(12)}|${"-".repeat(13)}|${"-".repeat(11)}|${"-".repeat(8)}|${"-".repeat(12)}|${"-".repeat(12)}|`,
   );
   for (const key of ["webuiTotal", "stringifyOnly", "webuiRender", "control"]) {
     const r = res.arms[key];
+    const corePct = ((r.userUs + r.sysUs) * TARGET_RPS) / 10_000;
+    const coreStr = corePct >= 10 ? corePct.toFixed(0) : corePct.toFixed(2);
+    const opsPerSec = r.wallUs > 0 ? 1_000_000 / r.wallUs : 0;
     console.log(
       `| ${ARM_LABELS[key].padEnd(24)} | ${String(r.iters).padStart(8)} | ${r.userUs.toFixed(2).padStart(11)} | ` +
         `${r.sysUs.toFixed(2).padStart(10)} | ${r.wallUs.toFixed(2).padStart(11)} | ` +
-        `${`${r.cpuPct.toFixed(0)}%`.padStart(6)} | ${(r.outBytesPerOp / 1024).toFixed(2).padStart(10)} |`,
+        `${formatOps(opsPerSec).padStart(9)} | ${`${r.cpuPct.toFixed(0)}%`.padStart(6)} | ${`${coreStr}%`.padStart(10)} | ` +
+        `${(r.outBytesPerOp / 1024).toFixed(2).padStart(10)} |`,
     );
   }
 
@@ -346,6 +410,22 @@ function printScale(scale, res) {
     `  → webui burns ${ratio}× the control's user CPU. ` +
       `stringify ≈ ${stringify.toFixed(0)} µs/op (${stringifyPct.toFixed(0)}% of webui); ` +
       `serde parse+render ≈ ${render.toFixed(0)} µs/op vs control ${ctrl.toFixed(1)} µs/op.`,
+  );
+  const webuiCore = ((res.arms.webuiTotal.userUs + res.arms.webuiTotal.sysUs) * TARGET_RPS) / 10_000;
+  const ctrlCore = ((res.arms.control.userUs + res.arms.control.sysUs) * TARGET_RPS) / 10_000;
+  console.log(
+    `    load-test projection @${TARGET_RPS} RPS: webui ≈ ${webuiCore.toFixed(0)}% of one core ` +
+      `vs control ≈ ${ctrlCore.toFixed(2)}% (${ctrlCore > 0 ? (webuiCore / ctrlCore).toFixed(0) : "∞"}× the core utilisation).`,
+  );
+  const mem = res.memory;
+  const miB = (bytes) => (bytes / (1024 * 1024)).toFixed(1);
+  console.log(
+    `    host memory (webui render loop): RSS ${miB(mem.baseRss)}→${miB(mem.peakRss)} MiB peak, ` +
+      `settled ${miB(mem.settledRss)} MiB; V8 heap peak ${miB(mem.peakHeap)} MiB` +
+      `${mem.gc ? "" : " (run node --expose-gc for stable figures)"}.`,
+  );
+  console.log(
+    "      note: the per-op serde tree is transient (freed each call) — exact allocs/op & bytes/op are in `cargo xtask bench state-cpu`.",
   );
 }
 
@@ -467,7 +547,9 @@ function main() {
     const state = buildState(scale);
     const res = measureScale(addon, protocol, entry, state);
     printScale(scale, res);
-    rows.push({ scale, ...res });
+    // Persist only the timed arms — host memory (res.memory) is informational
+    // and GC-noisy, so it stays out of the regression snapshot.
+    rows.push({ scale, stateBytes: res.stateBytes, arms: res.arms });
   }
 
   console.log();
@@ -477,6 +559,12 @@ function main() {
   console.log("    scales; webui grows because it re-parses the whole state every request.");
   console.log("  * `stringify only` is the JS-side tax; `webui (render only)` is the Rust-side");
   console.log("    serde parse + protocol walk. Their sum ~= `webui (stringify+render)`.");
+  console.log("  * ops/s = single-thread render throughput (1e6 / wall µs/op) — the speed/throughput KPI.");
+  console.log("  * CPU% = on-core saturation during the op (≈100% everywhere → compute-bound).");
+  console.log(`  * core%@150 = projected % of ONE core at ${TARGET_RPS} RPS (per-req CPU × RPS) —`);
+  console.log("    the number to compare against the load test's ~60% (webui) vs ~25% (control).");
+  console.log("  * host memory = process RSS/heap working set under load; the per-op serde tree is");
+  console.log("    transient (freed each call) so exact allocs/bytes live in `xtask bench state-cpu`.");
 
   if (mode === "save") saveSnapshot(name, rows);
   else if (mode === "compare") {

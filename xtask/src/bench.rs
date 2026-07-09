@@ -297,7 +297,12 @@ fn run_ffi_cpu(baseline: &Baseline) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let mut args: Vec<String> = vec![script.to_string_lossy().into_owned()];
+    // `--expose-gc` lets the harness force GC around its memory probe so the
+    // reported RSS/heap working set is stable rather than GC-timing noise.
+    let mut args: Vec<String> = vec![
+        "--expose-gc".to_string(),
+        script.to_string_lossy().into_owned(),
+    ];
     baseline.push_example(&mut args);
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     match run_command("node", &arg_refs, None) {
