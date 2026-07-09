@@ -2,24 +2,33 @@
 // Licensed under the MIT license.
 
 /**
- * FFI CPU benchmark for the WebUI Node.js native addon.
+ * FFI CPU benchmark for the WebUI Node.js native addon — A/B vs a JS control.
  *
  * Load tests reported the Node SSR host burning ~60% CPU vs ~25% for the
  * control at 150 RPS, with traces blaming JSON processing of the state object.
- * The sibling Rust bench (`crates/webui/examples/state_cpu_bench.rs`) isolates
- * parse vs render CPU *inside* Rust. This harness measures the **full FFI
- * per-request CPU** as Node actually pays it, including the costs a pure-Rust
- * bench cannot see:
+ * To *prove* whether the FFI path is fast or a regression vs "plain JS", this
+ * harness measures three arms per request, all from the SAME live state object:
  *
- *   1. napi copies `stateJson` from V8 into a Rust `String`.
- *   2. `serde_json::from_str` builds the owned state tree.
- *   3. `WebUIHandler::render` walks the protocol.
- *   4. every emitted chunk crosses the FFI boundary back into JS
- *      (`content.to_owned()` per chunk + the `onChunk` call).
+ *   A. webui (stringify+render) — the TRUE per-request cost: the caller must
+ *      `JSON.stringify(state)` because `render()` takes a JSON string, then Rust
+ *      re-parses it with `serde_json::from_str` into an owned `Value` tree and
+ *      walks the protocol. This is what a Node host actually pays.
+ *   A'. webui (render only) — render on a *prebuilt* JSON string. This is what
+ *      the old harness measured; the gap A − A' is the hidden `JSON.stringify`
+ *      tax the old numbers omitted.
+ *   C. control (pure JS, live object) — a hand-written SSR of the SAME dashboard
+ *      route straight from the live object: no stringify, no parse. This is the
+ *      "control uses JS to do everything" baseline the load test compared to.
  *
- * It uses `process.cpuUsage()` (user + system microseconds) around a tight
- * `render()` loop over increasingly large JSON state, and reports user µs/op,
- * system µs/op, wall µs/op, CPU% and state throughput (MiB/s).
+ * The `/` route only emits a fixed-size dashboard (stats + sidebar + the 5
+ * `recentContacts` cards), so the control's render work does NOT grow with the
+ * contact count — but WebUI still parses the entire state on every request. The
+ * A − C gap is therefore the JSON tax, and it is exactly the CPU the load test
+ * saw. A future "object-in" arm (pass the object, read it lazily) lands with the
+ * handler-side fix and slots in next to these.
+ *
+ * Reports user µs/op, system µs/op, wall µs/op, CPU% and out KiB/op for each arm,
+ * plus a "webui = N× control" CPU ratio and the isolated stringify tax.
  *
  * The addon is loaded directly from the cargo build output via `process.dlopen`
  * — no napi packaging step required. Build it first:
@@ -43,9 +52,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SNAPSHOT_SCHEMA = 1;
+const SNAPSHOT_SCHEMA = 2;
 const SCALES = [1_000, 5_000, 10_000];
-const ITERS_PER_SCALE = 400;
+// Per-arm iteration counts are calibrated at runtime so each arm accumulates
+// enough CPU to clear the OS CPU-clock tick (~15 ms on Windows). Without this,
+// the sub-10-µs control arm reads as "0 µs / 0% CPU". Each arm runs until it has
+// spent ~TARGET_MS of wall time, bounded by [MIN_ITERS, MAX_ITERS].
+const TARGET_MS = 1_500;
+const MIN_ITERS = 20;
+const MAX_ITERS = 2_000_000;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // crates/webui-node/bench -> repo root
@@ -141,76 +156,196 @@ function buildState(count) {
   };
 }
 
+// ── Control renderer (pure JS SSR of the `/` dashboard, no JSON round-trip) ──
+
+/** HTML-escape interpolated text, mirroring the work WebUI does per value. */
+function esc(value) {
+  const s = String(value);
+  let out = "";
+  let last = 0;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s.charCodeAt(i);
+    let rep;
+    if (ch === 38) rep = "&amp;";
+    else if (ch === 60) rep = "&lt;";
+    else if (ch === 62) rep = "&gt;";
+    else if (ch === 34) rep = "&quot;";
+    else continue;
+    out += s.slice(last, i) + rep;
+    last = i + 1;
+  }
+  return last === 0 ? s : out + s.slice(last);
+}
+
+function renderCard(c) {
+  let o =
+    `<cb-contact-card id="${esc(c.id)}" first-name="${esc(c.firstName)}" ` +
+    `last-name="${esc(c.lastName)}" email="${esc(c.email)}" phone="${esc(c.phone)}" ` +
+    `company="${esc(c.company)}" group="${esc(c.group)}" favorite="${c.favorite}" ` +
+    `initials="${esc(c.initials)}" avatar-color="${esc(c.avatarColor)}" ` +
+    `notes="${esc(c.notes)}" address="${esc(c.address)}">`;
+  o += `<template shadowrootmode="open"><a class="card" href="./contacts/${esc(c.id)}">`;
+  o += `<div class="avatar" style="background-color: ${esc(c.avatarColor)}">`;
+  o += `<span class="avatar-initials">${esc(c.initials)}</span></div>`;
+  o += `<div class="card-content"><div class="card-top">`;
+  o += `<span class="name">${esc(c.firstName)} ${esc(c.lastName)}</span>`;
+  if (c.favorite === true) o += `<span class="fav-star"></span>`;
+  o += `</div><span class="email">${esc(c.email)}</span>`;
+  o += `<span class="phone">${esc(c.phone)}</span></div>`;
+  o += `<span class="badge">${esc(c.group)}</span></a></template></cb-contact-card>`;
+  return o;
+}
+
+/** Render the same dashboard route WebUI serves for "/", from the live object. */
+function renderControl(s) {
+  let out = `<cb-header search-query="${esc(s.searchQuery)}"><template shadowrootmode="open">`;
+  out += `<div class="header-left"><h1 class="title">Contacts</h1></div>`;
+  out += `<div class="header-center"><div class="search-container"><span class="search-icon"></span>`;
+  out += `<input class="search-input" type="text" placeholder="Search contacts..." value="${esc(s.searchQuery)}" /></div></div>`;
+  out += `<div class="header-right"><a class="add-btn" href="./contacts/add">`;
+  out += `<span class="add-icon">+</span><span class="add-label">Add Contact</span></a></div>`;
+  out += `</template></cb-header><div class="layout">`;
+  out +=
+    `<cb-sidebar page="${esc(s.page)}" active-group="${esc(s.activeGroup)}" ` +
+    `total-contacts="${s.totalContacts}" total-favorites="${s.totalFavorites}">`;
+  out += `<template shadowrootmode="open"><div class="nav-section">`;
+  out += `<a class="nav-item" data-nav="Dashboard" href="./"><span class="nav-icon nav-icon-dashboard"></span><span class="nav-label">Dashboard</span></a>`;
+  out += `<a class="nav-item" data-nav="All Contacts" href="./contacts"><span class="nav-icon nav-icon-contacts"></span><span class="nav-label">All Contacts</span><span class="nav-count">${s.totalContacts}</span></a>`;
+  out += `<a class="nav-item" data-nav="Favorites" href="./favorites"><span class="nav-icon nav-icon-favorites"></span><span class="nav-label">Favorites</span><span class="nav-count">${s.totalFavorites}</span></a>`;
+  out += `</div><div class="nav-divider"></div><div class="nav-section"><h3 class="nav-heading">Groups</h3>`;
+  for (const group of s.groups) {
+    out += `<a class="nav-item nav-item-group" data-nav="${esc(group)}" href="./groups/${esc(group)}">`;
+    out += `<span class="nav-icon nav-icon-folder"></span><span class="nav-label">${esc(group)}</span></a>`;
+  }
+  out += `</div></template></cb-sidebar><main class="content">`;
+  out += `<h2 class="page-title">Dashboard</h2><div class="stats-row">`;
+  out += `<div class="stat-card"><span class="stat-icon stat-icon-contacts"></span><div class="stat-content"><span class="stat-value">${s.totalContacts}</span><span class="stat-label">Total Contacts</span></div></div>`;
+  out += `<div class="stat-card"><span class="stat-icon stat-icon-favorites"></span><div class="stat-content"><span class="stat-value">${s.totalFavorites}</span><span class="stat-label">Favorites</span></div></div>`;
+  out += `<div class="stat-card"><span class="stat-icon stat-icon-groups"></span><div class="stat-content"><span class="stat-value">${s.totalGroups}</span><span class="stat-label">Groups</span></div></div>`;
+  out += `</div><h3 class="section-title">Recent Contacts</h3><div class="contact-list-container">`;
+  for (const c of s.recentContacts) out += renderCard(c);
+  out += `</div></main></div>`;
+  return out;
+}
+
 // ── Measurement ───────────────────────────────────────────────────────
 
 /**
- * Run `render()` `iters` times and capture CPU + wall deltas.
- * `onChunk` only sums byte length so the per-chunk FFI callback cost is
- * measured but JS-side work stays negligible.
+ * Estimate how many iterations of `thunk` fit in ~TARGET_MS of wall time, so a
+ * cheap arm runs long enough for CPU accounting to be meaningful. Returns a
+ * count clamped to [MIN_ITERS, MAX_ITERS].
  */
-function measure(addon, protocol, stateJson, entry, iters) {
+function calibrateIters(thunk) {
+  const probe = 8;
+  for (let i = 0; i < 3; i += 1) thunk(); // warm up JIT + first-call lazy init
+  const t0 = process.hrtime.bigint();
+  for (let i = 0; i < probe; i += 1) thunk();
+  const perOpMs = Number(process.hrtime.bigint() - t0) / 1e6 / probe;
+  if (perOpMs <= 0) return MAX_ITERS;
+  const n = Math.ceil(TARGET_MS / perOpMs);
+  return Math.min(MAX_ITERS, Math.max(MIN_ITERS, n));
+}
+
+/**
+ * Run `thunk` `iters` times and capture CPU + wall deltas. The thunk returns the
+ * number of output bytes it produced so we can report per-op output size.
+ */
+function measureThunk(thunk, iters) {
+  for (let i = 0; i < 3; i += 1) thunk(); // warm up JIT + first-call lazy init
+
   let outBytes = 0;
-  let chunks = 0;
-  const onChunk = (html) => {
-    outBytes += html.length;
-    chunks += 1;
-  };
-
-  // Warm up: JIT + first-call lazy init.
-  for (let i = 0; i < 3; i += 1) addon.render(protocol, stateJson, entry, "/", onChunk);
-
-  outBytes = 0;
-  chunks = 0;
   const cpu0 = process.cpuUsage();
   const wall0 = process.hrtime.bigint();
-  for (let i = 0; i < iters; i += 1) {
-    addon.render(protocol, stateJson, entry, "/", onChunk);
-  }
+  for (let i = 0; i < iters; i += 1) outBytes += thunk();
   const wallNs = Number(process.hrtime.bigint() - wall0);
-  const cpu = process.cpuUsage(cpu0); // { user, system } in microseconds
+  const cpu = process.cpuUsage(cpu0); // { user, system } microseconds
 
-  const n = iters;
-  const userUs = cpu.user / n;
-  const sysUs = cpu.system / n;
-  const wallUs = wallNs / 1000 / n;
-  const cpuPct = wallUs > 0 ? ((userUs + sysUs) / wallUs) * 100 : 0;
-  const wallS = wallNs / 1e9 / n;
-  const stateMiBs = wallS > 0 ? stateJson.length / (1024 * 1024) / wallS : 0;
-
+  const userUs = cpu.user / iters;
+  const sysUs = cpu.system / iters;
+  const wallUs = wallNs / 1000 / iters;
   return {
     iters,
     userUs,
     sysUs,
     wallUs,
-    cpuPct,
-    stateMiBs,
-    outBytesPerOp: outBytes / n,
-    chunksPerOp: chunks / n,
+    cpuPct: wallUs > 0 ? ((userUs + sysUs) / wallUs) * 100 : 0,
+    outBytesPerOp: outBytes / iters,
   };
+}
+
+/** Calibrate then measure a single arm. */
+function runArm(thunk) {
+  return measureThunk(thunk, calibrateIters(thunk));
+}
+
+/** Build the three measured arms for one scale. */
+function measureScale(addon, protocol, entry, state) {
+  const prebuilt = JSON.stringify(state);
+  let chunkBytes = 0;
+  const onChunk = (html) => {
+    chunkBytes += html.length;
+  };
+
+  const webuiTotal = runArm(() => {
+    chunkBytes = 0;
+    const json = JSON.stringify(state);
+    addon.render(protocol, json, entry, "/", onChunk);
+    return chunkBytes;
+  });
+
+  const stringifyOnly = runArm(() => JSON.stringify(state).length);
+
+  const webuiRender = runArm(() => {
+    chunkBytes = 0;
+    addon.render(protocol, prebuilt, entry, "/", onChunk);
+    return chunkBytes;
+  });
+
+  const control = runArm(() => renderControl(state).length);
+
+  return { stateBytes: prebuilt.length, arms: { webuiTotal, stringifyOnly, webuiRender, control } };
 }
 
 // ── Reporting ─────────────────────────────────────────────────────────
 
-function printHeader() {
+const ARM_LABELS = {
+  webuiTotal: "webui (stringify+render)",
+  stringifyOnly: "  stringify only",
+  webuiRender: "  webui (render only)",
+  control: "control (pure JS)",
+};
+
+function printScale(scale, res) {
   console.log();
   console.log(
-    `| ${"scale".padEnd(9)} | ${"iters".padStart(6)} | ${"user µs/op".padStart(11)} | ` +
-      `${"sys µs/op".padStart(10)} | ${"wall µs/op".padStart(11)} | ${"CPU%".padStart(6)} | ` +
-      `${"state MiB/s".padStart(11)} | ${"out KiB/op".padStart(10)} | ${"chunks/op".padStart(9)} |`,
+    `Scale ${scale} contacts | state JSON ${(res.stateBytes / (1024 * 1024)).toFixed(2)} MiB`,
   );
   console.log(
-    `|${"-".repeat(11)}|${"-".repeat(8)}|${"-".repeat(13)}|${"-".repeat(12)}|` +
-      `${"-".repeat(13)}|${"-".repeat(8)}|${"-".repeat(13)}|${"-".repeat(12)}|${"-".repeat(11)}|`,
+    `| ${"arm".padEnd(24)} | ${"iters".padStart(8)} | ${"user µs/op".padStart(11)} | ${"sys µs/op".padStart(10)} | ` +
+      `${"wall µs/op".padStart(11)} | ${"CPU%".padStart(6)} | ${"out KiB/op".padStart(10)} |`,
   );
-}
+  console.log(
+    `|${"-".repeat(26)}|${"-".repeat(10)}|${"-".repeat(13)}|${"-".repeat(12)}|${"-".repeat(13)}|${"-".repeat(8)}|${"-".repeat(12)}|`,
+  );
+  for (const key of ["webuiTotal", "stringifyOnly", "webuiRender", "control"]) {
+    const r = res.arms[key];
+    console.log(
+      `| ${ARM_LABELS[key].padEnd(24)} | ${String(r.iters).padStart(8)} | ${r.userUs.toFixed(2).padStart(11)} | ` +
+        `${r.sysUs.toFixed(2).padStart(10)} | ${r.wallUs.toFixed(2).padStart(11)} | ` +
+        `${`${r.cpuPct.toFixed(0)}%`.padStart(6)} | ${(r.outBytesPerOp / 1024).toFixed(2).padStart(10)} |`,
+    );
+  }
 
-function printRow(scale, r) {
+  const total = res.arms.webuiTotal.userUs;
+  const stringify = res.arms.stringifyOnly.userUs;
+  const render = res.arms.webuiRender.userUs;
+  const ctrl = res.arms.control.userUs;
+  const ratio = ctrl > 0 ? (total / ctrl).toFixed(0) : "∞";
+  const stringifyPct = total > 0 ? (stringify / total) * 100 : 0;
   console.log(
-    `| ${String(scale).padEnd(9)} | ${String(r.iters).padStart(6)} | ` +
-      `${r.userUs.toFixed(2).padStart(11)} | ${r.sysUs.toFixed(2).padStart(10)} | ` +
-      `${r.wallUs.toFixed(2).padStart(11)} | ${`${r.cpuPct.toFixed(0)}%`.padStart(6)} | ` +
-      `${r.stateMiBs.toFixed(1).padStart(11)} | ${(r.outBytesPerOp / 1024).toFixed(1).padStart(10)} | ` +
-      `${r.chunksPerOp.toFixed(1).padStart(9)} |`,
+    `  → webui burns ${ratio}× the control's user CPU. ` +
+      `stringify ≈ ${stringify.toFixed(0)} µs/op (${stringifyPct.toFixed(0)}% of webui); ` +
+      `serde parse+render ≈ ${render.toFixed(0)} µs/op vs control ${ctrl.toFixed(1)} µs/op.`,
   );
 }
 
@@ -255,22 +390,26 @@ function pctChange(base, current) {
 
 function printDiff(rows, baseline) {
   console.log();
-  console.log(`Diff vs baseline '${baseline.name}'`);
+  console.log(`Diff vs baseline '${baseline.name}' (webui stringify+render arm, user CPU)`);
   console.log(
-    `| ${"scale".padEnd(9)} | ${"user_cpu Δ%".padStart(14)} | ${"wall Δ%".padStart(14)} | ${"CPU% Δ (pts)".padStart(14)} |`,
+    `| ${"scale".padEnd(9)} | ${"user Δ%".padStart(12)} | ${"wall Δ%".padStart(12)} | ${"webui/control Δ".padStart(16)} |`,
   );
-  console.log(`|${"-".repeat(11)}|${"-".repeat(16)}|${"-".repeat(16)}|${"-".repeat(16)}|`);
+  console.log(`|${"-".repeat(11)}|${"-".repeat(14)}|${"-".repeat(14)}|${"-".repeat(18)}|`);
   for (const cur of rows) {
     const base = baseline.rows.find((b) => b.scale === cur.scale);
     if (!base) {
-      console.log(`| ${String(cur.scale).padEnd(9)} | ${"(new row)".padStart(14)} | ${"—".padStart(14)} | ${"—".padStart(14)} |`);
+      console.log(`| ${String(cur.scale).padEnd(9)} | ${"(new row)".padStart(12)} | ${"—".padStart(12)} | ${"—".padStart(16)} |`);
       continue;
     }
-    const ud = pctChange(base.userUs, cur.userUs);
-    const wd = pctChange(base.wallUs, cur.wallUs);
-    const cd = cur.cpuPct - base.cpuPct;
+    const ct = cur.arms.webuiTotal;
+    const bt = base.arms.webuiTotal;
+    const ud = pctChange(bt.userUs, ct.userUs);
+    const wd = pctChange(bt.wallUs, ct.wallUs);
+    const curRatio = cur.arms.control.userUs > 0 ? ct.userUs / cur.arms.control.userUs : 0;
+    const baseRatio = base.arms.control.userUs > 0 ? bt.userUs / base.arms.control.userUs : 0;
+    const rd = curRatio - baseRatio;
     console.log(
-      `| ${String(cur.scale).padEnd(9)} | ${`${ud.toFixed(1)}%`.padStart(14)} | ${`${wd.toFixed(1)}%`.padStart(14)} | ${`${cd.toFixed(1)}`.padStart(14)} |`,
+      `| ${String(cur.scale).padEnd(9)} | ${`${ud.toFixed(1)}%`.padStart(12)} | ${`${wd.toFixed(1)}%`.padStart(12)} | ${`${rd >= 0 ? "+" : ""}${rd.toFixed(1)}×`.padStart(16)} |`,
     );
   }
   console.log();
@@ -288,7 +427,7 @@ function parseArgs() {
     if (args[i] === "--help" || args[i] === "-h") {
       console.log(
         "Usage: node ffi_cpu_bench.mjs [--save NAME] [--compare NAME]\n\n" +
-          "  With no args: prints the FFI CPU table.\n" +
+          "  With no args: prints the FFI CPU A/B table (webui vs JS control).\n" +
           "  --save NAME: write results to target/bench-baselines/ffi-cpu-NAME.json\n" +
           "  --compare NAME: print results AND a Δ%-table vs the saved baseline",
       );
@@ -313,28 +452,31 @@ function main() {
   const built = addon.build({ appDir, entry, css: "style" });
   const protocol = built.protocol;
 
-  console.log("WebUI FFI CPU benchmark (native addon render, process.cpuUsage)");
-  console.log("==============================================================");
+  console.log("WebUI FFI CPU benchmark — A/B vs pure-JS control (process.cpuUsage)");
+  console.log("==================================================================");
   console.log(`Addon:   ${addonPath}`);
   console.log(`Node:    ${process.version} | platform: ${process.platform}-${process.arch}`);
-  console.log(`Iters per scale: ${ITERS_PER_SCALE} | protocol: ${protocol.length} bytes`);
-  console.log("CPU% = (user+sys)/wall. This includes napi string marshalling + per-chunk FFI callbacks.");
-  printHeader();
+  console.log(`Protocol: ${protocol.length} bytes | route: "/" (dashboard)`);
+  console.log("Arms measured per request, all from the SAME live object:");
+  console.log("  webui (stringify+render): JSON.stringify(state) + addon.render() — true per-request cost.");
+  console.log("  webui (render only):      addon.render() on a prebuilt string — hides the stringify.");
+  console.log("  control (pure JS):        renderControl(state) — no stringify, no parse (the control).");
 
   const rows = [];
   for (const scale of SCALES) {
-    const stateJson = JSON.stringify(buildState(scale));
-    const r = measure(addon, protocol, stateJson, entry, ITERS_PER_SCALE);
-    printRow(scale, r);
-    rows.push({ scale, ...r });
+    const state = buildState(scale);
+    const res = measureScale(addon, protocol, entry, state);
+    printScale(scale, res);
+    rows.push({ scale, ...res });
   }
 
   console.log();
-  console.log("Notes:");
-  console.log("  * `user`/`sys µs/op` come from process.cpuUsage() deltas / iters.");
-  console.log("  * `state MiB/s` normalizes throughput to the input state-JSON size.");
-  console.log("  * This is the full per-request FFI cost; the Rust example splits it");
-  console.log("    into parse vs render (cargo xtask bench state-cpu).");
+  console.log("Reading the result:");
+  console.log("  * webui/control ratio ~= how much more CPU the FFI path burns than plain JS.");
+  console.log("  * The control render is fixed-size (5 recent cards), so its cost is flat across");
+  console.log("    scales; webui grows because it re-parses the whole state every request.");
+  console.log("  * `stringify only` is the JS-side tax; `webui (render only)` is the Rust-side");
+  console.log("    serde parse + protocol walk. Their sum ~= `webui (stringify+render)`.");
 
   if (mode === "save") saveSnapshot(name, rows);
   else if (mode === "compare") {

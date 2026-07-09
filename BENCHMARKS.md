@@ -17,7 +17,7 @@ how to compare results.
 | `cargo xtask bench contact-book` | criterion micro | ~90 s | end-to-end render at 10/100/1000 contacts | inner-loop iteration on handler/state/expressions |
 | `cargo xtask bench streaming-resource` | example | ~30 s | exact alloc count + bytes + getrusage CPU + RSS | proving zero-alloc claims; allocation regression hunting |
 | `cargo xtask bench state-cpu` | example | ~20 s | user/sys CPU µs + **CPU%** + MiB/s for parse vs render vs parse+render at 1k/5k/10k state | attributing per-request CPU to JSON state parsing |
-| `cargo xtask bench ffi-cpu` | Node addon | ~40 s (incl. addon build) | full FFI per-request CPU via `process.cpuUsage()` — napi marshalling + parse + render + per-chunk callback | measuring the CPU the Node host actually burns |
+| `cargo xtask bench ffi-cpu` | Node addon | ~50 s (incl. addon build) | A/B per-request CPU via `process.cpuUsage()`: `webui (stringify+render)` vs `stringify only` vs `render only` vs a pure-JS `control`, at 1k/5k/10k | proving the FFI path is fast (or a regression) vs plain JS |
 | `cargo xtask bench streaming-e2e-ttfb` | example | ~10 s | HTTP-level TTFB / TTLB through actix | confirming wire-level streaming win |
 | `cargo xtask bench streaming-browser` | Playwright | ~30 s | real Chromium TTFB / FCP / LCP / DCL / load | proving user-perceived paint improvement |
 | `cargo xtask bench full` (= `streaming-all`) | suite | ~3 min | runs all four streaming-related benches in sequence | full streaming evidence pack for a PR |
@@ -41,7 +41,7 @@ Baselines are stored at `target/bench-baselines/`:
 
 * `streaming-resource-<name>.json`  — alloc + RSS + CPU table
 * `state-cpu-<name>.json`           — parse/render CPU + CPU% table
-* `ffi-cpu-<name>.json`             — Node FFI CPU (process.cpuUsage) table
+* `ffi-cpu-<name>.json`             — Node FFI A/B CPU (webui vs JS control) table
 * `e2e-ttfb-<name>.json`            — HTTP TTFB/TTLB table
 * `browser-<name>.json`             — browser metrics table
 * `target/criterion/<bench>/<name>` — criterion's native baseline
@@ -152,25 +152,41 @@ bytes/op, wall µs/op, **user µs/op**, **sys µs/op**, **CPU%**
 per-request CPU goes and to measure parser-side optimizations
 (caching, splicing, a faster parser or map) before/after.
 
-### `ffi-cpu` (Node addon, `process.cpuUsage()`)
+### `ffi-cpu` (Node addon, `process.cpuUsage()`) — A/B vs a JS control
 
-`crates/webui-node/bench/ffi_cpu_bench.mjs` measures the **full FFI
-per-request CPU** as the Node host actually pays it — the one number a
-pure-Rust bench cannot produce, because it includes the boundary
-costs: napi copying `stateJson` out of V8, and every rendered chunk
-crossing back into JS (`content.to_owned()` per chunk + the `onChunk`
-call). `cargo xtask bench ffi-cpu` builds the addon
+`crates/webui-node/bench/ffi_cpu_bench.mjs` proves whether the FFI
+path is *fast* or a *regression* vs plain JS by measuring, per request
+and all from the **same live state object**, four calibrated arms:
+
+* **`webui (stringify+render)`** — the TRUE per-request cost: the caller
+  must `JSON.stringify(state)` (because `render()` takes a JSON string),
+  then Rust re-parses it with `serde_json::from_str` into an owned
+  `Value` tree and walks the protocol.
+* **`stringify only`** — the isolated JS-side `JSON.stringify` tax.
+* **`webui (render only)`** — `render()` on a *prebuilt* string; this is
+  the Rust-side serde parse + protocol walk (what the old harness
+  measured, hiding the stringify).
+* **`control (pure JS)`** — a hand-written SSR of the same `/` dashboard
+  route straight from the live object: no stringify, no parse. This is
+  the "control uses JS to do everything" baseline the load test compared
+  against.
+
+Because `/` emits a fixed-size dashboard (stats + sidebar + the 5
+`recentContacts` cards), the control's render work is flat across
+scales, while WebUI re-parses the *entire* state every request — so the
+**webui/control CPU ratio** is the JSON tax the 60%-vs-25% load test
+saw. Each arm auto-calibrates its iteration count so even the sub-10-µs
+control clears the OS CPU-clock tick (~15 ms on Windows); without this
+the control reads as "0 µs".
+
+`cargo xtask bench ffi-cpu` builds the addon
 (`cargo build -p microsoft-webui-node --release` →
 `target/release/webui_node.<dll|so|dylib>`), loads it via
 `process.dlopen`, compiles the contact-book protocol through the
-addon's own `build()`, then loops `render()` over 1k / 5k / 10k JSON
-state while sampling `process.cpuUsage()` (user + system µs).
-
-Reports per scale: **user µs/op**, **sys µs/op**, wall µs/op, **CPU%**,
-state MiB/s, output KiB/op, and chunks/op. Compare its `user µs/op`
-against `state-cpu`'s `parse+render` row to see how much extra CPU the
-FFI boundary itself adds on top of the Rust work. Requires Node.js on
-`PATH`.
+addon's own `build()`, then runs the arms at 1k / 5k / 10k while
+sampling `process.cpuUsage()` (user + system µs). Reports per scale and
+arm: **user µs/op**, **sys µs/op**, wall µs/op, **CPU%**, out KiB/op,
+plus a `webui = N× control` ratio. Requires Node.js on `PATH`.
 
 ### `streaming-e2e-ttfb` (HTTP-level)
 
