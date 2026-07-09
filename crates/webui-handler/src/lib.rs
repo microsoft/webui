@@ -38,8 +38,6 @@ use webui_expressions::{evaluate_with_resolver, ExpressionError};
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUIProtocol};
 use webui_state::find_value_by_dotted_path_ref;
 
-const CLIENT_STATE_TOKEN_KEY: &str = "tokens";
-
 /// Error types for the WebUI handler.
 #[derive(Debug, Error)]
 pub enum HandlerError {
@@ -265,6 +263,9 @@ struct WebUIProcessContext<'a> {
 
 struct WebUiBootstrap<'a> {
     state: &'a Value,
+    /// Build-time hydration key allowlist (sorted, deduped). The `state`
+    /// object is projected down to only these keys before emission.
+    hydration_schema: &'a [String],
     chain: &'a [Value],
     inventory: &'a str,
     nonce: Option<&'a str>,
@@ -363,32 +364,185 @@ where
     write_script_safe_json(writer, value)
 }
 
-struct ClientState<'a> {
+/// Serialize wrapper that projects an SSR state object down to only the
+/// keys present in the build-time hydration `schema`.
+///
+/// This is the runtime half of the projected-hydration design: instead of
+/// serializing the entire application state (potentially megabytes) on every
+/// full-HTML render, only the fields a component actually hydrates are
+/// emitted. Over-inclusion is harmless (the client ignores unknown keys), so
+/// `schema` is a safe superset union of every component's hydration keys and
+/// no field a component needs is ever dropped. A server-only field (e.g.
+/// CSRF `tokens`) is naturally excluded because it is not a hydration key.
+///
+/// `schema` MUST be sorted (it is produced sorted + deduped at build time) so
+/// membership is a zero-allocation binary search. Non-object states carry
+/// nothing hydratable and serialize as an empty object.
+struct ProjectedState<'a> {
     value: &'a Value,
+    schema: &'a [String],
 }
 
-impl Serialize for ClientState<'_> {
+impl Serialize for ProjectedState<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         let Value::Object(map) = self.value else {
-            return self.value.serialize(serializer);
+            return serializer.serialize_map(Some(0))?.end();
         };
-
-        if !map.contains_key(CLIENT_STATE_TOKEN_KEY) {
-            return self.value.serialize(serializer);
-        }
 
         let mut out = serializer.serialize_map(None)?;
         for (key, value) in map {
-            if key == CLIENT_STATE_TOKEN_KEY {
-                continue;
+            if self
+                .schema
+                .binary_search_by(|candidate| candidate.as_str().cmp(key.as_str()))
+                .is_ok()
+            {
+                out.serialize_entry(key, value)?;
             }
-            out.serialize_entry(key, value)?;
         }
         out.end()
     }
+}
+
+/// An [`std::io::Write`] adapter over a [`ResponseWriter`] that escapes the
+/// byte sequence `</` to `<\/` inline, so serialized JSON can be embedded in
+/// a `<script>` element in a single streaming pass — no intermediate buffer,
+/// no UTF-8 revalidation, and no second `</` scan.
+///
+/// The `<` and `/` of `</` may fall in separate `write` calls, so a trailing
+/// `<` is carried in `pending_lt` and resolved against the next chunk (or
+/// flushed by [`ScriptSafeWriter::finish`]).
+struct ScriptSafeWriter<'w> {
+    inner: &'w mut dyn ResponseWriter,
+    pending_lt: bool,
+    /// First [`ResponseWriter`] or UTF-8 error, surfaced after serialization
+    /// (an [`std::io::Error`] cannot carry a [`HandlerError`]).
+    error: Option<HandlerError>,
+}
+
+impl<'w> ScriptSafeWriter<'w> {
+    fn new(inner: &'w mut dyn ResponseWriter) -> Self {
+        Self {
+            inner,
+            pending_lt: false,
+            error: None,
+        }
+    }
+
+    /// Flush a carried trailing `<` (only reachable if the JSON ended on a
+    /// literal `<`, which serde_json never emits — defensive).
+    fn finish(&mut self) -> Result<()> {
+        if self.pending_lt {
+            self.pending_lt = false;
+            self.inner.write("<")?;
+        }
+        Ok(())
+    }
+
+    fn write_escaped(&mut self, chunk: &str) -> Result<()> {
+        let bytes = chunk.as_bytes();
+        let mut idx = 0;
+
+        // Resolve a `<` carried over from the previous chunk against this
+        // chunk's first byte.
+        if self.pending_lt {
+            self.pending_lt = false;
+            if bytes.first() == Some(&b'/') {
+                self.inner.write("<\\/")?;
+                idx = 1;
+            } else {
+                self.inner.write("<")?;
+            }
+        }
+
+        let mut run_start = idx;
+        while idx < bytes.len() {
+            if bytes[idx] == b'<' {
+                match bytes.get(idx + 1) {
+                    Some(&b'/') => {
+                        if idx > run_start {
+                            self.inner.write(&chunk[run_start..idx])?;
+                        }
+                        self.inner.write("<\\/")?;
+                        idx += 2;
+                        run_start = idx;
+                        continue;
+                    }
+                    Some(_) => idx += 1,
+                    None => {
+                        // `<` is the final byte of this chunk: carry it.
+                        if idx > run_start {
+                            self.inner.write(&chunk[run_start..idx])?;
+                        }
+                        self.pending_lt = true;
+                        return Ok(());
+                    }
+                }
+            } else {
+                idx += 1;
+            }
+        }
+
+        if run_start < bytes.len() {
+            self.inner.write(&chunk[run_start..])?;
+        }
+        Ok(())
+    }
+}
+
+impl std::io::Write for ScriptSafeWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        // serde_json emits valid UTF-8 in escape-aligned chunks (a multi-byte
+        // char is never split across chunks), so this validation always
+        // succeeds; it is retained only to uphold the `&str` contract without
+        // an unchecked conversion.
+        let chunk = match std::str::from_utf8(buf) {
+            Ok(chunk) => chunk,
+            Err(utf8_error) => {
+                self.error = Some(HandlerError::Rendering(format!(
+                    "invalid JSON UTF-8 while streaming state: {utf8_error}"
+                )));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid UTF-8",
+                ));
+            }
+        };
+        if let Err(handler_error) = self.write_escaped(chunk) {
+            self.error = Some(handler_error);
+            return Err(std::io::Error::other("response writer error"));
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Stream the SSR `state` into the bootstrap block, projected down to only the
+/// keys present in the build-time hydration `schema` and escaped inline so the
+/// JSON is safe inside a `<script>` element.
+fn write_projected_state(
+    writer: &mut dyn ResponseWriter,
+    state: &Value,
+    schema: &[String],
+) -> Result<()> {
+    let mut adapter = ScriptSafeWriter::new(writer);
+    let projected = ProjectedState {
+        value: state,
+        schema,
+    };
+    let serialize_result = serde_json::to_writer(&mut adapter, &projected);
+    // Surface a stored ResponseWriter/UTF-8 error ahead of the serde wrapper.
+    if let Some(error) = adapter.error.take() {
+        return Err(error);
+    }
+    serialize_result
+        .map_err(|error| HandlerError::Rendering(format!("failed to serialize state: {error}")))?;
+    adapter.finish()
 }
 
 fn write_webui_bootstrap(
@@ -408,14 +562,8 @@ fn write_webui_bootstrap(
     if let Some(nonce) = bootstrap.nonce {
         write_json_field(writer, &mut wrote_field, "nonce", nonce)?;
     }
-    write_json_field(
-        writer,
-        &mut wrote_field,
-        "state",
-        &ClientState {
-            value: bootstrap.state,
-        },
-    )?;
+    write_json_field_name(writer, &mut wrote_field, "state")?;
+    write_projected_state(writer, bootstrap.state, bootstrap.hydration_schema)?;
     if !bootstrap.style_specs.is_empty() {
         write_json_field(writer, &mut wrote_field, "styles", bootstrap.style_specs)?;
     }
@@ -1281,6 +1429,7 @@ impl WebUIHandler {
                     context.writer,
                     WebUiBootstrap {
                         state: context.state,
+                        hydration_schema: &context.protocol.hydration_schema,
                         chain: &chain_json,
                         inventory: &inventory_hex,
                         nonce: context.nonce,
@@ -6995,6 +7144,10 @@ mod tests {
                 comp.template_functions = r#"[function(v,s){return !!v("ready",s)}]"#.to_string();
             }
         }
+        // `hasItems` is an SSR-resolved reactive root, so it is part of the
+        // build-time hydration schema and must survive projection into the
+        // client state block.
+        protocol.hydration_schema = vec!["hasItems".to_string()];
 
         // Render with hasItems=false — product-card should NOT be rendered
         let state = test_json!({ "hasItems": false });
@@ -7213,7 +7366,7 @@ mod tests {
     }
 
     #[test]
-    fn client_state_strips_tokens_after_ssr_resolution() -> Result<()> {
+    fn projected_state_excludes_non_hydration_keys() -> Result<()> {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -7227,7 +7380,11 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol::new(fragments);
+        let mut protocol = WebUIProtocol::new(fragments);
+        // Only `name` is a hydration key. `tokens` is a server-only field
+        // (used above to resolve SSR CSS variables) and is NOT in the schema,
+        // so projection MUST keep it out of the client state block.
+        protocol.hydration_schema = vec!["name".to_string()];
         let state = test_json!({
             "name": "Alice",
             "tokens": {
@@ -7246,10 +7403,50 @@ mod tests {
         )?;
         let output = writer.get_content();
 
+        // SSR still reads `tokens` to resolve the inline <style>...
         assert!(output.contains("--color-brand: red;"));
+        // ...but only the hydration-schema key reaches the client state.
         assert!(output.contains(r#""name":"Alice""#));
         assert!(!output.contains(r#""tokens""#));
         Ok(())
+    }
+
+    #[test]
+    fn script_safe_writer_escapes_split_close_tag() {
+        use std::io::Write;
+        let mut sink = TestWriter::new();
+        {
+            let mut writer = ScriptSafeWriter::new(&mut sink);
+            // `<` and `/script>` arrive in separate writes: the escaper must
+            // carry the trailing `<` and still emit `<\/script>`.
+            writer.write_all(b"a<").unwrap();
+            writer.write_all(b"/script>b").unwrap();
+            writer.finish().unwrap();
+        }
+        assert_eq!(sink.get_content(), r"a<\/script>b");
+    }
+
+    #[test]
+    fn write_projected_state_projects_and_escapes() {
+        // `keep` is in the (sorted) schema and its value contains a `</` that
+        // must be escaped; `drop` is absent and must be projected out.
+        let state = test_json!({
+            "drop": "secret",
+            "keep": "</script><b>"
+        });
+        let schema = vec!["keep".to_string()];
+        let mut sink = TestWriter::new();
+        write_projected_state(&mut sink, &state, &schema).unwrap();
+        assert_eq!(sink.get_content(), r#"{"keep":"<\/script><b>"}"#);
+    }
+
+    #[test]
+    fn write_projected_state_non_object_emits_empty_object() {
+        let state = test_json!("scalar state has nothing hydratable");
+        let schema: Vec<String> = Vec::new();
+        let mut sink = TestWriter::new();
+        write_projected_state(&mut sink, &state, &schema).unwrap();
+        assert_eq!(sink.get_content(), "{}");
     }
 
     #[test]

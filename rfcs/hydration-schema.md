@@ -1,17 +1,22 @@
-# RFC: Plugin-Centric Per-Component Hydration Schema
+# RFC: Build-Time Hydration Schema with Runtime State Projection
 
-**Status:** Proposal · **Author:** session `Handler state emission` · **Scope:** `webui-protocol`, `webui-handler`, `webui-discovery`/`webui-press`, `webui-framework`, `webui-router`
-**Breaking:** Yes — no backwards compatibility. The monolithic `#webui-data` `state` field is removed.
+**Status:** Accepted · implementing · **Author:** session `Handler state emission`
+**Scope:** `webui-parser`, `webui-discovery`, `webui`, `webui-protocol`, `webui-handler`, `webui-framework`
+**Breaking:** Yes — no backwards compatibility. The `#webui-data` `state` field is projected to a build-time allowlist; the subtractive `tokens` strip is removed.
+
+> **Supersedes** the original *"Plugin-Centric Per-Component Hydration Schema"* proposal (co-located positional value blocks + a rich `HydrationSchema` protobuf message). That design was rejected during implementation because it duplicated shared-state bytes across authored instances and was justified by an `O(N·K)` client cost that the framework does not actually pay (see §16). This revision documents the design that shipped.
 
 ---
 
 ## 1. Summary
 
-Replace the single monolithic `<script id="webui-data">…"state":{…}</script>` block — which serializes the **entire** application state as one JSON string at render time — with **per-component, plugin-produced hydration payloads** co-located with each component instance in the SSR DOM.
+Keep the single consolidated `<script type="application/json" id="webui-data">` bootstrap block, but **shrink its `state` field to only the fields components actually hydrate.**
 
-Each plugin owns a **hydration schema** compiled at build time (from `.ts` `@observable`/`@attr` decorators unioned with template reactive roots). At render time the handler walks that schema and emits a compact **positional value block** next to each component. The client hydrates by index-assigning backing fields, then drops the block.
+The hydratable surface of every component is computed **at build time** as a sorted, deduplicated set of property names — the union of the `@observable` / `@attr` reactive surface scanned from the component's sibling `.ts`/`.js` and the template reactive roots (`tr`) / observed attributes (`ta`) already extracted by the compiler. Each component's set is stored on `ComponentData.hydration_keys`; a precomputed global union is stored on `WebUIProtocol.hydration_schema`.
 
-The core shift: **the compiled schema *is* the allowlist.** Server-only fields never enter any schema, so they are never serialized. Hydration cost drops from `O(N·K)` (N instances re-scanning a K-key global bag) to `O(total hydrated fields)`.
+At render time the handler **projects** the borrowed application state down to that allowlist and streams it through a single-pass, zero-copy `</`-escaping serializer — no whole-state `serde` round-trip, no intermediate buffer, no UTF-8 revalidation, no second `</` scan. The client is unchanged: it still reads `window.__webui.state`, but that object is now tiny.
+
+The core shift: **the compiled allowlist *is* the wire filter.** Server-only fields (e.g. CSRF `tokens`) are never in any component's hydration set, so they are dropped by construction — the filter is positive, not subtractive.
 
 ---
 
@@ -19,50 +24,53 @@ The core shift: **the compiled schema *is* the allowlist.** Server-only fields n
 
 ### 2.1 The measured hot path
 
-Today, full-HTML SSR emits one consolidated block. The `state` field is written by `write_webui_bootstrap` (`crates/webui-handler/src/lib.rs:411`) through `write_script_safe_json` (`lib.rs:309`):
+Full-HTML SSR emits one consolidated block. The `state` field was written by `write_webui_bootstrap` through `write_script_safe_json`:
 
 ```rust
-// lib.rs:309 — current monolithic serialization
+// crates/webui-handler/src/lib.rs (baseline) — monolithic serialization
 let mut json = Vec::with_capacity(256);
-serde_json::to_writer(&mut json, value)?;          // ① serialize ENTIRE state
-let json = std::str::from_utf8(&json)?;            // ② full UTF-8 re-validation
-write_script_safe_json_str(writer, json)?;         // ③ second pass: scan for </
+serde_json::to_writer(&mut json, value)?;   // ① serialize the ENTIRE state
+let json = std::str::from_utf8(&json)?;      // ② full UTF-8 re-validation
+write_script_safe_json_str(writer, json)?;   // ③ second pass: scan for </
 ```
 
-For a ~1 MB state this is three linear passes over ~1 MB (grow-and-realloc serialize, UTF‑8 validate, `</`-escape scan), **regardless of how little of that state is actually hydrated**. This is the reported CPU spike at startup.
+For a ~1 MB state this is three linear passes over ~1 MB (grow-and-realloc serialize, UTF-8 validate, `</`-escape scan) **regardless of how little of that state is hydrated**. The committed benchmark (`crates/webui-handler/benches/bootstrap_state_bench.rs`) confirms the cost is dominated by this serialization and scales linearly:
 
-### 2.2 The client mirror of the same waste
+| Serialized state | With bootstrap block | Without block |
+|---|---|---|
+| 64 KB | 64.18 µs | ~80 ns |
+| 256 KB | 243.09 µs | ~80 ns |
+| **1 MB** | **1.5574 ms** | ~80 ns |
 
-`$applySSRState` (`packages/webui-framework/src/template-element.ts:596`) reads the **global** `window.__webui.state`, calls `Object.keys(state)`, and for **every** key checks `$observableNames()` + template roots — **once per component instance**:
+The `with`/`without` delta *is* the serialization cost. This is the reported CPU spike at startup.
 
-```
-N instances × Object.keys(K-key state) × membership checks  →  O(N·K)
-```
+### 2.2 Most of that data is never hydrated
 
-Both server and client pay for data that is mostly not hydrated.
+The `state` object typically mixes a small reactive surface (a handful of `@observable`/`@attr`-backed fields and template roots) with large non-hydrated payloads (record arrays, normalized collections, render-only tokens). The client only ever reads the reactive keys; the rest is serialized, shipped, parsed, and ignored. Projecting to the hydratable set removes that waste at the source.
 
 ### 2.3 Guiding principle
 
 > **Move the decision to build/startup, apply zero-copy at runtime.**
 
-The set of hydratable fields per component is statically knowable at build time. The runtime should ship and assign only *values*, in a pre-agreed order, with no scanning, no filtering, and no monolithic serialization.
+The hydratable field set per component is statically knowable at build time. The runtime should filter and emit *values* against a pre-agreed set, with no per-request set construction and no whole-state serialization.
 
 ---
 
 ## 3. Goals / Non-Goals
 
 **Goals**
-- Eliminate whole-state JSON serialization on the SSR hot path.
-- Plugin-centric: **any** plugin produces its own hydration schema and wire format; the handler never interprets it.
-- Reuse the existing `prost`/protobuf pipeline for the schema (no ad-hoc side channel).
-- Reduce client hydration to `O(total hydrated fields)` with monomorphic index-assign.
-- Server-only fields are structurally impossible to leak (not in any schema).
+- Eliminate whole-state JSON serialization on the SSR hot path; emit only hydratable fields.
+- Compute the hydratable surface at build time and carry it in the existing `prost`/protobuf pipeline (no ad-hoc side channel).
+- Keep runtime membership zero-allocation (binary search over a pre-sorted slice) and emission single-pass/streaming.
+- Make server-only fields structurally un-leakable (positive allowlist).
 - Add a ~1 MB state benchmark that gates regressions.
 
 **Non-Goals**
-- Backwards compatibility. `window.__webui.state` and the monolithic `state` field are deleted.
-- Changing the router **chain / inventory / nonce** contract (those stay in a demoted shared block).
+- Backwards compatibility. The `state` field is now projected; the `tokens` strip and `ClientState` wrapper are deleted.
+- Rewriting the client hydration algorithm. `$applySSRState` keeps reading `window.__webui.state`; only the payload shrinks.
+- Per-instance/co-located value blocks (rejected — see §16).
 - Reworking template metadata (`template_json` / `templateFns`) delivery — orthogonal.
+- Per-route allowlist tightening — desirable but deferred (see §14).
 
 ---
 
@@ -73,15 +81,13 @@ flowchart TB
     S["state: &Value (full app state, ~1MB)"]
     S --> R["SSR render resolves {{expressions}}"]
     S --> B["write_webui_bootstrap: state field"]
-    B --> J["write_script_safe_json:<br/>serialize ALL + UTF8 + escape"]
+    B --> J["write_script_safe_json:<br/>serialize ALL + UTF8 revalidate + escape"]
     J --> D["#webui-data { chain, inventory, state:{…1MB…} }"]
-    D --> G["window.__webui.state (global)"]
-    G --> H1["comp #1 $applySSRState: Object.keys × membership"]
-    G --> H2["comp #2 …"]
-    G --> HN["comp #N …"]
+    D --> G["window.__webui.state (global, ~1MB)"]
+    G --> H1["root subtree $applySSRState"]
 ```
 
-Ownership today: host supplies `state` content; **handler** manufactures the block and serializes the whole thing; **every** client component re-scans the global bag.
+Ownership today: the host supplies `state`; the **handler** serializes the whole thing; the client parses the whole thing and uses a sliver.
 
 ---
 
@@ -90,41 +96,64 @@ Ownership today: host supplies `state` content; **handler** manufactures the blo
 ```mermaid
 flowchart TB
     subgraph Build["① Build time"]
-      TS[".ts: @observable / @attr"] --> EX["schema producer (per plugin)"]
-      TR["template reactive roots (tr/ta)"] --> EX
-      EX --> HS["HydrationSchema per component<br/>(ordered fields + kinds) → protobuf"]
+      TS[".ts sibling: @observable / @attr"] --> SC["scan_hydration_attributes<br/>(deterministic token scanner)"]
+      TR["template reactive roots (tr) / observed attrs (ta)"] --> UN["union + sort + dedup"]
+      SC --> UN
+      UN --> HK["ComponentData.hydration_keys (per tag)"]
+      HK --> GU["WebUIProtocol.hydration_schema<br/>(global sorted union)"]
     end
-    subgraph Render["② SSR render — per component instance"]
-      HS --> EM["plugin.emit_hydration_payload(schema, resolver)"]
-      ST["render state (borrowed)"] --> EM
-      EM --> VB["co-located value block<br/>&lt;script data-h&gt;[5,'Inbox',true]&lt;/script&gt;"]
+    subgraph Render["② SSR render (body_end)"]
+      GU --> PJ["ProjectedState: iterate state.Object,<br/>keep keys ∈ schema (binary_search)"]
+      ST["state (borrowed &Value)"] --> PJ
+      PJ --> SW["ScriptSafeWriter (io::Write):<br/>stream + inline </ → <\\/"]
+      SW --> D2["#webui-data { chain, inventory, state:{…hydratable only…} }"]
     end
-    subgraph Client["③ Startup hydration — per component"]
-      VB --> RD["read adjacent block once"]
-      CT["ctor.$hydrate = ['_count','_label','_open']"] --> AS["index-assign el[field[i]] = values[i]"]
-      RD --> AS
-      AS --> DR["drop block (retain under __WEBUI_DEV__)"]
+    subgraph Client["③ Startup hydration"]
+      D2 --> RG["window.__webui.state (tiny)"]
+      RG --> AP["$applySSRState (unchanged):<br/>observable/template-root keys only"]
     end
 ```
 
-### 5.1 Responsibility split (new)
+### 5.1 Responsibility split
 
 | Concern | Owner |
 |---|---|
-| Which fields are hydratable (schema) | **Plugin schema producer** at build time |
-| Schema storage / transport | **protobuf** (`ComponentData.hydration`) |
-| Per-instance wire format (bytes) | **Plugin** (`emit_hydration_payload`) — handler never interprets |
-| Pulling values from render state | **Handler** provides a borrowed resolver; plugin selects |
-| Applying values to the instance | **Client plugin runtime** (framework/router) |
-| Shared chain/inventory/nonce | **Handler** (demoted `#webui-data`, no `state`) |
-
-This mirrors the existing parser↔handler plugin pairing (`WebUIFragmentPlugin { bytes data }`, `webui.proto:122`) and the `BootstrapExtensionContext` extension point — we are generalizing that pattern to state hydration.
+| Which property names are hydratable (per component) | **`webui-parser`** (scanner) ∪ **template build metadata** (`tr`/`ta`), at build time |
+| Global allowlist union | **`webui` build** (`build_protocol_inner`) |
+| Schema storage / transport | **protobuf** (`ComponentData.hydration_keys`, `WebUIProtocol.hydration_schema`) |
+| Projecting + streaming the state field | **`webui-handler`** (`ProjectedState` + `ScriptSafeWriter`) |
+| Applying values to instances | **`webui-framework`** client runtime (`$applySSRState`, unchanged) |
 
 ---
 
-## 6. Protobuf Schema Changes
+## 6. Build-Time Schema Extraction
 
-Reuse `prost`. Extend `ComponentData` and add schema messages in `crates/webui-protocol/proto/webui.proto`:
+### 6.1 Scanner (`crates/webui-parser/src/hydration.rs`)
+
+`scan_hydration_attributes(source: &str) -> Vec<String>` is a **deterministic byte/token scanner** (no regex, no recursion — per repo policy). It matches `@observable` / `@attr` decorators, skips balanced `(...)` option groups (with string-literal awareness) and stacked decorators, and reads the following property identifier. UTF-8 identifier bytes (`>= 0x80`) are treated as identifier characters. Output is sorted and deduplicated.
+
+There is **no Rust TypeScript AST parser available** (esbuild bundles `.ts` opaquely), so a full AST parse — as an earlier draft assumed — is not feasible at Rust build time. The token scanner is the pragmatic, policy-compliant substitute.
+
+### 6.2 Safety bias (correctness-critical)
+
+> **Over-inclusion is harmless; under-inclusion silently breaks hydration.**
+
+If a key that no component reads is included, the client ignores it (a few wasted bytes). If a key a component *needs* is dropped, that field silently fails to seed from SSR. Therefore:
+
+- The scanner **errs toward matching** and does not need robust comment/string skipping.
+- The schema is a **union** of the scan with the template reactive roots (`tr`) / observed attributes (`ta`), so a scanner miss is backstopped by the template surface and vice-versa.
+
+### 6.3 Two registration paths
+
+- **App-directory components** are scanned from their sibling script directly during `register_component_from_paths` (`webui-parser`).
+- **External `--components`** surface their script through discovery (`DiscoveredComponent.script_content`); the `webui` crate scans it via `webui_parser::scan_hydration_attributes`.
+- **npm / cached components** have no scannable sibling (they are precompiled), so their hydratable surface is **template roots only**. A JS-only `@observable` on such a component that never appears in a template binding will not be in the schema (accepted limitation; see §14).
+
+---
+
+## 7. Protobuf Schema Changes
+
+Reuse `prost`. Two additions in `crates/webui-protocol/proto/webui.proto`:
 
 ```proto
 message ComponentData {
@@ -133,233 +162,140 @@ message ComponentData {
   string css_href = 3;
   string template_json = 4;
   string template_functions = 5;
-  // NEW: compiled hydration schema for this component tag.
-  HydrationSchema hydration = 6;
+  // Build-time hydration allowlist for this component: the property names the
+  // client consumes from SSR state. Union of the sibling `.ts`
+  // (`@observable`/`@attr`) reactive surface and the template reactive roots
+  // (`tr`) / observed attributes (`ta`). Sorted and deduplicated. Empty for
+  // components with no hydratable surface.
+  repeated string hydration_keys = 6;
 }
 
-// Compiled at build time by a plugin's schema producer. The field ORDER is
-// the positional contract shared by the SSR value block and the client hydrator.
-message HydrationSchema {
-  repeated HydrationField fields = 1;
-  // Opaque plugin discriminator so the client dispatches to the right hydrator
-  // (e.g. "webui", "fast"). The handler never interprets this.
-  string producer = 2;
-}
-
-message HydrationField {
-  // Client backing-field/property to assign (e.g. "_count", "label").
-  string property = 1;
-  // Value kind → lets the client coerce without sniffing; lets the handler
-  // fast-path scalar emission without a serde round-trip.
-  HydrationKind kind = 2;
-  // Build-time-only source path into render state (NOT shipped to client).
-  string source_path = 3;
-}
-
-enum HydrationKind {
-  HYDRATION_KIND_JSON = 0;   // arbitrary JSON value (default / fallback)
-  HYDRATION_KIND_STRING = 1;
-  HYDRATION_KIND_NUMBER = 2;
-  HYDRATION_KIND_BOOL = 3;
+message WebUIProtocol {
+  map<string, FragmentList> fragments = 1;
+  repeated string tokens = 2;
+  map<string, ComponentData> components = 3;
+  CssStrategy css_strategy = 4;
+  DomStrategy dom_strategy = 5;
+  // Sorted, deduplicated union of every component's `hydration_keys`.
+  // Precomputed at build time so the handler can project SSR state to the
+  // hydratable surface in a single pass without rebuilding the set per request.
+  repeated string hydration_schema = 6;
 }
 ```
 
-**Why on `ComponentData`, not a side channel:** the schema is per-tag build-time metadata, exactly like `template_json`. It rides the same compiled protocol, is validated at build, and needs no new transport. Cascade per the protocol-evolution checklist: protocol → handler → ffi → cli.
+A flat `repeated string` is deliberately the minimum representation the runtime needs. There is no per-field `kind`/`source_path`/`producer`: the projected object keeps its keys, and `serde_json::Value` already carries each value's type, so a positional-array contract and a scalar-kind enum would be redundant complexity.
+
+**Cascade** per the protocol-evolution checklist: proto → `gen_webui.rs` (regenerated via `cargo xtask proto`) → `lib.rs` constructors (`hydration_schema: Vec::new()`) → handler consumption. `prost` repeated fields expose a `pub` `Vec`; assign directly (no generated setter).
 
 ---
 
-## 7. Plugin API (handler side)
+## 8. Runtime Projection + Zero-Copy Streaming (`webui-handler`)
 
-Add **one** hook to `HandlerPlugin` (`crates/webui-handler/src/plugin/mod.rs`). Default is a no-op so non-hydrating plugins are unaffected:
+The `state` field of `write_webui_bootstrap` is emitted by `write_projected_state`, which composes two pieces:
 
-```rust
-/// Emit a component-instance hydration payload, co-located with the element.
-///
-/// Called by the handler when a component that has a `HydrationSchema` is
-/// rendered. The plugin OWNS the wire format — the handler supplies the schema
-/// and a borrowed value resolver and never inspects the bytes written.
-fn emit_hydration_payload(
-    &mut self,
-    _ctx: HydrationContext<'_>,
-    _writer: &mut dyn ResponseWriter,
-) -> Result<()> {
-    Ok(())
-}
-```
+**(a) `ProjectedState` — a `Serialize` wrapper** that iterates the state `Value::Object` and emits only entries whose key is present in the sorted `hydration_schema`, tested by **zero-allocation binary search**:
 
 ```rust
-/// Context for a single component instance's hydration emission.
-pub struct HydrationContext<'a> {
-    /// Component custom-element tag name.
-    pub tag_name: &'a str,
-    /// Compiled schema for this tag (borrowed from the protocol).
-    pub schema: &'a HydrationSchema,
-    /// Zero-copy resolver: pulls a value from the current render scope
-    /// (local_vars ∪ state) by `source_path`. Returns a borrowed Cow.
-    pub resolve: &'a dyn Fn(&str) -> Option<Cow<'a, Value>>,
-    /// CSP nonce when configured (for the inert block's `nonce` attr).
-    pub nonce: Option<&'a str>,
-}
-```
-
-The `resolve` closure reuses the existing `resolve_value_from_sources` machinery (`lib.rs:469`) — borrowed, no clone of the state tree.
-
-### 7.1 WebUI plugin implementation (reference)
-
-The `WebUIHydrationPlugin` writes a **positional JSON value array** — the smallest form that preserves types and reuses existing `</`-escaping:
-
-```rust
-fn emit_hydration_payload(&mut self, ctx: HydrationContext<'_>, w: &mut dyn ResponseWriter) -> Result<()> {
-    if ctx.schema.fields.is_empty() { return Ok(()); }
-    w.write("<script type=\"application/json\" data-h")?;
-    if let Some(n) = ctx.nonce { w.write(" nonce=\"")?; w.write(n)?; w.write("\"")?; }
-    w.write(">[")?;
-    for (i, f) in ctx.schema.fields.iter().enumerate() {
-        if i > 0 { w.write(",")?; }
-        match (ctx.resolve)(&f.source_path) {
-            Some(v) => write_hydration_value(w, &f.kind(), &v)?, // scalar fast-path or serde
-            None    => w.write("null")?,
-        }
+for (key, value) in map {
+    if schema.binary_search_by(|k| k.as_str().cmp(key.as_str())).is_ok() {
+        out.serialize_entry(key, value)?;
     }
-    w.write("]</script>")
 }
 ```
 
-Only hydratable fields are serialized — never the whole state.
+The schema is sorted at build time, so `binary_search` is valid and costs `O(log S)` per state key with no allocation and no `HashSet` build per request. A non-object state carries nothing hydratable and serializes as `{}`.
+
+**(b) `ScriptSafeWriter` — an `std::io::Write` adapter** over `ResponseWriter` that escapes `</` → `<\/` **inline as bytes stream**, carrying a trailing `<` across `write` boundaries. `serde_json::to_writer(&mut adapter, &projected)` is a **single pass**: no intermediate `Vec`, no whole-buffer UTF-8 revalidation, and no separate `</` scan. A `ResponseWriter`/UTF-8 error is captured on the adapter and surfaced as a `HandlerError` after serialization (an `io::Error` cannot carry it).
+
+**Removed:** the `ClientState` wrapper and `CLIENT_STATE_TOKEN_KEY` constant. The `tokens` strip disappears because render-only tokens were never in a hydration schema — the allowlist is now positive.
+
+The generic `write_script_safe_json` / `write_script_safe_json_str` helpers remain for the small, pre-serialized template metadata strings (`templates` map); only the large `state` field moved to the projected streamer.
 
 ---
 
-## 8. Handler Emission Flow
+## 9. Client-Side (`webui-framework`)
 
-```mermaid
-sequenceDiagram
-    participant Loop as render loop
-    participant Reg as component open
-    participant Plug as plugin.emit_hydration_payload
-    participant W as writer
+**Unchanged algorithm.** `$applySSRState` (`packages/webui-framework/src/template-element.ts:596`) continues to read `window.__webui.state`, iterate `Object.keys(state)`, and apply observable / template-root keys. Because the projected `state` now contains only hydratable keys, the loop is over a tiny object.
 
-    Loop->>Reg: open <my-card> (matched route or component)
-    Reg->>Reg: protocol.components[tag].hydration present?
-    alt has schema
-      Reg->>Plug: HydrationContext { schema, resolve, nonce }
-      Plug->>W: <script data-h>[…only hydrated values…]</script>
-    else no schema
-      Note over Reg: emit nothing (static component)
-    end
-    Loop->>Loop: … render template …
-    Note over Loop: body_end: emit DEMOTED #webui-data<br/>{ chain, inventory, nonce, css, styles }<br/>NO state field
-```
+Note the earlier draft's premise that *every* instance re-scans the global bag is incorrect: only the root subtree runs the global `$applySSRState`. `<for>` items hydrate from a local `ScopeFrame` (`template-element.ts:1180–1203`), and route components hydrate from indexed slices via `data-ri`. So the projected bag is read a small, bounded number of times — shrinking it is a byte/CPU win, not an algorithmic one (see §12).
 
-**Removed:** `write_webui_bootstrap`'s `state` field, the `ClientState` wrapper, and `CLIENT_STATE_TOKEN_KEY` (`lib.rs:41,366`). The `tokens` strip disappears because render-only tokens were never in a hydration schema to begin with — the allowlist is now positive, not subtractive.
-
-**Placement:** the value block is a light-DOM `<script>` child so Shadow-DOM components don't clone it into the shadow root, and it survives DOM relocation. Emitted **inline during the render loop** (not at `body_end`), so `<for>`-repeated instances each get their own payload and streaming hydration composes with NDJSON.
+The remaining client task is a **verification/trim pass**: confirm the tiny projected bag still satisfies `$applySSRState` and remove any now-dead assumptions about the bag carrying full state.
 
 ---
 
-## 9. Client-Side Cleanup
+## 10. Router (`webui-router`) — partial navigation
 
-### 9.1 `webui-framework`
-
-Bake the field-name array into the class from compiled metadata (once per class):
-
-```js
-MyCard.$hydrate = ['_count', '_label', '_open']; // from HydrationSchema field order
-```
-
-Rewrite `$applySSRState` to read the adjacent block and index-assign:
-
-```js
-$applySSRState() {
-  const el = this.querySelector(':scope > script[data-h]');
-  if (!el) return;
-  const v = JSON.parse(el.textContent);        // one alloc, array parse
-  const f = this.constructor.$hydrate;
-  for (let i = 0; i < f.length; i++) this[f[i]] = v[i]; // monomorphic, no scan
-  if (!DEV) el.remove();                        // drop; retain in dev for debug
-}
-```
-
-Deleted: global `window.__webui.state` read, `Object.keys(state)`, per-key `$observableNames()`/`$usesTemplateState()` membership loop.
-
-### 9.2 `webui-router`
-
-Partial navigation currently attaches a top-level `state` to the JSON/NDJSON partial (`crates/webui/src/server.rs:106`, `DESIGN.md:329`). Replace with **per-component payloads** keyed by the chain position / component tag: the router applies each component's positional array via the same `$hydrate` index-assign path, removing `window.__webui.state` from `router.ts` (lines ~348, 374). NDJSON Chunk 2 becomes an array of per-component value arrays instead of one merged state object.
-
-### 9.3 Dev guard
-
-Retention of the inert block in development reuses the established `__WEBUI_DEV__` idiom (`DESIGN.md:1600-1614`): production folds `DEV=false`, the `el.remove()` runs, and blocks are reclaimed; dev keeps them for debuggability and hydration-mismatch inspection.
+Partial navigation currently returns a `serde_json::Value` (`render_partial` adds no state; `render_action_response` inserts `state` as-is) that the **host** serializes (`crates/webui-handler/src/route_handler.rs:895`, `:971`; `DESIGN.md:329`). These paths carry route-scoped slices applied via `setState()`, not the initial-bootstrap 1 MB blob, so they are **outside the measured hot path**. If profiling shows they carry excess data, the same projection can be applied to the returned `Value` before the host serializes it; this is deferred (see §14).
 
 ---
 
-## 10. Data Format Decision
+## 11. Security — positive allowlist
 
-| Leaf format | Verdict |
-|---|---|
-| Keyed JSON `{count:5,…}` per instance | keys repeat per instance; larger; hidden-class churn on parse |
-| **Positional JSON array `[5,"Inbox",true]`** | ✅ smallest type-preserving form; one-alloc array parse; reuses `</`→`<\/` escaping; no key strings |
-| Trie / flatmap | solves *locating a slice in a shared tree* — but **co-location removes the lookup entirely**. The fastest index is no index. |
-| Base64 protobuf/flatbuffer leaf | decode + bounds-checks + bundle weight lose to `JSON.parse("[…]")` at 2–8 fields. Keep protobuf for the **schema** and bulk protocol, not the per-instance leaf. |
-
-Protobuf is used where it wins (compiled build-time schema, shipped once per tag). The per-instance leaf stays positional JSON where `JSON.parse` wins.
+Server-only fields (CSRF `tokens`, secrets, normalized server caches) are never declared `@observable`/`@attr` and never appear as template reactive roots, so they are **absent from every component's `hydration_keys`** and therefore from the global `hydration_schema`. Projection drops them by construction. SSR can still *read* such fields during rendering (e.g. `tokens.light` resolving an inline `<style>`, `DESIGN.md:1387`) — reading server-side and shipping client-side are now cleanly separated by the positive filter, replacing the old subtractive `tokens` strip.
 
 ---
 
-## 11. Performance Analysis
+## 12. Performance Analysis
 
-| Aspect | Baseline (monolithic) | Proposed (per-component) |
+| Aspect | Baseline (monolithic) | This design (projected) |
 |---|---|---|
-| Server serialize | whole state (~1 MB), 3 passes | only hydrated fields, scalar fast-path |
-| Server UTF‑8 revalidate | full 1 MB | none (scalars) / tiny (json values) |
-| Client per instance | `Object.keys(K)` + membership | index-assign `$hydrate.length` |
-| Total client work | `O(N·K)` | `O(Σ fields)` |
-| Client allocations | N key-arrays + global reread | 1 small array parse per instance |
-| Server-only leakage | needs subtractive filter | **impossible** (positive allowlist) |
-| Streaming | blocked on body_end blob | per-subtree as it streams |
+| Server serialize | whole state (~1 MB), 3 passes | only hydratable keys, 1 streaming pass |
+| Server intermediate buffer | `Vec` of full JSON | none (stream to `ResponseWriter`) |
+| Server UTF-8 revalidate | full 1 MB | none (serde emits valid UTF-8; adapter validates per chunk only to honor the `&str` API) |
+| Server `</` scan | separate full pass | inline during the single pass |
+| Per-request set build | n/a | none — `binary_search` over pre-sorted slice |
+| Client payload | full state | hydratable subset |
+| Server-only leakage | needs subtractive filter | impossible (positive allowlist) |
 
-Complexity-class win (`O(N·K) → O(Σ fields)`), not a constant factor.
+The win is a **large constant-factor reduction** in bytes and CPU on the server hot path (K shrinks from "all state keys" to "hydratable keys"), plus a smaller client payload — **not** an asymptotic change in the client hydration loop (that loop was never `O(N·K)`; see §16).
 
 ---
 
-## 12. Benchmark Plan (lands first, gates the work)
+## 13. Benchmark Plan (lands first, gates the work)
 
 `crates/webui-handler/benches/bootstrap_state_bench.rs`:
 
 - `build_large_state(target_bytes)` → realistic nested records summing to ~64 KB / 256 KB / **1 MB** serialized.
-- `build_bootstrap_protocol()` → full HTML page with `body_end`, `WebUIHydrationPlugin` active so the block is emitted.
-- **Baseline metric:** full render throughput (bytes/s) and wall time at each size; the delta between "with plugin" (emits block) and "without plugin" isolates serialization cost.
-- **Post-change metric:** same protocol/state; assert the 1 MB case no longer serializes the whole tree (dramatic bytes-in-block reduction + wall-time drop) with no regression on the small cases.
-
-Established **before** any implementation change, per the request, so we measure against a fixed yardstick.
+- `build_bootstrap_protocol()` → full HTML page firing `body_end`, `WebUIHydrationPlugin` active so the block is emitted.
+- **Baseline (captured before the change):** with/without-plugin wall time and throughput at each size — the delta isolates serialization cost. Recorded numbers in §2.1.
+- **Post-change (bench-verify):** set a realistic `WebUIProtocol.hydration_schema` on the protocol and measure two arms:
+  - *projected-typical* — schema selects a few metadata keys of the 1 MB payload (the giant array is not hydratable): expect the emitted `state` to collapse to a sliver and wall time to drop toward the no-block floor.
+  - *projected-full* — schema selects every top-level key so the whole 1 MB streams through `ScriptSafeWriter`: the **anti-regression guard** proving the streaming escaper is no slower than the old `Vec`-based serializer at equal bytes.
 
 ---
 
-## 13. Risks & Mitigations
+## 14. Risks & Mitigations / Future Work
 
 | Risk | Mitigation |
 |---|---|
-| `.ts` decorator extraction is subtle (factory `@attr({...})`, inheritance, mixins) | True TS AST via the bundler's parser — **no regex** (repo policy). Conservative: on any uncertainty, fall back to `HYDRATION_KIND_JSON` for the field; never drop a field silently. |
-| Shared/normalized data duplicated across instances | Keep a **small demoted shared tier** in `#webui-data` for app-shell/normalized collections; per-instance blocks carry view-state only. Hybrid, not purge. |
-| Shadow-DOM cloning the block | Light-DOM `<script>` child, emitted outside the shadow template. |
-| Schema/DOM order drift | Field order is the single positional contract, compiled once; a build-time assertion validates `$hydrate.length == schema.fields.len()`. |
-| No-backcompat churn | Explicitly in scope; delete `window.__webui.state`, `ClientState`, `CLIENT_STATE_TOKEN_KEY`, and the partial `state` field in one sweep. |
+| Scanner misses a decorator variant (factory `@attr({...})`, stacked, mixins) | Union with template `tr`/`ta`; over-inclusion is harmless; scanner errs toward matching. |
+| npm/cached component with a JS-only `@observable` not in any template binding | Template-root surface only for npm; documented limitation. **Future:** ship hydration keys in the component cache format. |
+| Global-union over-inclusion emits keys no reachable component needs | Safe (never drops a needed key). **Future:** per-route allowlist derived from reachable components tightens the projection. |
+| Non-object state now serializes as `{}` (was passthrough) | Intentional under no-backcompat; state is contractually an object. Documented in `DESIGN.md`. |
+| Spec/code drift | Update `DESIGN.md` §(state block) to state that `state` is projected to the hydratable surface, in the same change. |
 
 ---
 
-## 14. Rollout / Sequencing
+## 15. Rollout / Sequencing
 
-1. **Benchmark** (`bootstrap_state_bench.rs`) + baseline numbers. *(gate)*
-2. **protobuf** schema (`HydrationSchema`) + regenerate + cascade compile.
-3. **Plugin trait** `emit_hydration_payload` + `HydrationContext` (no-op default).
-4. **Handler** inline per-component emission; delete monolithic `state`/`ClientState`.
-5. **Build-time** schema producer: template `tr`/`ta` first (already exist), then `.ts` decorator AST union.
-6. **Client** framework `$applySSRState` rewrite + `$hydrate` baking; router partial path.
-7. **Re-measure**; `cargo xtask check`; update `DESIGN.md` §(state block) + `docs/`.
+1. **Benchmark** (`bootstrap_state_bench.rs`) + baseline numbers. *(gate — done, `873e745d`)*
+2. **Build-side schema** — scanner + discovery plumbing + protobuf (`hydration_keys`, `hydration_schema`) + global union. *(done, `06702bfe`)*
+3. **Handler** — `ProjectedState` + `ScriptSafeWriter` + `write_projected_state`; delete `ClientState`/`CLIENT_STATE_TOKEN_KEY`. *(this change)*
+4. **Benchmark verify** — projected-typical + projected-full arms; compare vs the §2.1 baseline.
+5. **Client** — verify/trim `$applySSRState` against the tiny projected bag.
+6. **Docs** — `DESIGN.md` §(state block) + `docs/`; `cargo xtask check`.
 
 ---
 
-## 15. Open Questions
+## 16. What changed from the original proposal
 
-1. **Shared-tier boundary:** what heuristic promotes a field to the demoted shared block vs per-instance? (Proposal: fields whose `source_path` is referenced by ≥2 component tags.)
-2. **Producer discriminator granularity:** one `producer` per component, or per field? (Proposal: per component; simpler client dispatch.)
-3. **Numeric precision:** positional JSON preserves `f64`; do any hosts need `i64`/bigint beyond JSON range? (Proposal: `HYDRATION_KIND_JSON` string-encodes if needed.)
-4. **Should the demoted `#webui-data` keep `styles`/`css`** or also move per-component? (Proposal: keep shared; they are already deduped by inventory.)
+The first draft proposed **per-component co-located positional value blocks** (`<script data-h>[5,"Inbox",true]</script>`) backed by a rich `HydrationSchema { repeated HydrationField (property, kind, source_path); producer }` message and an `emit_hydration_payload` plugin hook, with the client rewritten to index-assign `this.constructor.$hydrate[i] = values[i]` and `window.__webui.state` deleted.
+
+It was rejected during implementation for concrete reasons:
+
+- **Byte regression.** A per-instance block co-located with each authored instance **duplicates** shared/normalized fields across every instance of a tag — a payload-size regression on the very axis the RFC set out to improve.
+- **The `O(N·K)` premise was wrong.** Only the root subtree reads the global bag; `<for>` items use a local `ScopeFrame` (`template-element.ts:1180–1203`) and route instances use indexed `data-ri` slices. There is no per-instance re-scan of a K-key global bag to eliminate, so the claimed `O(N·K) → O(Σ fields)` complexity-class win does not exist.
+- **Accidental complexity.** `HydrationKind` duplicates type information already in `serde_json::Value`; `source_path` and a positional order contract exist only to support positional arrays; `producer` dispatch is unneeded when the client keys by name. The flat `repeated string` allowlist is the right size.
+- **Infeasible extraction mechanism.** "True TS AST via the bundler's parser" is not available at Rust build time; a deterministic token scanner unioned with template roots is the workable, policy-compliant approach.
+
+The projected-single-block design keeps the parts that were right (the measured hot path, the guiding principle, protobuf carriage, benchmark-first, the positive-allowlist security property) and drops the parts that were not.
