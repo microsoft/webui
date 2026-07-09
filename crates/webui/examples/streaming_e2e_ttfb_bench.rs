@@ -49,7 +49,6 @@
 //! for SSR HTML.
 
 #![allow(missing_docs)]
-#![allow(unsafe_code)]
 
 use actix_web::{web, App, HttpResponse, HttpServer};
 use awc::Client;
@@ -64,6 +63,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use webui::streaming::StreamingWriter;
 use webui::{build, BuildOptions, CssStrategy, ResponseWriter, WebUIHandler};
+use webui_bench_support::report::{Align, Table};
+use webui_bench_support::{baseline, percentile, BaselineRow, Metric};
 use webui_handler::RenderOptions;
 use webui_protocol::WebUIProtocol;
 
@@ -319,15 +320,6 @@ async fn measure_one(client: &Client, url: &str) -> Measurement {
     }
 }
 
-fn percentile(samples: &mut Vec<u128>, p: f64) -> u128 {
-    if samples.is_empty() {
-        return 0;
-    }
-    samples.sort_unstable();
-    let idx = ((p / 100.0) * (samples.len() - 1) as f64).round() as usize;
-    samples[idx.min(samples.len() - 1)]
-}
-
 async fn run_scenario(
     client: &Client,
     url: &str,
@@ -361,7 +353,7 @@ async fn run_scenario(
 
 // ── Snapshot serialization ────────────────────────────────────────────
 
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct SnapshotRow {
     label: String,
     iters: usize,
@@ -374,112 +366,55 @@ struct SnapshotRow {
     body_bytes: usize,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Snapshot {
-    schema: u32,
-    name: String,
-    timestamp_unix: u64,
-    rows: Vec<SnapshotRow>,
-}
+const SCHEMA: u32 = 2;
+const KIND: &str = "e2e-ttfb";
 
-const SNAPSHOT_SCHEMA: u32 = 1;
-
-fn snapshot_path(name: &str) -> std::path::PathBuf {
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .join("..")
-        .join("..")
-        .join("target")
-        .join("bench-baselines")
-        .join(format!("e2e-ttfb-{name}.json"))
-}
-
-fn save_snapshot(name: &str, rows: &[SnapshotRow]) {
-    let path = snapshot_path(name);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+impl BaselineRow for SnapshotRow {
+    fn key(&self) -> String {
+        self.label.clone()
     }
-    let snap = Snapshot {
-        schema: SNAPSHOT_SCHEMA,
-        name: name.to_string(),
-        timestamp_unix: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
-        rows: rows.to_vec(),
-    };
-    let json = match serde_json::to_string_pretty(&snap) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("snapshot: serialize failed: {e}");
-            return;
-        }
-    };
-    if let Err(e) = std::fs::write(&path, json) {
-        eprintln!("snapshot: write {} failed: {e}", path.display());
-        return;
-    }
-    println!();
-    println!("✔ Baseline saved to {}", path.display());
-}
 
-fn load_snapshot(name: &str) -> Option<Snapshot> {
-    let path = snapshot_path(name);
-    let bytes = match std::fs::read(&path) {
-        Ok(b) => b,
-        Err(_) => {
-            eprintln!(
-                "compare: baseline '{name}' not found at {} — run with --save {name} first",
-                path.display()
-            );
-            return None;
-        }
-    };
-    match serde_json::from_slice::<Snapshot>(&bytes) {
-        Ok(s) if s.schema == SNAPSHOT_SCHEMA => Some(s),
-        Ok(s) => {
-            eprintln!(
-                "compare: baseline '{name}' has schema {} (expected {SNAPSHOT_SCHEMA})",
-                s.schema
-            );
-            None
-        }
-        Err(e) => {
-            eprintln!("compare: parse {} failed: {e}", path.display());
-            None
-        }
+    fn metrics(&self) -> Vec<Metric> {
+        // Latency percentiles are lower-better. p50 tracks the typical
+        // request; p99 guards the tail that dominates user-perceived
+        // slowness. `min` is displayed but intentionally NOT gated — it
+        // is the single luckiest sample and far too noisy to threshold.
+        vec![
+            Metric::lower_better("TTFB p50", self.ttfb_p50_us as f64),
+            Metric::lower_better("TTFB p99", self.ttfb_p99_us as f64),
+            Metric::lower_better("TTLB p50", self.ttlb_p50_us as f64),
+            Metric::lower_better("TTLB p99", self.ttlb_p99_us as f64),
+        ]
     }
 }
 
-fn pct_change(base: u128, current: u128) -> f64 {
-    if base == 0 {
-        return 0.0;
+fn render_table(rows: &[SnapshotRow]) {
+    let mut table = Table::new([
+        "scenario / path",
+        "iter",
+        "TTFB min",
+        "TTFB p50",
+        "TTFB p99",
+        "TTLB min",
+        "TTLB p50",
+        "TTLB p99",
+        "bytes",
+    ])
+    .aligns([Align::Left]);
+    for r in rows {
+        table.row([
+            r.label.clone(),
+            r.iters.to_string(),
+            format!("{} µs", r.ttfb_min_us),
+            format!("{} µs", r.ttfb_p50_us),
+            format!("{} µs", r.ttfb_p99_us),
+            format!("{} µs", r.ttlb_min_us),
+            format!("{} µs", r.ttlb_p50_us),
+            format!("{} µs", r.ttlb_p99_us),
+            r.body_bytes.to_string(),
+        ]);
     }
-    ((current as f64 - base as f64) / base as f64) * 100.0
-}
-
-fn print_diff(current: &[SnapshotRow], baseline: &Snapshot) {
-    println!();
-    println!("Diff vs baseline '{}':", baseline.name);
-    println!(
-        "| {:<48} | {:>16} | {:>16} |",
-        "scenario / path", "TTFB p50 Δ%", "TTLB p50 Δ%"
-    );
-    println!("|{:-<50}|{:->18}|{:->18}|", "", "", "");
-    for cur in current {
-        let base = baseline.rows.iter().find(|b| b.label == cur.label);
-        match base {
-            Some(b) => {
-                let ttfb = pct_change(b.ttfb_p50_us, cur.ttfb_p50_us);
-                let ttlb = pct_change(b.ttlb_p50_us, cur.ttlb_p50_us);
-                println!("| {:<48} | {:>15.1}% | {:>15.1}% |", cur.label, ttfb, ttlb);
-            }
-            None => println!("| {:<48} | {:>16} | {:>16} |", cur.label, "(new)", "—"),
-        }
-    }
-    println!();
-    println!("Negative Δ% = improvement; positive = regression.");
-    println!();
+    table.print();
 }
 
 enum Mode {
@@ -550,38 +485,24 @@ fn main() {
 
     let iters = 50;
     let rt = actix_web::rt::System::new();
+    println!();
+    println!(
+        "Running {} scenarios × 2 paths × {iters} iters over HTTP loopback…",
+        scenarios.len()
+    );
     let snapshot_rows: Vec<SnapshotRow> = rt.block_on(async {
         let client = Client::default();
         let mut rows: Vec<SnapshotRow> = Vec::new();
 
-        println!();
-        println!(
-            "| {:<48} | {:>5} | {:>9} | {:>9} | {:>9} | {:>9} | {:>9} | {:>9} | {:>9} |",
-            "scenario / path",
-            "iter",
-            "TTFB min",
-            "TTFB p50",
-            "TTFB p99",
-            "TTLB min",
-            "TTLB p50",
-            "TTLB p99",
-            "bytes",
-        );
-        println!(
-            "|{:-<50}|{:->7}|{:->11}|{:->11}|{:->11}|{:->11}|{:->11}|{:->11}|{:->11}|",
-            "", "", "", "", "", "", "", "", ""
-        );
-
         for &(delay_us, desc) in scenarios {
             for &(label, route) in &[("buffered", "buf"), ("streaming", "stream")] {
                 let url = format!("http://127.0.0.1:{port}/{route}?delay_us={delay_us}");
+                let row_label = format!("{label} | {desc}");
+                // Live progress: a single scenario at 200 µs/write takes
+                // seconds, so echo which one is running to stderr.
+                eprintln!("  … {row_label}");
                 let (mn1, p50_1, p99_1, mn2, p50_2, p99_2, bytes) =
                     run_scenario(&client, &url, iters).await;
-                let row_label = format!("{label} | {desc}");
-                println!(
-                    "| {:<48} | {:>5} | {:>7} µs | {:>7} µs | {:>7} µs | {:>7} µs | {:>7} µs | {:>7} µs | {:>9} |",
-                    row_label, iters, mn1, p50_1, p99_1, mn2, p50_2, p99_2, bytes,
-                );
                 rows.push(SnapshotRow {
                     label: row_label,
                     iters,
@@ -594,30 +515,28 @@ fn main() {
                     body_bytes: bytes,
                 });
             }
-            println!(
-                "|{:-<50}|{:->7}|{:->11}|{:->11}|{:->11}|{:->11}|{:->11}|{:->11}|{:->11}|",
-                "", "", "", "", "", "", "", "", ""
-            );
         }
-        println!();
-        println!("Notes:");
-        println!("  * TTFB = time from request send to first response byte.");
-        println!("  * TTLB = time from request send to last response byte.");
-        println!("  * No network throttling: requests are loopback (~50 µs RTT).");
-        println!("    On real WAN (50 ms RTT), add 50 ms to every number — the");
-        println!("    streaming TTFB win STAYS the same in absolute µs, but");
-        println!("    relative to the fixed 50 ms baseline becomes negligible.");
-        println!("  * For browser-perceived metrics (FCP, LCP, TTI), use a");
         rows
     });
 
+    render_table(&snapshot_rows);
+    println!();
+    println!("Notes:");
+    println!("  * TTFB = time from request send to first response byte.");
+    println!("  * TTLB = time from request send to last response byte.");
+    println!("  * No network throttling: requests are loopback (~50 µs RTT).");
+    println!("    On real WAN (50 ms RTT), add 50 ms to every number — the");
+    println!("    streaming TTFB win STAYS the same in absolute µs, but");
+    println!("    relative to the fixed 50 ms baseline becomes negligible.");
+    println!("  * For browser-perceived metrics (FCP, LCP, TTI), use a");
+    println!("    real browser harness (Playwright + PerformanceObserver).");
+
     match mode {
         Mode::Print => {}
-        Mode::Save(name) => save_snapshot(&name, &snapshot_rows),
+        Mode::Save(name) => baseline::save(KIND, &name, SCHEMA, snapshot_rows),
         Mode::Compare(name) => {
-            if let Some(baseline) = load_snapshot(&name) {
-                print_diff(&snapshot_rows, &baseline);
-            }
+            // Latency is noisier than CPU/alloc counts, so gate at 15%.
+            let _ = baseline::compare(KIND, &name, SCHEMA, &snapshot_rows, 15.0);
         }
     }
 }

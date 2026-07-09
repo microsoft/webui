@@ -1,0 +1,30 @@
+[package]
+name = "microsoft-webui-bench-support"
+description = "Shared measurement and reporting harness for WebUI resource benchmarks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["webui", "benchmark", "profiling", "cpu", "performance"]
+categories = ["development-tools::profiling"]
+
+[lib]
+name = "webui_bench_support"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+console = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
+[lints]
+workspace = true

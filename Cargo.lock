@@ -1787,9 +1787,9 @@ dependencies = [
  "criterion",
  "crossbeam-queue",
  "futures-util",
- "libc",
  "log",
  "memchr",
+ "microsoft-webui-bench-support",
  "microsoft-webui-discovery",
  "microsoft-webui-handler",
  "microsoft-webui-parser",
@@ -1802,6 +1802,16 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "microsoft-webui-bench-support"
+version = "0.0.18"
+dependencies = [
+ "console",
+ "libc",
+ "serde",
+ "serde_json",
  "windows-sys 0.61.2",
 ]
 

@@ -62,6 +62,47 @@ improvement; positive = regression.
 | streaming-e2e-ttfb (loopback) | < ±10% | > ±20% |
 | streaming-browser (real Chromium) | < ±5% | > ±15% |
 
+## Shared measurement crate (`webui-bench-support`)
+
+The three example harnesses (`state-cpu`, `streaming-resource`,
+`streaming-e2e-ttfb`) are **thin consumers** of a single dev-only crate,
+`crates/webui-bench-support` (package `microsoft-webui-bench-support`).
+Criterion owns per-function wall-clock; this crate owns everything
+criterion deliberately does *not* measure — exact allocation, CPU-time
+split, and cross-run regression snapshots — so those primitives are
+written and audited **once** instead of copy-pasted per bench.
+
+What it centralizes:
+
+* **`alloc`** — a counting `GlobalAlloc` (exact `allocs`/`bytes`,
+  zero-overhead when idle) plus a scoped RAII probe.
+* **`cpu`** — the cross-platform CPU/RSS reader (`getrusage` on Unix,
+  `GetProcessTimes` + `PeakWorkingSetSize` on Windows). This is why
+  `libc`/`windows-sys` are dependencies of *this* crate only, not of
+  every bench.
+* **`measure`** — `Measurement` + the **four-dimension** `PerIter`
+  view (cpu / memory / throughput / latency), a self-calibrating
+  `bench(target_duration, …)` that grows the iteration count until the
+  work clears the OS CPU-clock tick, a fixed-count `measure(iters, …)`,
+  and a `percentile()` for latency distributions.
+* **`report`** — the styled, auto-width `Table` every harness prints,
+  plus `format_bytes`/`format_ops`/`format_count`.
+* **`baseline`** — generic `save()` / `compare()` over any row type
+  implementing the `BaselineRow` trait. Each metric declares its own
+  direction (`Metric::lower_better` / `higher_better`), so the Δ%-table
+  flags regressions correctly regardless of whether higher or lower is
+  better. This is the shared engine behind every
+  `--save NAME` / `--compare NAME` snapshot below.
+
+A bench therefore supplies only its *workload* and a `Row: BaselineRow`;
+the measurement, table, and regression logic are identical across all
+three. Add the crate as a dev-dependency to consume it:
+
+```toml
+[dev-dependencies]
+microsoft-webui-bench-support = { path = "../webui-bench-support", version = "0.0.18" }
+```
+
 ## Anatomy of each bench
 
 ### Criterion benches (`cargo bench`-driven)
@@ -136,7 +177,7 @@ claims and to detect allocation-pressure regressions.
 
 `crates/webui/examples/state_cpu_bench.rs` targets the exact cost the
 load-test traces blamed: **JSON processing of the state object**. It
-reuses the same cross-platform CPU reader as `streaming-resource`
+reuses the shared `webui-bench-support` CPU reader
 (`getrusage` on Unix, `GetProcessTimes` on Windows) but reports the
 CPU *split* across three stages at 1k / 5k / 10k catalog items:
 
@@ -314,9 +355,11 @@ benchmark. The bar:
 1. **Criterion** if the unit-of-work is a single function call. Add a
    `[[bench]]` entry to the relevant crate's `Cargo.toml`.
 2. **Example with `--save NAME`/`--compare NAME`** if you need
-   process-wide measurement (custom allocator, getrusage, an HTTP
-   server, etc.). Mirror the structure of
-   `streaming_resource_bench.rs`.
+   process-wide measurement (custom allocator, CPU reader, an HTTP
+   server, etc.). Consume `microsoft-webui-bench-support` for the
+   allocator, CPU reader, measurement, table, and baseline snapshot —
+   supply only your workload and a `Row: BaselineRow`. Mirror the
+   structure of `state_cpu_bench.rs`.
 3. **Playwright** if the metric is browser-perceived (paint, layout,
    hydration time). Mirror the structure of
    `examples/integration/streaming-browser-bench/`.

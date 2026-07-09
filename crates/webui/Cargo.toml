@@ -42,12 +42,9 @@ tokio-stream = { workspace = true }
 actix-web = { workspace = true }
 awc = { workspace = true }
 futures-util = { workspace = true }
-libc = { workspace = true }
 microsoft-webui-handler = { path = "../webui-handler", version = "0.0.18" }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.18" }
-
-[target.'cfg(windows)'.dev-dependencies]
-windows-sys = { workspace = true }
+microsoft-webui-bench-support = { path = "../webui-bench-support", version = "0.0.18" }
 
 [[bench]]
 name = "contact_book_bench"
