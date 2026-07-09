@@ -442,6 +442,15 @@ At startup, the router uses the SSR route chain, route indexes, template
 inventory, and style list emitted by the server. That keeps hydration direct and
 avoids DOM walking or route-pattern recomputation on first load.
 
+The `state` field is **projected** to the hydratable surface rather than
+carrying your entire application state. At build time WebUI records which
+properties each component actually hydrates — its template state roots plus any
+`@observable`/`@attr` fields — and at render time the server emits only those
+keys, dropping everything else (including server-only data). This keeps the
+bootstrap block small even when the underlying render state is large; the client
+hydrates exactly as before, since it only ever reads the properties a component
+observes.
+
 #### SSR Fresh / Loaders
 
 By default, `Router.start({ ssrFresh: true })` skips running route loaders on the initial SSR-bootstrapped navigation. The server-rendered state is considered authoritative, so there is no redundant client-side fetch on first load.
