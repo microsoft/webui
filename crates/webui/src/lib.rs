@@ -323,14 +323,23 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             ))
         })?;
         for comp in &result.components {
+            // npm components ship no scannable sibling source, so their hydration
+            // surface comes from template roots alone; local components contribute
+            // their scanned `@observable`/`@attr` property names here.
+            let hydration_attrs = comp
+                .script_content
+                .as_deref()
+                .map(webui_parser::scan_hydration_attributes)
+                .unwrap_or_default();
             parser
                 .component_registry_mut()
-                .register_component(
-                    &comp.tag_name,
-                    &comp.html_content,
-                    comp.css_content.as_deref(),
-                    comp.has_script,
-                )
+                .register_component_with_hydration(webui_parser::ComponentRegistration {
+                    tag_name: &comp.tag_name,
+                    html_content: &comp.html_content,
+                    css_content: comp.css_content.as_deref(),
+                    has_script: comp.has_script,
+                    hydration_attrs,
+                })
                 .map_err(|e| {
                     WebUIError::ComponentRegistration(format!(
                         "Failed to register component '{}' from {}: {e}",
@@ -448,7 +457,10 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         // parser — nothing to store in the protocol or emit as files.
     }
 
-    // Store client templates in the protocol so any host server can query them.
+    // Store client templates in the protocol so any host server can query them,
+    // and aggregate their hydration keys into the protocol-level projection
+    // allowlist the handler uses to shrink emitted bootstrap state.
+    let mut hydration_schema: Vec<String> = Vec::new();
     for artifact in &component_templates {
         let component = protocol
             .components
@@ -457,7 +469,12 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         component.template = artifact.template.clone();
         component.template_json = artifact.template_json.clone();
         component.template_functions = artifact.template_functions.clone();
+        component.hydration_keys = artifact.hydration_keys.clone();
+        hydration_schema.extend_from_slice(&artifact.hydration_keys);
     }
+    hydration_schema.sort_unstable();
+    hydration_schema.dedup();
+    protocol.hydration_schema = hydration_schema;
 
     let component_asset_files = component_assets::render_component_assets(
         &protocol,
@@ -655,6 +672,39 @@ mod tests {
             .unwrap();
         assert!(!template.template_json.contains(r#""th":1"#));
         assert!(template.template_json.contains(r#""eg":[["click""#));
+    }
+
+    #[test]
+    fn test_build_populates_hydration_schema_from_component_script() {
+        let app = create_app_dir(&[
+            ("index.html", "<demo-card></demo-card>"),
+            ("demo-card.html", "<p>{{name}}</p>"),
+            (
+                "demo-card.ts",
+                "import { WebUIElement, attr, observable } from '@microsoft/webui-framework';\n\
+                 class DemoCard extends WebUIElement {\n\
+                 @observable name = '';\n\
+                 @attr({ attribute: 'cta-href' }) ctaHref = '/x';\n\
+                 @observable count = 0;\n\
+                 }\n\
+                 DemoCard.define('demo-card');",
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        let result = build(options).unwrap();
+
+        // Component-level keys are the union of scanned decorators and the
+        // template root `name` (deduplicated).
+        let component = result.protocol.components.get("demo-card").unwrap();
+        assert_eq!(component.hydration_keys, vec!["count", "ctaHref", "name"]);
+
+        // The protocol-level schema aggregates every component's keys into the
+        // runtime projection allowlist.
+        assert_eq!(
+            result.protocol.hydration_schema,
+            vec!["count", "ctaHref", "name"]
+        );
     }
 
     #[test]

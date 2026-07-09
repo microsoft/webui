@@ -325,6 +325,7 @@ impl WebUiProtocol {
             components: HashMap::new(),
             css_strategy: 0,
             dom_strategy: 0,
+            hydration_schema: Vec::new(),
         }
     }
 
@@ -336,6 +337,7 @@ impl WebUiProtocol {
             components: HashMap::new(),
             css_strategy: 0,
             dom_strategy: 0,
+            hydration_schema: Vec::new(),
         }
     }
 }

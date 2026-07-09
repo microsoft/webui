@@ -46,6 +46,11 @@ pub struct ComponentTemplateArtifact {
     pub template_json: String,
     /// WebUI component-local JavaScript condition closure array.
     pub template_functions: String,
+    /// Sorted, deduplicated hydration key surface for this component: the union
+    /// of scanned `@observable`/`@attr` property names and the template's
+    /// reactive roots. The build aggregates these across components into the
+    /// protocol-level projection allowlist. Empty for non-WebUI plugins.
+    pub hydration_keys: Vec<String>,
 }
 
 impl ComponentTemplateArtifact {
@@ -57,10 +62,14 @@ impl ComponentTemplateArtifact {
             template,
             template_json: String::new(),
             template_functions: String::new(),
+            hydration_keys: Vec::new(),
         }
     }
 
     /// Create a WebUI split metadata/function payload.
+    ///
+    /// The hydration key surface is empty on construction; the WebUI plugin sets
+    /// it after unioning template roots with the component's scanned attributes.
     #[must_use]
     pub fn webui(tag_name: String, template_json: String, template_functions: String) -> Self {
         Self {
@@ -68,6 +77,7 @@ impl ComponentTemplateArtifact {
             template: String::new(),
             template_json,
             template_functions,
+            hydration_keys: Vec::new(),
         }
     }
 }

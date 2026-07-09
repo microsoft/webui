@@ -38,6 +38,16 @@ pub struct ComponentData {
     /// Empty when the component has no conditions or boolean attributes.
     #[prost(string, tag = "5")]
     pub template_functions: ::prost::alloc::string::String,
+    /// Build-time hydration allowlist for this component: the property names the
+    /// client consumes from SSR state. It is the union of the reactive surface
+    /// declared in the sibling `.ts` (`@observable` / `@attr` properties) and the
+    /// template reactive roots (`tr`) / observed attributes (`ta`). The handler
+    /// projects emitted SSR state down to these keys so the bootstrap payload
+    /// carries only hydratable fields instead of the entire server state.
+    ///
+    /// Sorted and deduplicated. Empty for components with no hydratable surface.
+    #[prost(string, repeated, tag = "6")]
+    pub hydration_keys: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -66,6 +76,14 @@ pub struct WebUiProtocol {
     /// decide preload vs stylesheet emission.
     #[prost(enumeration = "DomStrategy", tag = "5")]
     pub dom_strategy: i32,
+    /// Sorted, deduplicated union of every component's `hydration_keys`.
+    /// Precomputed at build time so the handler can project SSR state to the
+    /// hydratable surface in a single pass without rebuilding the set per request.
+    /// This is the runtime allowlist: any state key absent from this set is
+    /// dropped from the bootstrap payload because no reachable component would
+    /// consume it during hydration.
+    #[prost(string, repeated, tag = "6")]
+    pub hydration_schema: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
 #[derive(serde::Serialize, serde::Deserialize)]

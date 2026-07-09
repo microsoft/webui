@@ -28,6 +28,13 @@ pub struct DiscoveredComponent {
     pub css_content: Option<String>,
     /// Whether authored browser code owns this custom element tag.
     pub has_script: bool,
+    /// The authored client script source for local components, when present.
+    ///
+    /// Carried verbatim (this crate does not depend on `webui-parser`) so the
+    /// caller can scan it for `@observable`/`@attr` decorators to derive the
+    /// component's hydration surface. `None` for npm components, which ship no
+    /// scannable sibling source.
+    pub script_content: Option<String>,
     /// The original source identifier (for display/diagnostics)
     pub source: String,
 }
@@ -135,11 +142,13 @@ fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
                     } else {
                         None
                     };
+                    let script_content = read_sibling_script(path);
                     components.push(DiscoveredComponent {
                         tag_name: filename.to_string(),
                         html_content,
                         css_content,
-                        has_script: has_sibling_script(path),
+                        has_script: script_content.is_some(),
+                        script_content,
                         source: source.clone(),
                     });
                 }
@@ -150,8 +159,18 @@ fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
     Ok(components)
 }
 
-fn has_sibling_script(html_path: &Path) -> bool {
-    html_path.with_extension("ts").exists() || html_path.with_extension("js").exists()
+/// Read a component's sibling client module source, preferring `.ts` over `.js`.
+/// Returns `None` when neither exists or the file cannot be read.
+fn read_sibling_script(html_path: &Path) -> Option<String> {
+    for ext in ["ts", "js"] {
+        let candidate = html_path.with_extension(ext);
+        if candidate.exists() {
+            if let Ok(source) = std::fs::read_to_string(&candidate) {
+                return Some(source);
+            }
+        }
+    }
+    None
 }
 
 /// Collect the resolved local paths from source strings for file watching.

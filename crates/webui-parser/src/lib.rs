@@ -14,6 +14,7 @@ mod diagnostic;
 mod error;
 mod handlebars_parser;
 mod html_parser;
+mod hydration;
 pub mod plugin;
 mod route_parser;
 mod suggest;
@@ -21,13 +22,14 @@ mod suggest;
 pub use asset_filename::{
     AssetFileNameTemplate, AssetFileNameTemplateError, DEFAULT_ASSET_FILE_NAME_TEMPLATE,
 };
-pub use component_registry::{Component, ComponentRegistry};
+pub use component_registry::{Component, ComponentRegistration, ComponentRegistry};
 pub use condition_parser::ConditionParser;
 pub use css_link::{CssLinkHref, CssLinkOptions, DEFAULT_CSS_FILE_NAME_TEMPLATE};
 pub use css_parser::CssParser;
 pub use diagnostic::{codes, Diagnostic, Severity};
 pub use error::{ParserError, Result};
 pub use handlebars_parser::HandlebarsParser;
+pub use hydration::scan_hydration_attributes;
 pub use webui_tokens::CssFallbackChain;
 
 use crate::html_parser::{self as html, Attrs, Element, Event, Walker};
