@@ -586,9 +586,11 @@ export class TemplateElement extends HTMLElement {
    * Apply SSR state from `window.__webui.state`.
    *
    * The handler emits all SSR metadata in a single consolidated
-   * `window.__webui` script block. State lives at `.state` — the same
-   * props passed to the server render so observables match the DOM.
-   * Only observable properties are set — unknown keys are ignored.
+   * `window.__webui` script block. State lives at `.state` — the build-time
+   * hydration schema projects the server render props down to just the
+   * hydratable surface (every component's `@observable`/`@attr` union), so this
+   * bag contains only keys a component may consume. Unknown keys are still
+   * ignored defensively, but projection means they no longer arrive.
    *
    * Writes directly to the backing field (`_prop`) to avoid triggering
    * reactive updates before bindings are wired.
