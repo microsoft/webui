@@ -71,9 +71,8 @@ impl ComponentTemplateArtifact {
 
     /// Create a WebUI split metadata/function payload.
     ///
-    /// The hydration key surface is empty on construction; the WebUI plugin sets
-    /// it after unioning template roots with the `@observable`/`@attr` names it
-    /// scans from the component's `script_source`.
+    /// The hydration surface starts empty; the producing plugin attaches it with
+    /// [`Self::with_hydration_keys`] once it has derived the keys.
     #[must_use]
     pub fn webui(tag_name: String, template_json: String, template_functions: String) -> Self {
         Self {
@@ -83,6 +82,20 @@ impl ComponentTemplateArtifact {
             template_functions,
             hydration_keys: Vec::new(),
         }
+    }
+
+    /// Attach the hydration key surface this plugin derived for the component.
+    ///
+    /// This is the plugin-agnostic hook for the hydration surface: any plugin —
+    /// the WebUI plugin, a FAST plugin, or a third-party one — computes its own
+    /// keys (the fields the client restores from bootstrap state) and attaches
+    /// them here in a single born-complete expression. The build aggregates
+    /// these across components into the protocol-level projection allowlist.
+    /// Keys must be sorted and deduplicated.
+    #[must_use]
+    pub fn with_hydration_keys(mut self, hydration_keys: Vec<String>) -> Self {
+        self.hydration_keys = hydration_keys;
+        self
     }
 }
 
@@ -138,5 +151,47 @@ pub trait ParserPlugin {
     /// while producing its artifacts (e.g. an invalid `@event` handler).
     fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts> {
         Ok(ParserPluginArtifacts::None)
+    }
+}
+
+#[cfg(test)]
+mod artifact_tests {
+    use super::ComponentTemplateArtifact;
+
+    #[test]
+    fn template_constructor_starts_with_no_hydration_surface() {
+        let artifact = ComponentTemplateArtifact::template("x-a".into(), "<p></p>".into());
+        assert_eq!(artifact.tag_name, "x-a");
+        assert_eq!(artifact.template, "<p></p>");
+        assert!(artifact.template_json.is_empty());
+        assert!(artifact.template_functions.is_empty());
+        assert!(artifact.hydration_keys.is_empty());
+    }
+
+    #[test]
+    fn webui_constructor_starts_with_no_hydration_surface() {
+        let artifact =
+            ComponentTemplateArtifact::webui("x-b".into(), "{\"j\":1}".into(), "[]".into());
+        assert_eq!(artifact.tag_name, "x-b");
+        assert!(artifact.template.is_empty());
+        assert_eq!(artifact.template_json, "{\"j\":1}");
+        assert_eq!(artifact.template_functions, "[]");
+        assert!(artifact.hydration_keys.is_empty());
+    }
+
+    #[test]
+    fn with_hydration_keys_attaches_surface_fluently() {
+        let artifact = ComponentTemplateArtifact::webui("x-c".into(), "{}".into(), "[]".into())
+            .with_hydration_keys(vec!["count".into(), "name".into()]);
+        assert_eq!(artifact.hydration_keys, vec!["count", "name"]);
+    }
+
+    #[test]
+    fn with_hydration_keys_is_plugin_agnostic_over_template_payloads() {
+        // A non-WebUI plugin payload can carry its own hydration surface too.
+        let artifact = ComponentTemplateArtifact::template("x-d".into(), "<f-t></f-t>".into())
+            .with_hydration_keys(vec!["value".into()]);
+        assert_eq!(artifact.template, "<f-t></f-t>");
+        assert_eq!(artifact.hydration_keys, vec!["value"]);
     }
 }

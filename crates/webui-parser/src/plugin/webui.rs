@@ -160,13 +160,14 @@ impl WebUIParserPlugin {
                 .map(crate::hydration::scan_hydration_attributes)
                 .unwrap_or_default();
             let hydration_keys = union_hydration_keys(&payload.hydration_roots, &scanned);
-            let mut artifact = ComponentTemplateArtifact::webui(
-                c.tag_name.clone(),
-                payload.template_json,
-                payload.template_functions,
+            out.push(
+                ComponentTemplateArtifact::webui(
+                    c.tag_name.clone(),
+                    payload.template_json,
+                    payload.template_functions,
+                )
+                .with_hydration_keys(hydration_keys),
             );
-            artifact.hydration_keys = hydration_keys;
-            out.push(artifact);
         }
         Ok(out)
     }
