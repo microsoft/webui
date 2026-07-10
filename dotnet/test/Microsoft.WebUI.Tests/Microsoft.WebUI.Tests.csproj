@@ -12,7 +12,24 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Microsoft.WebUI/Microsoft.WebUI.csproj" />
   </ItemGroup>
-  <ItemGroup>
-    <None Include="fixtures/projected_protocol.bin" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
+
+  <!--
+    Compile the projection fixture app with the webui CLI at build time rather
+    than committing a prebuilt protocol binary. The app under
+    fixtures/projection-app declares one component whose only hydratable key is
+    `kept`, so the emitted protocol's hydration schema is ["kept"]. The
+    projection test renders it and asserts server-only fields are dropped.
+
+    cargo run resolves and builds the CLI on demand and locates the workspace by
+    walking up from this project directory. The target is incremental: it only
+    invokes the CLI when the app sources change or the output is missing.
+  -->
+  <Target Name="BuildProjectionFixtureProtocol"
+          BeforeTargets="Build"
+          Inputs="fixtures/projection-app/index.html;fixtures/projection-app/kept-widget.html"
+          Outputs="$(OutDir)fixtures/projection-app/protocol.bin">
+    <MakeDir Directories="$(OutDir)fixtures/projection-app" />
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="cargo run --quiet -p microsoft-webui-cli -- build fixtures/projection-app --out &quot;$(OutDir)fixtures/projection-app/protocol.bin&quot; --plugin webui" />
+  </Target>
 </Project>
