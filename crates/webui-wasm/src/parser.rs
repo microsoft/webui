@@ -42,11 +42,22 @@ fn register_components(
             if tag_name.contains('-') {
                 let css_key = format!("{tag_name}.css");
                 let css = files.get(&css_key).map(String::as_str);
+                // The sibling module (if any) is both the `has_script` signal and
+                // the source of the component's hydration surface. Scan it once so
+                // the wasm build path projects SSR state to the same allowlist as
+                // the native build.
+                let script = component_script(files, tag_name);
+                let hydration_attrs = script
+                    .map(webui_parser::scan_hydration_attributes)
+                    .unwrap_or_default();
                 parser.component_registry_mut().register_component(
-                    tag_name,
-                    content,
-                    css,
-                    has_script(files, tag_name),
+                    webui_parser::ComponentRegistration {
+                        tag_name,
+                        html_content: content,
+                        css_content: css,
+                        has_script: script.is_some(),
+                        hydration_attrs,
+                    },
                 )?;
             }
         }
@@ -54,8 +65,15 @@ fn register_components(
     Ok(())
 }
 
-fn has_script(files: &HashMap<String, String>, tag_name: &str) -> bool {
-    files.contains_key(&format!("{tag_name}.ts")) || files.contains_key(&format!("{tag_name}.js"))
+/// Return the authored browser module source for a component, if present.
+///
+/// Prefers `.ts` over `.js`. Its presence is the static-host `has_script`
+/// signal, and its source yields the component's hydration surface.
+fn component_script<'a>(files: &'a HashMap<String, String>, tag_name: &str) -> Option<&'a str> {
+    files
+        .get(&format!("{tag_name}.ts"))
+        .or_else(|| files.get(&format!("{tag_name}.js")))
+        .map(String::as_str)
 }
 
 /// Parse virtual files into a `WebUIProtocol` using the real `webui-parser`

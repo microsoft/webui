@@ -3053,12 +3053,12 @@ mod tests {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-component",
                 "<div>My Component</div>",
                 Some("div { color: blue; }"),
                 true,
-            )
+            ))
             .expect("Failed to register component");
 
         let result = parser.parse("test.html", "<my-component></my-component>");
@@ -3089,7 +3089,12 @@ mod tests {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
-            .register_component("mp-button", "<button>b</button>", None, true)
+            .register_component(ComponentRegistration::new(
+                "mp-button",
+                "<button>b</button>",
+                None,
+                true,
+            ))
             .expect("Failed to register component");
 
         // `<mp-buton>` is a same-namespace one-character typo of `mp-button`.
@@ -3114,7 +3119,12 @@ mod tests {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
-            .register_component("mp-button", "<button>b</button>", None, true)
+            .register_component(ComponentRegistration::new(
+                "mp-button",
+                "<button>b</button>",
+                None,
+                true,
+            ))
             .expect("Failed to register component");
 
         // `<md-button>` is a different namespace (md- vs mp-): a genuine
@@ -3156,7 +3166,12 @@ mod tests {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
-            .register_component("my-card", "<div>card</div>", None, true)
+            .register_component(ComponentRegistration::new(
+                "my-card",
+                "<div>card</div>",
+                None,
+                true,
+            ))
             .expect("register");
 
         // A registered component first, then a broken <for> in the same template.
@@ -3180,12 +3195,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-component",
                 "<div>My Component</div>",
                 Some("div { color: blue; }"),
                 true,
-            )
+            ))
             .expect("Failed to register component");
 
         let result = parser.parse(
@@ -3224,7 +3239,7 @@ mod tests {
 
         parser
             .component_registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "app-shell",
                 r#"<template shadowrootmode="open">
                   <my-navbar></my-navbar>
@@ -3234,29 +3249,34 @@ mod tests {
                 </template>"#,
                 Some(":host{display:flex}"),
                 true,
-            )
+            ))
             .expect("register app-shell");
         parser
             .component_registry
-            .register_component("my-navbar", "<nav>Nav</nav>", Some("nav{color:red}"), true)
+            .register_component(ComponentRegistration::new(
+                "my-navbar",
+                "<nav>Nav</nav>",
+                Some("nav{color:red}"),
+                true,
+            ))
             .expect("register my-navbar");
         parser
             .component_registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "cart-panel",
                 "<aside>Cart</aside>",
                 Some("aside{color:green}"),
                 true,
-            )
+            ))
             .expect("register cart-panel");
         parser
             .component_registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-footer",
                 "<footer>Footer</footer>",
                 Some("footer{color:blue}"),
                 true,
-            )
+            ))
             .expect("register my-footer");
 
         parser
@@ -3298,12 +3318,12 @@ mod tests {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "custom-element",
                 r#"<template foo="bar"><slot></slot></template>"#,
                 None,
                 true,
-            )
+            ))
             .expect("register");
         let result = parser.parse("index.html", "<custom-element>Hello</custom-element>");
         assert!(result.is_ok());
@@ -3334,12 +3354,12 @@ mod tests {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "custom-element",
                 r#"<template foo="bar"><slot></slot></template>"#,
                 Some("div { color: red; }"),
                 true,
-            )
+            ))
             .expect("register");
         let result = parser.parse("index.html", "<custom-element>Hello</custom-element>");
         assert!(result.is_ok());
@@ -3361,12 +3381,12 @@ mod tests {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "custom-element",
                 r#"<template @click={foo} :bar="baz" ?bool="true"><slot></slot></template>"#,
                 None,
                 true,
-            )
+            ))
             .expect("register");
         let result = parser.parse("index.html", "<custom-element>Hello</custom-element>");
         assert!(result.is_ok());
@@ -3384,12 +3404,12 @@ mod tests {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "custom-element",
                 r#"<template data-note="@click={foo}" @click={foo}><slot></slot></template>"#,
                 None,
                 true,
-            )
+            ))
             .expect("register");
         let result = parser.parse("index.html", "<custom-element>Hello</custom-element>");
         assert!(result.is_ok());
@@ -3409,12 +3429,12 @@ mod tests {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "custom-element",
                 r#"<template @click={foo} @click={bar}><slot></slot></template>"#,
                 None,
                 true,
-            )
+            ))
             .expect("register");
         let result = parser.parse("index.html", "<custom-element>Hello</custom-element>");
         assert!(result.is_ok());
@@ -3432,7 +3452,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry
-            .register_component("custom-element", "<slot></slot>", None, true)
+            .register_component(ComponentRegistration::new(
+                "custom-element",
+                "<slot></slot>",
+                None,
+                true,
+            ))
             .expect("register");
         let result = parser.parse(
             "index.html",
@@ -3457,7 +3482,12 @@ mod tests {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
-            .register_component("custom-element", "<div>Custom Element</div>", None, true)
+            .register_component(ComponentRegistration::new(
+                "custom-element",
+                "<div>Custom Element</div>",
+                None,
+                true,
+            ))
             .expect("register");
         let result = parser.parse("index.html", "<custom-element></custom-element>");
         assert!(result.is_ok());
@@ -3484,7 +3514,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry
-            .register_component("custom-widget", "<div>Widget Content</div>", None, true)
+            .register_component(ComponentRegistration::new(
+                "custom-widget",
+                "<div>Widget Content</div>",
+                None,
+                true,
+            ))
             .expect("register");
         let result = parser.parse("index.html", r#"<custom-widget config="{{settings}}" />"#);
         assert!(result.is_ok());
@@ -3506,7 +3541,12 @@ mod tests {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
-            .register_component("custom-icon", "<svg><slot></slot></svg>", None, true)
+            .register_component(ComponentRegistration::new(
+                "custom-icon",
+                "<svg><slot></slot></svg>",
+                None,
+                true,
+            ))
             .expect("register");
         let result = parser.parse(
             "index.html",
@@ -3534,7 +3574,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry
-            .register_component("custom-element", "<slot></slot>", None, true)
+            .register_component(ComponentRegistration::new(
+                "custom-element",
+                "<slot></slot>",
+                None,
+                true,
+            ))
             .expect("register");
         let result = parser.parse(
             "index.html",
@@ -3563,7 +3608,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry
-            .register_component("custom-element", "<slot></slot>", None, true)
+            .register_component(ComponentRegistration::new(
+                "custom-element",
+                "<slot></slot>",
+                None,
+                true,
+            ))
             .expect("register");
         let result = parser.parse(
             "index.html",
@@ -3733,7 +3783,7 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry
-            .register_component(tag, "<div></div>", None, true)
+            .register_component(ComponentRegistration::new(tag, "<div></div>", None, true))
             .expect("register");
         let result = parser.parse("index.html", html);
         assert!(result.is_ok(), "Parse error: {:?}", result.err());
@@ -3946,7 +3996,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry
-            .register_component("my-widget", "<div></div>", None, true)
+            .register_component(ComponentRegistration::new(
+                "my-widget",
+                "<div></div>",
+                None,
+                true,
+            ))
             .expect("register");
         let result = parser.parse(
             "index.html",
@@ -4415,7 +4470,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry
-            .register_component("custom-element", "<slot></slot>", None, true)
+            .register_component(ComponentRegistration::new(
+                "custom-element",
+                "<slot></slot>",
+                None,
+                true,
+            ))
             .expect("register");
         let html = r#"<custom-element :config="{{config}}" class="{{value0}}" style="{{value1}}" role="{{value2}}" data-test="{{value3}}" aria-test="{{value4}}"></custom-element>"#;
         let result = parser.parse("index.html", html);
@@ -4450,7 +4510,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry
-            .register_component("item-group", "<slot></slot>", None, true)
+            .register_component(ComponentRegistration::new(
+                "item-group",
+                "<slot></slot>",
+                None,
+                true,
+            ))
             .expect("register");
 
         let html = r#"<item-group role="list" aria-labelledby="group-date-{{group.id}}" data-testid="grp-{{group.id}}" class="fixed-class"></item-group>"#;
@@ -4484,20 +4549,30 @@ mod tests {
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "custom-element",
                 "<custom-child></custom-child><slot></slot>",
                 None,
                 true,
-            )
+            ))
             .expect("register");
         parser
             .component_registry
-            .register_component("custom-button", "<slot></slot>", None, true)
+            .register_component(ComponentRegistration::new(
+                "custom-button",
+                "<slot></slot>",
+                None,
+                true,
+            ))
             .expect("register");
         parser
             .component_registry
-            .register_component("custom-child", "<h1>Hello World!</h1>", None, true)
+            .register_component(ComponentRegistration::new(
+                "custom-child",
+                "<h1>Hello World!</h1>",
+                None,
+                true,
+            ))
             .expect("register");
 
         let html = r#"<for each="item in items"><custom-element><custom-button>Ok</custom-button></custom-element></for>"#;
@@ -4616,7 +4691,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry
-            .register_component("route-page", "<slot></slot>", None, true)
+            .register_component(ComponentRegistration::new(
+                "route-page",
+                "<slot></slot>",
+                None,
+                true,
+            ))
             .expect("register");
 
         let depth = MAX_TEMPLATE_DEPTH + 2;
@@ -4641,7 +4721,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry
-            .register_component("self-card", "<self-card></self-card>", None, true)
+            .register_component(ComponentRegistration::new(
+                "self-card",
+                "<self-card></self-card>",
+                None,
+                true,
+            ))
             .expect("register");
 
         let result = parser.parse("index.html", "<self-card></self-card>");
@@ -4697,12 +4782,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-card",
                 "<p><slot></slot></p>",
                 Some("p { color: red; }"),
                 true,
-            )
+            ))
             .ok();
         parser.parse("index.html", "<my-card>Hello</my-card>").ok();
         let records = parser.into_fragment_records();
@@ -4754,12 +4839,12 @@ mod tests {
         let mut parser = HtmlParser::with_options(CssStrategy::Style);
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-card",
                 "<p><slot></slot></p>",
                 Some("p { color: red; }"),
                 true,
-            )
+            ))
             .ok();
         parser.parse("index.html", "<my-card>Hello</my-card>").ok();
         let records = parser.into_fragment_records();
@@ -4788,12 +4873,12 @@ mod tests {
         let mut parser = HtmlParser::with_options((CssStrategy::Module, DomStrategy::Light));
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-card",
                 "<p><slot></slot></p>",
                 Some("p { color: red; }"),
                 true,
-            )
+            ))
             .ok();
         parser.parse("index.html", "<my-card>Hello</my-card>").ok();
         let records = parser.into_fragment_records();
@@ -4834,7 +4919,12 @@ mod tests {
         let mut parser = HtmlParser::with_options(CssStrategy::Module);
         parser
             .component_registry_mut()
-            .register_component("my-card", "<p><slot></slot></p>", None, true)
+            .register_component(ComponentRegistration::new(
+                "my-card",
+                "<p><slot></slot></p>",
+                None,
+                true,
+            ))
             .ok();
         parser.parse("index.html", "<my-card>Hello</my-card>").ok();
         let records = parser.into_fragment_records();
@@ -5421,11 +5511,11 @@ mod tests {
         );
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "todo-app",
                 r#"<template shadowrootmode="open" @toggle-item="{onToggleItem($e)}" @delete-item="{onDeleteItem($e)}" f-ref="{root}"><div>items</div></template>"#,
                 Some(":host { display: block; }"),
-             true,)
+             true,))
             .expect("register todo-app");
 
         parser
@@ -5465,7 +5555,12 @@ mod tests {
         let mut parser = HtmlParser::with_plugin(Box::new(BindingCountPlugin::new()));
         parser
             .component_registry
-            .register_component("my-btn", "<button><slot></slot></button>", None, true)
+            .register_component(ComponentRegistration::new(
+                "my-btn",
+                "<button><slot></slot></button>",
+                None,
+                true,
+            ))
             .expect("register");
 
         // All attributes are static — binding count should be 0
@@ -5492,7 +5587,12 @@ mod tests {
         let mut parser = HtmlParser::with_plugin(Box::new(BindingCountPlugin::new()));
         parser
             .component_registry
-            .register_component("my-btn", "<button><slot></slot></button>", None, true)
+            .register_component(ComponentRegistration::new(
+                "my-btn",
+                "<button><slot></slot></button>",
+                None,
+                true,
+            ))
             .expect("register");
 
         // One dynamic attribute ({{...}}) — binding count should be 1
@@ -5526,7 +5626,12 @@ mod tests {
         let mut parser = HtmlParser::with_plugin(Box::new(BindingCountPlugin::new()));
         parser
             .component_registry
-            .register_component("my-btn", "<button><slot></slot></button>", None, true)
+            .register_component(ComponentRegistration::new(
+                "my-btn",
+                "<button><slot></slot></button>",
+                None,
+                true,
+            ))
             .expect("register");
 
         // 2 static, 1 dynamic, 1 skipped-with-plugin (@click) — only dynamic + skipped counted
@@ -5563,7 +5668,12 @@ mod tests {
         let mut parser = HtmlParser::with_plugin(Box::new(BindingCountPlugin::new()));
         parser
             .component_registry
-            .register_component("my-btn", "<button><slot></slot></button>", None, true)
+            .register_component(ComponentRegistration::new(
+                "my-btn",
+                "<button><slot></slot></button>",
+                None,
+                true,
+            ))
             .expect("register");
 
         // Only plugin-skipped attrs (@click, f-ref) plus static — only skipped counted
@@ -5662,7 +5772,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component("x-bad", "<span>ok</span><!-- missing close", None, true)
+            .register_component(ComponentRegistration::new(
+                "x-bad",
+                "<span>ok</span><!-- missing close",
+                None,
+                true,
+            ))
             .expect("register failed");
 
         let result = parser.parse("index.html", "<x-bad></x-bad>");
@@ -5678,12 +5793,12 @@ mod tests {
             HtmlParser::with_plugin(Box::new(crate::plugin::webui::WebUIParserPlugin::new()));
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "x-bleed",
                 r#"<!-- {{path}} @click="{bad()}" ?hidden="{{bad}}" --><div>hello</div>"#,
                 None,
                 true,
-            )
+            ))
             .expect("register failed");
 
         parser
@@ -5708,12 +5823,12 @@ mod tests {
             HtmlParser::with_plugin(Box::new(crate::plugin::webui::WebUIParserPlugin::new()));
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "x-style",
                 "<style>// {{ignored}}\n.x { color: red; }</style><div>hello</div>",
                 None,
                 true,
-            )
+            ))
             .expect("register failed");
 
         parser
@@ -5764,12 +5879,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-button",
                 "<button>Click</button>",
                 Some(":host { color: var(--textColor); border: var(--borderWidth); }"),
                 true,
-            )
+            ))
             .expect("register failed");
 
         let html = "<my-button></my-button>";
@@ -5784,12 +5899,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-card",
                 "<div>Card</div>",
                 Some(":host { color: var(--token-a, var(--token-b, var(--token-c), true)); }"),
                 true,
-            )
+            ))
             .expect("register failed");
 
         parser
@@ -5810,13 +5925,13 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-card",
                 "<div>Card</div>",
                 Some(
                     ":host { --token-a: red; --foo-bar: var(--token-a, var(--token-b, var(--token-c), true)); }",
                 ),
-             true,)
+             true,))
             .expect("register failed");
 
         parser
@@ -5837,13 +5952,13 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-card",
                 "<div>Card</div>",
                 Some(
                     ":host { --token-a: red; --foo-bar: var(--token-a, var(--token-b, var(--token-c), true)); }",
                 ),
-             true,)
+             true,))
             .expect("register failed");
         parser
             .parse("test.html", "<my-card></my-card>")
@@ -5874,12 +5989,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-card",
                 "<div>Card</div>",
                 Some(":host { color: var(--brand, #000); }"),
                 true,
-            )
+            ))
             .expect("register failed");
         parser
             .parse("test.html", "<my-card></my-card>")
@@ -5905,14 +6020,14 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-card",
                 "<div>Card</div>",
                 // One usage has a literal fallback, the other does not. The
                 // bare `var(--brand)` makes the token genuinely required.
                 Some(":host { color: var(--brand, #000); background: var(--brand); }"),
                 true,
-            )
+            ))
             .expect("register failed");
         parser
             .parse("test.html", "<my-card></my-card>")
@@ -5935,7 +6050,7 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-card",
                 "<div>Card</div>",
                 Some(
@@ -5946,7 +6061,7 @@ mod tests {
                      }",
                 ),
                 true,
-            )
+            ))
             .expect("register failed");
         parser
             .parse("test.html", "<my-card></my-card>")
@@ -5977,12 +6092,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-card",
                 "<div>Card</div>",
                 ":host {\n  color: var(--color-neutral-2000);\n}".into(),
                 true,
-            )
+            ))
             .expect("register failed");
         parser
             .parse("test.html", "<my-card></my-card>")
@@ -6024,12 +6139,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-card",
                 "<div>Card</div>",
                 ":host {\n  color: var(--colr-brand, #000);\n}".into(),
                 true,
-            )
+            ))
             .expect("register failed");
         parser
             .parse("test.html", "<my-card></my-card>")
@@ -6057,12 +6172,15 @@ mod tests {
     #[test]
     fn test_tokens_from_malformed_component_css_error_on_unclosed_var() {
         let mut parser = HtmlParser::new();
-        let result = parser.component_registry_mut().register_component(
-            "my-card",
-            "<div>Card</div>",
-            Some(".bad { color: var(--dangling; } .ok { color: var(--valid); }"),
-            true,
-        );
+        let result =
+            parser
+                .component_registry_mut()
+                .register_component(ComponentRegistration::new(
+                    "my-card",
+                    "<div>Card</div>",
+                    Some(".bad { color: var(--dangling; } .ok { color: var(--valid); }"),
+                    true,
+                ));
 
         assert!(matches!(result, Err(ParserError::Css(message)) if
             message.contains("Unterminated CSS var() call")
@@ -6074,12 +6192,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-widget",
                 "<div>Widget</div>",
                 Some(".w { padding: var(--spacingM); }"),
                 true,
-            )
+            ))
             .expect("register failed");
 
         let html = r#"<style>.root { color: var(--textColor); }</style><my-widget></my-widget>"#;
@@ -6094,12 +6212,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-btn",
                 "<button>B</button>",
                 Some(".b { color: var(--shared); }"),
                 true,
-            )
+            ))
             .expect("register failed");
 
         let html = r#"<style>.x { color: var(--shared); }</style><my-btn></my-btn>"#;
@@ -6124,12 +6242,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-card",
                 "<div>Card</div>",
                 Some(":host { --local: 5px; width: var(--external); }"),
                 true,
-            )
+            ))
             .expect("register failed");
 
         let html = "<my-card></my-card>";
@@ -6144,12 +6262,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-btn",
                 "<button>B</button>",
                 Some(".b { color: var(--color-primary); border-radius: var(--radius-m); }"),
                 true,
-            )
+            ))
             .expect("register failed");
 
         // Entry HTML defines --color-primary and --radius-m in :root
@@ -6177,12 +6295,12 @@ mod tests {
         let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-card",
                 "<div>Card</div>",
                 Some(".c { color: var(--color-primary); margin: var(--external-spacing); }"),
                 true,
-            )
+            ))
             .expect("register failed");
 
         // Entry defines --color-primary but NOT --external-spacing

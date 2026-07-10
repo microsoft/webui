@@ -333,7 +333,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
                 .unwrap_or_default();
             parser
                 .component_registry_mut()
-                .register_component_with_hydration(webui_parser::ComponentRegistration {
+                .register_component(webui_parser::ComponentRegistration {
                     tag_name: &comp.tag_name,
                     html_content: &comp.html_content,
                     css_content: comp.css_content.as_deref(),
