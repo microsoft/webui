@@ -130,7 +130,7 @@ flowchart TB
 
 ### 6.1 Scanner (`crates/webui-parser/src/hydration.rs`)
 
-`scan_hydration_attributes(source: &str) -> Vec<String>` is a **deterministic byte/token scanner** (no regex, no recursion — per repo policy). It matches `@observable` / `@attr` decorators, skips balanced `(...)` option groups (with string-literal awareness) and stacked decorators, skips any TypeScript member modifiers (`public`/`private`/`protected`/`readonly`/`static`/`declare`/`override`/`accessor`/`abstract`) and line/block comments between the decorator and the property, and reads the following property identifier. UTF-8 identifier bytes (`>= 0x80`) are treated as identifier characters. Output is sorted and deduplicated.
+`scan_hydration_attributes(source: &str) -> Vec<String>` is a **deterministic byte/token scanner** (no regex, no recursion — per repo policy). It matches `@observable` / `@attr` decorators, skips balanced `(...)` option groups (with string-literal awareness) and stacked decorators, skips any TypeScript member modifiers (`public`/`private`/`protected`/`readonly`/`static`/`declare`/`override`/`accessor`/`abstract`) as well as `get`/`set` accessor keywords (so `@observable get fullName()` reads `fullName`, not `get`) and line/block comments between the decorator and the property, and reads the following property identifier. UTF-8 identifier bytes (`>= 0x80`) are treated as identifier characters. Output is sorted and deduplicated.
 
 There is **no Rust TypeScript AST parser available** (esbuild bundles `.ts` opaquely), so a full AST parse — as an earlier draft assumed — is not feasible at Rust build time. The token scanner is the pragmatic, policy-compliant substitute.
 
@@ -152,7 +152,9 @@ module** — `Component::script_source` — so any plugin can derive its own
 hydration surface (or ignore it). The WebUI plugin is the sole caller of
 `scan_hydration_attributes`; it scans each component's `script_source` exactly
 once, in `take_component_templates`, and unions the result with the template
-reactive roots to produce `ComponentTemplateArtifact::hydration_keys`.
+reactive roots, attaching the set through the plugin-agnostic
+`ComponentTemplateArtifact::with_hydration_keys` builder — the single hook any
+plugin (WebUI or third-party) uses to declare its hydratable surface.
 
 Sources of `script_source`:
 
@@ -281,6 +283,7 @@ The win is a **large constant-factor reduction** in bytes and CPU on the server 
 | Risk | Mitigation |
 |---|---|
 | Scanner misses a decorator variant (factory `@attr({...})`, stacked, mixins) | Union with template `tr`/`ta`; over-inclusion is harmless; scanner errs toward matching. |
+| Sibling module present but unreadable (I/O error / non-UTF-8) | **Hard build error**, never a silent script-less skip — silently dropping it would omit the component's `@observable`/`@attr` keys and under-include the schema (the one failure mode §6.2 forbids). |
 | npm/cached component with a JS-only `@observable` not in any template binding | Template-root surface only for npm; documented limitation. **Future:** ship hydration keys in the component cache format. |
 | Global-union over-inclusion emits keys no reachable component needs | Safe (never drops a needed key). **Future:** per-route allowlist derived from reachable components tightens the projection. |
 | Non-object state now serializes as `{}` (was passthrough) | Intentional under no-backcompat; state is contractually an object. Documented in `DESIGN.md`. |
