@@ -424,6 +424,14 @@ fn write_projected_state(
     state: &Value,
     schema: &[String],
 ) -> Result<()> {
+    // Projection membership is a binary search, so a mis-sorted schema would
+    // silently drop hydration keys. The schema is produced sorted + deduped at
+    // build time; this guard makes any future hand-built protocol that violates
+    // the invariant fail loudly in tests at zero release cost.
+    debug_assert!(
+        schema.windows(2).all(|pair| pair[0] <= pair[1]),
+        "hydration schema must be sorted for binary-search projection"
+    );
     write_script_safe_json(
         writer,
         &ProjectedState {

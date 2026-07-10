@@ -39,6 +39,10 @@ public sealed class WebUIHandler : IDisposable
 
     /// <summary>
     /// Renders the given protocol data with the specified state, entry, and request path.
+    /// <para>When the handler was created with the <c>webui</c> plugin, the state seeded
+    /// into the emitted <c>#webui-data</c> bootstrap block is projected down to the
+    /// component hydration schema compiled into <paramref name="protocol"/>; server-only
+    /// fields absent from that schema are not serialized into the response.</para>
     /// </summary>
     /// <param name="protocol">Pre-compiled protocol binary data.</param>
     /// <param name="stateJson">JSON-encoded state for the render.</param>

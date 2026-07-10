@@ -142,7 +142,7 @@ fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
                     } else {
                         None
                     };
-                    let script_content = read_sibling_script(path);
+                    let script_content = read_sibling_script(path)?;
                     components.push(DiscoveredComponent {
                         tag_name: filename.to_string(),
                         html_content,
@@ -160,17 +160,24 @@ fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
 }
 
 /// Read a component's sibling client module source, preferring `.ts` over `.js`.
-/// Returns `None` when neither exists or the file cannot be read.
-fn read_sibling_script(html_path: &Path) -> Option<String> {
+///
+/// Returns `Ok(None)` only when neither sibling exists. A sibling that exists
+/// but cannot be read (I/O error, or non-UTF-8 source, which
+/// [`std::fs::read_to_string`] rejects) is a hard error rather than a silent
+/// `None`: swallowing it would downgrade the component to a static host and drop
+/// its entire hydration surface without warning. This mirrors the sibling HTML
+/// and CSS reads above.
+fn read_sibling_script(html_path: &Path) -> Result<Option<String>> {
     for ext in ["ts", "js"] {
         let candidate = html_path.with_extension(ext);
         if candidate.exists() {
-            if let Ok(source) = std::fs::read_to_string(&candidate) {
-                return Some(source);
-            }
+            let source = std::fs::read_to_string(&candidate).with_context(|| {
+                format!("Failed to read component script: {}", candidate.display())
+            })?;
+            return Ok(Some(source));
         }
     }
-    None
+    Ok(None)
 }
 
 /// Collect the resolved local paths from source strings for file watching.

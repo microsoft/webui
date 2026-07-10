@@ -48,6 +48,10 @@
 //!   is precise: a modifier keyword is only treated as a modifier when another
 //!   identifier follows it; otherwise it is itself the property name (a field
 //!   literally named `static` in `@observable static = 5`).
+//! - **Accessor keywords** — `@observable get fullName()`, `@attr set label(v)`.
+//!   A leading `get`/`set` is skipped under the same "only when an identifier
+//!   follows" rule, so the accessor name is read rather than the keyword; a
+//!   field named `get` (`@observable get = 5`) still reads as `get`.
 //! - **Comments between decorator and property** — `@observable /* doc */ name`
 //!   and `@attr // note\n label`. The reading path skips `//` and `/* */` runs.
 //! - **Definite-assignment / type annotations** — `@attr subtotal!: string`.
@@ -127,11 +131,11 @@ fn read_decorated_property(bytes: &[u8], mut i: usize) -> Option<(String, usize)
                 let start = i;
                 i = skip_identifier(bytes, i);
                 let word = core::str::from_utf8(&bytes[start..i]).ok()?;
-                // A TS member modifier is only a modifier when another
-                // identifier follows it; otherwise the keyword is itself the
-                // property name (a field literally named `static`, say). Peek
-                // past whitespace/comments to disambiguate.
-                if is_ts_member_modifier(word) {
+                // A TS member modifier or `get`/`set` accessor keyword is only a
+                // prefix when another identifier follows it; otherwise the keyword
+                // is itself the property name (a field literally named `static`,
+                // or `get`, say). Peek past whitespace/comments to disambiguate.
+                if is_ts_member_modifier(word) || is_accessor_keyword(word) {
                     let after = skip_ws_and_comments(bytes, i);
                     if bytes.get(after).is_some_and(|&b| is_ident_start(b)) {
                         i = after;
@@ -161,6 +165,16 @@ fn is_ts_member_modifier(word: &str) -> bool {
             | "accessor"
             | "abstract"
     )
+}
+
+/// Accessor keywords that may precede the property name on a decorated accessor
+/// (`@observable get fullName()`). Like member modifiers they are skipped only
+/// when another identifier follows, so a field literally named `get` or `set`
+/// (`@observable get = 5`) still reads the keyword itself as the name. Reading
+/// the accessor name rather than the keyword keeps the scanner from *missing*
+/// the hydratable field — the under-inclusion the module forbids.
+fn is_accessor_keyword(word: &str) -> bool {
+    matches!(word, "get" | "set")
 }
 
 /// Skip a balanced parenthesis group starting at `bytes[start] == b'('`,
@@ -379,6 +393,34 @@ mod tests {
     fn reads_accessor_auto_field() {
         let src = "@observable accessor value = 1;";
         assert_eq!(scan_hydration_attributes(src), vec!["value"]);
+    }
+
+    #[test]
+    fn reads_name_after_get_accessor_keyword() {
+        // `@observable get fullName()` must yield `fullName`, not `get` — reading
+        // the keyword would MISS the hydratable field (under-inclusion).
+        let src = "@observable get fullName() { return this._n; }";
+        assert_eq!(scan_hydration_attributes(src), vec!["fullName"]);
+    }
+
+    #[test]
+    fn reads_name_after_set_accessor_keyword() {
+        let src = "@attr set label(v) { this._l = v; }";
+        assert_eq!(scan_hydration_attributes(src), vec!["label"]);
+    }
+
+    #[test]
+    fn get_is_property_name_when_no_identifier_follows() {
+        // A field literally named `get` — the keyword IS the name because `=`
+        // (not another identifier) follows it.
+        let src = "@observable get = 5;";
+        assert_eq!(scan_hydration_attributes(src), vec!["get"]);
+    }
+
+    #[test]
+    fn reads_name_after_modifier_and_accessor_keyword() {
+        let src = "@observable public get total() { return 0; }";
+        assert_eq!(scan_hydration_attributes(src), vec!["total"]);
     }
 
     #[test]

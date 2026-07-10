@@ -108,20 +108,29 @@ pub struct ComponentRegistry {
 #[cfg(feature = "fs")]
 /// Read a component's authored browser module source, if present.
 ///
-/// Prefers `.ts` over `.js`; returns `None` when neither sibling exists. The
-/// raw source is stored on the [`Component`] and handed to parser plugins so
+/// Prefers `.ts` over `.js`. Returns `Ok(None)` only when neither sibling
+/// exists. A sibling that exists but cannot be read (I/O error, or non-UTF-8
+/// source, which [`fs::read_to_string`] rejects) is a hard error rather than a
+/// silent `None`: swallowing it would downgrade the component to a static host
+/// and drop its entire hydration surface without warning — precisely the
+/// under-inclusion failure this feature is designed to prevent. This matches
+/// how the sibling HTML and CSS reads treat an unreadable-but-present file.
+///
+/// The raw source is stored on the [`Component`] and handed to parser plugins so
 /// each can derive its own hydration surface; its presence also doubles as the
 /// static-host `has_script` signal.
-fn read_component_script(html_path: &Path) -> Option<String> {
+fn read_component_script(html_path: &Path) -> Result<Option<String>> {
     for ext in ["ts", "js"] {
         let candidate = html_path.with_extension(ext);
         if candidate.exists() {
-            if let Ok(source) = fs::read_to_string(&candidate) {
-                return Some(source);
-            }
+            let source = fs::read_to_string(&candidate).map_err(|source| ParserError::IO {
+                context: format!("Failed to read component script: {}", candidate.display()),
+                source,
+            })?;
+            return Ok(Some(source));
         }
     }
-    None
+    Ok(None)
 }
 
 impl Default for ComponentRegistry {
@@ -237,7 +246,8 @@ impl ComponentRegistry {
         // Read the sibling client module once: its presence is the static-host
         // signal, and its raw source is handed to parser plugins so each can
         // derive its own hydration surface (the registry stays convention-agnostic).
-        let script_source = read_component_script(html_path);
+        // A present-but-unreadable sibling is a hard error, never a silent skip.
+        let script_source = read_component_script(html_path)?;
         let has_script = script_source.is_some();
 
         // Create and register the component
@@ -423,6 +433,29 @@ mod tests {
             .get("scripted-card")
             .expect("Failed to retrieve registered component");
         assert!(component.has_script);
+    }
+
+    #[test]
+    fn test_register_component_errors_on_unreadable_sibling_script() {
+        // A sibling `.ts` that exists but is not valid UTF-8 must be a hard
+        // error, never a silent downgrade to `has_script = false` — that would
+        // drop the component's entire hydration surface without warning, the
+        // exact under-inclusion this feature is built to prevent.
+        let mut fs = TestFileSystem::new();
+        let html_path = fs.add_file("components/scripted-card.html", "<p>Scripted</p>");
+        // 0xFF is never a valid UTF-8 start byte, so read_to_string rejects it.
+        std::fs::write(html_path.with_extension("ts"), [0xFF, 0xFE, 0x00])
+            .expect("Failed to write invalid sibling script");
+
+        let mut registry = ComponentRegistry::new();
+        let result = registry.register_component_from_paths(&html_path, None::<&str>);
+
+        assert!(
+            result.is_err(),
+            "a present-but-unreadable sibling script must fail the build, not be silently skipped"
+        );
+        // A failed read must not leave the component registered as a static host.
+        assert!(!registry.contains("scripted-card"));
     }
 
     #[test]
