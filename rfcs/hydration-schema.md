@@ -130,7 +130,7 @@ flowchart TB
 
 ### 6.1 Scanner (`crates/webui-parser/src/hydration.rs`)
 
-`scan_hydration_attributes(source: &str) -> Vec<String>` is a **deterministic byte/token scanner** (no regex, no recursion — per repo policy). It matches `@observable` / `@attr` decorators, skips balanced `(...)` option groups (with string-literal awareness) and stacked decorators, and reads the following property identifier. UTF-8 identifier bytes (`>= 0x80`) are treated as identifier characters. Output is sorted and deduplicated.
+`scan_hydration_attributes(source: &str) -> Vec<String>` is a **deterministic byte/token scanner** (no regex, no recursion — per repo policy). It matches `@observable` / `@attr` decorators, skips balanced `(...)` option groups (with string-literal awareness) and stacked decorators, skips any TypeScript member modifiers (`public`/`private`/`protected`/`readonly`/`static`/`declare`/`override`/`accessor`/`abstract`) and line/block comments between the decorator and the property, and reads the following property identifier. UTF-8 identifier bytes (`>= 0x80`) are treated as identifier characters. Output is sorted and deduplicated.
 
 There is **no Rust TypeScript AST parser available** (esbuild bundles `.ts` opaquely), so a full AST parse — as an earlier draft assumed — is not feasible at Rust build time. The token scanner is the pragmatic, policy-compliant substitute.
 
@@ -140,7 +140,7 @@ There is **no Rust TypeScript AST parser available** (esbuild bundles `.ts` opaq
 
 If a key that no component reads is included, the client ignores it (a few wasted bytes). If a key a component *needs* is dropped, that field silently fails to seed from SSR. Therefore:
 
-- The scanner **errs toward matching** and does not need robust comment/string skipping.
+- The scanner **errs toward matching**: its decorator-matching pass needs no robust comment/string skipping (over-inclusion is harmless), though once a decorator matches it does skip TS member modifiers and intervening comments so the correct property identifier is read.
 - The schema is a **union** of the scan with the template reactive roots (`tr`) / observed attributes (`ta`), so a scanner miss is backstopped by the template surface and vice-versa.
 
 ### 6.3 Plugin-owned scanning

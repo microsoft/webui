@@ -828,3 +828,79 @@ fn protocol_tokens_invalid_protobuf_returns_null() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests: projected hydration state through the C ABI render path
+// ---------------------------------------------------------------------------
+
+/// Like [`build_protocol_with_body_end`] but attaches a hydration `schema`, so
+/// the emitted `#webui-data` state block is projected down to those keys.
+fn build_protocol_with_schema(schema: &[&str]) -> Vec<u8> {
+    let mut fragments = HashMap::new();
+    fragments.insert(
+        "index.html".to_string(),
+        FragmentList {
+            fragments: vec![
+                WebUIFragment::raw("<html><head>"),
+                WebUIFragment::signal("head_end".to_string(), true),
+                WebUIFragment::raw("</head><body>"),
+                WebUIFragment::signal("body_end".to_string(), true),
+                WebUIFragment::raw("</body></html>"),
+            ],
+        },
+    );
+    let protocol = WebUIProtocol {
+        fragments,
+        hydration_schema: schema.iter().map(|s| (*s).to_string()).collect(),
+        ..Default::default()
+    };
+    protocol.to_protobuf().expect("serialize test protocol")
+}
+
+#[test]
+fn handler_render_projects_state_to_hydration_schema() {
+    let proto_bytes = build_protocol_with_schema(&["kept"]);
+
+    unsafe {
+        let plugin_id = CString::new("webui").expect("static string");
+        let handler = webui_handler_create_with_plugin(plugin_id.as_ptr());
+
+        let c_json =
+            CString::new(r#"{"kept":"KEPT_VALUE_FFI","dropped":"DROPPED_VALUE_FFI"}"#).unwrap();
+        let c_entry = CString::new("index.html").expect("static string");
+        let c_path = CString::new("/").expect("static string");
+
+        let ptr = webui_handler_render(
+            handler,
+            proto_bytes.as_ptr(),
+            proto_bytes.len(),
+            c_json.as_ptr(),
+            c_entry.as_ptr(),
+            c_path.as_ptr(),
+        );
+        assert!(
+            !ptr.is_null(),
+            "render returned NULL: {}",
+            last_error_string().unwrap_or_else(|| "<none>".to_string())
+        );
+
+        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        webui_free(ptr);
+        webui_handler_destroy(handler);
+
+        // Only the hydratable key reaches the bootstrap state block...
+        assert!(
+            result.contains(r#""kept":"KEPT_VALUE_FFI""#),
+            "hydratable key missing from bootstrap state:\n{result}"
+        );
+        // ...the non-hydratable key is projected out entirely.
+        assert!(
+            !result.contains("DROPPED_VALUE_FFI"),
+            "server-only value leaked into render:\n{result}"
+        );
+        assert!(
+            !result.contains("dropped"),
+            "server-only key name leaked into render:\n{result}"
+        );
+    }
+}

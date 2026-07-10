@@ -31,8 +31,30 @@
 //! client ignores unknown keys, so it is harmless. A name that is *missed*,
 //! however, would be projected out and silently break that field's hydration.
 //! The scanner therefore errs toward matching: it does not attempt to skip
-//! commented-out or stringified decorators, since those false positives cost at
-//! most a few bytes while a false negative would be a correctness bug.
+//! commented-out or stringified decorators at the top level, since those false
+//! positives cost at most a few bytes while a false negative would be a
+//! correctness bug.
+//!
+//! ## TypeScript / JavaScript surface handled
+//!
+//! Because a *miss* breaks hydration, the property-reading path is deliberately
+//! tolerant of the real authoring shapes the example apps use and the quirks JS
+//! permits:
+//!
+//! - **TS member modifiers** — `@observable public count`, `@attr private
+//!   readonly total`. A leading run of `public`/`private`/`protected`/
+//!   `readonly`/`static`/`declare`/`override`/`accessor`/`abstract` is skipped
+//!   so the *property* name is read, not the modifier. The disambiguation rule
+//!   is precise: a modifier keyword is only treated as a modifier when another
+//!   identifier follows it; otherwise it is itself the property name (a field
+//!   literally named `static` in `@observable static = 5`).
+//! - **Comments between decorator and property** — `@observable /* doc */ name`
+//!   and `@attr // note\n label`. The reading path skips `//` and `/* */` runs.
+//! - **Definite-assignment / type annotations** — `@attr subtotal!: string`.
+//!   Only the name is read; the trailing `!`, `:`, type, and initializer are
+//!   irrelevant, which is also why optional semicolons never matter.
+//! - **Decorator factories and stacked decorators** — `@attr({ attribute:
+//!   'x' })\n prop` and `@observable @deprecated prop`.
 
 /// Property-decorator keywords that mark a hydratable reactive field.
 const HYDRATION_DECORATORS: [&str; 2] = ["observable", "attr"];
@@ -84,9 +106,15 @@ fn match_decorator(bytes: &[u8], start: usize) -> Option<usize> {
 /// From just past a decorator keyword, skip optional `(...)` options and any
 /// stacked decorators, then read the decorated property identifier. Returns the
 /// property name and the index just past it.
+///
+/// A leading run of TypeScript member modifiers (`public`, `readonly`, …) is
+/// skipped so `@observable public count` yields `count`, not `public`. Comments
+/// between the decorator and the property are skipped as well. Both are
+/// correctness-critical: a missed property name is projected out of the
+/// bootstrap state and silently breaks that field's hydration.
 fn read_decorated_property(bytes: &[u8], mut i: usize) -> Option<(String, usize)> {
     loop {
-        i = skip_whitespace(bytes, i);
+        i = skip_ws_and_comments(bytes, i);
         let &byte = bytes.get(i)?;
         match byte {
             b'(' => i = skip_balanced_parens(bytes, i)?,
@@ -98,12 +126,41 @@ fn read_decorated_property(bytes: &[u8], mut i: usize) -> Option<(String, usize)
             _ if is_ident_start(byte) => {
                 let start = i;
                 i = skip_identifier(bytes, i);
-                let name = core::str::from_utf8(&bytes[start..i]).ok()?;
-                return Some((name.to_string(), i));
+                let word = core::str::from_utf8(&bytes[start..i]).ok()?;
+                // A TS member modifier is only a modifier when another
+                // identifier follows it; otherwise the keyword is itself the
+                // property name (a field literally named `static`, say). Peek
+                // past whitespace/comments to disambiguate.
+                if is_ts_member_modifier(word) {
+                    let after = skip_ws_and_comments(bytes, i);
+                    if bytes.get(after).is_some_and(|&b| is_ident_start(b)) {
+                        i = after;
+                        continue;
+                    }
+                }
+                return Some((word.to_string(), i));
             }
             _ => return None,
         }
     }
+}
+
+/// TypeScript class-member modifiers that may sit between a decorator and the
+/// property name. Skipping them is required so the *property* identifier is read
+/// rather than the modifier keyword.
+fn is_ts_member_modifier(word: &str) -> bool {
+    matches!(
+        word,
+        "public"
+            | "private"
+            | "protected"
+            | "readonly"
+            | "static"
+            | "declare"
+            | "override"
+            | "accessor"
+            | "abstract"
+    )
 }
 
 /// Skip a balanced parenthesis group starting at `bytes[start] == b'('`,
@@ -149,6 +206,36 @@ fn skip_whitespace(bytes: &[u8], mut i: usize) -> usize {
         i += 1;
     }
     i
+}
+
+/// Skip a run of ASCII whitespace and `//` / `/* */` comments. Used only on the
+/// property-reading path (after a decorator keyword has matched), where a
+/// comment between the decorator and the property must not hide the property
+/// name. A lone `/` that starts neither comment form is left in place for the
+/// caller to reject. The top-level `@`-scan stays comment-unaware by design
+/// (over-inclusion is harmless; see the module docs).
+fn skip_ws_and_comments(bytes: &[u8], mut i: usize) -> usize {
+    loop {
+        i = skip_whitespace(bytes, i);
+        match (bytes.get(i), bytes.get(i + 1)) {
+            (Some(b'/'), Some(b'/')) => {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            (Some(b'/'), Some(b'*')) => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                // Advance past the closing `*/` (clamped for an unterminated
+                // comment so the index never runs past the slice).
+                i = (i + 2).min(bytes.len());
+            }
+            _ => return i,
+        }
+    }
 }
 
 fn skip_identifier(bytes: &[u8], mut i: usize) -> usize {
@@ -265,5 +352,81 @@ mod tests {
     #[test]
     fn empty_source_yields_no_names() {
         assert!(scan_hydration_attributes("").is_empty());
+    }
+
+    #[test]
+    fn skips_ts_access_modifiers() {
+        // `public`/`private`/`protected` etc. are modifiers, not the property.
+        let src = "@observable public count = 0;\n@attr private label = 'x';";
+        assert_eq!(scan_hydration_attributes(src), vec!["count", "label"]);
+    }
+
+    #[test]
+    fn skips_stacked_ts_modifiers() {
+        let src = "@observable protected readonly total = 0;";
+        assert_eq!(scan_hydration_attributes(src), vec!["total"]);
+    }
+
+    #[test]
+    fn modifier_word_is_property_when_no_identifier_follows() {
+        // A field literally named `static` — the modifier keyword IS the name
+        // because `=` (not another identifier) follows it.
+        let src = "@observable static = 5;";
+        assert_eq!(scan_hydration_attributes(src), vec!["static"]);
+    }
+
+    #[test]
+    fn reads_accessor_auto_field() {
+        let src = "@observable accessor value = 1;";
+        assert_eq!(scan_hydration_attributes(src), vec!["value"]);
+    }
+
+    #[test]
+    fn skips_block_comment_between_decorator_and_property() {
+        let src = "@observable /* doc */ name = '';";
+        assert_eq!(scan_hydration_attributes(src), vec!["name"]);
+    }
+
+    #[test]
+    fn skips_line_comment_between_decorator_and_property() {
+        let src = "@attr // trailing note\n  label = 'x';";
+        assert_eq!(scan_hydration_attributes(src), vec!["label"]);
+    }
+
+    #[test]
+    fn skips_comment_between_factory_and_property() {
+        let src = "@attr({ attribute: 'a-b' }) /* c */ ab = '';";
+        assert_eq!(scan_hydration_attributes(src), vec!["ab"]);
+    }
+
+    #[test]
+    fn reads_name_despite_definite_assignment_and_type() {
+        // Matches the commerce `mp-cart-panel` shape: `@attr subtotal!: string;`.
+        // Only the property name is read; `!`, the type, and the missing
+        // initializer are irrelevant.
+        let src = "@attr subtotal!: string;\n@attr({ attribute: 'cart-open' }) cartOpen!: string;";
+        assert_eq!(scan_hydration_attributes(src), vec!["cartOpen", "subtotal"]);
+    }
+
+    #[test]
+    fn scans_commerce_add_to_cart_shape() {
+        // Real `mp-add-to-cart` decorators: factory options on the same line,
+        // hyphenated attribute mapping, camelCase property names.
+        let src = "@attr handle = '';\n\
+                   @attr({ attribute: 'product-title' }) productTitle = '';\n\
+                   @attr({ attribute: 'image-url' }) imageUrl = '';\n\
+                   @attr({ attribute: 'selected-size' }) selectedSize = '';";
+        assert_eq!(
+            scan_hydration_attributes(src),
+            vec!["handle", "imageUrl", "productTitle", "selectedSize"]
+        );
+    }
+
+    #[test]
+    fn tolerates_semicolonless_fields() {
+        // ASI: no trailing semicolons. We read the NAME, so this never mattered,
+        // but pin it as a regression guard.
+        let src = "@observable a = 1\n@observable b = 2\n@attr c = 3";
+        assert_eq!(scan_hydration_attributes(src), vec!["a", "b", "c"]);
     }
 }

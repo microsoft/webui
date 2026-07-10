@@ -1529,7 +1529,10 @@ deduplicated union of two sources:
 2. **`@observable` / `@attr` decorators** scanned from the carried
    `script_source` (the sibling `.ts`/`.js`). A deterministic, allocation-light
    token scan (no regex, no recursion) collects the declared identifier after
-   each `@observable`, `@attr`, or `@attr({ … })` decorator. This captures
+   each `@observable`, `@attr`, or `@attr({ … })` decorator, skipping any
+   TypeScript member modifiers (`public`, `private`, `protected`, `readonly`,
+   `static`, `declare`, `override`, `accessor`, `abstract`) and line/block
+   comments that sit between the decorator and the property name. This captures
    JS-only reactive fields that the server may seed but the template never binds
    (so they are absent from `tr`). The plugin performs this scan exactly once per
    component, when it finalizes template artifacts.
@@ -1543,8 +1546,10 @@ of the block.
 
 **Safety bias.** Over-inclusion is harmless — a key the client does not observe
 is silently ignored — whereas under-inclusion would drop a needed hydration
-value. The scanner therefore errs toward inclusion and needs no robust comment
-or string-literal handling. The global union is a safe superset: it never drops
+value. The scanner therefore errs toward inclusion: the decorator-matching pass
+is deliberately comment-unaware (a commented-out `@observable` merely
+over-includes, which is harmless), so it needs no full string-literal or comment
+parser. The global union is a safe superset: it never drops
 a key any component needs, at the cost of a slightly larger shared bag than a
 per-route union would produce (a future tightening).
 

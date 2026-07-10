@@ -337,4 +337,53 @@ mod tests {
             "Unknown plugin: unknown. Use \"webui\", \"fast-v3\", \"fast-v2\", or \"fast\"."
         );
     }
+
+    #[test]
+    fn render_projects_state_to_hydration_schema() {
+        use std::collections::HashMap;
+        use webui_protocol::{FragmentList, WebUIFragment};
+
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>"),
+                    WebUIFragment::signal("head_end".to_string(), true),
+                    WebUIFragment::raw("</head><body>"),
+                    WebUIFragment::signal("body_end".to_string(), true),
+                    WebUIFragment::raw("</body></html>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol {
+            fragments,
+            hydration_schema: vec!["kept".to_string()],
+            ..Default::default()
+        };
+
+        let rendered = render_protocol_to_string(
+            &protocol,
+            r#"{"kept":"KEPT_VALUE_WASM","dropped":"DROPPED_VALUE_WASM"}"#,
+            "index.html",
+            "/",
+            Some(HandlerPluginKind::WebUI),
+        )
+        .expect("render should succeed");
+
+        // Only the hydratable key reaches the bootstrap state block...
+        assert!(
+            rendered.contains(r#""kept":"KEPT_VALUE_WASM""#),
+            "hydratable key missing from bootstrap state:\n{rendered}"
+        );
+        // ...the non-hydratable key is projected out entirely.
+        assert!(
+            !rendered.contains("DROPPED_VALUE_WASM"),
+            "server-only value leaked into render:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("dropped"),
+            "server-only key name leaked into render:\n{rendered}"
+        );
+    }
 }

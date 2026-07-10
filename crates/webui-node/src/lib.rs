@@ -508,6 +508,77 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Parse `html`, attach a sorted hydration `schema`, and encode to protobuf.
+    fn build_projected_protocol(html: &str, schema: &[&str]) -> Vec<u8> {
+        let mut parser = HtmlParser::new();
+        parser.parse("index.html", html).expect("parse failed");
+        let tokens = parser.take_tokens();
+        let mut protocol = WebUIProtocol::with_tokens(parser.into_fragment_records(), tokens);
+        protocol.hydration_schema = schema.iter().map(|s| (*s).to_string()).collect();
+        protocol.to_protobuf().expect("protobuf encode failed")
+    }
+
+    /// Render protocol bytes with the WebUI hydration plugin so the `#webui-data`
+    /// bootstrap block (and its projected state) is emitted — this mirrors the
+    /// production `render(..., plugin = "webui")` path.
+    fn render_with_webui_plugin(protocol_bytes: &[u8], state_json: &str) -> Result<String, String> {
+        let protocol = WebUIProtocol::from_protobuf(protocol_bytes).map_err(|e| e.to_string())?;
+        let state: Value = serde_json::from_str(state_json).map_err(|e| e.to_string())?;
+
+        let mut output = String::with_capacity(1024);
+        struct StringWriter<'a> {
+            output: &'a mut String,
+        }
+        impl ResponseWriter for StringWriter<'_> {
+            fn write(&mut self, content: &str) -> webui_handler::Result<()> {
+                self.output.push_str(content);
+                Ok(())
+            }
+            fn end(&mut self) -> webui_handler::Result<()> {
+                Ok(())
+            }
+        }
+        let mut writer = StringWriter {
+            output: &mut output,
+        };
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        handler
+            .render(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(output)
+    }
+
+    #[test]
+    fn render_projects_state_to_hydration_schema() {
+        // Full document so the parser emits a `body_end` signal, which makes the
+        // WebUI plugin emit the #webui-data bootstrap block.
+        let bytes =
+            build_projected_protocol("<html><body><p>{{kept}}</p></body></html>", &["kept"]);
+        let out =
+            render_with_webui_plugin(&bytes, r#"{"kept":"KEPT_VALUE","dropped":"DROPPED_VALUE"}"#)
+                .expect("render should succeed");
+
+        // Only the hydratable key reaches the bootstrap state block...
+        assert!(
+            out.contains(r#""kept":"KEPT_VALUE""#),
+            "hydratable key missing from bootstrap state: {out}"
+        );
+        // ...the non-hydratable key is projected out entirely.
+        assert!(
+            !out.contains("DROPPED_VALUE"),
+            "server-only value leaked: {out}"
+        );
+        assert!(
+            !out.contains("dropped"),
+            "server-only key name leaked: {out}"
+        );
+    }
+
     // ── Tests for build() and inspect() napi exports ─────────────────
 
     #[test]
