@@ -42,21 +42,18 @@ fn register_components(
             if tag_name.contains('-') {
                 let css_key = format!("{tag_name}.css");
                 let css = files.get(&css_key).map(String::as_str);
-                // The sibling module (if any) is both the `has_script` signal and
-                // the source of the component's hydration surface. Scan it once so
-                // the wasm build path projects SSR state to the same allowlist as
-                // the native build.
+                // The sibling module (if any) is the `has_script` signal; its raw
+                // source is carried through to the WebUI parser plugin, which
+                // derives the hydration surface itself. Keeping the wasm path
+                // scan-free mirrors the native build's plugin-owned strategy.
                 let script = component_script(files, tag_name);
-                let hydration_attrs = script
-                    .map(webui_parser::scan_hydration_attributes)
-                    .unwrap_or_default();
                 parser.component_registry_mut().register_component(
                     webui_parser::ComponentRegistration {
                         tag_name,
                         html_content: content,
                         css_content: css,
                         has_script: script.is_some(),
-                        hydration_attrs,
+                        script_source: script,
                     },
                 )?;
             }
@@ -68,7 +65,8 @@ fn register_components(
 /// Return the authored browser module source for a component, if present.
 ///
 /// Prefers `.ts` over `.js`. Its presence is the static-host `has_script`
-/// signal, and its source yields the component's hydration surface.
+/// signal; the raw source is handed to parser plugins so each can derive its
+/// own hydration surface.
 fn component_script<'a>(files: &'a HashMap<String, String>, tag_name: &str) -> Option<&'a str> {
     files
         .get(&format!("{tag_name}.ts"))

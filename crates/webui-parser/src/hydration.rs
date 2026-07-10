@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 //! Build-time extraction of a component's hydration surface from its authored
-//! client script.
+//! client script — the **WebUI parser plugin's** hydration strategy.
 //!
 //! WebUI components declare reactive state with `@observable` and `@attr`
 //! property decorators. Those properties — and only those — are the fields the
@@ -10,6 +10,14 @@
 //! hydration. Extracting their names at build time lets the handler project the
 //! SSR state payload down to the hydratable surface instead of serializing the
 //! entire server state, which is the dominant startup CPU cost for large state.
+//!
+//! This convention is owned by [`crate::plugin::webui::WebUIParserPlugin`],
+//! which is the sole caller of [`scan_hydration_attributes`] against the raw
+//! `Component::script_source` handed to it by the registry. The function stays
+//! `pub` so third-party plugins may reuse the same decorator convention, but the
+//! plugin-agnostic registration pipeline never scans — each plugin derives its
+//! own hydration keys ([`crate::plugin::ComponentTemplateArtifact::hydration_keys`])
+//! from whatever build metadata it chooses.
 //!
 //! This is a deterministic, allocation-light token scanner — no regular
 //! expressions and no full TypeScript parse (the guiding principle is *move the

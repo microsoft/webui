@@ -37,21 +37,22 @@ pub struct Component {
     /// Whether this component has an authored client script.
     pub has_script: bool,
 
-    /// Sorted, deduplicated `@observable`/`@attr` property names scanned from
-    /// the component's authored client script. This is the component's hydration
-    /// surface: the fields the client restores from the bootstrap state. It is
-    /// unioned with the template's reactive roots to form the projection
-    /// allowlist that shrinks the emitted SSR state. Empty when the component
-    /// ships no local script (e.g. npm-provided components).
-    pub hydration_attrs: Vec<String>,
+    /// Raw authored client-module source (`.ts`/`.js`), when available. This is
+    /// convention-agnostic build metadata — the registry never interprets it.
+    /// Parser plugins read it to derive their own hydration surface: the WebUI
+    /// plugin scans it for `@observable`/`@attr` decorators, while other plugins
+    /// may apply a different strategy or ignore it entirely. `None` when the
+    /// component ships no scannable local script (e.g. npm-provided components).
+    pub script_source: Option<String>,
 }
 
 /// Inputs for registering a component from content strings.
 ///
 /// Grouping the fields keeps [`ComponentRegistry::register_component`] a
 /// single-argument call and lets it grow new build-time metadata (such as the
-/// hydration surface) without changing its arity. Callers with no hydration
-/// surface use [`ComponentRegistration::new`], which defaults it to empty.
+/// component's client-module source) without changing its arity. Callers with
+/// no client script use [`ComponentRegistration::new`], which defaults it to
+/// `None`.
 #[derive(Debug, Clone)]
 pub struct ComponentRegistration<'a> {
     /// The custom element tag name (must contain a hyphen).
@@ -62,18 +63,20 @@ pub struct ComponentRegistration<'a> {
     pub css_content: Option<&'a str>,
     /// Whether authored browser code owns this custom element tag.
     pub has_script: bool,
-    /// Scanned `@observable`/`@attr` property names forming the hydration
-    /// surface. Empty for components with no scannable client script.
-    pub hydration_attrs: Vec<String>,
+    /// Raw authored client-module source, when available. Parser plugins derive
+    /// their own hydration surface from it (the WebUI plugin scans
+    /// `@observable`/`@attr` decorators). `None` when there is no scannable
+    /// client script.
+    pub script_source: Option<&'a str>,
 }
 
 impl<'a> ComponentRegistration<'a> {
-    /// Create a registration with an empty hydration surface.
+    /// Create a registration with no client-module source.
     ///
     /// Convenience for callers with no scannable client script (tests,
     /// npm-provided components, and hosts that hydrate purely from template
-    /// roots). Populate [`Self::hydration_attrs`] directly when the component's
-    /// authored script has been scanned with [`crate::scan_hydration_attributes`].
+    /// roots). Set [`Self::script_source`] directly to let parser plugins derive
+    /// a hydration surface from the component's authored module.
     #[must_use]
     pub fn new(
         tag_name: &'a str,
@@ -86,7 +89,7 @@ impl<'a> ComponentRegistration<'a> {
             html_content,
             css_content,
             has_script,
-            hydration_attrs: Vec::new(),
+            script_source: None,
         }
     }
 }
@@ -106,8 +109,8 @@ pub struct ComponentRegistry {
 /// Read a component's authored browser module source, if present.
 ///
 /// Prefers `.ts` over `.js`; returns `None` when neither sibling exists. The
-/// returned source is scanned for `@observable`/`@attr` decorators to derive the
-/// component's build-time hydration surface, and its presence doubles as the
+/// raw source is stored on the [`Component`] and handed to parser plugins so
+/// each can derive its own hydration surface; its presence also doubles as the
 /// static-host `has_script` signal.
 fn read_component_script(html_path: &Path) -> Option<String> {
     for ext in ["ts", "js"] {
@@ -232,12 +235,10 @@ impl ComponentRegistry {
         };
 
         // Read the sibling client module once: its presence is the static-host
-        // signal and its source yields the hydration surface.
-        let script = read_component_script(html_path);
-        let has_script = script.is_some();
-        let hydration_attrs = script
-            .map(|source| crate::hydration::scan_hydration_attributes(&source))
-            .unwrap_or_default();
+        // signal, and its raw source is handed to parser plugins so each can
+        // derive its own hydration surface (the registry stays convention-agnostic).
+        let script_source = read_component_script(html_path);
+        let has_script = script_source.is_some();
 
         // Create and register the component
         let component = Component {
@@ -247,7 +248,7 @@ impl ComponentRegistry {
             css_definitions,
             css_fallback_chains,
             has_script,
-            hydration_attrs,
+            script_source,
         };
 
         self.components.insert(tag_name.to_string(), component);
@@ -256,20 +257,18 @@ impl ComponentRegistry {
 
     /// Register a component directly from provided content strings.
     ///
-    /// The [`ComponentRegistration::hydration_attrs`] field carries the sorted
-    /// set of `@observable`/`@attr` property names scanned from the component's
-    /// authored client script (see [`crate::scan_hydration_attributes`]). It is
-    /// unioned at build time with the template's reactive roots to form the
-    /// projection allowlist the handler uses to shrink the emitted bootstrap
-    /// state. Use [`ComponentRegistration::new`] when there is no hydration
-    /// surface to supply.
+    /// The [`ComponentRegistration::script_source`] field carries the component's
+    /// raw authored client module (when available). The registry stores it
+    /// verbatim; parser plugins later derive their own hydration surface from it
+    /// (the WebUI plugin scans `@observable`/`@attr` decorators). Use
+    /// [`ComponentRegistration::new`] when there is no client script to supply.
     pub fn register_component(&mut self, registration: ComponentRegistration<'_>) -> Result<()> {
         let ComponentRegistration {
             tag_name,
             html_content,
             css_content,
             has_script,
-            hydration_attrs,
+            script_source,
         } = registration;
 
         // Validate component name (must contain a hyphen)
@@ -304,7 +303,7 @@ impl ComponentRegistry {
             css_definitions,
             css_fallback_chains,
             has_script,
-            hydration_attrs,
+            script_source: script_source.map(str::to_string),
         };
 
         // Register the component

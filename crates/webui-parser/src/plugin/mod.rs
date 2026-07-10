@@ -46,10 +46,13 @@ pub struct ComponentTemplateArtifact {
     pub template_json: String,
     /// WebUI component-local JavaScript condition closure array.
     pub template_functions: String,
-    /// Sorted, deduplicated hydration key surface for this component: the union
-    /// of scanned `@observable`/`@attr` property names and the template's
-    /// reactive roots. The build aggregates these across components into the
-    /// protocol-level projection allowlist. Empty for non-WebUI plugins.
+    /// Sorted, deduplicated hydration key surface this plugin derives for the
+    /// component — the fields the client restores from the bootstrap state. Each
+    /// plugin owns how it computes them: the WebUI plugin unions the template's
+    /// reactive roots with the `@observable`/`@attr` names it scans from
+    /// `Component::script_source`, while other plugins may use a different
+    /// strategy or leave it empty. The build aggregates these across components
+    /// into the protocol-level projection allowlist.
     pub hydration_keys: Vec<String>,
 }
 
@@ -69,7 +72,8 @@ impl ComponentTemplateArtifact {
     /// Create a WebUI split metadata/function payload.
     ///
     /// The hydration key surface is empty on construction; the WebUI plugin sets
-    /// it after unioning template roots with the component's scanned attributes.
+    /// it after unioning template roots with the `@observable`/`@attr` names it
+    /// scans from the component's `script_source`.
     #[must_use]
     pub fn webui(tag_name: String, template_json: String, template_functions: String) -> Self {
         Self {
@@ -104,6 +108,13 @@ pub trait ParserPlugin {
     /// Called with the plugin-facing component template for the active CSS/DOM
     /// strategies. Authored root `<template>` attributes are preserved here;
     /// the SSR/internal parse view may strip runtime-only attributes.
+    ///
+    /// `component` carries the build-time metadata a plugin needs to author its
+    /// own hydration strategy — notably [`Component::script_source`], the raw
+    /// authored client module. The registry never interprets that source, so a
+    /// plugin is free to scan it (as the WebUI plugin does for `@observable`/`@attr`),
+    /// parse it differently, or ignore it, and populate
+    /// [`ComponentTemplateArtifact::hydration_keys`] accordingly.
     fn register_component_template(
         &mut self,
         tag_name: &str,

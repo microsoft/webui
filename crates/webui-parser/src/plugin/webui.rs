@@ -80,9 +80,11 @@ struct TrackedComponent {
     /// Source fact from the component registry. Static-host metadata is derived
     /// as `!has_script` only when the final template payload is emitted.
     has_script: bool,
-    /// Scanned `@observable`/`@attr` property names for this component, unioned
-    /// with the template roots to form the artifact's hydration key surface.
-    hydration_attrs: Vec<String>,
+    /// Raw authored client-module source, if any. Scanned once for
+    /// `@observable`/`@attr` decorators when the component's template payload is
+    /// emitted, then unioned with the template roots to form the hydration keys.
+    /// This is where the WebUI plugin owns its hydration strategy end to end.
+    script_source: Option<String>,
 }
 
 /// Inputs for recording or updating a tracked component template. Grouped to
@@ -92,7 +94,7 @@ struct StoredTemplateInput<'a> {
     template_html: &'a str,
     root_event_source: &'a str,
     has_script: bool,
-    hydration_attrs: &'a [String],
+    script_source: Option<&'a str>,
 }
 
 /// WebUI Framework parser plugin.
@@ -148,7 +150,16 @@ impl WebUIParserPlugin {
                 use_shadow,
                 !c.has_script,
             )?;
-            let hydration_keys = union_hydration_keys(&payload.hydration_roots, &c.hydration_attrs);
+            // The WebUI plugin owns its hydration strategy: scan the component's
+            // raw client module for `@observable`/`@attr` decorators, then union
+            // with the template's reactive roots. Scanned once per component here
+            // (a build-time cold path), regardless of re-registration.
+            let scanned = c
+                .script_source
+                .as_deref()
+                .map(crate::hydration::scan_hydration_attributes)
+                .unwrap_or_default();
+            let hydration_keys = union_hydration_keys(&payload.hydration_roots, &scanned);
             let mut artifact = ComponentTemplateArtifact::webui(
                 c.tag_name.clone(),
                 payload.template_json,
@@ -166,7 +177,7 @@ impl WebUIParserPlugin {
             template_html,
             root_event_source,
             has_script,
-            hydration_attrs,
+            script_source,
         } = input;
         if let Some(component) = self.components.iter_mut().find(|c| c.tag_name == tag_name) {
             component.template_html.clear();
@@ -174,8 +185,7 @@ impl WebUIParserPlugin {
             component.root_event_source.clear();
             component.root_event_source.push_str(root_event_source);
             component.has_script = has_script;
-            component.hydration_attrs.clear();
-            component.hydration_attrs.extend_from_slice(hydration_attrs);
+            component.script_source = script_source.map(str::to_string);
             return;
         }
         self.components.push(TrackedComponent {
@@ -183,7 +193,7 @@ impl WebUIParserPlugin {
             template_html: template_html.to_string(),
             root_event_source: root_event_source.to_string(),
             has_script,
-            hydration_attrs: hydration_attrs.to_vec(),
+            script_source: script_source.map(str::to_string),
         });
     }
 }
@@ -223,7 +233,7 @@ impl ParserPlugin for WebUIParserPlugin {
             template_html: processed_template,
             root_event_source: &component.html_content,
             has_script: component.has_script,
-            hydration_attrs: &component.hydration_attrs,
+            script_source: component.script_source.as_deref(),
         });
         Ok(())
     }
@@ -3005,7 +3015,7 @@ mod tests {
         .expect("valid template compiles")
     }
 
-    /// Test helper: build a `Component` with an empty hydration surface.
+    /// Test helper: build a `Component` with no client-module source.
     fn test_component(
         tag_name: &str,
         html_content: &str,
@@ -3019,7 +3029,7 @@ mod tests {
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
             has_script,
-            hydration_attrs: Vec::new(),
+            script_source: None,
         }
     }
 
@@ -3456,8 +3466,9 @@ mod tests {
         let mut plugin = WebUIParserPlugin::new();
         let mut comp = test_component("test-el", "<p>{{name}}</p>", None, true);
         // `name` is also a template root; `count` is a JS-only observable that
-        // the template never references, so only the scan can contribute it.
-        comp.hydration_attrs = vec!["count".to_string(), "name".to_string()];
+        // the template never references, so only the scan can contribute it. The
+        // plugin scans this raw source itself when the template is taken.
+        comp.script_source = Some("@observable count = 0;\n@attr name = '';".to_string());
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();

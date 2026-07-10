@@ -323,14 +323,10 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             ))
         })?;
         for comp in &result.components {
-            // npm components ship no scannable sibling source, so their hydration
-            // surface comes from template roots alone; local components contribute
-            // their scanned `@observable`/`@attr` property names here.
-            let hydration_attrs = comp
-                .script_content
-                .as_deref()
-                .map(webui_parser::scan_hydration_attributes)
-                .unwrap_or_default();
+            // Carry the raw sibling source (when present) so the WebUI parser
+            // plugin can derive its own hydration surface; npm components ship no
+            // scannable source and hydrate from template roots alone. The registry
+            // stays convention-agnostic — it never scans decorators itself.
             parser
                 .component_registry_mut()
                 .register_component(webui_parser::ComponentRegistration {
@@ -338,7 +334,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
                     html_content: &comp.html_content,
                     css_content: comp.css_content.as_deref(),
                     has_script: comp.has_script,
-                    hydration_attrs,
+                    script_source: comp.script_content.as_deref(),
                 })
                 .map_err(|e| {
                     WebUIError::ComponentRegistration(format!(

@@ -1126,7 +1126,7 @@ pub trait ParserPlugin {
 - **Fragment start**: `start_fragment` runs before each `HtmlParser::parse(...)` call so plugins can reset fragment-local counters
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
-- **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean.
+- **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The `component` argument also carries `Component::script_source` — the raw authored client module — which is the metadata hook a plugin uses to author its own hydration strategy (the WebUI plugin scans it for `@observable`/`@attr`; see [Hydration schema](#hydration-schema)).
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts. It is **fallible**: template-authoring mistakes found while compiling component templates (an invalid `@event` handler or a non-braced `w-ref`) surface as `ParserError::Template` instead of panicking, so every host (CLI, Node, FFI, WASM) can handle them.
 
 **Selecting parser plugins**
@@ -1513,18 +1513,26 @@ static HTML-only components and authored interactive components omit it.
 
 #### Hydration schema
 
-The build additionally derives, per component, a sorted/deduplicated set of
-**hydration keys** — the property names a component may seed from SSR state.
-This set is the union of two sources:
+Deriving a component's **hydration keys** — the property names it may seed from
+SSR state — is the responsibility of the **owning parser plugin**, not the
+plugin-agnostic registration pipeline. Registration only carries the component's
+raw client-module source on `Component::script_source`; each plugin decides how
+(or whether) to interpret it. This keeps WebUI's `@observable`/`@attr` convention
+out of generic code, so a plugin such as FAST can author a different hydration
+strategy through the same `register_component_template` hook.
+
+The **WebUI parser plugin** derives its per-component set as the sorted,
+deduplicated union of two sources:
 
 1. **Template state roots (`tr`).** Already produced by the compiler; every
    component-level property the template binds to.
-2. **`@observable` / `@attr` decorators** scanned from the sibling `.ts` source
-   (`<component>.html` → `<component>.ts`). A deterministic, allocation-light
+2. **`@observable` / `@attr` decorators** scanned from the carried
+   `script_source` (the sibling `.ts`/`.js`). A deterministic, allocation-light
    token scan (no regex, no recursion) collects the declared identifier after
    each `@observable`, `@attr`, or `@attr({ … })` decorator. This captures
    JS-only reactive fields that the server may seed but the template never binds
-   (so they are absent from `tr`).
+   (so they are absent from `tr`). The plugin performs this scan exactly once per
+   component, when it finalizes template artifacts.
 
 The union is stored on `ComponentData::hydration_keys` and folded into a single
 global `WebUIProtocol::hydration_schema` at assembly time. At render the handler

@@ -118,7 +118,7 @@ flowchart TB
 
 | Concern | Owner |
 |---|---|
-| Which property names are hydratable (per component) | **`webui-parser`** (scanner) ∪ **template build metadata** (`tr`/`ta`), at build time |
+| Which property names are hydratable (per component) | **`webui-parser` WebUI plugin** (owns the `@observable`/`@attr` scan) ∪ its **template build metadata** (`tr`/`ta`), at build time. Other plugins derive their own surface. |
 | Global allowlist union | **`webui` build** (`build_protocol_inner`) |
 | Schema storage / transport | **protobuf** (`ComponentData.hydration_keys`, `WebUIProtocol.hydration_schema`) |
 | Projecting + streaming the state field | **`webui-handler`** (`ProjectedState` + `ScriptSafeWriter`) |
@@ -143,11 +143,23 @@ If a key that no component reads is included, the client ignores it (a few waste
 - The scanner **errs toward matching** and does not need robust comment/string skipping.
 - The schema is a **union** of the scan with the template reactive roots (`tr`) / observed attributes (`ta`), so a scanner miss is backstopped by the template surface and vice-versa.
 
-### 6.3 Two registration paths
+### 6.3 Plugin-owned scanning
 
-- **App-directory components** are scanned from their sibling script directly during `register_component_from_paths` (`webui-parser`).
-- **External `--components`** surface their script through discovery (`DiscoveredComponent.script_content`); the `webui` crate scans it via `webui_parser::scan_hydration_attributes`.
-- **npm / cached components** have no scannable sibling (they are precompiled), so their hydratable surface is **template roots only**. A JS-only `@observable` on such a component that never appears in a template binding will not be in the schema (accepted limitation; see §14).
+The `@observable`/`@attr` convention is **owned by the WebUI parser plugin**
+(`crates/webui-parser/src/plugin/webui.rs`), not by the plugin-agnostic
+registration pipeline. Registration only carries the component's **raw client
+module** — `Component::script_source` — so any plugin can derive its own
+hydration surface (or ignore it). The WebUI plugin is the sole caller of
+`scan_hydration_attributes`; it scans each component's `script_source` exactly
+once, in `take_component_templates`, and unions the result with the template
+reactive roots to produce `ComponentTemplateArtifact::hydration_keys`.
+
+Sources of `script_source`:
+
+- **App-directory components** — `register_component_from_paths` (`webui-parser`) reads the sibling `.ts`/`.js` and stores it verbatim on the `Component`.
+- **External `--components`** — discovery surfaces the source through `DiscoveredComponent.script_content`; the `webui` crate passes it as `ComponentRegistration::script_source`.
+- **Wasm build** — `webui-wasm` locates the sibling module in its in-memory file map and passes it through the same field.
+- **npm / cached components** — have no scannable sibling (they are precompiled), so `script_source` is `None` and their hydratable surface is **template roots only**. A JS-only `@observable` on such a component that never appears in a template binding will not be in the schema (accepted limitation; see §14).
 
 ---
 

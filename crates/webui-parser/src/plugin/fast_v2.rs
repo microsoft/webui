@@ -677,7 +677,7 @@ mod tests {
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
             has_script: false,
-            hydration_attrs: Vec::new(),
+            script_source: None,
         }
     }
 
