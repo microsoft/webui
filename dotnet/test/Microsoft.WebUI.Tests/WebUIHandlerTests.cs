@@ -50,7 +50,7 @@ public class WebUIHandlerTests
         // render state down to that allowlist before emitting the #webui-data
         // bootstrap block, dropping server-only fields.
         byte[] protocol = File.ReadAllBytes(
-            Path.Combine(AppContext.BaseDirectory, "fixtures", "projection-app", "protocol.bin"));
+            Path.Join(AppContext.BaseDirectory, Path.Combine("fixtures", "projection-app", "protocol.bin")));
 
         using var handler = new WebUIHandler("webui");
         string html = handler.Render(
