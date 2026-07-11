@@ -18,8 +18,10 @@ use std::ffi::{CStr, CString};
 // against the rlib and call the `pub extern "C"` functions.
 use webui_ffi::{
     webui_free, webui_handler_create, webui_handler_create_with_plugin, webui_handler_destroy,
-    webui_handler_render, webui_handler_set_nonce, webui_last_error, webui_protocol_tokens,
-    webui_render, webui_render_partial,
+    webui_handler_render, webui_handler_render_prepared, webui_handler_set_nonce, webui_last_error,
+    webui_protocol_create, webui_protocol_destroy, webui_protocol_tokens,
+    webui_protocol_tokens_prepared, webui_render, webui_render_partial,
+    webui_render_partial_prepared,
 };
 use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol, WebUiFragmentRoute};
 
@@ -379,6 +381,31 @@ fn render_partial_returns_templates_inventory_and_chain() {
 
         let value: serde_json::Value =
             serde_json::from_str(&json).expect("ffi response should be valid json");
+
+        let prepared = webui_protocol_create(protocol_bytes.as_ptr(), protocol_bytes.len());
+        assert!(
+            !prepared.is_null(),
+            "webui_protocol_create returned NULL: {}",
+            last_error_string().unwrap_or_else(|| "<none>".to_string())
+        );
+        let prepared_ptr = webui_render_partial_prepared(
+            prepared,
+            c_state.as_ptr(),
+            c_entry.as_ptr(),
+            c_request_path.as_ptr(),
+            c_inventory.as_ptr(),
+        );
+        assert!(
+            !prepared_ptr.is_null(),
+            "prepared partial render returned NULL: {}",
+            last_error_string().unwrap_or_else(|| "<none>".to_string())
+        );
+        let prepared_json = CStr::from_ptr(prepared_ptr).to_string_lossy().into_owned();
+        webui_free(prepared_ptr);
+        webui_protocol_destroy(prepared);
+        let prepared_value: serde_json::Value =
+            serde_json::from_str(&prepared_json).expect("prepared response should be valid json");
+        assert_eq!(prepared_value, value);
 
         // State is at top level (caller adds it), not per-entry in chain
         assert!(
@@ -902,5 +929,76 @@ fn handler_render_projects_state_to_hydration_schema() {
             !result.contains("dropped"),
             "server-only key name leaked into render:\n{result}"
         );
+    }
+}
+
+#[test]
+fn prepared_protocol_supports_repeated_full_renders() {
+    let proto_bytes = build_protocol_with_schema(&["kept"]);
+
+    unsafe {
+        let plugin_id = CString::new("webui").expect("static string");
+        let handler = webui_handler_create_with_plugin(plugin_id.as_ptr());
+        let prepared = webui_protocol_create(proto_bytes.as_ptr(), proto_bytes.len());
+        assert!(
+            !prepared.is_null(),
+            "protocol preparation failed: {}",
+            last_error_string().unwrap_or_else(|| "<none>".to_string())
+        );
+
+        let c_entry = CString::new("index.html").expect("static string");
+        let c_path = CString::new("/").expect("static string");
+        for expected in ["FIRST_PREPARED", "SECOND_PREPARED"] {
+            let state = CString::new(format!(r#"{{"kept":"{expected}","dropped":"SECRET"}}"#))
+                .expect("state should not contain NUL");
+            let ptr = webui_handler_render_prepared(
+                handler,
+                prepared,
+                state.as_ptr(),
+                c_entry.as_ptr(),
+                c_path.as_ptr(),
+            );
+            assert!(
+                !ptr.is_null(),
+                "prepared render failed: {}",
+                last_error_string().unwrap_or_else(|| "<none>".to_string())
+            );
+            let rendered = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+            webui_free(ptr);
+            assert!(rendered.contains(expected));
+            assert!(!rendered.contains("SECRET"));
+        }
+
+        webui_protocol_destroy(prepared);
+        webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn prepared_protocol_tokens_match_legacy_tokens() {
+    let protocol = WebUIProtocol::with_tokens(
+        HashMap::new(),
+        vec!["alpha".to_string(), "beta".to_string()],
+    );
+    let bytes = protocol.to_protobuf().expect("serialize protocol");
+
+    unsafe {
+        let prepared = webui_protocol_create(bytes.as_ptr(), bytes.len());
+        assert!(!prepared.is_null());
+
+        let ptr = webui_protocol_tokens_prepared(prepared);
+        assert!(!ptr.is_null());
+        let tokens = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        webui_free(ptr);
+        webui_protocol_destroy(prepared);
+
+        assert_eq!(tokens, "alpha\nbeta");
+    }
+}
+
+#[test]
+fn protocol_destroy_null_is_safe() {
+    unsafe {
+        webui_protocol_destroy(std::ptr::null_mut());
     }
 }

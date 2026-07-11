@@ -5,11 +5,11 @@
 //! client script — the **WebUI parser plugin's** hydration strategy.
 //!
 //! WebUI components declare reactive state with `@observable` and `@attr`
-//! property decorators. Those properties — and only those — are the fields the
-//! client runtime restores from the server-emitted bootstrap state during
-//! hydration. Extracting their names at build time lets the handler project the
-//! SSR state payload down to the hydratable surface instead of serializing the
-//! entire server state, which is the dominant startup CPU cost for large state.
+//! property decorators. Those properties, together with compiled template
+//! roots, are the fields the client runtime restores from the server-emitted
+//! bootstrap state during hydration. Extracting their names at build time lets
+//! the handler project the SSR state payload down to the hydratable surface
+//! instead of serializing the entire server state.
 //!
 //! This convention is owned by [`crate::plugin::webui::WebUIParserPlugin`],
 //! which is the sole caller of [`scan_hydration_attributes`] against the raw
@@ -24,16 +24,15 @@
 //! decision to build time*). It reads the `.ts`/`.js` source and collects the
 //! property name following each `@observable` / `@attr` decorator.
 //!
-//! ## Safety bias: over-inclusion is harmless, under-inclusion is not
+//! ## Lexical filtering and safety
 //!
-//! A name that is scanned but never actually hydrated only means an extra key is
-//! *retained* in the projected payload if the server happens to provide it — the
-//! client ignores unknown keys, so it is harmless. A name that is *missed*,
-//! however, would be projected out and silently break that field's hydration.
-//! The scanner therefore errs toward matching: it does not attempt to skip
-//! commented-out or stringified decorators at the top level, since those false
-//! positives cost at most a few bytes while a false negative would be a
-//! correctness bug.
+//! The top-level scan skips comments, quoted strings, template literals, and
+//! regular-expression literals before matching decorators. Text such as
+//! `// @observable apiKey` must not expand the emitted state allowlist merely
+//! because a server state object happens to contain the same key. This scanner
+//! is still not a TypeScript parser or a security boundary: hosts must not place
+//! secrets in client-facing render state. The template-root union remains the
+//! correctness backstop for fields referenced by authored templates.
 //!
 //! ## TypeScript / JavaScript surface handled
 //!
@@ -74,17 +73,65 @@ pub fn scan_hydration_attributes(source: &str) -> Vec<String> {
     let bytes = source.as_bytes();
     let mut names: Vec<String> = Vec::new();
     let mut i = 0;
+    let mut can_start_regex = true;
     while i < bytes.len() {
-        if bytes[i] == b'@' {
-            if let Some(keyword_end) = match_decorator(bytes, i + 1) {
-                if let Some((name, next)) = read_decorated_property(bytes, keyword_end) {
-                    names.push(name);
+        match bytes[i] {
+            byte if byte.is_ascii_whitespace() => i += 1,
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                i = skip_line_comment(bytes, i + 2);
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i = skip_block_comment(bytes, i + 2);
+            }
+            quote @ (b'\'' | b'"') => {
+                i = skip_string(bytes, i + 1, quote).unwrap_or(bytes.len());
+                can_start_regex = false;
+            }
+            b'`' => {
+                i = skip_template_literal(bytes, i + 1).unwrap_or(bytes.len());
+                can_start_regex = false;
+            }
+            b'/' if can_start_regex => {
+                if let Some(next) = skip_regex_literal(bytes, i + 1) {
                     i = next;
-                    continue;
+                    can_start_regex = false;
+                } else {
+                    i += 1;
+                    can_start_regex = true;
                 }
             }
+            b'@' => {
+                if let Some(keyword_end) = match_decorator(bytes, i + 1) {
+                    if let Some((name, next)) = read_decorated_property(bytes, keyword_end) {
+                        names.push(name);
+                        i = next;
+                        can_start_regex = false;
+                        continue;
+                    }
+                }
+                i += 1;
+                can_start_regex = true;
+            }
+            byte if is_ident_start(byte) => {
+                let start = i;
+                i = skip_identifier(bytes, i);
+                can_start_regex =
+                    core::str::from_utf8(&bytes[start..i]).is_ok_and(keyword_allows_regex);
+            }
+            byte if byte.is_ascii_digit() => {
+                i = skip_number(bytes, i);
+                can_start_regex = false;
+            }
+            byte @ (b'+' | b'-') if bytes.get(i + 1) == Some(&byte) => {
+                i += 2;
+                // Prefix updates still expect an expression; postfix updates
+                // still end one. Preserve the preceding token state.
+            }
+            byte => {
+                i += 1;
+                can_start_regex = punctuation_allows_regex(byte);
+            }
         }
-        i += 1;
     }
     names.sort_unstable();
     names.dedup();
@@ -125,7 +172,7 @@ fn read_decorated_property(bytes: &[u8], mut i: usize) -> Option<(String, usize)
             b'@' => {
                 // Stacked decorator (e.g. `@observable @deprecated prop`): skip
                 // its name and keep searching for the property identifier.
-                i = skip_identifier(bytes, i + 1);
+                i = skip_stacked_decorator(bytes, i + 1)?;
             }
             _ if is_ident_start(byte) => {
                 let start = i;
@@ -146,6 +193,28 @@ fn read_decorated_property(bytes: &[u8], mut i: usize) -> Option<(String, usize)
             }
             _ => return None,
         }
+    }
+}
+
+fn skip_stacked_decorator(bytes: &[u8], mut i: usize) -> Option<usize> {
+    let &first = bytes.get(i)?;
+    if !is_ident_start(first) {
+        return None;
+    }
+    i = skip_identifier(bytes, i);
+
+    loop {
+        let dot = skip_ws_and_comments(bytes, i);
+        if bytes.get(dot) != Some(&b'.') {
+            return Some(i);
+        }
+
+        i = skip_ws_and_comments(bytes, dot + 1);
+        let &byte = bytes.get(i)?;
+        if !is_ident_start(byte) {
+            return None;
+        }
+        i = skip_identifier(bytes, i);
     }
 }
 
@@ -183,20 +252,60 @@ fn is_accessor_keyword(word: &str) -> bool {
 fn skip_balanced_parens(bytes: &[u8], start: usize) -> Option<usize> {
     let mut depth = 0usize;
     let mut i = start;
+    let mut can_start_regex = true;
     while i < bytes.len() {
         match bytes[i] {
-            b'(' => depth += 1,
+            b'(' => {
+                depth += 1;
+                can_start_regex = true;
+            }
             b')' => {
                 depth -= 1;
                 if depth == 0 {
                     return Some(i + 1);
                 }
+                can_start_regex = false;
             }
-            quote @ (b'\'' | b'"' | b'`') => {
+            quote @ (b'\'' | b'"') => {
                 i = skip_string(bytes, i + 1, quote)?;
+                can_start_regex = false;
                 continue;
             }
-            _ => {}
+            b'`' => {
+                i = skip_template_literal(bytes, i + 1)?;
+                can_start_regex = false;
+                continue;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                i = skip_line_comment(bytes, i + 2);
+                continue;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i = skip_block_comment(bytes, i + 2);
+                continue;
+            }
+            b'/' if can_start_regex => {
+                i = skip_regex_literal(bytes, i + 1)?;
+                can_start_regex = false;
+                continue;
+            }
+            byte if is_ident_start(byte) => {
+                let word_start = i;
+                i = skip_identifier(bytes, i);
+                can_start_regex =
+                    core::str::from_utf8(&bytes[word_start..i]).is_ok_and(keyword_allows_regex);
+                continue;
+            }
+            byte if byte.is_ascii_digit() => {
+                i = skip_number(bytes, i);
+                can_start_regex = false;
+                continue;
+            }
+            byte @ (b'+' | b'-') if bytes.get(i + 1) == Some(&byte) => {
+                i += 2;
+                continue;
+            }
+            byte => can_start_regex = punctuation_allows_regex(byte),
         }
         i += 1;
     }
@@ -215,6 +324,208 @@ fn skip_string(bytes: &[u8], mut i: usize, quote: u8) -> Option<usize> {
     None
 }
 
+/// Skip a template literal starting just after its opening backtick.
+///
+/// The common no-interpolation path is allocation-free. Template expressions
+/// use an explicit mode stack so nested template literals remain iterative.
+fn skip_template_literal(bytes: &[u8], mut i: usize) -> Option<usize> {
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(bytes.len()),
+            b'`' => return Some(i + 1),
+            b'$' if bytes.get(i + 1) == Some(&b'{') => {
+                return skip_template_with_expressions(bytes, i + 2);
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy)]
+enum TemplateMode {
+    Text,
+    Expression {
+        brace_depth: usize,
+        can_start_regex: bool,
+    },
+}
+
+fn skip_template_with_expressions(bytes: &[u8], mut i: usize) -> Option<usize> {
+    let mut modes = Vec::with_capacity(4);
+    modes.push(TemplateMode::Text);
+    modes.push(TemplateMode::Expression {
+        brace_depth: 1,
+        can_start_regex: true,
+    });
+
+    while i < bytes.len() {
+        match modes.last().copied()? {
+            TemplateMode::Text => {
+                i = scan_template_text(bytes, i, &mut modes)?;
+                if modes.is_empty() {
+                    return Some(i);
+                }
+            }
+            TemplateMode::Expression {
+                brace_depth,
+                can_start_regex,
+            } => {
+                i = scan_template_expression(bytes, i, brace_depth, can_start_regex, &mut modes)?;
+            }
+        }
+    }
+    None
+}
+
+fn scan_template_text(bytes: &[u8], i: usize, modes: &mut Vec<TemplateMode>) -> Option<usize> {
+    match bytes[i] {
+        b'\\' => Some((i + 2).min(bytes.len())),
+        b'`' => {
+            modes.pop();
+            set_expression_regex_state(modes, false);
+            Some(i + 1)
+        }
+        b'$' if bytes.get(i + 1) == Some(&b'{') => {
+            modes.push(TemplateMode::Expression {
+                brace_depth: 1,
+                can_start_regex: true,
+            });
+            Some(i + 2)
+        }
+        _ => Some(i + 1),
+    }
+}
+
+fn scan_template_expression(
+    bytes: &[u8],
+    i: usize,
+    brace_depth: usize,
+    can_start_regex: bool,
+    modes: &mut Vec<TemplateMode>,
+) -> Option<usize> {
+    let byte = bytes[i];
+    let next = match byte {
+        byte if byte.is_ascii_whitespace() => i + 1,
+        b'/' if bytes.get(i + 1) == Some(&b'/') => skip_line_comment(bytes, i + 2),
+        b'/' if bytes.get(i + 1) == Some(&b'*') => skip_block_comment(bytes, i + 2),
+        quote @ (b'\'' | b'"') => {
+            let next = skip_string(bytes, i + 1, quote)?;
+            set_expression_regex_state(modes, false);
+            next
+        }
+        b'`' => {
+            modes.push(TemplateMode::Text);
+            i + 1
+        }
+        b'{' => {
+            set_expression_depth(modes, brace_depth + 1, true);
+            i + 1
+        }
+        b'}' if brace_depth == 1 => {
+            modes.pop();
+            i + 1
+        }
+        b'}' => {
+            set_expression_depth(modes, brace_depth - 1, false);
+            i + 1
+        }
+        b'/' if can_start_regex => {
+            if let Some(next) = skip_regex_literal(bytes, i + 1) {
+                set_expression_regex_state(modes, false);
+                next
+            } else {
+                set_expression_regex_state(modes, true);
+                i + 1
+            }
+        }
+        byte if is_ident_start(byte) => {
+            let next = skip_identifier(bytes, i);
+            let allows_regex =
+                core::str::from_utf8(&bytes[i..next]).is_ok_and(keyword_allows_regex);
+            set_expression_regex_state(modes, allows_regex);
+            next
+        }
+        byte if byte.is_ascii_digit() => {
+            let next = skip_number(bytes, i);
+            set_expression_regex_state(modes, false);
+            next
+        }
+        byte @ (b'+' | b'-') if bytes.get(i + 1) == Some(&byte) => {
+            set_expression_regex_state(modes, can_start_regex);
+            i + 2
+        }
+        byte => {
+            set_expression_regex_state(modes, punctuation_allows_regex(byte));
+            i + 1
+        }
+    };
+    Some(next)
+}
+
+fn set_expression_depth(modes: &mut [TemplateMode], depth: usize, can_start_regex: bool) {
+    if let Some(mode @ TemplateMode::Expression { .. }) = modes.last_mut() {
+        *mode = TemplateMode::Expression {
+            brace_depth: depth,
+            can_start_regex,
+        };
+    }
+}
+
+fn set_expression_regex_state(modes: &mut [TemplateMode], can_start_regex: bool) {
+    if let Some(TemplateMode::Expression {
+        can_start_regex: state,
+        ..
+    }) = modes.last_mut()
+    {
+        *state = can_start_regex;
+    }
+}
+
+fn skip_line_comment(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && bytes[i] != b'\n' {
+        i += 1;
+    }
+    i
+}
+
+fn skip_block_comment(bytes: &[u8], mut i: usize) -> usize {
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+            return i + 2;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+fn skip_regex_literal(bytes: &[u8], mut i: usize) -> Option<usize> {
+    let mut in_class = false;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(bytes.len()),
+            b'[' => {
+                in_class = true;
+                i += 1;
+            }
+            b']' => {
+                in_class = false;
+                i += 1;
+            }
+            b'/' if !in_class => {
+                i += 1;
+                while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                return Some(i);
+            }
+            b'\n' | b'\r' => return None,
+            _ => i += 1,
+        }
+    }
+    None
+}
+
 fn skip_whitespace(bytes: &[u8], mut i: usize) -> usize {
     while i < bytes.len() && bytes[i].is_ascii_whitespace() {
         i += 1;
@@ -226,8 +537,7 @@ fn skip_whitespace(bytes: &[u8], mut i: usize) -> usize {
 /// property-reading path (after a decorator keyword has matched), where a
 /// comment between the decorator and the property must not hide the property
 /// name. A lone `/` that starts neither comment form is left in place for the
-/// caller to reject. The top-level `@`-scan stays comment-unaware by design
-/// (over-inclusion is harmless; see the module docs).
+/// caller to reject.
 fn skip_ws_and_comments(bytes: &[u8], mut i: usize) -> usize {
     loop {
         i = skip_whitespace(bytes, i);
@@ -257,6 +567,82 @@ fn skip_identifier(bytes: &[u8], mut i: usize) -> usize {
         i += 1;
     }
     i
+}
+
+fn skip_number(bytes: &[u8], mut i: usize) -> usize {
+    if bytes.get(i) == Some(&b'0') {
+        if let Some(radix) = bytes.get(i + 1).copied() {
+            if matches!(radix, b'x' | b'X' | b'b' | b'B' | b'o' | b'O') {
+                i += 2;
+                while i < bytes.len()
+                    && (bytes[i] == b'_'
+                        || match radix {
+                            b'x' | b'X' => bytes[i].is_ascii_hexdigit(),
+                            b'b' | b'B' => matches!(bytes[i], b'0' | b'1'),
+                            b'o' | b'O' => matches!(bytes[i], b'0'..=b'7'),
+                            _ => false,
+                        })
+                {
+                    i += 1;
+                }
+                if bytes.get(i) == Some(&b'n') {
+                    i += 1;
+                }
+                return i;
+            }
+        }
+    }
+
+    while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
+        i += 1;
+    }
+    skip_decimal_number_suffix(bytes, i)
+}
+
+fn skip_decimal_number_suffix(bytes: &[u8], mut i: usize) -> usize {
+    if bytes.get(i) == Some(&b'.') {
+        i += 1;
+        while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
+            i += 1;
+        }
+    }
+
+    if matches!(bytes.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(bytes.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
+            i += 1;
+        }
+    } else if bytes.get(i) == Some(&b'n') {
+        i += 1;
+    }
+    i
+}
+
+fn keyword_allows_regex(word: &str) -> bool {
+    matches!(
+        word,
+        "await"
+            | "case"
+            | "delete"
+            | "do"
+            | "else"
+            | "in"
+            | "instanceof"
+            | "new"
+            | "of"
+            | "return"
+            | "throw"
+            | "typeof"
+            | "void"
+            | "yield"
+    )
+}
+
+fn punctuation_allows_regex(byte: u8) -> bool {
+    !matches!(byte, b')' | b']' | b'}' | b'.')
 }
 
 /// Identifier continuation byte. Bytes >= 0x80 are treated as identifier bytes
@@ -357,6 +743,12 @@ mod tests {
     }
 
     #[test]
+    fn reads_property_after_qualified_stacked_decorator() {
+        let src = "@observable @validate.required(/\\)/) value = 1;";
+        assert_eq!(scan_hydration_attributes(src), vec!["value"]);
+    }
+
+    #[test]
     fn ignores_scoped_package_specifiers() {
         // `@microsoft/fast-element` must not be read as an `@attr` decorator.
         let src = "import { attr } from '@microsoft/fast-element';";
@@ -407,6 +799,12 @@ mod tests {
     fn reads_name_after_set_accessor_keyword() {
         let src = "@attr set label(v) { this._l = v; }";
         assert_eq!(scan_hydration_attributes(src), vec!["label"]);
+    }
+
+    #[test]
+    fn tolerates_regex_parentheses_in_stacked_decorator_options() {
+        let src = "@observable @validate(/\\)/) value = 1;";
+        assert_eq!(scan_hydration_attributes(src), vec!["value"]);
     }
 
     #[test]
@@ -470,5 +868,58 @@ mod tests {
         // but pin it as a regression guard.
         let src = "@observable a = 1\n@observable b = 2\n@attr c = 3";
         assert_eq!(scan_hydration_attributes(src), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn ignores_decorators_inside_comments() {
+        let src = "// @observable lineSecret = '';\n\
+                   /* @attr blockSecret = ''; */\n\
+                   @observable visible = 1;";
+        assert_eq!(scan_hydration_attributes(src), vec!["visible"]);
+    }
+
+    #[test]
+    fn ignores_decorators_inside_strings_and_templates() {
+        let src = "const a = \"@observable doubleSecret = 1\";\n\
+                   const b = '@attr singleSecret = 1';\n\
+                   const c = `@observable templateSecret = ${\"@attr nestedSecret\"}`;\n\
+                   @attr visible = '';";
+        assert_eq!(scan_hydration_attributes(src), vec!["visible"]);
+    }
+
+    #[test]
+    fn ignores_decorators_inside_regex_literals() {
+        let src = "const a = /@observable regexSecret/;\n\
+                   const b = /[@attr blockSecret]/gi;\n\
+                   @observable visible = 1;";
+        assert_eq!(scan_hydration_attributes(src), vec!["visible"]);
+    }
+
+    #[test]
+    fn scans_decorators_after_postfix_update_and_division() {
+        let src = "class Demo {\n\
+                   x = a++ / b;\n\
+                   @observable plusValue = /c/;\n\
+                   y = a-- / b;\n\
+                   @attr minusValue = /d/;\n\
+                   }";
+        assert_eq!(
+            scan_hydration_attributes(src),
+            vec!["minusValue", "plusValue"]
+        );
+    }
+
+    #[test]
+    fn numeric_operators_do_not_corrupt_template_regex_context() {
+        let src = "const text = `${1+/{/.test(\"{\")}`;\n\
+                   @observable visible = 1;";
+        assert_eq!(scan_hydration_attributes(src), vec!["visible"]);
+    }
+
+    #[test]
+    fn resumes_after_template_interpolation() {
+        let src = "const text = `value ${condition ? `nested ${value}` : \"fallback\"}`;\n\
+                   @observable visible = 1;";
+        assert_eq!(scan_hydration_attributes(src), vec!["visible"]);
     }
 }

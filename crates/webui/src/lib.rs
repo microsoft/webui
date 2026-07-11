@@ -36,7 +36,8 @@ pub use webui_handler::route_handler::{
 pub use webui_handler::route_matcher::CompiledRouteCache;
 pub use webui_handler::Result as HandlerResult;
 pub use webui_handler::{
-    plugin::HandlerPlugin, HandlerError, RenderOptions, ResponseWriter, WebUIHandler,
+    plugin::HandlerPlugin, HandlerError, PreparedProtocol, RenderOptions, ResponseWriter,
+    WebUIHandler,
 };
 pub use webui_parser::plugin::ComponentTemplateArtifact;
 pub use webui_parser::CssStrategy;
@@ -471,6 +472,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     hydration_schema.sort_unstable();
     hydration_schema.dedup();
     protocol.hydration_schema = hydration_schema;
+    protocol.hydration_schema_version = webui_protocol::HYDRATION_SCHEMA_VERSION;
 
     let component_asset_files = component_assets::render_component_assets(
         &protocol,
@@ -577,6 +579,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use tempfile::TempDir;
+    use webui_handler::plugin::webui::WebUIHydrationPlugin;
     use webui_protocol::web_ui_fragment::Fragment;
 
     struct StringWriter {
@@ -701,6 +704,59 @@ mod tests {
             result.protocol.hydration_schema,
             vec!["count", "ctaHref", "name"]
         );
+        assert_eq!(
+            result.protocol.hydration_schema_version,
+            webui_protocol::HYDRATION_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn test_build_does_not_hydrate_decorators_from_non_code_text() {
+        let app = create_app_dir(&[
+            ("index.html", "<demo-card></demo-card>"),
+            ("demo-card.html", "<p>{{name}}</p>"),
+            (
+                "demo-card.ts",
+                "const commentText = '@observable apiKey = \"\"';\n\
+                 const templateText = `@attr apiKey = \"\"`;\n\
+                 const decoratorPattern = /@observable apiKey/;\n\
+                 // @observable apiKey = '';\n\
+                 /* @attr apiKey = ''; */\n\
+                 class DemoCard {\n\
+                 @observable name = '';\n\
+                 }\n\
+                 customElements.define('demo-card', DemoCard);",
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        let result = build(options).unwrap();
+
+        let component = result.protocol.components.get("demo-card").unwrap();
+        assert_eq!(component.hydration_keys, vec!["name"]);
+        assert!(!result
+            .protocol
+            .hydration_schema
+            .iter()
+            .any(|key| key == "apiKey"));
+
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        let state = serde_json::json!({
+            "name": "Visible",
+            "apiKey": "TOP_SECRET_SENTINEL",
+        });
+        let mut writer = StringWriter { buf: String::new() };
+        handler
+            .handle(
+                &result.protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        assert!(writer.buf.contains("Visible"));
+        assert!(!writer.buf.contains("TOP_SECRET_SENTINEL"));
+        assert!(!writer.buf.contains("\"apiKey\""));
     }
 
     #[test]
@@ -1332,6 +1388,12 @@ mod tests {
 
         let restored = WebUIProtocol::from_protobuf(&result.protocol_bytes).unwrap();
         assert!(restored.fragments.contains_key("index.html"));
+    }
+
+    #[test]
+    fn prepared_protocol_is_available_from_facade() {
+        let prepared = PreparedProtocol::new(WebUIProtocol::new(HashMap::new()));
+        assert!(prepared.protocol().fragments.is_empty());
     }
 
     #[test]

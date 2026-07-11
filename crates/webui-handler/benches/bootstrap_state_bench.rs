@@ -4,23 +4,26 @@
 //! Bootstrap state-serialization benchmark.
 //!
 //! Measures the cost of emitting the `#webui-data` bootstrap block, whose
-//! `state` field is streamed on every full-HTML render
+//! `state` field is serialized on every full-HTML render
 //! (`write_webui_bootstrap` → `write_projected_state`).
 //!
 //! The projected-hydration design filters the SSR state down to only the keys
 //! a component actually hydrates (the build-time `hydration_schema`) before
-//! streaming it through a single-pass `</`-escaping writer. This benchmark
-//! pins that behavior with three arms per size:
+//! serializing it through the script-safe JSON writer. This benchmark pins
+//! that behavior with three arms per size:
 //!
-//! * `projected_full` — schema contains EVERY top-level key, so the entire
-//!   state is serialized. This is the anti-regression guard: the streaming
-//!   projection path must not be slower than the monolithic baseline it
-//!   replaced (~1.557 ms at 1 MB).
-//! * `projected_typical` — schema contains only the small metadata keys, so
-//!   the large `items` array is projected away. This is the realistic win: the
-//!   emitted block stays tiny and roughly flat regardless of total state size.
+//! * `hydratable_collection` — schema contains every top-level key, including
+//!   the large `items` collection. This models a real `<for>` root and is the
+//!   equal-byte anti-regression guard.
+//! * `server_only_collection` — schema contains only the small metadata keys,
+//!   so the large `items` array is projected away. This models a large
+//!   render-only/server-only collection, not a hydrated `<for>` root.
 //! * `without_plugin` — no bootstrap block is emitted at all; the structural
 //!   lower bound.
+//!
+//! Separate groups cover a very wide top-level object and a routed application
+//! whose inactive route owns the large collection. Those cases gate adaptive
+//! projection lookup and request-scoped hydration schemas.
 //!
 //! The protocol is intentionally minimal — a bare `<body>` plus a raw
 //! `body_end` signal that triggers the bootstrap emission — so the measured
@@ -36,7 +39,9 @@ use std::collections::HashMap;
 use std::hint::black_box;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
-use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol};
+use webui_protocol::{
+    ComponentData, FragmentList, WebUIFragment, WebUIFragmentRoute, WebUIProtocol,
+};
 
 struct BenchWriter {
     output: String,
@@ -103,6 +108,35 @@ fn build_large_state(target_bytes: usize) -> Value {
     })
 }
 
+fn build_wide_state(keys: usize) -> Value {
+    let mut map = serde_json::Map::new();
+    map.insert("keptA".to_string(), json!("a"));
+    map.insert("keptB".to_string(), json!("b"));
+    for idx in 0..keys {
+        map.insert(format!("serverOnly{idx:05}"), json!(idx));
+    }
+    Value::Object(map)
+}
+
+fn build_routed_state(contact_count: usize) -> Value {
+    let mut contacts = Vec::with_capacity(contact_count);
+    for idx in 0..contact_count {
+        contacts.push(json!({
+            "id": idx,
+            "name": format!("Contact {idx:05}"),
+            "email": format!("contact{idx:05}@example.com"),
+            "company": "Contoso",
+            "phone": "+1-555-0100",
+        }));
+    }
+    let recent_contacts = contacts.iter().take(5).cloned().collect::<Vec<_>>();
+    json!({
+        "page": "dashboard",
+        "contacts": contacts,
+        "recentContacts": recent_contacts,
+    })
+}
+
 /// Every top-level key of [`build_large_state`], sorted. Projecting against
 /// this emits the full state (worst case / anti-regression guard).
 fn full_schema() -> Vec<String> {
@@ -118,7 +152,7 @@ fn full_schema() -> Vec<String> {
 
 /// The small metadata keys only, sorted — the large `items` array is
 /// deliberately excluded so projection collapses the payload (typical case).
-fn typical_schema() -> Vec<String> {
+fn server_only_schema() -> Vec<String> {
     let mut schema = vec![
         "count".to_string(),
         "generatedAt".to_string(),
@@ -126,6 +160,68 @@ fn typical_schema() -> Vec<String> {
     ];
     schema.sort();
     schema
+}
+
+fn build_routed_protocol() -> WebUIProtocol {
+    let mut fragments = HashMap::new();
+    fragments.insert(
+        "index.html".to_string(),
+        FragmentList {
+            fragments: vec![
+                WebUIFragment::raw("<!DOCTYPE html><html><body>"),
+                WebUIFragment::route_from(WebUIFragmentRoute {
+                    path: "/".to_string(),
+                    fragment_id: "dashboard-page".to_string(),
+                    exact: true,
+                    ..Default::default()
+                }),
+                WebUIFragment::route_from(WebUIFragmentRoute {
+                    path: "/contacts".to_string(),
+                    fragment_id: "contacts-page".to_string(),
+                    exact: true,
+                    ..Default::default()
+                }),
+                WebUIFragment::signal("body_end", true),
+                WebUIFragment::raw("</body></html>"),
+            ],
+        },
+    );
+    fragments.insert(
+        "dashboard-page".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::raw("<p>Dashboard</p>")],
+        },
+    );
+    fragments.insert(
+        "contacts-page".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::raw("<p>Contacts</p>")],
+        },
+    );
+
+    let mut protocol = WebUIProtocol::new(fragments);
+    protocol.components.insert(
+        "dashboard-page".to_string(),
+        ComponentData {
+            template_json: "{}".to_string(),
+            hydration_keys: vec!["page".to_string(), "recentContacts".to_string()],
+            ..Default::default()
+        },
+    );
+    protocol.components.insert(
+        "contacts-page".to_string(),
+        ComponentData {
+            template_json: "{}".to_string(),
+            hydration_keys: vec!["contacts".to_string(), "page".to_string()],
+            ..Default::default()
+        },
+    );
+    protocol.hydration_schema = vec![
+        "contacts".to_string(),
+        "page".to_string(),
+        "recentContacts".to_string(),
+    ];
+    protocol
 }
 
 /// Minimal full-HTML protocol that fires a single `body_end` hook, carrying the
@@ -163,7 +259,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
 
     // Protocols differ only by the projection schema; state is shared per size.
     let full_protocol = build_bootstrap_protocol(full_schema());
-    let typical_protocol = build_bootstrap_protocol(typical_schema());
+    let server_only_protocol = build_bootstrap_protocol(server_only_schema());
     let empty_protocol = build_bootstrap_protocol(Vec::new());
 
     for &target in &[64 * 1024usize, 256 * 1024, 1024 * 1024] {
@@ -179,7 +275,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
         // state is streamed. Anti-regression guard against the monolithic
         // baseline (~1.557 ms at 1 MB).
         group.bench_with_input(
-            BenchmarkId::new("projected_full", &label),
+            BenchmarkId::new("hydratable_collection", &label),
             &state,
             |b, st| {
                 let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
@@ -193,7 +289,9 @@ fn bootstrap_state_bench(c: &mut Criterion) {
                             &options,
                             &mut writer,
                         )
-                        .unwrap_or_else(|error| panic!("projected_full render failed: {error}"));
+                        .unwrap_or_else(|error| {
+                            panic!("hydratable_collection render failed: {error}")
+                        });
                     black_box(writer.len());
                 });
             },
@@ -203,7 +301,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
         // the large `items` array is projected away and the emitted block stays
         // tiny regardless of total state size. This is the redesign's win.
         group.bench_with_input(
-            BenchmarkId::new("projected_typical", &label),
+            BenchmarkId::new("server_only_collection", &label),
             &state,
             |b, st| {
                 let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
@@ -212,12 +310,14 @@ fn bootstrap_state_bench(c: &mut Criterion) {
                     writer.clear();
                     handler
                         .handle(
-                            black_box(&typical_protocol),
+                            black_box(&server_only_protocol),
                             black_box(st),
                             &options,
                             &mut writer,
                         )
-                        .unwrap_or_else(|error| panic!("projected_typical render failed: {error}"));
+                        .unwrap_or_else(|error| {
+                            panic!("server_only_collection render failed: {error}")
+                        });
                     black_box(writer.len());
                 });
             },
@@ -250,7 +350,132 @@ fn bootstrap_state_bench(c: &mut Criterion) {
     }
 
     group.finish();
+
+    let wide_state = build_wide_state(30_000);
+    let wide_state_bytes = serialized_len(&wide_state);
+    let wide_protocol = build_bootstrap_protocol(vec!["keptA".to_string(), "keptB".to_string()]);
+    let mut wide_group = c.benchmark_group("bootstrap_state_wide");
+    wide_group.throughput(Throughput::Bytes(wide_state_bytes as u64));
+    wide_group.bench_function("sparse_schema_30000_keys", |b| {
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        let mut writer = BenchWriter::new(4096);
+        b.iter(|| {
+            writer.clear();
+            handler
+                .handle(
+                    black_box(&wide_protocol),
+                    black_box(&wide_state),
+                    &options,
+                    &mut writer,
+                )
+                .unwrap_or_else(|error| panic!("wide-state render failed: {error}"));
+            black_box(writer.len());
+        });
+    });
+    wide_group.finish();
+
+    let routed_state = build_routed_state(1_000);
+    let routed_state_bytes = serialized_len(&routed_state);
+    let routed_protocol = build_routed_protocol();
+    let mut legacy_routed_protocol = build_routed_protocol();
+    for component in legacy_routed_protocol.components.values_mut() {
+        component.hydration_keys.clear();
+    }
+    let mut route_group = c.benchmark_group("bootstrap_state_route");
+    route_group.throughput(Throughput::Bytes(routed_state_bytes as u64));
+    for &(name, path, protocol) in &[
+        ("dashboard_excludes_contacts", "/", &routed_protocol),
+        ("contacts_includes_contacts", "/contacts", &routed_protocol),
+        (
+            "contacts_legacy_global_schema",
+            "/contacts",
+            &legacy_routed_protocol,
+        ),
+    ] {
+        route_group.bench_function(name, |b| {
+            let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+            let render_options = RenderOptions::new("index.html", path);
+            let mut writer = BenchWriter::new(routed_state_bytes + 4096);
+            b.iter(|| {
+                writer.clear();
+                handler
+                    .handle(
+                        black_box(protocol),
+                        black_box(&routed_state),
+                        &render_options,
+                        &mut writer,
+                    )
+                    .unwrap_or_else(|error| panic!("route-state render failed: {error}"));
+                black_box(writer.len());
+            });
+        });
+    }
+    route_group.finish();
 }
 
-criterion_group!(benches, bootstrap_state_bench);
+fn partial_state_serialization_bench(c: &mut Criterion) {
+    let response = json!({
+        "templates": {},
+        "templateFunctions": {},
+        "templateStyles": [],
+        "cssHrefs": [],
+        "inventory": "",
+        "path": "/",
+        "chain": [],
+    });
+    let mut group = c.benchmark_group("partial_state_serialization");
+
+    for &target in &[64 * 1024usize, 1024 * 1024] {
+        let state = build_large_state(target);
+        let state_json = serde_json::to_string(&state)
+            .unwrap_or_else(|error| panic!("state serialization failed: {error}"));
+        let label = format!("{}KB", target / 1024);
+        group.throughput(Throughput::Bytes(state_json.len() as u64));
+
+        group.bench_with_input(
+            BenchmarkId::new("legacy_parse_and_reserialize", &label),
+            &state_json,
+            |b, input| {
+                b.iter(|| {
+                    let state: Value = serde_json::from_str(black_box(input))
+                        .unwrap_or_else(|error| panic!("state parse failed: {error}"));
+                    let mut result = response.clone();
+                    result
+                        .as_object_mut()
+                        .unwrap_or_else(|| panic!("benchmark response must be an object"))
+                        .insert("state".to_string(), state);
+                    let output = serde_json::to_string(&result)
+                        .unwrap_or_else(|error| panic!("response serialization failed: {error}"));
+                    black_box(output.len());
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("validate_and_embed", &label),
+            &state_json,
+            |b, input| {
+                b.iter(|| {
+                    let output =
+                        webui_handler::route_handler::serialize_partial_response_with_state(
+                            &response,
+                            black_box(input),
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("raw-state response serialization failed: {error}")
+                        });
+                    black_box(output.len());
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bootstrap_state_bench,
+    partial_state_serialization_bench
+);
 criterion_main!(benches);

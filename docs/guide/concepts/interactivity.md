@@ -152,6 +152,24 @@ You do not need `@observable` for values that are only read by the template.
 Add `@observable` when TypeScript code needs to read or mutate the value, for
 example in an event handler.
 
+### Initial Hydration State
+
+At build time, WebUI records each component's hydratable top-level state keys
+from template bindings plus authored `@observable` and `@attr` properties. The
+script scanner ignores decorator-looking text inside comments, strings,
+template-literal text, and regular-expression literals.
+
+For the initial full page, the server includes only keys needed by components
+reachable on the active request route. Inactive sibling routes do not enlarge
+the `#webui-data` state payload. Components behind a conditional or loop on the
+active route remain included so they can activate without losing initial state.
+
+::: warning Do not use projection as a secrecy boundary
+Hydration state is sent to the browser. Never put credentials, private tokens,
+or other secrets in browser render state, even if no current component appears
+to reference the field.
+:::
+
 ### Derived State
 
 For derived values like "has items?" or "total count", use template expressions directly instead of computed properties:

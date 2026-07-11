@@ -18,22 +18,23 @@ var result = WebUIRenderer.RenderHtml(html, json);
 
 ## Handler API (Higher Performance)
 
-For repeated renders with pre-compiled protocol data, use the `WebUIHandler`:
+For repeated renders with pre-compiled protocol data, prepare the protocol once
+and use the `WebUIHandler` overloads:
 
 ```csharp
 using Microsoft.WebUI;
 
-// Create a handler (optionally with a plugin name)
-using var handler = new WebUIHandler("webui");
-
 // Load pre-compiled protocol binary (from `webui build`)
-byte[] protocol = File.ReadAllBytes("app.webui");
+using var protocol = new PreparedProtocol(File.ReadAllBytes("app.webui"));
+using var handler = new WebUIHandler("webui");
 
 // Render with different state each time
 var html = handler.Render(protocol, """{"user": "Alice"}""", "index.html", "/");
 ```
 
-Refer to the WebUI documentation for the available plugin identifiers.
+`PreparedProtocol` is thread-safe and owns the decoded protocol plus reusable
+indices. Keep it alive for the server lifetime. Refer to the WebUI
+documentation for the available plugin identifiers.
 
 ## Client-Side Navigation (Partial Responses)
 
@@ -98,7 +99,7 @@ export WEBUI_LIB_PATH=/path/to/libwebui_ffi.dylib  # direct file path
 
 ```bash
 # Build the native FFI library
-cargo build --release -p webui-ffi
+cargo build --release -p microsoft-webui-ffi
 
 # Build and test the .NET package
 cargo xtask dotnet

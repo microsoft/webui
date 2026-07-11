@@ -41,9 +41,9 @@ pub struct ComponentData {
     /// Build-time hydration allowlist for this component: the property names the
     /// client consumes from SSR state. It is the union of the reactive surface
     /// declared in the sibling `.ts` (`@observable` / `@attr` properties) and the
-    /// template reactive roots (`tr`) / observed attributes (`ta`). The handler
-    /// projects emitted SSR state down to these keys so the bootstrap payload
-    /// carries only hydratable fields instead of the entire server state.
+    /// template reactive roots (`tr`) / observed attributes (`ta`). For each
+    /// request, the handler unions keys from components reachable on the active
+    /// route and projects the emitted SSR state to that request-scoped set.
     ///
     /// Sorted and deduplicated. Empty for components with no hydratable surface.
     #[prost(string, repeated, tag = "6")]
@@ -77,13 +77,16 @@ pub struct WebUiProtocol {
     #[prost(enumeration = "DomStrategy", tag = "5")]
     pub dom_strategy: i32,
     /// Sorted, deduplicated union of every component's `hydration_keys`.
-    /// Precomputed at build time so the handler can project SSR state to the
-    /// hydratable surface in a single pass without rebuilding the set per request.
-    /// This is the runtime allowlist: any state key absent from this set is
-    /// dropped from the bootstrap payload because no reachable component would
-    /// consume it during hydration.
+    /// Retained as a compatibility fallback for protocols that do not carry
+    /// per-component hydration keys.
     #[prost(string, repeated, tag = "6")]
     pub hydration_schema: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Hydration projection contract version. Zero identifies protocols produced
+    /// before hydration projection and preserves their full-state bootstrap
+    /// behavior. Version 1 makes hydration_schema authoritative, including when
+    /// the schema is intentionally empty.
+    #[prost(uint32, tag = "7")]
+    pub hydration_schema_version: u32,
 }
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
 #[derive(serde::Serialize, serde::Deserialize)]

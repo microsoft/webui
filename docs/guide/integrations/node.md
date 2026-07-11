@@ -1,6 +1,9 @@
 # WebUI Native Node Module Handler
 
-The `@microsoft/webui` npm package provides high-performance server-side rendering for Node.js / Bun / Deno. It uses a native addon with zero-copy Buffer access and streams rendered HTML fragments via callbacks for progressive rendering with minimal latency.
+The `@microsoft/webui` npm package provides high-performance server-side
+rendering for Node.js, Bun, and Deno. It uses a native addon with direct
+`Buffer` access, a buffered string path for normal rendering, and batched
+callbacks for streaming responses.
 
 ## Installation
 
@@ -90,8 +93,8 @@ Deno.serve({ port: 3000 }, (req) => {
 | Function | Description |
 |----------|-------------|
 | `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, componentAssetFiles, warnings, stats }` |
-| `render(protocol, state, options?)` | Render protocol with route matching. Returns the rendered HTML as a string |
-| `renderStream(protocol, state, onChunk, options?)` | Render with streaming output. Each HTML fragment is passed to `onChunk` as it is produced |
+| `render(protocol, state, options?)` | Render protocol with route matching through the native buffered-string path |
+| `renderStream(protocol, state, onChunk, options?)` | Render with callbacks coalesced around a 16 KiB target before crossing into JavaScript |
 | `inspect(protocol)` | Convert protocol to JSON for debugging |
 
 ### RenderOptions
@@ -103,6 +106,35 @@ Deno.serve({ port: 3000 }, (req) => {
 | `plugin` | `string` | - | Handler plugin name (see [Plugins](/guide/concepts/plugins/)) |
 
 `state` accepts either an object (auto-serialized) or a pre-stringified JSON string.
+
+## Reusing the Prepared Protocol
+
+Load `protocol.bin` once and keep the same `Buffer` object and plugin selection
+for the lifetime of the server:
+
+```js
+const protocol = readFileSync('./dist/protocol.bin');
+
+const server = createServer((req, res) => {
+  const html = render(protocol, getState(req), {
+    entry: 'index.html',
+    requestPath: req.url,
+    plugin: 'webui',
+  });
+  res.end(html);
+});
+```
+
+The package stores plugin-bound native prepared protocols in a `WeakMap` keyed
+by `Buffer` identity. Reusing the same buffer and plugin avoids protobuf
+decoding and deterministic index construction on later full, partial, and
+component-template requests. The package compares a retained byte snapshot and
+invalidates the prepared entry if the buffer is mutated. Reading the file into
+a new buffer per request defeats this optimization.
+
+Use `render()` when the complete HTML string is needed. Use `renderStream()`
+when the HTTP integration can make progress from callbacks; callbacks are
+batched rather than invoked for every internal handler write.
 
 ### BuildOptions
 

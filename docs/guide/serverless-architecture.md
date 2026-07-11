@@ -85,8 +85,9 @@ where the UI changes far less often than the state.
 3. **Dynamic state only.** API endpoints return JSON state. They do not build
    HTML and do not need a JavaScript rendering runtime.
 4. **Callback streaming.** `render(protocolBytes, stateJson, onChunk, options)`
-   calls `onChunk(html)` for each handler write. The service worker writes those
-   chunks directly to a `ReadableStream`.
+   coalesces handler writes around a 16 KiB target before calling
+   `onChunk(html)`. The service worker writes those chunks directly to a
+   `ReadableStream`.
 5. **Light DOM fragments.** The example builds with `--dom light` because the
    service worker appends independent fragments into a single document stream.
 6. **Shared theme tokens.** `scripts/inject-theme.ts` mirrors

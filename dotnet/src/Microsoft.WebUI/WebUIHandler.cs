@@ -41,8 +41,8 @@ public sealed class WebUIHandler : IDisposable
     /// Renders the given protocol data with the specified state, entry, and request path.
     /// <para>When the handler was created with the <c>webui</c> plugin, the state seeded
     /// into the emitted <c>#webui-data</c> bootstrap block is projected down to the
-    /// component hydration schema compiled into <paramref name="protocol"/>; server-only
-    /// fields absent from that schema are not serialized into the response.</para>
+    /// hydration keys for components reachable on the active request route. Projection
+    /// reduces response work and bytes; it is not a secrecy boundary.</para>
     /// </summary>
     /// <param name="protocol">Pre-compiled protocol binary data.</param>
     /// <param name="stateJson">JSON-encoded state for the render.</param>
@@ -63,6 +63,46 @@ public sealed class WebUIHandler : IDisposable
             _handle,
             protocol,
             (nuint)protocol.Length,
+            stateJson,
+            entryId,
+            requestPath);
+
+        if (resultPtr == IntPtr.Zero)
+        {
+            string error = NativeBindings.GetLastError() ?? "Render failed.";
+            throw new WebUIException(error);
+        }
+
+        return NativeBindings.ReadAndFreeString(resultPtr)!;
+    }
+
+    /// <summary>
+    /// Renders a protocol that was decoded once for repeated use.
+    /// </summary>
+    /// <param name="protocol">Prepared protocol shared across requests.</param>
+    /// <param name="stateJson">JSON-encoded state for the render.</param>
+    /// <param name="entryId">The entry identifier to render.</param>
+    /// <param name="requestPath">The HTTP request path.</param>
+    /// <returns>The rendered HTML string.</returns>
+    /// <exception cref="ObjectDisposedException">
+    /// Thrown when the handler or prepared protocol has been disposed.
+    /// </exception>
+    /// <exception cref="WebUIException">Thrown when rendering fails.</exception>
+    public string Render(
+        PreparedProtocol protocol,
+        string stateJson,
+        string entryId,
+        string requestPath)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(protocol);
+        ArgumentNullException.ThrowIfNull(stateJson);
+        ArgumentNullException.ThrowIfNull(entryId);
+        ArgumentNullException.ThrowIfNull(requestPath);
+
+        IntPtr resultPtr = NativeBindings.webui_handler_render_prepared(
+            _handle,
+            protocol.Handle,
             stateJson,
             entryId,
             requestPath);
@@ -101,6 +141,49 @@ public sealed class WebUIHandler : IDisposable
         IntPtr resultPtr = NativeBindings.webui_render_partial(
             protocol,
             (nuint)protocol.Length,
+            stateJson,
+            entryId,
+            requestPath,
+            inventoryHex);
+
+        if (resultPtr == IntPtr.Zero)
+        {
+            string error = NativeBindings.GetLastError() ?? "RenderPartial failed.";
+            throw new WebUIException(error);
+        }
+
+        return NativeBindings.ReadAndFreeString(resultPtr)!;
+    }
+
+    /// <summary>
+    /// Produces a partial response using a protocol decoded once for repeated use.
+    /// </summary>
+    /// <param name="protocol">Prepared protocol shared across requests.</param>
+    /// <param name="stateJson">JSON-encoded application state.</param>
+    /// <param name="entryId">The persistent entry identifier.</param>
+    /// <param name="requestPath">The current route path.</param>
+    /// <param name="inventoryHex">Hex-encoded inventory string.</param>
+    /// <returns>A JSON string containing state, templates, inventory, path, and chain.</returns>
+    /// <exception cref="ObjectDisposedException">
+    /// Thrown when the handler or prepared protocol has been disposed.
+    /// </exception>
+    /// <exception cref="WebUIException">Thrown when the operation fails.</exception>
+    public string RenderPartial(
+        PreparedProtocol protocol,
+        string stateJson,
+        string entryId,
+        string requestPath,
+        string inventoryHex)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(protocol);
+        ArgumentNullException.ThrowIfNull(stateJson);
+        ArgumentNullException.ThrowIfNull(entryId);
+        ArgumentNullException.ThrowIfNull(requestPath);
+        ArgumentNullException.ThrowIfNull(inventoryHex);
+
+        IntPtr resultPtr = NativeBindings.webui_render_partial_prepared(
+            protocol.Handle,
             stateJson,
             entryId,
             requestPath,

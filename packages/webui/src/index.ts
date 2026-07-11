@@ -111,6 +111,7 @@ export interface PartialResponse {
 // ── Internal: native addon loading ───────────────────────────────────
 
 interface NativeAddon {
+  PreparedProtocol?: new (protocol: Buffer, plugin?: string) => NativePreparedProtocol;
   render(
     protocol: Buffer,
     stateJson: string,
@@ -134,8 +135,27 @@ interface NativeAddon {
   renderComponentTemplates(protocolData: Buffer, componentTagsJson: string, inventoryHex: string): string;
 }
 
+interface NativePreparedProtocol {
+  renderJson(stateJson: string, entry: string, requestPath: string): string;
+  renderStreamJson(
+    stateJson: string,
+    entry: string,
+    requestPath: string,
+    onChunk: (html: string) => void,
+  ): void;
+  renderPartial(stateJson: string, entryId: string, requestPath: string, inventoryHex: string): string;
+  renderComponentTemplates(componentTags: string[], inventoryHex: string): string;
+  protocolTokens(): string[];
+}
+
 let addon: NativeAddon | null = null;
 let fallbackWarned = false;
+interface PreparedProtocolCache {
+  snapshot: Buffer;
+  byPlugin: Map<string | undefined, NativePreparedProtocol>;
+}
+
+const preparedProtocols = new WeakMap<Buffer, PreparedProtocolCache>();
 
 function loadAddon(): NativeAddon | null {
   if (addon) return addon;
@@ -167,6 +187,44 @@ function warnFallback(): void {
       `Using WASM fallback — performance may be degraded.\n` +
       `Install the platform-specific package for optimal performance.`,
   );
+}
+
+function getPreparedProtocol(
+  native: NativeAddon,
+  protocol: Buffer,
+  plugin?: string,
+): NativePreparedProtocol | null {
+  if (!native.PreparedProtocol) return null;
+
+  const cache = getPreparedProtocolCache(protocol);
+  let prepared = cache.byPlugin.get(plugin);
+  if (!prepared) {
+    prepared = new native.PreparedProtocol(protocol, plugin);
+    cache.byPlugin.set(plugin, prepared);
+  }
+  return prepared;
+}
+
+function getPreparedProtocolCache(protocol: Buffer): PreparedProtocolCache {
+  let cache = preparedProtocols.get(protocol);
+  if (!cache || !cache.snapshot.equals(protocol)) {
+    cache = {
+      snapshot: Buffer.from(protocol),
+      byPlugin: new Map<string | undefined, NativePreparedProtocol>(),
+    };
+    preparedProtocols.set(protocol, cache);
+  }
+  return cache;
+}
+
+function getAnyPreparedProtocol(
+  native: NativeAddon,
+  protocol: Buffer,
+): NativePreparedProtocol | null {
+  if (!native.PreparedProtocol) return null;
+  const first = getPreparedProtocolCache(protocol).byPlugin.values().next();
+  if (first && !first.done) return first.value;
+  return getPreparedProtocol(native, protocol);
 }
 
 // ── Build API ────────────────────────────────────────────────────────
@@ -258,10 +316,16 @@ export function render(
 ): string {
   const native = loadAddon();
   if (native) {
-    let result = "";
-    const stateStr = typeof state === "string" ? state : JSON.stringify(state);
     const entry = options?.entry ?? "index.html";
     const requestPath = options?.requestPath ?? "/";
+    const prepared = getPreparedProtocol(native, protocol, options?.plugin);
+    if (prepared) {
+      const stateStr = typeof state === "string" ? state : JSON.stringify(state);
+      return prepared.renderJson(stateStr, entry, requestPath);
+    }
+
+    let result = "";
+    const stateStr = typeof state === "string" ? state : JSON.stringify(state);
     native.render(protocol, stateStr, entry, requestPath, (chunk) => {
       result += chunk;
     }, options?.plugin);
@@ -276,7 +340,7 @@ export function render(
 
 /**
  * Render a protocol with streaming output.
- * Each HTML fragment is passed to the onChunk callback as it is produced.
+ * Internal handler writes are coalesced around a 16 KiB target before onChunk.
  */
 export function renderStream(
   protocol: Buffer,
@@ -286,10 +350,24 @@ export function renderStream(
 ): void {
   const native = loadAddon();
   if (native) {
-    const stateStr = typeof state === "string" ? state : JSON.stringify(state);
     const entry = options?.entry ?? "index.html";
     const requestPath = options?.requestPath ?? "/";
-    native.render(protocol, stateStr, entry, requestPath, onChunk, options?.plugin);
+    const prepared = getPreparedProtocol(native, protocol, options?.plugin);
+    if (prepared) {
+      const stateStr = typeof state === "string" ? state : JSON.stringify(state);
+      prepared.renderStreamJson(stateStr, entry, requestPath, onChunk);
+      return;
+    }
+
+    const stateStr = typeof state === "string" ? state : JSON.stringify(state);
+    native.render(
+      protocol,
+      stateStr,
+      entry,
+      requestPath,
+      onChunk,
+      options?.plugin,
+    );
     return;
   }
 
@@ -343,6 +421,10 @@ export function renderPartial(
 ): string {
   const native = loadAddon();
   if (native?.renderPartial) {
+    const prepared = getAnyPreparedProtocol(native, protocolData);
+    if (prepared) {
+      return prepared.renderPartial(stateJson, entryId, requestPath, inventoryHex);
+    }
     return native.renderPartial(protocolData, stateJson, entryId, requestPath, inventoryHex);
   }
   throw new Error("[webui] renderPartial() requires the native addon.");
@@ -367,6 +449,10 @@ export function renderComponentTemplates(
 ): string {
   const native = loadAddon();
   if (native?.renderComponentTemplates) {
+    const prepared = getAnyPreparedProtocol(native, protocolData);
+    if (prepared) {
+      return prepared.renderComponentTemplates(componentTags, inventoryHex);
+    }
     return native.renderComponentTemplates(
       protocolData,
       JSON.stringify(componentTags),

@@ -8,7 +8,14 @@
 
 import { describe, test, before, after } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { build, render, renderStream, inspect, renderComponentTemplates } from '@microsoft/webui';
+import {
+  build,
+  inspect,
+  render,
+  renderComponentTemplates,
+  renderPartial,
+  renderStream,
+} from '@microsoft/webui';
 import type { ComponentTemplatesResponse } from '@microsoft/webui';
 import { existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -130,6 +137,42 @@ describe('render', () => {
     const html = render(result.protocol, { name: 'X', items: [], show: false });
     assert.ok(!html.includes('<footer>'));
   });
+
+  test('reuses one protocol for object and JSON string state', () => {
+    const result = build({ appDir });
+    const objectHtml = render(result.protocol, { name: 'Object', items: [], show: false });
+    const jsonHtml = render(
+      result.protocol,
+      JSON.stringify({ name: 'JSON', items: [], show: false }),
+    );
+    assert.ok(objectHtml.includes('Hello, Object!'));
+    assert.ok(jsonHtml.includes('Hello, JSON!'));
+  });
+
+  test('invalidates the prepared cache when a protocol buffer mutates', () => {
+    const result = build({ appDir });
+    const state = { name: 'Cache', items: [], show: true };
+    const initialHtml = render(result.protocol, state);
+    assert.ok(initialHtml.includes('<footer>Visible</footer>'));
+
+    const offset = result.protocol.indexOf('Visible');
+    assert.ok(offset >= 0);
+    result.protocol.write('Altered', offset, 'utf8');
+
+    const updatedHtml = render(result.protocol, state);
+    assert.ok(updatedHtml.includes('<footer>Altered</footer>'));
+    assert.ok(!updatedHtml.includes('<footer>Visible</footer>'));
+  });
+
+  test('does not alias an empty plugin to the omitted plugin cache entry', () => {
+    const result = build({ appDir });
+    const state = { name: 'Plugin', items: [], show: false };
+    render(result.protocol, state);
+    assert.throws(
+      () => render(result.protocol, state, { plugin: '' }),
+      /Unknown plugin/,
+    );
+  });
 });
 
 describe('renderStream', () => {
@@ -162,5 +205,20 @@ describe('renderComponentTemplates', () => {
     assert.deepEqual(parsed.templates, {});
     assert.deepEqual(parsed.templateFunctions, {});
     assert.deepEqual(parsed.templateStyles, []);
+  });
+});
+
+describe('renderPartial', () => {
+  test('embeds state through the prepared protocol path', () => {
+    const result = build({ appDir });
+    const json = renderPartial(
+      result.protocol,
+      '{"name":"Partial"}',
+      'index.html',
+      '/',
+      '',
+    );
+    const parsed = JSON.parse(json);
+    assert.equal(parsed.state.name, 'Partial');
   });
 });

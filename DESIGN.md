@@ -40,10 +40,13 @@ pub struct WebUIProtocol {
     pub css_strategy: CssStrategy,
     /// Build-wide DOM encapsulation strategy (Shadow or Light).
     pub dom_strategy: DomStrategy,
-    /// Sorted, deduplicated union of every component's `hydration_keys` — the
-    /// build-time allowlist the handler projects the SSR `state` object down to
-    /// before emitting the `#webui-data` block. See "Hydration schema" below.
+    /// Sorted, deduplicated union of every component's `hydration_keys`.
+    /// Used as the compatibility fallback for protocols that do not carry
+    /// per-component hydration keys. See "Hydration schema" below.
     pub hydration_schema: Vec<String>,
+    /// Hydration projection contract version. Zero preserves full-state
+    /// bootstrap behavior for protocols built before projection.
+    pub hydration_schema_version: u32,
 }
 
 /// Per-component metadata populated by the active parser plugin at build time.
@@ -71,8 +74,8 @@ pub struct ComponentData {
     pub template_functions: String,
     /// Sorted, deduplicated hydratable property names for this component: the
     /// union of its template state roots (`tr`) and any `@observable`/`@attr`
-    /// fields scanned from the sibling `.ts` source. Folded into
-    /// `WebUIProtocol::hydration_schema` at assembly time.
+    /// fields scanned from the sibling `.ts` source. The handler unions these
+    /// keys for components reachable on the active request path.
     pub hydration_keys: Vec<String>,
 }
 
@@ -315,15 +318,20 @@ lazily parse and remove `#webui-data` into `window.__webui` when metadata is nee
 **CSS module definitions** are emitted for all **reachable** components (including those in false
 `<if>` blocks), not just rendered ones.
 
-The `state` field is **projected**, not the whole application state. Rather than
-serializing the entire state tree on every full-HTML render, the handler emits
-only the keys present in `WebUIProtocol::hydration_schema` (the sorted union of
-every component's hydratable properties). Server-only fields (e.g. CSRF
-`tokens`) are naturally excluded because they are never hydration keys, and
-over-inclusion is harmless — the client ignores any key it does not observe.
-This keeps startup cost proportional to the hydratable surface rather than the
-full state, which for a large state with a small hydratable surface collapses
-the emitted block to a few bytes. See [Hydration schema](#hydration-schema).
+The `state` field is **projected**, not the whole application state. The handler
+unions `hydration_keys` for components reachable from the active entry and
+request route, then serializes only matching top-level state fields. Components
+behind active-route `<if>` and `<for>` branches remain conservatively reachable;
+inactive sibling routes are excluded. Protocols that predate per-component keys
+fall back to the global `WebUIProtocol::hydration_schema`. Protocols that
+predate hydration projection entirely have version `0` and emit the full state;
+new builds write version `1`, making even an empty schema authoritative.
+
+Projection keeps startup cost proportional to the active hydratable surface
+rather than the full state. It is a payload boundary, not a secrecy boundary:
+any key selected by template metadata or an authored decorator is client-facing.
+Hosts must never put secrets in browser render state. See
+[Hydration schema](#hydration-schema).
 
 Plugins can still emit executable side-channel data after the inert block. The WebUI framework
 plugin uses that extension point to install component-local
@@ -345,8 +353,16 @@ emit WebUI `templates` or `templateFns`.
 6. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
 7. Parent components and their state are preserved.
 
-**Partial response:** `render_partial()` returns `{ templateStyles, templates, templateFunctions, inventory, path, chain, cacheTags, cacheControl }`. The caller adds application state to the response (e.g. as a top-level `state` field for non-streaming, or as an NDJSON Chunk 2 for streaming):
-- `state`: (added by caller) route-scoped application data — the router applies it to components via `setState()`
+**Partial response:** The core `render_partial()` function returns
+`{ templateStyles, templates, templateFunctions, inventory, path, chain, cacheTags, cacheControl }`
+without state so streaming hosts can schedule data independently. FFI, Node,
+WASM, and .NET convenience entry points accept `state_json` and return a
+complete JSON response with a top-level `state` field. They validate the input
+with a streaming serde visitor that enforces `serde_json::Value` numeric limits,
+then embed the original JSON bytes instead of materializing and serializing a
+duplicate value tree.
+
+- `state`: route-scoped application data; included by complete-response host APIs or supplied as NDJSON Chunk 2 by a streaming host. The router applies it to components via `setState()`
 - `templateStyles`: CSS module definition tags (`<script type="importmap">{"imports":{"...":"data:text/css,..."}}</script>` strings - see [CssStrategy::Module](#css-strategy)) for newly shipped components. Empty array for Link/Style modes. The client appends these to `<head>` before installing template closure arrays so adopted stylesheets are available
 - `templates`: JSON-safe client template metadata keyed by component tag, filtered by inventory bitmask
 - `templateFunctions`: JavaScript condition closure array strings keyed by component tag, filtered alongside `templates`; omitted or empty for templates with no conditions
@@ -443,12 +459,11 @@ overlap with the invalidated tags.
 | `Accept` | `application/x-ndjson, application/json` | Requests NDJSON streaming or JSON partial instead of full HTML |
 | `X-WebUI-Inventory` | Hex bitmask | Templates already loaded — server skips re-sending them |
 
-The `chain` field is produced by `render_partial()` in the handler, which walks the
-fragment graph and matches routes at each nesting level using a `ProtocolIndex` for
-cached route matching (see [ProtocolIndex](#protocolindex)). The function returns
-chain + templates without state — the caller adds state to the response. Host servers
-call this once per partial response. Available via FFI as `webui_render_partial()` for
-C/.NET/Node hosts.
+The `chain` field is produced by `render_partial()` in the handler, which walks
+the fragment graph and matches routes at each nesting level using a
+`ProtocolIndex` (see [ProtocolIndex](#protocolindex)). Low-level Rust callers can
+add state themselves or use `serialize_partial_response_with_state()`. The FFI,
+Node, WASM, and .NET `renderPartial` surfaces return the complete JSON response.
 
 **Partial-template selection:** During client navigation, servers derive template names from the
 normal render fragment graph starting at the persistent entry fragment. The traversal is
@@ -630,72 +645,76 @@ impl WebUIHandler {
 }
 ```
 
-#### ProtocolIndex
+#### PreparedProtocol and ProtocolIndex
 
-`ProtocolIndex` is a pre-computed index over a `WebUIProtocol` that accelerates
-repeated render and partial operations. It is built once from a protocol and
-reused across requests:
+`PreparedProtocol` owns a decoded `WebUIProtocol`, a deterministic component
+index, and a lazily populated template-metadata cache. Construct it once when
+the server loads `protocol.bin`, then share it across repeated full renders,
+partial navigation, component-template requests, and token queries:
+
+```rust
+pub struct PreparedProtocol {
+    /* decoded protocol + component index + RwLock<template metadata> */
+}
+
+impl PreparedProtocol {
+    pub fn from_protobuf(bytes: &[u8]) -> Result<Self, ProtocolError>;
+    pub fn new(protocol: WebUIProtocol) -> Self;
+    pub fn protocol(&self) -> &WebUIProtocol;
+    pub fn tokens(&self) -> &[String];
+}
+```
+
+Full renders borrow the immutable protocol without locking. Partial and action
+requests use request-local compiled-route caches, so concurrent requests do not
+serialize behind a shared lock. Parsed template metadata uses a read-write lock
+limited to individual cache lookups. The prepared handle is `Send + Sync`.
+
+`ProtocolIndex` stores the deterministic component bit-index, lazily parsed
+WebUI template metadata, and a compiled route cache:
 
 ```rust
 pub struct ProtocolIndex {
-    /// Maps component tag name → bit position in the inventory bitmask.
     pub component_index: HashMap<String, u32>,
-    /// Pre-compiled route segment patterns for O(1) route matching.
     pub route_cache: CompiledRouteCache,
-}
-
-impl ProtocolIndex {
-    pub fn new(protocol: &WebUIProtocol) -> Self;
+    /* parsed template metadata cache */
 }
 ```
 
-`CompiledRouteCache` stores pre-compiled route segment patterns extracted from
-the protocol's `WebUIFragmentRoute` tree. Route matching via `match_route_cached()`
-uses these compiled patterns instead of re-parsing path templates on every request:
-
-```rust
-pub struct CompiledRouteCache { /* internal */ }
-
-/// Match a request path against compiled route patterns. Returns the matched
-/// route and extracted path parameters, or `None` if no route matches.
-pub fn match_route_cached(
-    routes: &[WebUIFragmentRoute],
-    request_path: &str,
-    cache: &CompiledRouteCache,
-) -> Option<RouteMatch>;
-```
+The route cache is request-specific. Prepared partial and action calls reset it
+before each request because nested relative route resolution can include actual
+parameter values; retaining those entries would allow unbounded growth.
 
 #### Partial and Action Response Functions
 
 ```rust
-/// Produce a JSON partial response for client-side navigation.
-/// `protocol_index` provides cached route matching and component indices.
+/// Produce route/template metadata for client-side navigation.
 pub fn render_partial(
-    handler: &mut WebUIHandler,
     protocol: &WebUIProtocol,
-    protocol_index: &mut ProtocolIndex,
-    options: &RenderOptions<'_>,
+    entry_id: &str,
+    request_path: &str,
     inventory_hex: &str,
-) -> Result<PartialResponse, HandlerError>;
+    index: &mut ProtocolIndex,
+) -> Result<Value, HandlerError>;
 
-/// Produce a response for a mutation action (POST).
-/// `protocol_index` provides cached route matching and component indices.
-pub fn render_action_response(
-    handler: &mut WebUIHandler,
-    protocol: &WebUIProtocol,
-    protocol_index: &mut ProtocolIndex,
-    options: &RenderOptions<'_>,
+pub fn render_partial_prepared(
+    prepared: &PreparedProtocol,
+    entry_id: &str,
+    request_path: &str,
     inventory_hex: &str,
-) -> Result<ActionResponse, HandlerError>;
+) -> Result<Value, HandlerError>;
 
-/// Emit client template metadata, closure arrays, styles, and inventory.
-/// `protocol_index` provides the component index for inventory tracking.
-pub fn render_component_templates(
-    handler: &WebUIHandler,
-    protocol: &WebUIProtocol,
-    protocol_index: &ProtocolIndex,
-    components: &[String],
-) -> serde_json::Value;
+/// Validate state JSON and embed its original bytes in a partial response.
+pub fn serialize_partial_response_with_state(
+    response: &Value,
+    state_json: &str,
+) -> Result<String, HandlerError>;
+
+pub fn render_component_templates_prepared(
+    prepared: &PreparedProtocol,
+    component_tags: &[&str],
+    inventory_hex: &str,
+) -> Result<Value, HandlerError>;
 ```
 
 #### Component Inventory Functions
@@ -1528,35 +1547,50 @@ deduplicated union of two sources:
    component-level property the template binds to.
 2. **`@observable` / `@attr` decorators** scanned from the carried
    `script_source` (the sibling `.ts`/`.js`). A deterministic, allocation-light
-   token scan (no regex, no recursion) collects the declared identifier after
-   each `@observable`, `@attr`, or `@attr({ … })` decorator, skipping any
-   TypeScript member modifiers (`public`, `private`, `protected`, `readonly`,
-   `static`, `declare`, `override`, `accessor`, `abstract`) and line/block
-   comments that sit between the decorator and the property name. This captures
-   JS-only reactive fields that the server may seed but the template never binds
-   (so they are absent from `tr`). The plugin performs this scan exactly once per
-   component, when it finalizes template artifacts.
+   lexical scan (no regex, no recursion) collects the declared identifier after
+   each `@observable`, `@attr`, or `@attr({ ... })` decorator. The scanner skips
+   line and block comments, quoted strings, regular-expression literals, and
+   template-literal text while correctly traversing nested `${...}`
+   interpolation. It then handles decorator option groups, stacked decorators,
+   comments, accessors, and TypeScript member modifiers (`public`, `private`,
+   `protected`, `readonly`, `static`, `declare`, `override`, `accessor`,
+   `abstract`) before the property name. This captures JS-only reactive fields
+   that the server may seed but the template never binds. The plugin performs
+   this scan exactly once per component when finalizing template artifacts.
 
-The union is stored on `ComponentData::hydration_keys` and folded into a single
-global `WebUIProtocol::hydration_schema` at assembly time. At render the handler
-**projects** the borrowed SSR `state` object down to this allowlist (a
-zero-allocation binary search per top-level key over the sorted schema) and
-streams the survivors through the same script-safe JSON path used for the rest
-of the block.
+The component union is stored on `ComponentData::hydration_keys`. Assembly also
+folds all component keys into the sorted global
+`WebUIProtocol::hydration_schema` for compatibility with protocols that only
+carry the global schema. Current builders also set
+`hydration_schema_version = 1`. Version `0` identifies protocols that predate
+projection and preserves their full-state bootstrap behavior.
 
-**Safety bias.** Over-inclusion is harmless — a key the client does not observe
-is silently ignored — whereas under-inclusion would drop a needed hydration
-value. The scanner therefore errs toward inclusion: the decorator-matching pass
-is deliberately comment-unaware (a commented-out `@observable` merely
-over-includes, which is harmless), so it needs no full string-literal or comment
-parser. The global union is a safe superset: it never drops
-a key any component needs, at the cost of a slightly larger shared bag than a
-per-route union would produce (a future tightening).
+At initial full render, the handler finds components reachable from the active
+entry and request route, then unions only those components' keys. Inactive
+sibling routes are excluded. Components behind active-route conditionals,
+loops, and attribute-template edges remain conservatively reachable because
+reachability is state-agnostic. If no component has per-component keys, the
+handler uses the global schema.
 
-**Scope.** Projection applies to the initial `#webui-data` bootstrap `state`.
-Partial-navigation state is caller-supplied on the `render_partial()` response
-(see below) and applied via `setState()`; projecting that path is a documented
-future extension, not part of the initial-load contract.
+Projection iterates whichever side is smaller:
+
+- schema keys plus direct object lookup for sparse schemas over wide state maps
+- state entries plus binary-search membership for compact state maps
+
+The projected object is serialized into the existing buffered script-safe JSON
+path. The handler does not stream serde tokens directly to `ResponseWriter`;
+that alternative regressed the equal-byte 1 MB benchmark.
+
+**Security boundary.** Hydration projection reduces payload and CPU cost. It is
+not a secrecy boundary. Skipping comments and literals prevents false decorator
+matches from expanding the payload, but any key selected by authored template
+metadata or a decorator is intentionally client-facing. Hosts must not place
+secrets in browser render state.
+
+**Partial state.** The low-level `render_partial()` result excludes state so a
+streaming host can defer it. FFI, Node, WASM, and .NET complete-response helpers
+accept `state_json`, validate it without allocating a duplicate value tree, and
+embed its original bytes as the top-level `state` field.
 
 `a[]` uses compact tuple forms to avoid runtime parsing:
 
@@ -1781,22 +1815,24 @@ webui-ffi ──────► webui-handler ◄────── webui-wasm (
 ```
 
 The `webui` library crate is the primary API surface for programmatic use.
-It re-exports `WebUIHandler`, `ResponseWriter`, and `WebUIProtocol` from their
-respective crates and provides `build()`, `build_to_disk()`, and `inspect()`
-functions with `BuildStats` (duration, fragment/component/CSS counts, protocol size).
+It re-exports `WebUIHandler`, `PreparedProtocol`, `ResponseWriter`, and
+`WebUIProtocol` from their respective crates and provides `build()`,
+`build_to_disk()`, and `inspect()` functions with `BuildStats` (duration,
+fragment/component/CSS counts, protocol size).
 
 ### WASM Distribution
 
 The `microsoft-webui-wasm` crate exposes feature-gated browser bindings so
 consumers only ship the parser and/or handler code they need:
 
-- `handler` builds `webui_wasm_handler.js` and exports `render`,
-  `render_partial`, `protocol_tokens`, and `render_component_templates`. It
-  accepts protobuf protocol bytes and depends on `webui-handler` and
-  `webui-protocol`, not `webui-parser`. `render(protocolBytes, stateJson,
-  onChunk, options)` uses the same `ResponseWriter` callback shape as the
-  Node binding: each handler write calls `onChunk(html)`, while callers that
-  need a full string concatenate chunks in JavaScript.
+- `handler` builds `webui_wasm_handler.js` and exports `PreparedProtocol`,
+  `render`, `render_partial`, `protocol_tokens`, and
+  `render_component_templates`. It accepts protobuf protocol bytes and depends
+  on `webui-handler` and `webui-protocol`, not `webui-parser`.
+  `PreparedProtocol` decodes once and provides `renderJson`,
+  `renderStreamJson`, `renderPartial`, `renderComponentTemplates`, and
+  `protocolTokens`. Callback rendering coalesces handler fragments with a
+  16 KiB target before crossing the WASM-to-JavaScript boundary.
 - `parser` builds `webui_wasm_parser.js` and exports `build_protocol`. It
   returns protobuf protocol bytes and depends on `webui-parser` and
   `webui-protocol`, not `webui-handler`.
@@ -1813,11 +1849,23 @@ output names.
 The `@microsoft/webui` npm package follows the esbuild single-package model:
 - `bin: { "webui": "bin/webui" }` — CLI binary via platform-specific `optionalDependencies`
 - `main: "lib/main.js"` — Programmatic API that loads the `.node` native addon directly
+- repeated calls with the same protocol `Buffer` and render plugin transparently
+  reuse a plugin-bound native prepared protocol through a `WeakMap`; a retained
+  byte snapshot invalidates the entry if callers mutate the buffer
+- `render()` uses the native buffered-string path; `renderStream()` batches
+  callbacks with a 16 KiB target instead of crossing into JavaScript for every
+  internal handler fragment
 - WASM fallback for render when native addon is unavailable (one-time warning logged)
 
 ### .NET / NuGet Distribution
 
 The `Microsoft.WebUI` package is the managed .NET binding for `webui-ffi`. It targets `net8.0` and `net9.0`, packs `dotnet/src/Microsoft.WebUI/README.md`, and publishes XML documentation generated from public API comments.
+
+`PreparedProtocol` is a public `IDisposable` type backed by a native
+`SafeHandle`. Applications create one from `protocol.bin` at startup and pass it
+to the `WebUIHandler.Render` and `RenderPartial` overloads. The type is
+thread-safe and releases both decoded protocol data and reusable indices on
+dispose.
 
 Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each supported RID. The runtime packages share `dotnet/runtime/README.md`, include NuGet release notes pointing to the GitHub release notes, and carry the matching `runtimes/<rid>/native` asset. The managed package references every runtime package so NuGet restores them transitively; .NET then resolves `webui_ffi` from the matching native asset. `WEBUI_LIB_PATH` remains the override for custom local native builds.
 
@@ -1845,8 +1893,16 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 | `webui_render(html, data_json)` | Parse + render in one call (requires `parser` feature; returns `NULL` when absent). Returns heap-allocated string (caller frees with `webui_free`). |
 | `webui_handler_create()` | Create a reusable handler (no plugin). |
 | `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin. Returns `NULL` on error. Refer to the CLI/crate docs for the current list of plugin identifiers. |
+| `webui_protocol_create(data, len)` | Decode and index a protocol once. Returns a thread-safe opaque handle. |
+| `webui_protocol_destroy(protocol)` | Destroy a prepared protocol handle. `NULL` is a safe no-op. |
 | `webui_handler_render(handler, data, len, json, entry_id, request_path)` | Render a pre-compiled protocol with route matching. `request_path` controls which route is active. Returns heap-allocated string. |
-| `webui_render_partial(protocol_data, len, entry_id, request_path, inventory_hex)` | Produce a JSON partial response (templateStyles, templates, inventory, path, matched route chain, cacheTags, cacheControl) in a single call. Uses an internal `ProtocolIndex` for cached route matching. Caller adds state. Returns heap-allocated JSON string. |
+| `webui_handler_render_prepared(handler, protocol, json, entry_id, request_path)` | Render with a prepared protocol, avoiding protobuf decode and index construction. |
+| `webui_render_partial(data, len, state_json, entry_id, request_path, inventory_hex)` | Produce a complete JSON partial response with validated state in a single call. |
+| `webui_render_partial_prepared(protocol, state_json, entry_id, request_path, inventory_hex)` | Produce the same complete response using a prepared protocol. |
+| `webui_render_component_templates(data, len, tags_json, inventory_hex)` | Return requested component template payloads and updated inventory. |
+| `webui_render_component_templates_prepared(protocol, tags_json, inventory_hex)` | Component-template query using a prepared protocol. |
+| `webui_protocol_tokens(data, len)` | Return newline-delimited CSS token names. |
+| `webui_protocol_tokens_prepared(protocol)` | Return token names without decoding protobuf again. |
 | `webui_handler_destroy(handler)` | Destroy a handler. `NULL` is a safe no-op. |
 | `webui_free(ptr)` | Free a string returned by any render function. `NULL` is a safe no-op. |
 | `webui_last_error()` | Return per-thread error message. Caller must **not** free. |

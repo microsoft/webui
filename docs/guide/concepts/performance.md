@@ -52,9 +52,49 @@ with avatars, metadata, and action buttons.
 | 100 contacts    | 4.94 ms     | 56 KB HTML  |
 | 1,000 contacts  | 57.5 ms     | 363 KB HTML |
 
-Hydration plugin overhead is minimal: ~2–3% (59.5 ms vs 57.5 ms at 1,000
-contacts). The cost of embedding hydration markers is negligible compared to
-the rendering work itself.
+Hydration marker overhead is small in this fixture. Bootstrap state is a
+separate cost: if a large server state object is copied into `#webui-data`, JSON
+serialization can dominate a small render. WebUI compiles hydration keys per
+component and projects initial state to components reachable on the active
+request route.
+
+## Hydration Startup and Protocol Reuse
+
+The initial hydration block contains only top-level state fields required by
+reachable components. Inactive sibling routes are excluded, while components
+behind conditionals and loops on the active route are included conservatively.
+Projection iterates the smaller of the state map and hydration schema, which
+avoids scanning a wide server-only state object for a few client properties.
+
+Measured release-mode results on the development benchmark machine:
+
+| Workload | Before | After | Improvement |
+|----------|-------:|------:|------------:|
+| 30,000-key state, sparse hydration schema | ~194 us | 0.79 us | 99.6% |
+| Inactive 1,000-contact route | ~97 us | 4.01 us | 95.9% |
+| Active contact route, scoped vs global control | 105.44 us | 105.21 us | no regression |
+| Partial response with 64 KB state | 254.54 us | 37.93 us | 85.1% |
+| Partial response with 1 MB state | 5.716 ms | 1.054 ms | 81.6% |
+| Shared prepared partial, 8 threads x 10,000 | 2.059 s | 0.203 s | 90.1% |
+
+Projection does not avoid parsing the incoming JSON state. Native hosts should
+also prepare `protocol.bin` once at startup:
+
+- Rust: construct `PreparedProtocol`
+- C: use `webui_protocol_create` and the `*_prepared` functions
+- .NET: construct `PreparedProtocol` and use the matching handler overloads
+- WASM: construct the exported `PreparedProtocol`
+- Node: reuse the same protocol `Buffer` and plugin; `@microsoft/webui` caches
+  its plugin-bound native representation by buffer identity
+
+Do not read `protocol.bin` into a new Node `Buffer` for every request. A stable
+buffer lets the package reuse protobuf decoding and deterministic indices.
+
+::: warning Hydration state is client-facing
+Projection is a performance and payload boundary, not a secrecy boundary.
+Never put credentials, private tokens, or other secrets in state rendered to
+the browser.
+:::
 
 ## Why WebUI is Fast
 
@@ -66,10 +106,10 @@ Each layer of the architecture contributes to the overall performance profile:
   state interpolation against a pre-compiled binary protocol - no syntax
   parsing, no AST walking.
 
-- **Protocol Buffers.** The handler deserializes a compact binary payload
-  instead of parsing template syntax on every request. Protocol Buffer
-  deserialization is an order of magnitude faster than JSON parsing for
-  equivalent payloads.
+- **Protocol Buffers.** The handler consumes a compact binary payload instead
+  of parsing template syntax. Prepared host APIs decode the protocol and build
+  deterministic indices once at startup rather than repeating that work per
+  request.
 
 - **Streaming output with backpressure.** The `webui::streaming::StreamingWriter`
   coalesces handler writes into ~4 KB chunks and pushes them through a
@@ -147,6 +187,8 @@ consistent performance:
   character.
 - **No per-request template re-parsing** - load the compiled protocol once at
   startup and reuse it for every request.
+- **No per-request protocol decoding** - use `PreparedProtocol` or keep the same
+  Node protocol `Buffer` alive across requests.
 
 ## Running Benchmarks
 
@@ -162,6 +204,12 @@ cargo xtask bench handler
 cargo xtask bench expressions
 cargo xtask bench protocol
 cargo xtask bench state
+
+# Hydration-state projection and partial-state serialization
+cargo bench -p microsoft-webui-handler --bench bootstrap_state_bench
+
+# Prepared versus one-shot FFI startup cost
+cargo bench -p microsoft-webui-ffi --bench prepared_protocol_bench
 
 # Contact book end-to-end benchmark
 cargo bench -p microsoft-webui --bench contact_book_bench

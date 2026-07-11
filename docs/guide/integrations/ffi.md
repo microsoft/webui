@@ -19,7 +19,7 @@ This produces a shared library:
 
 The generated C header is at `crates/webui-ffi/include/webui_ffi.h`.
 
-## Two Rendering Modes
+## Rendering Modes
 
 ### One-shot: `webui_render`
 
@@ -38,36 +38,46 @@ if (html == NULL) {
 }
 ```
 
-### Pre-compiled: `webui_handler_create` + `webui_handler_render`
+### Raw protocol: `webui_handler_create` + `webui_handler_render`
 
-Create a reusable handler and render pre-compiled protobuf protocols. Best for production use where the protocol is built once with `webui build` and rendered many times.
+Create a reusable handler and render pre-compiled protobuf bytes. This
+compatibility path decodes the protocol on each render.
+
+### Prepared protocol: recommended for repeated rendering
+
+Decode and index `protocol.bin` once with `webui_protocol_create`, then use the
+prepared entry points:
 
 ```c
-// Create handler (optionally with a plugin)
-void *handler = webui_handler_create();
-// or: void *handler = webui_handler_create_with_plugin("webui");
-
-// Set CSP nonce (optional — required if your page uses Content-Security-Policy)
+void *handler = webui_handler_create_with_plugin("webui");
 webui_handler_set_nonce(handler, "Ep7tTOr+HyRkByAPXxZ9ag==");
 
-// Load protocol.bin from disk (your code)
 uint8_t *data = load_file("dist/protocol.bin", &len);
+void *protocol = webui_protocol_create(data, len);
+if (protocol == NULL) {
+    fprintf(stderr, "Protocol error: %s\n", webui_last_error());
+    webui_handler_destroy(handler);
+    return;
+}
 
-// Render
-char *html = webui_handler_render(handler, data, len, state_json,
-                                  "index.html", request_path);
+char *html = webui_handler_render_prepared(
+    handler, protocol, state_json, "index.html", request_path
+);
 if (html) {
-    // use html...
     webui_free(html);
 }
 
-// Clean up
+webui_protocol_destroy(protocol);
 webui_handler_destroy(handler);
 ```
 
+Prepared protocol handles are thread-safe. Handler instances are safe for
+concurrent renders as long as configuration such as the nonce is not mutated
+concurrently.
+
 ## C API Reference
 
-The library exports six functions. The generated C header is at `crates/webui-ffi/include/webui_ffi.h`.
+The generated C header is at `crates/webui-ffi/include/webui_ffi.h`.
 
 ### webui_render
 
@@ -75,7 +85,9 @@ The library exports six functions. The generated C header is at `crates/webui-ff
 char *webui_render(const char *html, const char *data_json);
 ```
 
-Parse an HTML template and render it with JSON state data in a single call. This is the **recommended entry point** for most consumers.
+Parse an HTML template and render it with JSON state data in a single call.
+Use it for prototypes and one-shot templates. Production servers should build a
+protocol ahead of time and reuse a prepared protocol handle.
 
 - `html`, null-terminated UTF-8 string containing the HTML template.
 - `data_json`, null-terminated UTF-8 JSON string with the render state.
@@ -144,8 +156,23 @@ Set the CSP nonce for inline tags on a handler instance. When set, all subsequen
 The nonce is written verbatim — pass the raw base64 string without any encoding. The same value should appear in your `Content-Security-Policy` header.
 
 ::: warning Thread Safety
-Handler instances are **not** thread-safe. Do not call `webui_handler_set_nonce` concurrently with `webui_handler_render` or other operations on the same handler. Serialize all access via a mutex or single-threaded use.
+Concurrent render calls are supported after configuration. Do not call
+`webui_handler_set_nonce` or `webui_handler_destroy` while another operation is
+using the same handler.
 :::
+
+### webui_protocol_create / webui_protocol_destroy
+
+```c
+void *webui_protocol_create(const uint8_t *protocol_data,
+                            uintptr_t protocol_len);
+void webui_protocol_destroy(void *protocol_ptr);
+```
+
+Decode protobuf bytes and build reusable component and route indices. The
+returned handle is thread-safe and can be shared across requests. Destroy it
+after every render using it has completed. Passing `NULL` to
+`webui_protocol_destroy` is a safe no-op.
 
 ### webui_handler_render
 
@@ -168,6 +195,36 @@ Render a pre-compiled WebUI protocol (protobuf binary) with JSON state data. Thi
 - `request_path`, null-terminated UTF-8 string with the request path for route matching (e.g., `"/users/42"`).
 - **Returns** a heap-allocated string on success, or `NULL` on error.
 - The caller **must** free the returned string with `webui_free()`.
+
+This function decodes `protocol_data` on every call. Use
+`webui_handler_render_prepared` for a protocol rendered repeatedly.
+
+### webui_handler_render_prepared
+
+```c
+char *webui_handler_render_prepared(void *handler_ptr,
+                                    const void *protocol_ptr,
+                                    const char *data_json,
+                                    const char *entry_id,
+                                    const char *request_path);
+```
+
+Render with a handle from `webui_protocol_create`. Output, errors, and string
+ownership match `webui_handler_render`.
+
+### Partial, component-template, and token helpers
+
+| Function | Result |
+|----------|--------|
+| `webui_render_partial(...)` | Complete JSON partial response containing validated `state`, templates, inventory, path, and route chain |
+| `webui_render_partial_prepared(...)` | Same response using a prepared protocol |
+| `webui_render_component_templates(...)` | Requested component template payloads and updated inventory |
+| `webui_render_component_templates_prepared(...)` | Same query using a prepared protocol |
+| `webui_protocol_tokens(...)` | Newline-delimited CSS token names |
+| `webui_protocol_tokens_prepared(...)` | Token names using a prepared protocol |
+
+The partial functions validate `state_json` and embed its original bytes in the
+response without allocating and serializing a duplicate JSON value tree.
 
 ## Error Handling
 
@@ -198,9 +255,12 @@ Two rules to remember:
 |---|---|---|
 | `webui_render` | Caller | `webui_free(ptr)` |
 | `webui_handler_render` | Caller | `webui_free(ptr)` |
+| `webui_handler_render_prepared` | Caller | `webui_free(ptr)` |
+| Partial, component-template, and token strings | Caller | `webui_free(ptr)` |
 | `webui_last_error` | Library (do **not** free) | Replaced on next call |
 | `webui_handler_create` | Caller | `webui_handler_destroy(ptr)` |
 | `webui_handler_create_with_plugin` | Caller | `webui_handler_destroy(ptr)` |
+| `webui_protocol_create` | Caller | `webui_protocol_destroy(ptr)` |
 
 ## Using Plugins
 
@@ -369,7 +429,9 @@ class WebUI
 Any language with C FFI support can use WebUI. The pattern is always the same:
 
 1. Load the shared library (`libwebui_ffi.dylib` / `.so` / `.dll`).
-2. Declare the functions you need, at minimum `webui_render`, `webui_free`, and `webui_last_error`.
+2. Declare the functions you need. For a server, prefer
+   `webui_protocol_create`, `webui_handler_render_prepared`,
+   `webui_protocol_destroy`, `webui_free`, and `webui_last_error`.
 3. Pass UTF-8 null-terminated strings for `html` and `data_json`.
 4. Check the return value, `NULL` means an error occurred.
 5. Copy the returned string into your language's managed memory, then call `webui_free`.

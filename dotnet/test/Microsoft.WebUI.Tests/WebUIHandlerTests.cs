@@ -65,4 +65,43 @@ public class WebUIHandlerTests
         Assert.DoesNotContain("DROPPED_VALUE", html);
         Assert.DoesNotContain("dropped", html);
     }
+
+    [Fact]
+    public void Handler_RenderPrepared_ReusesDecodedProtocol()
+    {
+        byte[] protocolBytes = File.ReadAllBytes(
+            Path.Combine(AppContext.BaseDirectory, "fixtures", "projection-app", "protocol.bin"));
+
+        using var protocol = new PreparedProtocol(protocolBytes);
+        using var handler = new WebUIHandler("webui");
+
+        string first = handler.Render(
+            protocol,
+            "{\"kept\":\"FIRST\",\"dropped\":\"SECRET\"}",
+            "index.html",
+            "/");
+        string second = handler.Render(
+            protocol,
+            "{\"kept\":\"SECOND\",\"dropped\":\"SECRET\"}",
+            "index.html",
+            "/");
+
+        Assert.Contains("\"kept\":\"FIRST\"", first);
+        Assert.Contains("\"kept\":\"SECOND\"", second);
+        Assert.DoesNotContain("SECRET", first);
+        Assert.DoesNotContain("SECRET", second);
+    }
+
+    [Fact]
+    public void Handler_RenderWithDisposedPreparedProtocol_ThrowsObjectDisposedException()
+    {
+        byte[] protocolBytes = File.ReadAllBytes(
+            Path.Combine(AppContext.BaseDirectory, "fixtures", "projection-app", "protocol.bin"));
+        var protocol = new PreparedProtocol(protocolBytes);
+        protocol.Dispose();
+
+        using var handler = new WebUIHandler();
+        Assert.Throws<ObjectDisposedException>(() =>
+            handler.Render(protocol, "{}", "index.html", "/"));
+    }
 }

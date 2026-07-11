@@ -32,5 +32,12 @@ serde_json = { workspace = true }
 [build-dependencies]
 cbindgen = { workspace = true, optional = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "prepared_protocol_bench"
+harness = false
+
 [lints]
 workspace = true

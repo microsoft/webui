@@ -13,9 +13,8 @@
 //!    including the awkward shapes (`@attr({ attribute: '…' }) productTitle`,
 //!    definite-assignment `@attr subtotal!: string`, observable arrays).
 //! 2. **Runtime side** — rendering with a large server-only state emits a
-//!    `#webui-data` bootstrap block that keeps the hydratable keys and projects
-//!    the server-only payload out entirely. This is the CPU/byte win: the block
-//!    tracks the hydratable surface, not total state size.
+//!    `#webui-data` bootstrap block that keeps keys needed by the active route
+//!    and projects inactive-route and server-only payloads out.
 
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -134,7 +133,7 @@ fn contact_book_manager_projects_hydration_surface() {
         "premise broken: server-only key is in the schema"
     );
 
-    let html = render(&protocol, &state, "/");
+    let html = render(&protocol, &state, "/contacts/add");
     let block = webui_data_block(&html);
     assert!(
         block.contains("SENTINEL_HYDRATABLE_cb"),
@@ -147,6 +146,13 @@ fn contact_book_manager_projects_hydration_surface() {
     assert!(
         !html.contains(&server_only),
         "server-only blob leaked into the render"
+    );
+
+    let dashboard_html = render(&protocol, &state, "/");
+    let dashboard_block = webui_data_block(&dashboard_html);
+    assert!(
+        !dashboard_block.contains("SENTINEL_HYDRATABLE_cb"),
+        "inactive contact-form state leaked into the dashboard bootstrap"
     );
 }
 

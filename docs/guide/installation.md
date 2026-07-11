@@ -88,6 +88,25 @@ dotnet add package Microsoft.WebUI
 
 It targets .NET 8 and .NET 9. The package restores platform-specific `Microsoft.WebUI.Runtime.*` packages transitively, and .NET selects the matching native asset. Release builds stage `.nupkg` and `.snupkg` artifacts with Source Link and repository metadata; nuget.org publishing is manual until ESRP automation supports this project.
 
+Prepare `protocol.bin` once for repeated rendering:
+
+```csharp
+using Microsoft.WebUI;
+
+using var protocol = new PreparedProtocol(
+    File.ReadAllBytes("dist/protocol.bin"));
+using var handler = new WebUIHandler("webui");
+
+string html = handler.Render(
+    protocol,
+    """{"title":"Home"}""",
+    "index.html",
+    "/");
+```
+
+`PreparedProtocol` is thread-safe and owns the decoded protocol plus reusable
+indices. Keep it alive for the server lifetime and dispose it during shutdown.
+
 ---
 
 The packages below are client-side runtime libraries. They are installed from npm regardless of whether your build toolchain is npm or Rust, since they ship as JavaScript that runs in the browser.

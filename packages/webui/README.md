@@ -66,9 +66,16 @@ Renders a compiled protocol with state data and returns the full HTML string.
 const html = render(protocol, { title: "Hello", show: true });
 ```
 
+Keep the same protocol `Buffer` and plugin selection across requests. The
+package caches a plugin-bound native prepared protocol by buffer identity,
+avoiding protobuf decoding and deterministic index construction after the
+first call. A byte snapshot detects buffer mutation and rebuilds the prepared
+entry so cached rendering cannot return stale protocol content.
+
 ### `renderStream(protocol: Buffer, state: object | string, onChunk: (html: string) => void): void`
 
-Renders with streaming output - each HTML fragment is passed to the callback as it is produced.
+Renders with streaming output. Internal handler writes are coalesced around a
+16 KiB target before the callback crosses into JavaScript.
 
 ```js
 renderStream(protocol, state, (chunk) => {

@@ -37,7 +37,7 @@ use std::os::raw::{c_char, c_void};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
-use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{PreparedProtocol, RenderOptions, ResponseWriter, WebUIHandler};
 #[cfg(feature = "parser")]
 use webui_parser::HtmlParser;
 use webui_protocol::WebUIProtocol;
@@ -81,6 +81,16 @@ struct HandlerContext {
     handler: WebUIHandler,
     /// CSP nonce for inline `<script>` tags (set via `webui_handler_set_nonce`).
     nonce: Option<String>,
+}
+
+/// Opaque decoded protocol context shared across repeated host calls.
+struct PreparedProtocolContext {
+    prepared: PreparedProtocol,
+}
+
+struct RawProtocolData {
+    data: *const u8,
+    len: usize,
 }
 
 /// A simple string buffer for collecting rendered output.
@@ -210,6 +220,61 @@ pub unsafe extern "C" fn webui_handler_destroy(handler_ptr: *mut c_void) {
     }
 }
 
+/// Decode and index a WebUI protocol for repeated rendering.
+///
+/// The returned handle is thread-safe and must be released with
+/// [`webui_protocol_destroy`].
+///
+/// # Safety
+///
+/// `protocol_data` must point to `protocol_len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn webui_protocol_create(
+    protocol_data: *const u8,
+    protocol_len: usize,
+) -> *mut c_void {
+    clear_last_error();
+    if protocol_data.is_null() {
+        set_last_error("protocol_data is null");
+        return std::ptr::null_mut();
+    }
+
+    match std::panic::catch_unwind(|| {
+        // SAFETY: The caller guarantees that the input range is readable.
+        let bytes = unsafe { std::slice::from_raw_parts(protocol_data, protocol_len) };
+        match PreparedProtocol::from_protobuf(bytes) {
+            Ok(prepared) => {
+                Box::into_raw(Box::new(PreparedProtocolContext { prepared })) as *mut c_void
+            }
+            Err(error) => {
+                set_last_error(format!("failed to parse protobuf protocol: {error}"));
+                std::ptr::null_mut()
+            }
+        }
+    }) {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("panic in webui_protocol_create");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Destroy a prepared WebUI protocol handle.
+///
+/// # Safety
+///
+/// `protocol_ptr` must be a pointer returned by [`webui_protocol_create`], or
+/// `NULL` for a no-op.
+#[no_mangle]
+pub unsafe extern "C" fn webui_protocol_destroy(protocol_ptr: *mut c_void) {
+    if !protocol_ptr.is_null() {
+        // SAFETY: The caller guarantees this pointer came from
+        // `webui_protocol_create` and has not already been destroyed.
+        let _ = unsafe { Box::from_raw(protocol_ptr as *mut PreparedProtocolContext) };
+    }
+}
+
 /// Set the CSP nonce for inline `<script>` tags on a handler instance.
 ///
 /// When set, all subsequent renders via [`webui_handler_render`] will include
@@ -220,9 +285,9 @@ pub unsafe extern "C" fn webui_handler_destroy(handler_ptr: *mut c_void) {
 ///
 /// # Thread Safety
 ///
-/// Handler instances are **not** thread-safe. Callers must serialize access
-/// to a single `handler_ptr` — do not call `set_nonce` concurrently with
-/// `render` or other operations on the same handler.
+/// Concurrent render calls are supported after configuration. Callers must not
+/// call `set_nonce` or destroy the handler concurrently with any operation on
+/// the same `handler_ptr`.
 ///
 /// # Safety
 ///
@@ -299,8 +364,35 @@ pub unsafe extern "C" fn webui_handler_render(
 ) -> *mut c_char {
     clear_last_error();
 
+    match std::panic::catch_unwind(|| {
+        webui_handler_render_impl(
+            handler_ptr,
+            RawProtocolData {
+                data: protocol_data,
+                len: protocol_len,
+            },
+            data_json,
+            entry_id,
+            request_path,
+        )
+    }) {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("panic in webui_handler_render");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+unsafe fn webui_handler_render_impl(
+    handler_ptr: *mut c_void,
+    protocol: RawProtocolData,
+    data_json: *const c_char,
+    entry_id: *const c_char,
+    request_path: *const c_char,
+) -> *mut c_char {
     if handler_ptr.is_null()
-        || protocol_data.is_null()
+        || protocol.data.is_null()
         || data_json.is_null()
         || entry_id.is_null()
         || request_path.is_null()
@@ -312,35 +404,8 @@ pub unsafe extern "C" fn webui_handler_render(
     // SAFETY: caller guarantees handler_ptr is valid and exclusively owned.
     let context = &*(handler_ptr as *const HandlerContext);
 
-    // SAFETY: caller guarantees protocol_data points to protocol_len valid bytes.
-    let protocol_bytes = std::slice::from_raw_parts(protocol_data, protocol_len);
-
-    // SAFETY: caller guarantees data_json is a valid null-terminated string.
-    let data_str = match CStr::from_ptr(data_json).to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_last_error(format!("invalid UTF-8 in data_json: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-
-    // SAFETY: caller guarantees entry_id is a valid null-terminated string.
-    let entry_str = match CStr::from_ptr(entry_id).to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_last_error(format!("invalid UTF-8 in entry_id: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
-
-    // SAFETY: caller guarantees request_path is a valid null-terminated string.
-    let path_str = match CStr::from_ptr(request_path).to_str() {
-        Ok(s) => s,
-        Err(e) => {
-            set_last_error(format!("invalid UTF-8 in request_path: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
+    // SAFETY: caller guarantees protocol.data points to protocol.len valid bytes.
+    let protocol_bytes = std::slice::from_raw_parts(protocol.data, protocol.len);
 
     // Parse protocol from protobuf binary data
     let protocol = match WebUIProtocol::from_protobuf(protocol_bytes) {
@@ -351,7 +416,94 @@ pub unsafe extern "C" fn webui_handler_render(
         }
     };
 
-    // Parse data JSON
+    render_decoded_protocol(context, &protocol, data_json, entry_id, request_path)
+}
+
+/// Render using a protocol previously returned by [`webui_protocol_create`].
+///
+/// This avoids protobuf decoding and deterministic index construction on every
+/// request. The output and error contract match [`webui_handler_render`].
+///
+/// # Safety
+///
+/// * `handler_ptr` must be a valid handler pointer.
+/// * `protocol_ptr` must be a valid prepared protocol pointer.
+/// * String arguments must be valid null-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn webui_handler_render_prepared(
+    handler_ptr: *mut c_void,
+    protocol_ptr: *const c_void,
+    data_json: *const c_char,
+    entry_id: *const c_char,
+    request_path: *const c_char,
+) -> *mut c_char {
+    clear_last_error();
+
+    match std::panic::catch_unwind(|| {
+        if handler_ptr.is_null()
+            || protocol_ptr.is_null()
+            || data_json.is_null()
+            || entry_id.is_null()
+            || request_path.is_null()
+        {
+            set_last_error("one or more required arguments are null");
+            return std::ptr::null_mut();
+        }
+
+        // SAFETY: The caller guarantees both opaque pointers are valid.
+        let context = unsafe { &*(handler_ptr as *const HandlerContext) };
+        let prepared = unsafe { &*(protocol_ptr as *const PreparedProtocolContext) };
+        // SAFETY: The caller guarantees all string pointers are valid.
+        unsafe {
+            render_decoded_protocol(
+                context,
+                prepared.prepared.protocol(),
+                data_json,
+                entry_id,
+                request_path,
+            )
+        }
+    }) {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("panic in webui_handler_render_prepared");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+unsafe fn render_decoded_protocol(
+    context: &HandlerContext,
+    protocol: &WebUIProtocol,
+    data_json: *const c_char,
+    entry_id: *const c_char,
+    request_path: *const c_char,
+) -> *mut c_char {
+    // SAFETY: The caller validates all pointers before invoking this helper.
+    let data_str = match unsafe { CStr::from_ptr(data_json) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("invalid UTF-8 in data_json: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+    // SAFETY: The caller validates all pointers before invoking this helper.
+    let entry_str = match unsafe { CStr::from_ptr(entry_id) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("invalid UTF-8 in entry_id: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+    // SAFETY: The caller validates all pointers before invoking this helper.
+    let path_str = match unsafe { CStr::from_ptr(request_path) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("invalid UTF-8 in request_path: {e}"));
+            return std::ptr::null_mut();
+        }
+    };
+
     let data: Value = match serde_json::from_str(data_str) {
         Ok(d) => d,
         Err(e) => {
@@ -369,7 +521,7 @@ pub unsafe extern "C" fn webui_handler_render(
     let mut writer = StringResponseWriter::new();
     match context
         .handler
-        .render(&protocol, &data, &options, &mut writer)
+        .render(protocol, &data, &options, &mut writer)
     {
         Ok(_) => match CString::new(writer.content) {
             Ok(s) => s.into_raw(),
@@ -391,8 +543,10 @@ pub unsafe extern "C" fn webui_handler_render(
 
 /// Parse an HTML template and render it with JSON data in a single call.
 ///
-/// This is the **recommended entry point** for Go, C#, and Python consumers.
-/// It eliminates the need for callers to deal with protobuf serialisation.
+/// This convenience entry point is intended for one-shot templates and
+/// prototypes. Repeated production renders should compile a protocol ahead of
+/// time and use [`webui_protocol_create`] with
+/// [`webui_handler_render_prepared`].
 ///
 /// Requires the `parser` feature (enabled by default). When built without
 /// the `parser` feature, this function always returns `NULL` and sets an
@@ -569,14 +723,6 @@ pub unsafe extern "C" fn webui_render_partial(
             }
         };
 
-        let state: Value = match serde_json::from_str(state_str) {
-            Ok(v) => v,
-            Err(e) => {
-                set_last_error(format!("invalid state JSON: {e}"));
-                return std::ptr::null_mut();
-            }
-        };
-
         // SAFETY: The caller guarantees `entry_id` is a valid null-terminated string.
         let entry_str = match unsafe { CStr::from_ptr(entry_id) }.to_str() {
             Ok(s) => s,
@@ -615,7 +761,7 @@ pub unsafe extern "C" fn webui_render_partial(
         // Per-request index — see ProtocolIndex doc for caching guidance.
         let mut index = webui_handler::route_handler::ProtocolIndex::new(&protocol);
 
-        let mut result = match webui_handler::route_handler::render_partial(
+        let result = match webui_handler::route_handler::render_partial(
             &protocol,
             entry_str,
             request_path_str,
@@ -628,11 +774,18 @@ pub unsafe extern "C" fn webui_render_partial(
                 return std::ptr::null_mut();
             }
         };
-        if let Some(obj) = result.as_object_mut() {
-            obj.insert("state".into(), state);
-        }
 
-        match CString::new(result.to_string()) {
+        let output = match webui_handler::route_handler::serialize_partial_response_with_state(
+            &result, state_str,
+        ) {
+            Ok(output) => output,
+            Err(e) => {
+                set_last_error(e.to_string());
+                return std::ptr::null_mut();
+            }
+        };
+
+        match CString::new(output) {
             Ok(s) => s.into_raw(),
             Err(e) => {
                 set_last_error(format!("JSON output contains interior NUL byte: {e}"));
@@ -643,6 +796,105 @@ pub unsafe extern "C" fn webui_render_partial(
         Ok(ptr) => ptr,
         Err(_) => {
             set_last_error("panic in webui_render_partial");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Produce a partial response using a prepared protocol handle.
+///
+/// This is equivalent to [`webui_render_partial`] but avoids protobuf decoding
+/// and reuses parsed component metadata across calls.
+///
+/// # Safety
+///
+/// * `protocol_ptr` must be a valid pointer returned by [`webui_protocol_create`].
+/// * All string pointers must be valid, non-null, null-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn webui_render_partial_prepared(
+    protocol_ptr: *const c_void,
+    state_json: *const c_char,
+    entry_id: *const c_char,
+    request_path: *const c_char,
+    inventory_hex: *const c_char,
+) -> *mut c_char {
+    clear_last_error();
+
+    match std::panic::catch_unwind(|| {
+        if protocol_ptr.is_null()
+            || state_json.is_null()
+            || entry_id.is_null()
+            || request_path.is_null()
+            || inventory_hex.is_null()
+        {
+            set_last_error("one or more required arguments are null");
+            return std::ptr::null_mut();
+        }
+
+        // SAFETY: The caller guarantees that all opaque/string pointers are valid.
+        let prepared = unsafe { &*(protocol_ptr as *const PreparedProtocolContext) };
+        let state_str = match unsafe { CStr::from_ptr(state_json) }.to_str() {
+            Ok(value) => value,
+            Err(error) => {
+                set_last_error(format!("invalid UTF-8 in state_json: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let entry_str = match unsafe { CStr::from_ptr(entry_id) }.to_str() {
+            Ok(value) => value,
+            Err(error) => {
+                set_last_error(format!("invalid UTF-8 in entry_id: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let request_path_str = match unsafe { CStr::from_ptr(request_path) }.to_str() {
+            Ok(value) => value,
+            Err(error) => {
+                set_last_error(format!("invalid UTF-8 in request_path: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let inventory_str = match unsafe { CStr::from_ptr(inventory_hex) }.to_str() {
+            Ok(value) => value,
+            Err(error) => {
+                set_last_error(format!("invalid UTF-8 in inventory_hex: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        let result = match webui_handler::route_handler::render_partial_prepared(
+            &prepared.prepared,
+            entry_str,
+            request_path_str,
+            inventory_str,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                set_last_error(format!("render_partial failed: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let output = match webui_handler::route_handler::serialize_partial_response_with_state(
+            &result, state_str,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                set_last_error(error.to_string());
+                return std::ptr::null_mut();
+            }
+        };
+
+        match CString::new(output) {
+            Ok(value) => value.into_raw(),
+            Err(error) => {
+                set_last_error(format!("JSON output contains interior NUL byte: {error}"));
+                std::ptr::null_mut()
+            }
+        }
+    }) {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("panic in webui_render_partial_prepared");
             std::ptr::null_mut()
         }
     }
@@ -737,6 +989,79 @@ pub unsafe extern "C" fn webui_render_component_templates(
     }
 }
 
+/// Render component templates using a prepared protocol handle.
+///
+/// # Safety
+///
+/// * `protocol_ptr` must be a valid pointer returned by [`webui_protocol_create`].
+/// * String arguments must be valid, non-null, null-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn webui_render_component_templates_prepared(
+    protocol_ptr: *const c_void,
+    component_tags_json: *const c_char,
+    inventory_hex: *const c_char,
+) -> *mut c_char {
+    clear_last_error();
+
+    match std::panic::catch_unwind(|| {
+        if protocol_ptr.is_null() || component_tags_json.is_null() || inventory_hex.is_null() {
+            set_last_error("one or more required arguments are null");
+            return std::ptr::null_mut();
+        }
+
+        // SAFETY: The caller guarantees that all opaque/string pointers are valid.
+        let prepared = unsafe { &*(protocol_ptr as *const PreparedProtocolContext) };
+        let tags_str = match unsafe { CStr::from_ptr(component_tags_json) }.to_str() {
+            Ok(value) => value,
+            Err(error) => {
+                set_last_error(format!("invalid UTF-8 in component_tags_json: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let tags: Vec<String> = match serde_json::from_str(tags_str) {
+            Ok(value) => value,
+            Err(error) => {
+                set_last_error(format!("invalid tags JSON: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let tag_refs: Vec<&str> = tags.iter().map(String::as_str).collect();
+        let inventory_str = match unsafe { CStr::from_ptr(inventory_hex) }.to_str() {
+            Ok(value) => value,
+            Err(error) => {
+                set_last_error(format!("invalid UTF-8 in inventory_hex: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        let result = match webui_handler::route_handler::render_component_templates_prepared(
+            &prepared.prepared,
+            &tag_refs,
+            inventory_str,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                set_last_error(format!("render_component_templates failed: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+
+        match CString::new(result.to_string()) {
+            Ok(value) => value.into_raw(),
+            Err(error) => {
+                set_last_error(format!("JSON output contains interior NUL byte: {error}"));
+                std::ptr::null_mut()
+            }
+        }
+    }) {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("panic in webui_render_component_templates_prepared");
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Free a string returned by a WebUI FFI function.
 ///
 /// # Safety
@@ -803,6 +1128,47 @@ pub unsafe extern "C" fn webui_protocol_tokens(
         Ok(ptr) => ptr,
         Err(_) => {
             set_last_error("panic in webui_protocol_tokens");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Extract CSS token names from a prepared protocol handle.
+///
+/// Returns the same newline-delimited representation as
+/// [`webui_protocol_tokens`] without decoding protobuf bytes again.
+///
+/// # Safety
+///
+/// * `protocol_ptr` must be a valid pointer returned by [`webui_protocol_create`].
+/// * The returned pointer must be freed with [`webui_free`].
+#[no_mangle]
+pub unsafe extern "C" fn webui_protocol_tokens_prepared(
+    protocol_ptr: *const c_void,
+) -> *mut c_char {
+    clear_last_error();
+
+    match std::panic::catch_unwind(|| {
+        if protocol_ptr.is_null() {
+            set_last_error("protocol_ptr is null");
+            return std::ptr::null_mut();
+        }
+
+        // SAFETY: The caller guarantees protocol_ptr is a live prepared handle.
+        let prepared = unsafe { &*(protocol_ptr as *const PreparedProtocolContext) };
+        let joined = prepared.prepared.tokens().join("\n");
+
+        match CString::new(joined) {
+            Ok(value) => value.into_raw(),
+            Err(error) => {
+                set_last_error(format!("token string contains null byte: {error}"));
+                std::ptr::null_mut()
+            }
+        }
+    }) {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("panic in webui_protocol_tokens_prepared");
             std::ptr::null_mut()
         }
     }

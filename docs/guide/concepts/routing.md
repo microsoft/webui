@@ -228,13 +228,17 @@ The router provides four mechanisms for controlling how state flows to your comp
 | **Preserve DOM + refresh data** | `keep-alive` + `static loader()` | DOM is preserved and loader data refreshes the component |
 
 ```typescript
-// Express example — render_partial returns chain + templates (no state).
-// Caller adds state to the response.
+// Express example - the npm helper returns a complete JSON partial.
 app.get('*', async (req, res) => {
   const state = await db.getPageState(req.path);
-  const partial = handler.renderPartial(protocol, index, req.path, invHex);
-  partial.state = state;
-  res.json(partial);
+  const partialJson = renderPartial(
+    protocol,
+    JSON.stringify(state),
+    'index.html',
+    req.path,
+    invHex,
+  );
+  res.type('json').send(partialJson);
 });
 ```
 
@@ -676,7 +680,7 @@ When `Accept: application/json` or `application/x-ndjson`:
 
 | Field | Description |
 |-------|-------------|
-| `state` | Application state (added by the caller, not by `render_partial`) |
+| `state` | Application state. Complete FFI, Node, WASM, and .NET helpers include it; low-level Rust `render_partial` leaves scheduling to the host |
 | `templateStyles` | Module CSS definition tags (empty for Link/Style modes) |
 | `templates` | Client template payloads filtered by inventory bitmask |
 | `inventory` | Updated hex bitmask of loaded templates |
@@ -702,50 +706,74 @@ bootstrap.
 
 ### Partial Navigation
 
-The partial response format is unchanged. Use `render_partial()` (Rust) or `webui_render_partial()` (FFI) to get the partial response - chain, templateStyles, templates, inventory, path, and cacheTags. The caller adds application state to the result.
+Low-level Rust `render_partial()` returns route and template metadata without
+state so an NDJSON host can defer data. FFI, Node, WASM, and .NET partial
+helpers accept state JSON and return the complete response. They validate the
+state and embed its original JSON bytes without constructing and serializing a
+duplicate value tree.
 
-`render_partial()` now requires a `ProtocolIndex` parameter - a pre-computed index that caches expensive lookups (component bit-index maps, compiled route templates, and component closures). Build it once per protocol at startup and reuse it across requests:
+For repeated Rust requests, use `PreparedProtocol`:
 
 ```rust
-// Rust - build the index once, reuse across requests
-let mut index = ProtocolIndex::new(&protocol);
-
-let mut partial = route_handler::render_partial(&protocol, &entry, &path, &inventory_hex, &mut index);
-// Caller adds state to the response
-if let Some(obj) = partial.as_object_mut() {
-    obj.insert("state".into(), state);
-}
+let prepared = PreparedProtocol::from_protobuf(&protocol_bytes)?;
+let partial = route_handler::render_partial_prepared(
+    &prepared,
+    "index.html",
+    request_path,
+    inventory_hex,
+)?;
+let json = route_handler::serialize_partial_response_with_state(
+    &partial,
+    state_json,
+)?;
 ```
 
 ```csharp
 // C#
-string partialJson = handler.RenderPartial(protocol, index, entryId, requestPath, inventoryHex);
-// Caller merges state into the JSON before sending
+string partialJson = handler.RenderPartial(
+    protocol,
+    stateJson,
+    entryId,
+    requestPath,
+    inventoryHex);
 ```
 
 ```javascript
 // Node.js
-const partialJson = webui.renderPartial(protocol, index, entryId, requestPath, inventoryHex);
-// Caller adds state before sending
+const partialJson = renderPartial(
+  protocol,
+  JSON.stringify(state),
+  entryId,
+  requestPath,
+  inventoryHex,
+);
 ```
 
 ### Express Example
 
 ```javascript
-// Build index once at startup
-const index = webui.createIndex(protocol);
+// Load once. Reusing Buffer identity and plugin reuses the prepared protocol.
+const protocol = readFileSync('./dist/protocol.bin');
 
 app.get('/users/:id', (req, res) => {
   const state = { name: getUser(req.params.id).name };
 
   if (req.accepts('json')) {
-    // renderPartial() returns chain + templates; caller adds state
     const inv = req.get('X-WebUI-Inventory') ?? '';
-    const partial = JSON.parse(webui.renderPartial(protocol, index, 'index.html', req.path, inv));
-    partial.state = state;
-    res.type('json').send(JSON.stringify(partial));
+    const partialJson = webui.renderPartial(
+      protocol,
+      JSON.stringify(state),
+      'index.html',
+      req.path,
+      inv,
+    );
+    res.type('json').send(partialJson);
   } else {
-    res.type('html').send(handler.render(protocol, state, 'index.html', req.path));
+    const html = webui.render(protocol, state, {
+      entry: 'index.html',
+      requestPath: req.path,
+    });
+    res.type('html').send(html);
   }
 });
 ```

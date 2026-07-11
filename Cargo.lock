@@ -1877,6 +1877,7 @@ name = "microsoft-webui-ffi"
 version = "0.0.18"
 dependencies = [
  "cbindgen",
+ "criterion",
  "microsoft-webui-handler",
  "microsoft-webui-parser",
  "microsoft-webui-protocol",

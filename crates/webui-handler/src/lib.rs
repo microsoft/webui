@@ -13,6 +13,8 @@ pub mod route_handler;
 pub mod route_matcher;
 pub(crate) mod route_renderer;
 
+pub use route_handler::PreparedProtocol;
+
 /// Minimal HTML escaper for the 6 XSS-critical characters
 /// (`& < > " ' /`). Returns `Cow::Borrowed` when no escaping is
 /// needed (zero allocation on the happy path), `Cow::Owned` when
@@ -263,9 +265,10 @@ struct WebUIProcessContext<'a> {
 
 struct WebUiBootstrap<'a> {
     state: &'a Value,
-    /// Build-time hydration key allowlist (sorted, deduped). The `state`
-    /// object is projected down to only these keys before emission.
-    hydration_schema: &'a [String],
+    /// Request-scoped hydration key allowlist (sorted, deduped). The `state`
+    /// object is projected down to only these keys before emission. `None`
+    /// preserves full-state emission for protocols built before projection.
+    hydration_schema: Option<&'a [&'a str]>,
     chain: &'a [Value],
     inventory: &'a str,
     nonce: Option<&'a str>,
@@ -370,17 +373,20 @@ where
 /// This is the runtime half of the projected-hydration design: instead of
 /// serializing the entire application state (potentially megabytes) on every
 /// full-HTML render, only the fields a component actually hydrates are
-/// emitted. Over-inclusion is harmless (the client ignores unknown keys), so
-/// `schema` is a safe superset union of every component's hydration keys and
-/// no field a component needs is ever dropped. A server-only field (e.g.
-/// CSRF `tokens`) is naturally excluded because it is not a hydration key.
+/// emitted. The request schema conservatively includes every reachable
+/// component's hydration keys so no field a component needs is dropped.
 ///
-/// `schema` MUST be sorted (it is produced sorted + deduped at build time) so
-/// membership is a zero-allocation binary search. Non-object states carry
-/// nothing hydratable and serialize as an empty object.
+/// Projection is a payload boundary, not a secrecy boundary. Any key selected
+/// by authored template metadata or decorators is client-facing, so hosts must
+/// never place secrets in browser render state.
+///
+/// `schema` MUST be sorted and deduplicated. Projection iterates whichever side
+/// is smaller: schema keys with direct map lookup for wide states, or state
+/// entries with binary-search membership for compact states. Non-object states
+/// carry nothing hydratable and serialize as an empty object.
 struct ProjectedState<'a> {
     value: &'a Value,
-    schema: &'a [String],
+    schema: &'a [&'a str],
 }
 
 impl Serialize for ProjectedState<'_> {
@@ -393,13 +399,26 @@ impl Serialize for ProjectedState<'_> {
         };
 
         let mut out = serializer.serialize_map(None)?;
-        for (key, value) in map {
-            if self
-                .schema
-                .binary_search_by(|candidate| candidate.as_str().cmp(key.as_str()))
-                .is_ok()
-            {
-                out.serialize_entry(key, value)?;
+        if self.schema.len() < map.len() {
+            let mut previous = None;
+            for key in self.schema {
+                if previous == Some(*key) {
+                    continue;
+                }
+                previous = Some(*key);
+                if let Some(value) = map.get(*key) {
+                    out.serialize_entry(key, value)?;
+                }
+            }
+        } else {
+            for (key, value) in map {
+                if self
+                    .schema
+                    .binary_search_by(|candidate| candidate.cmp(&key.as_str()))
+                    .is_ok()
+                {
+                    out.serialize_entry(key, value)?;
+                }
             }
         }
         out.end()
@@ -422,11 +441,11 @@ impl Serialize for ProjectedState<'_> {
 fn write_projected_state(
     writer: &mut dyn ResponseWriter,
     state: &Value,
-    schema: &[String],
+    schema: &[&str],
 ) -> Result<()> {
-    // Projection membership is a binary search, so a mis-sorted schema would
-    // silently drop hydration keys. The schema is produced sorted + deduped at
-    // build time; this guard makes any future hand-built protocol that violates
+    // Projection membership may use binary search, so a mis-sorted schema
+    // would silently drop hydration keys. The schema is produced sorted +
+    // deduped at build time; this guard makes hand-built protocols that violate
     // the invariant fail loudly in tests at zero release cost.
     debug_assert!(
         schema.windows(2).all(|pair| pair[0] <= pair[1]),
@@ -439,6 +458,55 @@ fn write_projected_state(
             schema,
         },
     )
+}
+
+/// Build the sorted hydration allowlist for the components reachable on this
+/// request path. Inactive route branches are excluded, while components behind
+/// active-route conditionals and loops remain conservatively included by the
+/// reachability walk.
+///
+/// Protocols produced before per-component hydration keys were introduced may
+/// contain only the global schema. Protocols produced before hydration
+/// projection entirely carry neither a schema nor a version; those return
+/// `None` so the handler preserves full-state bootstrap behavior.
+fn collect_reachable_hydration_schema<'a>(
+    protocol: &'a WebUIProtocol,
+    reachable: &HashSet<String>,
+) -> Option<Vec<&'a str>> {
+    let has_component_schema = protocol
+        .components
+        .values()
+        .any(|component| !component.hydration_keys.is_empty());
+    if protocol.hydration_schema_version == 0
+        && protocol.hydration_schema.is_empty()
+        && !has_component_schema
+    {
+        return None;
+    }
+
+    if !has_component_schema {
+        return Some(
+            protocol
+                .hydration_schema
+                .iter()
+                .map(String::as_str)
+                .collect(),
+        );
+    }
+
+    let estimated = reachable
+        .len()
+        .saturating_mul(4)
+        .min(protocol.hydration_schema.len());
+    let mut schema = Vec::with_capacity(estimated);
+    for name in reachable {
+        if let Some(component) = protocol.components.get(name) {
+            schema.extend(component.hydration_keys.iter().map(String::as_str));
+        }
+    }
+    schema.sort_unstable();
+    schema.dedup();
+    Some(schema)
 }
 
 fn write_webui_bootstrap(
@@ -459,7 +527,11 @@ fn write_webui_bootstrap(
         write_json_field(writer, &mut wrote_field, "nonce", nonce)?;
     }
     write_json_field_name(writer, &mut wrote_field, "state")?;
-    write_projected_state(writer, bootstrap.state, bootstrap.hydration_schema)?;
+    if let Some(schema) = bootstrap.hydration_schema {
+        write_projected_state(writer, bootstrap.state, schema)?;
+    } else {
+        write_script_safe_json(writer, bootstrap.state)?;
+    }
     if !bootstrap.style_specs.is_empty() {
         write_json_field(writer, &mut wrote_field, "styles", bootstrap.style_specs)?;
     }
@@ -1227,6 +1299,8 @@ impl WebUIHandler {
                     context.request_path,
                     &mut context.route_cache,
                 );
+                let hydration_schema =
+                    collect_reachable_hydration_schema(context.protocol, &reachable);
 
                 // Emit CSS module importmaps for reachable-but-unrendered
                 // components so the framework can adopt them when an `<if>`
@@ -1325,7 +1399,7 @@ impl WebUIHandler {
                     context.writer,
                     WebUiBootstrap {
                         state: context.state,
-                        hydration_schema: &context.protocol.hydration_schema,
+                        hydration_schema: hydration_schema.as_deref(),
                         chain: &chain_json,
                         inventory: &inventory_hex,
                         nonce: context.nonce,
@@ -7308,6 +7382,52 @@ mod tests {
     }
 
     #[test]
+    fn hydration_schema_version_distinguishes_legacy_from_empty_projection() -> Result<()> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><body>".to_string()),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        let legacy_protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({
+            "title": "Legacy state",
+            "serverOnly": "preserved",
+        });
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+
+        let mut legacy_writer = TestWriter::new();
+        handler.handle(
+            &legacy_protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut legacy_writer,
+        )?;
+        let legacy_output = legacy_writer.get_content();
+        assert!(legacy_output.contains(r#""serverOnly":"preserved""#));
+        assert!(legacy_output.contains(r#""title":"Legacy state""#));
+
+        let mut projected_protocol = legacy_protocol;
+        projected_protocol.hydration_schema_version = webui_protocol::HYDRATION_SCHEMA_VERSION;
+        let mut projected_writer = TestWriter::new();
+        handler.handle(
+            &projected_protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut projected_writer,
+        )?;
+        assert!(projected_writer.get_content().contains(r#""state":{}"#));
+        Ok(())
+    }
+
+    #[test]
     fn write_projected_state_projects_and_escapes() {
         // `keep` is in the (sorted) schema and its value contains a `</` that
         // must be escaped; `drop` is absent and must be projected out.
@@ -7315,7 +7435,7 @@ mod tests {
             "drop": "secret",
             "keep": "</script><b>"
         });
-        let schema = vec!["keep".to_string()];
+        let schema = ["keep"];
         let mut sink = TestWriter::new();
         write_projected_state(&mut sink, &state, &schema).unwrap();
         assert_eq!(sink.get_content(), r#"{"keep":"<\/script><b>"}"#);
@@ -7324,10 +7444,114 @@ mod tests {
     #[test]
     fn write_projected_state_non_object_emits_empty_object() {
         let state = test_json!("scalar state has nothing hydratable");
-        let schema: Vec<String> = Vec::new();
+        let schema: [&str; 0] = [];
         let mut sink = TestWriter::new();
         write_projected_state(&mut sink, &state, &schema).unwrap();
         assert_eq!(sink.get_content(), "{}");
+    }
+
+    #[test]
+    fn write_projected_state_schema_first_skips_missing_and_duplicate_keys() {
+        let state = test_json!({
+            "keptA": 1,
+            "keptB": 2,
+            "serverOnlyA": 3,
+            "serverOnlyB": 4,
+        });
+        let schema = ["keptA", "keptA", "keptB", "missing"];
+        let mut sink = TestWriter::new();
+        write_projected_state(&mut sink, &state, &schema).unwrap();
+        assert_eq!(sink.get_content(), r#"{"keptA":1,"keptB":2}"#);
+    }
+
+    #[test]
+    fn write_projected_state_map_first_matches_schema_first_output() {
+        let state = test_json!({
+            "keptA": 1,
+            "keptB": 2,
+        });
+        let schema = ["keptA", "keptB", "missingA", "missingB"];
+        let mut sink = TestWriter::new();
+        write_projected_state(&mut sink, &state, &schema).unwrap();
+        assert_eq!(sink.get_content(), r#"{"keptA":1,"keptB":2}"#);
+    }
+
+    #[test]
+    fn bootstrap_state_excludes_inactive_route_hydration_keys() -> Result<()> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><body>"),
+                    WebUIFragment::route_from(webui_protocol::WebUiFragmentRoute {
+                        path: "/".to_string(),
+                        fragment_id: "home-page".to_string(),
+                        exact: true,
+                        ..Default::default()
+                    }),
+                    WebUIFragment::route_from(webui_protocol::WebUiFragmentRoute {
+                        path: "/admin".to_string(),
+                        fragment_id: "admin-page".to_string(),
+                        exact: true,
+                        ..Default::default()
+                    }),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "home-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Home</p>")],
+            },
+        );
+        fragments.insert(
+            "admin-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Admin</p>")],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.components.insert(
+            "home-page".to_string(),
+            webui_protocol::ComponentData {
+                template_json: "{}".to_string(),
+                hydration_keys: vec!["homeTitle".to_string()],
+                ..Default::default()
+            },
+        );
+        protocol.components.insert(
+            "admin-page".to_string(),
+            webui_protocol::ComponentData {
+                template_json: "{}".to_string(),
+                hydration_keys: vec!["adminToken".to_string()],
+                ..Default::default()
+            },
+        );
+        protocol.hydration_schema = vec!["adminToken".to_string(), "homeTitle".to_string()];
+
+        let state = test_json!({
+            "homeTitle": "Welcome",
+            "adminToken": "TOP_SECRET_SENTINEL",
+        });
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = TestWriter::new();
+        handler.handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )?;
+        let output = writer.get_content();
+        assert!(output.contains(r#""homeTitle":"Welcome""#));
+        assert!(!output.contains("TOP_SECRET_SENTINEL"));
+        assert!(!output.contains(r#""adminToken""#));
+        Ok(())
     }
 
     #[test]

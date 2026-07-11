@@ -15,6 +15,11 @@ static BUNDLE_REBUILD_NONCE: AtomicU64 = AtomicU64::new(0);
 const WEBUI_TSCONFIG_RAW: &str =
     r#"{"compilerOptions":{"experimentalDecorators":true,"useDefineForClassFields":false}}"#;
 
+struct EsbuildCommand {
+    program: PathBuf,
+    prefix_args: Vec<String>,
+}
+
 /// Resolve a configured component source for the per-page builds.
 ///
 /// Local paths are made absolute against `cwd` (the project root) because
@@ -1228,9 +1233,10 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     }
 
     let args = esbuild_args(opts, &entry_files, bundle_tmp.path());
-    let esbuild_bin = esbuild_command(node_modules);
+    let esbuild = esbuild_command(node_modules);
 
-    let output = std::process::Command::new(&esbuild_bin)
+    let output = std::process::Command::new(&esbuild.program)
+        .args(&esbuild.prefix_args)
         .args(&args)
         .env("NODE_PATH", node_modules)
         .stdout(std::process::Stdio::piped())
@@ -1290,22 +1296,46 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     })
 }
 
-/// Resolve the esbuild binary path from node_modules.
-fn esbuild_command(node_modules: &Path) -> std::path::PathBuf {
-    let binary = if cfg!(windows) {
-        "esbuild.cmd"
-    } else {
-        "esbuild"
-    };
+/// Resolve the esbuild invocation from node_modules.
+///
+/// Windows invokes the package's JavaScript entry through `node` directly.
+/// Going through pnpm's `.cmd` shim strips quotes from `--tsconfig-raw`.
+fn esbuild_command(node_modules: &Path) -> EsbuildCommand {
     if let Some(project_dir) = node_modules.parent() {
         for dir in project_dir.ancestors() {
-            let candidate = dir.join("node_modules").join(".bin").join(binary);
+            if cfg!(windows) {
+                let candidate = dir
+                    .join("node_modules")
+                    .join("esbuild")
+                    .join("bin")
+                    .join("esbuild");
+                if candidate.exists() {
+                    return EsbuildCommand {
+                        program: PathBuf::from("node"),
+                        prefix_args: vec![path_for_js(&candidate)],
+                    };
+                }
+                continue;
+            }
+
+            let candidate = dir.join("node_modules").join(".bin").join("esbuild");
             if candidate.exists() {
-                return candidate;
+                return EsbuildCommand {
+                    program: candidate,
+                    prefix_args: Vec::new(),
+                };
             }
         }
     }
-    std::path::PathBuf::from(binary)
+
+    EsbuildCommand {
+        program: PathBuf::from(if cfg!(windows) {
+            "esbuild.cmd"
+        } else {
+            "esbuild"
+        }),
+        prefix_args: Vec::new(),
+    }
 }
 
 /// Extract `<script type="module" bundle>` and `<script type="module" bundle src="...">` tags
@@ -1574,16 +1604,22 @@ mod tests {
     #[test]
     fn esbuild_command_resolves_from_node_modules() {
         let tmp = std::env::temp_dir().join("webui-press-esbuild-test");
-        let bin_dir = tmp.join("node_modules/.bin");
-        fs::create_dir_all(&bin_dir).unwrap();
         let bin_path = if cfg!(windows) {
-            bin_dir.join("esbuild.cmd")
+            tmp.join("node_modules/esbuild/bin/esbuild")
         } else {
-            bin_dir.join("esbuild")
+            tmp.join("node_modules/.bin/esbuild")
         };
+        fs::remove_dir_all(&tmp).ok();
+        fs::create_dir_all(bin_path.parent().unwrap()).unwrap();
         fs::write(&bin_path, "").unwrap();
         let resolved = esbuild_command(&tmp.join("node_modules"));
-        assert_eq!(resolved, bin_path);
+        if cfg!(windows) {
+            assert_eq!(resolved.program, PathBuf::from("node"));
+            assert_eq!(resolved.prefix_args, [path_for_js(&bin_path)]);
+        } else {
+            assert_eq!(resolved.program, bin_path);
+            assert!(resolved.prefix_args.is_empty());
+        }
         fs::remove_dir_all(&tmp).ok();
     }
 

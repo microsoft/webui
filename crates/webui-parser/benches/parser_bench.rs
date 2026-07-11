@@ -2,7 +2,44 @@
 // Licensed under the MIT license.
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
-use webui_parser::{plugin::fast_v2::FastV2ParserPlugin, CssStrategy, HtmlParser};
+use webui_parser::{
+    plugin::fast_v2::FastV2ParserPlugin, scan_hydration_attributes, CssStrategy, HtmlParser,
+};
+
+fn build_hydration_script(properties: usize, noise_blocks: usize) -> String {
+    let mut source = String::with_capacity(properties * 48 + noise_blocks * 256 + 128);
+    source.push_str("export class BenchElement {\n");
+    for idx in 0..properties {
+        source.push_str("  @observable value");
+        source.push_str(&idx.to_string());
+        source.push_str(" = 0;\n");
+    }
+    for idx in 0..noise_blocks {
+        source.push_str("  // @observable lineComment");
+        source.push_str(&idx.to_string());
+        source.push_str(" = 1;\n");
+        source.push_str("  /* @attr blockComment");
+        source.push_str(&idx.to_string());
+        source.push_str(" = 'x'; */\n");
+        source.push_str("  text");
+        source.push_str(&idx.to_string());
+        source.push_str(" = \"@observable stringValue");
+        source.push_str(&idx.to_string());
+        source.push_str(" = 1\";\n");
+        source.push_str("  template");
+        source.push_str(&idx.to_string());
+        source.push_str(" = `@attr templateValue");
+        source.push_str(&idx.to_string());
+        source.push_str(" = 'x'`;\n");
+        source.push_str("  regex");
+        source.push_str(&idx.to_string());
+        source.push_str(" = /@observable regexValue");
+        source.push_str(&idx.to_string());
+        source.push_str("/;\n");
+    }
+    source.push_str("}\n");
+    source
+}
 
 fn build_simple_template() -> String {
     let mut html = String::with_capacity(256);
@@ -599,6 +636,26 @@ fn parser_adversarial_bench(c: &mut Criterion) {
     group.finish();
 }
 
+fn hydration_scanner_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("hydration_scanner");
+    let scenarios = [
+        ("reactive_256", build_hydration_script(256, 0)),
+        ("mixed_noise_256", build_hydration_script(16, 256)),
+    ];
+
+    for (name, source) in scenarios {
+        group.throughput(Throughput::Bytes(source.len() as u64));
+        group.bench_with_input(BenchmarkId::new("scan", name), &source, |b, input| {
+            b.iter(|| {
+                let names = scan_hydration_attributes(black_box(input));
+                black_box(names.len());
+            });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     parser_parse_reuse_bench,
@@ -608,6 +665,7 @@ criterion_group!(
     parser_size_sweep_bench,
     parser_realistic_bench,
     parser_text_vs_directive_bench,
-    parser_adversarial_bench
+    parser_adversarial_bench,
+    hydration_scanner_bench
 );
 criterion_main!(benches);

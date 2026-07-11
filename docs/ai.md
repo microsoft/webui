@@ -55,6 +55,11 @@ webui build         + JSON state          hydrate as islands
    stateful templates. Components with event handlers, client-mutated state, or
    user input need authored client-side code.
 
+5. **Hydration state is client-facing.** Initial `#webui-data.state` is
+   projected to hydration keys for components reachable on the active route.
+   This reduces CPU and bytes, but it is not a secrecy boundary. Never put
+   credentials or private tokens in browser render state.
+
 ## Project Structure
 
 ```
@@ -1109,16 +1114,16 @@ Add `@microsoft/webui-router` if using client-side navigation.
 
 ## Language Integration (Server Side)
 
-WebUI renders from **any** backend. The server loads `protocol.bin` once
-and renders with JSON state per request.
+WebUI renders from **any** backend. The server loads and prepares
+`protocol.bin` once, then renders with JSON state per request.
 
 ### Rust
 
 ```rust
-let protocol = WebUIProtocol::from_protobuf(&fs::read("dist/protocol.bin")?)?;
+let protocol = PreparedProtocol::from_protobuf(&fs::read("dist/protocol.bin")?)?;
 let state = json!({ "title": "Home", "items": items_vec });
-let mut handler = WebUIHandler::new();
-handler.handle(&protocol, &state, &options, &mut writer)?;
+let handler = WebUIHandler::new();
+handler.handle(protocol.protocol(), &state, &options, &mut writer)?;
 ```
 
 **Streaming SSR (production).** Use `webui::streaming::StreamingWriter::new_pooled(tx, chunk_pool)` with a process-wide `ChunkPool` for bounded backpressure + zero per-flush allocation. Configure `.with_flush_timeout(Duration::from_secs(30))` to bound slow-loris DoS. Use `RenderOptions::with_head_inject(html)` / `with_body_inject(html)` for per-request HTML splicing at parser-synthesized `head_end` / `body_end` boundaries (no byte-scanner, cannot mis-fire on literals in comments / srcdoc). `HandlerError::ClientDisconnected` and `StreamTimeout` are returned from both `write()` and `end()` for telemetry. Pre-escape untrusted inject content with `webui_handler::encode_safe`.
@@ -1127,8 +1132,14 @@ handler.handle(&protocol, &state, &options, &mut writer)?;
 
 ```javascript
 import { render } from '@microsoft/webui';
+// Keep this Buffer for the server lifetime. Reusing its identity reuses the
+// native prepared protocol.
 const protocol = readFileSync('./dist/protocol.bin');
-const html = render(protocol, JSON.stringify(state), 'index.html', req.url);
+const html = render(protocol, state, {
+  entry: 'index.html',
+  requestPath: req.url,
+  plugin: 'webui',
+});
 ```
 
 ### WebAssembly
@@ -1136,13 +1147,14 @@ const html = render(protocol, JSON.stringify(state), 'index.html', req.url);
 Use the split WASM bundles when rendering or parsing in the browser:
 
 ```javascript
-import initHandler, { render } from './wasm/handler/webui_wasm_handler.js';
+import initHandler, { PreparedProtocol } from './wasm/handler/webui_wasm_handler.js';
 await initHandler();
 const protocolBytes = new Uint8Array(await (await fetch('/protocol.bin')).arrayBuffer());
-let html = '';
-render(protocolBytes, JSON.stringify(state), (chunk) => {
-  html += chunk;
-}, { entry: 'index.html', requestPath: '/', plugin: 'webui' });
+const protocol = new PreparedProtocol(protocolBytes);
+const html = protocol.renderJson(
+  JSON.stringify(state),
+  { entry: 'index.html', requestPath: '/', plugin: 'webui' },
+);
 ```
 
 ```javascript
@@ -1161,6 +1173,9 @@ result = ctypes.cast(ptr, c_char_p).value.decode("utf-8")
 lib.webui_free(ptr)
 ```
 
+For repeated FFI rendering, use `webui_protocol_create` once and call
+`webui_handler_render_prepared` per request.
+
 ### Go (cgo)
 
 ```go
@@ -1169,12 +1184,12 @@ defer C.webui_free(ptr)
 result := C.GoString(ptr)
 ```
 
-### C# (P/Invoke)
+### C# (.NET package)
 
 ```csharp
-IntPtr ptr = webui_render(html, dataJson);
-string result = Marshal.PtrToStringUTF8(ptr);
-webui_free(ptr);
+using var protocol = new PreparedProtocol(File.ReadAllBytes("dist/protocol.bin"));
+using var handler = new WebUIHandler("webui");
+string result = handler.Render(protocol, dataJson, "index.html", requestPath);
 ```
 
 ### Server Template Endpoint

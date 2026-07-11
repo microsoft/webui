@@ -5,7 +5,7 @@ WebUI runs anywhere you can render text. The protocol is compiled once with `web
 Pick the handler that matches your stack:
 
 - [**Rust**](./rust), High-performance native rendering with the Rust programming language
-- [**Node**](./node), Streaming SSR via a native addon built with napi-rs for Node, Bun, and Deno.
+- [**Node**](./node), Buffered and streaming SSR via a native addon built with napi-rs for Node, Bun, and Deno
 - [**.NET**](/guide/installation#net), Managed `Microsoft.WebUI` NuGet bindings with transitive native runtime packages
 - [**Electron**](./electron), Desktop apps via Electron with custom `webui://` protocol
 - [**WebAssembly**](./wasm), Split parser, handler, and combined browser bundles
@@ -15,11 +15,14 @@ Pick the handler that matches your stack:
 
 All WebUI handlers follow the same pattern:
 
-1. They accept a WebUI protocol object (parsed from protobuf binary)
+1. They accept a WebUI protocol object, preferably decoded and prepared once at startup
 2. They process the protocol with the provided state data
 3. They render the final HTML output by evaluating directives and inserting dynamic content
 
 This consistent approach ensures that the same template produces identical results across different programming languages and platforms.
+
+For repeated requests, use the integration's prepared-protocol path. It avoids
+protobuf decoding and deterministic index construction on every render.
 
 ## Common Handler Interface
 
