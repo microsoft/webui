@@ -96,10 +96,9 @@ The sibling `.ts` or `.js` file is the authored behavior boundary. Within that
 module, only `@observable` and `@attr` fields opt into initial state hydration;
 template-only roots stay in the trusted SSR DOM. Without a module, template
 bindings render on the server and the component contributes no bootstrap state.
-The compiler still emits its template metadata. When the framework is loaded, a
-minimal compiler-owned host remains dormant over the SSR DOM until `setState`, a
-parent property write, an observed attribute change, or client-side creation
-actually needs it.
+The compiler still emits its template metadata. When the framework is loaded,
+it can activate that template when browser state or client-side creation needs
+it.
 If that first write omits a repeat collection, the host preserves the existing
 SSR items until the collection is explicitly supplied.
 
@@ -274,7 +273,7 @@ The WebUI plugin supports these template features:
 - repeats: `<for each="item in items">`
 
 Components that use `@event` must have authored `.ts` or `.js` code that
-defines a `WebUIElement` for the tag; compiler-owned hosts do not provide
+defines a `WebUIElement` for the tag. HTML-only components do not provide
 application event handlers.
 
 Example from `examples/app/todo-webui`:

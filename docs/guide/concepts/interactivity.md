@@ -34,10 +34,10 @@ The sibling `.ts` or `.js` file is the authored behavior boundary. Within an
 authored component, only `@observable` and `@attr` fields opt into initial state
 hydration; ordinary template roots remain in the trusted SSR DOM. Without a
 client module, bindings, conditionals, and loops still render on the server, but
-the component contributes no bootstrap state and remains dormant on startup. If
-the framework is loaded, its compiler-owned host can later activate for
-browser-applied state or soft navigation. Add a same-named client module only
-for events, lifecycle code, decorators, or imperative APIs. See
+the component contributes no bootstrap state. If the framework is loaded, it
+can later activate the compiled template for browser-applied state or soft
+navigation. Add a same-named client module only for events, lifecycle code,
+decorators, or imperative APIs. See
 [Hydration](/guide/concepts/hydration) for the full contract.
 
 ## The Component Class
@@ -159,23 +159,13 @@ example in an event handler.
 
 ### Initial Hydration State
 
-At build time, WebUI records each authored component's hydratable top-level
-state keys from template bindings plus `@observable` and `@attr` properties.
-The script scanner ignores decorator-looking text inside comments, strings,
-template-literal text, and regular-expression literals. Scriptless template
-roots are reserved for partial navigation and do not enter initial bootstrap
-state.
+For the initial page, only top-level `@observable` and `@attr` values from
+authored components can be seeded from server state. Template bindings still
+render on the server, but they do not automatically become JavaScript state.
+Only components reachable on the active route contribute values.
 
-For the initial full page, the server includes only keys needed by components
-reachable on the active request route. Inactive sibling routes do not enlarge
-the `#webui-data` state payload. Components behind a conditional or loop on the
-active route remain included so they can activate without losing initial state.
-
-::: warning Do not use projection as a secrecy boundary
-Hydration state is sent to the browser. Never put credentials, private tokens,
-or other secrets in browser render state, even if no current component appears
-to reference the field.
-:::
+See [Hydration](/guide/concepts/hydration) for HTML-only components, soft
+navigation, and payload behavior.
 
 ### Derived State
 
@@ -228,8 +218,8 @@ Attach event handlers with `@event` syntax:
 ```
 
 Components that use `@event` must have authored `.ts` or `.js` code that
-defines a `WebUIElement` for the tag; compiler-owned scriptless hosts do not
-provide application event handlers.
+defines a `WebUIElement` for the tag. HTML-only components do not provide
+application event handlers.
 
 Event handlers use method-call syntax only. Arguments can be:
 
@@ -579,28 +569,14 @@ export class MyCounter extends WebUIElement {
 
 If `count` should already read `3` in the server-rendered HTML, seed it in the SSR state instead of assigning it on the client at all.
 
-#### The warning is development-only
+#### Development warning
 
-This diagnostic is a **development aid** — its comparison code *and* its message strings are removed from production bundles, so it never costs your users anything. It is gated by a compile-time flag, **`__WEBUI_DEV__`**, and loaded through a dynamic `import()`, so when the flag is `false` a bundler dead-code-eliminates the entire diagnostic module.
-
-The flag is **on by default**. You never enable it — you only turn it *off* for production:
-
-- **Using `webui-press`?** Nothing to do. `webui-press build` sets `__WEBUI_DEV__` to `false` for you, and `webui-press serve` leaves it on.
-- **Bundling client JavaScript yourself?** Define the flag as `false` in your **production** build. Leave it out of development builds — when the flag is absent the framework defaults it to on, so you always get the warning while developing.
+The mismatch warning is removed from `webui-press` production builds. If you
+bundle the framework yourself, define `__WEBUI_DEV__` as `false` in production:
 
 ```bash
-# esbuild: production build only
 esbuild app.ts --bundle --minify --define:__WEBUI_DEV__=false
 ```
-
-| Bundler | Production setting |
-| --- | --- |
-| esbuild | `--define:__WEBUI_DEV__=false` |
-| Vite / Rollup / rolldown | `define: { __WEBUI_DEV__: 'false' }` |
-| webpack / Rspack | `new DefinePlugin({ __WEBUI_DEV__: 'false' })` |
-| swc | `jsc.transform.optimizer.globals.vars: { __WEBUI_DEV__: 'false' }` |
-
-Only the literal `false` turns the diagnostics off. Any other value — or leaving the flag undefined — keeps them on, so a forgotten define can never silently hide a real mismatch during development.
 
 
 ## When NOT to Hydrate

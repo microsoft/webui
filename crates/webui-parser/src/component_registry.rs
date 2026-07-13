@@ -34,8 +34,8 @@ pub struct Component {
     /// CSS `var()` fallback chains from this component's CSS.
     pub css_fallback_chains: Vec<CssFallbackChain>,
 
-    /// Whether this component has an authored client script.
-    pub has_script: bool,
+    /// Whether authored browser code owns this custom element tag.
+    pub is_client_owned: bool,
 
     /// Raw authored client-module source (`.ts`/`.js`), when available. This is
     /// convention-agnostic build metadata — the registry never interprets it.
@@ -62,7 +62,7 @@ pub struct ComponentRegistration<'a> {
     /// The component's CSS content, if any.
     pub css_content: Option<&'a str>,
     /// Whether authored browser code owns this custom element tag.
-    pub has_script: bool,
+    pub is_client_owned: bool,
     /// Raw authored client-module source, when available. Parser plugins derive
     /// their own hydration surface from it (the WebUI plugin scans
     /// `@observable`/`@attr` decorators). `None` when there is no scannable
@@ -82,13 +82,13 @@ impl<'a> ComponentRegistration<'a> {
         tag_name: &'a str,
         html_content: &'a str,
         css_content: Option<&'a str>,
-        has_script: bool,
+        is_client_owned: bool,
     ) -> Self {
         Self {
             tag_name,
             html_content,
             css_content,
-            has_script,
+            is_client_owned,
             script_source: None,
         }
     }
@@ -248,7 +248,7 @@ impl ComponentRegistry {
         // derive its own hydration surface (the registry stays convention-agnostic).
         // A present-but-unreadable sibling is a hard error, never a silent skip.
         let script_source = read_component_script(html_path)?;
-        let has_script = script_source.is_some();
+        let is_client_owned = script_source.is_some();
 
         // Create and register the component
         let component = Component {
@@ -257,7 +257,7 @@ impl ComponentRegistry {
             css_content,
             css_definitions,
             css_fallback_chains,
-            has_script,
+            is_client_owned,
             script_source,
         };
 
@@ -277,7 +277,7 @@ impl ComponentRegistry {
             tag_name,
             html_content,
             css_content,
-            has_script,
+            is_client_owned,
             script_source,
         } = registration;
 
@@ -312,7 +312,7 @@ impl ComponentRegistry {
             css_content,
             css_definitions,
             css_fallback_chains,
-            has_script,
+            is_client_owned,
             script_source: script_source.map(str::to_string),
         };
 
@@ -396,7 +396,7 @@ mod tests {
             .expect("Failed to retrieve registered component");
         assert_eq!(component.html_content, html_content);
         assert_eq!(component.css_content.as_deref(), Some(css_content));
-        assert!(!component.has_script);
+        assert!(!component.is_client_owned);
     }
 
     #[test]
@@ -414,7 +414,7 @@ mod tests {
         let component = registry
             .get("scripted-card")
             .expect("Failed to retrieve registered component");
-        assert!(component.has_script);
+        assert!(component.is_client_owned);
     }
 
     #[test]
@@ -432,13 +432,13 @@ mod tests {
         let component = registry
             .get("scripted-card")
             .expect("Failed to retrieve registered component");
-        assert!(component.has_script);
+        assert!(component.is_client_owned);
     }
 
     #[test]
     fn test_register_component_errors_on_unreadable_sibling_script() {
         // A sibling `.ts` that exists but is not valid UTF-8 must be a hard
-        // error, never a silent downgrade to `has_script = false` — that would
+        // error, never a silent downgrade to `is_client_owned = false` — that would
         // drop the component's entire hydration surface without warning, the
         // exact under-inclusion this feature is built to prevent.
         let mut fs = TestFileSystem::new();
@@ -473,7 +473,7 @@ mod tests {
         let component = registry
             .get("scripted-card")
             .expect("Failed to retrieve registered component");
-        assert!(!component.has_script);
+        assert!(!component.is_client_owned);
     }
 
     #[test]
@@ -534,7 +534,7 @@ mod tests {
             .expect("Failed to retrieve registered component");
         assert_eq!(component.html_content, html_content);
         assert_eq!(component.css_content.as_deref(), Some(css_content));
-        assert!(component.has_script);
+        assert!(component.is_client_owned);
     }
 
     #[test]

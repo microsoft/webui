@@ -53,7 +53,7 @@ fn register_components(
                         tag_name,
                         html_content: content,
                         css_content: css,
-                        has_script: script.is_some(),
+                        is_client_owned: script.is_some(),
                         script_source: script,
                     },
                 )?;

@@ -15,8 +15,8 @@ Uses the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navig
 
 Authored route components use their registered classes. Scriptless route
 components also navigate without a full page reload when the application loads
-`@microsoft/webui-framework`, which registers compiler-owned hosts from the
-templates published by the router.
+`@microsoft/webui-framework`, which mounts the templates published by the
+router.
 
 ## Installation
 
@@ -89,10 +89,9 @@ window.addEventListener('webui:hydration-complete', () => {
 
 Components in `loaders` are lazy-loaded on first navigation. Components not
 listed are assumed eagerly loaded when already registered. Scriptless route
-templates are registered as dormant compiler-owned hosts by the framework, so
-they can accept server-projected partial state without empty `.ts` files. Add a
-same-named module only when a route owns events, lifecycle code, decorators, or
-imperative APIs. If no runtime registers a destination tag, the router safely
+templates can accept server-provided partial state through the framework
+without empty `.ts` files. Add a same-named module only when a route owns
+events, lifecycle code, decorators, or imperative APIs. If no runtime registers a destination tag, the router safely
 falls back to a full document request.
 
 ## Nested Routes

@@ -645,7 +645,7 @@ export class TemplateElement extends HTMLElement {
    *
    * The handler emits all SSR metadata in a single consolidated
    * `window.__webui` script block. State lives at `.state`; the build-time
-   * hydration schema contains only explicit `@observable`/`@attr` properties.
+   * hydration keys contain only explicit `@observable`/`@attr` properties.
    * Template-only roots remain absent because their initial values are already
    * represented by the trusted SSR DOM.
    *

@@ -984,8 +984,11 @@ pub struct Component {
     pub css_definitions: Vec<String>,
     /// CSS `var()` fallback chains from this component's CSS.
     pub css_fallback_chains: Vec<CssFallbackChain>,
-    /// Whether this component has an authored client script.
-    pub has_script: bool,
+    /// Whether authored browser code owns this custom element. This can be true
+    /// for external packages whose source is not available to the parser.
+    pub is_client_owned: bool,
+    /// Raw local client-module source when available.
+    pub script_source: Option<String>,
 }
 ```
 
@@ -1030,7 +1033,10 @@ pub struct DiscoveredComponent {
     pub tag_name: String,
     pub html_content: String,
     pub css_content: Option<String>,
-    pub has_script: bool,
+    /// Whether authored browser code owns this custom element.
+    pub is_client_owned: bool,
+    /// Raw sibling `.ts` / `.js` source for local components.
+    pub script_content: Option<String>,
     pub source: String,
 }
 ```
@@ -1044,16 +1050,15 @@ pub struct DiscoveredComponent {
    - `customElements` → path to Custom Elements Manifest
    - root JS entry (`exports["."]`, `main`, `module`, or `browser`) → authored component ownership
 4. Parse the Custom Elements Manifest for `modules[].declarations[].tagName`
-5. Return `DiscoveredComponent` structs with `has_script` set from source metadata (callers handle registration)
+5. Return `DiscoveredComponent` structs with `is_client_owned` set from source metadata (callers handle registration)
 
 Conditional exports are resolved with deterministic priority: `default` → `import` → `require`.
 
 Script ownership is metadata-only: discovery never scans package JavaScript to find
 `customElements.define()` calls. Packages without a root JS entry are treated as
-compiler-owned template libraries: their templates and styles participate in
-server rendering, browser template metadata is emitted, and initial hydration
-state remains empty. Packages with a root JS entry own their custom elements
-and receive authored hydration keys.
+compiler-owned template libraries. Packages with a root JS entry own their custom
+elements and are never replaced by compiler-owned hosts. Package source is not
+scanned, so only local sibling modules contribute decorator-derived hydration keys.
 
 #### Security
 - **Path traversal**: Export paths are validated — absolute paths and `..` components are rejected
@@ -1556,6 +1561,12 @@ raw client-module source on `Component::script_source`; each plugin decides how
 out of generic code, so a plugin such as FAST can author a different hydration
 strategy through the same `register_component_template` hook.
 
+Client ownership and source availability are distinct build facts. A component
+can be scriptless, locally authored with scannable source, or externally authored
+with opaque source. External ownership prevents the framework from defining a
+compiler-owned host for that tag; only scannable local source contributes
+decorator-derived initial hydration keys.
+
 The sibling `.ts` or `.js` file marks authored browser behavior, but its
 presence does not make every template binding initial hydration state. The
 **WebUI parser plugin** derives two per-component surfaces:
@@ -1870,14 +1881,17 @@ output names.
 
 The `@microsoft/webui` npm package follows the esbuild single-package model:
 - `bin: { "webui": "bin/webui" }` — CLI binary via platform-specific `optionalDependencies`
-- `main: "lib/main.js"` — Programmatic API that loads the `.node` native addon directly
+- `exports["."]` points to the compiled `dist/index.js` programmatic API, which
+  loads the platform native addon directly
 - repeated calls with the same protocol `Buffer` and render plugin transparently
   reuse a plugin-bound native prepared protocol through a `WeakMap`; a retained
   byte snapshot invalidates the entry if callers mutate the buffer
-- `render()` uses the native buffered-string path; `renderStream()` batches
-  callbacks with a 16 KiB target instead of crossing into JavaScript for every
-  internal handler fragment
-- WASM fallback for render when native addon is unavailable (one-time warning logged)
+- all package render APIs require `PreparedProtocol`; there is no one-shot
+  decode fallback for older addons
+- `render()` returns the prepared buffered-string result; `renderStream()`
+  batches callbacks with a 16 KiB target instead of crossing into JavaScript
+  for every internal handler fragment
+- render currently requires the native addon; no WASM render fallback is wired
 
 ### .NET / NuGet Distribution
 

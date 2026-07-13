@@ -65,10 +65,9 @@ The server SSRs the matched route on first load. The router handles clicks on `<
 
 The router never imports framework code. Authored route components use their
 registered classes. When the application also loads
-`@microsoft/webui-framework`, scriptless route templates receive
-compiler-owned hosts and can mount from projected partial state without empty
-TypeScript modules. The router falls back to a full document request only when
-no runtime registers the destination tag.
+`@microsoft/webui-framework`, HTML-only route templates can mount during soft
+navigation without empty TypeScript modules. The router falls back to a full
+document request only when no runtime registers the destination tag.
 
 When the View Transitions API is available, client-side route commits
 use `document.startViewTransition()`. While active, the router installs a
@@ -231,8 +230,8 @@ The router provides four mechanisms for controlling how state flows to your comp
 
 | Need | Mechanism | What happens |
 |------|-----------|-------------|
-| **Server provides state to authored code** | Authored route component | Fresh projected route state is applied when the component mounts |
-| **Template-only soft navigation** | Omit sibling `.ts` / `.js`, load the framework once | A dormant compiler-owned host mounts the route from template-root state |
+| **Server provides state to authored code** | Authored route component | Fresh route state is applied when the component mounts |
+| **Template-only soft navigation** | Omit sibling `.ts` / `.js`, load the framework once | The framework mounts the compiled route template |
 | **I fetch my own data** | `static loader()` on component | Loader runs before the route commits and supplies route data |
 | **Preserve local state** | `keep-alive` on route | Params/query attrs update while local state is preserved |
 | **Preserve DOM + refresh data** | `keep-alive` + `static loader()` | DOM is preserved and loader data refreshes the component |
@@ -720,11 +719,10 @@ bootstrap.
 ### Partial Navigation
 
 Rust `render_partial()` and every host binding return the complete response,
-including projected state. An NDJSON host can call
+including the state needed by active-route components. An NDJSON host can call
 `render_partial_metadata()` for state-free chunk 1 and send state later. Raw
-state input is validated in full while only active-route navigation keys are
-copied; unselected values are skipped without constructing a duplicate JSON
-tree.
+state input is validated in full while unneeded values are skipped without
+constructing a duplicate JSON tree.
 
 For repeated Rust requests, use `PreparedProtocol`:
 

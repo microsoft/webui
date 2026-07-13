@@ -267,7 +267,7 @@ struct WebUiBootstrap<'a> {
     state: &'a Value,
     /// Request-scoped hydration key allowlist (sorted, deduped). The `state`
     /// object is projected down to only these authored-client keys.
-    hydration_schema: &'a [&'a str],
+    hydration_keys: &'a [&'a str],
     chain: &'a [Value],
     inventory: &'a str,
     nonce: Option<&'a str>,
@@ -367,25 +367,25 @@ where
 }
 
 /// Serialize wrapper that projects an SSR state object down to only the
-/// keys present in the build-time hydration `schema`.
+/// keys present in the build-time hydration allowlist.
 ///
 /// This is the runtime half of the projected-hydration design: instead of
 /// serializing the entire application state (potentially megabytes) on every
 /// full-HTML render, only the fields a component actually hydrates are
-/// emitted. The request schema conservatively includes every reachable
+/// emitted. The request allowlist conservatively includes every reachable
 /// component's hydration keys so no field a component needs is dropped.
 ///
 /// Projection is a payload boundary, not a secrecy boundary. Any key selected
 /// by authored template metadata or decorators is client-facing, so hosts must
 /// never place secrets in browser render state.
 ///
-/// `schema` MUST be sorted and deduplicated. Projection iterates whichever side
-/// is smaller: schema keys with direct map lookup for wide states, or state
+/// `keys` MUST be sorted and deduplicated. Projection iterates whichever side
+/// is smaller: hydration keys with direct map lookup for wide states, or state
 /// entries with binary-search membership for compact states. Non-object states
 /// carry nothing hydratable and serialize as an empty object.
 struct ProjectedState<'a> {
     value: &'a Value,
-    schema: &'a [&'a str],
+    keys: &'a [&'a str],
 }
 
 impl Serialize for ProjectedState<'_> {
@@ -398,9 +398,9 @@ impl Serialize for ProjectedState<'_> {
         };
 
         let mut out = serializer.serialize_map(None)?;
-        if self.schema.len() < map.len() {
+        if self.keys.len() < map.len() {
             let mut previous = None;
-            for key in self.schema {
+            for key in self.keys {
                 if previous == Some(*key) {
                     continue;
                 }
@@ -412,7 +412,7 @@ impl Serialize for ProjectedState<'_> {
         } else {
             for (key, value) in map {
                 if self
-                    .schema
+                    .keys
                     .binary_search_by(|candidate| candidate.cmp(&key.as_str()))
                     .is_ok()
                 {
@@ -425,7 +425,7 @@ impl Serialize for ProjectedState<'_> {
 }
 
 /// Write the SSR `state` into the bootstrap block, projected down to only the
-/// keys present in the build-time hydration `schema` and escaped so the JSON is
+/// keys present in the build-time hydration allowlist and escaped so the JSON is
 /// safe inside a `<script>` element.
 ///
 /// [`ProjectedState`] serializes only the allowlisted keys, so for the typical
@@ -440,50 +440,44 @@ impl Serialize for ProjectedState<'_> {
 fn write_projected_state(
     writer: &mut dyn ResponseWriter,
     state: &Value,
-    schema: &[&str],
+    keys: &[&str],
 ) -> Result<()> {
-    if schema.is_empty() {
+    if keys.is_empty() {
         return writer.write("{}");
     }
 
-    // Projection membership may use binary search, so a mis-sorted schema
-    // would silently drop hydration keys. The schema is produced sorted +
+    // Projection membership may use binary search, so a mis-sorted key set
+    // would silently drop hydration keys. The key allowlist is produced sorted +
     // deduped at build time; this guard makes hand-built protocols that violate
     // the invariant fail loudly in tests at zero release cost.
     debug_assert!(
-        schema.windows(2).all(|pair| pair[0] <= pair[1]),
-        "hydration schema must be sorted for binary-search projection"
+        keys.windows(2).all(|pair| pair[0] <= pair[1]),
+        "hydration keys must be sorted for binary-search projection"
     );
-    write_script_safe_json(
-        writer,
-        &ProjectedState {
-            value: state,
-            schema,
-        },
-    )
+    write_script_safe_json(writer, &ProjectedState { value: state, keys })
 }
 
 // Covers the common route surface without trusting protocol-derived counts for
-// an eager allocation; larger schemas grow only as actual keys are visited.
-const INITIAL_SCHEMA_CAPACITY: usize = 16;
+// an eager allocation; larger key sets grow only as actual keys are visited.
+const INITIAL_KEY_CAPACITY: usize = 16;
 
 /// Build the sorted hydration allowlist for the components reachable on this
 /// request path. Inactive route branches are excluded, while components behind
 /// active-route conditionals and loops remain conservatively included by the
 /// reachability walk.
-pub(crate) fn collect_hydration_schema<'a, 'b>(
+pub(crate) fn collect_hydration_keys<'a, 'b>(
     protocol: &'a WebUIProtocol,
     components: impl IntoIterator<Item = &'b str>,
 ) -> Vec<&'a str> {
-    let mut schema = Vec::with_capacity(INITIAL_SCHEMA_CAPACITY);
+    let mut keys = Vec::with_capacity(INITIAL_KEY_CAPACITY);
     for name in components {
         if let Some(component) = protocol.components.get(name) {
-            schema.extend(component.hydration_keys.iter().map(String::as_str));
+            keys.extend(component.hydration_keys.iter().map(String::as_str));
         }
     }
-    schema.sort_unstable();
-    schema.dedup();
-    schema
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 /// Build the sorted state allowlist for client-created components reachable on
@@ -492,19 +486,19 @@ pub(crate) fn collect_hydration_schema<'a, 'b>(
 /// Authored components expose the same keys they hydrate initially. Scriptless
 /// compiled templates expose only their template roots, allowing soft
 /// navigation without populating initial SSR state.
-pub(crate) fn collect_navigation_schema<'a, 'b>(
+pub(crate) fn collect_navigation_keys<'a, 'b>(
     protocol: &'a WebUIProtocol,
     components: impl IntoIterator<Item = &'b str>,
 ) -> Vec<&'a str> {
-    let mut schema = Vec::with_capacity(INITIAL_SCHEMA_CAPACITY);
+    let mut keys = Vec::with_capacity(INITIAL_KEY_CAPACITY);
     for name in components {
         if let Some(component) = protocol.components.get(name) {
-            schema.extend(component.navigation_keys.iter().map(String::as_str));
+            keys.extend(component.navigation_keys.iter().map(String::as_str));
         }
     }
-    schema.sort_unstable();
-    schema.dedup();
-    schema
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 fn write_webui_bootstrap(
@@ -525,7 +519,7 @@ fn write_webui_bootstrap(
         write_json_field(writer, &mut wrote_field, "nonce", nonce)?;
     }
     write_json_field_name(writer, &mut wrote_field, "state")?;
-    write_projected_state(writer, bootstrap.state, bootstrap.hydration_schema)?;
+    write_projected_state(writer, bootstrap.state, bootstrap.hydration_keys)?;
     if !bootstrap.style_specs.is_empty() {
         write_json_field(writer, &mut wrote_field, "styles", bootstrap.style_specs)?;
     }
@@ -1293,10 +1287,8 @@ impl WebUIHandler {
                     context.request_path,
                     &mut context.route_cache,
                 );
-                let hydration_schema = collect_hydration_schema(
-                    context.protocol,
-                    reachable.iter().map(String::as_str),
-                );
+                let hydration_keys =
+                    collect_hydration_keys(context.protocol, reachable.iter().map(String::as_str));
 
                 // Emit CSS module importmaps for reachable-but-unrendered
                 // components so the framework can adopt them when an `<if>`
@@ -1395,7 +1387,7 @@ impl WebUIHandler {
                     context.writer,
                     WebUiBootstrap {
                         state: context.state,
-                        hydration_schema: &hydration_schema,
+                        hydration_keys: &hydration_keys,
                         chain: &chain_json,
                         inventory: &inventory_hex,
                         nonce: context.nonce,
@@ -7389,14 +7381,14 @@ mod tests {
 
         // SSR still reads `tokens` to resolve the inline <style>...
         assert!(output.contains("--color-brand: red;"));
-        // ...but only the hydration-schema key reaches the client state.
+        // ...but only the hydration key reaches the client state.
         assert!(output.contains(r#""name":"Alice""#));
         assert!(!output.contains(r#""tokens""#));
         Ok(())
     }
 
     #[test]
-    fn empty_reachable_hydration_schema_excludes_all_state() -> Result<()> {
+    fn empty_reachable_hydration_keys_exclude_all_state() -> Result<()> {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -7484,24 +7476,24 @@ mod tests {
 
     #[test]
     fn write_projected_state_projects_and_escapes() {
-        // `keep` is in the (sorted) schema and its value contains a `</` that
+        // `keep` is in the sorted key set and its value contains a `</` that
         // must be escaped; `drop` is absent and must be projected out.
         let state = test_json!({
             "drop": "secret",
             "keep": "</script><b>"
         });
-        let schema = ["keep"];
+        let keys = ["keep"];
         let mut sink = TestWriter::new();
-        write_projected_state(&mut sink, &state, &schema).unwrap();
+        write_projected_state(&mut sink, &state, &keys).unwrap();
         assert_eq!(sink.get_content(), r#"{"keep":"<\/script><b>"}"#);
     }
 
     #[test]
     fn write_projected_state_non_object_emits_empty_object() {
         let state = test_json!("scalar state has nothing hydratable");
-        let schema: [&str; 0] = [];
+        let keys: [&str; 0] = [];
         let mut sink = TestWriter::new();
-        write_projected_state(&mut sink, &state, &schema).unwrap();
+        write_projected_state(&mut sink, &state, &keys).unwrap();
         assert_eq!(sink.get_content(), "{}");
     }
 
@@ -7513,9 +7505,9 @@ mod tests {
             "serverOnlyA": 3,
             "serverOnlyB": 4,
         });
-        let schema = ["keptA", "keptA", "keptB", "missing"];
+        let keys = ["keptA", "keptA", "keptB", "missing"];
         let mut sink = TestWriter::new();
-        write_projected_state(&mut sink, &state, &schema).unwrap();
+        write_projected_state(&mut sink, &state, &keys).unwrap();
         assert_eq!(sink.get_content(), r#"{"keptA":1,"keptB":2}"#);
     }
 
@@ -7525,9 +7517,9 @@ mod tests {
             "keptA": 1,
             "keptB": 2,
         });
-        let schema = ["keptA", "keptB", "missingA", "missingB"];
+        let keys = ["keptA", "keptB", "missingA", "missingB"];
         let mut sink = TestWriter::new();
-        write_projected_state(&mut sink, &state, &schema).unwrap();
+        write_projected_state(&mut sink, &state, &keys).unwrap();
         assert_eq!(sink.get_content(), r#"{"keptA":1,"keptB":2}"#);
     }
 

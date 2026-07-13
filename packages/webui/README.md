@@ -70,7 +70,9 @@ Keep the same protocol `Buffer` and plugin selection across requests. The
 package caches a plugin-bound native prepared protocol by buffer identity,
 avoiding protobuf decoding and deterministic index construction after the
 first call. A byte snapshot detects buffer mutation and rebuilds the prepared
-entry so cached rendering cannot return stale protocol content.
+entry so cached rendering cannot return stale protocol content. All render APIs
+use this prepared path; incompatible older addons fail instead of silently
+falling back to per-request decoding.
 
 ### `renderStream(protocol: Buffer, state: object | string, onChunk: (html: string) => void): void`
 

@@ -246,7 +246,7 @@ fn resolve_single(
         _ => None,
     };
 
-    let has_script = package_has_authored_script(&pkg_json);
+    let is_client_owned = package_has_authored_script(&pkg_json);
 
     // Create one DiscoveredComponent per tag name
     let components: Vec<DiscoveredComponent> = tag_names
@@ -255,7 +255,7 @@ fn resolve_single(
             tag_name,
             html_content: html_content.clone(),
             css_content: css_content.clone(),
-            has_script,
+            is_client_owned,
             script_content: None,
             source: name.to_string(),
         })
@@ -529,7 +529,7 @@ mod tests {
             components[0].css_content.as_deref(),
             Some(".widget { color: blue; }")
         );
-        assert!(!components[0].has_script);
+        assert!(!components[0].is_client_owned);
     }
 
     #[test]

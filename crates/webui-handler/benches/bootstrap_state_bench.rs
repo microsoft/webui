@@ -12,10 +12,10 @@
 //! serializing it through the script-safe JSON writer. This benchmark pins
 //! that behavior with six arms per size:
 //!
-//! * `hydratable_collection` — schema contains every top-level key, including
+//! * `hydratable_collection` — hydration keys contain every top-level key, including
 //!   the large `items` collection. This models a real `<for>` root and is the
 //!   equal-byte anti-regression guard.
-//! * `server_only_collection` — schema contains only the small metadata keys,
+//! * `server_only_collection` — hydration keys contain only the small metadata keys,
 //!   so the large `items` array is projected away. This models a large
 //!   render-only/server-only collection, not a hydrated `<for>` root.
 //! * `authored_navigation_only_component` — an authored component retains the
@@ -23,7 +23,7 @@
 //!   hydration fields. This is the property-level split exercised by authored
 //!   event/ref components such as the routes example shell.
 //! * `dormant_scriptless_component` — the reachable component retains browser
-//!   template metadata and navigation keys, but its initial hydration schema is
+//!   template metadata and navigation keys, but its initial hydration key set is
 //!   empty, so the state is never traversed.
 //! * `metadata_free_scriptless_component` — the discarded design that omitted
 //!   the scriptless browser template. This isolates the fixed cost required to
@@ -33,7 +33,7 @@
 //!
 //! Separate groups cover a very wide top-level object and a routed application
 //! whose inactive route owns the large collection. Those cases gate adaptive
-//! projection lookup and request-scoped hydration schemas.
+//! projection lookup and request-scoped hydration key collection.
 //!
 //! The protocol is intentionally minimal — a bare `<body>` plus a raw
 //! `body_end` signal that triggers the bootstrap emission — so the measured
@@ -149,27 +149,27 @@ fn build_routed_state(contact_count: usize) -> Value {
 
 /// Every top-level key of [`build_large_state`], sorted. Projecting against
 /// this emits the full state (worst case / anti-regression guard).
-fn full_schema() -> Vec<String> {
-    let mut schema = vec![
+fn full_hydration_keys() -> Vec<String> {
+    let mut keys = vec![
         "count".to_string(),
         "generatedAt".to_string(),
         "items".to_string(),
         "title".to_string(),
     ];
-    schema.sort();
-    schema
+    keys.sort();
+    keys
 }
 
 /// The small metadata keys only, sorted — the large `items` array is
 /// deliberately excluded so projection collapses the payload (typical case).
-fn server_only_schema() -> Vec<String> {
-    let mut schema = vec![
+fn server_only_hydration_keys() -> Vec<String> {
+    let mut keys = vec![
         "count".to_string(),
         "generatedAt".to_string(),
         "title".to_string(),
     ];
-    schema.sort();
-    schema
+    keys.sort();
+    keys
 }
 
 fn build_partial_protocol(
@@ -272,9 +272,9 @@ fn build_routed_protocol() -> WebUIProtocol {
 }
 
 /// Minimal full-HTML protocol that fires a single `body_end` hook, carrying the
-/// supplied authored-component hydration `schema` used to project the state at
+/// supplied authored-component hydration keys used to project the state at
 /// emission time. A compiler-owned component keeps template metadata and
-/// navigation keys while its initial hydration schema stays empty.
+/// navigation keys while its initial hydration key set stays empty.
 ///
 /// The raw `body_end` signal resolves to no value (it is a structural hook, not
 /// a state key), so it emits no text of its own but triggers the bootstrap
@@ -336,9 +336,9 @@ fn bootstrap_state_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("bootstrap_state");
     let options = RenderOptions::new("index.html", "/");
 
-    // Protocols differ only by the projection schema; state is shared per size.
-    let full_keys = full_schema();
-    let metadata_keys = server_only_schema();
+    // Protocols differ only by the projection keys; state is shared per size.
+    let full_keys = full_hydration_keys();
+    let metadata_keys = server_only_hydration_keys();
     let full_protocol = build_bootstrap_protocol(full_keys.clone(), full_keys.clone(), false);
     let server_only_protocol =
         build_bootstrap_protocol(metadata_keys.clone(), metadata_keys, false);
@@ -486,8 +486,8 @@ fn bootstrap_state_bench(c: &mut Criterion) {
 
         // WITHOUT a plugin: no bootstrap block is emitted, so the state is
         // never touched. Structural lower bound. `empty_protocol` carries an
-        // empty startup schema, but with no plugin active no block is emitted, so the
-        // schema is irrelevant here.
+        // empty startup key set, but with no plugin active no block is emitted, so
+        // those keys are irrelevant here.
         group.bench_with_input(
             BenchmarkId::new("without_plugin", &label),
             &state,
@@ -518,7 +518,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
     let wide_protocol = build_bootstrap_protocol(wide_keys.clone(), wide_keys, false);
     let mut wide_group = c.benchmark_group("bootstrap_state_wide");
     wide_group.throughput(Throughput::Bytes(wide_state_bytes as u64));
-    wide_group.bench_function("sparse_schema_30000_keys", |b| {
+    wide_group.bench_function("sparse_keys_30000", |b| {
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
         let mut writer = BenchWriter::new(4096);
         b.iter(|| {

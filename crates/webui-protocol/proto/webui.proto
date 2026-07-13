@@ -81,8 +81,6 @@ message WebUIProtocol {
   // Build-wide DOM encapsulation strategy. Combined with css_strategy to
   // decide preload vs stylesheet emission.
   DomStrategy dom_strategy = 5;
-  reserved 6, 7;
-  reserved "hydration_schema", "hydration_schema_version";
 }
 
 // A list of fragments (needed because protobuf maps cannot have repeated values directly).

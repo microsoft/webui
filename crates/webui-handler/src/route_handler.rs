@@ -316,14 +316,14 @@ pub fn render_partial_prepared(
 ) -> Result<String, HandlerError> {
     let mut route_cache = CompiledRouteCache::new();
     let mut index = prepared.request_index(&mut route_cache);
-    let (response, navigation_schema) = render_partial_indexed_with_schema(
+    let (response, navigation_keys) = render_partial_indexed_with_keys(
         prepared.protocol(),
         entry_id,
         request_path,
         inventory_hex,
         &mut index,
     )?;
-    serialize_projected_partial_response(&response, state_json, &navigation_schema)
+    serialize_projected_partial_response(&response, state_json, &navigation_keys)
 }
 
 /// Render an action response using a prepared protocol and its reusable index.
@@ -363,12 +363,12 @@ pub fn render_component_templates_prepared(
 fn serialize_projected_partial_response(
     response: &Value,
     state_json: &str,
-    navigation_schema: &[&str],
+    navigation_keys: &[&str],
 ) -> Result<String, HandlerError> {
     let response = response
         .as_object()
         .ok_or_else(partial_response_not_object)?;
-    let state = project_raw_state(state_json, navigation_schema)?;
+    let state = project_raw_state(state_json, navigation_keys)?;
     serde_json::to_string(&PartialResponseWithState { response, state })
         .map_err(|error| partial_serialize_error(&error.to_string()))
 }
@@ -513,7 +513,7 @@ impl Serialize for ProjectedRawState<'_> {
 
 fn project_raw_state<'de>(
     state_json: &'de str,
-    hydration_schema: &[&str],
+    state_keys: &[&str],
 ) -> Result<ProjectedRawState<'de>, HandlerError> {
     let is_object = state_json
         .as_bytes()
@@ -528,7 +528,7 @@ fn project_raw_state<'de>(
     }
 
     let mut deserializer = serde_json::Deserializer::from_str(state_json);
-    let mut state = ProjectedRawStateSeed { hydration_schema }
+    let mut state = ProjectedRawStateSeed { state_keys }
         .deserialize(&mut deserializer)
         .and_then(|state| {
             deserializer.end()?;
@@ -542,7 +542,7 @@ fn project_raw_state<'de>(
 }
 
 struct ProjectedRawStateSeed<'a> {
-    hydration_schema: &'a [&'a str],
+    state_keys: &'a [&'a str],
 }
 
 impl<'de> DeserializeSeed<'de> for ProjectedRawStateSeed<'_> {
@@ -553,13 +553,13 @@ impl<'de> DeserializeSeed<'de> for ProjectedRawStateSeed<'_> {
         D: serde::Deserializer<'de>,
     {
         deserializer.deserialize_map(ProjectedRawStateVisitor {
-            hydration_schema: self.hydration_schema,
+            state_keys: self.state_keys,
         })
     }
 }
 
 struct ProjectedRawStateVisitor<'a> {
-    hydration_schema: &'a [&'a str],
+    state_keys: &'a [&'a str],
 }
 
 impl<'de> Visitor<'de> for ProjectedRawStateVisitor<'_> {
@@ -574,9 +574,9 @@ impl<'de> Visitor<'de> for ProjectedRawStateVisitor<'_> {
         A: MapAccess<'de>,
     {
         let mut entries: Vec<(Cow<'de, str>, &'de RawValue)> =
-            Vec::with_capacity(self.hydration_schema.len());
+            Vec::with_capacity(self.state_keys.len());
         while let Some(key) = map.next_key_seed(BorrowedString)? {
-            if self.hydration_schema.binary_search(&key.as_ref()).is_err() {
+            if self.state_keys.binary_search(&key.as_ref()).is_err() {
                 map.next_value_seed(ValidJson)?;
                 continue;
             }
@@ -1395,7 +1395,7 @@ pub fn render_partial(
 ) -> Result<Value, HandlerError> {
     let mut index = ProtocolIndex::new(protocol);
     let mut request_index = index.request_index();
-    let (mut response, navigation_schema) = render_partial_indexed_with_schema(
+    let (mut response, navigation_keys) = render_partial_indexed_with_keys(
         protocol,
         entry_id,
         request_path,
@@ -1405,10 +1405,7 @@ pub fn render_partial(
     let response = response
         .as_object_mut()
         .ok_or_else(partial_response_not_object)?;
-    response.insert(
-        "state".into(),
-        project_owned_state(state, &navigation_schema),
-    );
+    response.insert("state".into(), project_owned_state(state, &navigation_keys));
     Ok(Value::Object(std::mem::take(response)))
 }
 
@@ -1419,11 +1416,11 @@ fn render_partial_indexed(
     inventory_hex: &str,
     index: &mut RequestProtocolIndex<'_>,
 ) -> Result<Value, HandlerError> {
-    render_partial_indexed_with_schema(protocol, entry_id, request_path, inventory_hex, index)
+    render_partial_indexed_with_keys(protocol, entry_id, request_path, inventory_hex, index)
         .map(|(response, _)| response)
 }
 
-fn render_partial_indexed_with_schema<'a>(
+fn render_partial_indexed_with_keys<'a>(
     protocol: &'a WebUIProtocol,
     entry_id: &str,
     request_path: &str,
@@ -1433,8 +1430,8 @@ fn render_partial_indexed_with_schema<'a>(
     // Single-pass walk: collect both inventory components and route chain.
     let (component_ids, mut chain) =
         collect_inventory_and_chain(protocol, entry_id, request_path, index);
-    let navigation_schema =
-        crate::collect_navigation_schema(protocol, component_ids.iter().map(String::as_str));
+    let navigation_keys =
+        crate::collect_navigation_keys(protocol, component_ids.iter().map(String::as_str));
 
     let (needed_names, updated_inv) =
         filter_needed_components(&component_ids, inventory_hex, index.component_index)?;
@@ -1473,15 +1470,15 @@ fn render_partial_indexed_with_schema<'a>(
             .collect();
         result.insert("cacheTags".into(), Value::Array(deduped));
     }
-    Ok((Value::Object(result), navigation_schema))
+    Ok((Value::Object(result), navigation_keys))
 }
 
-fn project_owned_state(state: Value, hydration_schema: &[&str]) -> Value {
+fn project_owned_state(state: Value, state_keys: &[&str]) -> Value {
     let Value::Object(mut source) = state else {
         return Value::Object(Map::new());
     };
-    let mut projected = Map::with_capacity(hydration_schema.len().min(source.len()));
-    for &key in hydration_schema {
+    let mut projected = Map::with_capacity(state_keys.len().min(source.len()));
+    for &key in state_keys {
         if let Some(value) = source.remove(key) {
             projected.insert(key.to_owned(), value);
         }

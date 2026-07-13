@@ -27,7 +27,7 @@ pub struct DiscoveredComponent {
     /// The CSS content, if any
     pub css_content: Option<String>,
     /// Whether authored browser code owns this custom element tag.
-    pub has_script: bool,
+    pub is_client_owned: bool,
     /// The authored client script source for local components, when present.
     ///
     /// Carried verbatim (this crate does not depend on `webui-parser`) so the
@@ -147,7 +147,7 @@ fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
                         tag_name: filename.to_string(),
                         html_content,
                         css_content,
-                        has_script: script_content.is_some(),
+                        is_client_owned: script_content.is_some(),
                         script_content,
                         source: source.clone(),
                     });
@@ -286,7 +286,7 @@ mod tests {
             .find(|component| component.tag_name == "interactive-card")
             .unwrap();
 
-        assert!(!plain.has_script);
-        assert!(interactive.has_script);
+        assert!(!plain.is_client_owned);
+        assert!(interactive.is_client_owned);
     }
 }

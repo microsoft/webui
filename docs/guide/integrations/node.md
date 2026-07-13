@@ -130,7 +130,9 @@ by `Buffer` identity. Reusing the same buffer and plugin avoids protobuf
 decoding and deterministic index construction on later full, partial, and
 component-template requests. The package compares a retained byte snapshot and
 invalidates the prepared entry if the buffer is mutated. Reading the file into
-a new buffer per request defeats this optimization.
+a new buffer per request defeats this optimization. All render APIs require
+the prepared native path rather than silently falling back to per-request
+protocol decoding.
 
 Use `render()` when the complete HTML string is needed. Use `renderStream()`
 when the HTTP integration can make progress from callbacks; callbacks are

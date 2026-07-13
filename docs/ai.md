@@ -333,10 +333,10 @@ MyComponent.define('my-component');
 ```
 
 Components can omit the `.ts` file when server-rendered output is final. The
-sibling module is the hydration boundary: without it, WebUI emits no client
-template or bootstrap state for that component. Create a custom element for
-events, custom lifecycle code, imperative methods, JavaScript-owned state,
-client-applied route state, or client-created instances.
+sibling module is the authored behavior boundary: without it, WebUI emits no
+bootstrap state for that component, but retains its compiled template for later
+browser rendering. Create a custom element for events, custom lifecycle code,
+imperative methods, or JavaScript-owned state.
 
 `@observable` and `@attr` are optional. Use them when TypeScript code reads or
 mutates the value directly, or when the value is part of the component's public

@@ -334,7 +334,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
                     tag_name: &comp.tag_name,
                     html_content: &comp.html_content,
                     css_content: comp.css_content.as_deref(),
-                    has_script: comp.has_script,
+                    is_client_owned: comp.is_client_owned,
                     script_source: comp.script_content.as_deref(),
                 })
                 .map_err(|e| {

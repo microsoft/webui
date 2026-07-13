@@ -25,10 +25,10 @@ Components must follow these naming conventions:
 - **File name = component name**: The HTML file name determines the component's tag name
 
 An HTML-only component still receives compiled browser template metadata, but
-it contributes no initial hydration state. When the framework runtime is
-loaded, a compiler-owned host can activate it for browser-applied state or soft
-navigation. Add the JavaScript or TypeScript file only for authored events,
-lifecycle code, decorators, or imperative APIs.
+it contributes no initial browser state. When the framework runtime is loaded,
+it can activate the component for browser-applied state or soft navigation. Add
+the JavaScript or TypeScript file only for authored events, lifecycle code,
+decorators, or imperative APIs.
 
 ### The `<template>` Tag
 
@@ -226,8 +226,8 @@ The Custom Elements Manifest provides the component's tag name:
 Packages that also expose a root JavaScript entry (`exports["."]`, `main`,
 `module`, or `browser`) are treated as authored custom-element packages. Packages
 with only WebUI template/style exports are treated as HTML-only component
-libraries; dynamic bindings render on the server, compiler-owned browser
-template metadata is emitted, and initial hydration state remains empty.
+libraries; dynamic bindings render on the server and remain inactive until the
+framework needs them.
 
 ### Local Paths
 

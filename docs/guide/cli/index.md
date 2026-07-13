@@ -517,14 +517,16 @@ The Custom Elements Manifest provides the component tag name via `modules[].decl
 If the package also exposes a root JavaScript entry (`exports["."]`, `main`,
 `module`, or `browser`), WebUI treats those components as authored custom
 elements. Packages with only template/style exports are HTML-only component
-libraries. Their templates render on the server and can use compiler-owned
-dormant hosts when the framework runtime is loaded.
+libraries. Their templates render on the server and the framework can activate
+them later when needed.
 
 **Resolution:** The CLI searches for `node_modules/` by walking up from the app directory, matching Node.js module resolution behavior. Symlinks (pnpm, npm workspaces) are resolved automatically.
 
 ### Local Paths
 
-Pass a filesystem path to discover components the same way the app directory is scanned. A sibling `.ts` or `.js` file marks a component as authored/interactive. Otherwise WebUI emits compiler-owned template metadata with no initial hydration state.
+Pass a filesystem path to discover components the same way the app directory
+is scanned. A sibling `.ts` or `.js` file marks a component as
+authored/interactive. Otherwise the component remains HTML-only.
 
 ```bash
 # Relative path

@@ -52,52 +52,35 @@ with avatars, metadata, and action buttons.
 | 100 contacts    | 4.94 ms     | 56 KB HTML  |
 | 1,000 contacts  | 57.5 ms     | 363 KB HTML |
 
-Hydration marker overhead is small in this fixture. Bootstrap state is a
-separate cost: if a large server state object is copied into `#webui-data`, JSON
-serialization can dominate a small render. WebUI compiles hydration keys per
-component and projects initial state to components reachable on the active
-request route.
+Hydration marker overhead is small in this fixture. Browser state is a separate
+cost: serializing a large server state object can dominate a small render.
+WebUI sends only the state needed by authored components on the active route.
 
 ## Hydration Startup and Protocol Reuse
 
-The initial hydration block contains only top-level `@observable` and `@attr`
-fields required by reachable authored components. Template-only roots and
-scriptless components contribute no hydration keys, so their server render
-dependencies never enter startup state. Inactive sibling routes are excluded,
-while components behind conditionals and loops on the active route are included
-conservatively. Projection iterates the smaller of the state map and hydration
-key set.
+The initial page contains only top-level `@observable` and `@attr` values needed
+by reachable authored components. Template-only values and inactive routes do
+not enlarge startup state.
 
-The following release-mode Criterion point estimates came from one 100-sample
-run. Bracketed values are the reported 95% confidence intervals, and each row
-compares paths measured in that same run:
+Representative release-mode Criterion results:
 
-| Workload | Full or legacy path | Projected path | Improvement |
-|----------|--------------------:|---------------:|------------:|
-| 1 MiB authored template root, legacy startup projection vs decorator-free authored shell | 1.5415 ms [1.5293, 1.5537] | 1.3298 us [1.3008, 1.3615] | 99.914%, 1,159x |
-| 1 MiB state, authored component needs only small decorated metadata | 1.5415 ms [1.5293, 1.5537] | 1.3680 us [1.3545, 1.3836] | 99.911%, 1,127x |
-| 1 MiB partial, parse + reserialize vs projected authored state | 4.5930 ms [4.5093, 4.6847] | 573.85 us [562.17, 587.41] | 87.51%, 8.00x |
-| 1 MiB partial, parse + reserialize vs projected scriptless state | 4.5930 ms [4.5093, 4.6847] | 571.76 us [565.15, 578.99] | 87.55%, 8.03x |
-| 1 MiB partial, parse + reserialize vs fully static scriptless state | 4.5930 ms [4.5093, 4.6847] | 555.11 us [547.50, 567.08] | 87.91%, 8.27x |
+| Workload | Before | After | Improvement |
+|----------|-------:|------:|------------:|
+| Serialize pre-parsed 1 MiB initial state not needed by client code | 1.5415 ms | 1.3298 us | 1,159x |
+| 1 MiB partial-navigation state | 4.5930 ms | 573.85 us | 8.00x |
 
-Live example payloads confirm that the CPU result corresponds to bytes removed,
-not deferred serialization:
+The initial-state benchmark starts from an already parsed Rust value. Hosts
+that accept JSON strings still pay JSON parsing cost. Preparing
+`protocol.bin` avoids repeated protocol decoding, not state parsing.
+
+Example payloads show the same reduction:
 
 | Initial route | Previous state JSON | Decorator-only state JSON | Reduction |
 |---------------|--------------------:|--------------------------:|----------:|
 | Routes home, behavior but no decorators | 191 bytes | 2 bytes (`{}`) | 98.95% |
 | Contact book home | 103 bytes | 20 bytes (`{"totalFavorites":5}`) | 80.58% |
 
-Keeping browser template metadata for soft navigation has a small fixed cost
-that does not grow with server state. Two isolated 200-sample runs measured
-`0.303-0.306 us` per render on the 1,000-contact dormant route compared with
-the discarded metadata-free design. The minimal component comparator measured
-`64-140 ns` per render. In the HTML-only browser fixture, `state` is the
-two-byte `{}` object and the retained template adds exactly 721 bytes to the
-`#webui-data` JSON block.
-
-Projection does not avoid parsing the incoming JSON state. Native hosts should
-also prepare `protocol.bin` once at startup:
+Native hosts should also prepare `protocol.bin` once at startup:
 
 - Rust: construct `PreparedProtocol`
 - C: use `webui_protocol_create` and the `*_prepared` functions
@@ -109,8 +92,7 @@ also prepare `protocol.bin` once at startup:
 Do not read `protocol.bin` into a new Node `Buffer` for every request. A stable
 buffer lets the package reuse protobuf decoding and deterministic indices.
 
-::: warning Hydration state is client-facing
-Projection is a performance and payload boundary, not a secrecy boundary.
+::: warning Browser state is client-facing
 Never put credentials, private tokens, or other secrets in state rendered to
 the browser.
 :::

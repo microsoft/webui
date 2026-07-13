@@ -33,7 +33,7 @@ struct CachedComponent {
     tag_name: String,
     html_content: String,
     css_content: Option<String>,
-    has_script: bool,
+    is_client_owned: bool,
 }
 
 /// File-based component discovery cache.
@@ -112,7 +112,7 @@ impl DiscoveryCache {
                 tag_name: c.tag_name,
                 html_content: c.html_content,
                 css_content: c.css_content,
-                has_script: c.has_script,
+                is_client_owned: c.is_client_owned,
                 script_content: None,
                 source: entry.source.clone(),
             })
@@ -141,7 +141,7 @@ impl DiscoveryCache {
                     tag_name: c.tag_name.clone(),
                     html_content: c.html_content.clone(),
                     css_content: c.css_content.clone(),
-                    has_script: c.has_script,
+                    is_client_owned: c.is_client_owned,
                 })
                 .collect(),
         };
@@ -177,7 +177,7 @@ mod tests {
             tag_name: "test-comp".to_string(),
             html_content: "<div>test</div>".to_string(),
             css_content: Some(".test { color: red; }".to_string()),
-            has_script: false,
+            is_client_owned: false,
             script_content: None,
             source: "test-pkg".to_string(),
         }];
@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(cached.len(), 1);
         assert_eq!(cached[0].tag_name, "test-comp");
         assert_eq!(cached[0].html_content, "<div>test</div>");
-        assert!(!cached[0].has_script);
+        assert!(!cached[0].is_client_owned);
         assert_eq!(
             cached[0].css_content.as_deref(),
             Some(".test { color: red; }")
@@ -211,7 +211,7 @@ mod tests {
             tag_name: "test-comp".to_string(),
             html_content: "<div>v1</div>".to_string(),
             css_content: None,
-            has_script: false,
+            is_client_owned: false,
             script_content: None,
             source: "test-pkg".to_string(),
         }];

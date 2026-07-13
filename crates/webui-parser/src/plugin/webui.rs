@@ -77,24 +77,40 @@ struct TrackedComponent {
     tag_name: String,
     template_html: String,
     root_event_source: String,
-    /// Source fact from the component registry. Components without authored
-    /// client code use compiler-owned dormant template hosts.
-    has_script: bool,
-    /// Raw authored client-module source, if any. Scanned once for
-    /// `@observable`/`@attr` decorators when the component's template payload is
-    /// emitted. Decorators form the initial hydration keys; their union with
-    /// template roots forms the partial-navigation keys.
-    script_source: Option<String>,
+    client_module: ClientModule,
 }
 
-/// Inputs for recording or updating a tracked component template. Grouped to
-/// keep [`WebUIParserPlugin::store_component_template`] a single-argument call.
-struct StoredTemplateInput<'a> {
-    tag_name: &'a str,
-    template_html: &'a str,
-    root_event_source: &'a str,
-    has_script: bool,
-    script_source: Option<&'a str>,
+/// Authored client-module ownership and source availability.
+///
+/// External packages can own a custom element without exposing scannable
+/// source. They must not be treated as compiler-owned scriptless templates.
+enum ClientModule {
+    None,
+    Opaque,
+    Source(String),
+}
+
+impl ClientModule {
+    fn from_component(component: &Component) -> Self {
+        if let Some(source) = component.script_source.as_deref() {
+            Self::Source(source.to_string())
+        } else if component.is_client_owned {
+            Self::Opaque
+        } else {
+            Self::None
+        }
+    }
+
+    fn is_authored(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    fn source(&self) -> Option<&str> {
+        match self {
+            Self::Source(source) => Some(source),
+            Self::None | Self::Opaque => None,
+        }
+    }
 }
 
 /// WebUI Framework parser plugin.
@@ -147,25 +163,23 @@ impl WebUIParserPlugin {
         let use_shadow = matches!(self.dom_strategy, DomStrategy::Shadow);
         let mut out = Vec::with_capacity(self.components.len());
         for c in &self.components {
+            let is_authored = c.client_module.is_authored();
             let payload = generate_compiled_template_with_root_source(
                 &c.tag_name,
                 &c.template_html,
                 &c.root_event_source,
                 use_shadow,
-                !c.has_script,
+                !is_authored,
             )?;
-            let hydration_keys = if c.has_script {
-                // Initial SSR state seeds only explicit JavaScript-owned fields.
-                // Template roots already exist in the SSR DOM and belong to the
-                // separate navigation surface used for client creation/updates.
-                c.script_source
-                    .as_deref()
-                    .map(crate::hydration::scan_hydration_attributes)
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let navigation_keys = if c.has_script {
+            // Initial SSR state seeds only explicit JavaScript-owned fields.
+            // Template roots already exist in the SSR DOM and belong to the
+            // separate navigation surface used for client creation/updates.
+            let hydration_keys = c
+                .client_module
+                .source()
+                .map(crate::hydration::scan_hydration_attributes)
+                .unwrap_or_default();
+            let navigation_keys = if is_authored {
                 union_state_keys(&payload.hydration_roots, &hydration_keys)
             } else {
                 payload.hydration_roots.clone()
@@ -183,29 +197,26 @@ impl WebUIParserPlugin {
         Ok(out)
     }
 
-    fn store_component_template(&mut self, input: StoredTemplateInput<'_>) {
-        let StoredTemplateInput {
-            tag_name,
-            template_html,
-            root_event_source,
-            has_script,
-            script_source,
-        } = input;
+    fn store_component_template(
+        &mut self,
+        tag_name: &str,
+        template_html: &str,
+        root_event_source: &str,
+        client_module: ClientModule,
+    ) {
         if let Some(component) = self.components.iter_mut().find(|c| c.tag_name == tag_name) {
             component.template_html.clear();
             component.template_html.push_str(template_html);
             component.root_event_source.clear();
             component.root_event_source.push_str(root_event_source);
-            component.has_script = has_script;
-            component.script_source = script_source.map(str::to_string);
+            component.client_module = client_module;
             return;
         }
         self.components.push(TrackedComponent {
             tag_name: tag_name.to_string(),
             template_html: template_html.to_string(),
             root_event_source: root_event_source.to_string(),
-            has_script,
-            script_source: script_source.map(str::to_string),
+            client_module,
         });
     }
 }
@@ -240,13 +251,12 @@ impl ParserPlugin for WebUIParserPlugin {
         component: &Component,
         processed_template: &str,
     ) -> Result<()> {
-        self.store_component_template(StoredTemplateInput {
+        self.store_component_template(
             tag_name,
-            template_html: processed_template,
-            root_event_source: &component.html_content,
-            has_script: component.has_script,
-            script_source: component.script_source.as_deref(),
-        });
+            processed_template,
+            &component.html_content,
+            ClientModule::from_component(component),
+        );
         Ok(())
     }
 
@@ -3032,7 +3042,7 @@ mod tests {
         tag_name: &str,
         html_content: &str,
         css_content: Option<&str>,
-        has_script: bool,
+        is_client_owned: bool,
     ) -> Component {
         Component {
             tag_name: tag_name.to_string(),
@@ -3040,7 +3050,7 @@ mod tests {
             css_content: css_content.map(str::to_string),
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
-            has_script,
+            is_client_owned,
             script_source: None,
         }
     }
@@ -3487,6 +3497,20 @@ mod tests {
             templates[0].navigation_keys,
             vec!["count", "label", "serverTitle"]
         );
+    }
+
+    #[test]
+    fn test_opaque_authored_component_does_not_emit_dormant_host() {
+        let mut plugin = WebUIParserPlugin::new();
+        let comp = test_component("test-el", "<p>{{serverTitle}}</p>", None, true);
+
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        assert!(templates[0].hydration_keys.is_empty());
+        assert_eq!(templates[0].navigation_keys, ["serverTitle"]);
+        assert!(!templates[0].template_json.contains(r#","th":1"#));
     }
 
     #[test]

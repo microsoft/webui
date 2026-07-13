@@ -868,7 +868,7 @@ fn protocol_tokens_invalid_protobuf_returns_null() {
 
 /// Like [`build_protocol_with_body_end`] but attaches a reachable authored
 /// component hydration keys, so the emitted state is projected to that set.
-fn build_protocol_with_schema(schema: &[&str]) -> Vec<u8> {
+fn build_protocol_with_hydration_keys(hydration_keys: &[&str]) -> Vec<u8> {
     let mut fragments = HashMap::new();
     fragments.insert(
         "index.html".to_string(),
@@ -893,7 +893,10 @@ fn build_protocol_with_schema(schema: &[&str]) -> Vec<u8> {
     protocol.components.insert(
         "client-card".to_string(),
         webui_protocol::ComponentData {
-            hydration_keys: schema.iter().map(|key| (*key).to_string()).collect(),
+            hydration_keys: hydration_keys
+                .iter()
+                .map(|key| (*key).to_string())
+                .collect(),
             ..Default::default()
         },
     );
@@ -902,7 +905,7 @@ fn build_protocol_with_schema(schema: &[&str]) -> Vec<u8> {
 
 #[test]
 fn handler_render_projects_state_to_component_hydration_keys() {
-    let proto_bytes = build_protocol_with_schema(&["kept"]);
+    let proto_bytes = build_protocol_with_hydration_keys(&["kept"]);
 
     unsafe {
         let plugin_id = CString::new("webui").expect("static string");
@@ -950,7 +953,7 @@ fn handler_render_projects_state_to_component_hydration_keys() {
 
 #[test]
 fn prepared_protocol_supports_repeated_full_renders() {
-    let proto_bytes = build_protocol_with_schema(&["kept"]);
+    let proto_bytes = build_protocol_with_hydration_keys(&["kept"]);
 
     unsafe {
         let plugin_id = CString::new("webui").expect("static string");

@@ -44,7 +44,7 @@ For each incoming request, the handler:
 2. Walks the compiled protocol fragments in order
 3. Copies **static fragments** directly to the output buffer (no processing needed)
 4. Resolves **dynamic fragments** by looking up keys in the JSON state
-5. Projects initial hydration state to components reachable on the active route
+5. Includes only the browser state needed by components on the active route
 6. Emits the final HTML response
 
 ```
@@ -79,7 +79,9 @@ The user sees rendered content immediately - no blank page, no loading spinner.
 
 ## Client Hydration Phase
 
-After the browser renders the server HTML, JavaScript loads and Web Components **hydrate** as independent islands of interactivity.
+After the browser renders the server HTML, authored Web Components **hydrate**
+as independent islands of interactivity. HTML-only components remain as
+server-rendered content unless later navigation or state updates need them.
 
 ### How hydration works
 

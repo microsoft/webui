@@ -112,14 +112,6 @@ export interface PartialResponse {
 
 interface NativeAddon {
   PreparedProtocol?: new (protocol: Buffer, plugin?: string) => NativePreparedProtocol;
-  render(
-    protocol: Buffer,
-    stateJson: string,
-    entry: string,
-    requestPath: string,
-    onChunk: (html: string) => void,
-    plugin?: string,
-  ): void;
   build(options: {
     appDir: string;
     entry?: string;
@@ -131,8 +123,6 @@ interface NativeAddon {
     cssPublicBase?: string;
   }): BuildResult;
   inspect(protocolData: Buffer): string;
-  renderPartial(protocolData: Buffer, stateJson: string, entryId: string, requestPath: string, inventoryHex: string): string;
-  renderComponentTemplates(protocolData: Buffer, componentTagsJson: string, inventoryHex: string): string;
 }
 
 interface NativePreparedProtocol {
@@ -193,13 +183,18 @@ function getPreparedProtocol(
   native: NativeAddon,
   protocol: Buffer,
   plugin?: string,
-): NativePreparedProtocol | null {
-  if (!native.PreparedProtocol) return null;
+): NativePreparedProtocol {
+  const PreparedProtocol = native.PreparedProtocol;
+  if (!PreparedProtocol) {
+    throw new Error(
+      "[webui] Native addon is incompatible: PreparedProtocol is required.",
+    );
+  }
 
   const cache = getPreparedProtocolCache(protocol);
   let prepared = cache.byPlugin.get(plugin);
   if (!prepared) {
-    prepared = new native.PreparedProtocol(protocol, plugin);
+    prepared = new PreparedProtocol(protocol, plugin);
     cache.byPlugin.set(plugin, prepared);
   }
   return prepared;
@@ -220,8 +215,7 @@ function getPreparedProtocolCache(protocol: Buffer): PreparedProtocolCache {
 function getAnyPreparedProtocol(
   native: NativeAddon,
   protocol: Buffer,
-): NativePreparedProtocol | null {
-  if (!native.PreparedProtocol) return null;
+): NativePreparedProtocol {
   const first = getPreparedProtocolCache(protocol).byPlugin.values().next();
   if (first && !first.done) return first.value;
   return getPreparedProtocol(native, protocol);
@@ -319,17 +313,8 @@ export function render(
     const entry = options?.entry ?? "index.html";
     const requestPath = options?.requestPath ?? "/";
     const prepared = getPreparedProtocol(native, protocol, options?.plugin);
-    if (prepared) {
-      const stateStr = typeof state === "string" ? state : JSON.stringify(state);
-      return prepared.renderJson(stateStr, entry, requestPath);
-    }
-
-    let result = "";
     const stateStr = typeof state === "string" ? state : JSON.stringify(state);
-    native.render(protocol, stateStr, entry, requestPath, (chunk) => {
-      result += chunk;
-    }, options?.plugin);
-    return result;
+    return prepared.renderJson(stateStr, entry, requestPath);
   }
 
   warnFallback();
@@ -353,21 +338,8 @@ export function renderStream(
     const entry = options?.entry ?? "index.html";
     const requestPath = options?.requestPath ?? "/";
     const prepared = getPreparedProtocol(native, protocol, options?.plugin);
-    if (prepared) {
-      const stateStr = typeof state === "string" ? state : JSON.stringify(state);
-      prepared.renderStreamJson(stateStr, entry, requestPath, onChunk);
-      return;
-    }
-
     const stateStr = typeof state === "string" ? state : JSON.stringify(state);
-    native.render(
-      protocol,
-      stateStr,
-      entry,
-      requestPath,
-      onChunk,
-      options?.plugin,
-    );
+    prepared.renderStreamJson(stateStr, entry, requestPath, onChunk);
     return;
   }
 
@@ -421,12 +393,13 @@ export function renderPartial(
   inventoryHex: string,
 ): string {
   const native = loadAddon();
-  if (native?.renderPartial) {
-    const prepared = getAnyPreparedProtocol(native, protocolData);
-    if (prepared) {
-      return prepared.renderPartial(stateJson, entryId, requestPath, inventoryHex);
-    }
-    return native.renderPartial(protocolData, stateJson, entryId, requestPath, inventoryHex);
+  if (native) {
+    return getAnyPreparedProtocol(native, protocolData).renderPartial(
+      stateJson,
+      entryId,
+      requestPath,
+      inventoryHex,
+    );
   }
   throw new Error("[webui] renderPartial() requires the native addon.");
 }
@@ -449,14 +422,9 @@ export function renderComponentTemplates(
   inventoryHex: string,
 ): string {
   const native = loadAddon();
-  if (native?.renderComponentTemplates) {
-    const prepared = getAnyPreparedProtocol(native, protocolData);
-    if (prepared) {
-      return prepared.renderComponentTemplates(componentTags, inventoryHex);
-    }
-    return native.renderComponentTemplates(
-      protocolData,
-      JSON.stringify(componentTags),
+  if (native) {
+    return getAnyPreparedProtocol(native, protocolData).renderComponentTemplates(
+      componentTags,
       inventoryHex,
     );
   }
