@@ -16,13 +16,19 @@ WebUI uses a component discovery system that automatically scans and registers c
 ```
 my-component.html  # Required - component template
 my-component.css   # Optional - component styles
-my-component.js    # Optional - client-side behavior
+my-component.js    # Optional - authored client behavior
 ```
 
 Components must follow these naming conventions:
 
 - **Hyphen required**: All component names must contain at least one hyphen (e.g., `user-card`, `nav-menu`, `data-table`)
 - **File name = component name**: The HTML file name determines the component's tag name
+
+An HTML-only component still receives compiled browser template metadata, but
+it contributes no initial hydration state. When the framework runtime is
+loaded, a compiler-owned host can activate it for browser-applied state or soft
+navigation. Add the JavaScript or TypeScript file only for authored events,
+lifecycle code, decorators, or imperative APIs.
 
 ### The `<template>` Tag
 
@@ -220,8 +226,8 @@ The Custom Elements Manifest provides the component's tag name:
 Packages that also expose a root JavaScript entry (`exports["."]`, `main`,
 `module`, or `browser`) are treated as authored custom-element packages. Packages
 with only WebUI template/style exports are treated as HTML-only component
-libraries; dynamic templates can be hosted by the framework without empty
-`WebUIElement` stubs.
+libraries; dynamic bindings render on the server, compiler-owned browser
+template metadata is emitted, and initial hydration state remains empty.
 
 ### Local Paths
 

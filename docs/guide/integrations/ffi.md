@@ -216,15 +216,16 @@ ownership match `webui_handler_render`.
 
 | Function | Result |
 |----------|--------|
-| `webui_render_partial(...)` | Complete JSON partial response containing validated `state`, templates, inventory, path, and route chain |
-| `webui_render_partial_prepared(...)` | Same response using a prepared protocol |
+| `webui_render_partial(...)` | Complete JSON partial response containing active-route projected `state`, templates, inventory, path, and route chain |
+| `webui_render_partial_prepared(...)` | Same projected response using a prepared protocol |
 | `webui_render_component_templates(...)` | Requested component template payloads and updated inventory |
 | `webui_render_component_templates_prepared(...)` | Same query using a prepared protocol |
 | `webui_protocol_tokens(...)` | Newline-delimited CSS token names |
 | `webui_protocol_tokens_prepared(...)` | Token names using a prepared protocol |
 
-The partial functions validate `state_json` and embed its original bytes in the
-response without allocating and serializing a duplicate JSON value tree.
+The partial functions validate `state_json`, skip unselected values without
+materializing them, and copy only raw values required by authored components on
+the active route.
 
 ## Error Handling
 

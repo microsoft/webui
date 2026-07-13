@@ -365,7 +365,9 @@ mod tests {
                 "mail-thread.html",
                 r#"<if condition="hasMessages"><mail-message title="{{title}}"></mail-message></if>"#,
             ),
+            ("mail-thread.ts", "export {};"),
             ("mail-message.html", "<p>{{title}}</p>"),
+            ("mail-message.ts", "export {};"),
         ]);
         let out_dir = TempDir::new().unwrap();
 
@@ -487,6 +489,7 @@ mod tests {
             ("index.html", "<app-shell></app-shell>"),
             ("app-shell.html", "<div></div>"),
             ("mail-thread.html", "<p>{{title}}</p>"),
+            ("mail-thread.ts", "export {};"),
         ]);
         let out_dir = TempDir::new().unwrap();
 

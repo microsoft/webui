@@ -63,10 +63,19 @@ Router.start();
 
 The server SSRs the matched route on first load. The router handles clicks on `<a>` tags for subsequent navigations - no full page reloads.
 
-The router never imports framework code. If route components are HTML-only but
-need server or route state, make sure the browser entry imports
-`@microsoft/webui-framework` somewhere so compiler-owned route tags can be
-claimed by the framework static host runtime.
+The router never imports framework code. Authored route components use their
+registered classes. When the application also loads
+`@microsoft/webui-framework`, scriptless route templates receive
+compiler-owned hosts and can mount from projected partial state without empty
+TypeScript modules. The router falls back to a full document request only when
+no runtime registers the destination tag.
+
+When the View Transitions API is available, client-side route commits
+use `document.startViewTransition()`. While active, the router installs a
+nonce-bearing `@view-transition { navigation: none; }` override. This disables
+automatic cross-document transitions because they conflict with intercepted
+routes that may need the document fallback. `Router.destroy()` removes the
+override.
 
 ## Nested Routes
 
@@ -222,7 +231,8 @@ The router provides four mechanisms for controlling how state flows to your comp
 
 | Need | Mechanism | What happens |
 |------|-----------|-------------|
-| **Server provides all state** | Default (no changes) | Fresh route state is applied when the component mounts. HTML-only route components do not need empty classes; import `@microsoft/webui-framework` when compiler-owned stateful templates are present |
+| **Server provides state to authored code** | Authored route component | Fresh projected route state is applied when the component mounts |
+| **Template-only soft navigation** | Omit sibling `.ts` / `.js`, load the framework once | A dormant compiler-owned host mounts the route from template-root state |
 | **I fetch my own data** | `static loader()` on component | Loader runs before the route commits and supplies route data |
 | **Preserve local state** | `keep-alive` on route | Params/query attrs update while local state is preserved |
 | **Preserve DOM + refresh data** | `keep-alive` + `static loader()` | DOM is preserved and loader data refreshes the component |
@@ -664,9 +674,9 @@ When `Accept: application/json` or `application/x-ndjson`:
   "inventory": "04000400...",
   "path": "/users/42",
   "chain": [
-    { "component": "app-shell", "path": "/" },
+    { "component": "app-shell", "client": true, "path": "/" },
     {
-      "component": "user-detail", "path": "users/:id",
+      "component": "user-detail", "client": true, "path": "users/:id",
       "params": { "id": "42" }, "exact": true, "keepAlive": true,
       "pendingComponent": "loading-skeleton",
       "errorComponent": "error-page",
@@ -680,7 +690,7 @@ When `Accept: application/json` or `application/x-ndjson`:
 
 | Field | Description |
 |-------|-------------|
-| `state` | Application state. Complete FFI, Node, WASM, and .NET helpers include it; low-level Rust `render_partial` leaves scheduling to the host |
+| `state` | Active-route navigation state for reachable authored and scriptless components. `render_partial` and all host bindings include it; Rust NDJSON hosts use `render_partial_metadata` when scheduling state separately |
 | `templateStyles` | Module CSS definition tags (empty for Link/Style modes) |
 | `templates` | Client template payloads filtered by inventory bitmask |
 | `inventory` | Updated hex bitmask of loaded templates |
@@ -689,7 +699,10 @@ When `Accept: application/json` or `application/x-ndjson`:
 | `cacheTags` | Resolved cache tags from the full chain (union of all levels) |
 | `cacheControl` | Optional per-response cache overrides |
 
-Each `chain` entry can include: `component`, `path`, `params`, `exact`, `keepAlive`, `allowedQuery`, `pendingComponent`, `errorComponent`, and `invalidates`.
+Each `chain` entry includes `component` and `path`. It can also include
+`params`, `exact`, `keepAlive`, `allowedQuery`, `pendingComponent`,
+`errorComponent`, and `invalidates`. Component capability is determined by
+custom-element registration, not by a server `client` flag.
 
 **Request headers the router sends:**
 
@@ -706,25 +719,23 @@ bootstrap.
 
 ### Partial Navigation
 
-Low-level Rust `render_partial()` returns route and template metadata without
-state so an NDJSON host can defer data. FFI, Node, WASM, and .NET partial
-helpers accept state JSON and return the complete response. They validate the
-state and embed its original JSON bytes without constructing and serializing a
-duplicate value tree.
+Rust `render_partial()` and every host binding return the complete response,
+including projected state. An NDJSON host can call
+`render_partial_metadata()` for state-free chunk 1 and send state later. Raw
+state input is validated in full while only active-route navigation keys are
+copied; unselected values are skipped without constructing a duplicate JSON
+tree.
 
 For repeated Rust requests, use `PreparedProtocol`:
 
 ```rust
 let prepared = PreparedProtocol::from_protobuf(&protocol_bytes)?;
-let partial = route_handler::render_partial_prepared(
+let json = route_handler::render_partial_prepared(
     &prepared,
+    state_json,
     "index.html",
     request_path,
     inventory_hex,
-)?;
-let json = route_handler::serialize_partial_response_with_state(
-    &partial,
-    state_json,
 )?;
 ```
 

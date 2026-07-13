@@ -109,9 +109,7 @@ describe('WebUIRouter', () => {
       const origQuerySelectorAll = (globalThis as any).document.querySelectorAll;
       const origAddEventListener = (globalThis as any).document.addEventListener;
       const origRemoveEventListener = (globalThis as any).document.removeEventListener;
-      const origDispatchEvent = (globalThis as any).window.dispatchEvent;
       let removed = false;
-      let notifiedTemplates: Record<string, unknown> | undefined;
 
       globals().__webui = {
         templateFns: { greeting: [() => true] },
@@ -128,12 +126,6 @@ describe('WebUIRouter', () => {
       (globalThis as any).document.querySelectorAll = () => [];
       (globalThis as any).document.addEventListener = () => {};
       (globalThis as any).document.removeEventListener = () => {};
-      (globalThis as any).window.dispatchEvent = (event: Event) => {
-        if (event.type === 'webui:templates-registered') {
-          notifiedTemplates = (event as CustomEvent<{ templates: Record<string, unknown> }>).detail.templates;
-        }
-        return true;
-      };
 
       try {
         const router = new WebUIRouter();
@@ -144,11 +136,6 @@ describe('WebUIRouter', () => {
         assert.deepEqual(globals().__webui!.state, { title: 'Hello' });
         assert.ok(globals().__webui!.templates?.greeting, 'template metadata should be loaded');
         assert.ok(globals().__webui!.templateFns?.greeting, 'existing templateFns should be preserved');
-        assert.deepEqual(
-          notifiedTemplates,
-          { greeting: { h: '<p></p>' } },
-          'initial SSR templates should notify optional framework runtimes',
-        );
         assert.equal(removed, true);
         router.destroy();
       } finally {
@@ -157,7 +144,6 @@ describe('WebUIRouter', () => {
         (globalThis as any).document.querySelectorAll = origQuerySelectorAll;
         (globalThis as any).document.addEventListener = origAddEventListener;
         (globalThis as any).document.removeEventListener = origRemoveEventListener;
-        (globalThis as any).window.dispatchEvent = origDispatchEvent;
       }
     });
   });
@@ -224,6 +210,11 @@ describe('WebUIRouter', () => {
     test('split template registration stores data and condition closures', () => {
       const origCreateElement = (globalThis as any).document.createElement;
       const origHead = (globalThis as any).document.head;
+      let registeredEvent = false;
+      const onRegistered = () => {
+        registeredEvent = true;
+      };
+      window.addEventListener('webui:templates-registered', onRegistered);
 
       (globalThis as any).document.createElement = (tag: string) => ({
         tagName: tag,
@@ -253,35 +244,11 @@ describe('WebUIRouter', () => {
           'template HTML should match',
         );
         assert.equal(typeof (globals().__webui as any).templateFns['test-comp'][0], 'function');
+        assert.equal(registeredEvent, true, 'template registration should notify optional runtimes');
       } finally {
+        window.removeEventListener('webui:templates-registered', onRegistered);
         (globalThis as any).document.createElement = origCreateElement;
         (globalThis as any).document.head = origHead;
-      }
-    });
-
-    test('template registration notifies optional framework runtimes', () => {
-      const origDispatchEvent = (globalThis as any).window.dispatchEvent;
-      let notifiedTemplates: Record<string, unknown> | undefined;
-
-      (globalThis as any).window.dispatchEvent = (event: Event) => {
-        if (event.type === 'webui:templates-registered') {
-          const detail = (event as CustomEvent<{
-            templates: Record<string, unknown>;
-          }>).detail;
-          notifiedTemplates = detail.templates;
-        }
-        return true;
-      };
-
-      try {
-        const template = { h: '<p>Notified</p>' };
-        registerTemplatesAndStyles({
-          templates: { 'notified-comp': template },
-        }, '', new Set(), () => {});
-
-        assert.deepEqual(notifiedTemplates, { 'notified-comp': template });
-      } finally {
-        (globalThis as any).window.dispatchEvent = origDispatchEvent;
       }
     });
 
@@ -666,7 +633,7 @@ describe('WebUIRouter', () => {
       );
     });
 
-    test('handleNavigation clears SSR-only preload links before partial fetches', () => {
+    test('handleNavigation clears initial-page preload links before partial fetches', () => {
       const router = new WebUIRouter();
       const source = (router as any).handleNavigation.toString() as string;
       const clearIdx = source.indexOf('this.clearSsrPreloads()');
@@ -1228,6 +1195,127 @@ describe('WebUIRouter', () => {
 
       priv.applyState(entry, {}, new Map());
       assert.deepEqual(setStateArg, { from: 'server' }, 'non-keep-alive should use per-entry state');
+    });
+  });
+
+  describe('document navigation fallback', () => {
+    test('reloads an already committed destination instead of nesting navigation', () => {
+      const router = new WebUIRouter();
+      const originalHref = window.location.href;
+      const originalReload = window.location.reload;
+      const destination = new URL('/ssr-only', originalHref).href;
+      let reloads = 0;
+
+      try {
+        window.location.href = destination;
+        (window.location as any).reload = () => {
+          reloads += 1;
+        };
+
+        (router as any).navigateDocument('/ssr-only');
+
+        assert.equal(reloads, 1);
+        assert.equal((router as any).documentNavigationUrl, destination);
+      } finally {
+        window.location.href = originalHref;
+        (window.location as any).reload = originalReload;
+      }
+    });
+
+    test('disables automatic cross-document view transitions while active', () => {
+      const router = new WebUIRouter();
+      const originalCreateElement = document.createElement;
+      const originalAppendChild = document.head.appendChild;
+      const originalStartViewTransition = document.startViewTransition;
+      let removed = false;
+      let appendedStyle:
+        | { nonce?: string; textContent?: string; remove(): void }
+        | undefined;
+
+      globals().__webui!.nonce = 'test-nonce';
+      (document as any).startViewTransition = () => {};
+      (document as any).createElement = () => ({
+        remove() {
+          removed = true;
+        },
+      });
+      (document.head as any).appendChild = (style: typeof appendedStyle) => {
+        appendedStyle = style;
+      };
+
+      try {
+        (router as any).installDocumentTransitionOverride();
+
+        assert.equal(appendedStyle?.nonce, 'test-nonce');
+        assert.equal(
+          appendedStyle?.textContent,
+          '@view-transition { navigation: none; }',
+        );
+        router.destroy();
+        assert.equal(removed, true);
+      } finally {
+        (document as any).startViewTransition = originalStartViewTransition;
+        (document as any).createElement = originalCreateElement;
+        (document.head as any).appendChild = originalAppendChild;
+      }
+    });
+
+    test('does not intercept the one-shot document fallback', () => {
+      const navigation = (globalThis as any).navigation;
+      const originalAddEventListener = navigation.addEventListener;
+      const originalRemoveEventListener = navigation.removeEventListener;
+      const originalHref = window.location.href;
+      let navigateHandler: ((event: NavigateEvent) => void) | undefined;
+
+      navigation.addEventListener = (type: string, handler: (event: NavigateEvent) => void) => {
+        if (type === 'navigate') navigateHandler = handler;
+      };
+      navigation.removeEventListener = () => {};
+
+      const router = new WebUIRouter();
+      try {
+        router.start();
+        (router as any).navigateDocument('/ssr-only');
+
+        let intercepted = false;
+        navigateHandler?.({
+          canIntercept: true,
+          hashChange: false,
+          destination: { url: new URL('/ssr-only', originalHref).href },
+          intercept() {
+            intercepted = true;
+          },
+        } as unknown as NavigateEvent);
+
+        assert.equal(intercepted, false);
+        assert.equal((router as any).documentNavigationUrl, null);
+      } finally {
+        router.destroy();
+        window.location.href = originalHref;
+        navigation.addEventListener = originalAddEventListener;
+        navigation.removeEventListener = originalRemoveEventListener;
+      }
+    });
+
+    test('uses document navigation when no module or template runtime registers the tag', async () => {
+      const router = new WebUIRouter();
+      const originalHref = window.location.href;
+      const tag = `missing-client-${Date.now()}`;
+
+      try {
+        await (router as any).commitWithData(
+          {
+            state: {},
+            chain: [{ component: tag, path: '/missing-client', params: {} }],
+          },
+          '/missing-client',
+          {},
+        );
+
+        assert.equal(window.location.href, '/missing-client');
+      } finally {
+        window.location.href = originalHref;
+      }
     });
   });
 

@@ -49,11 +49,11 @@ webui build         + JSON state          hydrate as islands
 3. **The server is the source of truth for the initial render.** The client
    takes over after hydration for user interactions.
 
-4. **Fully static content never ships JavaScript.** HTML-only components with
-   server or route state use the static host runtime installed by
-   `@microsoft/webui-framework`; the runtime only claims compiler-owned
-   stateful templates. Components with event handlers, client-mutated state, or
-   user input need authored client-side code.
+4. **Scriptless components are dormant, not dead.** Their bindings render on the
+   server and contribute no initial bootstrap state. When the framework is
+   loaded, compiler-owned hosts can activate for browser-applied state, parent
+   property writes, or soft navigation. Events, lifecycle code, decorators, and
+   imperative APIs need a same-named `.ts` or `.js` module.
 
 5. **Hydration state is client-facing.** Initial `#webui-data.state` is
    projected to hydration keys for components reachable on the active route.
@@ -83,7 +83,11 @@ my-app/
 **Component discovery rules:**
 - HTML files with a hyphen in the name are components (`my-card.html` → `<my-card>`)
 - CSS files with the same name are auto-paired (`my-card.css`)
-- TypeScript files provide client-side behavior (`my-card.ts`)
+- A same-named TypeScript or JavaScript file opts the component into authored
+  behavior (`my-card.ts`); only its `@observable` / `@attr` fields opt into
+  initial state hydration
+- Scriptless components retain compiler-owned browser templates but contribute
+  no keys to initial bootstrap state
 - Discovery is recursive through subdirectories
 
 ## The `<template>` Tag
@@ -250,6 +254,8 @@ In the TypeScript class: `searchInput!: HTMLInputElement;`
 All attributes are validated at build time. Referencing a non-existent `pending` or `error` component is a compile error.
 
 **State flow:**
+- Scriptless route components use compiler-owned hosts when the framework is
+  loaded, so partial navigation applies only their template-root state
 - `keep-alive` preserves DOM and local state. On reactivation, only param/query attrs are updated
 - Route loaders: `static loader({ params, query, signal })` on component class - fetches custom data instead of server state. Runs pre-commit. Falls back to server state on failure
 - Keep-alive + loader: DOM preserved, loader refreshes data on reactivation
@@ -326,13 +332,11 @@ export class MyComponent extends WebUIElement {
 MyComponent.define('my-component');
 ```
 
-HTML-only components can omit the `.ts` file when they have no event handlers or
-custom client logic. Create a custom element only for an Interactive Island:
-events, custom lifecycle code, imperative methods, or JavaScript-owned state.
-Import `@microsoft/webui-framework` from the browser entry to install the
-minimal static host runtime. The runtime only claims compiler-owned HTML-only
-components whose templates need server or route state; fully static HTML-only
-components stay as plain SSR DOM.
+Components can omit the `.ts` file when server-rendered output is final. The
+sibling module is the hydration boundary: without it, WebUI emits no client
+template or bootstrap state for that component. Create a custom element for
+events, custom lifecycle code, imperative methods, JavaScript-owned state,
+client-applied route state, or client-created instances.
 
 `@observable` and `@attr` are optional. Use them when TypeScript code reads or
 mutates the value directly, or when the value is part of the component's public
@@ -416,6 +420,12 @@ Router.start({
   loaders: { ... },
 });
 ```
+
+Every route intended for partial navigation must register a custom element.
+Authored routes register eagerly or through `loaders`. Scriptless templates are
+registered by the framework's compiler-owned host runtime. If a route remains
+unregistered after template publication and loader resolution, the router
+navigates the document to let the server render the component.
 
 Without `@microsoft/webui-router`, prebuild static assets and load them from a
 CDN or the app's static folder:
@@ -564,6 +574,12 @@ The router wraps every client-side navigation in `document.startViewTransition()
 automatically. **Do not** wrap `Router.navigate()` in your own `startViewTransition()`
 — that would double-transition.
 
+While active, the router installs a nonce-bearing
+`@view-transition { navigation: none; }` override. Automatic cross-document
+transitions would conflict with intercepted routes that fall back to SSR
+document requests. Explicit client-side transitions still use
+`document.startViewTransition()`, and `Router.destroy()` removes the override.
+
 To customize the animation, assign `view-transition-name` to elements in your CSS
 and target them with `::view-transition-old()` / `::view-transition-new()`:
 
@@ -607,8 +623,10 @@ wrappers when needed. If you author the wrapper yourself for root events, keep
 your attributes there; WebUI preserves them for client/plugin templates.
 
 For framework apps that bundle browser code, bundle your source browser entry
-directly. Import `@microsoft/webui-framework` once so authored elements and
-compiler-owned static hosts share the same runtime.
+directly. Import `@microsoft/webui-framework` from authored component modules.
+An app that stays static after SSR needs no framework browser runtime. Import
+the framework once when scriptless components need browser state or soft
+navigation.
 
 For CDN/browser caching in `link` mode, prefer:
 
@@ -778,8 +796,9 @@ The package's `package.json` must have:
 
 Packages with a root JavaScript entry (`exports["."]`, `main`, `module`, or
 `browser`) are authored custom-element packages. Packages with only WebUI
-template/style exports are HTML-only libraries; dynamic templates can use
-compiler-owned static hosts.
+template/style exports are compiler-owned template libraries. Their dynamic
+templates render on the server and can activate in the browser when the
+framework runtime is loaded.
 
 **Local path scanning** works like app directory scanning: HTML files with
 hyphenated names are registered as components, matching CSS files are

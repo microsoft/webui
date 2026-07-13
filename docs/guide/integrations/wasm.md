@@ -46,7 +46,7 @@ and builds deterministic indices once.
 |--------|-------------|
 | `renderJson(stateJson, options?)` | Return complete rendered HTML as a string |
 | `renderStreamJson(stateJson, onChunk, options?)` | Invoke callbacks coalesced around a 16 KiB target |
-| `renderPartial(stateJson, entry, requestPath, inventoryHex)` | Return a complete JSON partial response with validated state |
+| `renderPartial(stateJson, entry, requestPath, inventoryHex)` | Return a complete JSON partial response with active-route projected state |
 | `renderComponentTemplates(componentTags, inventoryHex)` | Return requested template payloads and updated inventory |
 | `protocolTokens()` | Return CSS token names in build order |
 
@@ -74,7 +74,7 @@ For a complete static/CDN service worker example using this callback to write a
 
 | Export | Description |
 |--------|-------------|
-| `render_partial(protocolBytes, stateJson, entry, requestPath, inventoryHex)` | Returns the JSON partial-navigation response with `state` included |
+| `render_partial(protocolBytes, stateJson, entry, requestPath, inventoryHex)` | Returns the JSON partial-navigation response with projected `state` included |
 | `protocol_tokens(protocolBytes)` | Returns the protocol CSS token names as a JavaScript array |
 | `render_component_templates(protocolBytes, componentTagsJson, inventoryHex)` | Returns template metadata, condition closures, and style payloads for requested components |
 

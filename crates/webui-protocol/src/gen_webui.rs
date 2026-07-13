@@ -38,16 +38,28 @@ pub struct ComponentData {
     /// Empty when the component has no conditions or boolean attributes.
     #[prost(string, tag = "5")]
     pub template_functions: ::prost::alloc::string::String,
-    /// Build-time hydration allowlist for this component: the property names the
-    /// client consumes from SSR state. It is the union of the reactive surface
-    /// declared in the sibling `.ts` (`@observable` / `@attr` properties) and the
-    /// template reactive roots (`tr`) / observed attributes (`ta`). For each
-    /// request, the handler unions keys from components reachable on the active
-    /// route and projects the emitted SSR state to that request-scoped set.
+    /// Build-time hydration allowlist for an authored client component: the
+    /// property names its browser implementation consumes from initial SSR state.
+    /// It contains only the sibling `.ts` / `.js` reactive surface declared with
+    /// `@observable` / `@attr`. Template roots already exist in the trusted SSR DOM
+    /// and do not enter initial state solely because a component also has authored
+    /// events or lifecycle code. Scriptless components leave this empty.
+    ///
+    /// For each request, the handler unions keys from authored components
+    /// reachable on the active route and projects emitted SSR state to that set.
     ///
     /// Sorted and deduplicated. Empty for components with no hydratable surface.
     #[prost(string, repeated, tag = "6")]
     pub hydration_keys: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Build-time state allowlist used when a component is created or updated by
+    /// partial navigation. Authored components use the union of hydration_keys and
+    /// template reactive roots. Scriptless compiled templates include only their
+    /// template roots so the router can render them without an empty authored
+    /// module or a full-document navigation.
+    ///
+    /// Sorted and deduplicated. Empty for fully static templates.
+    #[prost(string, repeated, tag = "7")]
+    pub navigation_keys: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -76,17 +88,6 @@ pub struct WebUiProtocol {
     /// decide preload vs stylesheet emission.
     #[prost(enumeration = "DomStrategy", tag = "5")]
     pub dom_strategy: i32,
-    /// Sorted, deduplicated union of every component's `hydration_keys`.
-    /// Retained as a compatibility fallback for protocols that do not carry
-    /// per-component hydration keys.
-    #[prost(string, repeated, tag = "6")]
-    pub hydration_schema: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// Hydration projection contract version. Zero identifies protocols produced
-    /// before hydration projection and preserves their full-state bootstrap
-    /// behavior. Version 1 makes hydration_schema authoritative, including when
-    /// the schema is intentionally empty.
-    #[prost(uint32, tag = "7")]
-    pub hydration_schema_version: u32,
 }
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
 #[derive(serde::Serialize, serde::Deserialize)]

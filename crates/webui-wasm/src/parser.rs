@@ -9,7 +9,7 @@ use wasm_bindgen::prelude::*;
 use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::plugin::ParserPluginArtifacts;
 use webui_parser::{CssStrategy, HtmlParser};
-use webui_protocol::{WebUIProtocol, HYDRATION_SCHEMA_VERSION};
+use webui_protocol::WebUIProtocol;
 
 /// Build protocol protobuf bytes from virtual files without rendering.
 ///
@@ -43,10 +43,10 @@ fn register_components(
             if tag_name.contains('-') {
                 let css_key = format!("{tag_name}.css");
                 let css = files.get(&css_key).map(String::as_str);
-                // The sibling module (if any) is the `has_script` signal; its raw
+                // A sibling module marks an authored client component. Its raw
                 // source is carried through to the WebUI parser plugin, which
-                // derives the hydration surface itself. Keeping the wasm path
-                // scan-free mirrors the native build's plugin-owned strategy.
+                // derives the hydration surface itself. Scriptless components
+                // retain dormant template metadata for soft navigation.
                 let script = component_script(files, tag_name);
                 parser.component_registry_mut().register_component(
                     webui_parser::ComponentRegistration {
@@ -65,9 +65,9 @@ fn register_components(
 
 /// Return the authored browser module source for a component, if present.
 ///
-/// Prefers `.ts` over `.js`. Its presence is the static-host `has_script`
-/// signal; the raw source is handed to parser plugins so each can derive its
-/// own hydration surface.
+/// Prefers `.ts` over `.js`. Its presence is the client-component signal; the
+/// raw source is handed to parser plugins so each can derive its own hydration
+/// surface.
 fn component_script<'a>(files: &'a HashMap<String, String>, tag_name: &str) -> Option<&'a str> {
     files
         .get(&format!("{tag_name}.ts"))
@@ -95,19 +95,14 @@ pub(crate) fn parse_to_protocol(
     };
 
     let mut protocol = WebUIProtocol::new(parser.into_fragment_records());
-    let mut hydration_schema = Vec::new();
     for artifact in templates {
         let component = protocol.components.entry(artifact.tag_name).or_default();
         component.template = artifact.template;
         component.template_json = artifact.template_json;
         component.template_functions = artifact.template_functions;
         component.hydration_keys = artifact.hydration_keys;
-        hydration_schema.extend_from_slice(&component.hydration_keys);
+        component.navigation_keys = artifact.navigation_keys;
     }
-    hydration_schema.sort_unstable();
-    hydration_schema.dedup();
-    protocol.hydration_schema = hydration_schema;
-    protocol.hydration_schema_version = HYDRATION_SCHEMA_VERSION;
     Ok(protocol)
 }
 
@@ -143,8 +138,26 @@ mod tests {
         let component = protocol.components.get("my-card").unwrap();
 
         assert_eq!(component.hydration_keys, ["name"]);
-        assert_eq!(protocol.hydration_schema, ["name"]);
-        assert_eq!(protocol.hydration_schema_version, HYDRATION_SCHEMA_VERSION);
         assert!(!component.template_json.is_empty());
+    }
+
+    #[test]
+    fn parse_to_protocol_keeps_scriptless_navigation_metadata() {
+        let files = HashMap::from([
+            (
+                "index.html".to_string(),
+                "<html><body><my-card></my-card></body></html>".to_string(),
+            ),
+            (
+                "my-card.html".to_string(),
+                "<template shadowrootmode=\"open\"><p>{{name}}</p></template>".to_string(),
+            ),
+        ]);
+
+        let protocol = parse_to_protocol(&files, "index.html").unwrap();
+        let component = protocol.components.get("my-card").unwrap();
+        assert!(component.hydration_keys.is_empty());
+        assert_eq!(component.navigation_keys, ["name"]);
+        assert!(component.template_json.contains(r#""th":1"#));
     }
 }

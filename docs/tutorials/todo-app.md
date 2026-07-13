@@ -407,11 +407,12 @@ npx webui build ./src --out ./dist --plugin=webui
 ```
 
 The output in `./dist` contains the compiled protocol binary and CSS files.
-Bundle your browser source entry directly. If the app has no authored
-components but still uses HTML-only components that receive server or route
-state, import `@microsoft/webui-framework` once from that browser entry. The
-protocol and CSS are ready for deployment with any handler (Rust, Node.js, C#,
-Python, Go).
+Bundle your browser source entry directly. Import
+`@microsoft/webui-framework` from authored component modules. Scriptless
+components contribute no startup state; when the framework is loaded, their
+compiler-owned hosts can activate for browser-applied state or soft navigation.
+The protocol and CSS are ready for deployment with any handler (Rust, Node.js,
+C#, Python, Go).
 
 ---
 

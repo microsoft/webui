@@ -9,7 +9,9 @@ High-performance template renderer for the [WebUI](https://github.com/microsoft/
 ## Key Functions
 
 ### `route_handler::render_partial`
-Renders a JSON partial response for client-side navigation. Returns state, templates, CSS, inventory, and the matched route chain.
+Returns a complete client-navigation response with active-route projected
+state. Use `render_partial_metadata` only when producing state-free NDJSON
+chunk 1.
 
 ### `route_handler::render_component_templates`
 Returns compiled templates and CSS for specific components by tag name. Used for on-demand loading of components not in the route tree (dialogs, overlays). Supports inventory-based deduplication.

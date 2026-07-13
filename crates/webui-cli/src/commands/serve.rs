@@ -1039,14 +1039,12 @@ async fn handle_json_partial(
 
     // Build the complete partial response (templateStyles, templates, inventory, path, chain)
     let partial = if let Some(proto) = &protocol {
-        // Per-request index — ideally cached alongside protocol for server lifetime.
-        let mut index = webui_handler::route_handler::ProtocolIndex::new(proto);
-        let mut p = match webui_handler::route_handler::render_partial(
+        match webui_handler::route_handler::render_partial(
             proto,
+            state_data,
             &entry,
             &paths.route_path,
             &client_inv_hex,
-            &mut index,
         ) {
             Ok(v) => v,
             Err(e) => {
@@ -1054,11 +1052,7 @@ async fn handle_json_partial(
                     .content_type("application/json")
                     .body(format!(r#"{{"error":"{}"}}"#, e));
             }
-        };
-        if let Some(obj) = p.as_object_mut() {
-            obj.insert("state".into(), state_data);
         }
-        p
     } else {
         Value::Object(serde_json::Map::new())
     };
@@ -2221,6 +2215,7 @@ mod tests {
             ("app-shell.html", "<div></div>"),
             ("lazy-panel.html", "<p>{{title}}</p>"),
             ("lazy-panel.css", ":host { color: red; }"),
+            ("lazy-panel.ts", "export {};"),
         ]);
         let config = RenderConfig {
             app_args: AppArgs {

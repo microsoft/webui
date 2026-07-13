@@ -454,10 +454,9 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         // parser — nothing to store in the protocol or emit as files.
     }
 
-    // Store client templates in the protocol so any host server can query them,
-    // and aggregate their hydration keys into the protocol-level projection
-    // allowlist the handler uses to shrink emitted bootstrap state.
-    let mut hydration_schema: Vec<String> = Vec::new();
+    // Store compiled client templates in the protocol so any host server can
+    // query them. Scriptless templates retain navigation metadata but contribute
+    // no initial hydration state.
     for artifact in &component_templates {
         let component = protocol
             .components
@@ -467,12 +466,8 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         component.template_json = artifact.template_json.clone();
         component.template_functions = artifact.template_functions.clone();
         component.hydration_keys = artifact.hydration_keys.clone();
-        hydration_schema.extend_from_slice(&artifact.hydration_keys);
+        component.navigation_keys = artifact.navigation_keys.clone();
     }
-    hydration_schema.sort_unstable();
-    hydration_schema.dedup();
-    protocol.hydration_schema = hydration_schema;
-    protocol.hydration_schema_version = webui_protocol::HYDRATION_SCHEMA_VERSION;
 
     let component_asset_files = component_assets::render_component_assets(
         &protocol,
@@ -628,10 +623,13 @@ mod tests {
     }
 
     #[test]
-    fn test_build_marks_stateful_html_only_component_as_template_host() {
+    fn test_build_keeps_scriptless_component_dormant_until_client_use() {
         let app = create_app_dir(&[
-            ("index.html", "<demo-card></demo-card>"),
-            ("demo-card.html", "<p>{{name}}</p>"),
+            (
+                "index.html",
+                "<html><body><demo-card></demo-card></body></html>",
+            ),
+            ("demo-card.html", "<p>{{name}} {{serverTitle}}</p>"),
         ]);
         let mut options = default_options(app.path());
         options.plugin = Some(Plugin::WebUI);
@@ -640,9 +638,30 @@ mod tests {
         assert!(result
             .component_templates
             .iter()
-            .any(|template| template.tag_name == "demo-card"
-                && template.template_json.contains(r#""th":1"#)));
-        assert!(result.protocol.components.contains_key("demo-card"));
+            .any(|template| template.tag_name == "demo-card"));
+        let component = result
+            .protocol
+            .components
+            .get("demo-card")
+            .expect("scriptless component metadata should be retained");
+        assert!(component.hydration_keys.is_empty());
+        assert_eq!(component.navigation_keys, ["name", "serverTitle"]);
+        assert!(component.template_json.contains(r#""th":1"#));
+
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        let state = serde_json::json!({ "name": "Server rendered" });
+        let mut writer = StringWriter { buf: String::new() };
+        handler
+            .handle(
+                &result.protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        assert!(writer.buf.contains("Server rendered"));
+        assert!(writer.buf.contains(r#""state":{}"#));
+        assert!(writer.buf.contains(r#""templates":{"demo-card":"#));
     }
 
     #[test]
@@ -669,12 +688,11 @@ mod tests {
             .iter()
             .find(|template| template.tag_name == "demo-card")
             .unwrap();
-        assert!(!template.template_json.contains(r#""th":1"#));
         assert!(template.template_json.contains(r#""eg":[["click""#));
     }
 
     #[test]
-    fn test_build_populates_hydration_schema_from_component_script() {
+    fn test_build_populates_component_hydration_keys_from_script() {
         let app = create_app_dir(&[
             ("index.html", "<demo-card></demo-card>"),
             ("demo-card.html", "<p>{{name}}</p>"),
@@ -693,21 +711,9 @@ mod tests {
         options.plugin = Some(Plugin::WebUI);
         let result = build(options).unwrap();
 
-        // Component-level keys are the union of scanned decorators and the
-        // template root `name` (deduplicated).
         let component = result.protocol.components.get("demo-card").unwrap();
         assert_eq!(component.hydration_keys, vec!["count", "ctaHref", "name"]);
-
-        // The protocol-level schema aggregates every component's keys into the
-        // runtime projection allowlist.
-        assert_eq!(
-            result.protocol.hydration_schema,
-            vec!["count", "ctaHref", "name"]
-        );
-        assert_eq!(
-            result.protocol.hydration_schema_version,
-            webui_protocol::HYDRATION_SCHEMA_VERSION
-        );
+        assert_eq!(component.navigation_keys, vec!["count", "ctaHref", "name"]);
     }
 
     #[test]
@@ -734,11 +740,7 @@ mod tests {
 
         let component = result.protocol.components.get("demo-card").unwrap();
         assert_eq!(component.hydration_keys, vec!["name"]);
-        assert!(!result
-            .protocol
-            .hydration_schema
-            .iter()
-            .any(|key| key == "apiKey"));
+        assert!(!component.hydration_keys.iter().any(|key| key == "apiKey"));
 
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
         let state = serde_json::json!({
@@ -868,6 +870,7 @@ mod tests {
             ("index.html", "<my-card>Hello</my-card>"),
             ("my-card.html", "<div><slot></slot></div>"),
             ("my-card.css", ".card { color: red; }"),
+            ("my-card.ts", "export {};"),
         ]);
         let result = build(default_options(app.path())).unwrap();
 
@@ -1033,6 +1036,7 @@ mod tests {
             ("index.html", "<my-card>Hello</my-card>"),
             ("my-card.html", "<div><slot></slot></div>"),
             ("my-card.css", ".card { color: red; }"),
+            ("my-card.ts", "export {};"),
         ]);
         let mut options = default_options(app.path());
         options.plugin = Some(Plugin::WebUI);
@@ -1110,6 +1114,7 @@ mod tests {
                 "lazy-panel.html",
                 r#"<if condition="ready"><p>{{title}}</p></if>"#,
             ),
+            ("lazy-panel.ts", "export {};"),
         ]);
         let mut options = default_options(app.path());
         options.plugin = Some(Plugin::WebUI);
@@ -1294,6 +1299,7 @@ mod tests {
             ("index.html", "<my-card>Hello</my-card>"),
             ("my-card.html", "<div><slot></slot></div>"),
             ("my-card.css", ".card { color: red; }"),
+            ("my-card.ts", "export {};"),
         ]);
         let out = TempDir::new().unwrap();
 
@@ -1456,7 +1462,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_with_scriptless_component_path_emits_static_host() {
+    fn test_build_with_scriptless_component_path_emits_dormant_template() {
         let app = create_app_dir(&[("index.html", "<ext-card></ext-card>")]);
         let ext_dir = TempDir::new().unwrap();
         fs::write(ext_dir.path().join("ext-card.html"), "<p>{{title}}</p>").unwrap();
@@ -1466,12 +1472,22 @@ mod tests {
         options.components = vec![ext_dir.path().to_string_lossy().to_string()];
 
         let result = build(options).unwrap();
-        let template = &result.protocol.components["ext-card"].template_json;
-        assert!(template.contains(r#""th":1"#), "template: {template}");
+        assert!(result
+            .component_templates
+            .iter()
+            .any(|template| template.tag_name == "ext-card"));
+        let component = result
+            .protocol
+            .components
+            .get("ext-card")
+            .expect("external scriptless component metadata should be retained");
+        assert!(component.hydration_keys.is_empty());
+        assert_eq!(component.navigation_keys, ["title"]);
+        assert!(component.template_json.contains(r#""th":1"#));
     }
 
     #[test]
-    fn test_build_with_scripted_component_path_skips_static_host() {
+    fn test_build_with_scripted_component_path_emits_client_artifact() {
         let app = create_app_dir(&[("index.html", "<ext-card></ext-card>")]);
         let ext_dir = TempDir::new().unwrap();
         fs::write(ext_dir.path().join("ext-card.html"), "<p>{{title}}</p>").unwrap();
@@ -1483,7 +1499,7 @@ mod tests {
 
         let result = build(options).unwrap();
         let template = &result.protocol.components["ext-card"].template_json;
-        assert!(!template.contains(r#""th":1"#), "template: {template}");
+        assert!(!template.is_empty(), "template should be emitted");
     }
 
     #[test]

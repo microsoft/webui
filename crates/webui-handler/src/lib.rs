@@ -266,9 +266,8 @@ struct WebUIProcessContext<'a> {
 struct WebUiBootstrap<'a> {
     state: &'a Value,
     /// Request-scoped hydration key allowlist (sorted, deduped). The `state`
-    /// object is projected down to only these keys before emission. `None`
-    /// preserves full-state emission for protocols built before projection.
-    hydration_schema: Option<&'a [&'a str]>,
+    /// object is projected down to only these authored-client keys.
+    hydration_schema: &'a [&'a str],
     chain: &'a [Value],
     inventory: &'a str,
     nonce: Option<&'a str>,
@@ -443,6 +442,10 @@ fn write_projected_state(
     state: &Value,
     schema: &[&str],
 ) -> Result<()> {
+    if schema.is_empty() {
+        return writer.write("{}");
+    }
+
     // Projection membership may use binary search, so a mis-sorted schema
     // would silently drop hydration keys. The schema is produced sorted +
     // deduped at build time; this guard makes hand-built protocols that violate
@@ -460,53 +463,48 @@ fn write_projected_state(
     )
 }
 
+// Covers the common route surface without trusting protocol-derived counts for
+// an eager allocation; larger schemas grow only as actual keys are visited.
+const INITIAL_SCHEMA_CAPACITY: usize = 16;
+
 /// Build the sorted hydration allowlist for the components reachable on this
 /// request path. Inactive route branches are excluded, while components behind
 /// active-route conditionals and loops remain conservatively included by the
 /// reachability walk.
-///
-/// Protocols produced before per-component hydration keys were introduced may
-/// contain only the global schema. Protocols produced before hydration
-/// projection entirely carry neither a schema nor a version; those return
-/// `None` so the handler preserves full-state bootstrap behavior.
-fn collect_reachable_hydration_schema<'a>(
+pub(crate) fn collect_hydration_schema<'a, 'b>(
     protocol: &'a WebUIProtocol,
-    reachable: &HashSet<String>,
-) -> Option<Vec<&'a str>> {
-    let has_component_schema = protocol
-        .components
-        .values()
-        .any(|component| !component.hydration_keys.is_empty());
-    if protocol.hydration_schema_version == 0
-        && protocol.hydration_schema.is_empty()
-        && !has_component_schema
-    {
-        return None;
-    }
-
-    if !has_component_schema {
-        return Some(
-            protocol
-                .hydration_schema
-                .iter()
-                .map(String::as_str)
-                .collect(),
-        );
-    }
-
-    let estimated = reachable
-        .len()
-        .saturating_mul(4)
-        .min(protocol.hydration_schema.len());
-    let mut schema = Vec::with_capacity(estimated);
-    for name in reachable {
+    components: impl IntoIterator<Item = &'b str>,
+) -> Vec<&'a str> {
+    let mut schema = Vec::with_capacity(INITIAL_SCHEMA_CAPACITY);
+    for name in components {
         if let Some(component) = protocol.components.get(name) {
             schema.extend(component.hydration_keys.iter().map(String::as_str));
         }
     }
     schema.sort_unstable();
     schema.dedup();
-    Some(schema)
+    schema
+}
+
+/// Build the sorted state allowlist for client-created components reachable on
+/// a partial-navigation request.
+///
+/// Authored components expose the same keys they hydrate initially. Scriptless
+/// compiled templates expose only their template roots, allowing soft
+/// navigation without populating initial SSR state.
+pub(crate) fn collect_navigation_schema<'a, 'b>(
+    protocol: &'a WebUIProtocol,
+    components: impl IntoIterator<Item = &'b str>,
+) -> Vec<&'a str> {
+    let mut schema = Vec::with_capacity(INITIAL_SCHEMA_CAPACITY);
+    for name in components {
+        if let Some(component) = protocol.components.get(name) {
+            schema.extend(component.navigation_keys.iter().map(String::as_str));
+        }
+    }
+    schema.sort_unstable();
+    schema.dedup();
+    schema
 }
 
 fn write_webui_bootstrap(
@@ -527,11 +525,7 @@ fn write_webui_bootstrap(
         write_json_field(writer, &mut wrote_field, "nonce", nonce)?;
     }
     write_json_field_name(writer, &mut wrote_field, "state")?;
-    if let Some(schema) = bootstrap.hydration_schema {
-        write_projected_state(writer, bootstrap.state, schema)?;
-    } else {
-        write_script_safe_json(writer, bootstrap.state)?;
-    }
+    write_projected_state(writer, bootstrap.state, bootstrap.hydration_schema)?;
     if !bootstrap.style_specs.is_empty() {
         write_json_field(writer, &mut wrote_field, "styles", bootstrap.style_specs)?;
     }
@@ -1299,8 +1293,10 @@ impl WebUIHandler {
                     context.request_path,
                     &mut context.route_cache,
                 );
-                let hydration_schema =
-                    collect_reachable_hydration_schema(context.protocol, &reachable);
+                let hydration_schema = collect_hydration_schema(
+                    context.protocol,
+                    reachable.iter().map(String::as_str),
+                );
 
                 // Emit CSS module importmaps for reachable-but-unrendered
                 // components so the framework can adopt them when an `<if>`
@@ -1399,7 +1395,7 @@ impl WebUIHandler {
                     context.writer,
                     WebUiBootstrap {
                         state: context.state,
-                        hydration_schema: hydration_schema.as_deref(),
+                        hydration_schema: &hydration_schema,
                         chain: &chain_json,
                         inventory: &inventory_hex,
                         nonce: context.nonce,
@@ -7110,14 +7106,13 @@ mod tests {
             let comp = protocol.components.entry(name.to_string()).or_default();
             comp.template_json = format!(r#"{{"h":"<div class=\"{name}\"></div>"}}"#);
             comp.css = format!(".{name}{{display:block}}");
+            if name == "cart-panel" {
+                comp.hydration_keys = vec!["hasItems".to_string()];
+            }
             if name == "product-card" {
                 comp.template_functions = r#"[function(v,s){return !!v("ready",s)}]"#.to_string();
             }
         }
-        // `hasItems` is an SSR-resolved reactive root, so it is part of the
-        // build-time hydration schema and must survive projection into the
-        // client state block.
-        protocol.hydration_schema = vec!["hasItems".to_string()];
 
         // Render with hasItems=false — product-card should NOT be rendered
         let state = test_json!({ "hasItems": false });
@@ -7350,11 +7345,30 @@ mod tests {
                 ],
             },
         );
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<span>shell</span>".to_string())],
+            },
+        );
+        let index_fragments = fragments
+            .get_mut("index.html")
+            .expect("index fixture should exist");
+        index_fragments
+            .fragments
+            .insert(1, WebUIFragment::component("app-shell"));
         let mut protocol = WebUIProtocol::new(fragments);
         // Only `name` is a hydration key. `tokens` is a server-only field
-        // (used above to resolve SSR CSS variables) and is NOT in the schema,
+        // (used above to resolve SSR CSS variables) and is NOT in the component
+        // hydration keys,
         // so projection MUST keep it out of the client state block.
-        protocol.hydration_schema = vec!["name".to_string()];
+        protocol.components.insert(
+            "app-shell".to_string(),
+            webui_protocol::ComponentData {
+                hydration_keys: vec!["name".to_string()],
+                ..Default::default()
+            },
+        );
         let state = test_json!({
             "name": "Alice",
             "tokens": {
@@ -7382,7 +7396,7 @@ mod tests {
     }
 
     #[test]
-    fn hydration_schema_version_distinguishes_legacy_from_empty_projection() -> Result<()> {
+    fn empty_reachable_hydration_schema_excludes_all_state() -> Result<()> {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -7394,7 +7408,7 @@ mod tests {
                 ],
             },
         );
-        let legacy_protocol = WebUIProtocol::new(fragments);
+        let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({
             "title": "Legacy state",
             "serverOnly": "preserved",
@@ -7403,27 +7417,68 @@ mod tests {
             Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
         });
 
-        let mut legacy_writer = TestWriter::new();
+        let mut writer = TestWriter::new();
         handler.handle(
-            &legacy_protocol,
+            &protocol,
             &state,
             &RenderOptions::new("index.html", "/"),
-            &mut legacy_writer,
+            &mut writer,
         )?;
-        let legacy_output = legacy_writer.get_content();
-        assert!(legacy_output.contains(r#""serverOnly":"preserved""#));
-        assert!(legacy_output.contains(r#""title":"Legacy state""#));
+        assert!(writer.get_content().contains(r#""state":{}"#));
+        assert!(!writer.get_content().contains("Legacy state"));
+        assert!(!writer.get_content().contains("preserved"));
+        Ok(())
+    }
 
-        let mut projected_protocol = legacy_protocol;
-        projected_protocol.hydration_schema_version = webui_protocol::HYDRATION_SCHEMA_VERSION;
-        let mut projected_writer = TestWriter::new();
+    #[test]
+    fn scriptless_component_state_is_navigation_only() -> Result<()> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><body>"),
+                    WebUIFragment::component("items-page"),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "items-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Items</p>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.components.insert(
+            "items-page".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<p>Items</p>","th":1}"#.into(),
+                navigation_keys: vec!["items".into()],
+                ..Default::default()
+            },
+        );
+        let state = test_json!({
+            "items": ["STATE_SENTINEL"],
+            "serverOnly": "SECRET_SENTINEL",
+        });
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = TestWriter::new();
+
         handler.handle(
-            &projected_protocol,
+            &protocol,
             &state,
             &RenderOptions::new("index.html", "/"),
-            &mut projected_writer,
+            &mut writer,
         )?;
-        assert!(projected_writer.get_content().contains(r#""state":{}"#));
+
+        let output = writer.get_content();
+        assert!(output.contains(r#""state":{}"#));
+        assert!(!output.contains("STATE_SENTINEL"));
+        assert!(!output.contains("SECRET_SENTINEL"));
         Ok(())
     }
 
@@ -7531,8 +7586,6 @@ mod tests {
                 ..Default::default()
             },
         );
-        protocol.hydration_schema = vec!["adminToken".to_string(), "homeTitle".to_string()];
-
         let state = test_json!({
             "homeTitle": "Welcome",
             "adminToken": "TOP_SECRET_SENTINEL",

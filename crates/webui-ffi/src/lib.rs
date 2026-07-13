@@ -668,8 +668,11 @@ unsafe fn webui_render_impl(html: *const c_char, data_json: *const c_char) -> *m
 
 /// Produce a complete JSON partial response for client-side navigation.
 ///
-/// Combines route templates, inventory, and matched route chain into a single
-/// JSON string: `{"templates":[...],"inventory":"...","chain":[...]}`.
+/// Combines active-route projected state, route templates, inventory, request
+/// path, and matched route chain into a single JSON string:
+/// `{"state":{...},"templates":{...},"inventory":"...","path":"...","chain":[...]}`.
+/// State fields not consumed by reachable authored client components are
+/// excluded.
 ///
 /// # Arguments
 ///
@@ -758,29 +761,17 @@ pub unsafe extern "C" fn webui_render_partial(
             }
         };
 
-        // Per-request index — see ProtocolIndex doc for caching guidance.
-        let mut index = webui_handler::route_handler::ProtocolIndex::new(&protocol);
-
-        let result = match webui_handler::route_handler::render_partial(
-            &protocol,
+        let prepared = PreparedProtocol::new(protocol);
+        let output = match webui_handler::route_handler::render_partial_prepared(
+            &prepared,
+            state_str,
             entry_str,
             request_path_str,
             inv_str,
-            &mut index,
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                set_last_error(format!("render_partial failed: {e}"));
-                return std::ptr::null_mut();
-            }
-        };
-
-        let output = match webui_handler::route_handler::serialize_partial_response_with_state(
-            &result, state_str,
         ) {
             Ok(output) => output,
             Err(e) => {
-                set_last_error(e.to_string());
+                set_last_error(format!("render_partial failed: {e}"));
                 return std::ptr::null_mut();
             }
         };
@@ -804,7 +795,8 @@ pub unsafe extern "C" fn webui_render_partial(
 /// Produce a partial response using a prepared protocol handle.
 ///
 /// This is equivalent to [`webui_render_partial`] but avoids protobuf decoding
-/// and reuses parsed component metadata across calls.
+/// and reuses parsed component metadata across calls. State is projected to the
+/// reachable authored client components before serialization.
 ///
 /// # Safety
 ///
@@ -862,8 +854,9 @@ pub unsafe extern "C" fn webui_render_partial_prepared(
             }
         };
 
-        let result = match webui_handler::route_handler::render_partial_prepared(
+        let output = match webui_handler::route_handler::render_partial_prepared(
             &prepared.prepared,
+            state_str,
             entry_str,
             request_path_str,
             inventory_str,
@@ -871,15 +864,6 @@ pub unsafe extern "C" fn webui_render_partial_prepared(
             Ok(value) => value,
             Err(error) => {
                 set_last_error(format!("render_partial failed: {error}"));
-                return std::ptr::null_mut();
-            }
-        };
-        let output = match webui_handler::route_handler::serialize_partial_response_with_state(
-            &result, state_str,
-        ) {
-            Ok(value) => value,
-            Err(error) => {
-                set_last_error(error.to_string());
                 return std::ptr::null_mut();
             }
         };

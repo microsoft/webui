@@ -29,11 +29,16 @@ Create a custom element only for an Interactive Island: event handlers, custom
 lifecycle code, imperative methods, or state that TypeScript code reads or
 mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
 to access the value or when the value is part of the component's public API.
-When HTML-only components receive server or route state, make sure the browser
-entry imports `@microsoft/webui-framework` somewhere. The framework root
-installs the minimal static host runtime and only claims compiler-owned
-HTML-only components whose templates need hidden state or observed host
-attributes. Fully static HTML-only components stay as plain SSR DOM.
+
+The sibling `.ts` or `.js` file is the authored behavior boundary. Within an
+authored component, only `@observable` and `@attr` fields opt into initial state
+hydration; ordinary template roots remain in the trusted SSR DOM. Without a
+client module, bindings, conditionals, and loops still render on the server, but
+the component contributes no bootstrap state and remains dormant on startup. If
+the framework is loaded, its compiler-owned host can later activate for
+browser-applied state or soft navigation. Add a same-named client module only
+for events, lifecycle code, decorators, or imperative APIs. See
+[Hydration](/guide/concepts/hydration) for the full contract.
 
 ## The Component Class
 
@@ -154,10 +159,12 @@ example in an event handler.
 
 ### Initial Hydration State
 
-At build time, WebUI records each component's hydratable top-level state keys
-from template bindings plus authored `@observable` and `@attr` properties. The
-script scanner ignores decorator-looking text inside comments, strings,
-template-literal text, and regular-expression literals.
+At build time, WebUI records each authored component's hydratable top-level
+state keys from template bindings plus `@observable` and `@attr` properties.
+The script scanner ignores decorator-looking text inside comments, strings,
+template-literal text, and regular-expression literals. Scriptless template
+roots are reserved for partial navigation and do not enter initial bootstrap
+state.
 
 For the initial full page, the server includes only keys needed by components
 reachable on the active request route. Inactive sibling routes do not enlarge
@@ -221,7 +228,8 @@ Attach event handlers with `@event` syntax:
 ```
 
 Components that use `@event` must have authored `.ts` or `.js` code that
-defines a `WebUIElement` for the tag; HTML-only components are declarative only.
+defines a `WebUIElement` for the tag; compiler-owned scriptless hosts do not
+provide application event handlers.
 
 Event handlers use method-call syntax only. Arguments can be:
 

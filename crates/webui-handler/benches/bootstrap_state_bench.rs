@@ -8,9 +8,9 @@
 //! (`write_webui_bootstrap` → `write_projected_state`).
 //!
 //! The projected-hydration design filters the SSR state down to only the keys
-//! a component actually hydrates (the build-time `hydration_schema`) before
+//! authored client components actually hydrate before
 //! serializing it through the script-safe JSON writer. This benchmark pins
-//! that behavior with three arms per size:
+//! that behavior with six arms per size:
 //!
 //! * `hydratable_collection` — schema contains every top-level key, including
 //!   the large `items` collection. This models a real `<for>` root and is the
@@ -18,6 +18,16 @@
 //! * `server_only_collection` — schema contains only the small metadata keys,
 //!   so the large `items` array is projected away. This models a large
 //!   render-only/server-only collection, not a hydrated `<for>` root.
+//! * `authored_navigation_only_component` — an authored component retains the
+//!   full template-root navigation surface but declares no JavaScript-owned
+//!   hydration fields. This is the property-level split exercised by authored
+//!   event/ref components such as the routes example shell.
+//! * `dormant_scriptless_component` — the reachable component retains browser
+//!   template metadata and navigation keys, but its initial hydration schema is
+//!   empty, so the state is never traversed.
+//! * `metadata_free_scriptless_component` — the discarded design that omitted
+//!   the scriptless browser template. This isolates the fixed cost required to
+//!   preserve soft navigation.
 //! * `without_plugin` — no bootstrap block is emitted at all; the structural
 //!   lower bound.
 //!
@@ -38,7 +48,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::hint::black_box;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
-use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{PreparedProtocol, RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::{
     ComponentData, FragmentList, WebUIFragment, WebUIFragmentRoute, WebUIProtocol,
 };
@@ -162,6 +172,48 @@ fn server_only_schema() -> Vec<String> {
     schema
 }
 
+fn build_partial_protocol(
+    hydration_keys: &[&str],
+    navigation_keys: &[&str],
+    compiler_owned: bool,
+) -> PreparedProtocol {
+    let mut fragments = HashMap::new();
+    fragments.insert(
+        "index.html".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::route("/", "benchmark-page")],
+        },
+    );
+    fragments.insert(
+        "benchmark-page".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::raw("<p>Benchmark</p>")],
+        },
+    );
+    let mut protocol = WebUIProtocol::new(fragments);
+    let template_json = if compiler_owned {
+        r#"{"h":"<p>Benchmark</p>","th":1}"#
+    } else {
+        r#"{"h":"<p>Benchmark</p>"}"#
+    };
+    protocol.components.insert(
+        "benchmark-page".to_string(),
+        ComponentData {
+            template_json: template_json.to_string(),
+            hydration_keys: hydration_keys
+                .iter()
+                .map(|key| (*key).to_string())
+                .collect(),
+            navigation_keys: navigation_keys
+                .iter()
+                .map(|key| (*key).to_string())
+                .collect(),
+            ..Default::default()
+        },
+    );
+    PreparedProtocol::new(protocol)
+}
+
 fn build_routed_protocol() -> WebUIProtocol {
     let mut fragments = HashMap::new();
     fragments.insert(
@@ -216,34 +268,61 @@ fn build_routed_protocol() -> WebUIProtocol {
             ..Default::default()
         },
     );
-    protocol.hydration_schema = vec![
-        "contacts".to_string(),
-        "page".to_string(),
-        "recentContacts".to_string(),
-    ];
     protocol
 }
 
 /// Minimal full-HTML protocol that fires a single `body_end` hook, carrying the
-/// supplied hydration `schema` used to project the state at emission time.
+/// supplied authored-component hydration `schema` used to project the state at
+/// emission time. A compiler-owned component keeps template metadata and
+/// navigation keys while its initial hydration schema stays empty.
 ///
 /// The raw `body_end` signal resolves to no value (it is a structural hook, not
 /// a state key), so it emits no text of its own but triggers the bootstrap
 /// `#webui-data` block when a hydration plugin is active.
-fn build_bootstrap_protocol(schema: Vec<String>) -> WebUIProtocol {
+fn build_bootstrap_protocol(
+    hydration_keys: Vec<String>,
+    navigation_keys: Vec<String>,
+    compiler_owned: bool,
+) -> WebUIProtocol {
     let mut fragments = HashMap::new();
     fragments.insert(
         "index.html".to_string(),
         FragmentList {
             fragments: vec![
                 WebUIFragment::raw("<!DOCTYPE html><html><body>"),
+                WebUIFragment::component("bench-component"),
                 WebUIFragment::signal("body_end", true),
                 WebUIFragment::raw("</body></html>"),
             ],
         },
     );
+    fragments.insert(
+        "bench-component".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::raw("<p>ready</p>")],
+        },
+    );
     let mut protocol = WebUIProtocol::new(fragments);
-    protocol.hydration_schema = schema;
+    let template_json = if compiler_owned {
+        r#"{"h":"<p>ready</p>","tr":["count","generatedAt","items","title"],"th":1}"#
+    } else {
+        r#"{"h":"<p>ready</p>"}"#
+    };
+    protocol.components.insert(
+        "bench-component".to_string(),
+        ComponentData {
+            template_json: template_json.to_string(),
+            hydration_keys,
+            navigation_keys,
+            ..Default::default()
+        },
+    );
+    protocol
+}
+
+fn build_metadata_free_bootstrap_protocol() -> WebUIProtocol {
+    let mut protocol = build_bootstrap_protocol(Vec::new(), Vec::new(), true);
+    protocol.components.clear();
     protocol
 }
 
@@ -258,9 +337,15 @@ fn bootstrap_state_bench(c: &mut Criterion) {
     let options = RenderOptions::new("index.html", "/");
 
     // Protocols differ only by the projection schema; state is shared per size.
-    let full_protocol = build_bootstrap_protocol(full_schema());
-    let server_only_protocol = build_bootstrap_protocol(server_only_schema());
-    let empty_protocol = build_bootstrap_protocol(Vec::new());
+    let full_keys = full_schema();
+    let metadata_keys = server_only_schema();
+    let full_protocol = build_bootstrap_protocol(full_keys.clone(), full_keys.clone(), false);
+    let server_only_protocol =
+        build_bootstrap_protocol(metadata_keys.clone(), metadata_keys, false);
+    let authored_navigation_only_protocol =
+        build_bootstrap_protocol(Vec::new(), full_keys.clone(), false);
+    let dormant_protocol = build_bootstrap_protocol(Vec::new(), full_keys, true);
+    let metadata_free_protocol = build_metadata_free_bootstrap_protocol();
 
     for &target in &[64 * 1024usize, 256 * 1024, 1024 * 1024] {
         let state = build_large_state(target);
@@ -323,9 +408,85 @@ fn bootstrap_state_bench(c: &mut Criterion) {
             },
         );
 
+        // AUTHORED NAVIGATION-ONLY component: event/ref hydration remains active,
+        // but template roots stay out of initial state because SSR already
+        // rendered them. Partial navigation still retains the full key surface.
+        group.bench_with_input(
+            BenchmarkId::new("authored_navigation_only_component", &label),
+            &state,
+            |b, st| {
+                let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+                let mut writer = BenchWriter::new(4096);
+                b.iter(|| {
+                    writer.clear();
+                    handler
+                        .handle(
+                            black_box(&authored_navigation_only_protocol),
+                            black_box(st),
+                            &options,
+                            &mut writer,
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("authored_navigation_only_component render failed: {error}")
+                        });
+                    black_box(writer.len());
+                });
+            },
+        );
+
+        // DORMANT SCRIPTLESS component: browser template metadata is emitted,
+        // but no initial state keys are projected or serialized.
+        group.bench_with_input(
+            BenchmarkId::new("dormant_scriptless_component", &label),
+            &state,
+            |b, st| {
+                let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+                let mut writer = BenchWriter::new(4096);
+                b.iter(|| {
+                    writer.clear();
+                    handler
+                        .handle(
+                            black_box(&dormant_protocol),
+                            black_box(st),
+                            &options,
+                            &mut writer,
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("dormant_scriptless_component render failed: {error}")
+                        });
+                    black_box(writer.len());
+                });
+            },
+        );
+
+        // DISCARDED design: omitting the browser template is slightly cheaper,
+        // but breaks client creation and soft navigation.
+        group.bench_with_input(
+            BenchmarkId::new("metadata_free_scriptless_component", &label),
+            &state,
+            |b, st| {
+                let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+                let mut writer = BenchWriter::new(4096);
+                b.iter(|| {
+                    writer.clear();
+                    handler
+                        .handle(
+                            black_box(&metadata_free_protocol),
+                            black_box(st),
+                            &options,
+                            &mut writer,
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("metadata_free_scriptless_component render failed: {error}")
+                        });
+                    black_box(writer.len());
+                });
+            },
+        );
+
         // WITHOUT a plugin: no bootstrap block is emitted, so the state is
         // never touched. Structural lower bound. `empty_protocol` carries an
-        // empty schema, but with no plugin active no block is emitted, so the
+        // empty startup schema, but with no plugin active no block is emitted, so the
         // schema is irrelevant here.
         group.bench_with_input(
             BenchmarkId::new("without_plugin", &label),
@@ -337,7 +498,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
                     writer.clear();
                     handler
                         .handle(
-                            black_box(&empty_protocol),
+                            black_box(&dormant_protocol),
                             black_box(st),
                             &options,
                             &mut writer,
@@ -353,7 +514,8 @@ fn bootstrap_state_bench(c: &mut Criterion) {
 
     let wide_state = build_wide_state(30_000);
     let wide_state_bytes = serialized_len(&wide_state);
-    let wide_protocol = build_bootstrap_protocol(vec!["keptA".to_string(), "keptB".to_string()]);
+    let wide_keys = vec!["keptA".to_string(), "keptB".to_string()];
+    let wide_protocol = build_bootstrap_protocol(wide_keys.clone(), wide_keys, false);
     let mut wide_group = c.benchmark_group("bootstrap_state_wide");
     wide_group.throughput(Throughput::Bytes(wide_state_bytes as u64));
     wide_group.bench_function("sparse_schema_30000_keys", |b| {
@@ -377,19 +539,28 @@ fn bootstrap_state_bench(c: &mut Criterion) {
     let routed_state = build_routed_state(1_000);
     let routed_state_bytes = serialized_len(&routed_state);
     let routed_protocol = build_routed_protocol();
-    let mut legacy_routed_protocol = build_routed_protocol();
-    for component in legacy_routed_protocol.components.values_mut() {
+    let mut dormant_routed_protocol = build_routed_protocol();
+    for component in dormant_routed_protocol.components.values_mut() {
+        component.navigation_keys = component.hydration_keys.clone();
         component.hydration_keys.clear();
+        component.template_json = r#"{"h":"<p>ready</p>","th":1}"#.to_string();
     }
+    let mut metadata_free_routed_protocol = dormant_routed_protocol.clone();
+    metadata_free_routed_protocol.components.clear();
     let mut route_group = c.benchmark_group("bootstrap_state_route");
     route_group.throughput(Throughput::Bytes(routed_state_bytes as u64));
     for &(name, path, protocol) in &[
         ("dashboard_excludes_contacts", "/", &routed_protocol),
         ("contacts_includes_contacts", "/contacts", &routed_protocol),
         (
-            "contacts_legacy_global_schema",
+            "contacts_dormant_component",
             "/contacts",
-            &legacy_routed_protocol,
+            &dormant_routed_protocol,
+        ),
+        (
+            "contacts_metadata_free_component",
+            "/contacts",
+            &metadata_free_routed_protocol,
         ),
     ] {
         route_group.bench_function(name, |b| {
@@ -423,6 +594,13 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
         "path": "/",
         "chain": [],
     });
+    let projected_protocol = build_partial_protocol(
+        &["count", "generatedAt", "title"],
+        &["count", "generatedAt", "title"],
+        false,
+    );
+    let scriptless_protocol = build_partial_protocol(&[], &["count", "generatedAt", "title"], true);
+    let static_protocol = build_partial_protocol(&[], &[], true);
     let mut group = c.benchmark_group("partial_state_serialization");
 
     for &target in &[64 * 1024usize, 1024 * 1024] {
@@ -452,18 +630,60 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("validate_and_embed", &label),
+            BenchmarkId::new("projected_authored_state", &label),
             &state_json,
             |b, input| {
                 b.iter(|| {
-                    let output =
-                        webui_handler::route_handler::serialize_partial_response_with_state(
-                            &response,
-                            black_box(input),
-                        )
-                        .unwrap_or_else(|error| {
-                            panic!("raw-state response serialization failed: {error}")
-                        });
+                    let output = webui_handler::route_handler::render_partial_prepared(
+                        &projected_protocol,
+                        black_box(input),
+                        "index.html",
+                        "/",
+                        "",
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("projected partial response serialization failed: {error}")
+                    });
+                    black_box(output.len());
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("projected_scriptless_state", &label),
+            &state_json,
+            |b, input| {
+                b.iter(|| {
+                    let output = webui_handler::route_handler::render_partial_prepared(
+                        &scriptless_protocol,
+                        black_box(input),
+                        "index.html",
+                        "/",
+                        "",
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("scriptless partial response serialization failed: {error}")
+                    });
+                    black_box(output.len());
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("static_scriptless_state", &label),
+            &state_json,
+            |b, input| {
+                b.iter(|| {
+                    let output = webui_handler::route_handler::render_partial_prepared(
+                        &static_protocol,
+                        black_box(input),
+                        "index.html",
+                        "/",
+                        "",
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("static partial response serialization failed: {error}")
+                    });
                     black_box(output.len());
                 });
             },

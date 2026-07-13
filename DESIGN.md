@@ -40,13 +40,6 @@ pub struct WebUIProtocol {
     pub css_strategy: CssStrategy,
     /// Build-wide DOM encapsulation strategy (Shadow or Light).
     pub dom_strategy: DomStrategy,
-    /// Sorted, deduplicated union of every component's `hydration_keys`.
-    /// Used as the compatibility fallback for protocols that do not carry
-    /// per-component hydration keys. See "Hydration schema" below.
-    pub hydration_schema: Vec<String>,
-    /// Hydration projection contract version. Zero preserves full-state
-    /// bootstrap behavior for protocols built before projection.
-    pub hydration_schema_version: u32,
 }
 
 /// Per-component metadata populated by the active parser plugin at build time.
@@ -72,11 +65,14 @@ pub struct ComponentData {
     pub template_json: String,
     /// WebUI plugin component-local JavaScript condition closure array.
     pub template_functions: String,
-    /// Sorted, deduplicated hydratable property names for this component: the
-    /// union of its template state roots (`tr`) and any `@observable`/`@attr`
-    /// fields scanned from the sibling `.ts` source. The handler unions these
-    /// keys for components reachable on the active request path.
+    /// Sorted, deduplicated property names seeded during initial SSR hydration.
+    /// Empty for compiler-owned scriptless templates.
     pub hydration_keys: Vec<String>,
+    /// Sorted, deduplicated property names needed to create or update this
+    /// component during partial navigation. Scriptless templates use their
+    /// template roots; authored components use template roots plus hydration
+    /// keys.
+    pub navigation_keys: Vec<String>,
 }
 
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
@@ -322,16 +318,18 @@ The `state` field is **projected**, not the whole application state. The handler
 unions `hydration_keys` for components reachable from the active entry and
 request route, then serializes only matching top-level state fields. Components
 behind active-route `<if>` and `<for>` branches remain conservatively reachable;
-inactive sibling routes are excluded. Protocols that predate per-component keys
-fall back to the global `WebUIProtocol::hydration_schema`. Protocols that
-predate hydration projection entirely have version `0` and emit the full state;
-new builds write version `1`, making even an empty schema authoritative.
+inactive sibling routes are excluded. Per-component keys are always
+authoritative. If no reachable authored component needs initial state, the
+handler emits `"state":{}` without invoking serde for the state value. Protocol
+fields formerly used for a global schema and compatibility version are reserved
+and have no runtime fallback.
 
 Projection keeps startup cost proportional to the active hydratable surface
 rather than the full state. It is a payload boundary, not a secrecy boundary:
-any key selected by template metadata or an authored decorator is client-facing.
-Hosts must never put secrets in browser render state. See
-[Hydration schema](#hydration-schema).
+any key selected by an authored decorator for initial hydration, or by template
+metadata for partial navigation, is client-facing. Hosts must never put secrets
+in browser render state. See
+[Hydration keys and state projection](#hydration-keys-and-state-projection).
 
 Plugins can still emit executable side-channel data after the inert block. The WebUI framework
 plugin uses that extension point to install component-local
@@ -345,29 +343,31 @@ emit WebUI `templates` or `templateFns`.
 - `<webui-outlet>` — light DOM custom element, marks insertion point for child route content
 
 **Client-side navigation:**
-1. On initial load, the router reads `window.__webui` for the SSR chain, inventory, and nonce. It hydrates matched `<webui-route>` elements using the `data-ri` attribute for O(1) indexed lookup instead of DOM walking.
+1. On initial load, the router reads `window.__webui` for the SSR chain, inventory, and nonce. It hydrates matched `<webui-route>` elements using the `data-ri` attribute for O(1) indexed lookup instead of DOM walking. While active, it installs a nonce-bearing `@view-transition { navigation: none; }` override and removes it on `destroy()`. This disables automatic cross-document transitions without affecting explicit same-document `document.startViewTransition()` commits.
 2. `RouterConfig` supports `ssrFresh?: boolean` (default `true`) — when set, the router skips the initial loader replay because SSR state is authoritative. Components can opt into loader replay at startup by declaring `static ssrLoader = true`.
 3. On navigation, fetches a partial response (`Accept: application/x-ndjson, application/json`) from the server.
-4. The server returns the matched route chain — the client does NOT perform route matching.
-5. Reconciles old vs new chain — finds first changed level.
-6. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
-7. Parent components and their state are preserved.
+4. The server returns the matched route chain; the client does NOT perform route matching.
+5. Newly received templates are registered and published through `webui:templates-registered`, allowing the framework to define compiler-owned hosts before commit.
+6. Configured authored loaders run. If the destination tag is still unregistered, the router performs document navigation.
+7. Otherwise, the router reconciles old vs new chain — finds first changed level.
+8. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
+9. Parent components and their state are preserved.
 
-**Partial response:** The core `render_partial()` function returns
-`{ templateStyles, templates, templateFunctions, inventory, path, chain, cacheTags, cacheControl }`
-without state so streaming hosts can schedule data independently. FFI, Node,
-WASM, and .NET convenience entry points accept `state_json` and return a
-complete JSON response with a top-level `state` field. They validate the input
+**Partial response:** `render_partial()` and `render_partial_prepared()` return
+the complete response with projected top-level `state`.
+`render_partial_metadata()` and `render_partial_metadata_prepared()` are the
+explicit state-free APIs for NDJSON chunk 1. Raw-state callers validate input
 with a streaming serde visitor that enforces `serde_json::Value` numeric limits,
-then embed the original JSON bytes instead of materializing and serializing a
-duplicate value tree.
+skip unselected values without materializing them, and borrow selected raw
+values into the response. FFI, Node, WASM, and .NET expose only the complete
+`renderPartial` contract.
 
-- `state`: route-scoped application data; included by complete-response host APIs or supplied as NDJSON Chunk 2 by a streaming host. The router applies it to components via `setState()`
+- `state`: route-scoped navigation data projected with each reachable component's `navigation_keys`; included by complete-response host APIs or supplied as NDJSON Chunk 2 by a streaming host. The router applies it to components via `setState()`
 - `templateStyles`: CSS module definition tags (`<script type="importmap">{"imports":{"...":"data:text/css,..."}}</script>` strings - see [CssStrategy::Module](#css-strategy)) for newly shipped components. Empty array for Link/Style modes. The client appends these to `<head>` before installing template closure arrays so adopted stylesheets are available
-- `templates`: JSON-safe client template metadata keyed by component tag, filtered by inventory bitmask
+- `templates`: JSON-safe authored and compiler-owned template metadata keyed by component tag, filtered by inventory bitmask
 - `templateFunctions`: JavaScript condition closure array strings keyed by component tag, filtered alongside `templates`; omitted or empty for templates with no conditions
 - `inventory`: updated hex bitmask of loaded templates
-- `chain`: matched route chain array — each entry has `component`, `path`, optional `params`, `exact`, `allowedQuery`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`
+- `chain`: matched route chain array. Each entry has `component`, `path`, optional `params`, `exact`, `allowedQuery`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`
 - `cacheTags`: resolved cache tags from the full route chain (union of all levels, deduplicated). The client tags its cache entry with these values for tag-based invalidation
 
 **NDJSON streaming:** For servers that support it, the partial can be split into two NDJSON lines. Chunk 1 (chain + templates) flushes immediately for instant navigation commit. Chunk 2 (per-component states) arrives when the backend data is ready. The router reads Chunk 1, commits navigation, then applies Chunk 2 states in the background.
@@ -459,11 +459,13 @@ overlap with the invalidated tags.
 | `Accept` | `application/x-ndjson, application/json` | Requests NDJSON streaming or JSON partial instead of full HTML |
 | `X-WebUI-Inventory` | Hex bitmask | Templates already loaded — server skips re-sending them |
 
-The `chain` field is produced by `render_partial()` in the handler, which walks
+The `chain` field is produced by the partial renderer, which walks
 the fragment graph and matches routes at each nesting level using a
-`ProtocolIndex` (see [ProtocolIndex](#protocolindex)). Low-level Rust callers can
-add state themselves or use `serialize_partial_response_with_state()`. The FFI,
-Node, WASM, and .NET `renderPartial` surfaces return the complete JSON response.
+`ProtocolIndex` (see [ProtocolIndex](#protocolindex)). `render_partial()` and
+`render_partial_prepared()` apply active-route projection and return complete
+JSON responses. Rust NDJSON hosts use the explicitly named
+`render_partial_metadata()` APIs to schedule state separately. The FFI, Node,
+WASM, and .NET `renderPartial` surfaces return the complete JSON response.
 
 **Partial-template selection:** During client navigation, servers derive template names from the
 normal render fragment graph starting at the persistent entry fragment. The traversal is
@@ -688,8 +690,8 @@ parameter values; retaining those entries would allow unbounded growth.
 #### Partial and Action Response Functions
 
 ```rust
-/// Produce route/template metadata for client-side navigation.
-pub fn render_partial(
+/// Produce state-free route/template metadata for NDJSON chunk 1.
+pub fn render_partial_metadata(
     protocol: &WebUIProtocol,
     entry_id: &str,
     request_path: &str,
@@ -697,17 +699,29 @@ pub fn render_partial(
     index: &mut ProtocolIndex,
 ) -> Result<Value, HandlerError>;
 
-pub fn render_partial_prepared(
+pub fn render_partial_metadata_prepared(
     prepared: &PreparedProtocol,
     entry_id: &str,
     request_path: &str,
     inventory_hex: &str,
 ) -> Result<Value, HandlerError>;
 
-/// Validate state JSON and embed its original bytes in a partial response.
-pub fn serialize_partial_response_with_state(
-    response: &Value,
+/// Produce a complete partial response from parsed state.
+pub fn render_partial(
+    protocol: &WebUIProtocol,
+    state: Value,
+    entry_id: &str,
+    request_path: &str,
+    inventory_hex: &str,
+) -> Result<Value, HandlerError>;
+
+/// Validate and project raw state without materializing the full value tree.
+pub fn render_partial_prepared(
+    prepared: &PreparedProtocol,
     state_json: &str,
+    entry_id: &str,
+    request_path: &str,
+    inventory_hex: &str,
 ) -> Result<String, HandlerError>;
 
 pub fn render_component_templates_prepared(
@@ -1036,9 +1050,10 @@ Conditional exports are resolved with deterministic priority: `default` → `imp
 
 Script ownership is metadata-only: discovery never scans package JavaScript to find
 `customElements.define()` calls. Packages without a root JS entry are treated as
-HTML-only component libraries, so dynamic templates can use compiler-owned static
-hosts. Packages with a root JS entry own their custom elements and do not receive
-static-host metadata.
+compiler-owned template libraries: their templates and styles participate in
+server rendering, browser template metadata is emitted, and initial hydration
+state remains empty. Packages with a root JS entry own their custom elements
+and receive authored hydration keys.
 
 #### Security
 - **Path traversal**: Export paths are validated — absolute paths and `..` components are rejected
@@ -1055,8 +1070,8 @@ static-host metadata.
 #### Local Path Resolution
 Local paths use the same sibling-file rule as app components: `my-card.html`
 paired with `my-card.ts` or `my-card.js` is authored/interactive; otherwise it is
-HTML-only and eligible for compiler-owned static hosts when the template has
-dynamic roots.
+SSR-only. Scriptless templates may contain server-rendered bindings,
+conditionals, and repeats, but they emit no client metadata or state.
 Local paths perform a recursive WalkDir scan for HTML files with hyphenated names, pairing matching CSS files — the same convention used by the parser's `ComponentRegistry`.
 
 ### HTML Parser
@@ -1145,7 +1160,7 @@ pub trait ParserPlugin {
 - **Fragment start**: `start_fragment` runs before each `HtmlParser::parse(...)` call so plugins can reset fragment-local counters
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
-- **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The `component` argument also carries `Component::script_source` — the raw authored client module — which is the metadata hook a plugin uses to author its own hydration strategy (the WebUI plugin scans it for `@observable`/`@attr`; see [Hydration schema](#hydration-schema)).
+- **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The `component` argument also carries `Component::script_source` — the raw authored client module — which is the metadata hook a plugin uses to author its own hydration strategy (the WebUI plugin scans it for `@observable`/`@attr`; see [Hydration keys and state projection](#hydration-keys-and-state-projection)).
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts. It is **fallible**: template-authoring mistakes found while compiling component templates (an invalid `@event` handler or a non-braced `w-ref`) surface as `ParserError::Template` instead of panicking, so every host (CLI, Node, FFI, WASM) can handle them.
 
 **Selecting parser plugins**
@@ -1502,9 +1517,9 @@ update hot paths still call the function directly.
 | `tr`  | `string[]`                        | Component-level state roots referenced by the template, excluding repeat item variables |
 | `ta`  | `string[]`                        | Observed host attributes index-aligned with `tr` |
 | `sd`  | `1`                               | Shadow DOM flag for client-created components      |
-| `th`  | `1`                               | Internal static TemplateElement host ownership flag for compiler-owned HTML-only components |
+| `th`  | `1`                               | Compiler-owned host flag for a scriptless template |
 
-All arrays are optional — omitted from the output when empty to minimize payload.
+All arrays are optional and omitted from the output when empty to minimize payload.
 
 `ConditionRef` in JSON metadata is `[functionIndex, paths]`:
 
@@ -1526,11 +1541,12 @@ Logical operators also match the protocol enum values:
 every binding at startup to rediscover roots or observed attributes. `ta` is
 index-aligned with `tr`: `ta[i]` is the host attribute observed for template
 root `tr[i]`. Metadata generated by `--plugin=webui` must include these fields
-when applicable; runtimes treat missing fields as empty. `th` is emitted only
-when the compiler owns a missing static host for an HTML-only component; fully
-static HTML-only components and authored interactive components omit it.
+when applicable; runtimes treat missing fields as empty. Authored components
+emit normal metadata. Scriptless components retain the same compiled template
+metadata with `th: 1`, allowing the framework to register a compiler-owned
+dormant host without requiring an empty authored module.
 
-#### Hydration schema
+#### Hydration keys and state projection
 
 Deriving a component's **hydration keys** — the property names it may seed from
 SSR state — is the responsibility of the **owning parser plugin**, not the
@@ -1540,37 +1556,40 @@ raw client-module source on `Component::script_source`; each plugin decides how
 out of generic code, so a plugin such as FAST can author a different hydration
 strategy through the same `register_component_template` hook.
 
-The **WebUI parser plugin** derives its per-component set as the sorted,
-deduplicated union of two sources:
+The sibling `.ts` or `.js` file marks authored browser behavior, but its
+presence does not make every template binding initial hydration state. The
+**WebUI parser plugin** derives two per-component surfaces:
 
-1. **Template state roots (`tr`).** Already produced by the compiler; every
-   component-level property the template binds to.
-2. **`@observable` / `@attr` decorators** scanned from the carried
-   `script_source` (the sibling `.ts`/`.js`). A deterministic, allocation-light
-   lexical scan (no regex, no recursion) collects the declared identifier after
-   each `@observable`, `@attr`, or `@attr({ ... })` decorator. The scanner skips
-   line and block comments, quoted strings, regular-expression literals, and
-   template-literal text while correctly traversing nested `${...}`
-   interpolation. It then handles decorator option groups, stacked decorators,
-   comments, accessors, and TypeScript member modifiers (`public`, `private`,
-   `protected`, `readonly`, `static`, `declare`, `override`, `accessor`,
-   `abstract`) before the property name. This captures JS-only reactive fields
-   that the server may seed but the template never binds. The plugin performs
-   this scan exactly once per component when finalizing template artifacts.
+1. **Initial hydration keys.** Only `@observable` / `@attr` properties scanned
+   from the carried `script_source` (the sibling `.ts`/`.js`). A deterministic,
+   allocation-light lexical scan (no regex, no recursion) collects the declared
+   identifier after each `@observable`, `@attr`, or `@attr({ ... })` decorator.
+   The scanner skips line and block comments, quoted strings,
+   regular-expression literals, and template-literal text while correctly
+   traversing nested `${...}` interpolation. It then handles decorator option
+   groups, stacked decorators, comments, accessors, and TypeScript member
+   modifiers (`public`, `private`, `protected`, `readonly`, `static`, `declare`,
+   `override`, `accessor`, `abstract`) before the property name. This captures
+   JS-owned reactive fields that the server may seed even when the template
+   does not bind them. The plugin performs this scan exactly once per component
+   when finalizing template artifacts.
+2. **Partial-navigation keys.** The sorted, deduplicated union of the initial
+   hydration keys and compiled template state roots (`tr`). Client-created or
+   updated route components need both JavaScript-owned state and every value
+   required to render their template.
 
-The component union is stored on `ComponentData::hydration_keys`. Assembly also
-folds all component keys into the sorted global
-`WebUIProtocol::hydration_schema` for compatibility with protocols that only
-carry the global schema. Current builders also set
-`hydration_schema_version = 1`. Version `0` identifies protocols that predate
-projection and preserves their full-state bootstrap behavior.
+`ComponentData::hydration_keys` stores the decorator-only initial surface.
+`ComponentData::navigation_keys` stores the partial-navigation union. A
+scriptless component has empty hydration keys and template-root navigation
+keys. A fully static template has both sets empty. There is no global schema or
+version fallback. Protocols without per-component keys project no client state.
 
 At initial full render, the handler finds components reachable from the active
 entry and request route, then unions only those components' keys. Inactive
 sibling routes are excluded. Components behind active-route conditionals,
 loops, and attribute-template edges remain conservatively reachable because
 reachability is state-agnostic. If no component has per-component keys, the
-handler uses the global schema.
+handler writes an empty state object directly.
 
 Projection iterates whichever side is smaller:
 
@@ -1583,14 +1602,20 @@ that alternative regressed the equal-byte 1 MB benchmark.
 
 **Security boundary.** Hydration projection reduces payload and CPU cost. It is
 not a secrecy boundary. Skipping comments and literals prevents false decorator
-matches from expanding the payload, but any key selected by authored template
-metadata or a decorator is intentionally client-facing. Hosts must not place
-secrets in browser render state.
+matches from expanding the payload, but any key selected by a decorator for
+initial hydration or by template metadata for partial navigation is
+intentionally client-facing. Hosts must not place secrets in browser render
+state.
 
-**Partial state.** The low-level `render_partial()` result excludes state so a
-streaming host can defer it. FFI, Node, WASM, and .NET complete-response helpers
-accept `state_json`, validate it without allocating a duplicate value tree, and
-embed its original bytes as the top-level `state` field.
+**Partial state.** `render_partial()` is the complete parsed-state API and
+`render_partial_prepared()` is the complete raw-state API. Both apply the active
+route's `navigation_keys`. The explicitly named `render_partial_metadata()`
+variants omit state only for NDJSON chunk 1. A streaming JSON visitor validates
+the complete object, skips unselected values without materializing them, and
+borrows selected raw values into the response. Parsed-state hosts move only
+selected values into the projected object. Scriptless routes therefore receive
+only the template roots needed to render the destination; fully static routes
+return `"state":{}`.
 
 `a[]` uses compact tuple forms to avoid runtime parsing:
 
@@ -1668,7 +1693,7 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
 
 ### Runtime contract
 
-`@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, and only interactive Web Components hydrate on the client — leaving static content untouched.
+`@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, authored Web Components hydrate on startup, and compiler-owned scriptless hosts remain dormant until browser code actually writes state.
 
 - SSR hydration uses one DOM walk to discover `<!--wr-->`, `<!--wi-->`, and `<!--wc-->` comment markers, wire the relevant bindings using compiled metadata path indices, then remove SSR-only markers.
 - Client-created DOM never reparses template syntax; it clones marker-free `h`,
@@ -1712,33 +1737,30 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   even when its only caller folds away. `webui-press build` injects
   `--define:__WEBUI_DEV__=false` automatically (and `serve` leaves it undefined);
   apps that bundle their own client define the flag as `false` for production.
-- Missing HTML-only custom elements that need host attribute or router state
-  reactivity are marked in compiled template metadata with `th: 1`. Importing
-  `@microsoft/webui-framework` installs the static host runtime; the router
-  remains framework-independent and never imports framework code. The runtime installs a static
-  `TemplateElement` subclass only for compiler-owned `th` tags that are not
-  already registered. Fully static scriptless templates remain plain SSR DOM and
-  are not upgraded.
-  `TemplateElement` is the static rendering core (hydration, template state,
-  bindings, repeats, conditionals, attribute reflection); the interactive
-  `WebUIElement` superset adds event wiring, `w-ref` wiring, and `$emit` on top.
-  The fallback uses compiler-emitted `tr` and `ta` metadata to determine
-  reactive roots and observed host attributes. It seeds non-attribute state from
-  `window.__webui.state` and supports router state updates without
-  developer-authored `@observable` / `@attr` stubs. Developer-authored classes,
-  lazy loaders, and templates with event handlers own their custom element
-  definitions.
+- Scriptless components receive compiled `template_json` with `th: 1` but no
+  `hydration_keys` or initial bootstrap state. The framework registers a
+  compiler-owned `TemplateElement` host for each such tag. Existing SSR DOM is
+  not walked and bindings are not installed on startup. The host activates only
+  after `setState`, a compiled parent property write, or a later observed
+  attribute change. Activation wires the existing SSR markers against the new
+  state and applies one targeted update. If the triggering write omits a repeat
+  root, activation preserves the SSR items and leaves that repeat unsynchronized
+  until the root is explicitly supplied; an explicit empty collection removes
+  them. Client-created instances mount immediately from the cached template.
+  `WebUIElement` remains the authored layer for events, `w-ref`, lifecycle code,
+  decorators, and `$emit`.
 - Developer-authored `WebUIElement` classes also treat compiled template roots
-  as stateful. `setState()` and SSR seeding store any undecorated
-  template-bound roots in hidden framework state, so `@observable` is only
-  required when TypeScript code reads or mutates the property directly.
-- Template producers that bootstrap initial SSR metadata or load metadata after
-  initial SSR, including `@microsoft/webui-router`, synchronously publish
-  `webui:templates-registered` with `{ templates }` in `detail`. The static
-  host tier claims compiler-owned template-backed HTML-only tags when the event
-  fires. The router does not install no-op fallback elements; missing component
-  registrations indicate that the app omitted the required runtime tier or lazy
-  loader.
+  as navigation state. `setState()` stores undecorated template-bound roots in
+  hidden framework state, so `@observable` is only required when TypeScript
+  reads or mutates the property directly. Initial SSR projection is stricter:
+  only explicit `@observable` / `@attr` fields select bootstrap state because
+  template-only values already exist in the trusted SSR DOM.
+- The router publishes initial and partial template registrations through
+  `webui:templates-registered`. This lets the framework claim scriptless route
+  tags before the router commits a partial, preserving soft navigation without
+  empty modules. After configured lazy loaders run, document navigation is used
+  only when neither authored code nor the compiler-owned host runtime registers
+  the destination tag. Route chain JSON has no `client` capability flag.
 - Events are resolved from compiler-grouped `eg[]` metadata entries using path
   indices. The compiler groups element events by event name and marks handlers
   that receive `e`, so the runtime installs one delegated listener per event
@@ -1897,8 +1919,8 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 | `webui_protocol_destroy(protocol)` | Destroy a prepared protocol handle. `NULL` is a safe no-op. |
 | `webui_handler_render(handler, data, len, json, entry_id, request_path)` | Render a pre-compiled protocol with route matching. `request_path` controls which route is active. Returns heap-allocated string. |
 | `webui_handler_render_prepared(handler, protocol, json, entry_id, request_path)` | Render with a prepared protocol, avoiding protobuf decode and index construction. |
-| `webui_render_partial(data, len, state_json, entry_id, request_path, inventory_hex)` | Produce a complete JSON partial response with validated state in a single call. |
-| `webui_render_partial_prepared(protocol, state_json, entry_id, request_path, inventory_hex)` | Produce the same complete response using a prepared protocol. |
+| `webui_render_partial(data, len, state_json, entry_id, request_path, inventory_hex)` | Produce a complete JSON partial response with active-route projected state in a single call. |
+| `webui_render_partial_prepared(protocol, state_json, entry_id, request_path, inventory_hex)` | Produce the same projected response using a prepared protocol. |
 | `webui_render_component_templates(data, len, tags_json, inventory_hex)` | Return requested component template payloads and updated inventory. |
 | `webui_render_component_templates_prepared(protocol, tags_json, inventory_hex)` | Component-template query using a prepared protocol. |
 | `webui_protocol_tokens(data, len)` | Return newline-delimited CSS token names. |

@@ -118,8 +118,10 @@ public sealed class WebUIHandler : IDisposable
 
     /// <summary>
     /// Produces a complete JSON partial response for client-side navigation.
-    /// Combines application state, route templates, inventory, request path, and
-    /// matched route chain in a single call — no assembly required.
+    /// Combines active-route client state, route templates, inventory, request
+    /// path, and matched route chain in a single call — no assembly required.
+    /// State fields not consumed by reachable authored client components are
+    /// excluded from the response.
     /// </summary>
     /// <param name="protocol">Pre-compiled protocol binary data.</param>
     /// <param name="stateJson">JSON-encoded application state.</param>
@@ -157,6 +159,8 @@ public sealed class WebUIHandler : IDisposable
 
     /// <summary>
     /// Produces a partial response using a protocol decoded once for repeated use.
+    /// State fields not consumed by reachable authored client components are
+    /// excluded from the response.
     /// </summary>
     /// <param name="protocol">Prepared protocol shared across requests.</param>
     /// <param name="stateJson">JSON-encoded application state.</param>

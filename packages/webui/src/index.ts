@@ -404,8 +404,9 @@ export function inspect(protocolData: Buffer): string {
 /**
  * Produce a complete JSON partial response for client-side navigation.
  *
- * Returns a JSON string with `state`, `templates`, `inventory`, `path`, and `chain`.
- * Pipe directly to the HTTP response — no post-processing needed.
+ * Returns a JSON string with active-route projected `state`, `templates`,
+ * `inventory`, `path`, and `chain`. Pipe directly to the HTTP response - no
+ * post-processing needed.
  *
  * If you need to inspect the response, parse it with the exported `PartialResponse` type:
  * ```ts

@@ -162,8 +162,11 @@ char *webui_render(const char *html, const char *data_json);
 
 /// Produce a complete JSON partial response for client-side navigation.
 ///
-/// Combines route templates, inventory, and matched route chain into a single
-/// JSON string: `{"templates":[...],"inventory":"...","chain":[...]}`.
+/// Combines active-route projected state, route templates, inventory, request
+/// path, and matched route chain into a single JSON string:
+/// `{"state":{...},"templates":{...},"inventory":"...","path":"...","chain":[...]}`.
+/// State fields not consumed by reachable authored client components are
+/// excluded.
 ///
 /// # Arguments
 ///
@@ -193,7 +196,8 @@ char *webui_render_partial(const uint8_t *protocol_data,
 /// Produce a partial response using a prepared protocol handle.
 ///
 /// This is equivalent to [`webui_render_partial`] but avoids protobuf decoding
-/// and reuses parsed component metadata across calls.
+/// and reuses parsed component metadata across calls. State is projected to the
+/// reachable authored client components before serialization.
 ///
 /// # Safety
 ///

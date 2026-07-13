@@ -124,7 +124,7 @@ use webui_handler::route_handler;
 
 let partial = route_handler::render_partial(
     &protocol, state, "index.html", "/users/42", inventory_hex,
-);
+)?;
 // Returns: { state, templates, inventory, path, chain }
 ```
 

@@ -453,7 +453,7 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn category_partial_in_module_mode_splits_styles_from_templates() {
+    async fn category_partial_in_module_mode_emits_authored_and_dormant_styles() {
         let app = test::init_service(
             App::new()
                 .app_data(test_state_with_css(webui::CssStrategy::Module))
@@ -494,8 +494,16 @@ mod tests {
         };
 
         assert!(
+            combined_styles.contains(r#""mp-product-card":"data:text/css,"#),
+            "module partials should return authored product-card CSS: {combined_styles}"
+        );
+        assert!(
             combined_styles.contains(r#""mp-product-grid":"data:text/css,"#),
-            "module partials should return mp-product-grid CSS as an importmap entry: {combined_styles}"
+            "module partials should return dormant product-grid CSS: {combined_styles}"
+        );
+        assert!(
+            combined_styles.contains(r#""mp-page-search":"data:text/css,"#),
+            "module partials should return dormant page-search CSS: {combined_styles}"
         );
         assert!(
             !combined_templates.contains(r#""mp-product-grid":"data:text/css,"#),

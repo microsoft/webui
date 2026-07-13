@@ -111,14 +111,14 @@ pub struct ComponentRegistry {
 /// Prefers `.ts` over `.js`. Returns `Ok(None)` only when neither sibling
 /// exists. A sibling that exists but cannot be read (I/O error, or non-UTF-8
 /// source, which [`fs::read_to_string`] rejects) is a hard error rather than a
-/// silent `None`: swallowing it would downgrade the component to a static host
-/// and drop its entire hydration surface without warning — precisely the
+/// silent `None`: swallowing it would misclassify the component as scriptless
+/// and drop its authored hydration surface without warning — precisely the
 /// under-inclusion failure this feature is designed to prevent. This matches
 /// how the sibling HTML and CSS reads treat an unreadable-but-present file.
 ///
 /// The raw source is stored on the [`Component`] and handed to parser plugins so
-/// each can derive its own hydration surface; its presence also doubles as the
-/// static-host `has_script` signal.
+/// each can derive its own hydration surface; its presence is the authored
+/// client-component signal.
 fn read_component_script(html_path: &Path) -> Result<Option<String>> {
     for ext in ["ts", "js"] {
         let candidate = html_path.with_extension(ext);
@@ -243,8 +243,8 @@ impl ComponentRegistry {
             (None, Vec::new(), Vec::new())
         };
 
-        // Read the sibling client module once: its presence is the static-host
-        // signal, and its raw source is handed to parser plugins so each can
+        // Read the sibling client module once: its presence marks the component
+        // as client-authored, and its raw source is handed to parser plugins so each can
         // derive its own hydration surface (the registry stays convention-agnostic).
         // A present-but-unreadable sibling is a hard error, never a silent skip.
         let script_source = read_component_script(html_path)?;
@@ -454,7 +454,7 @@ mod tests {
             result.is_err(),
             "a present-but-unreadable sibling script must fail the build, not be silently skipped"
         );
-        // A failed read must not leave the component registered as a static host.
+        // A failed read must not leave the component registered as scriptless.
         assert!(!registry.contains("scripted-card"));
     }
 

@@ -164,9 +164,9 @@ fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
 /// Returns `Ok(None)` only when neither sibling exists. A sibling that exists
 /// but cannot be read (I/O error, or non-UTF-8 source, which
 /// [`std::fs::read_to_string`] rejects) is a hard error rather than a silent
-/// `None`: swallowing it would downgrade the component to a static host and drop
-/// its entire hydration surface without warning. This mirrors the sibling HTML
-/// and CSS reads above.
+/// `None`: swallowing it would misclassify the component as scriptless and drop
+/// its authored hydration surface without warning. This mirrors the
+/// sibling HTML and CSS reads above.
 fn read_sibling_script(html_path: &Path) -> Result<Option<String>> {
     for ext in ["ts", "js"] {
         let candidate = html_path.with_extension(ext);

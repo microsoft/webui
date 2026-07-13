@@ -14,9 +14,6 @@ use std::fmt;
 use std::io;
 use thiserror::Error;
 
-/// Current build-time hydration schema contract version.
-pub const HYDRATION_SCHEMA_VERSION: u32 = 1;
-
 /// Plugin-specific protocol helpers for framework hydration metadata.
 pub mod plugin;
 
@@ -328,8 +325,6 @@ impl WebUiProtocol {
             components: HashMap::new(),
             css_strategy: 0,
             dom_strategy: 0,
-            hydration_schema: Vec::new(),
-            hydration_schema_version: 0,
         }
     }
 
@@ -341,8 +336,6 @@ impl WebUiProtocol {
             components: HashMap::new(),
             css_strategy: 0,
             dom_strategy: 0,
-            hydration_schema: Vec::new(),
-            hydration_schema_version: 0,
         }
     }
 }

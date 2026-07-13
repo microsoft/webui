@@ -102,19 +102,14 @@ impl FrontendRuntime {
         inventory_hex: &str,
         state: Value,
     ) -> Value {
-        let mut index = route_handler::ProtocolIndex::new(&self.protocol);
-        let mut partial = route_handler::render_partial(
+        route_handler::render_partial(
             &self.protocol,
+            state,
             &self.entry,
             route_path,
             inventory_hex,
-            &mut index,
         )
-        .unwrap_or_else(|e| serde_json::json!({"error": format!("render_partial failed: {e}")}));
-        if let Some(obj) = partial.as_object_mut() {
-            obj.insert("state".into(), state);
-        }
-        partial
+        .unwrap_or_else(|e| serde_json::json!({"error": format!("render_partial failed: {e}")}))
     }
 
     #[must_use]

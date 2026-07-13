@@ -5,11 +5,12 @@
 //! client script — the **WebUI parser plugin's** hydration strategy.
 //!
 //! WebUI components declare reactive state with `@observable` and `@attr`
-//! property decorators. Those properties, together with compiled template
-//! roots, are the fields the client runtime restores from the server-emitted
-//! bootstrap state during hydration. Extracting their names at build time lets
-//! the handler project the SSR state payload down to the hydratable surface
-//! instead of serializing the entire server state.
+//! property decorators. Those explicit JavaScript-owned properties are the
+//! fields the client runtime restores from the server-emitted bootstrap state.
+//! Compiled template roots are a separate navigation surface because their
+//! initial values already exist in the trusted SSR DOM. Extracting decorator
+//! names at build time lets the handler project the SSR state payload down to
+//! the hydratable surface instead of serializing the entire server state.
 //!
 //! This convention is owned by [`crate::plugin::webui::WebUIParserPlugin`],
 //! which is the sole caller of [`scan_hydration_attributes`] against the raw
@@ -31,8 +32,9 @@
 //! `// @observable apiKey` must not expand the emitted state allowlist merely
 //! because a server state object happens to contain the same key. This scanner
 //! is still not a TypeScript parser or a security boundary: hosts must not place
-//! secrets in client-facing render state. The template-root union remains the
-//! correctness backstop for fields referenced by authored templates.
+//! secrets in client-facing render state. Template roots are retained
+//! separately for partial navigation, where client-created components need
+//! values that were not already rendered into SSR DOM.
 //!
 //! ## TypeScript / JavaScript surface handled
 //!

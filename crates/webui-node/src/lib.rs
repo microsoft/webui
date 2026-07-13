@@ -296,8 +296,8 @@ impl PreparedProtocol {
 
 /// Produce a complete JSON partial response for client-side navigation.
 ///
-/// Combines application state, route templates, inventory, request path, and
-/// matched route chain into a single JSON string:
+/// Combines active-route projected state, route templates, inventory, request
+/// path, and matched route chain into a single JSON string:
 /// `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
 ///
 /// Host servers return this directly — no assembly required.
@@ -358,16 +358,14 @@ fn render_partial_with_prepared(
     request_path: &str,
     inventory_hex: &str,
 ) -> napi::Result<String> {
-    let result = webui_handler::route_handler::render_partial_prepared(
+    webui_handler::route_handler::render_partial_prepared(
         prepared,
+        state_json,
         entry_id,
         request_path,
         inventory_hex,
     )
-    .map_err(|e| NapiError::from_reason(format!("render_partial failed: {e}")))?;
-
-    webui_handler::route_handler::serialize_partial_response_with_state(&result, state_json)
-        .map_err(|e| NapiError::from_reason(e.to_string()))
+    .map_err(|e| NapiError::from_reason(format!("render_partial failed: {e}")))
 }
 
 fn render_component_templates_with_prepared(
@@ -702,7 +700,25 @@ mod tests {
         parser.parse("index.html", html).expect("parse failed");
         let tokens = parser.take_tokens();
         let mut protocol = WebUIProtocol::with_tokens(parser.into_fragment_records(), tokens);
-        protocol.hydration_schema = schema.iter().map(|s| (*s).to_string()).collect();
+        protocol.fragments.insert(
+            "client-card".to_string(),
+            webui_protocol::FragmentList {
+                fragments: vec![webui_protocol::WebUIFragment::raw("<p>client</p>")],
+            },
+        );
+        protocol
+            .fragments
+            .get_mut("index.html")
+            .expect("index fragment should exist")
+            .fragments
+            .insert(1, webui_protocol::WebUIFragment::component("client-card"));
+        protocol.components.insert(
+            "client-card".to_string(),
+            webui_protocol::ComponentData {
+                hydration_keys: schema.iter().map(|key| (*key).to_string()).collect(),
+                ..Default::default()
+            },
+        );
         protocol.to_protobuf().expect("protobuf encode failed")
     }
 
@@ -742,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn render_projects_state_to_hydration_schema() {
+    fn render_projects_state_to_component_hydration_keys() {
         // Full document so the parser emits a `body_end` signal, which makes the
         // WebUI plugin emit the #webui-data bootstrap block.
         let bytes =
@@ -931,6 +947,7 @@ mod tests {
         std::fs::write(dir.path().join("index.html"), "<app-shell></app-shell>").unwrap();
         std::fs::write(dir.path().join("app-shell.html"), "<div></div>").unwrap();
         std::fs::write(dir.path().join("lazy-panel.html"), "<p>{{title}}</p>").unwrap();
+        std::fs::write(dir.path().join("lazy-panel.ts"), "export {};").unwrap();
 
         let options = JsBuildOptions {
             app_dir: dir.path().to_string_lossy().to_string(),

@@ -341,6 +341,12 @@ fn render_partial_returns_templates_inventory_and_chain() {
         .entry("mp-search-page".to_string())
         .or_default()
         .template = "<f-template id=search></f-template>".to_string();
+    let search_page = protocol
+        .components
+        .entry("mp-search-page".to_string())
+        .or_default();
+    search_page.hydration_keys = vec!["query".to_string()];
+    search_page.navigation_keys = vec!["query".to_string()];
     protocol
         .components
         .entry("mp-product-grid".to_string())
@@ -860,8 +866,8 @@ fn protocol_tokens_invalid_protobuf_returns_null() {
 // Tests: projected hydration state through the C ABI render path
 // ---------------------------------------------------------------------------
 
-/// Like [`build_protocol_with_body_end`] but attaches a hydration `schema`, so
-/// the emitted `#webui-data` state block is projected down to those keys.
+/// Like [`build_protocol_with_body_end`] but attaches a reachable authored
+/// component hydration keys, so the emitted state is projected to that set.
 fn build_protocol_with_schema(schema: &[&str]) -> Vec<u8> {
     let mut fragments = HashMap::new();
     fragments.insert(
@@ -871,21 +877,31 @@ fn build_protocol_with_schema(schema: &[&str]) -> Vec<u8> {
                 WebUIFragment::raw("<html><head>"),
                 WebUIFragment::signal("head_end".to_string(), true),
                 WebUIFragment::raw("</head><body>"),
+                WebUIFragment::component("client-card"),
                 WebUIFragment::signal("body_end".to_string(), true),
                 WebUIFragment::raw("</body></html>"),
             ],
         },
     );
-    let protocol = WebUIProtocol {
-        fragments,
-        hydration_schema: schema.iter().map(|s| (*s).to_string()).collect(),
-        ..Default::default()
-    };
+    fragments.insert(
+        "client-card".to_string(),
+        FragmentList {
+            fragments: vec![WebUIFragment::raw("<p>client</p>")],
+        },
+    );
+    let mut protocol = WebUIProtocol::new(fragments);
+    protocol.components.insert(
+        "client-card".to_string(),
+        webui_protocol::ComponentData {
+            hydration_keys: schema.iter().map(|key| (*key).to_string()).collect(),
+            ..Default::default()
+        },
+    );
     protocol.to_protobuf().expect("serialize test protocol")
 }
 
 #[test]
-fn handler_render_projects_state_to_hydration_schema() {
+fn handler_render_projects_state_to_component_hydration_keys() {
     let proto_bytes = build_protocol_with_schema(&["kept"]);
 
     unsafe {

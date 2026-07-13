@@ -11,7 +11,10 @@
 use crate::{route_matcher, route_renderer, HandlerError};
 use route_matcher::CompiledRouteCache;
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
-use serde_json::Value;
+use serde::ser::SerializeMap;
+use serde::Serialize;
+use serde_json::{value::RawValue, Map, Value};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::RwLock;
@@ -278,8 +281,11 @@ pub fn get_needed_components_for_request(
     filter_needed_components(&component_names, inventory_hex, component_index)
 }
 
-/// Render a partial response using a prepared protocol and its reusable index.
-pub fn render_partial_prepared(
+/// Render partial-navigation metadata using a prepared protocol and its reusable index.
+///
+/// This state-free form is intended for NDJSON chunk 1. Use
+/// [`render_partial_prepared`] for a complete JSON response.
+pub fn render_partial_metadata_prepared(
     prepared: &PreparedProtocol,
     entry_id: &str,
     request_path: &str,
@@ -294,6 +300,30 @@ pub fn render_partial_prepared(
         inventory_hex,
         &mut index,
     )
+}
+
+/// Produce a complete partial-navigation response with request-projected state.
+///
+/// The input JSON is validated without materializing the full state tree.
+/// Only keys required to create or update components reachable on the active
+/// route are copied into the response.
+pub fn render_partial_prepared(
+    prepared: &PreparedProtocol,
+    state_json: &str,
+    entry_id: &str,
+    request_path: &str,
+    inventory_hex: &str,
+) -> Result<String, HandlerError> {
+    let mut route_cache = CompiledRouteCache::new();
+    let mut index = prepared.request_index(&mut route_cache);
+    let (response, navigation_schema) = render_partial_indexed_with_schema(
+        prepared.protocol(),
+        entry_id,
+        request_path,
+        inventory_hex,
+        &mut index,
+    )?;
+    serialize_projected_partial_response(&response, state_json, &navigation_schema)
 }
 
 /// Render an action response using a prepared protocol and its reusable index.
@@ -330,38 +360,28 @@ pub fn render_component_templates_prepared(
     )
 }
 
-/// Serialize a partial response while embedding validated state JSON verbatim.
-///
-/// This avoids materializing the state as a `serde_json::Value` only to
-/// serialize it again. A streaming visitor enforces the same numeric limits as
-/// `serde_json::Value` without allocating a duplicate JSON tree.
-pub fn serialize_partial_response_with_state(
+fn serialize_projected_partial_response(
     response: &Value,
     state_json: &str,
+    navigation_schema: &[&str],
 ) -> Result<String, HandlerError> {
-    validate_json(state_json)?;
-    let mut output = serde_json::to_string(response)
-        .map_err(|error| partial_serialize_error(&error.to_string()))?;
-    if !output.starts_with('{') || !output.ends_with('}') {
-        return Err(partial_response_not_object());
-    }
-
-    output.pop();
-    if output.len() > 1 {
-        output.push(',');
-    }
-    output.push_str("\"state\":");
-    output.push_str(state_json);
-    output.push('}');
-    Ok(output)
+    let response = response
+        .as_object()
+        .ok_or_else(partial_response_not_object)?;
+    let state = project_raw_state(state_json, navigation_schema)?;
+    serde_json::to_string(&PartialResponseWithState { response, state })
+        .map_err(|error| partial_serialize_error(&error.to_string()))
 }
 
 fn validate_json(json: &str) -> Result<(), HandlerError> {
+    validate_json_inner(json).map_err(|error| invalid_state_json(&error.to_string()))
+}
+
+fn validate_json_inner(json: &str) -> serde_json::Result<()> {
     let mut deserializer = serde_json::Deserializer::from_str(json);
     ValidJson
         .deserialize(&mut deserializer)
         .and_then(|_| deserializer.end())
-        .map_err(|error| invalid_state_json(&error.to_string()))
 }
 
 struct ValidJson;
@@ -452,6 +472,162 @@ impl<'de> Visitor<'de> for ValidJsonVisitor {
             map.next_value_seed(ValidJson)?;
         }
         Ok(())
+    }
+}
+
+struct PartialResponseWithState<'a, 'state> {
+    response: &'a Map<String, Value>,
+    state: ProjectedRawState<'state>,
+}
+
+impl Serialize for PartialResponseWithState<'_, '_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.response.len().saturating_add(1)))?;
+        for (key, value) in self.response {
+            map.serialize_entry(key, value)?;
+        }
+        map.serialize_entry("state", &self.state)?;
+        map.end()
+    }
+}
+
+struct ProjectedRawState<'de> {
+    entries: Vec<(Cow<'de, str>, &'de RawValue)>,
+}
+
+impl Serialize for ProjectedRawState<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.entries.len()))?;
+        for (key, value) in &self.entries {
+            map.serialize_entry(key.as_ref(), value)?;
+        }
+        map.end()
+    }
+}
+
+fn project_raw_state<'de>(
+    state_json: &'de str,
+    hydration_schema: &[&str],
+) -> Result<ProjectedRawState<'de>, HandlerError> {
+    let is_object = state_json
+        .as_bytes()
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| *byte == b'{');
+    if !is_object {
+        validate_json(state_json)?;
+        return Ok(ProjectedRawState {
+            entries: Vec::new(),
+        });
+    }
+
+    let mut deserializer = serde_json::Deserializer::from_str(state_json);
+    let mut state = ProjectedRawStateSeed { hydration_schema }
+        .deserialize(&mut deserializer)
+        .and_then(|state| {
+            deserializer.end()?;
+            Ok(state)
+        })
+        .map_err(|error| invalid_state_json(&error.to_string()))?;
+    state.entries.sort_unstable_by(|left, right| {
+        left.0.as_ref().as_bytes().cmp(right.0.as_ref().as_bytes())
+    });
+    Ok(state)
+}
+
+struct ProjectedRawStateSeed<'a> {
+    hydration_schema: &'a [&'a str],
+}
+
+impl<'de> DeserializeSeed<'de> for ProjectedRawStateSeed<'_> {
+    type Value = ProjectedRawState<'de>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(ProjectedRawStateVisitor {
+            hydration_schema: self.hydration_schema,
+        })
+    }
+}
+
+struct ProjectedRawStateVisitor<'a> {
+    hydration_schema: &'a [&'a str],
+}
+
+impl<'de> Visitor<'de> for ProjectedRawStateVisitor<'_> {
+    type Value = ProjectedRawState<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut entries: Vec<(Cow<'de, str>, &'de RawValue)> =
+            Vec::with_capacity(self.hydration_schema.len());
+        while let Some(key) = map.next_key_seed(BorrowedString)? {
+            if self.hydration_schema.binary_search(&key.as_ref()).is_err() {
+                map.next_value_seed(ValidJson)?;
+                continue;
+            }
+
+            let value: &'de RawValue = map.next_value()?;
+            validate_json_inner(value.get()).map_err(serde::de::Error::custom)?;
+            if let Some(entry) = entries
+                .iter_mut()
+                .find(|(existing, _)| existing.as_ref() == key.as_ref())
+            {
+                *entry = (key, value);
+            } else {
+                entries.push((key, value));
+            }
+        }
+        Ok(ProjectedRawState { entries })
+    }
+}
+
+struct BorrowedString;
+
+impl<'de> DeserializeSeed<'de> for BorrowedString {
+    type Value = Cow<'de, str>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(BorrowedStringVisitor)
+    }
+}
+
+struct BorrowedStringVisitor;
+
+impl<'de> Visitor<'de> for BorrowedStringVisitor {
+    type Value = Cow<'de, str>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a string")
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> std::result::Result<Self::Value, E> {
+        Ok(Cow::Borrowed(value))
+    }
+
+    fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E> {
+        Ok(Cow::Owned(value.to_owned()))
+    }
+
+    fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E> {
+        Ok(Cow::Owned(value))
     }
 }
 
@@ -1174,12 +1350,11 @@ fn walk_children_for_inventory_and_chain(
     }
 }
 
-/// Produce a JSON partial response for client-side navigation.
+/// Produce state-free partial-navigation metadata for NDJSON chunk 1.
 ///
 /// Returns the matched route chain, templates, inventory, and cache tags.
-/// **State is not included** — the caller is responsible for adding
-/// application state to the response (e.g. as a top-level `"state"` field
-/// for non-streaming, or as NDJSON Chunk 2 for streaming).
+/// State is intentionally excluded so a streaming host can send it later.
+/// Use [`render_partial`] for a complete JSON response.
 ///
 /// Returns a `serde_json::Value` object with fields:
 /// - `templateStyles`: module CSS definition tags for inventory-new components (empty for Link/Style)
@@ -1189,7 +1364,7 @@ fn walk_children_for_inventory_and_chain(
 /// - `path`: the request path
 /// - `chain`: matched route chain array
 /// - `cacheTags`: resolved cache tags from the full route chain (union of all levels)
-pub fn render_partial(
+pub fn render_partial_metadata(
     protocol: &WebUIProtocol,
     entry_id: &str,
     request_path: &str,
@@ -1206,6 +1381,37 @@ pub fn render_partial(
     )
 }
 
+/// Produce a complete partial-navigation response with projected parsed state.
+///
+/// Only keys required to create or update client components reachable on the
+/// active route are retained. Authored components use template roots plus their
+/// explicit hydration surface; scriptless templates use compiled template roots.
+pub fn render_partial(
+    protocol: &WebUIProtocol,
+    state: Value,
+    entry_id: &str,
+    request_path: &str,
+    inventory_hex: &str,
+) -> Result<Value, HandlerError> {
+    let mut index = ProtocolIndex::new(protocol);
+    let mut request_index = index.request_index();
+    let (mut response, navigation_schema) = render_partial_indexed_with_schema(
+        protocol,
+        entry_id,
+        request_path,
+        inventory_hex,
+        &mut request_index,
+    )?;
+    let response = response
+        .as_object_mut()
+        .ok_or_else(partial_response_not_object)?;
+    response.insert(
+        "state".into(),
+        project_owned_state(state, &navigation_schema),
+    );
+    Ok(Value::Object(std::mem::take(response)))
+}
+
 fn render_partial_indexed(
     protocol: &WebUIProtocol,
     entry_id: &str,
@@ -1213,9 +1419,22 @@ fn render_partial_indexed(
     inventory_hex: &str,
     index: &mut RequestProtocolIndex<'_>,
 ) -> Result<Value, HandlerError> {
+    render_partial_indexed_with_schema(protocol, entry_id, request_path, inventory_hex, index)
+        .map(|(response, _)| response)
+}
+
+fn render_partial_indexed_with_schema<'a>(
+    protocol: &'a WebUIProtocol,
+    entry_id: &str,
+    request_path: &str,
+    inventory_hex: &str,
+    index: &mut RequestProtocolIndex<'_>,
+) -> Result<(Value, Vec<&'a str>), HandlerError> {
     // Single-pass walk: collect both inventory components and route chain.
     let (component_ids, mut chain) =
         collect_inventory_and_chain(protocol, entry_id, request_path, index);
+    let navigation_schema =
+        crate::collect_navigation_schema(protocol, component_ids.iter().map(String::as_str));
 
     let (needed_names, updated_inv) =
         filter_needed_components(&component_ids, inventory_hex, index.component_index)?;
@@ -1254,7 +1473,20 @@ fn render_partial_indexed(
             .collect();
         result.insert("cacheTags".into(), Value::Array(deduped));
     }
-    Ok(Value::Object(result))
+    Ok((Value::Object(result), navigation_schema))
+}
+
+fn project_owned_state(state: Value, hydration_schema: &[&str]) -> Value {
+    let Value::Object(mut source) = state else {
+        return Value::Object(Map::new());
+    };
+    let mut projected = Map::with_capacity(hydration_schema.len().min(source.len()));
+    for &key in hydration_schema {
+        if let Some(value) = source.remove(key) {
+            projected.insert(key.to_owned(), value);
+        }
+    }
+    Value::Object(projected)
 }
 
 /// Produce a JSON response for a POST mutation action.
@@ -1627,10 +1859,13 @@ pub fn collect_route_chain(
                             // Walk nested children iteratively
                             collect_chain_from_children(
                                 &route_frag.children,
-                                request_path,
                                 &child_route_base,
                                 &mut chain,
-                                cache,
+                                &mut ChildWalkCtx {
+                                    request_path,
+                                    protocol,
+                                    cache,
+                                },
                             );
                         }
                     }
@@ -1646,16 +1881,17 @@ pub fn collect_route_chain(
 /// Iteratively collect chain entries from nested route children.
 fn collect_chain_from_children(
     children: &[WebUIFragmentRoute],
-    request_path: &str,
     route_base: &str,
     chain: &mut Vec<RouteChainEntry>,
-    cache: &mut CompiledRouteCache,
+    ctx: &mut ChildWalkCtx<'_>,
 ) {
     let mut pending: Vec<(&[WebUIFragmentRoute], String)> =
         vec![(children, route_base.to_string())];
 
     while let Some((current, base)) = pending.pop() {
-        if let Some((idx, rm)) = select_best_child_route(current, request_path, &base, cache) {
+        if let Some((idx, rm)) =
+            select_best_child_route(current, ctx.request_path, &base, ctx.cache)
+        {
             let matched = &current[idx];
             chain.push(RouteChainEntry {
                 component: matched.fragment_id.clone(),
@@ -1671,7 +1907,7 @@ fn collect_chain_from_children(
             });
             if !matched.children.is_empty() {
                 let child_base =
-                    route_matcher::compute_route_base(request_path, rm.consumed_segments);
+                    route_matcher::compute_route_base(ctx.request_path, rm.consumed_segments);
                 pending.push((&matched.children, child_base));
             }
         }
@@ -1720,9 +1956,10 @@ mod tests {
         );
         let protocol = WebUIProtocol::new(fragments);
         let mut direct_index = ProtocolIndex::new(&protocol);
-        let direct = render_partial(&protocol, "index.html", "/", "", &mut direct_index).unwrap();
+        let direct =
+            render_partial_metadata(&protocol, "index.html", "/", "", &mut direct_index).unwrap();
         let prepared = PreparedProtocol::new(protocol);
-        let cached = render_partial_prepared(&prepared, "index.html", "/", "").unwrap();
+        let cached = render_partial_metadata_prepared(&prepared, "index.html", "/", "").unwrap();
 
         assert_eq!(cached, direct);
     }
@@ -1761,7 +1998,8 @@ mod tests {
                     barrier.wait();
                     for _ in 0..50 {
                         let response =
-                            render_partial_prepared(&prepared, "index.html", "/", "").unwrap();
+                            render_partial_metadata_prepared(&prepared, "index.html", "/", "")
+                                .unwrap();
                         assert_eq!(response["templates"]["home-page"]["h"], "<p>Home</p>");
                     }
                 })
@@ -1773,11 +2011,52 @@ mod tests {
         }
     }
 
+    fn prepared_partial_protocol(hydration_keys: &[&str]) -> PreparedProtocol {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route("/", "home-page")],
+            },
+        );
+        fragments.insert(
+            "home-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Home</p>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.components.insert(
+            "home-page".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<p>Home</p>"}"#.to_string(),
+                hydration_keys: hydration_keys
+                    .iter()
+                    .map(|key| (*key).to_string())
+                    .collect(),
+                navigation_keys: hydration_keys
+                    .iter()
+                    .map(|key| (*key).to_string())
+                    .collect(),
+                ..Default::default()
+            },
+        );
+        PreparedProtocol::new(protocol)
+    }
+
     #[test]
     fn partial_state_serialization_preserves_validated_raw_json() {
-        let response = serde_json::json!({"inventory":"00","chain":[]});
-        let output = serialize_partial_response_with_state(&response, r#"{"value":1e2}"#).unwrap();
+        let prepared = prepared_partial_protocol(&["value"]);
+        let output = render_partial_prepared(
+            &prepared,
+            r#"{"serverOnly":"drop","value":1e2}"#,
+            "index.html",
+            "/",
+            "",
+        )
+        .unwrap();
         assert!(output.contains(r#""state":{"value":1e2}"#));
+        assert!(!output.contains("serverOnly"));
 
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["state"]["value"], 100.0);
@@ -1785,10 +2064,59 @@ mod tests {
 
     #[test]
     fn partial_state_serialization_rejects_invalid_json() {
-        let response = serde_json::json!({"inventory":"00"});
-        let error = serialize_partial_response_with_state(&response, r#"{"broken":"#)
+        let prepared = prepared_partial_protocol(&[]);
+        let error = render_partial_prepared(&prepared, r#"{"broken":"#, "index.html", "/", "")
             .expect_err("invalid state JSON must fail");
         assert!(error.to_string().contains("invalid state JSON"));
+    }
+
+    #[test]
+    fn partial_state_serialization_emits_empty_state_without_client_components() {
+        let prepared = PreparedProtocol::new(WebUIProtocol::default());
+        let output =
+            render_partial_prepared(&prepared, r#"{"serverOnly":"drop"}"#, "index.html", "/", "")
+                .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["state"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn partial_state_serialization_validates_selected_and_skipped_numbers() {
+        let prepared = prepared_partial_protocol(&["value"]);
+        for state in [r#"{"value":1e9999}"#, r#"{"serverOnly":1e9999,"value":1}"#] {
+            let error = render_partial_prepared(&prepared, state, "index.html", "/", "")
+                .expect_err("out-of-range state numbers must fail");
+            assert!(error.to_string().contains("invalid state JSON"));
+        }
+    }
+
+    #[test]
+    fn partial_state_serialization_uses_last_duplicate_and_decodes_keys() {
+        let prepared = prepared_partial_protocol(&["value"]);
+        let output = render_partial_prepared(
+            &prepared,
+            r#"{"value":1,"va\u006cue":2}"#,
+            "index.html",
+            "/",
+            "",
+        )
+        .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["state"], serde_json::json!({"value": 2}));
+    }
+
+    #[test]
+    fn parsed_partial_state_projects_without_cloning_server_only_values() {
+        let prepared = prepared_partial_protocol(&["value"]);
+        let response = render_partial(
+            prepared.protocol(),
+            serde_json::json!({"serverOnly": [1, 2, 3], "value": "kept"}),
+            "index.html",
+            "/",
+            "",
+        )
+        .unwrap();
+        assert_eq!(response["state"], serde_json::json!({"value": "kept"}));
     }
 
     #[test]
@@ -2434,7 +2762,8 @@ mod tests {
         component.css = ".page{color:red}".to_string();
 
         let mut index = ProtocolIndex::new(&protocol);
-        let partial = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
+        let partial =
+            render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -2487,7 +2816,8 @@ mod tests {
         // css is empty — Link strategy stores href, not content
 
         let mut index = ProtocolIndex::new(&protocol);
-        let partial = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
+        let partial =
+            render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -2531,7 +2861,8 @@ mod tests {
         // css is empty for Style strategy
 
         let mut index = ProtocolIndex::new(&protocol);
-        let partial = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
+        let partial =
+            render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -2579,7 +2910,8 @@ mod tests {
         // No CSS — simulates Link or Style mode
 
         let mut index = ProtocolIndex::new(&protocol);
-        let partial = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
+        let partial =
+            render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -2615,7 +2947,8 @@ mod tests {
 
         let mut index = ProtocolIndex::new(&protocol);
         // First call to establish inventory
-        let partial1 = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
+        let partial1 =
+            render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
         let inv = partial1["inventory"].as_str().unwrap_or_default();
         assert!(!inv.is_empty());
 
@@ -2623,7 +2956,8 @@ mod tests {
         // because the inventory covers this component.  The SSR handler emits all
         // module style definitions in <head> for inventoried components, so the
         // client already has the CSS definition.
-        let partial2 = render_partial(&protocol, "index.html", "/", inv, &mut index).unwrap();
+        let partial2 =
+            render_partial_metadata(&protocol, "index.html", "/", inv, &mut index).unwrap();
         let styles = partial2["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -2801,7 +3135,17 @@ mod tests {
                 fragments: vec![WebUIFragment::raw("<p>Compose</p>")],
             },
         );
-        let protocol = WebUIProtocol::new(fragments);
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol
+            .components
+            .entry("app-shell".into())
+            .or_default()
+            .css_href = "/app-shell.css".into();
+        protocol
+            .components
+            .entry("compose-page".into())
+            .or_default()
+            .template_json = r#"{"h":"<p>Compose</p>"}"#.into();
 
         let chain = collect_route_chain(
             &protocol,
@@ -2814,6 +3158,133 @@ mod tests {
         assert!(chain[0].allowed_query.is_empty());
         assert_eq!(chain[1].component, "compose-page");
         assert_eq!(chain[1].allowed_query, "action,to");
+    }
+
+    #[test]
+    fn scriptless_partial_uses_navigation_keys_without_bootstrap_keys() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/items".into(),
+                    fragment_id: "items-page".into(),
+                    exact: true,
+                    ..Default::default()
+                })],
+            },
+        );
+        fragments.insert(
+            "items-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Items</p>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.components.insert(
+            "items-page".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<p>Items</p>","th":1}"#.into(),
+                navigation_keys: vec!["items".into(), "title".into()],
+                ..Default::default()
+            },
+        );
+
+        let partial = render_partial(
+            &protocol,
+            serde_json::json!({
+                "items": [1, 2],
+                "serverOnly": "secret",
+                "title": "Catalog",
+            }),
+            "index.html",
+            "/items",
+            "",
+        )
+        .unwrap();
+
+        assert_eq!(
+            partial["state"],
+            serde_json::json!({
+                "items": [1, 2],
+                "title": "Catalog",
+            })
+        );
+    }
+
+    #[test]
+    fn partial_requires_explicit_navigation_keys() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("authored-card")],
+            },
+        );
+        fragments.insert(
+            "authored-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Card</p>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.components.insert(
+            "authored-card".to_string(),
+            webui_protocol::ComponentData {
+                hydration_keys: vec!["title".into()],
+                ..Default::default()
+            },
+        );
+
+        let partial = render_partial(
+            &protocol,
+            serde_json::json!({
+                "serverOnly": "secret",
+                "title": "Authored",
+            }),
+            "index.html",
+            "/",
+            "",
+        )
+        .unwrap();
+
+        assert_eq!(partial["state"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn fully_static_scriptless_partial_emits_empty_state() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("static-card")],
+            },
+        );
+        fragments.insert(
+            "static-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Static</p>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.components.insert(
+            "static-card".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<p>Static</p>","th":1}"#.into(),
+                ..Default::default()
+            },
+        );
+
+        let partial = render_partial(
+            &protocol,
+            serde_json::json!({ "serverOnly": "secret" }),
+            "index.html",
+            "/",
+            "",
+        )
+        .unwrap();
+
+        assert_eq!(partial["state"], serde_json::json!({}));
     }
 
     #[test]
@@ -2970,7 +3441,8 @@ mod tests {
         }
 
         let mut index = ProtocolIndex::new(&protocol);
-        let partial = render_partial(&protocol, "index.html", "/inbox", "", &mut index).unwrap();
+        let partial =
+            render_partial_metadata(&protocol, "index.html", "/inbox", "", &mut index).unwrap();
         let templates = partial["templates"].as_object().unwrap();
 
         assert!(
@@ -3112,7 +3584,8 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
 
         let mut index = ProtocolIndex::new(&protocol);
-        let partial = render_partial(&protocol, "index.html", "/email/42", "", &mut index).unwrap();
+        let partial =
+            render_partial_metadata(&protocol, "index.html", "/email/42", "", &mut index).unwrap();
         let tags = partial["cacheTags"].as_array().unwrap();
         let tag_strings: Vec<&str> = tags.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(

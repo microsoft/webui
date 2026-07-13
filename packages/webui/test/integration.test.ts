@@ -54,8 +54,10 @@ before(() => {
   writeFileSync(join(appDir, 'my-card.html'), '<div class="card"><slot></slot></div>');
   writeFileSync(join(appDir, 'my-card.css'), '.card { border: 1px solid #ccc; }');
   writeFileSync(join(appDir, 'index2.html'), '<my-card>Hello</my-card>');
-  writeFileSync(join(appDir, 'app-shell.html'), '<div></div>');
+  writeFileSync(join(appDir, 'app-shell.html'), '<div>{{name}}</div>');
+  writeFileSync(join(appDir, 'app-shell.ts'), 'export {};');
   writeFileSync(join(appDir, 'lazy-panel.html'), '<p>{{title}}</p>');
+  writeFileSync(join(appDir, 'lazy-panel.ts'), 'export {};');
   writeFileSync(join(appDir, 'index3.html'), '<app-shell></app-shell>');
 });
 
@@ -209,16 +211,17 @@ describe('renderComponentTemplates', () => {
 });
 
 describe('renderPartial', () => {
-  test('embeds state through the prepared protocol path', () => {
-    const result = build({ appDir });
+  test('projects state through the prepared protocol path', () => {
+    const result = build({ appDir, entry: 'index3.html', plugin: 'webui' });
     const json = renderPartial(
       result.protocol,
-      '{"name":"Partial"}',
-      'index.html',
+      '{"name":"Partial","serverOnly":"drop"}',
+      'index3.html',
       '/',
       '',
     );
     const parsed = JSON.parse(json);
     assert.equal(parsed.state.name, 'Partial');
+    assert.equal(parsed.state.serverOnly, undefined);
   });
 });

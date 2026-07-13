@@ -26,6 +26,8 @@ interface BrowserGlobals {
     head: { appendChild(): void };
   };
   window: typeof globalThis;
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject): void;
+  removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void;
   dispatchEvent(event: Event): boolean;
   navigation: {
     addEventListener(): void;
@@ -35,10 +37,12 @@ interface BrowserGlobals {
     href: string;
     origin: string;
     pathname: string;
+    reload(): void;
   };
 }
 
 const g = globalThis as unknown as Partial<BrowserGlobals>;
+const eventListeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
 
 if (typeof HTMLElement === 'undefined') {
   g.HTMLElement = class HTMLElement {};
@@ -68,8 +72,34 @@ if (typeof document === 'undefined') {
 if (typeof window === 'undefined') {
   g.window = globalThis;
 }
+if (typeof addEventListener === 'undefined') {
+  g.addEventListener = (type, listener) => {
+    let listeners = eventListeners.get(type);
+    if (!listeners) {
+      listeners = new Set();
+      eventListeners.set(type, listeners);
+    }
+    listeners.add(listener);
+  };
+}
+if (typeof removeEventListener === 'undefined') {
+  g.removeEventListener = (type, listener) => {
+    eventListeners.get(type)?.delete(listener);
+  };
+}
 if (typeof dispatchEvent === 'undefined') {
-  g.dispatchEvent = () => true;
+  g.dispatchEvent = (event) => {
+    const listeners = eventListeners.get(event.type);
+    if (!listeners) return true;
+    for (const listener of listeners) {
+      if (typeof listener === 'function') {
+        listener(event);
+      } else {
+        listener.handleEvent(event);
+      }
+    }
+    return !event.defaultPrevented;
+  };
 }
 if (!g.navigation) {
   g.navigation = {
@@ -82,5 +112,6 @@ if (typeof location === 'undefined') {
     href: 'http://localhost/',
     origin: 'http://localhost',
     pathname: '/',
+    reload() {},
   };
 }

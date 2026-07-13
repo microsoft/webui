@@ -48,12 +48,17 @@ pub struct ComponentTemplateArtifact {
     pub template_functions: String,
     /// Sorted, deduplicated hydration key surface this plugin derives for the
     /// component — the fields the client restores from the bootstrap state. Each
-    /// plugin owns how it computes them: the WebUI plugin unions the template's
-    /// reactive roots with the `@observable`/`@attr` names it scans from
-    /// `Component::script_source`, while other plugins may use a different
-    /// strategy or leave it empty. The build aggregates these across components
-    /// into the protocol-level projection allowlist.
+    /// plugin owns how it computes them: the WebUI plugin scans explicit
+    /// `@observable`/`@attr` names from `Component::script_source`, while other
+    /// plugins may use a different strategy or leave it empty. The build
+    /// aggregates these across components into the protocol-level projection
+    /// allowlist.
     pub hydration_keys: Vec<String>,
+    /// Sorted, deduplicated state surface needed to create or update this
+    /// component during partial navigation. WebUI components use the union of
+    /// template roots and explicit hydration keys; scriptless templates use only
+    /// their template roots while keeping `hydration_keys` empty.
+    pub navigation_keys: Vec<String>,
 }
 
 impl ComponentTemplateArtifact {
@@ -66,6 +71,7 @@ impl ComponentTemplateArtifact {
             template_json: String::new(),
             template_functions: String::new(),
             hydration_keys: Vec::new(),
+            navigation_keys: Vec::new(),
         }
     }
 
@@ -81,6 +87,7 @@ impl ComponentTemplateArtifact {
             template_json,
             template_functions,
             hydration_keys: Vec::new(),
+            navigation_keys: Vec::new(),
         }
     }
 
@@ -95,6 +102,15 @@ impl ComponentTemplateArtifact {
     #[must_use]
     pub fn with_hydration_keys(mut self, hydration_keys: Vec<String>) -> Self {
         self.hydration_keys = hydration_keys;
+        self
+    }
+
+    /// Attach the partial-navigation state surface derived by the plugin.
+    ///
+    /// Keys must be sorted and deduplicated.
+    #[must_use]
+    pub fn with_navigation_keys(mut self, navigation_keys: Vec<String>) -> Self {
+        self.navigation_keys = navigation_keys;
         self
     }
 }
@@ -166,6 +182,7 @@ mod artifact_tests {
         assert!(artifact.template_json.is_empty());
         assert!(artifact.template_functions.is_empty());
         assert!(artifact.hydration_keys.is_empty());
+        assert!(artifact.navigation_keys.is_empty());
     }
 
     #[test]
@@ -177,6 +194,7 @@ mod artifact_tests {
         assert_eq!(artifact.template_json, "{\"j\":1}");
         assert_eq!(artifact.template_functions, "[]");
         assert!(artifact.hydration_keys.is_empty());
+        assert!(artifact.navigation_keys.is_empty());
     }
 
     #[test]
@@ -193,5 +211,13 @@ mod artifact_tests {
             .with_hydration_keys(vec!["value".into()]);
         assert_eq!(artifact.template, "<f-t></f-t>");
         assert_eq!(artifact.hydration_keys, vec!["value"]);
+    }
+
+    #[test]
+    fn with_navigation_keys_attaches_partial_state_surface() {
+        let artifact = ComponentTemplateArtifact::webui("x-e".into(), "{}".into(), "[]".into())
+            .with_navigation_keys(vec!["items".into(), "title".into()]);
+        assert_eq!(artifact.navigation_keys, vec!["items", "title"]);
+        assert!(artifact.hydration_keys.is_empty());
     }
 }

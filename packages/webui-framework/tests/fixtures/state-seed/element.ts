@@ -40,7 +40,10 @@ export class TestStateSeed extends WebUIElement {
       activeClass: '',
     }];
   }
+
+  renameTitle(): void {
+    this.title = 'Client Title';
+  }
 }
 
 TestStateSeed.define('test-state-seed');
-

@@ -228,8 +228,8 @@ pub fn render(
 
 /// Produce a complete JSON partial response for client-side navigation.
 ///
-/// Combines application state, route templates, inventory, request path, and
-/// matched route chain into a single JSON string:
+/// Combines active-route projected state, route templates, inventory, request
+/// path, and matched route chain into a single JSON string:
 /// `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
 ///
 /// Host servers return this directly - no assembly required.
@@ -346,16 +346,14 @@ fn render_partial_prepared(
     request_path: &str,
     inventory_hex: &str,
 ) -> Result<String, JsValue> {
-    let result = webui_handler::route_handler::render_partial_prepared(
+    webui_handler::route_handler::render_partial_prepared(
         prepared,
+        state_json,
         entry_id,
         request_path,
         inventory_hex,
     )
-    .map_err(|error| JsValue::from_str(&format!("render_partial failed: {error}")))?;
-
-    webui_handler::route_handler::serialize_partial_response_with_state(&result, state_json)
-        .map_err(|error| JsValue::from_str(&error.to_string()))
+    .map_err(|error| JsValue::from_str(&format!("render_partial failed: {error}")))
 }
 
 fn render_component_templates_prepared(
@@ -488,9 +486,9 @@ mod tests {
     }
 
     #[test]
-    fn render_projects_state_to_hydration_schema() {
+    fn render_projects_state_to_component_hydration_keys() {
         use std::collections::HashMap;
-        use webui_protocol::{FragmentList, WebUIFragment};
+        use webui_protocol::{ComponentData, FragmentList, WebUIFragment};
 
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -500,16 +498,26 @@ mod tests {
                     WebUIFragment::raw("<html><head>"),
                     WebUIFragment::signal("head_end".to_string(), true),
                     WebUIFragment::raw("</head><body>"),
+                    WebUIFragment::component("client-card"),
                     WebUIFragment::signal("body_end".to_string(), true),
                     WebUIFragment::raw("</body></html>"),
                 ],
             },
         );
-        let protocol = WebUIProtocol {
-            fragments,
-            hydration_schema: vec!["kept".to_string()],
-            ..Default::default()
-        };
+        fragments.insert(
+            "client-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>client</p>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.components.insert(
+            "client-card".to_string(),
+            ComponentData {
+                hydration_keys: vec!["kept".to_string()],
+                ..Default::default()
+            },
+        );
 
         let rendered = render_protocol_to_string(
             &protocol,

@@ -150,7 +150,7 @@ This gives you:
 
 <webui-blockquote appearance="tip" title="Not every app needs this" icon="💡">
 
-If your pages are purely informational and never receive client-side state updates, you only need `@microsoft/webui` for building and rendering. Add the framework runtime when components have event handlers, user input, or HTML-only templates that should react to host attributes, server state, or route state.
+If your pages are purely informational and never receive client-side state updates, you only need `@microsoft/webui` for building and rendering. Load the framework when components need browser-applied state or soft navigation. Add a same-named component module only for events, lifecycle code, decorators, or imperative APIs.
 
 </webui-blockquote>
 

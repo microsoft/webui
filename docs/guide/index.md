@@ -28,6 +28,8 @@ On the client, only **Web Components marked as interactive** hydrate. Each compo
 
 - **Islands Architecture** - Each Web Component is an interactive island. Static content is server-rendered with no JavaScript. Only components that need interactivity hydrate on the client. See [Interactivity](/guide/concepts/interactivity).
 
+- **Explicit startup state boundary** - A same-named `.ts` or `.js` module opts a component into authored hydration state. Scriptless templates remain dormant at startup and activate only when browser use requires them. See [Hydration](/guide/concepts/hydration).
+
 - **Language agnostic** - Native handlers for Rust, Node/Bun/Deno, C#, Python, and Go. Any other language can use the C FFI bindings. See [Language Integrations](/guide/integrations/ffi).
 
 ## Quick Overview

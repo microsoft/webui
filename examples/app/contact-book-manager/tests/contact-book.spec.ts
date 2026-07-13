@@ -10,6 +10,14 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
+function bootstrapStateFromHtml(html: string): Record<string, unknown> {
+  const match = html.match(
+    /<script[^>]+id=["']webui-data["'][^>]*>(.*?)<\/script>/s,
+  );
+  if (!match?.[1]) throw new Error('#webui-data bootstrap block missing');
+  return (JSON.parse(match[1]) as { state?: Record<string, unknown> }).state ?? {};
+}
+
 async function expectSidebarGroupsStable(page: Page): Promise<void> {
   await expect(page.locator('cb-sidebar [data-nav="Dashboard"]')).toHaveCount(1);
   await expect(page.locator('cb-sidebar [data-nav="All Contacts"]')).toHaveCount(1);
@@ -40,7 +48,10 @@ async function expectContactDetailFieldsStable(page: Page): Promise<void> {
 
 test.describe('SSR pages', () => {
   test('dashboard renders with stats', async ({ page }) => {
-    await page.goto('/');
+    const response = await page.goto('/');
+    if (!response) throw new Error('dashboard navigation returned no response');
+    const bootstrapState = bootstrapStateFromHtml(await response.text());
+    expect(Object.keys(bootstrapState).sort()).toEqual(['totalFavorites']);
     await expect(page.locator('cb-page-dashboard .page-title')).toHaveText('Dashboard');
     // Stat cards
     await expect(page.locator('cb-page-dashboard .stat-label').filter({ hasText: 'Total Contacts' })).toBeVisible();
@@ -69,10 +80,10 @@ test.describe('SSR pages', () => {
   });
 });
 
-// ── Client-side navigation tests ─────────────────────────────────
+// ── Navigation tests ──────────────────────────────────────────────
 
 test.describe('client-side navigation', () => {
-  test('HTML-only components hydrate and update through static hosts', async ({ page }) => {
+  test('HTML-only components use dormant static hosts and soft navigation', async ({ page }) => {
     await page.goto('/contacts');
 
     await expect(page.locator('cb-page-contacts cb-contact-card')).toHaveCount(15);
@@ -88,10 +99,16 @@ test.describe('client-side navigation', () => {
 
     expect(autoDefined).toEqual([true, true, true]);
 
+    await page.evaluate(() => {
+      (window as Window & { navigationSentinel?: boolean }).navigationSentinel = true;
+    });
     await page.locator('cb-sidebar').getByRole('link', { name: 'Work' }).click();
     await expect(page).toHaveURL('/groups/Work');
     await expect(page.locator('cb-page-group .page-title')).toContainText('Work');
     await expectActiveSidebarNav(page, 'Work');
+    expect(await page.evaluate(
+      () => (window as Window & { navigationSentinel?: boolean }).navigationSentinel,
+    )).toBe(true);
   });
 
   test('navigate dashboard to contacts', async ({ page }) => {
@@ -112,7 +129,7 @@ test.describe('client-side navigation', () => {
     await expect(page.locator('cb-page-favorites .page-title')).toHaveText('Favorites');
   });
 
-  test('sidebar groups do not duplicate across SPA navigation', async ({ page }) => {
+  test('sidebar groups do not duplicate across navigation', async ({ page }) => {
     await page.goto('/');
     await expectSidebarGroupsStable(page);
 
@@ -125,7 +142,7 @@ test.describe('client-side navigation', () => {
     await expectSidebarGroupsStable(page);
   });
 
-  test('sidebar active state updates across SPA navigation', async ({ page }) => {
+  test('sidebar active state updates across navigation', async ({ page }) => {
     await page.goto('/');
     await expectActiveSidebarNav(page, 'Dashboard');
 
@@ -205,7 +222,7 @@ test.describe('client-side navigation', () => {
     await expectContactDetailFieldsStable(page);
   });
 
-  test('no full page reload during navigation', async ({ page }) => {
+  test('does not reload the document for scriptless route navigation', async ({ page }) => {
     await page.goto('/');
     await page.evaluate(() => { (window as any).__testMarker = Date.now(); });
 
@@ -214,9 +231,7 @@ test.describe('client-side navigation', () => {
 
     await page.locator('cb-sidebar').getByRole('link', { name: /Favorites/ }).click();
     await expect(page.locator('cb-page-favorites .page-title')).toHaveText('Favorites');
-
-    const marker = await page.evaluate(() => (window as any).__testMarker);
-    expect(marker).toBeGreaterThan(0);
+    expect(await page.evaluate(() => (window as any).__testMarker)).toBeGreaterThan(0);
   });
 });
 

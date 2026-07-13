@@ -4,10 +4,9 @@
 /**
  * Template registration bridge shared by framework and router.
  *
- * `@microsoft/webui-router` must stay platform independent and cannot import the
- * framework. It dispatches this DOM event after registering WebUI template data;
- * the framework listens for the event and can define compiler-owned static
- * template hosts.
+ * `@microsoft/webui-router` stays framework-independent and dispatches this DOM
+ * event after registering compiled template data. The framework listens for the
+ * event and defines compiler-owned dormant hosts.
  */
 
 import type { TemplateMeta } from './template.js';
@@ -15,12 +14,7 @@ import type { TemplateMeta } from './template.js';
 /** DOM event emitted when WebUI template data becomes available at runtime. */
 export const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
 
-/**
- * Notify optional runtimes that templates have been registered.
- *
- * The payload is intentionally generic so consumers can decide what to do
- * without creating package dependencies between router and framework.
- */
+/** Notify optional runtimes that templates have been registered. */
 export function dispatchTemplatesRegistered(
   templates: Record<string, TemplateMeta>,
 ): void {
@@ -43,7 +37,7 @@ export function templateRegistrationDetail(event: Event): {
 } | undefined {
   const detail = (event as CustomEvent<{ templates?: unknown }>).detail;
   if (!detail || typeof detail !== 'object') return undefined;
-  const templates = detail?.templates;
+  const templates = detail.templates;
   const payload = {
     templates: typeof templates === 'object' && templates !== null
       ? templates as Record<string, TemplateMeta>

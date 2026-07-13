@@ -60,22 +60,41 @@ request route.
 
 ## Hydration Startup and Protocol Reuse
 
-The initial hydration block contains only top-level state fields required by
-reachable components. Inactive sibling routes are excluded, while components
-behind conditionals and loops on the active route are included conservatively.
-Projection iterates the smaller of the state map and hydration schema, which
-avoids scanning a wide server-only state object for a few client properties.
+The initial hydration block contains only top-level `@observable` and `@attr`
+fields required by reachable authored components. Template-only roots and
+scriptless components contribute no hydration keys, so their server render
+dependencies never enter startup state. Inactive sibling routes are excluded,
+while components behind conditionals and loops on the active route are included
+conservatively. Projection iterates the smaller of the state map and hydration
+key set.
 
-Measured release-mode results on the development benchmark machine:
+The following release-mode Criterion point estimates came from one 100-sample
+run. Bracketed values are the reported 95% confidence intervals, and each row
+compares paths measured in that same run:
 
-| Workload | Before | After | Improvement |
-|----------|-------:|------:|------------:|
-| 30,000-key state, sparse hydration schema | ~194 us | 0.79 us | 99.6% |
-| Inactive 1,000-contact route | ~97 us | 4.01 us | 95.9% |
-| Active contact route, scoped vs global control | 105.44 us | 105.21 us | no regression |
-| Partial response with 64 KB state | 254.54 us | 37.93 us | 85.1% |
-| Partial response with 1 MB state | 5.716 ms | 1.054 ms | 81.6% |
-| Shared prepared partial, 8 threads x 10,000 | 2.059 s | 0.203 s | 90.1% |
+| Workload | Full or legacy path | Projected path | Improvement |
+|----------|--------------------:|---------------:|------------:|
+| 1 MiB authored template root, legacy startup projection vs decorator-free authored shell | 1.5415 ms [1.5293, 1.5537] | 1.3298 us [1.3008, 1.3615] | 99.914%, 1,159x |
+| 1 MiB state, authored component needs only small decorated metadata | 1.5415 ms [1.5293, 1.5537] | 1.3680 us [1.3545, 1.3836] | 99.911%, 1,127x |
+| 1 MiB partial, parse + reserialize vs projected authored state | 4.5930 ms [4.5093, 4.6847] | 573.85 us [562.17, 587.41] | 87.51%, 8.00x |
+| 1 MiB partial, parse + reserialize vs projected scriptless state | 4.5930 ms [4.5093, 4.6847] | 571.76 us [565.15, 578.99] | 87.55%, 8.03x |
+| 1 MiB partial, parse + reserialize vs fully static scriptless state | 4.5930 ms [4.5093, 4.6847] | 555.11 us [547.50, 567.08] | 87.91%, 8.27x |
+
+Live example payloads confirm that the CPU result corresponds to bytes removed,
+not deferred serialization:
+
+| Initial route | Previous state JSON | Decorator-only state JSON | Reduction |
+|---------------|--------------------:|--------------------------:|----------:|
+| Routes home, behavior but no decorators | 191 bytes | 2 bytes (`{}`) | 98.95% |
+| Contact book home | 103 bytes | 20 bytes (`{"totalFavorites":5}`) | 80.58% |
+
+Keeping browser template metadata for soft navigation has a small fixed cost
+that does not grow with server state. Two isolated 200-sample runs measured
+`0.303-0.306 us` per render on the 1,000-contact dormant route compared with
+the discarded metadata-free design. The minimal component comparator measured
+`64-140 ns` per render. In the HTML-only browser fixture, `state` is the
+two-byte `{}` object and the retained template adds exactly 721 bytes to the
+`#webui-data` JSON block.
 
 Projection does not avoid parsing the incoming JSON state. Native hosts should
 also prepare `protocol.bin` once at startup:

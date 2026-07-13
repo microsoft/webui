@@ -81,6 +81,6 @@ export interface TemplateMeta extends TemplateBlockMeta {
   ta?: string[];
   /** Shadow DOM flag — when true, client-created components use shadow root. */
   sd?: boolean;
-  /** Internal static host flag — true when the compiler owns a TemplateElement host. */
+  /** Internal compiler-owned dormant TemplateElement host flag. */
   th?: boolean | 1;
 }

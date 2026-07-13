@@ -25,11 +25,6 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { build, render } from '@microsoft/webui';
 
-const MARKER_SOURCE = `// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT license.
-
-`;
-
 export interface RenderedFixture {
   /** Fixture directory name (e.g. "counter"). */
   name: string;
@@ -63,11 +58,17 @@ function renderOne(fixturePath: string, name: string): RenderedFixture | null {
     ? JSON.parse(readFileSync(configFile, 'utf-8'))
     : {};
 
-  const hasAuthoredEntry = existsSync(resolve(fixturePath, 'element.ts'));
+  const authoredEntryPath = resolve(fixturePath, 'element.ts');
+  const hasAuthoredEntry = existsSync(authoredEntryPath);
+  const authoredEntrySource = hasAuthoredEntry
+    ? readFileSync(authoredEntryPath, 'utf-8')
+    : '';
   const authoredTags = hasAuthoredEntry
-    ? collectDefinedTags(readFileSync(resolve(fixturePath, 'element.ts'), 'utf-8'))
+    ? collectDefinedTags(authoredEntrySource)
     : new Set<string>();
-  const authoredSource = hasAuthoredEntry ? createAuthoredSourceMirror(srcDir, authoredTags) : null;
+  const authoredSource = hasAuthoredEntry
+    ? createAuthoredSourceMirror(srcDir, authoredTags, authoredEntrySource)
+    : null;
   const buildOptions: Parameters<typeof build>[0] = hasAuthoredEntry
     ? { appDir: authoredSource?.fixturePath ?? fixturePath, entry: 'src/index.html', plugin: 'webui' }
     : { appDir: srcDir, plugin: 'webui' };
@@ -95,23 +96,24 @@ function renderOne(fixturePath: string, name: string): RenderedFixture | null {
   const renderEntry = hasAuthoredEntry ? 'src/index.html' : 'index.html';
   let html = render(result.protocol, state, { entry: renderEntry, plugin: 'webui' });
 
-  // Fixtures with an authored element entry exercise interactive islands.
-  // Fixtures without one use the shared framework root bootstrap to prove
-  // HTML-only templates do not need empty component stubs.
-  const scriptPath = hasAuthoredEntry
-    ? `/dist/${name}/element.js`
-    : '/dist/static-host.js';
-  // Real WebUI apps load client islands as ES modules (`<script type="module">`),
-  // which are deferred until after the document is parsed. Fixtures can opt into
-  // that production-faithful timing with `"script": "module"` in webui.config.json;
-  // otherwise a classic (parser-blocking) script is injected for back-compat.
-  const scriptType = fixtureConfig.script === 'module' ? ' type="module"' : '';
-  const scriptTag = `<script${scriptType} src="${scriptPath}"></script>`;
-  const bodyEnd = html.lastIndexOf('</body>');
-  if (bodyEnd !== -1) {
-    html = html.slice(0, bodyEnd) + scriptTag + html.slice(bodyEnd);
-  } else {
-    html += scriptTag;
+  {
+    const scriptPath = hasAuthoredEntry
+      ? `/dist/${name}/element.js`
+      : '/dist/static-host.js';
+    // Real WebUI apps load client islands as ES modules (`<script type="module">`),
+    // which are deferred until after the document is parsed. Fixtures can opt into
+    // that production-faithful timing with `"script": "module"` in webui.config.json;
+    // otherwise a classic (parser-blocking) script is injected for back-compat.
+    const scriptType = hasAuthoredEntry && fixtureConfig.script === 'module'
+      ? ' type="module"'
+      : '';
+    const scriptTag = `<script${scriptType} src="${scriptPath}"></script>`;
+    const bodyEnd = html.lastIndexOf('</body>');
+    if (bodyEnd !== -1) {
+      html = html.slice(0, bodyEnd) + scriptTag + html.slice(bodyEnd);
+    } else {
+      html += scriptTag;
+    }
   }
 
   return { name, html };
@@ -122,12 +124,16 @@ interface AuthoredSourceMirror {
   fixturePath: string;
 }
 
-function createAuthoredSourceMirror(srcDir: string, authoredTags: Set<string>): AuthoredSourceMirror {
+function createAuthoredSourceMirror(
+  srcDir: string,
+  authoredTags: Set<string>,
+  authoredEntrySource: string,
+): AuthoredSourceMirror {
   const rootPath = mkdtempSync(resolve(tmpdir(), 'webui-fixture-'));
   const fixturePath = resolve(rootPath, 'fixture');
   const mirroredSrcDir = resolve(fixturePath, 'src');
   cpSync(srcDir, mirroredSrcDir, { recursive: true });
-  writeAuthoredComponentMarkers(mirroredSrcDir, authoredTags);
+  writeAuthoredComponentMarkers(mirroredSrcDir, authoredTags, authoredEntrySource);
   return { rootPath, fixturePath };
 }
 
@@ -161,7 +167,11 @@ function collectDefinedTags(source: string): Set<string> {
   return tags;
 }
 
-function writeAuthoredComponentMarkers(srcDir: string, authoredTags: Set<string>): void {
+function writeAuthoredComponentMarkers(
+  srcDir: string,
+  authoredTags: Set<string>,
+  authoredEntrySource: string,
+): void {
   const stack = [srcDir];
   while (stack.length > 0) {
     const dir = stack.pop();
@@ -186,7 +196,10 @@ function writeAuthoredComponentMarkers(srcDir: string, authoredTags: Set<string>
       const tsPath = resolve(dir, `${tagName}.ts`);
       const jsPath = resolve(dir, `${tagName}.js`);
       if (!existsSync(tsPath) && !existsSync(jsPath)) {
-        writeFileSync(tsPath, MARKER_SOURCE, 'utf-8');
+        // Fixtures bundle one shared element.ts entry. Mirror that source beside
+        // each authored template so build-time decorator projection sees the
+        // same JavaScript-owned state as the browser bundle.
+        writeFileSync(tsPath, authoredEntrySource, 'utf-8');
       }
     }
   }

@@ -77,13 +77,13 @@ struct TrackedComponent {
     tag_name: String,
     template_html: String,
     root_event_source: String,
-    /// Source fact from the component registry. Static-host metadata is derived
-    /// as `!has_script` only when the final template payload is emitted.
+    /// Source fact from the component registry. Components without authored
+    /// client code use compiler-owned dormant template hosts.
     has_script: bool,
     /// Raw authored client-module source, if any. Scanned once for
     /// `@observable`/`@attr` decorators when the component's template payload is
-    /// emitted, then unioned with the template roots to form the hydration keys.
-    /// This is where the WebUI plugin owns its hydration strategy end to end.
+    /// emitted. Decorators form the initial hydration keys; their union with
+    /// template roots forms the partial-navigation keys.
     script_source: Option<String>,
 }
 
@@ -130,10 +130,14 @@ impl WebUIParserPlugin {
         }
     }
 
-    /// Compile all tracked components and return split template payloads.
+    /// Compile component templates and return split browser payloads.
     ///
-    /// Each payload contains JSON-safe metadata plus a component-local closure
-    /// array for condition evaluation. Call this after all HTML parsing is complete.
+    /// Authored components receive an initial hydration surface plus a partial
+    /// navigation surface. Scriptless components keep an empty hydration
+    /// surface, but retain template roots for client-created soft-navigation
+    /// rendering through a compiler-owned dormant host. Each returned payload
+    /// contains JSON-safe metadata plus a component-local closure array for
+    /// condition evaluation. Call this after all HTML parsing is complete.
     ///
     /// # Errors
     ///
@@ -150,23 +154,30 @@ impl WebUIParserPlugin {
                 use_shadow,
                 !c.has_script,
             )?;
-            // The WebUI plugin owns its hydration strategy: scan the component's
-            // raw client module for `@observable`/`@attr` decorators, then union
-            // with the template's reactive roots. Scanned once per component here
-            // (a build-time cold path), regardless of re-registration.
-            let scanned = c
-                .script_source
-                .as_deref()
-                .map(crate::hydration::scan_hydration_attributes)
-                .unwrap_or_default();
-            let hydration_keys = union_hydration_keys(&payload.hydration_roots, &scanned);
+            let hydration_keys = if c.has_script {
+                // Initial SSR state seeds only explicit JavaScript-owned fields.
+                // Template roots already exist in the SSR DOM and belong to the
+                // separate navigation surface used for client creation/updates.
+                c.script_source
+                    .as_deref()
+                    .map(crate::hydration::scan_hydration_attributes)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let navigation_keys = if c.has_script {
+                union_state_keys(&payload.hydration_roots, &hydration_keys)
+            } else {
+                payload.hydration_roots.clone()
+            };
             out.push(
                 ComponentTemplateArtifact::webui(
                     c.tag_name.clone(),
                     payload.template_json,
                     payload.template_functions,
                 )
-                .with_hydration_keys(hydration_keys),
+                .with_hydration_keys(hydration_keys)
+                .with_navigation_keys(navigation_keys),
             );
         }
         Ok(out)
@@ -389,7 +400,7 @@ struct CompiledTemplatePayload {
 ///
 /// Called once per component at build time (a cold path), so clarity wins over
 /// micro-optimization; the result feeds the runtime projection allowlist.
-fn union_hydration_keys(roots: &[String], attrs: &[String]) -> Vec<String> {
+fn union_state_keys(roots: &[String], attrs: &[String]) -> Vec<String> {
     let mut keys = Vec::with_capacity(roots.len() + attrs.len());
     keys.extend_from_slice(roots);
     keys.extend_from_slice(attrs);
@@ -502,7 +513,7 @@ fn generate_compiled_template_with_root_source(
     html_content: &str,
     root_event_source: &str,
     shadow_dom: bool,
-    emit_static_host: bool,
+    scriptless: bool,
 ) -> Result<CompiledTemplatePayload> {
     let trimmed = html_content.trim();
     let root_events = extract_root_events(tag_name, root_event_source.trim())?;
@@ -510,7 +521,7 @@ fn generate_compiled_template_with_root_source(
     let body = strip_template_wrapper(trimmed);
     let meta = compile_to_metadata(tag_name, body, root_events)?;
     let build_meta = collect_template_build_metadata(&meta);
-    if emit_static_host && build_meta.has_events {
+    if scriptless && build_meta.has_events {
         return Err(scriptless_component_events(tag_name).into());
     }
     Ok(emit_compiled_template_payload(
@@ -520,7 +531,7 @@ fn generate_compiled_template_with_root_source(
         TemplatePayloadOptions {
             adopted_stylesheet: adopted_stylesheet.as_deref(),
             shadow_dom,
-            emit_static_host,
+            emit_static_host: scriptless,
         },
     ))
 }
@@ -547,7 +558,7 @@ fn emit_compiled_template_payload(
         out.push_str(",\"sd\":1");
     }
 
-    if options.emit_static_host && !build_meta.roots.is_empty() {
+    if options.emit_static_host {
         out.push_str(",\"th\":1");
     }
 
@@ -3463,24 +3474,25 @@ mod tests {
     }
 
     #[test]
-    fn test_hydration_keys_union_roots_and_scanned_attrs() {
+    fn test_authored_hydration_uses_decorators_and_navigation_adds_template_roots() {
         let mut plugin = WebUIParserPlugin::new();
-        let mut comp = test_component("test-el", "<p>{{name}}</p>", None, true);
-        // `name` is also a template root; `count` is a JS-only observable that
-        // the template never references, so only the scan can contribute it. The
-        // plugin scans this raw source itself when the template is taken.
-        comp.script_source = Some("@observable count = 0;\n@attr name = '';".to_string());
+        let mut comp = test_component("test-el", "<p>{{serverTitle}}</p>", None, true);
+        comp.script_source = Some("@observable count = 0;\n@attr label = '';".to_string());
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();
         let templates = plugin.take_component_templates().unwrap();
-        assert_eq!(templates[0].hydration_keys, vec!["count", "name"]);
+        assert_eq!(templates[0].hydration_keys, vec!["count", "label"]);
+        assert_eq!(
+            templates[0].navigation_keys,
+            vec!["count", "label", "serverTitle"]
+        );
     }
 
     #[test]
     fn test_deduplicates_components() {
         let mut plugin = WebUIParserPlugin::new();
-        let comp = test_component("test-el", "<p>hi</p>", None, false);
+        let comp = test_component("test-el", "<p>hi</p>", None, true);
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();
@@ -3491,34 +3503,47 @@ mod tests {
     }
 
     #[test]
-    fn test_scriptless_stateful_component_template_is_static_host_marked() {
+    fn test_scriptless_component_emits_dormant_navigation_template() {
         let mut plugin = WebUIParserPlugin::new();
-        let mut comp = test_component("test-el", "<p>{{name}}</p>", None, false);
+        let comp = test_component("test-el", "<p>{{name}}</p>", None, false);
 
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();
         let templates = plugin.take_component_templates().unwrap();
+        assert_eq!(templates.len(), 1);
+        assert!(templates[0].hydration_keys.is_empty());
+        assert_eq!(templates[0].navigation_keys, ["name"]);
         assert!(templates[0].template_json.contains(r#","th":1"#));
-
-        comp.has_script = true;
-        let mut plugin = WebUIParserPlugin::new();
-        plugin
-            .register_component_template("test-el", &comp, &comp.html_content)
-            .unwrap();
-        let templates = plugin.take_component_templates().unwrap();
-        assert!(!templates[0].template_json.contains(r#","th":1"#));
     }
 
     #[test]
-    fn test_scriptless_static_component_template_is_not_static_host_marked() {
+    fn test_fully_static_scriptless_component_still_emits_host_metadata() {
         let mut plugin = WebUIParserPlugin::new();
-        let comp = test_component("test-el", "<p>hi</p>", None, false);
+        let comp = test_component("test-el", "<p>Static</p>", None, false);
 
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();
         let templates = plugin.take_component_templates().unwrap();
+        assert_eq!(templates.len(), 1);
+        assert!(templates[0].hydration_keys.is_empty());
+        assert!(templates[0].navigation_keys.is_empty());
+        assert!(templates[0].template_json.contains(r#","th":1"#));
+    }
+
+    #[test]
+    fn test_scripted_component_emits_client_template_without_static_host_marker() {
+        let mut plugin = WebUIParserPlugin::new();
+        let comp = test_component("test-el", "<p>{{name}}</p>", None, true);
+
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        assert_eq!(templates.len(), 1);
+        assert!(templates[0].hydration_keys.is_empty());
+        assert_eq!(templates[0].navigation_keys, ["name"]);
         assert!(!templates[0].template_json.contains(r#","th":1"#));
     }
 
@@ -3626,7 +3651,7 @@ mod tests {
     fn test_plugin_uses_processed_module_template_html() {
         let mut plugin = WebUIParserPlugin::new();
 
-        let comp = test_component("test-el", "<p>hi</p>", Some(".root { color: red; }"), false);
+        let comp = test_component("test-el", "<p>hi</p>", Some(".root { color: red; }"), true);
 
         plugin
             .register_component_template(
