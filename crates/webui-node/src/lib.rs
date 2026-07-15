@@ -75,6 +75,15 @@ pub struct JsBuildResult {
     pub stats: JsBuildStats,
 }
 
+/// Inline projection manifest transported through N-API.
+#[napi(object)]
+pub struct JsProjectionManifest {
+    /// Logical manifest path used to resolve `root` and stale file checks.
+    pub path: String,
+    /// Canonical manifest JSON.
+    pub json: String,
+}
+
 /// Build options for the webui build API.
 #[napi(object)]
 pub struct JsBuildOptions {
@@ -100,6 +109,10 @@ pub struct JsBuildOptions {
     pub legal_comments: Option<String>,
     /// Design token theme: a JSON file path or npm package name.
     pub theme: Option<String>,
+    /// Projection manifest paths.
+    pub projection_manifests: Option<Vec<String>>,
+    /// Inline manifest objects with their logical paths.
+    pub projection_manifest_objects: Option<Vec<JsProjectionManifest>>,
 }
 
 /// Build a WebUI application from an app directory.
@@ -141,6 +154,23 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         .as_deref()
         .map(|theme| load_theme(theme, &app_dir))
         .transpose()?;
+    let mut projection_manifests: Vec<webui::ProjectionManifestSource> = options
+        .projection_manifests
+        .unwrap_or_default()
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .map(Into::into)
+        .collect();
+    projection_manifests.extend(
+        options
+            .projection_manifest_objects
+            .unwrap_or_default()
+            .into_iter()
+            .map(|manifest| webui::ProjectionManifestSource::Inline {
+                manifest_path: std::path::PathBuf::from(manifest.path),
+                json: manifest.json,
+            }),
+    );
 
     let build_options = webui::BuildOptions {
         app_dir,
@@ -156,6 +186,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         css_public_base: options.css_public_base,
         legal_comments,
         theme,
+        projection_manifests,
     };
 
     let result = webui::build(build_options)
@@ -542,7 +573,12 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use webui_parser::HtmlParser;
+    use webui_protocol::projection_manifest::{
+        ProjectionAdapter, ProjectionComponent, ProjectionManifest, ProjectionProducer,
+        PRODUCER_NAME, SCHEMA_ID,
+    };
 
     /// Helper: parse HTML into protobuf bytes for testing.
     fn build_protocol(html: &str) -> Vec<u8> {
@@ -712,9 +748,11 @@ mod tests {
             .expect("index fragment should exist")
             .fragments
             .insert(1, webui_protocol::WebUIFragment::component("client-card"));
+        protocol.initial_state_strategy = webui_protocol::InitialStateStrategy::Components as i32;
         protocol.components.insert(
             "client-card".to_string(),
             webui_protocol::ComponentData {
+                hydration_mode: webui_protocol::StateProjectionMode::Keys as i32,
                 hydration_keys: schema.iter().map(|key| (*key).to_string()).collect(),
                 ..Default::default()
             },
@@ -785,6 +823,90 @@ mod tests {
 
     // ── Tests for build() and inspect() napi exports ─────────────────
 
+    fn projection_manifest_json() -> String {
+        const EMPTY_SHA256: &str =
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let mut manifest = ProjectionManifest {
+            schema: SCHEMA_ID.to_string(),
+            producer: ProjectionProducer {
+                name: PRODUCER_NAME.to_string(),
+                version: "0.0.18".to_string(),
+            },
+            adapter: ProjectionAdapter {
+                name: "test".to_string(),
+                bundler: "test@1.0.0".to_string(),
+            },
+            root: ".".to_string(),
+            analysis_hash: format!("sha256:{}", "1".repeat(64)),
+            build_id: String::new(),
+            inputs: BTreeMap::from([("demo-card.ts".to_string(), EMPTY_SHA256.to_string())]),
+            outputs: BTreeMap::from([("bundle.js".to_string(), EMPTY_SHA256.to_string())]),
+            components: BTreeMap::from([(
+                "demo-card".to_string(),
+                ProjectionComponent {
+                    module: "demo-card.ts".to_string(),
+                    outputs: vec!["bundle.js".to_string()],
+                    hydration_keys: vec!["name".to_string()],
+                    navigation_keys: vec!["label".to_string(), "name".to_string()],
+                },
+            )]),
+        };
+        manifest.build_id = manifest.compute_build_id();
+        serde_json::to_string(&manifest).unwrap()
+    }
+
+    fn projection_build_options(app_dir: &std::path::Path) -> JsBuildOptions {
+        JsBuildOptions {
+            app_dir: app_dir.to_string_lossy().to_string(),
+            entry: None,
+            css: None,
+            dom: None,
+            plugin: Some("webui".to_string()),
+            components: None,
+            component_asset_roots: None,
+            css_file_name_template: None,
+            css_public_base: None,
+            legal_comments: None,
+            theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
+        }
+    }
+
+    #[test]
+    fn test_build_accepts_projection_paths_and_inline_objects() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<demo-card></demo-card>").unwrap();
+        std::fs::write(dir.path().join("demo-card.html"), "<p>{{name}}</p>").unwrap();
+        std::fs::write(dir.path().join("demo-card.ts"), "").unwrap();
+        std::fs::write(dir.path().join("bundle.js"), "").unwrap();
+        let manifest_path = dir.path().join("projection.json");
+        let json = projection_manifest_json();
+        std::fs::write(&manifest_path, &json).unwrap();
+
+        let mut path_options = projection_build_options(dir.path());
+        path_options.projection_manifests = Some(vec![manifest_path.to_string_lossy().to_string()]);
+        let path_result = build(path_options).unwrap();
+        let path_protocol = WebUIProtocol::from_protobuf(&path_result.protocol).unwrap();
+        assert_eq!(
+            path_protocol.components["demo-card"].hydration_keys,
+            ["name"]
+        );
+
+        std::fs::remove_file(&manifest_path).unwrap();
+        let mut inline_options = projection_build_options(dir.path());
+        inline_options.projection_manifest_objects = Some(vec![JsProjectionManifest {
+            path: manifest_path.to_string_lossy().to_string(),
+            json,
+        }]);
+        let inline_result = build(inline_options).unwrap();
+        let inline_protocol = WebUIProtocol::from_protobuf(&inline_result.protocol).unwrap();
+        assert_eq!(
+            inline_protocol.components["demo-card"].navigation_keys,
+            ["label", "name"]
+        );
+    }
+
     #[test]
     fn test_build_simple_app() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -802,6 +924,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options).unwrap();
@@ -828,6 +952,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options).unwrap();
@@ -848,6 +974,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options);
@@ -871,6 +999,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options);
@@ -896,6 +1026,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options).unwrap();
@@ -931,6 +1063,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: Some(theme_path.to_string_lossy().to_string()),
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let Err(err) = build(options) else {
@@ -961,6 +1095,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options).unwrap();
@@ -994,6 +1130,8 @@ mod tests {
             css_public_base: None,
             legal_comments: Some("none".to_string()),
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options).unwrap();
@@ -1017,6 +1155,8 @@ mod tests {
             css_public_base: None,
             legal_comments: Some("linked".to_string()),
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options);
@@ -1041,6 +1181,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options).unwrap();
@@ -1069,6 +1211,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options).unwrap();
@@ -1096,6 +1240,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options);

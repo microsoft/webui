@@ -58,27 +58,48 @@ WebUI sends only the state needed by authored components on the active route.
 
 ## Hydration Startup and Protocol Reuse
 
-The initial page contains only top-level `@observable` and `@attr` values needed
-by reachable authored components. Template-only values and inactive routes do
-not enlarge startup state.
+With a validated projection manifest, the initial page contains only top-level
+`@observable` and `@attr` values needed by reachable authored components.
+Template-only values and inactive routes do not enlarge startup state. Without
+a manifest, WebUI preserves full state.
 
-Representative release-mode Criterion results:
+Representative final release-mode Criterion results on a 1 MiB state object:
 
 | Workload | Before | After | Improvement |
 |----------|-------:|------:|------------:|
-| Serialize pre-parsed 1 MiB initial state not needed by client code | 1.5415 ms | 1.3298 us | 1,159x |
-| 1 MiB partial-navigation state | 4.5930 ms | 573.85 us | 8.00x |
+| Initial render, full state vs three exact keys | 1.9034 ms | 1.6724 us | 1,138x |
+| Partial route, legacy parse/materialize/reserialize vs borrowed projection | 6.6751 ms | 658.17 us | 10.14x |
+| Partial route, borrowed full JSON vs borrowed projection | 1.0191 ms | 658.17 us | 35.4% less CPU |
 
 The initial-state benchmark starts from an already parsed Rust value. Hosts
 that accept JSON strings still pay JSON parsing cost. Preparing
 `protocol.bin` avoids repeated protocol decoding, not state parsing.
 
-Example payloads show the same reduction:
+The same current Contact Book protocol and state isolate payload impact:
 
-| Initial route | Previous state JSON | Decorator-only state JSON | Reduction |
-|---------------|--------------------:|--------------------------:|----------:|
-| Routes home, behavior but no decorators | 191 bytes | 2 bytes (`{}`) | 98.95% |
-| Contact book home | 103 bytes | 20 bytes (`{"totalFavorites":5}`) | 80.58% |
+| Initial route | Full strategy | Projected strategy | Reduction |
+|---------------|--------------:|-------------------:|----------:|
+| Contact Book home | 12,116 bytes | 37 bytes | 99.69% |
+| Contact Book contacts | 12,116 bytes | 37 bytes | 99.69% |
+
+The live Contact Book API omits an empty `searchQuery`, so its projected
+`/contacts` response carries only `{"totalFavorites":5}` (20 bytes). Projection
+never synthesizes keys that the request state did not provide.
+
+Projection adds build-time work, not browser bundle code:
+
+| Paired Contact Book build | Without adapter | With adapter | Cost |
+|---------------------------|----------------:|-------------:|-----:|
+| Clean esbuild build, median of 6 alternating pairs | 90.9 ms | 131.8 ms | +40.9 ms |
+| No-change rebuild, median of 10 alternating pairs | 30.6 ms | 63.4 ms | +32.8 ms |
+| Emitted browser files | 398,341 bytes | 398,341 bytes | byte-identical |
+
+The production manifest was 9,753 bytes and added 450 bytes (1.62%) to the
+27,804-byte protocol. A profiled docs build hashed all 50 graph modules but
+parsed only 10 semantic modules; the complete adapter phase was 122 ms median.
+These numbers are hardware-specific, but they bound the tradeoff: tens of
+milliseconds during client builds in exchange for removing large-state
+serialization from every request.
 
 Native hosts should also prepare `protocol.bin` once at startup:
 
@@ -106,6 +127,11 @@ Each layer of the architecture contributes to the overall performance profile:
   with `webui serve` in development). At runtime, the server only performs
   state interpolation against a pre-compiled binary protocol - no syntax
   parsing, no AST walking.
+
+- **Bundler-proven state projection.** The application bundler records exact
+  decorated state ownership and emitted chunk membership. WebUI validates that
+  sidecar once, stores compact surfaces in `protocol.bin`, and projects request
+  state without running TypeScript analysis in Rust.
 
 - **Protocol Buffers.** The handler consumes a compact binary payload instead
   of parsing template syntax. Prepared host APIs decode the protocol and build

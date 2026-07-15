@@ -238,6 +238,9 @@ pub struct BundlerConfig {
     /// Module path aliases (e.g. `{ "~": "./src" }`).
     #[serde(default)]
     pub alias: std::collections::HashMap<String, String>,
+    /// Additional projection fragments for separately built external bundles.
+    #[serde(default, rename = "projectionManifests")]
+    pub projection_manifests: Vec<String>,
 }
 
 /// A processed page ready for rendering.
@@ -345,7 +348,8 @@ mod tests {
             "target": "es2022",
             "external": ["lodash"],
             "define": { "process.env.NODE_ENV": "\"production\"" },
-            "alias": { "~": "./src" }
+            "alias": { "~": "./src" },
+            "projectionManifests": ["./shared/projection.json"]
         }"#;
         let cfg: BundlerConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.target.as_deref(), Some("es2022"));
@@ -355,6 +359,7 @@ mod tests {
             "\"production\""
         );
         assert_eq!(cfg.alias.get("~").unwrap(), "./src");
+        assert_eq!(cfg.projection_manifests, vec!["./shared/projection.json"]);
     }
 
     #[test]
@@ -364,6 +369,7 @@ mod tests {
         assert!(cfg.external.is_empty());
         assert!(cfg.define.is_empty());
         assert!(cfg.alias.is_empty());
+        assert!(cfg.projection_manifests.is_empty());
     }
 
     // --- CustomPage::script_file -------------------------------------------

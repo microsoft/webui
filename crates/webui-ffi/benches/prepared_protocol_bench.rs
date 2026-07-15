@@ -12,7 +12,10 @@ use webui_ffi::{
     webui_handler_render_prepared, webui_protocol_create, webui_protocol_destroy,
     webui_render_partial, webui_render_partial_prepared,
 };
-use webui_protocol::{ComponentData, FragmentList, WebUIFragment, WebUIProtocol};
+use webui_protocol::{
+    ComponentData, FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment,
+    WebUIProtocol,
+};
 
 fn build_protocol(component_count: usize) -> Vec<u8> {
     let mut fragments = HashMap::with_capacity(component_count + 1);
@@ -24,6 +27,7 @@ fn build_protocol(component_count: usize) -> Vec<u8> {
     );
 
     let mut protocol = WebUIProtocol::new(fragments);
+    protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
     protocol.components.reserve(component_count);
     for index in 0..component_count {
         let name = format!("bench-component-{index:04}");
@@ -37,6 +41,7 @@ fn build_protocol(component_count: usize) -> Vec<u8> {
             name,
             ComponentData {
                 template_json: r#"{"html":"<div>component</div>"}"#.to_string(),
+                hydration_mode: StateProjectionMode::Keys as i32,
                 hydration_keys: vec!["title".to_string(), "items".to_string()],
                 ..Default::default()
             },

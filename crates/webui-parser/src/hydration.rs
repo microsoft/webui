@@ -17,7 +17,7 @@
 //! `Component::script_source` handed to it by the registry. The function stays
 //! `pub` so third-party plugins may reuse the same decorator convention, but the
 //! plugin-agnostic registration pipeline never scans — each plugin derives its
-//! own hydration keys ([`crate::plugin::ComponentTemplateArtifact::hydration_keys`])
+//! own hydration keys ([`crate::plugin::ComponentTemplateArtifact::hydration`])
 //! from whatever build metadata it chooses.
 //!
 //! This is a deterministic, allocation-light token scanner — no regular

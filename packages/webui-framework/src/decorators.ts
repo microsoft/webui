@@ -168,6 +168,14 @@ export function isAttributeProperty(ctor: Function, property: string): boolean {
   return attrPropertyMapFor(ctor)?.has(property) === true;
 }
 
+/** Return the reflected HTML attribute name for an `@attr` property. */
+export function attributeNameForProperty(
+  ctor: Function,
+  property: string,
+): string | undefined {
+  return attrPropertyMapFor(ctor)?.get(property)?.attribute;
+}
+
 // ---------------------------------------------------------------------------
 // Attribute reflection
 // ---------------------------------------------------------------------------

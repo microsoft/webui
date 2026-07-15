@@ -33,6 +33,13 @@ export interface BuildOptions {
   outDir?: string;
   /** Design token theme: a JSON file path or npm package name. */
   theme?: string;
+  /** Projection manifest file paths, merged in order. */
+  projectionManifests?: string[];
+  /** Inline manifests with logical paths anchoring root/stale validation. */
+  projectionManifestObjects?: Array<{
+    path: string;
+    manifest: unknown;
+  }>;
 }
 
 /** Build statistics. */
@@ -121,6 +128,11 @@ interface NativeAddon {
     componentAssetRoots?: string[];
     cssFileNameTemplate?: string;
     cssPublicBase?: string;
+    projectionManifests?: string[];
+    projectionManifestObjects?: Array<{
+      path: string;
+      json: string;
+    }>;
   }): BuildResult;
   inspect(protocolData: Buffer): string;
 }
@@ -227,7 +239,16 @@ function getAnyPreparedProtocol(
 export function build(options: BuildOptions): BuildResult {
   const native = loadAddon();
   if (native?.build) {
-    return native.build(options);
+    const { projectionManifestObjects, ...nativeOptions } = options;
+    return native.build({
+      ...nativeOptions,
+      projectionManifestObjects: projectionManifestObjects?.map(
+        ({ path, manifest }) => ({
+          path,
+          json: JSON.stringify(manifest),
+        })
+      ),
+    });
   }
 
   // Fallback: shell out to CLI binary.
@@ -246,6 +267,19 @@ export function build(options: BuildOptions): BuildResult {
     for (const c of options.components) {
       args.push("--components", c);
     }
+  }
+  if (options.projectionManifests) {
+    for (const manifest of options.projectionManifests) {
+      args.push("--projection-manifest", manifest);
+    }
+  }
+  if (
+    options.projectionManifestObjects &&
+    options.projectionManifestObjects.length > 0
+  ) {
+    throw new Error(
+      "[webui] Inline projection manifest objects require the native addon; write the manifest and pass projectionManifests when using the CLI fallback."
+    );
   }
   if (options.componentAssetRoots && options.componentAssetRoots.length > 0) {
     args.push("--emit-component-assets", options.componentAssetRoots.join(","));

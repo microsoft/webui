@@ -23,7 +23,10 @@ use webui_ffi::{
     webui_protocol_tokens_prepared, webui_render, webui_render_partial,
     webui_render_partial_prepared,
 };
-use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol, WebUiFragmentRoute};
+use webui_protocol::{
+    FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment, WebUIProtocol,
+    WebUiFragmentRoute,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -331,6 +334,7 @@ fn render_partial_returns_templates_inventory_and_chain() {
     );
 
     let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+    protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
     protocol
         .components
         .entry("mp-app".to_string())
@@ -345,7 +349,9 @@ fn render_partial_returns_templates_inventory_and_chain() {
         .components
         .entry("mp-search-page".to_string())
         .or_default();
+    search_page.hydration_mode = StateProjectionMode::Keys as i32;
     search_page.hydration_keys = vec!["query".to_string()];
+    search_page.navigation_mode = StateProjectionMode::Keys as i32;
     search_page.navigation_keys = vec!["query".to_string()];
     protocol
         .components
@@ -890,9 +896,11 @@ fn build_protocol_with_hydration_keys(hydration_keys: &[&str]) -> Vec<u8> {
         },
     );
     let mut protocol = WebUIProtocol::new(fragments);
+    protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
     protocol.components.insert(
         "client-card".to_string(),
         webui_protocol::ComponentData {
+            hydration_mode: StateProjectionMode::Keys as i32,
             hydration_keys: hydration_keys
                 .iter()
                 .map(|key| (*key).to_string())

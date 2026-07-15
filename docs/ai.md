@@ -75,8 +75,12 @@ my-app/
 │       ├── other-widget.html
 │       ├── other-widget.css
 │       └── other-widget.ts
+├── build-client.mjs           ← Application-owned browser bundle + manifest
 ├── data/
 │   └── state.json              ← Server state for dev
+├── dist/
+│   ├── index.js                ← Browser entry/chunks
+│   └── webui-projection.json   ← Build-time state projection sidecar
 └── package.json
 ```
 
@@ -84,8 +88,10 @@ my-app/
 - HTML files with a hyphen in the name are components (`my-card.html` → `<my-card>`)
 - CSS files with the same name are auto-paired (`my-card.css`)
 - A same-named TypeScript or JavaScript file opts the component into authored
-  behavior (`my-card.ts`); only its `@observable` / `@attr` fields opt into
-  initial state hydration
+  behavior (`my-card.ts`)
+- With a validated projection manifest, only exact `@observable` / `@attr`
+  fields opt into initial state hydration; without a manifest, state remains
+  full
 - Scriptless components retain compiler-owned browser templates but contribute
   no keys to initial bootstrap state
 - Discovery is recursive through subdirectories
@@ -346,8 +352,8 @@ API.
 
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |-----------|---------|------|---------------------|
-| `@attr` | HTML attribute reflection | Yes (from JSON state) | Yes |
-| `@attr({ mode: 'boolean' })` | Boolean attribute (present/absent) | Yes | Yes |
+| `@attr` | HTML attribute reflection | Yes; an existing SSR host attribute wins | Yes |
+| `@attr({ mode: 'boolean' })` | Boolean attribute (present/absent) | Yes; host presence wins | Yes |
 | `@observable` | Reactive state used by TypeScript code | Yes (from JSON state) | Yes |
 
 
@@ -550,6 +556,56 @@ window.addEventListener('webui:hydration-complete', () => {
 });
 ```
 
+## Build-Time State Projection
+
+Rust never analyzes JavaScript or TypeScript. Bundle browser code first and emit
+projection metadata from the same resolved graph:
+
+```bash
+npm install -D esbuild typescript
+```
+
+```javascript
+// build-client.mjs
+import * as esbuild from 'esbuild';
+import { esbuildProjection } from '@microsoft/webui/projection.js';
+
+await esbuild.build({
+  entryPoints: ['src/index.ts'],
+  outdir: 'dist',
+  bundle: true,
+  splitting: true,
+  format: 'esm',
+  plugins: [esbuildProjection()],
+});
+```
+
+```bash
+node build-client.mjs
+webui build ./src --out ./dist --plugin=webui \
+  --projection-manifest ./dist/webui-projection.json
+```
+
+Rules:
+
+- `@microsoft/webui/projection.js` is build-only. `esbuild` and `typescript` are
+  optional peers and are not imported by the root `@microsoft/webui` runtime.
+- The compiler contract is bundler-neutral; the package currently includes the
+  supported esbuild adapter.
+- esbuild runs once. The adapter observes that run and writes
+  `webui-projection.json` atomically after successful output.
+- No manifest means full state and no JavaScript inference.
+- Any supplied manifest enables strict coverage. Every scripted component in
+  the protocol, including components discovered through `--components`, must
+  have exactly one entry or the build fails with `PROJ-B001`.
+- Code-split and external bundles remain application-owned. Build external
+  shared controls separately and repeat `--projection-manifest` for each
+  fragment.
+- The manifest uses JavaScript property names for `@observable` and `@attr`.
+  Existing SSR host attributes take precedence over projected `@attr` values.
+- WebUI validates input/output hashes and embeds compact metadata in
+  `protocol.bin`. Runtime handlers never open the manifest.
+
 ## Hydration with Router
 
 ```typescript
@@ -610,6 +666,7 @@ webui build ./src --out ./dist --plugin=webui
 | `--dom <MODE>` | `shadow` | `shadow` or `light` |
 | `--plugin <NAME>` | none | Plugin identifier (e.g. `webui`) |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
+| `--projection-manifest <PATH>` | none | Bundler projection fragment (repeatable); requires `--plugin=webui` |
 | `--emit-component-assets <TAGS>` | none | Comma-separated root component tags emitted as static `.webui.js` ESM assets in `--out` |
 | `--theme <PACKAGE>` | none | Design token theme to validate against (see below) |
 | `--asset-file-name-template <TEMPLATE>` | `[name].[ext]` | Emitted asset filename template for Link-mode CSS files and static component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
@@ -627,6 +684,10 @@ directly. Import `@microsoft/webui-framework` from authored component modules.
 An app that stays static after SSR needs no framework browser runtime. Import
 the framework once when scriptless components need browser state or soft
 navigation.
+
+For exact state projection, run the browser bundler first and pass its completed
+manifest to `webui build`. Repeat `--projection-manifest` for separately built
+external component bundles. Omitting the flag preserves full state.
 
 For CDN/browser caching in `link` mode, prefer:
 
@@ -682,6 +743,7 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 | `--dom <MODE>` | `shadow` | `shadow` or `light` |
 | `--plugin <NAME>` | none | Plugin identifier (e.g. `webui`) |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
+| `--projection-manifest <PATH>` | none | Bundler projection fragment (repeatable); watched explicitly with `--watch` |
 | `--api-port <PORT>` | none | Proxy route requests to API server |
 | `--theme <PACKAGE>` | none | Design token theme; missing unresolved tokens fail the build (see below) |
 | `--asset-file-name-template <TEMPLATE>` | `[name].[ext]` | Emitted asset filename template |
@@ -750,7 +812,9 @@ apply to a given error are `null`.
 `unclosed-html-tag`,
 `malformed-html-tag`, `unexpected-closing-tag`, `unterminated-html-comment`,
 `unterminated-html-declaration`, `excessive-nesting`, `recursive-template`,
-`invalid-css`.
+`invalid-css`, `PROJ-P001`, `PROJ-P002`, `PROJ-B001`, `PROJ-B002`,
+`PROJ-M001`, `PROJ-M003`, `PROJ-M004`, `PROJ-M006`, `PROJ-M007`,
+`PROJ-M009`, `PROJ-S001`, `PROJ-S003`, `PROJ-S004`.
 
 ### Exit codes
 
@@ -1119,8 +1183,10 @@ Each route handler should return only the state that route's component needs:
 ```json
 {
   "scripts": {
-    "build": "webui build ./src --out ./dist --plugin=webui",
-    "dev": "webui serve ./src --state ./data/state.json --plugin=webui --watch"
+    "build:client": "node build-client.mjs",
+    "build:protocol": "webui build ./src --out ./dist --plugin=webui --projection-manifest ./dist/webui-projection.json",
+    "build": "npm run build:client && npm run build:protocol",
+    "dev:server": "webui serve ./src --state ./data/state.json --plugin=webui --projection-manifest ./dist/webui-projection.json --watch"
   },
   "dependencies": {
     "@microsoft/webui": "latest",
@@ -1130,11 +1196,15 @@ Each route handler should return only the state that route's component needs:
 ```
 
 Add `@microsoft/webui-router` if using client-side navigation.
+Run the client bundler in watch mode alongside `dev:server`; the dev server
+rebuilds when the adapter atomically replaces the manifest.
 
 ## Language Integration (Server Side)
 
 WebUI renders from **any** backend. The server loads and prepares
-`protocol.bin` once, then renders with JSON state per request.
+`protocol.bin` once, then renders with JSON state per request. Projection
+manifests are consumed only while producing `protocol.bin`; runtime rendering
+APIs are unchanged.
 
 ### Rust
 
@@ -1150,10 +1220,17 @@ handler.handle(protocol.protocol(), &state, &options, &mut writer)?;
 ### Node.js
 
 ```javascript
-import { render } from '@microsoft/webui';
+import { build, render } from '@microsoft/webui';
+
+const result = build({
+  appDir: './src',
+  plugin: 'webui',
+  projectionManifests: ['./dist/webui-projection.json'],
+});
+
 // Keep this Buffer for the server lifetime. Reusing its identity reuses the
 // native prepared protocol.
-const protocol = readFileSync('./dist/protocol.bin');
+const protocol = result.protocol;
 const html = render(protocol, state, {
   entry: 'index.html',
   requestPath: req.url,
@@ -1179,7 +1256,11 @@ const html = protocol.renderJson(
 ```javascript
 import initParser, { build_protocol } from './wasm/parser/webui_wasm_parser.js';
 await initParser();
-const protocolBytes = build_protocol({ 'index.html': '<h1>{{title}}</h1>' }, 'index.html');
+const protocolBytes = build_protocol(
+  { 'index.html': '<h1>{{title}}</h1>' },
+  'index.html',
+  [projectionManifest],
+);
 ```
 
 Use `wasm/all/webui_wasm_all.js` when both parser and handler exports are needed in one module, such as a playground.

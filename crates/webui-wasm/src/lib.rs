@@ -38,7 +38,7 @@ mod tests {
         entry: &str,
         request_path: &str,
     ) -> Result<String, WasmError> {
-        let protocol = parser::parse_to_protocol(files, entry)?;
+        let protocol = parser::parse_to_protocol(files, entry, &[])?;
         handler::render_protocol_to_string(&protocol, state_json, entry, request_path, None)
     }
 
@@ -75,7 +75,7 @@ mod tests {
             r#"<div><input w-ref="myInput" /></div>"#.to_string(),
         );
 
-        let result = parser::build_protocol_inner(&files, "index.html");
+        let result = parser::build_protocol_inner(&files, "index.html", &[]);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(

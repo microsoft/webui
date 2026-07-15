@@ -345,6 +345,7 @@ fn run(args: &ServeArgs) -> Result<()> {
 
         let handle = start_file_watcher(WatcherConfig {
             watch_paths: watch_paths_list,
+            projection_manifests: args.app_args.projection_manifests.clone(),
             state: Arc::clone(&state),
             render_config,
             livereload: active_lr.clone(),
@@ -1151,6 +1152,7 @@ const WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
 /// Configuration for the file watcher.
 struct WatcherConfig {
     watch_paths: Vec<PathBuf>,
+    projection_manifests: Vec<PathBuf>,
     state: Arc<Mutex<SharedState>>,
     render_config: RenderConfig,
     livereload: LiveReload,
@@ -1166,6 +1168,7 @@ struct WatcherConfig {
 fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::WatcherHandle> {
     let WatcherConfig {
         watch_paths,
+        projection_manifests,
         state,
         render_config,
         livereload,
@@ -1206,6 +1209,7 @@ fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::Watcher
     spawn_watcher(
         WatchConfig {
             paths: watch_paths,
+            explicit_files: projection_manifests,
             ignore,
             debounce: WATCH_DEBOUNCE,
             retry_unchanged_when: Some(retry_unchanged_when),
@@ -1346,6 +1350,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1375,6 +1380,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1410,6 +1416,7 @@ mod tests {
                     dom: DomStrategy::Shadow,
                     plugin,
                     components: Vec::new(),
+                    projection_manifests: Vec::new(),
                     asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                     css_public_base: None,
                     legal_comments: LegalComments::Inline,
@@ -1459,6 +1466,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1498,6 +1506,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1524,6 +1533,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1549,6 +1559,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1717,6 +1728,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1765,6 +1777,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2061,6 +2074,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2097,6 +2111,17 @@ mod tests {
         // The error demands the missing `--token-c`, not the locally-defined
         // `--token-a` (which appears in the source snippet only as context).
         assert!(!error.contains("add --token-a"), "error: {error}");
+
+        std::fs::write(
+            app.path().join("my-card.css"),
+            ":host { --foo-bar: var(--token-b); }",
+        )
+        .unwrap();
+        assert!(
+            rebuild_and_update_state(&config, &livereload, &state).is_ok(),
+            "a later valid synchronization file must recover the rebuild loop"
+        );
+        assert!(state.lock().unwrap().rebuild_error.is_none());
     }
 
     #[test]
@@ -2117,6 +2142,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2180,6 +2206,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2225,6 +2252,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2269,6 +2297,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,

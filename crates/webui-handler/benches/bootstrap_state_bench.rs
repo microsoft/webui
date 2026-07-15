@@ -5,16 +5,18 @@
 //!
 //! Measures the cost of emitting the `#webui-data` bootstrap block, whose
 //! `state` field is serialized on every full-HTML render
-//! (`write_webui_bootstrap` → `write_projected_state`).
+//! (`write_webui_bootstrap` → `write_selected_state`).
 //!
 //! The projected-hydration design filters the SSR state down to only the keys
 //! authored client components actually hydrate before
 //! serializing it through the script-safe JSON writer. This benchmark pins
-//! that behavior with six arms per size:
+//! that behavior with seven arms per size:
 //!
 //! * `hydratable_collection` — hydration keys contain every top-level key, including
 //!   the large `items` collection. This models a real `<for>` root and is the
 //!   equal-byte anti-regression guard.
+//! * `uncertain_full_state` — analysis selected `All`, so the handler bypasses
+//!   key collection and preserves the complete state.
 //! * `server_only_collection` — hydration keys contain only the small metadata keys,
 //!   so the large `items` array is projected away. This models a large
 //!   render-only/server-only collection, not a hydrated `<for>` root.
@@ -25,9 +27,9 @@
 //! * `dormant_scriptless_component` — the reachable component retains browser
 //!   template metadata and navigation keys, but its initial hydration key set is
 //!   empty, so the state is never traversed.
-//! * `metadata_free_scriptless_component` — the discarded design that omitted
-//!   the scriptless browser template. This isolates the fixed cost required to
-//!   preserve soft navigation.
+//! * `missing_component_metadata` — intentionally missing component
+//!   metadata. Runtime safety must preserve full state instead of treating
+//!   missing metadata as a proven-empty surface.
 //! * `without_plugin` — no bootstrap block is emitted at all; the structural
 //!   lower bound.
 //!
@@ -50,7 +52,8 @@ use std::hint::black_box;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{PreparedProtocol, RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::{
-    ComponentData, FragmentList, WebUIFragment, WebUIFragmentRoute, WebUIProtocol,
+    ComponentData, FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment,
+    WebUIFragmentRoute, WebUIProtocol,
 };
 
 struct BenchWriter {
@@ -176,6 +179,7 @@ fn build_partial_protocol(
     hydration_keys: &[&str],
     navigation_keys: &[&str],
     compiler_owned: bool,
+    navigation_mode: Option<StateProjectionMode>,
 ) -> PreparedProtocol {
     let mut fragments = HashMap::new();
     fragments.insert(
@@ -200,10 +204,17 @@ fn build_partial_protocol(
         "benchmark-page".to_string(),
         ComponentData {
             template_json: template_json.to_string(),
+            hydration_mode: if hydration_keys.is_empty() && !compiler_owned {
+                StateProjectionMode::Keys as i32
+            } else {
+                keyed_mode(hydration_keys)
+            },
             hydration_keys: hydration_keys
                 .iter()
                 .map(|key| (*key).to_string())
                 .collect(),
+            navigation_mode: navigation_mode
+                .map_or_else(|| keyed_mode(navigation_keys), |mode| mode as i32),
             navigation_keys: navigation_keys
                 .iter()
                 .map(|key| (*key).to_string())
@@ -252,10 +263,12 @@ fn build_routed_protocol() -> WebUIProtocol {
     );
 
     let mut protocol = WebUIProtocol::new(fragments);
+    protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
     protocol.components.insert(
         "dashboard-page".to_string(),
         ComponentData {
             template_json: "{}".to_string(),
+            hydration_mode: StateProjectionMode::Keys as i32,
             hydration_keys: vec!["page".to_string(), "recentContacts".to_string()],
             ..Default::default()
         },
@@ -264,6 +277,7 @@ fn build_routed_protocol() -> WebUIProtocol {
         "contacts-page".to_string(),
         ComponentData {
             template_json: "{}".to_string(),
+            hydration_mode: StateProjectionMode::Keys as i32,
             hydration_keys: vec!["contacts".to_string(), "page".to_string()],
             ..Default::default()
         },
@@ -303,6 +317,7 @@ fn build_bootstrap_protocol(
         },
     );
     let mut protocol = WebUIProtocol::new(fragments);
+    protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
     let template_json = if compiler_owned {
         r#"{"h":"<p>ready</p>","tr":["count","generatedAt","items","title"],"th":1}"#
     } else {
@@ -312,7 +327,13 @@ fn build_bootstrap_protocol(
         "bench-component".to_string(),
         ComponentData {
             template_json: template_json.to_string(),
+            hydration_mode: if hydration_keys.is_empty() && !compiler_owned {
+                StateProjectionMode::Keys as i32
+            } else {
+                keyed_mode(&hydration_keys)
+            },
             hydration_keys,
+            navigation_mode: keyed_mode(&navigation_keys),
             navigation_keys,
             ..Default::default()
         },
@@ -320,7 +341,15 @@ fn build_bootstrap_protocol(
     protocol
 }
 
-fn build_metadata_free_bootstrap_protocol() -> WebUIProtocol {
+fn keyed_mode<T>(keys: &[T]) -> i32 {
+    if keys.is_empty() {
+        StateProjectionMode::None as i32
+    } else {
+        StateProjectionMode::Keys as i32
+    }
+}
+
+fn build_missing_metadata_bootstrap_protocol() -> WebUIProtocol {
     let mut protocol = build_bootstrap_protocol(Vec::new(), Vec::new(), true);
     protocol.components.clear();
     protocol
@@ -340,12 +369,19 @@ fn bootstrap_state_bench(c: &mut Criterion) {
     let full_keys = full_hydration_keys();
     let metadata_keys = server_only_hydration_keys();
     let full_protocol = build_bootstrap_protocol(full_keys.clone(), full_keys.clone(), false);
+    let mut full_fallback_protocol = build_bootstrap_protocol(Vec::new(), Vec::new(), false);
+    let fallback_component = full_fallback_protocol
+        .components
+        .get_mut("bench-component")
+        .unwrap_or_else(|| panic!("benchmark component missing"));
+    fallback_component.hydration_mode = StateProjectionMode::All as i32;
+    fallback_component.navigation_mode = StateProjectionMode::All as i32;
     let server_only_protocol =
         build_bootstrap_protocol(metadata_keys.clone(), metadata_keys, false);
     let authored_navigation_only_protocol =
         build_bootstrap_protocol(Vec::new(), full_keys.clone(), false);
     let dormant_protocol = build_bootstrap_protocol(Vec::new(), full_keys, true);
-    let metadata_free_protocol = build_metadata_free_bootstrap_protocol();
+    let missing_metadata_protocol = build_missing_metadata_bootstrap_protocol();
 
     for &target in &[64 * 1024usize, 256 * 1024, 1024 * 1024] {
         let state = build_large_state(target);
@@ -376,6 +412,31 @@ fn bootstrap_state_bench(c: &mut Criterion) {
                         )
                         .unwrap_or_else(|error| {
                             panic!("hydratable_collection render failed: {error}")
+                        });
+                    black_box(writer.len());
+                });
+            },
+        );
+
+        // UNKNOWN surface: preserve full state without collecting or searching
+        // keys. This is the correctness fallback for unsupported source forms.
+        group.bench_with_input(
+            BenchmarkId::new("uncertain_full_state", &label),
+            &state,
+            |b, st| {
+                let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+                let mut writer = BenchWriter::new(state_bytes + 4096);
+                b.iter(|| {
+                    writer.clear();
+                    handler
+                        .handle(
+                            black_box(&full_fallback_protocol),
+                            black_box(st),
+                            &options,
+                            &mut writer,
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("uncertain_full_state render failed: {error}")
                         });
                     black_box(writer.len());
                 });
@@ -459,10 +520,10 @@ fn bootstrap_state_bench(c: &mut Criterion) {
             },
         );
 
-        // DISCARDED design: omitting the browser template is slightly cheaper,
-        // but breaks client creation and soft navigation.
+        // MISSING metadata: runtime safety falls back to full state instead of
+        // silently treating an unknown component surface as empty.
         group.bench_with_input(
-            BenchmarkId::new("metadata_free_scriptless_component", &label),
+            BenchmarkId::new("missing_component_metadata", &label),
             &state,
             |b, st| {
                 let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
@@ -471,13 +532,13 @@ fn bootstrap_state_bench(c: &mut Criterion) {
                     writer.clear();
                     handler
                         .handle(
-                            black_box(&metadata_free_protocol),
+                            black_box(&missing_metadata_protocol),
                             black_box(st),
                             &options,
                             &mut writer,
                         )
                         .unwrap_or_else(|error| {
-                            panic!("metadata_free_scriptless_component render failed: {error}")
+                            panic!("missing_component_metadata render failed: {error}")
                         });
                     black_box(writer.len());
                 });
@@ -542,11 +603,13 @@ fn bootstrap_state_bench(c: &mut Criterion) {
     let mut dormant_routed_protocol = build_routed_protocol();
     for component in dormant_routed_protocol.components.values_mut() {
         component.navigation_keys = component.hydration_keys.clone();
+        component.navigation_mode = component.hydration_mode;
         component.hydration_keys.clear();
+        component.hydration_mode = StateProjectionMode::None as i32;
         component.template_json = r#"{"h":"<p>ready</p>","th":1}"#.to_string();
     }
-    let mut metadata_free_routed_protocol = dormant_routed_protocol.clone();
-    metadata_free_routed_protocol.components.clear();
+    let mut missing_metadata_routed_protocol = dormant_routed_protocol.clone();
+    missing_metadata_routed_protocol.components.clear();
     let mut route_group = c.benchmark_group("bootstrap_state_route");
     route_group.throughput(Throughput::Bytes(routed_state_bytes as u64));
     for &(name, path, protocol) in &[
@@ -558,9 +621,9 @@ fn bootstrap_state_bench(c: &mut Criterion) {
             &dormant_routed_protocol,
         ),
         (
-            "contacts_metadata_free_component",
+            "contacts_missing_component_metadata",
             "/contacts",
-            &metadata_free_routed_protocol,
+            &missing_metadata_routed_protocol,
         ),
     ] {
         route_group.bench_function(name, |b| {
@@ -598,9 +661,12 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
         &["count", "generatedAt", "title"],
         &["count", "generatedAt", "title"],
         false,
+        None,
     );
-    let scriptless_protocol = build_partial_protocol(&[], &["count", "generatedAt", "title"], true);
-    let static_protocol = build_partial_protocol(&[], &[], true);
+    let scriptless_protocol =
+        build_partial_protocol(&[], &["count", "generatedAt", "title"], true, None);
+    let static_protocol = build_partial_protocol(&[], &[], true, None);
+    let full_protocol = build_partial_protocol(&[], &[], false, Some(StateProjectionMode::All));
     let mut group = c.benchmark_group("partial_state_serialization");
 
     for &target in &[64 * 1024usize, 1024 * 1024] {
@@ -624,6 +690,26 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
                         .insert("state".to_string(), state);
                     let output = serde_json::to_string(&result)
                         .unwrap_or_else(|error| panic!("response serialization failed: {error}"));
+                    black_box(output.len());
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("explicit_full_state", &label),
+            &state_json,
+            |b, input| {
+                b.iter(|| {
+                    let output = webui_handler::route_handler::render_partial_prepared(
+                        &full_protocol,
+                        black_box(input),
+                        "index.html",
+                        "/",
+                        "",
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("full partial response serialization failed: {error}")
+                    });
                     black_box(output.len());
                 });
             },

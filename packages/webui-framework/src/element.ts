@@ -16,8 +16,8 @@
 
 import { TemplateElement } from './template-element.js';
 import {
+  attributeNameForProperty,
   getObservableNames,
-  isAttributeProperty,
   syncAttrProperties,
 } from './decorators.js';
 import type {
@@ -54,7 +54,11 @@ export class WebUIElement extends TemplateElement {
   }
 
   protected override $shouldApplySSRState(key: string): boolean {
-    return !isAttributeProperty(this.constructor as Function, key);
+    const attribute = attributeNameForProperty(
+      this.constructor as Function,
+      key,
+    );
+    return attribute === undefined || !this.hasAttribute(attribute);
   }
 
   protected override $syncAuthoredAttributes(): void {

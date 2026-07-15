@@ -149,10 +149,25 @@ batched rather than invoked for every internal handler write.
 | `plugin` | `string` | - | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `string[]` | - | External component sources |
 | `componentAssetRoots` | `string[]` | - | Root component tags emitted as static `.webui.js` ESM assets |
+| `projectionManifests` | `string[]` | - | Projection manifest paths, merged with strict scripted-component coverage |
+| `projectionManifestObjects` | `{ path: string; manifest: unknown }[]` | - | Already-transported manifests with logical paths anchoring `root` and stale checks; native addon only |
 | `cssFileNameTemplate` | `string` | `"[name].[ext]"` | Emitted asset filename template for Link-mode CSS and component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `cssPublicBase` | `string` | - | Public URL/path prefix for Link-mode CSS hrefs |
 | `legalComments` | `"inline" \| "none"` | `"inline"` | Preserve legal CSS comments inline, or strip all comments |
 | `theme` | `string` | - | Design token theme JSON path or npm package name. Missing required CSS tokens fail the build (literal `var()` fallbacks are exempt) |
+
+```js
+const result = build({
+  appDir: './src',
+  plugin: 'webui',
+  projectionManifests: ['./dist/webui-projection.json'],
+});
+```
+
+Manifest inputs are build-time only. The returned protocol is self-contained,
+and `render()` does not load projection tooling. If no manifest is supplied,
+the build preserves full state. Inline objects require the native addon; the
+CLI fallback accepts manifest paths only.
 
 ### BuildStats
 

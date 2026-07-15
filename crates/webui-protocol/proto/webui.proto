@@ -5,7 +5,6 @@ syntax = "proto3";
 
 package webui;
 
-// Root protocol containing all fragment records.
 // Per-component metadata keyed by tag name.
 message ComponentData {
   // Non-WebUI client-side template payload.
@@ -32,26 +31,40 @@ message ComponentData {
   // WebUI plugin component-local JavaScript condition closure array.
   // Empty when the component has no conditions or boolean attributes.
   string template_functions = 5;
-  // Build-time hydration allowlist for an authored client component: the
-  // property names its browser implementation consumes from initial SSR state.
-  // It contains only the sibling `.ts` / `.js` reactive surface declared with
-  // `@observable` / `@attr`. Template roots already exist in the trusted SSR DOM
-  // and do not enter initial state solely because a component also has authored
-  // events or lifecycle code. Scriptless components leave this empty.
-  //
-  // For each request, the handler unions keys from authored components
-  // reachable on the active route and projects emitted SSR state to that set.
-  //
-  // Sorted and deduplicated. Empty for components with no hydratable surface.
+  // Exact @observable + @attr property keys when hydration_mode is KEYS.
+  // Existing SSR host attributes take precedence; bootstrap state fills
+  // attribute-backed properties that were not materialized on the host.
+  // Template roots already exist in the trusted SSR DOM and do not enter
+  // initial state solely because a component has authored browser code.
+  // Sorted and deduplicated; empty for NONE and ALL.
   repeated string hydration_keys = 6;
-  // Build-time state allowlist used when a component is created or updated by
-  // partial navigation. Authored components use the union of hydration_keys and
-  // template reactive roots. Scriptless compiled templates include only their
-  // template roots so the router can render them without an empty authored
-  // module or a full-document navigation.
-  //
-  // Sorted and deduplicated. Empty for fully static templates.
+  // Exact partial-navigation keys when navigation_mode is KEYS. Authored
+  // components use @observable + @attr property keys plus template roots.
+  // Scriptless compiled templates include only their template roots.
+  // Sorted and deduplicated; empty for NONE and ALL.
   repeated string navigation_keys = 7;
+  // How initial hydration state is selected for this component.
+  StateProjectionMode hydration_mode = 8;
+  // How partial-navigation state is selected for this component.
+  StateProjectionMode navigation_mode = 9;
+}
+
+// Build-wide initial-state behavior.
+enum InitialStateStrategy {
+  // Emit the complete state object. Used by default and non-WebUI plugins.
+  INITIAL_STATE_STRATEGY_FULL = 0;
+  // Select state from reachable WebUI component surfaces.
+  INITIAL_STATE_STRATEGY_COMPONENTS = 1;
+}
+
+// Per-component state selection.
+enum StateProjectionMode {
+  // The component is known not to consume state through this channel.
+  STATE_PROJECTION_MODE_NONE = 0;
+  // Select the component's explicit sorted key list.
+  STATE_PROJECTION_MODE_KEYS = 1;
+  // The complete surface is unknown, so preserve correctness with full state.
+  STATE_PROJECTION_MODE_ALL = 2;
 }
 
 // CSS delivery strategy chosen at build time.
@@ -67,6 +80,7 @@ enum DomStrategy {
   DOM_STRATEGY_LIGHT = 1;
 }
 
+// Root protocol containing all fragment records and build metadata.
 message WebUIProtocol {
   map<string, FragmentList> fragments = 1;
   // Sorted, deduplicated CSS custom property names used across all components
@@ -81,6 +95,9 @@ message WebUIProtocol {
   // Build-wide DOM encapsulation strategy. Combined with css_strategy to
   // decide preload vs stylesheet emission.
   DomStrategy dom_strategy = 5;
+  // Whether initial SSR metadata contains full state or WebUI component
+  // projection. Partial-navigation state remains component-driven.
+  InitialStateStrategy initial_state_strategy = 6;
 }
 
 // A list of fragments (needed because protobuf maps cannot have repeated values directly).

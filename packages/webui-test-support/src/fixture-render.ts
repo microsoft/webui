@@ -39,10 +39,16 @@ export interface RenderFixturesOptions {
   writeFiles?: boolean;
   /** Watch src/ dirs for changes and re-render automatically (default: false). */
   watchMode?: boolean;
+  /** Bundler projection manifest shared by authored fixture entries. */
+  projectionManifest?: string;
 }
 
 /** Build and render a single fixture from its src/ directory. */
-function renderOne(fixturePath: string, name: string): RenderedFixture | null {
+function renderOne(
+  fixturePath: string,
+  name: string,
+  projectionManifest?: string,
+): RenderedFixture | null {
   const srcDir = resolve(fixturePath, 'src');
   if (!existsSync(resolve(srcDir, 'index.html'))) {
     return null;
@@ -74,6 +80,9 @@ function renderOne(fixturePath: string, name: string): RenderedFixture | null {
     : { appDir: srcDir, plugin: 'webui' };
   if (fixtureConfig.css === 'link' || fixtureConfig.css === 'style' || fixtureConfig.css === 'module') {
     buildOptions.css = fixtureConfig.css;
+  }
+  if (projectionManifest) {
+    buildOptions.projectionManifests = [projectionManifest];
   }
 
   const result = (() => {
@@ -216,6 +225,7 @@ export function renderFixtures({
   fixturesRoot,
   writeFiles = false,
   watchMode = false,
+  projectionManifest,
 }: RenderFixturesOptions): Map<string, RenderedFixture> {
   const results = new Map<string, RenderedFixture>();
 
@@ -224,7 +234,7 @@ export function renderFixtures({
 
   for (const dir of dirs) {
     const fixturePath = resolve(fixturesRoot, dir.name);
-    const fixture = renderOne(fixturePath, dir.name);
+    const fixture = renderOne(fixturePath, dir.name, projectionManifest);
     if (!fixture) continue;
 
     results.set(dir.name, fixture);
@@ -242,7 +252,11 @@ export function renderFixtures({
       watch(srcDir, { recursive: true }, (_event, _filename) => {
         try {
           const fixturePath = resolve(fixturesRoot, dir.name);
-          const fixture = renderOne(fixturePath, dir.name);
+          const fixture = renderOne(
+            fixturePath,
+            dir.name,
+            projectionManifest,
+          );
           if (fixture) {
             results.set(dir.name, fixture);
             console.log(`  [watch] re-rendered ${dir.name}`);

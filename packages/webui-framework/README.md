@@ -92,13 +92,14 @@ Build with `--dom=shadow` (default) to wrap in a declarative shadow root, or `--
 If a component has no event handlers, custom lifecycle code, or client-only
 methods, it can ship only `component.html` and optional `component.css`.
 
-The sibling `.ts` or `.js` file is the authored behavior boundary. Within that
-module, only `@observable` and `@attr` fields opt into initial state hydration;
-template-only roots stay in the trusted SSR DOM. Without a module, template
-bindings render on the server and the component contributes no bootstrap state.
-The compiler still emits its template metadata. When the framework is loaded,
-it can activate that template when browser state or client-side creation needs
-it.
+The sibling `.ts` or `.js` file is the authored behavior boundary. With
+manifest-enabled projection, only `@observable` and `@attr` fields opt into
+initial state hydration; template-only roots stay in the trusted SSR DOM.
+Without a module, template bindings render on the server and the component
+contributes no projected keys. Without projection metadata, the server
+preserves full state. The compiler still emits template metadata for scriptless
+components. When the framework is loaded, it can activate that template when
+browser state or client-side creation needs it.
 If that first write omits a repeat collection, the host preserves the existing
 SSR items until the collection is explicitly supplied.
 
@@ -118,6 +119,12 @@ source browser entry directly. Import `@microsoft/webui-framework` from authored
 component modules. An app that stays static after SSR needs no framework
 browser import. Import the framework once when HTML-only components must accept
 browser state or participate in soft navigation.
+
+The plugin alone preserves full server state. To emit exact `@observable` and
+`@attr` state surfaces, run the application's bundler first with
+`@microsoft/webui/projection.js`, then pass its manifest to `webui build` with
+`--projection-manifest`. The manifest tooling is build-only; this runtime
+package does not depend on esbuild or TypeScript.
 
 ### Property binding lifecycle
 
@@ -244,6 +251,7 @@ Notes:
 
 - default attribute names use kebab-case
 - attribute values arrive as strings
+- during SSR hydration, an existing host attribute wins over projected state
 - use `@observable` for state that client code reads or mutates
 
 ### `@volatile`
@@ -643,12 +651,13 @@ sees `42` in the DOM before the component's JavaScript state exists. Without
 seeding, the first `$update()` would overwrite the SSR content with the wrong
 value.
 
-State seeding uses projected `window.__webui.state` loaded from the
-server-emitted `#webui-data` block. Only `@observable` and `@attr` keys from
-reachable authored components select initial state; HTML-only dormant
-components and authored template-only roots contribute no startup keys. During
-`$mount()`, `$applySSRState()` writes matching decorated keys directly to
-observable backing fields before any bindings are wired:
+State seeding uses `window.__webui.state` loaded from the server-emitted
+`#webui-data` block. When the protocol contains projection metadata, only
+`@observable` and `@attr` keys from reachable authored components select
+initial state; HTML-only dormant components and authored template-only roots
+contribute no startup keys. Without projection metadata, the server preserves
+full state. During `$mount()`, `$applySSRState()` writes matching decorated keys
+directly to observable backing fields before any bindings are wired:
 
 ```mermaid
 flowchart LR
@@ -658,10 +667,12 @@ flowchart LR
 ```
 
 Decorated writes go to the backing field (`_prop`) directly, avoiding reactive
-updates before bindings are wired. Template-only values remain represented by
-the SSR DOM until browser state explicitly changes them. Later `setState()`
-calls, including router partials, accept both decorated properties and compiled
-template roots; undecorated roots are stored in hidden framework state.
+updates before bindings are wired. For `@attr`, an existing SSR host attribute
+takes precedence and the projected value is skipped. Template-only values
+remain represented by the SSR DOM until browser state explicitly changes them.
+Later `setState()` calls, including router partials, accept both decorated
+properties and compiled template roots; undecorated roots are stored in hidden
+framework state.
 
 ---
 

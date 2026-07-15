@@ -60,7 +60,9 @@
 //! 4. **`take_component_templates`** — called after parsing is complete;
 //!    compiles each tracked component into JSON metadata plus condition closures.
 
-use super::{AttributeAction, ComponentTemplateArtifact, ParserPlugin, ParserPluginArtifacts};
+use super::{
+    AttributeAction, ComponentTemplateArtifact, ParserPlugin, ParserPluginArtifacts, StateSurface,
+};
 use crate::comment_policy;
 use crate::component_registry::Component;
 use crate::diagnostic::{codes, Diagnostic};
@@ -80,36 +82,29 @@ struct TrackedComponent {
     client_module: ClientModule,
 }
 
-/// Authored client-module ownership and source availability.
+/// Authored client-module ownership.
 ///
-/// External packages can own a custom element without exposing scannable
-/// source. They must not be treated as compiler-owned scriptless templates.
+/// The parser never analyzes JavaScript/TypeScript, so it only needs to know
+/// *whether* a component has a client module — a sibling script or an
+/// externally client-owned package without scannable source — not its
+/// content. Exact reactive keys for an authored component come solely from a
+/// validated bundler projection manifest, consumed later by `webui::build`.
 enum ClientModule {
     None,
-    Opaque,
-    Source(String),
+    Authored,
 }
 
 impl ClientModule {
     fn from_component(component: &Component) -> Self {
-        if let Some(source) = component.script_source.as_deref() {
-            Self::Source(source.to_string())
-        } else if component.is_client_owned {
-            Self::Opaque
+        if component.script_source.is_some() || component.is_client_owned {
+            Self::Authored
         } else {
             Self::None
         }
     }
 
     fn is_authored(&self) -> bool {
-        !matches!(self, Self::None)
-    }
-
-    fn source(&self) -> Option<&str> {
-        match self {
-            Self::Source(source) => Some(source),
-            Self::None | Self::Opaque => None,
-        }
+        matches!(self, Self::Authored)
     }
 }
 
@@ -148,18 +143,21 @@ impl WebUIParserPlugin {
 
     /// Compile component templates and return split browser payloads.
     ///
-    /// Authored components receive an initial hydration surface plus a partial
-    /// navigation surface. Scriptless components keep an empty hydration
-    /// surface, but retain template roots for client-created soft-navigation
-    /// rendering through a compiler-owned dormant host. Each returned payload
-    /// contains JSON-safe metadata plus a component-local closure array for
-    /// condition evaluation. Call this after all HTML parsing is complete.
+    /// Authored (scripted) components default to an unknown (`All`) hydration
+    /// and navigation surface, since this plugin never analyzes JavaScript or
+    /// TypeScript. `webui::build` narrows a scripted component to an exact
+    /// `Keys` surface only after validating a bundler projection manifest for
+    /// its tag. Scriptless components keep an empty hydration surface, but
+    /// retain template roots for client-created soft-navigation rendering
+    /// through a compiler-owned dormant host. Each returned payload contains
+    /// JSON-safe metadata plus a component-local closure array for condition
+    /// evaluation. Call this after all HTML parsing is complete.
     ///
     /// # Errors
     ///
     /// Returns [`crate::ParserError::Template`] if any tracked component
     /// contains an invalid `@event` handler or a non-braced `w-ref` binding.
-    pub fn take_component_templates(&self) -> Result<Vec<ComponentTemplateArtifact>> {
+    fn take_component_templates(&self) -> Result<Vec<ComponentTemplateArtifact>> {
         let use_shadow = matches!(self.dom_strategy, DomStrategy::Shadow);
         let mut out = Vec::with_capacity(self.components.len());
         for c in &self.components {
@@ -171,27 +169,32 @@ impl WebUIParserPlugin {
                 use_shadow,
                 !is_authored,
             )?;
-            // Initial SSR state seeds only explicit JavaScript-owned fields.
-            // Template roots already exist in the SSR DOM and belong to the
-            // separate navigation surface used for client creation/updates.
-            let hydration_keys = c
-                .client_module
-                .source()
-                .map(crate::hydration::scan_hydration_attributes)
-                .unwrap_or_default();
-            let navigation_keys = if is_authored {
-                union_state_keys(&payload.hydration_roots, &hydration_keys)
+            // The parser plugin performs no JavaScript/TypeScript analysis: it
+            // cannot prove an authored component's exact reactive key set.
+            // Scripted components default to `All` (unknown surface, full
+            // state preserved) for both hydration and partial navigation.
+            // Only a validated bundler projection manifest — consumed later by
+            // `webui::build` — can narrow a scripted component down to an
+            // exact `Keys` surface. Scriptless components have no script to
+            // analyze at all: their template roots already prove the complete
+            // safe surface, so they always get an exact (possibly empty) key
+            // set derived purely from the template.
+            let hydration = if is_authored {
+                StateSurface::All
             } else {
-                payload.hydration_roots.clone()
+                StateSurface::None
             };
+            let navigation = navigation_surface(&payload.hydration_roots, &hydration);
             out.push(
                 ComponentTemplateArtifact::webui(
                     c.tag_name.clone(),
                     payload.template_json,
                     payload.template_functions,
                 )
-                .with_hydration_keys(hydration_keys)
-                .with_navigation_keys(navigation_keys),
+                .with_hydration(hydration)
+                .with_navigation(navigation)
+                .with_template_roots(payload.hydration_roots.clone())
+                .scripted(is_authored),
             );
         }
         Ok(out)
@@ -401,9 +404,17 @@ enum CompiledAttrPart {
 struct CompiledTemplatePayload {
     template_json: String,
     template_functions: String,
-    /// Template reactive roots (top-level property names bound in the template).
-    /// These seed the hydration key surface alongside scanned decorators.
+    /// Template reactive roots used when client navigation creates or updates
+    /// a component whose initial DOM was not server rendered.
     hydration_roots: Vec<String>,
+}
+
+fn navigation_surface(roots: &[String], hydration: &StateSurface) -> StateSurface {
+    match hydration {
+        StateSurface::All => StateSurface::All,
+        StateSurface::Keys(keys) => StateSurface::keys(union_state_keys(roots, keys)),
+        StateSurface::None => StateSurface::keys(roots.to_vec()),
+    }
 }
 
 /// Union two sorted-or-unsorted key sets into a sorted, deduplicated allowlist.
@@ -3484,23 +3495,32 @@ mod tests {
     }
 
     #[test]
-    fn test_authored_hydration_uses_decorators_and_navigation_adds_template_roots() {
+    fn test_authored_component_defaults_to_unknown_surface_and_records_template_roots() {
+        // The parser plugin never analyzes JavaScript/TypeScript, so an
+        // authored (scripted) component's exact surface is unknown here — it
+        // defaults to `All` (full-state safety) regardless of script content.
+        // Only a validated bundler projection manifest, consumed later by
+        // `webui::build`, can narrow this to exact keys. Template roots are
+        // still recorded so the manifest consumer can union them in later.
         let mut plugin = WebUIParserPlugin::new();
         let mut comp = test_component("test-el", "<p>{{serverTitle}}</p>", None, true);
-        comp.script_source = Some("@observable count = 0;\n@attr label = '';".to_string());
+        comp.script_source = Some(
+            "@observable count = 0;\n\
+             @attr label = '';"
+                .to_string(),
+        );
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();
         let templates = plugin.take_component_templates().unwrap();
-        assert_eq!(templates[0].hydration_keys, vec!["count", "label"]);
-        assert_eq!(
-            templates[0].navigation_keys,
-            vec!["count", "label", "serverTitle"]
-        );
+        assert_eq!(templates[0].hydration, StateSurface::All);
+        assert_eq!(templates[0].navigation, StateSurface::All);
+        assert_eq!(templates[0].template_roots, vec!["serverTitle".to_string()]);
+        assert!(templates[0].is_scripted);
     }
 
     #[test]
-    fn test_opaque_authored_component_does_not_emit_dormant_host() {
+    fn test_opaque_authored_component_defaults_to_unknown_surface() {
         let mut plugin = WebUIParserPlugin::new();
         let comp = test_component("test-el", "<p>{{serverTitle}}</p>", None, true);
 
@@ -3508,8 +3528,13 @@ mod tests {
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();
         let templates = plugin.take_component_templates().unwrap();
-        assert!(templates[0].hydration_keys.is_empty());
-        assert_eq!(templates[0].navigation_keys, ["serverTitle"]);
+        // Client-owned components without scannable source are still
+        // authored; their surface defaults to `All` (unknown) rather than
+        // silently downgrading to an empty allowlist.
+        assert_eq!(templates[0].hydration, StateSurface::All);
+        assert_eq!(templates[0].navigation, StateSurface::All);
+        assert_eq!(templates[0].template_roots, vec!["serverTitle".to_string()]);
+        assert!(templates[0].is_scripted);
         assert!(!templates[0].template_json.contains(r#","th":1"#));
     }
 
@@ -3536,8 +3561,11 @@ mod tests {
             .unwrap();
         let templates = plugin.take_component_templates().unwrap();
         assert_eq!(templates.len(), 1);
-        assert!(templates[0].hydration_keys.is_empty());
-        assert_eq!(templates[0].navigation_keys, ["name"]);
+        assert_eq!(templates[0].hydration, StateSurface::None);
+        assert_eq!(
+            templates[0].navigation,
+            StateSurface::Keys(vec!["name".into()])
+        );
         assert!(templates[0].template_json.contains(r#","th":1"#));
     }
 
@@ -3551,8 +3579,8 @@ mod tests {
             .unwrap();
         let templates = plugin.take_component_templates().unwrap();
         assert_eq!(templates.len(), 1);
-        assert!(templates[0].hydration_keys.is_empty());
-        assert!(templates[0].navigation_keys.is_empty());
+        assert_eq!(templates[0].hydration, StateSurface::None);
+        assert_eq!(templates[0].navigation, StateSurface::None);
         assert!(templates[0].template_json.contains(r#","th":1"#));
     }
 
@@ -3566,8 +3594,9 @@ mod tests {
             .unwrap();
         let templates = plugin.take_component_templates().unwrap();
         assert_eq!(templates.len(), 1);
-        assert!(templates[0].hydration_keys.is_empty());
-        assert_eq!(templates[0].navigation_keys, ["name"]);
+        // Client-owned (authored) component: surface defaults to unknown.
+        assert_eq!(templates[0].hydration, StateSurface::All);
+        assert_eq!(templates[0].navigation, StateSurface::All);
         assert!(!templates[0].template_json.contains(r#","th":1"#));
     }
 

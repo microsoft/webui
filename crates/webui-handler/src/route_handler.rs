@@ -8,7 +8,7 @@
 //! current request path, while conservatively traversing `if`, `for`, and
 //! attribute-template edges without evaluating runtime state.
 
-use crate::{route_matcher, route_renderer, HandlerError};
+use crate::{route_matcher, route_renderer, HandlerError, StateSelection};
 use route_matcher::CompiledRouteCache;
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::ser::SerializeMap;
@@ -316,14 +316,14 @@ pub fn render_partial_prepared(
 ) -> Result<String, HandlerError> {
     let mut route_cache = CompiledRouteCache::new();
     let mut index = prepared.request_index(&mut route_cache);
-    let (response, navigation_keys) = render_partial_indexed_with_keys(
+    let (response, state_selection) = render_partial_indexed_with_state(
         prepared.protocol(),
         entry_id,
         request_path,
         inventory_hex,
         &mut index,
     )?;
-    serialize_projected_partial_response(&response, state_json, &navigation_keys)
+    serialize_partial_response(&response, state_json, &state_selection)
 }
 
 /// Render an action response using a prepared protocol and its reusable index.
@@ -360,15 +360,15 @@ pub fn render_component_templates_prepared(
     )
 }
 
-fn serialize_projected_partial_response(
+fn serialize_partial_response(
     response: &Value,
     state_json: &str,
-    navigation_keys: &[&str],
+    state_selection: &StateSelection<'_>,
 ) -> Result<String, HandlerError> {
     let response = response
         .as_object()
         .ok_or_else(partial_response_not_object)?;
-    let state = project_raw_state(state_json, navigation_keys)?;
+    let state = select_raw_state(state_json, state_selection)?;
     serde_json::to_string(&PartialResponseWithState { response, state })
         .map_err(|error| partial_serialize_error(&error.to_string()))
 }
@@ -477,7 +477,7 @@ impl<'de> Visitor<'de> for ValidJsonVisitor {
 
 struct PartialResponseWithState<'a, 'state> {
     response: &'a Map<String, Value>,
-    state: ProjectedRawState<'state>,
+    state: SelectedRawState<'state>,
 }
 
 impl Serialize for PartialResponseWithState<'_, '_> {
@@ -496,6 +496,23 @@ impl Serialize for PartialResponseWithState<'_, '_> {
 
 struct ProjectedRawState<'de> {
     entries: Vec<(Cow<'de, str>, &'de RawValue)>,
+}
+
+enum SelectedRawState<'de> {
+    Full(&'de RawValue),
+    Keys(ProjectedRawState<'de>),
+}
+
+impl Serialize for SelectedRawState<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Full(state) => state.serialize(serializer),
+            Self::Keys(state) => state.serialize(serializer),
+        }
+    }
 }
 
 impl Serialize for ProjectedRawState<'_> {
@@ -539,6 +556,20 @@ fn project_raw_state<'de>(
         left.0.as_ref().as_bytes().cmp(right.0.as_ref().as_bytes())
     });
     Ok(state)
+}
+
+fn select_raw_state<'de>(
+    state_json: &'de str,
+    selection: &StateSelection<'_>,
+) -> Result<SelectedRawState<'de>, HandlerError> {
+    match selection {
+        StateSelection::Full => serde_json::from_str::<&RawValue>(state_json)
+            .map(SelectedRawState::Full)
+            .map_err(|error| invalid_state_json(&error.to_string())),
+        StateSelection::Keys(keys) => {
+            project_raw_state(state_json, keys).map(SelectedRawState::Keys)
+        }
+    }
 }
 
 struct ProjectedRawStateSeed<'a> {
@@ -1384,8 +1415,9 @@ pub fn render_partial_metadata(
 /// Produce a complete partial-navigation response with projected parsed state.
 ///
 /// Only keys required to create or update client components reachable on the
-/// active route are retained. Authored components use template roots plus their
-/// explicit hydration surface; scriptless templates use compiled template roots.
+/// active route are retained. Authored components use their explicit
+/// navigation surface (`@observable + @attr + template roots`); scriptless
+/// templates use compiled template roots.
 pub fn render_partial(
     protocol: &WebUIProtocol,
     state: Value,
@@ -1395,7 +1427,7 @@ pub fn render_partial(
 ) -> Result<Value, HandlerError> {
     let mut index = ProtocolIndex::new(protocol);
     let mut request_index = index.request_index();
-    let (mut response, navigation_keys) = render_partial_indexed_with_keys(
+    let (mut response, state_selection) = render_partial_indexed_with_state(
         protocol,
         entry_id,
         request_path,
@@ -1405,7 +1437,7 @@ pub fn render_partial(
     let response = response
         .as_object_mut()
         .ok_or_else(partial_response_not_object)?;
-    response.insert("state".into(), project_owned_state(state, &navigation_keys));
+    response.insert("state".into(), select_owned_state(state, &state_selection));
     Ok(Value::Object(std::mem::take(response)))
 }
 
@@ -1416,22 +1448,22 @@ fn render_partial_indexed(
     inventory_hex: &str,
     index: &mut RequestProtocolIndex<'_>,
 ) -> Result<Value, HandlerError> {
-    render_partial_indexed_with_keys(protocol, entry_id, request_path, inventory_hex, index)
+    render_partial_indexed_with_state(protocol, entry_id, request_path, inventory_hex, index)
         .map(|(response, _)| response)
 }
 
-fn render_partial_indexed_with_keys<'a>(
+fn render_partial_indexed_with_state<'a>(
     protocol: &'a WebUIProtocol,
     entry_id: &str,
     request_path: &str,
     inventory_hex: &str,
     index: &mut RequestProtocolIndex<'_>,
-) -> Result<(Value, Vec<&'a str>), HandlerError> {
+) -> Result<(Value, StateSelection<'a>), HandlerError> {
     // Single-pass walk: collect both inventory components and route chain.
     let (component_ids, mut chain) =
         collect_inventory_and_chain(protocol, entry_id, request_path, index);
-    let navigation_keys =
-        crate::collect_navigation_keys(protocol, component_ids.iter().map(String::as_str));
+    let state_selection =
+        crate::collect_navigation_state(protocol, component_ids.iter().map(String::as_str));
 
     let (needed_names, updated_inv) =
         filter_needed_components(&component_ids, inventory_hex, index.component_index)?;
@@ -1470,10 +1502,13 @@ fn render_partial_indexed_with_keys<'a>(
             .collect();
         result.insert("cacheTags".into(), Value::Array(deduped));
     }
-    Ok((Value::Object(result), navigation_keys))
+    Ok((Value::Object(result), state_selection))
 }
 
-fn project_owned_state(state: Value, state_keys: &[&str]) -> Value {
+fn select_owned_state(state: Value, selection: &StateSelection<'_>) -> Value {
+    let StateSelection::Keys(state_keys) = selection else {
+        return state;
+    };
     let Value::Object(mut source) = state else {
         return Value::Object(Map::new());
     };
@@ -2027,10 +2062,12 @@ mod tests {
             "home-page".to_string(),
             webui_protocol::ComponentData {
                 template_json: r#"{"h":"<p>Home</p>"}"#.to_string(),
+                hydration_mode: webui_protocol::StateProjectionMode::Keys as i32,
                 hydration_keys: hydration_keys
                     .iter()
                     .map(|key| (*key).to_string())
                     .collect(),
+                navigation_mode: webui_protocol::StateProjectionMode::Keys as i32,
                 navigation_keys: hydration_keys
                     .iter()
                     .map(|key| (*key).to_string())
@@ -2039,6 +2076,16 @@ mod tests {
             },
         );
         PreparedProtocol::new(protocol)
+    }
+
+    fn prepared_full_state_partial_protocol() -> PreparedProtocol {
+        let mut prepared = prepared_partial_protocol(&[]);
+        let protocol = &mut prepared.protocol;
+        if let Some(component) = protocol.components.get_mut("home-page") {
+            component.navigation_mode = webui_protocol::StateProjectionMode::All as i32;
+            component.navigation_keys.clear();
+        }
+        prepared
     }
 
     #[test]
@@ -2057,6 +2104,20 @@ mod tests {
 
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["state"]["value"], 100.0);
+    }
+
+    #[test]
+    fn uncertain_partial_surface_preserves_complete_raw_state() {
+        let prepared = prepared_full_state_partial_protocol();
+        let output = render_partial_prepared(
+            &prepared,
+            r#"{"serverOnly":"keep","value":1e2}"#,
+            "index.html",
+            "/",
+            "",
+        )
+        .unwrap();
+        assert!(output.contains(r#""state":{"serverOnly":"keep","value":1e2}"#));
     }
 
     #[test]
@@ -2114,6 +2175,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(response["state"], serde_json::json!({"value": "kept"}));
+    }
+
+    #[test]
+    fn uncertain_partial_surface_preserves_complete_parsed_state() {
+        let prepared = prepared_full_state_partial_protocol();
+        let state = serde_json::json!({"serverOnly": [1, 2, 3], "value": "kept"});
+        let response =
+            render_partial(prepared.protocol(), state.clone(), "index.html", "/", "").unwrap();
+        assert_eq!(response["state"], state);
     }
 
     #[test]
@@ -3182,6 +3252,7 @@ mod tests {
             "items-page".to_string(),
             webui_protocol::ComponentData {
                 template_json: r#"{"h":"<p>Items</p>","th":1}"#.into(),
+                navigation_mode: webui_protocol::StateProjectionMode::Keys as i32,
                 navigation_keys: vec!["items".into(), "title".into()],
                 ..Default::default()
             },
@@ -3228,6 +3299,7 @@ mod tests {
         protocol.components.insert(
             "authored-card".to_string(),
             webui_protocol::ComponentData {
+                hydration_mode: webui_protocol::StateProjectionMode::Keys as i32,
                 hydration_keys: vec!["title".into()],
                 ..Default::default()
             },

@@ -1798,6 +1798,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "tokio",
@@ -1962,6 +1963,7 @@ dependencies = [
  "prost-build",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 

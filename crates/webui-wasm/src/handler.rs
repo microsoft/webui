@@ -488,7 +488,9 @@ mod tests {
     #[test]
     fn render_projects_state_to_component_hydration_keys() {
         use std::collections::HashMap;
-        use webui_protocol::{ComponentData, FragmentList, WebUIFragment};
+        use webui_protocol::{
+            ComponentData, FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment,
+        };
 
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -511,9 +513,11 @@ mod tests {
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
         protocol.components.insert(
             "client-card".to_string(),
             ComponentData {
+                hydration_mode: StateProjectionMode::Keys as i32,
                 hydration_keys: vec!["kept".to_string()],
                 ..Default::default()
             },

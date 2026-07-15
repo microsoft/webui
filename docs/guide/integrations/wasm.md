@@ -93,10 +93,14 @@ const files = {
   'my-card.css': 'p { color: red; }',
 };
 
-const protocolBytes = build_protocol(files, 'index.html');
+const protocolBytes = build_protocol(
+  files,
+  'index.html',
+  [projectionManifest],
+);
 ```
 
-### `build_protocol(files, entry)`
+### `build_protocol(files, entry, projectionManifests?)`
 
 Parse virtual files into a WebUI protocol without rendering.
 
@@ -104,8 +108,14 @@ Parse virtual files into a WebUI protocol without rendering.
 |-----------|------|-------------|
 | `files` | `Record<string, string>` | Map of filenames to content |
 | `entry` | `string` | Entry HTML filename |
+| `projectionManifests` | `object[]` | Optional bundler manifest fragments |
 
 Returns protobuf-serialized `WebUIProtocol` as a `Uint8Array`. Throws on missing entry files, invalid templates, invalid component authoring, or protocol serialization errors.
+
+Without manifests, initial and scripted navigation state remain full. With
+manifests, WASM applies the shared schema/build-ID validation, fragment merge,
+and strict coverage rules. Because virtual WASM builds have no filesystem, they
+cannot repeat disk stale-file checks and never analyze JavaScript.
 
 Component discovery follows the virtual file map convention: HTML files with a hyphen in the name are registered as components, such as `my-card.html` for `<my-card>`. Matching `.css` files are paired and inlined with `CssStrategy::Style`.
 

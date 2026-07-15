@@ -17,6 +17,7 @@
     "@codemirror/state": "catalog:",
     "@codemirror/theme-one-dark": "catalog:",
     "@codemirror/view": "catalog:",
+    "@microsoft/webui": "workspace:*",
     "@microsoft/webui-framework": "workspace:*",
     "esbuild": "catalog:"
   }

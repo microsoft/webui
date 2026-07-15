@@ -229,6 +229,7 @@ HttpResponse::Ok()
 | `plugin` | `Option<String>` | `None` | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `Vec<String>` | `[]` | External component sources |
 | `component_asset_roots` | `Vec<String>` | `[]` | Root component tags emitted as static `.webui.js` ESM assets |
+| `projection_manifests` | `Vec<ProjectionManifestSource>` | `[]` | Disk, inline, or prepared projection fragments; empty preserves full state |
 | `css_file_name_template` | `String` | `"[name].[ext]"` | Emitted asset filename template for Link-mode CSS and component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `css_public_base` | `Option<String>` | `None` | Public URL/path prefix for Link-mode CSS hrefs |
 | `theme` | `Option<TokenFile>` | `None` | Loaded design-token theme used to validate unresolved CSS tokens during build |
@@ -244,6 +245,13 @@ before the protocol is returned. Tokens used only with a literal `var()`
 fallback (e.g. `var(--brand, #000)`) are exempt; if such a token is also absent
 from every theme it is reported as a non-fatal advisory in
 `BuildResult::warnings` (a likely typo) instead of failing the build.
+
+Use `ProjectionManifestSource::Path` for normal builds. Orchestrators that build
+many protocols against one client bundle can call
+`prepare_projection_manifests()` once and reuse
+`ProjectionManifestSource::Prepared`. Every non-empty source set is
+hash-validated, merged by tag, and required to cover every compiled scripted
+component.
 
 ### BuildStats
 

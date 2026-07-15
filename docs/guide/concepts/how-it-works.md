@@ -134,9 +134,10 @@ If a value must appear in the initial HTML, it must come from the server state J
 
 For complex derived values, compute them on the server and include them in the state JSON.
 
-State that participates in hydration is client-facing. Route-scoped projection
-reduces serialization work and response bytes, but it is not a secrecy
-boundary. Do not put secrets in browser render state.
+State that participates in hydration is client-facing. When enabled with a
+bundler manifest, route-scoped projection reduces serialization work and
+response bytes, but it is not a secrecy boundary. Without a manifest, WebUI
+preserves full state. Do not put secrets in browser render state.
 
 ### The client handles interactivity after hydration
 

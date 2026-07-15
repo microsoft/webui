@@ -72,11 +72,18 @@ char *html = webui_handler_render(handler, protocol_data, protocol_len, state_js
 
 ```bash
 # Build with WebUI Framework hydration
-webui build ./src --out ./dist --plugin=webui
+webui build ./src --out ./dist --plugin=webui \
+  --projection-manifest ./dist/webui-projection.json
 
 # Dev server with WebUI Framework
-webui serve ./src --state ./data/state.json --plugin=webui --watch
+webui serve ./src --state ./data/state.json --plugin=webui \
+  --projection-manifest ./dist/webui-projection.json --watch
 ```
+
+Projection is optional. Without a manifest, the WebUI plugin preserves full
+state. When a manifest is supplied, coverage is strict and the manifest must be
+produced by the completed browser bundle. See
+[Build-Time State Projection](/guide/concepts/hydration#build-time-state-projection).
 
 ```rust
 // Rust handler

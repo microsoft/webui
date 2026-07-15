@@ -38,10 +38,10 @@ export class UserCard extends WebUIElement {
 UserCard.define('user-card');
 ```
 
-Only `@observable` and `@attr` fields can receive initial state from the server.
-Ordinary template values already exist in the rendered HTML and do not enter
-browser state just because the component has an event handler, `w-ref`,
-lifecycle method, or imperative API.
+Only `@observable` and `@attr` fields are eligible for exact initial state
+projection. Ordinary template values already exist in the rendered HTML and do
+not need to enter browser state just because the component has an event handler,
+`w-ref`, lifecycle method, or imperative API.
 
 An authored component with no decorators can therefore wire its behavior
 without adding any startup state.
@@ -50,11 +50,120 @@ Components using `@event` must be authored because the compiler needs a real
 handler implementation. Do not add an empty class merely to make template
 bindings or routing work.
 
+## Build-Time State Projection
+
+Exact state projection is opt-in. Rust does not inspect JavaScript or
+TypeScript. The application bundles its browser code first, and a bundler
+adapter emits `webui-projection.json` from the same resolved graph and output
+membership that produced the browser chunks.
+
+The projection compiler contract is bundler-neutral. The
+`@microsoft/webui/projection.js` subpath currently includes the supported
+esbuild adapter:
+
+```bash
+npm install -D esbuild typescript
+```
+
+```js
+// build-client.mjs
+import * as esbuild from 'esbuild';
+import { esbuildProjection } from '@microsoft/webui/projection.js';
+
+await esbuild.build({
+  entryPoints: ['src/index.ts'],
+  outdir: 'dist',
+  bundle: true,
+  splitting: true,
+  format: 'esm',
+  plugins: [esbuildProjection()],
+});
+```
+
+Run the client build once, then give its manifest to WebUI:
+
+```bash
+node build-client.mjs
+webui build ./src \
+  --plugin=webui \
+  --projection-manifest ./dist/webui-projection.json \
+  --out ./dist
+```
+
+The generated file has this shape (hashes abbreviated):
+
+```json
+{
+  "schema": "webui.state-projection/v1",
+  "producer": {
+    "name": "@microsoft/webui/projection.js",
+    "version": "0.0.18"
+  },
+  "adapter": {
+    "name": "esbuild",
+    "bundler": "esbuild@0.28.1"
+  },
+  "root": "..",
+  "analysisHash": "sha256:...",
+  "buildId": "sha256:...",
+  "outputs": {
+    "dist/index.js": "sha256:..."
+  },
+  "inputs": {
+    "src/user-card.ts": "sha256:..."
+  },
+  "components": {
+    "user-card": {
+      "module": "src/user-card.ts",
+      "outputs": ["dist/index.js"],
+      "hydrationKeys": ["displayName", "selected"],
+      "navigationKeys": ["displayName", "selected"]
+    }
+  }
+}
+```
+
+Do not hand-author this file. It is a deterministic record of the completed
+bundle and becomes stale as soon as a declared input or output changes.
+
+The manifest records exact input hashes, emitted output hashes, code-split
+membership, component ownership, and sorted `@observable` plus `@attr` property
+names. WebUI validates those hashes and embeds only the resulting key surfaces
+in `protocol.bin`. Runtime handlers do not load the manifest, TypeScript, or a
+bundler.
+
+Behavior is intentionally strict:
+
+- With no manifest, the build remains correct and sends full state. Projection
+  is disabled rather than guessed.
+- Once any manifest is supplied, every scripted component compiled into the
+  protocol must have exactly one entry. Missing coverage fails with
+  `PROJ-B001`.
+- Shared controls supplied through `--components` remain application-owned
+  bundles. If they are external to the main bundle, build them separately and
+  pass each manifest fragment with another `--projection-manifest`.
+- Stale inputs or outputs fail the WebUI build. Re-run the client bundler before
+  rebuilding the protocol.
+- `@attr` entries use JavaScript property names. During hydration, an existing
+  SSR host attribute wins; projected state seeds the property only when that
+  attribute is absent.
+
+The adapter runs inside the application's existing esbuild invocation. It does
+not start a second bundler run, and it does not constrain chunking, dynamic
+imports, external modules, or output naming.
+
+Other bundlers are not coupled to esbuild. A Vite, Rollup, Rolldown, webpack,
+Rspack, or other adapter can construct the exported `AdapterContext`, call
+`compileProjection()`, and run the exported conformance suite. The official
+package currently ships and supports the esbuild adapter.
+
 ## State Sent to the Browser
 
-The initial page includes only `@observable` and `@attr` values needed by
-authored components on the active route. Template values used only for server
-rendering stay out of browser state.
+With validated projection manifests, the initial page includes only
+`@observable` and `@attr` values needed by authored components on the active
+route. Template values used only for server rendering stay out of browser
+state. Without manifests, WebUI preserves full state for compatibility and
+correctness.
 
 Later soft navigations include the values needed to render the destination
 components. Inactive sibling routes do not enlarge either payload. If the

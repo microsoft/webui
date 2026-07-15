@@ -39,6 +39,9 @@ impl FrontendRuntime {
             entry: "index.html".to_string(),
             css,
             plugin: Some(Plugin::WebUI),
+            projection_manifests: vec![webui::ProjectionManifestSource::Path(
+                app_root.join("dist").join("webui-projection.json"),
+            )],
             ..BuildOptions::default()
         })
         .with_context(|| "Failed to build the commerce WebUI protocol")?;

@@ -30,13 +30,14 @@ lifecycle code, imperative methods, or state that TypeScript code reads or
 mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
 to access the value or when the value is part of the component's public API.
 
-The sibling `.ts` or `.js` file is the authored behavior boundary. Within an
-authored component, only `@observable` and `@attr` fields opt into initial state
-hydration; ordinary template roots remain in the trusted SSR DOM. Without a
-client module, bindings, conditionals, and loops still render on the server, but
-the component contributes no bootstrap state. If the framework is loaded, it
-can later activate the compiled template for browser-applied state or soft
-navigation. Add a same-named client module only for events, lifecycle code,
+The sibling `.ts` or `.js` file is the authored behavior boundary. With
+manifest-enabled projection, only `@observable` and `@attr` fields opt into
+initial state hydration; ordinary template roots remain in the trusted SSR DOM.
+Without a client module, bindings, conditionals, and loops still render on the
+server, but the component contributes no projected keys. If the framework is
+loaded, it can later activate the compiled template for browser-applied state or
+soft navigation. Without any projection manifest, the server preserves full
+state. Add a same-named client module only for events, lifecycle code,
 decorators, or imperative APIs. See
 [Hydration](/guide/concepts/hydration) for the full contract.
 
@@ -141,6 +142,11 @@ Use `@attr` for values passed from a parent element via HTML attributes. These a
 <my-button></my-button>
 ```
 
+When build-time projection is enabled, `@attr` property names are included in
+initial state metadata. If SSR already emitted the corresponding host
+attribute, that attribute is authoritative during hydration. Projected state
+fills the property only when the host attribute is absent.
+
 ### `@observable` - Reactive State
 
 Use `@observable` for internal state that changes over time. When an observable value changes, the framework automatically updates any template bindings that reference it.
@@ -159,10 +165,11 @@ example in an event handler.
 
 ### Initial Hydration State
 
-For the initial page, only top-level `@observable` and `@attr` values from
-authored components can be seeded from server state. Template bindings still
-render on the server, but they do not automatically become JavaScript state.
-Only components reachable on the active route contribute values.
+For the initial page, build-time projection can narrow state to top-level
+`@observable` and `@attr` values from authored components. Template bindings
+still render on the server, but they do not automatically become JavaScript
+state. Only components reachable on the active route contribute projected
+values. Without a projection manifest, WebUI intentionally sends full state.
 
 See [Hydration](/guide/concepts/hydration) for HTML-only components, soft
 navigation, and payload behavior.
@@ -529,6 +536,7 @@ The framework detects the existing Declarative Shadow DOM roots and upgrades ele
 - Bindings are wired to class properties
 - Event handlers are attached
 - `@observable` properties become reactive
+- Existing host attributes take precedence over projected `@attr` state
 - The component is now interactive
 
 ### 4. User interacts

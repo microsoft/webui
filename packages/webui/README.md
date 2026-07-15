@@ -58,6 +58,58 @@ usage with a literal fallback (e.g. `var(--brand, #000)`) is exempt. Missing
 required tokens fail the build with a structured `missing-theme-token` error.
 Misspelled literal-fallback tokens are returned as non-fatal warnings.
 
+### Optional state projection
+
+The build-only `@microsoft/webui/projection.js` subpath exposes the
+bundler-neutral projection compiler and the supported esbuild adapter. esbuild
+and TypeScript are optional peer dependencies, so applications that do not use
+projection do not install or load them:
+
+```bash
+npm install -D esbuild typescript
+```
+
+```js
+import * as esbuild from "esbuild";
+import { esbuildProjection } from "@microsoft/webui/projection.js";
+
+await esbuild.build({
+  entryPoints: ["src/index.ts"],
+  outdir: "dist",
+  bundle: true,
+  splitting: true,
+  format: "esm",
+  plugins: [esbuildProjection()],
+});
+
+const result = build({
+  appDir: "./src",
+  plugin: "webui",
+  projectionManifests: ["./dist/webui-projection.json"],
+});
+```
+
+esbuild runs once and emits both browser chunks and
+`webui-projection.json`; WebUI then embeds the exact initial/navigation
+surfaces into `protocol.bin`. The adapter uses esbuild's resolved graph and
+emitted output membership, so code splitting, dynamic imports, output hashes,
+and external bundles remain application-owned.
+
+Other bundler adapters can use the exported `AdapterContext`,
+`compileProjection()`, and conformance fixtures without importing esbuild. The
+package currently ships and supports `esbuildProjection()` as its official
+adapter.
+
+With no manifest, WebUI performs no JavaScript analysis and preserves full
+state. Once any manifest is supplied, coverage is strict: every scripted
+component compiled into the protocol must have exactly one entry. Shared
+controls built as external bundles should emit their own manifest fragment,
+then all fragments should be passed through `projectionManifests`.
+
+Manifest keys are exact JavaScript `@observable` and `@attr` property names.
+During hydration, an existing SSR host attribute wins over projected `@attr`
+state. Runtime hosts never load TypeScript, esbuild, or the manifest.
+
 ### `render(protocol: Buffer, state: object | string): string`
 
 Renders a compiled protocol with state data and returns the full HTML string.

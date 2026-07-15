@@ -37,7 +37,10 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 use webui_expressions::{evaluate_with_resolver, ExpressionError};
-use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUIProtocol};
+use webui_protocol::{
+    web_ui_fragment::Fragment, InitialStateStrategy, StateProjectionMode, WebUIFragment,
+    WebUIProtocol,
+};
 use webui_state::find_value_by_dotted_path_ref;
 
 /// Error types for the WebUI handler.
@@ -265,9 +268,7 @@ struct WebUIProcessContext<'a> {
 
 struct WebUiBootstrap<'a> {
     state: &'a Value,
-    /// Request-scoped hydration key allowlist (sorted, deduped). The `state`
-    /// object is projected down to only these authored-client keys.
-    hydration_keys: &'a [&'a str],
+    state_selection: StateSelection<'a>,
     chain: &'a [Value],
     inventory: &'a str,
     nonce: Option<&'a str>,
@@ -376,8 +377,8 @@ where
 /// component's hydration keys so no field a component needs is dropped.
 ///
 /// Projection is a payload boundary, not a secrecy boundary. Any key selected
-/// by authored template metadata or decorators is client-facing, so hosts must
-/// never place secrets in browser render state.
+/// by compiled client metadata is browser-facing, so hosts must never place
+/// secrets in browser render state.
 ///
 /// `keys` MUST be sorted and deduplicated. Projection iterates whichever side
 /// is smaller: hydration keys with direct map lookup for wide states, or state
@@ -424,9 +425,8 @@ impl Serialize for ProjectedState<'_> {
     }
 }
 
-/// Write the SSR `state` into the bootstrap block, projected down to only the
-/// keys present in the build-time hydration allowlist and escaped so the JSON is
-/// safe inside a `<script>` element.
+/// Write the SSR `state` into the bootstrap block according to the protocol's
+/// build-time selection and escape it for safe embedding in a `<script>`.
 ///
 /// [`ProjectedState`] serializes only the allowlisted keys, so for the typical
 /// payload — a large state with a small hydratable surface — serde ever only
@@ -437,11 +437,14 @@ impl Serialize for ProjectedState<'_> {
 /// Buffering the projected bytes and escaping once is measurably faster than
 /// streaming through a per-token `io::Write` adapter, and the projected buffer
 /// is tiny in the common case.
-fn write_projected_state(
+fn write_selected_state(
     writer: &mut dyn ResponseWriter,
     state: &Value,
-    keys: &[&str],
+    selection: &StateSelection<'_>,
 ) -> Result<()> {
+    let StateSelection::Keys(keys) = selection else {
+        return write_script_safe_json(writer, state);
+    };
     if keys.is_empty() {
         return writer.write("{}");
     }
@@ -454,6 +457,13 @@ fn write_projected_state(
         keys.windows(2).all(|pair| pair[0] <= pair[1]),
         "hydration keys must be sorted for binary-search projection"
     );
+    if let Value::Object(map) = state {
+        let selects_entire_map =
+            keys.len() == map.len() && keys.iter().copied().eq(map.keys().map(String::as_str));
+        if selects_entire_map {
+            return write_script_safe_json(writer, state);
+        }
+    }
     write_script_safe_json(writer, &ProjectedState { value: state, keys })
 }
 
@@ -461,44 +471,74 @@ fn write_projected_state(
 // an eager allocation; larger key sets grow only as actual keys are visited.
 const INITIAL_KEY_CAPACITY: usize = 16;
 
-/// Build the sorted hydration allowlist for the components reachable on this
-/// request path. Inactive route branches are excluded, while components behind
-/// active-route conditionals and loops remain conservatively included by the
-/// reachability walk.
-pub(crate) fn collect_hydration_keys<'a, 'b>(
-    protocol: &'a WebUIProtocol,
-    components: impl IntoIterator<Item = &'b str>,
-) -> Vec<&'a str> {
-    let mut keys = Vec::with_capacity(INITIAL_KEY_CAPACITY);
-    for name in components {
-        if let Some(component) = protocol.components.get(name) {
-            keys.extend(component.hydration_keys.iter().map(String::as_str));
-        }
-    }
-    keys.sort_unstable();
-    keys.dedup();
-    keys
+/// Request-scoped state selection derived from reachable component metadata.
+pub(crate) enum StateSelection<'a> {
+    /// Preserve the complete state value.
+    Full,
+    /// Project an object to a sorted, deduplicated key allowlist.
+    Keys(Vec<&'a str>),
 }
 
-/// Build the sorted state allowlist for client-created components reachable on
-/// a partial-navigation request.
+enum ComponentStateSurface {
+    Hydration,
+    Navigation,
+}
+
+/// Select initial state for the components reachable on this request path.
 ///
-/// Authored components expose the same keys they hydrate initially. Scriptless
-/// compiled templates expose only their template roots, allowing soft
-/// navigation without populating initial SSR state.
-pub(crate) fn collect_navigation_keys<'a, 'b>(
+/// Non-WebUI protocols preserve full state without walking component surfaces.
+/// WebUI protocols project exact surfaces, while any unknown surface restores
+/// the full state for correctness.
+pub(crate) fn collect_hydration_state<'a, 'b>(
     protocol: &'a WebUIProtocol,
     components: impl IntoIterator<Item = &'b str>,
-) -> Vec<&'a str> {
+) -> StateSelection<'a> {
+    if protocol.initial_state_strategy != InitialStateStrategy::Components as i32 {
+        return StateSelection::Full;
+    }
+    collect_component_state(protocol, components, ComponentStateSurface::Hydration)
+}
+
+/// Select state for client-created components reachable during navigation.
+pub(crate) fn collect_navigation_state<'a, 'b>(
+    protocol: &'a WebUIProtocol,
+    components: impl IntoIterator<Item = &'b str>,
+) -> StateSelection<'a> {
+    collect_component_state(protocol, components, ComponentStateSurface::Navigation)
+}
+
+fn collect_component_state<'a, 'b>(
+    protocol: &'a WebUIProtocol,
+    components: impl IntoIterator<Item = &'b str>,
+    surface: ComponentStateSurface,
+) -> StateSelection<'a> {
     let mut keys = Vec::with_capacity(INITIAL_KEY_CAPACITY);
     for name in components {
-        if let Some(component) = protocol.components.get(name) {
-            keys.extend(component.navigation_keys.iter().map(String::as_str));
+        let Some(component) = protocol.components.get(name) else {
+            return StateSelection::Full;
+        };
+        let (mode, component_keys) = match surface {
+            ComponentStateSurface::Hydration => {
+                (component.hydration_mode, &component.hydration_keys)
+            }
+            ComponentStateSurface::Navigation => {
+                (component.navigation_mode, &component.navigation_keys)
+            }
+        };
+        if mode == StateProjectionMode::All as i32 {
+            return StateSelection::Full;
+        }
+        if mode == StateProjectionMode::Keys as i32
+            || (mode == StateProjectionMode::None as i32 && !component_keys.is_empty())
+        {
+            keys.extend(component_keys.iter().map(String::as_str));
+        } else if mode != StateProjectionMode::None as i32 {
+            return StateSelection::Full;
         }
     }
     keys.sort_unstable();
     keys.dedup();
-    keys
+    StateSelection::Keys(keys)
 }
 
 fn write_webui_bootstrap(
@@ -519,7 +559,7 @@ fn write_webui_bootstrap(
         write_json_field(writer, &mut wrote_field, "nonce", nonce)?;
     }
     write_json_field_name(writer, &mut wrote_field, "state")?;
-    write_projected_state(writer, bootstrap.state, bootstrap.hydration_keys)?;
+    write_selected_state(writer, bootstrap.state, &bootstrap.state_selection)?;
     if !bootstrap.style_specs.is_empty() {
         write_json_field(writer, &mut wrote_field, "styles", bootstrap.style_specs)?;
     }
@@ -1287,8 +1327,8 @@ impl WebUIHandler {
                     context.request_path,
                     &mut context.route_cache,
                 );
-                let hydration_keys =
-                    collect_hydration_keys(context.protocol, reachable.iter().map(String::as_str));
+                let state_selection =
+                    collect_hydration_state(context.protocol, reachable.iter().map(String::as_str));
 
                 // Emit CSS module importmaps for reachable-but-unrendered
                 // components so the framework can adopt them when an `<if>`
@@ -1387,7 +1427,7 @@ impl WebUIHandler {
                     context.writer,
                     WebUiBootstrap {
                         state: context.state,
-                        hydration_keys: &hydration_keys,
+                        state_selection,
                         chain: &chain_json,
                         inventory: &inventory_hex,
                         nonce: context.nonce,
@@ -7094,11 +7134,13 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::new(fragments);
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
         for name in ["app-shell", "cart-panel", "product-card"] {
             let comp = protocol.components.entry(name.to_string()).or_default();
             comp.template_json = format!(r#"{{"h":"<div class=\"{name}\"></div>"}}"#);
             comp.css = format!(".{name}{{display:block}}");
             if name == "cart-panel" {
+                comp.hydration_mode = StateProjectionMode::Keys as i32;
                 comp.hydration_keys = vec!["hasItems".to_string()];
             }
             if name == "product-card" {
@@ -7350,6 +7392,7 @@ mod tests {
             .fragments
             .insert(1, WebUIFragment::component("app-shell"));
         let mut protocol = WebUIProtocol::new(fragments);
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
         // Only `name` is a hydration key. `tokens` is a server-only field
         // (used above to resolve SSR CSS variables) and is NOT in the component
         // hydration keys,
@@ -7357,6 +7400,7 @@ mod tests {
         protocol.components.insert(
             "app-shell".to_string(),
             webui_protocol::ComponentData {
+                hydration_mode: StateProjectionMode::Keys as i32,
                 hydration_keys: vec!["name".to_string()],
                 ..Default::default()
             },
@@ -7388,6 +7432,197 @@ mod tests {
     }
 
     #[test]
+    fn full_initial_strategy_preserves_complete_state() -> Result<()> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><body>"),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({
+            "client": "visible",
+            "serverOnly": "also preserved",
+        });
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = TestWriter::new();
+        handler.handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )?;
+        let output = writer.get_content();
+        assert!(output.contains(r#""client":"visible""#));
+        assert!(output.contains(r#""serverOnly":"also preserved""#));
+        Ok(())
+    }
+
+    #[test]
+    fn uncertain_hydration_surface_preserves_complete_state() -> Result<()> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><body>"),
+                    WebUIFragment::component("app-shell"),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Shell</p>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
+        protocol.components.insert(
+            "app-shell".to_string(),
+            webui_protocol::ComponentData {
+                hydration_mode: StateProjectionMode::All as i32,
+                ..Default::default()
+            },
+        );
+        let state = test_json!({
+            "known": "value",
+            "possiblyInherited": "must not be dropped",
+        });
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = TestWriter::new();
+        handler.handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )?;
+        let output = writer.get_content();
+        assert!(output.contains(r#""known":"value""#));
+        assert!(output.contains(r#""possiblyInherited":"must not be dropped""#));
+        Ok(())
+    }
+
+    #[test]
+    fn missing_component_projection_metadata_preserves_complete_state() -> Result<()> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><body>"),
+                    WebUIFragment::component("app-shell"),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Shell</p>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
+        let state = test_json!({
+            "known": "value",
+            "serverOnly": "must not be dropped",
+        });
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = TestWriter::new();
+        handler.handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )?;
+        let output = writer.get_content();
+        assert!(output.contains(r#""known":"value""#));
+        assert!(output.contains(r#""serverOnly":"must not be dropped""#));
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_projection_mode_preserves_complete_state() -> Result<()> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><body>"),
+                    WebUIFragment::component("app-shell"),
+                    WebUIFragment::signal("body_end", true),
+                    WebUIFragment::raw("</body></html>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Shell</p>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
+        protocol.components.insert(
+            "app-shell".to_string(),
+            webui_protocol::ComponentData {
+                hydration_mode: i32::MAX,
+                ..Default::default()
+            },
+        );
+        let state = test_json!({
+            "known": "value",
+            "serverOnly": "must not be dropped",
+        });
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = TestWriter::new();
+        handler.handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )?;
+        let output = writer.get_content();
+        assert!(output.contains(r#""known":"value""#));
+        assert!(output.contains(r#""serverOnly":"must not be dropped""#));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_navigation_keys_with_default_mode_remain_keyed() {
+        let mut protocol = WebUIProtocol::new(HashMap::new());
+        protocol.components.insert(
+            "app-shell".to_string(),
+            webui_protocol::ComponentData {
+                navigation_keys: vec!["selected".to_string()],
+                ..Default::default()
+            },
+        );
+
+        match collect_navigation_state(&protocol, ["app-shell"]) {
+            StateSelection::Keys(keys) => assert_eq!(keys, vec!["selected"]),
+            StateSelection::Full => panic!("legacy navigation keys should remain projected"),
+        }
+    }
+
+    #[test]
     fn empty_reachable_hydration_keys_exclude_all_state() -> Result<()> {
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -7400,7 +7635,8 @@ mod tests {
                 ],
             },
         );
-        let protocol = WebUIProtocol::new(fragments);
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
         let state = test_json!({
             "title": "Legacy state",
             "serverOnly": "preserved",
@@ -7443,10 +7679,12 @@ mod tests {
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
         protocol.components.insert(
             "items-page".to_string(),
             webui_protocol::ComponentData {
                 template_json: r#"{"h":"<p>Items</p>","th":1}"#.into(),
+                navigation_mode: StateProjectionMode::Keys as i32,
                 navigation_keys: vec!["items".into()],
                 ..Default::default()
             },
@@ -7475,7 +7713,7 @@ mod tests {
     }
 
     #[test]
-    fn write_projected_state_projects_and_escapes() {
+    fn write_selected_state_projects_and_escapes() {
         // `keep` is in the sorted key set and its value contains a `</` that
         // must be escaped; `drop` is absent and must be projected out.
         let state = test_json!({
@@ -7483,22 +7721,24 @@ mod tests {
             "keep": "</script><b>"
         });
         let keys = ["keep"];
+        let selection = StateSelection::Keys(keys.to_vec());
         let mut sink = TestWriter::new();
-        write_projected_state(&mut sink, &state, &keys).unwrap();
+        write_selected_state(&mut sink, &state, &selection).unwrap();
         assert_eq!(sink.get_content(), r#"{"keep":"<\/script><b>"}"#);
     }
 
     #[test]
-    fn write_projected_state_non_object_emits_empty_object() {
+    fn write_selected_state_non_object_projection_emits_empty_object() {
         let state = test_json!("scalar state has nothing hydratable");
         let keys: [&str; 0] = [];
+        let selection = StateSelection::Keys(keys.to_vec());
         let mut sink = TestWriter::new();
-        write_projected_state(&mut sink, &state, &keys).unwrap();
+        write_selected_state(&mut sink, &state, &selection).unwrap();
         assert_eq!(sink.get_content(), "{}");
     }
 
     #[test]
-    fn write_projected_state_schema_first_skips_missing_and_duplicate_keys() {
+    fn write_selected_state_schema_first_skips_missing_and_duplicate_keys() {
         let state = test_json!({
             "keptA": 1,
             "keptB": 2,
@@ -7506,21 +7746,37 @@ mod tests {
             "serverOnlyB": 4,
         });
         let keys = ["keptA", "keptA", "keptB", "missing"];
+        let selection = StateSelection::Keys(keys.to_vec());
         let mut sink = TestWriter::new();
-        write_projected_state(&mut sink, &state, &keys).unwrap();
+        write_selected_state(&mut sink, &state, &selection).unwrap();
         assert_eq!(sink.get_content(), r#"{"keptA":1,"keptB":2}"#);
     }
 
     #[test]
-    fn write_projected_state_map_first_matches_schema_first_output() {
+    fn write_selected_state_map_first_matches_schema_first_output() {
         let state = test_json!({
             "keptA": 1,
             "keptB": 2,
         });
         let keys = ["keptA", "keptB", "missingA", "missingB"];
+        let selection = StateSelection::Keys(keys.to_vec());
         let mut sink = TestWriter::new();
-        write_projected_state(&mut sink, &state, &keys).unwrap();
+        write_selected_state(&mut sink, &state, &selection).unwrap();
         assert_eq!(sink.get_content(), r#"{"keptA":1,"keptB":2}"#);
+    }
+
+    #[test]
+    fn write_selected_state_full_preserves_and_escapes_state() {
+        let state = test_json!({
+            "serverOnly": "</script><b>",
+            "value": 42,
+        });
+        let mut sink = TestWriter::new();
+        write_selected_state(&mut sink, &state, &StateSelection::Full).unwrap();
+        assert_eq!(
+            sink.get_content(),
+            r#"{"serverOnly":"<\/script><b>","value":42}"#
+        );
     }
 
     #[test]
@@ -7562,10 +7818,12 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::new(fragments);
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
         protocol.components.insert(
             "home-page".to_string(),
             webui_protocol::ComponentData {
                 template_json: "{}".to_string(),
+                hydration_mode: StateProjectionMode::Keys as i32,
                 hydration_keys: vec!["homeTitle".to_string()],
                 ..Default::default()
             },
@@ -7574,6 +7832,7 @@ mod tests {
             "admin-page".to_string(),
             webui_protocol::ComponentData {
                 template_json: "{}".to_string(),
+                hydration_mode: StateProjectionMode::Keys as i32,
                 hydration_keys: vec!["adminToken".to_string()],
                 ..Default::default()
             },

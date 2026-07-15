@@ -211,7 +211,7 @@ describe('renderComponentTemplates', () => {
 });
 
 describe('renderPartial', () => {
-  test('projects state through the prepared protocol path', () => {
+  test('preserves full state when projection metadata is absent', () => {
     const result = build({ appDir, entry: 'index3.html', plugin: 'webui' });
     const json = renderPartial(
       result.protocol,
@@ -222,6 +222,6 @@ describe('renderPartial', () => {
     );
     const parsed = JSON.parse(json);
     assert.equal(parsed.state.name, 'Partial');
-    assert.equal(parsed.state.serverOnly, undefined);
+    assert.equal(parsed.state.serverOnly, 'drop');
   });
 });

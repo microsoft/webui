@@ -3,13 +3,14 @@
   "version": "3.0.0",
   "type": "module",
   "private": true,
+  "webuiProjectionManifest": "./dist/webui-projection.json",
   "scripts": {
-    "build": "pnpm run build:deps && pnpm run build:protocol && pnpm run build:client && pnpm run build:server",
-    "build:deps": "pnpm --filter @microsoft/webui-framework --filter @microsoft/webui-router run build",
-    "build:protocol": "cargo run -p microsoft-webui-cli -- build ./src --plugin=webui --css module --out ./dist",
-    "build:client": "esbuild src/index.ts --bundle --outdir=dist --format=esm --splitting --sourcemap --minify",
+    "build": "pnpm run build:deps && pnpm run build:client && pnpm run build:protocol && pnpm run build:server",
+    "build:deps": "pnpm --filter @microsoft/webui --filter @microsoft/webui-framework --filter @microsoft/webui-router run build",
+    "build:protocol": "cargo run -p microsoft-webui-cli -- build ./src --plugin=webui --projection-manifest ./dist/webui-projection.json --css module --out ./dist",
+    "build:client": "node build-client.mjs",
     "build:server": "cargo check -p marketplace-api",
-    "start:client": "pnpm run build:deps && esbuild src/index.ts --bundle --outdir=dist --splitting --format=esm --sourcemap --watch",
+    "start:client": "pnpm run build:deps && node build-client.mjs --watch",
     "start:server": "cargo run -p marketplace-api -- --port 3004 --no-tls --css=module",
     "start": "cargo xtask dev commerce",
     "test": "playwright test",
@@ -22,6 +23,7 @@
     "#pages/*": "./src/pages/*"
   },
   "devDependencies": {
+    "@microsoft/webui": "workspace:*",
     "@microsoft/webui-framework": "workspace:*",
     "@microsoft/webui-router": "workspace:*",
     "@playwright/test": "catalog:",
