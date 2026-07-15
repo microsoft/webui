@@ -4,14 +4,17 @@ package webui_ffi
 // #cgo LDFLAGS: -L../../../../target/debug -lwebui_ffi
 // #cgo darwin LDFLAGS: -framework CoreFoundation -framework Security
 // #cgo linux LDFLAGS: -lm -ldl -lpthread
+// #include <stdint.h>
 // #include <stdlib.h>
 //
 // // Forward declarations matching the generated C header.
 // extern void  *webui_handler_create();
 // extern void   webui_handler_destroy(void *handler_ptr);
+// extern void  *webui_protocol_create(const unsigned char *protocol_data,
+//                                     uintptr_t protocol_len);
+// extern void   webui_protocol_destroy(void *protocol_ptr);
 // extern char  *webui_handler_render(void *handler_ptr,
-//                                     const unsigned char *protocol_data,
-//                                     unsigned long protocol_len,
+//                                     const void *protocol_ptr,
 //                                     const char *data_json,
 //                                     const char *entry_id,
 //                                     const char *request_path);
@@ -70,9 +73,19 @@ func HandlerDestroy(ptr unsafe.Pointer) {
 	C.webui_handler_destroy(ptr)
 }
 
+// ProtocolCreate decodes protocol bytes into a reusable handle.
+func ProtocolCreate(protoData *C.uchar, protoLen C.uintptr_t) unsafe.Pointer {
+	return C.webui_protocol_create(protoData, protoLen)
+}
+
+// ProtocolDestroy releases a reusable protocol handle.
+func ProtocolDestroy(ptr unsafe.Pointer) {
+	C.webui_protocol_destroy(ptr)
+}
+
 // HandlerRender calls webui_handler_render.
-func HandlerRender(handler unsafe.Pointer, protoData *C.uchar, protoLen C.ulong, dataJSON *C.char, entryID *C.char, requestPath *C.char) *C.char {
-	return C.webui_handler_render(handler, protoData, protoLen, dataJSON, entryID, requestPath)
+func HandlerRender(handler unsafe.Pointer, protocol unsafe.Pointer, dataJSON *C.char, entryID *C.char, requestPath *C.char) *C.char {
+	return C.webui_handler_render(handler, protocol, dataJSON, entryID, requestPath)
 }
 
 // CString wraps C.CString for use from test files.

@@ -33,25 +33,23 @@ public class WebUIHandlerTests
     [Fact]
     public void Handler_RenderAfterDispose_ThrowsObjectDisposedException()
     {
+        byte[] protocolBytes = File.ReadAllBytes(
+            Path.Combine(AppContext.BaseDirectory, "fixtures", "projection-app", "protocol.bin"));
+        using var protocol = new PreparedProtocol(protocolBytes);
         var handler = new WebUIHandler();
         handler.Dispose();
 
         Assert.Throws<ObjectDisposedException>(() =>
-            handler.Render(Array.Empty<byte>(), "{}", "index.html", "/"));
+            handler.Render(protocol, "{}", "index.html", "/"));
     }
 
     [Fact]
-    public void Handler_Render_ProjectsStateToComponentHydrationKeys()
+    public void Handler_Render_PreservesFullStateWithoutManifest()
     {
-        // The protocol is compiled at build time by the webui CLI from the source
-        // app under fixtures/projection-app (see the BuildProjectionFixtureProtocol
-        // target). That app's single component binds only `{{kept}}`, so the
-        // component's hydration keys are ["kept"]. The WebUI plugin must project
-        // the render state down to that allowlist before emitting the #webui-data
-        // bootstrap block, dropping server-only fields.
-        byte[] protocol = File.ReadAllBytes(
+        byte[] protocolBytes = File.ReadAllBytes(
             Path.Join(AppContext.BaseDirectory, "fixtures", "projection-app", "protocol.bin"));
 
+        using var protocol = new PreparedProtocol(protocolBytes);
         using var handler = new WebUIHandler("webui");
         string html = handler.Render(
             protocol,
@@ -59,15 +57,12 @@ public class WebUIHandlerTests
             "index.html",
             "/");
 
-        // The hydratable key survives...
         Assert.Contains("\"kept\":\"KEPT_VALUE\"", html);
-        // ...and the server-only key is projected out entirely.
-        Assert.DoesNotContain("DROPPED_VALUE", html);
-        Assert.DoesNotContain("dropped", html);
+        Assert.Contains("\"dropped\":\"DROPPED_VALUE\"", html);
     }
 
     [Fact]
-    public void Handler_RenderPrepared_ReusesDecodedProtocol()
+    public void Handler_Render_ReusesDecodedProtocol()
     {
         byte[] protocolBytes = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "fixtures", "projection-app", "protocol.bin"));
@@ -88,8 +83,8 @@ public class WebUIHandlerTests
 
         Assert.Contains("\"kept\":\"FIRST\"", first);
         Assert.Contains("\"kept\":\"SECOND\"", second);
-        Assert.DoesNotContain("SECRET", first);
-        Assert.DoesNotContain("SECRET", second);
+        Assert.Contains("\"dropped\":\"SECRET\"", first);
+        Assert.Contains("\"dropped\":\"SECRET\"", second);
     }
 
     [Fact]

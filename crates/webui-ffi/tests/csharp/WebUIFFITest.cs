@@ -32,10 +32,17 @@ internal static class WebUIFFI
     public static extern void webui_handler_destroy(IntPtr handlerPtr);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr webui_protocol_create(
+        IntPtr protocolData,
+        UIntPtr protocolLen);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern void webui_protocol_destroy(IntPtr protocolPtr);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr webui_handler_render(
         IntPtr handlerPtr,
-        IntPtr protocolData,
-        UIntPtr protocolLen,
+        IntPtr protocolPtr,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string dataJson,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string entryId,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string requestPath);
@@ -227,7 +234,8 @@ public class HandlerLifecycleTests
     {
         IntPtr handler = WebUIFFI.webui_handler_create();
 
-        IntPtr ptr = WebUIFFI.webui_handler_render(handler, IntPtr.Zero, UIntPtr.Zero, "{}", "index.html", "/");
+        IntPtr ptr = WebUIFFI.webui_handler_render(
+            handler, IntPtr.Zero, "{}", "index.html", "/");
         Assert.Equal(IntPtr.Zero, ptr);
         Assert.NotNull(WebUIFFI.GetLastError());
 

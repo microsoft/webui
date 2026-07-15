@@ -104,8 +104,8 @@ serialization from every request.
 Native hosts should also prepare `protocol.bin` once at startup:
 
 - Rust: construct `PreparedProtocol`
-- C: use `webui_protocol_create` and the `*_prepared` functions
-- .NET: construct `PreparedProtocol` and use the matching handler overloads
+- C: use `webui_protocol_create` and pass the handle to every protocol operation
+- .NET: construct `PreparedProtocol` and reuse it with the handler
 - WASM: construct the exported `PreparedProtocol`
 - Node: reuse the same protocol `Buffer` and plugin; `@microsoft/webui` caches
   its plugin-bound native representation by buffer identity
@@ -113,12 +113,12 @@ Native hosts should also prepare `protocol.bin` once at startup:
 The dedicated FFI startup benchmark isolates protobuf decoding and index
 construction from application rendering:
 
-| Protocol size | Full one-shot | Full prepared | Partial one-shot | Partial prepared |
-|---------------|--------------:|--------------:|-----------------:|-----------------:|
-| 100 components | 63.893 us | 0.510 us | 66.972 us | 1.138 us |
-| 1,000 components | 532.96 us | 0.329 us | 649.44 us | 0.778 us |
+| Protocol size | Full prepare/request | Full reused | Partial prepare/request | Partial reused |
+|---------------|---------------------:|------------:|------------------------:|---------------:|
+| 100 components | 77.390 us | 0.522 us | 72.673 us | 1.214 us |
+| 1,000 components | 716.67 us | 1.023 us | 790.70 us | 1.310 us |
 
-Prepared reuse removes 98.3% to 99.94% of the isolated protocol startup cost.
+Prepared reuse removes 98.3% to 99.86% of the isolated protocol startup cost.
 The relative impact on a real request is smaller when template rendering or
 state serialization dominates, but repeatedly decoding immutable protocol
 bytes remains avoidable work.

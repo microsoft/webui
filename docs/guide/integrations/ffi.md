@@ -38,15 +38,10 @@ if (html == NULL) {
 }
 ```
 
-### Raw protocol: `webui_handler_create` + `webui_handler_render`
-
-Create a reusable handler and render pre-compiled protobuf bytes. This
-compatibility path decodes the protocol on each render.
-
-### Prepared protocol: recommended for repeated rendering
+### Protocol rendering
 
 Decode and index `protocol.bin` once with `webui_protocol_create`, then use the
-prepared entry points:
+protocol handle for every operation:
 
 ```c
 void *handler = webui_handler_create_with_plugin("webui");
@@ -60,7 +55,7 @@ if (protocol == NULL) {
     return;
 }
 
-char *html = webui_handler_render_prepared(
+char *html = webui_handler_render(
     handler, protocol, state_json, "index.html", request_path
 );
 if (html) {
@@ -178,53 +173,33 @@ after every render using it has completed. Passing `NULL` to
 
 ```c
 char *webui_handler_render(void *handler_ptr,
-                           const uint8_t *protocol_data,
-                           uintptr_t protocol_len,
+                           const void *protocol_ptr,
                            const char *data_json,
                            const char *entry_id,
                            const char *request_path);
 ```
 
-Render a pre-compiled WebUI protocol (protobuf binary) with JSON state data. This is the lower-level API for callers that have already compiled their templates to protobuf via the CLI.
+Render a protocol handle created by `webui_protocol_create` with JSON state data.
 
 - `handler_ptr`, pointer returned by `webui_handler_create`.
-- `protocol_data`, pointer to protobuf binary data.
-- `protocol_len`, length of the protobuf data in bytes.
+- `protocol_ptr`, pointer returned by `webui_protocol_create`.
 - `data_json`, null-terminated UTF-8 JSON string with the render state.
 - `entry_id`, null-terminated UTF-8 string identifying the entry fragment (e.g., `"index.html"`).
 - `request_path`, null-terminated UTF-8 string with the request path for route matching (e.g., `"/users/42"`).
 - **Returns** a heap-allocated string on success, or `NULL` on error.
 - The caller **must** free the returned string with `webui_free()`.
 
-This function decodes `protocol_data` on every call. Use
-`webui_handler_render_prepared` for a protocol rendered repeatedly.
-
-### webui_handler_render_prepared
-
-```c
-char *webui_handler_render_prepared(void *handler_ptr,
-                                    const void *protocol_ptr,
-                                    const char *data_json,
-                                    const char *entry_id,
-                                    const char *request_path);
-```
-
-Render with a handle from `webui_protocol_create`. Output, errors, and string
-ownership match `webui_handler_render`.
-
 ### Partial, component-template, and token helpers
 
 | Function | Result |
 |----------|--------|
 | `webui_render_partial(...)` | Complete JSON partial response containing active-route projected `state`, templates, inventory, path, and route chain |
-| `webui_render_partial_prepared(...)` | Same projected response using a prepared protocol |
 | `webui_render_component_templates(...)` | Requested component template payloads and updated inventory |
-| `webui_render_component_templates_prepared(...)` | Same query using a prepared protocol |
 | `webui_protocol_tokens(...)` | Newline-delimited CSS token names |
-| `webui_protocol_tokens_prepared(...)` | Token names using a prepared protocol |
 
-The partial functions validate `state_json`, skip unselected values without
-materializing them, and copy only raw values required by authored components on
+These functions all accept a protocol handle from `webui_protocol_create`.
+The partial function validates `state_json`, skips unselected values without
+materializing them, and copies only raw values required by authored components on
 the active route.
 
 ## Error Handling
@@ -256,7 +231,6 @@ Two rules to remember:
 |---|---|---|
 | `webui_render` | Caller | `webui_free(ptr)` |
 | `webui_handler_render` | Caller | `webui_free(ptr)` |
-| `webui_handler_render_prepared` | Caller | `webui_free(ptr)` |
 | Partial, component-template, and token strings | Caller | `webui_free(ptr)` |
 | `webui_last_error` | Library (do **not** free) | Replaced on next call |
 | `webui_handler_create` | Caller | `webui_handler_destroy(ptr)` |
@@ -276,10 +250,13 @@ if (handler == NULL) {
 }
 
 // Render, output includes hydration markers
-char *html = webui_handler_render(handler, protocol_data, protocol_len,
-                                  state_json, "index.html", "/");
+void *protocol = webui_protocol_create(protocol_data, protocol_len);
+char *html = webui_handler_render(
+    handler, protocol, state_json, "index.html", "/"
+);
 
 webui_free(html);
+webui_protocol_destroy(protocol);
 webui_handler_destroy(handler);
 ```
 
@@ -430,8 +407,8 @@ class WebUI
 Any language with C FFI support can use WebUI. The pattern is always the same:
 
 1. Load the shared library (`libwebui_ffi.dylib` / `.so` / `.dll`).
-2. Declare the functions you need. For a server, prefer
-   `webui_protocol_create`, `webui_handler_render_prepared`,
+2. Declare the functions you need. For a server, use
+   `webui_protocol_create`, `webui_handler_render`,
    `webui_protocol_destroy`, `webui_free`, and `webui_last_error`.
 3. Pass UTF-8 null-terminated strings for `html` and `data_json`.
 4. Check the return value, `NULL` means an error occurred.

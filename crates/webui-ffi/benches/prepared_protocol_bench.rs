@@ -9,8 +9,7 @@ use std::ffi::CString;
 use std::hint::black_box;
 use webui_ffi::{
     webui_free, webui_handler_create, webui_handler_destroy, webui_handler_render,
-    webui_handler_render_prepared, webui_protocol_create, webui_protocol_destroy,
-    webui_render_partial, webui_render_partial_prepared,
+    webui_protocol_create, webui_protocol_destroy, webui_render_partial,
 };
 use webui_protocol::{
     ComponentData, FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment,
@@ -77,32 +76,37 @@ fn prepared_protocol_bench(c: &mut Criterion) {
         assert!(!prepared.is_null(), "protocol preparation failed");
 
         group.bench_function(
-            format!("full_legacy_decode_each_render/{component_count}_components"),
+            format!("full_prepare_each_render/{component_count}_components"),
             |b| {
                 b.iter(|| {
+                    // SAFETY: protocol points to protocol.len() initialized bytes.
+                    let request_protocol =
+                        unsafe { webui_protocol_create(protocol.as_ptr(), protocol.len()) };
+                    assert!(!request_protocol.is_null(), "protocol preparation failed");
                     // SAFETY: All opaque and string pointers remain valid for the call.
                     let output = unsafe {
                         webui_handler_render(
                             handler,
-                            protocol.as_ptr(),
-                            protocol.len(),
+                            request_protocol,
                             state.as_ptr(),
                             entry.as_ptr(),
                             path.as_ptr(),
                         )
                     };
-                    assert!(!output.is_null(), "legacy full render failed");
+                    assert!(!output.is_null(), "full render failed");
                     black_box(output);
                     // SAFETY: output was allocated by webui_handler_render.
                     unsafe { webui_free(output) };
+                    // SAFETY: request_protocol is live and no longer borrowed.
+                    unsafe { webui_protocol_destroy(request_protocol) };
                 });
             },
         );
-        group.bench_function(format!("full_prepared/{component_count}_components"), |b| {
+        group.bench_function(format!("full_reused/{component_count}_components"), |b| {
             b.iter(|| {
                 // SAFETY: All opaque and string pointers remain valid for the call.
                 let output = unsafe {
-                    webui_handler_render_prepared(
+                    webui_handler_render(
                         handler,
                         prepared,
                         state.as_ptr(),
@@ -112,39 +116,44 @@ fn prepared_protocol_bench(c: &mut Criterion) {
                 };
                 assert!(!output.is_null(), "prepared full render failed");
                 black_box(output);
-                // SAFETY: output was allocated by webui_handler_render_prepared.
+                // SAFETY: output was allocated by webui_handler_render.
                 unsafe { webui_free(output) };
             });
         });
         group.bench_function(
-            format!("partial_legacy_decode_each_render/{component_count}_components"),
+            format!("partial_prepare_each_render/{component_count}_components"),
             |b| {
                 b.iter(|| {
-                    // SAFETY: All byte and string pointers remain valid for the call.
+                    // SAFETY: protocol points to protocol.len() initialized bytes.
+                    let request_protocol =
+                        unsafe { webui_protocol_create(protocol.as_ptr(), protocol.len()) };
+                    assert!(!request_protocol.is_null(), "protocol preparation failed");
+                    // SAFETY: All opaque and string pointers remain valid for the call.
                     let output = unsafe {
                         webui_render_partial(
-                            protocol.as_ptr(),
-                            protocol.len(),
+                            request_protocol,
                             state.as_ptr(),
                             entry.as_ptr(),
                             path.as_ptr(),
                             inventory.as_ptr(),
                         )
                     };
-                    assert!(!output.is_null(), "legacy partial render failed");
+                    assert!(!output.is_null(), "partial render failed");
                     black_box(output);
                     // SAFETY: output was allocated by webui_render_partial.
                     unsafe { webui_free(output) };
+                    // SAFETY: request_protocol is live and no longer borrowed.
+                    unsafe { webui_protocol_destroy(request_protocol) };
                 });
             },
         );
         group.bench_function(
-            format!("partial_prepared/{component_count}_components"),
+            format!("partial_reused/{component_count}_components"),
             |b| {
                 b.iter(|| {
                     // SAFETY: All opaque and string pointers remain valid for the call.
                     let output = unsafe {
-                        webui_render_partial_prepared(
+                        webui_render_partial(
                             prepared,
                             state.as_ptr(),
                             entry.as_ptr(),
@@ -154,7 +163,7 @@ fn prepared_protocol_bench(c: &mut Criterion) {
                     };
                     assert!(!output.is_null(), "prepared partial render failed");
                     black_box(output);
-                    // SAFETY: output was allocated by webui_render_partial_prepared.
+                    // SAFETY: output was allocated by webui_render_partial.
                     unsafe { webui_free(output) };
                 });
             },

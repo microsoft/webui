@@ -119,15 +119,6 @@ internal static class NativeBindings
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr webui_handler_render(
         WebUIHandlerSafeHandle handlerPtr,
-        byte[] protocolData,
-        nuint protocolLen,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string dataJson,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string entryId,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string requestPath);
-
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr webui_handler_render_prepared(
-        WebUIHandlerSafeHandle handlerPtr,
         WebUIProtocolSafeHandle protocolPtr,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string dataJson,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string entryId,
@@ -140,15 +131,6 @@ internal static class NativeBindings
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr webui_render_partial(
-        byte[] protocolData,
-        nuint protocolLen,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string stateJson,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string entryId,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string requestPath,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string inventoryHex);
-
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr webui_render_partial_prepared(
         WebUIProtocolSafeHandle protocolPtr,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string stateJson,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string entryId,

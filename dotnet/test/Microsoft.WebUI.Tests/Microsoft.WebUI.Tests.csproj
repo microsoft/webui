@@ -14,17 +14,15 @@
   </ItemGroup>
 
   <!--
-    Compile the projection fixture app with the webui CLI at build time rather
-    than committing a prebuilt protocol binary. The app under
-    fixtures/projection-app declares one authored component whose only hydration
-    key is `kept`, so active-route projection retains only that field. The
-    projection test renders it and asserts server-only fields are dropped.
+    Compile the fixture app with the webui CLI at build time rather than
+    committing a prebuilt protocol binary. No projection manifest is supplied,
+    so the resulting protocol exercises the full-state safety fallback.
 
     cargo run resolves and builds the CLI on demand and locates the workspace by
     walking up from this project directory. The target is incremental: it only
     invokes the CLI when the app sources change or the output is missing.
   -->
-  <Target Name="BuildProjectionFixtureProtocol"
+  <Target Name="BuildFixtureProtocol"
           BeforeTargets="Build"
           Inputs="fixtures/projection-app/index.html;fixtures/projection-app/kept-widget.html;fixtures/projection-app/kept-widget.ts"
           Outputs="$(OutDir)fixtures/projection-app/protocol.bin">

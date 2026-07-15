@@ -3003,14 +3003,10 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 | `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin. Returns `NULL` on error. Refer to the CLI/crate docs for the current list of plugin identifiers. |
 | `webui_protocol_create(data, len)` | Decode and index a protocol once. Returns a thread-safe opaque handle. |
 | `webui_protocol_destroy(protocol)` | Destroy a prepared protocol handle. `NULL` is a safe no-op. |
-| `webui_handler_render(handler, data, len, json, entry_id, request_path)` | Render a pre-compiled protocol with route matching. `request_path` controls which route is active. Returns heap-allocated string. |
-| `webui_handler_render_prepared(handler, protocol, json, entry_id, request_path)` | Render with a prepared protocol, avoiding protobuf decode and index construction. |
-| `webui_render_partial(data, len, state_json, entry_id, request_path, inventory_hex)` | Produce a complete JSON partial response with active-route projected state in a single call. |
-| `webui_render_partial_prepared(protocol, state_json, entry_id, request_path, inventory_hex)` | Produce the same projected response using a prepared protocol. |
-| `webui_render_component_templates(data, len, tags_json, inventory_hex)` | Return requested component template payloads and updated inventory. |
-| `webui_render_component_templates_prepared(protocol, tags_json, inventory_hex)` | Component-template query using a prepared protocol. |
-| `webui_protocol_tokens(data, len)` | Return newline-delimited CSS token names. |
-| `webui_protocol_tokens_prepared(protocol)` | Return token names without decoding protobuf again. |
+| `webui_handler_render(handler, protocol, json, entry_id, request_path)` | Render a prepared protocol with route matching. `request_path` controls which route is active. Returns a heap-allocated string. |
+| `webui_render_partial(protocol, state_json, entry_id, request_path, inventory_hex)` | Produce a complete JSON partial response with active-route projected state. |
+| `webui_render_component_templates(protocol, tags_json, inventory_hex)` | Return requested component template payloads and updated inventory. |
+| `webui_protocol_tokens(protocol)` | Return newline-delimited CSS token names. |
 | `webui_handler_destroy(handler)` | Destroy a handler. `NULL` is a safe no-op. |
 | `webui_free(ptr)` | Free a string returned by any render function. `NULL` is a safe no-op. |
 | `webui_last_error()` | Return per-thread error message. Caller must **not** free. |

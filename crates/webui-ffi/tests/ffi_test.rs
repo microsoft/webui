@@ -11,17 +11,15 @@
 //! C symbols for Go, C#, and Python consumers.
 
 use std::collections::HashMap;
-use std::ffi::{CStr, CString};
+use std::ffi::{c_void, CStr, CString};
 
 // Re-use the crate's public C API functions directly.
 // Because we added "lib" to crate-type, Rust integration tests can link
 // against the rlib and call the `pub extern "C"` functions.
 use webui_ffi::{
     webui_free, webui_handler_create, webui_handler_create_with_plugin, webui_handler_destroy,
-    webui_handler_render, webui_handler_render_prepared, webui_handler_set_nonce, webui_last_error,
-    webui_protocol_create, webui_protocol_destroy, webui_protocol_tokens,
-    webui_protocol_tokens_prepared, webui_render, webui_render_partial,
-    webui_render_partial_prepared,
+    webui_handler_render, webui_handler_set_nonce, webui_last_error, webui_protocol_create,
+    webui_protocol_destroy, webui_protocol_tokens, webui_render, webui_render_partial,
 };
 use webui_protocol::{
     FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment, WebUIProtocol,
@@ -57,6 +55,26 @@ unsafe fn last_error_string() -> Option<String> {
     } else {
         Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
     }
+}
+
+unsafe fn prepare_protocol(bytes: &[u8]) -> *mut c_void {
+    let prepared = webui_protocol_create(bytes.as_ptr(), bytes.len());
+    assert!(
+        !prepared.is_null(),
+        "protocol preparation failed: {}",
+        last_error_string().unwrap_or_else(|| "<none>".to_string())
+    );
+    prepared
+}
+
+unsafe fn read_protocol_tokens(bytes: &[u8]) -> String {
+    let prepared = prepare_protocol(bytes);
+    let ptr = webui_protocol_tokens(prepared);
+    assert!(!ptr.is_null(), "protocol token extraction failed");
+    let tokens = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+    webui_free(ptr);
+    webui_protocol_destroy(prepared);
+    tokens
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +277,6 @@ fn handler_render_null_args_returns_null() {
         let ptr = webui_handler_render(
             handler,
             std::ptr::null(),
-            0,
             c_json.as_ptr(),
             c_entry.as_ptr(),
             c_request_path.as_ptr(),
@@ -373,10 +390,10 @@ fn render_partial_returns_templates_inventory_and_chain() {
         let c_state = CString::new(r#"{"query":"shirts"}"#).expect("static string");
         let c_request_path = CString::new("/search/shirts").expect("static string");
         let c_inventory = CString::new("").expect("static string");
+        let prepared = prepare_protocol(&protocol_bytes);
 
         let ptr = webui_render_partial(
-            protocol_bytes.as_ptr(),
-            protocol_bytes.len(),
+            prepared,
             c_state.as_ptr(),
             c_entry.as_ptr(),
             c_request_path.as_ptr(),
@@ -390,34 +407,10 @@ fn render_partial_returns_templates_inventory_and_chain() {
 
         let json = CStr::from_ptr(ptr).to_string_lossy().into_owned();
         webui_free(ptr);
+        webui_protocol_destroy(prepared);
 
         let value: serde_json::Value =
             serde_json::from_str(&json).expect("ffi response should be valid json");
-
-        let prepared = webui_protocol_create(protocol_bytes.as_ptr(), protocol_bytes.len());
-        assert!(
-            !prepared.is_null(),
-            "webui_protocol_create returned NULL: {}",
-            last_error_string().unwrap_or_else(|| "<none>".to_string())
-        );
-        let prepared_ptr = webui_render_partial_prepared(
-            prepared,
-            c_state.as_ptr(),
-            c_entry.as_ptr(),
-            c_request_path.as_ptr(),
-            c_inventory.as_ptr(),
-        );
-        assert!(
-            !prepared_ptr.is_null(),
-            "prepared partial render returned NULL: {}",
-            last_error_string().unwrap_or_else(|| "<none>".to_string())
-        );
-        let prepared_json = CStr::from_ptr(prepared_ptr).to_string_lossy().into_owned();
-        webui_free(prepared_ptr);
-        webui_protocol_destroy(prepared);
-        let prepared_value: serde_json::Value =
-            serde_json::from_str(&prepared_json).expect("prepared response should be valid json");
-        assert_eq!(prepared_value, value);
 
         // State is at top level (caller adds it), not per-entry in chain
         assert!(
@@ -562,14 +555,7 @@ fn protocol_tokens_empty_vec_returns_empty_string() {
     );
 
     unsafe {
-        let ptr = webui_protocol_tokens(bytes.as_ptr(), bytes.len());
-        assert!(
-            !ptr.is_null(),
-            "empty tokens should return non-null empty string"
-        );
-        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-        assert_eq!(result, "");
-        webui_free(ptr);
+        assert_eq!(read_protocol_tokens(&bytes), "");
     }
 }
 
@@ -586,11 +572,7 @@ fn protocol_tokens_single_token() {
     let bytes = protocol.to_protobuf().expect("serialize");
 
     unsafe {
-        let ptr = webui_protocol_tokens(bytes.as_ptr(), bytes.len());
-        assert!(!ptr.is_null());
-        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-        assert_eq!(result, "colorBrandBackground");
-        webui_free(ptr);
+        assert_eq!(read_protocol_tokens(&bytes), "colorBrandBackground");
     }
 }
 
@@ -614,14 +596,11 @@ fn protocol_tokens_multiple_tokens_newline_delimited() {
     let bytes = protocol.to_protobuf().expect("serialize");
 
     unsafe {
-        let ptr = webui_protocol_tokens(bytes.as_ptr(), bytes.len());
-        assert!(!ptr.is_null());
-        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        let result = read_protocol_tokens(&bytes);
         assert_eq!(
             result,
             "colorBrandBackground\nfontSizeBase300\nspacingHorizontalM"
         );
-        webui_free(ptr);
     }
 }
 
@@ -660,6 +639,7 @@ fn handler_set_nonce_applies_to_render() {
     unsafe {
         let plugin_id = CString::new("webui").expect("static string");
         let handler = webui_handler_create_with_plugin(plugin_id.as_ptr());
+        let prepared = prepare_protocol(&proto_bytes);
 
         // Set a nonce
         let nonce_val = CString::new("Ep7tTOr+HyRkByAPXxZ9ag==").expect("static string");
@@ -671,8 +651,7 @@ fn handler_set_nonce_applies_to_render() {
 
         let ptr = webui_handler_render(
             handler,
-            proto_bytes.as_ptr(),
-            proto_bytes.len(),
+            prepared,
             c_json.as_ptr(),
             c_entry.as_ptr(),
             c_path.as_ptr(),
@@ -698,6 +677,7 @@ fn handler_set_nonce_applies_to_render() {
             "rendered HTML should contain nonce meta tag, got:\n{result}"
         );
 
+        webui_protocol_destroy(prepared);
         webui_handler_destroy(handler);
     }
 }
@@ -709,6 +689,7 @@ fn handler_render_without_nonce_has_no_nonce_attribute() {
     unsafe {
         let plugin_id = CString::new("webui").expect("static string");
         let handler = webui_handler_create_with_plugin(plugin_id.as_ptr());
+        let prepared = prepare_protocol(&proto_bytes);
 
         let c_json = CString::new("{}").expect("static string");
         let c_entry = CString::new("index.html").expect("static string");
@@ -716,8 +697,7 @@ fn handler_render_without_nonce_has_no_nonce_attribute() {
 
         let ptr = webui_handler_render(
             handler,
-            proto_bytes.as_ptr(),
-            proto_bytes.len(),
+            prepared,
             c_json.as_ptr(),
             c_entry.as_ptr(),
             c_path.as_ptr(),
@@ -743,6 +723,7 @@ fn handler_render_without_nonce_has_no_nonce_attribute() {
             "rendered HTML without set_nonce should not have nonce meta, got:\n{result}"
         );
 
+        webui_protocol_destroy(prepared);
         webui_handler_destroy(handler);
     }
 }
@@ -754,6 +735,7 @@ fn handler_set_nonce_null_clears_nonce() {
     unsafe {
         let plugin_id = CString::new("webui").expect("static string");
         let handler = webui_handler_create_with_plugin(plugin_id.as_ptr());
+        let prepared = prepare_protocol(&proto_bytes);
 
         // Set a nonce
         let nonce_val = CString::new("test-nonce-123").expect("static string");
@@ -768,8 +750,7 @@ fn handler_set_nonce_null_clears_nonce() {
 
         let ptr = webui_handler_render(
             handler,
-            proto_bytes.as_ptr(),
-            proto_bytes.len(),
+            prepared,
             c_json.as_ptr(),
             c_entry.as_ptr(),
             c_path.as_ptr(),
@@ -785,6 +766,7 @@ fn handler_set_nonce_null_clears_nonce() {
             "after clearing nonce with NULL, output should not contain nonce, got:\n{result}"
         );
 
+        webui_protocol_destroy(prepared);
         webui_handler_destroy(handler);
     }
 }
@@ -817,18 +799,14 @@ fn protocol_tokens_preserves_order_and_duplicates() {
     let bytes = protocol.to_protobuf().expect("serialize");
 
     unsafe {
-        let ptr = webui_protocol_tokens(bytes.as_ptr(), bytes.len());
-        assert!(!ptr.is_null());
-        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-        assert_eq!(result, "zeta\nalpha\nzeta");
-        webui_free(ptr);
+        assert_eq!(read_protocol_tokens(&bytes), "zeta\nalpha\nzeta");
     }
 }
 
 #[test]
-fn protocol_tokens_null_data_returns_null() {
+fn protocol_tokens_null_handle_returns_null() {
     unsafe {
-        let ptr = webui_protocol_tokens(std::ptr::null(), 0);
+        let ptr = webui_protocol_tokens(std::ptr::null());
         assert!(ptr.is_null());
         let err = last_error_string().expect("error should be set for null input");
         assert!(
@@ -843,7 +821,9 @@ fn protocol_tokens_zero_length_returns_empty_string() {
     // A non-null pointer with len 0 should decode as an empty protocol (no tokens).
     let dummy: u8 = 0;
     unsafe {
-        let ptr = webui_protocol_tokens(&dummy as *const u8, 0);
+        let prepared = webui_protocol_create(&dummy as *const u8, 0);
+        assert!(!prepared.is_null());
+        let ptr = webui_protocol_tokens(prepared);
         assert!(
             !ptr.is_null(),
             "zero-length input should succeed, not return null"
@@ -851,15 +831,16 @@ fn protocol_tokens_zero_length_returns_empty_string() {
         let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
         assert_eq!(result, "");
         webui_free(ptr);
+        webui_protocol_destroy(prepared);
     }
 }
 
 #[test]
-fn protocol_tokens_invalid_protobuf_returns_null() {
+fn protocol_create_invalid_protobuf_returns_null() {
     let garbage: &[u8] = &[0xFF, 0xFE, 0xFD];
     unsafe {
-        let ptr = webui_protocol_tokens(garbage.as_ptr(), garbage.len());
-        assert!(ptr.is_null());
+        let prepared = webui_protocol_create(garbage.as_ptr(), garbage.len());
+        assert!(prepared.is_null());
         let err = last_error_string().expect("error should be set for bad protobuf");
         assert!(
             err.contains("protobuf") || err.contains("parse"),
@@ -918,6 +899,7 @@ fn handler_render_projects_state_to_component_hydration_keys() {
     unsafe {
         let plugin_id = CString::new("webui").expect("static string");
         let handler = webui_handler_create_with_plugin(plugin_id.as_ptr());
+        let prepared = prepare_protocol(&proto_bytes);
 
         let c_json =
             CString::new(r#"{"kept":"KEPT_VALUE_FFI","dropped":"DROPPED_VALUE_FFI"}"#).unwrap();
@@ -926,8 +908,7 @@ fn handler_render_projects_state_to_component_hydration_keys() {
 
         let ptr = webui_handler_render(
             handler,
-            proto_bytes.as_ptr(),
-            proto_bytes.len(),
+            prepared,
             c_json.as_ptr(),
             c_entry.as_ptr(),
             c_path.as_ptr(),
@@ -940,6 +921,7 @@ fn handler_render_projects_state_to_component_hydration_keys() {
 
         let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
         webui_free(ptr);
+        webui_protocol_destroy(prepared);
         webui_handler_destroy(handler);
 
         // Only the hydratable key reaches the bootstrap state block...
@@ -978,7 +960,7 @@ fn prepared_protocol_supports_repeated_full_renders() {
         for expected in ["FIRST_PREPARED", "SECOND_PREPARED"] {
             let state = CString::new(format!(r#"{{"kept":"{expected}","dropped":"SECRET"}}"#))
                 .expect("state should not contain NUL");
-            let ptr = webui_handler_render_prepared(
+            let ptr = webui_handler_render(
                 handler,
                 prepared,
                 state.as_ptr(),
@@ -1002,7 +984,7 @@ fn prepared_protocol_supports_repeated_full_renders() {
 }
 
 #[test]
-fn prepared_protocol_tokens_match_legacy_tokens() {
+fn prepared_protocol_exposes_tokens() {
     let protocol = WebUIProtocol::with_tokens(
         HashMap::new(),
         vec!["alpha".to_string(), "beta".to_string()],
@@ -1013,7 +995,7 @@ fn prepared_protocol_tokens_match_legacy_tokens() {
         let prepared = webui_protocol_create(bytes.as_ptr(), bytes.len());
         assert!(!prepared.is_null());
 
-        let ptr = webui_protocol_tokens_prepared(prepared);
+        let ptr = webui_protocol_tokens(prepared);
         assert!(!ptr.is_null());
         let tokens = CStr::from_ptr(ptr).to_string_lossy().into_owned();
         webui_free(ptr);

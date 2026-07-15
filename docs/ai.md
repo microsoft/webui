@@ -1273,8 +1273,8 @@ result = ctypes.cast(ptr, c_char_p).value.decode("utf-8")
 lib.webui_free(ptr)
 ```
 
-For repeated FFI rendering, use `webui_protocol_create` once and call
-`webui_handler_render_prepared` per request.
+For repeated FFI rendering, use `webui_protocol_create` once and pass that
+handle to `webui_handler_render` on every request.
 
 ### Go (cgo)
 
