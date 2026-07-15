@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm run build:deps && pnpm run build:scripts && pnpm run copy:wasm && pnpm run inject:theme && pnpm run typecheck && pnpm run build:client && pnpm run build:protocol && pnpm run check:render",
+    "build": "pnpm run build:deps && pnpm run build:scripts && pnpm run copy:wasm && pnpm run typecheck && pnpm run build:client && pnpm run build:protocol && pnpm run inject:theme && pnpm run check:render",
     "build:deps": "pnpm --filter @microsoft/webui run build",
     "build:protocol": "cargo run -p microsoft-webui-cli -- build ./src --out ./public/protocol.bin --plugin=webui --projection-manifest ./public/webui-projection.json --css style --dom light",
     "build:scripts": "esbuild scripts/copy-wasm.ts scripts/inject-theme.ts scripts/check-render.ts scripts/serve.ts --bundle --outdir=dist-scripts --platform=node --format=esm --target=node22 --external:../public/wasm/handler/webui_wasm_handler.js",
