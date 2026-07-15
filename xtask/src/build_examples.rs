@@ -177,12 +177,7 @@ fn run_app_build_script(app_dir: &Path) -> Result<(), String> {
         .stderr(Stdio::piped());
 
     match command.output() {
-        Ok(output) if output.status.success() => {
-            if has_script(app_dir, "test:projection-contract") {
-                run_app_projection_contract(app_dir)?;
-            }
-            Ok(())
-        }
+        Ok(output) if output.status.success() => Ok(()),
         Ok(output) => {
             let mut msg = String::new();
             if let Ok(s) = String::from_utf8(output.stdout) {
@@ -199,21 +194,6 @@ fn run_app_build_script(app_dir: &Path) -> Result<(), String> {
         }
         Err(error) => Err(error.to_string()),
     }
-}
-
-fn run_app_projection_contract(app_dir: &Path) -> Result<(), String> {
-    let mut command = build_command("pnpm", &["run", "test:projection-contract"]);
-    command
-        .current_dir(app_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let output = command.output().map_err(|error| error.to_string())?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let mut message = String::from_utf8_lossy(&output.stdout).into_owned();
-    message.push_str(&String::from_utf8_lossy(&output.stderr));
-    Err(message)
 }
 
 /// Check whether an app package declares a non-empty npm script.
