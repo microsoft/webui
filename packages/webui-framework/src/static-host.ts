@@ -30,8 +30,8 @@ function defineTemplateHost(tag: string, meta: TemplateMeta): void {
   if (!w.__webui.templates[tag]) w.__webui.templates[tag] = meta;
 
   class StaticTemplateHost extends TemplateElement {
-    protected $afterExternalStateWrite(changed: boolean): void {
-      if (changed) this.$activateDeferredSSR();
+    protected $afterExternalStateWrite(applied: boolean): void {
+      if (applied) this.$activateDeferredSSR();
     }
 
     protected $shouldDeferSSRHydration(): boolean {

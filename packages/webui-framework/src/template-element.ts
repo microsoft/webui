@@ -282,6 +282,11 @@ export class TemplateElement extends HTMLElement {
   private $hydrated = false;
   private $deferredSSR = false;
   private $activatingDeferredSSR = false;
+  /** True once a repeat produced an SSR item scope whose collection state is
+   *  absent on the client. Only these instances need the per-binding
+   *  scope-known walk in `$updateBindings`; authored components never set this,
+   *  so their update loop skips the walk entirely. */
+  private $hasUnknownScopes = false;
   private $templateState: Record<string, unknown> | null = null;
   private $dirtyPaths: Set<string> | null = null;
   private $pendingFlush = false;
@@ -310,9 +315,9 @@ export class TemplateElement extends HTMLElement {
   /** Internal single-key state hook used by compiled parent-to-child bindings. */
   [WEBUI_SET_STATE_KEY](key: string, value: unknown): boolean {
     this.$beforeExternalStateWrite();
-    const changed = this.$setStateKey(key, value);
-    this.$afterExternalStateWrite(changed);
-    return changed;
+    const owned = this.$setStateKey(key, value);
+    this.$afterExternalStateWrite(owned);
+    return owned;
   }
 
   /**
@@ -466,6 +471,7 @@ export class TemplateElement extends HTMLElement {
     if (!this.$root) {
       this.$deferredSSR = false;
       this.$ready = false;
+      this.$hasUnknownScopes = false;
       return;
     }
     this.$teardown(this.$root);
@@ -476,6 +482,7 @@ export class TemplateElement extends HTMLElement {
     this.$pendingFlush = false;
     this.$preReadyWrites = null;
     this.$ready = false;
+    this.$hasUnknownScopes = false;
   }
 
   /** Break all DOM references held by a binding instance and its nested blocks. */
@@ -531,12 +538,12 @@ export class TemplateElement extends HTMLElement {
   setState(state: Record<string, unknown>): void {
     this.$beforeExternalStateWrite();
     const keys = Object.keys(state);
-    let changed = false;
+    let owned = false;
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i];
-      changed = this.$setStateKey(key, state[key]) || changed;
+      owned = this.$setStateKey(key, state[key]) || owned;
     }
-    this.$afterExternalStateWrite(changed);
+    this.$afterExternalStateWrite(owned);
     this.$flushUpdates();
   }
 
@@ -548,8 +555,13 @@ export class TemplateElement extends HTMLElement {
   protected $beforeExternalStateWrite(): void {
   }
 
-  /** Finish preparing a dormant template host after an external state write. */
-  protected $afterExternalStateWrite(_changed: boolean): void {
+  /**
+   * Finish preparing a dormant template host after an external state write.
+   *
+   * `applied` is true when the write reached this component's state — an owned
+   * key (`setState` / parent binding) or a changed template attribute.
+   */
+  protected $afterExternalStateWrite(_applied: boolean): void {
   }
 
   /** Decide whether an SSR instance should remain dormant until client use. */
@@ -627,7 +639,16 @@ export class TemplateElement extends HTMLElement {
     return !!meta && templateHasRoot(meta, key) && !hasAuthoredMember(this, key);
   }
 
-  /** Route one external state key to an authored observable or hidden template state. */
+  /**
+   * Route one external state key to an authored observable or hidden template
+   * state, returning whether this component *owns* the key.
+   *
+   * The return is "owned", NOT "value changed": it stays `true` for an owned
+   * key even when the write is a no-op. `$patchAttr`'s complex-binding fallback
+   * relies on this — a `false` return makes the parent assign a plain DOM
+   * property (`el[name] = v`) that would shadow owned template state. Do not
+   * "optimize" this to real change-detection.
+   */
   private $setStateKey(key: string, value: unknown): boolean {
     if (this.$observableNames().has(key)) {
       (this as Record<string, unknown>)[key] = value;
@@ -1242,11 +1263,13 @@ export class TemplateElement extends HTMLElement {
           }
           for (let j = 0; j < itemMarkers.length; j++) {
             const itemValue = items[j];
+            const known = hasCollectionState && j < items.length;
+            if (!known) this.$hasUnknownScopes = true;
             const itemScope: ScopeFrame = {
               name: itemVar,
               value: itemValue,
               parent: scope,
-              known: hasCollectionState && j < items.length,
+              known,
             };
 
             if (rootTag) {
@@ -1654,21 +1677,24 @@ export class TemplateElement extends HTMLElement {
     texts: TextBinding[], attrs: AttrBinding[],
     conds: CondBinding[], repeats: RepeatBinding[],
   ): void {
+    // Fast path: with no client-absent SSR scopes (every authored component and
+    // every fully-hydrated host) the walk is unnecessary, so skip it per binding.
+    const gated = this.$hasUnknownScopes;
     for (let i = 0; i < texts.length; i++) {
       const binding = texts[i];
-      if (!binding.scope || this.$scopeIsKnown(binding.scope)) this.$patchText(binding);
+      if (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) this.$patchText(binding);
     }
     for (let i = 0; i < attrs.length; i++) {
       const binding = attrs[i];
-      if (!binding.scope || this.$scopeIsKnown(binding.scope)) this.$patchAttr(binding);
+      if (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) this.$patchAttr(binding);
     }
     for (let i = 0; i < conds.length; i++) {
       const binding = conds[i];
-      if (!binding.scope || this.$scopeIsKnown(binding.scope)) this.$toggleCond(binding);
+      if (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) this.$toggleCond(binding);
     }
     for (let i = 0; i < repeats.length; i++) {
       const binding = repeats[i];
-      if (!binding.scope || this.$scopeIsKnown(binding.scope)) syncRepeat(this, binding);
+      if (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) syncRepeat(this, binding);
     }
   }
 
