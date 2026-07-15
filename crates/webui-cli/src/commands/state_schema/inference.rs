@@ -320,7 +320,6 @@ fn add_condition_paths(root: &mut Node, scope: &Rc<Scope>, condition: &Condition
 
 fn add_predicate_paths(root: &mut Node, scope: &Rc<Scope>, predicate: &webui_protocol::Predicate) {
     let operator = ComparisonOperator::try_from(predicate.operator).ok();
-    let left_literal = literal_kind(&predicate.left);
     let right_literal = literal_kind(&predicate.right);
 
     match operator {
@@ -328,15 +327,13 @@ fn add_predicate_paths(root: &mut Node, scope: &Rc<Scope>, predicate: &webui_pro
         | Some(ComparisonOperator::LessThan)
         | Some(ComparisonOperator::GreaterThanOrEqual)
         | Some(ComparisonOperator::LessThanOrEqual) => {
-            if left_literal.is_none() {
-                add_path(
-                    root,
-                    scope,
-                    &predicate.left,
-                    InferredKind::Number,
-                    Requirement::Optional,
-                );
-            }
+            add_path(
+                root,
+                scope,
+                &predicate.left,
+                InferredKind::Number,
+                Requirement::Optional,
+            );
             if right_literal.is_none() {
                 add_path(
                     root,
@@ -347,14 +344,9 @@ fn add_predicate_paths(root: &mut Node, scope: &Rc<Scope>, predicate: &webui_pro
                 );
             }
         }
-        _ => match (left_literal, right_literal) {
-            (None, Some(kind)) => {
-                add_path(root, scope, &predicate.left, kind, Requirement::Optional)
-            }
-            (Some(kind), None) => {
-                add_path(root, scope, &predicate.right, kind, Requirement::Optional)
-            }
-            (None, None) => {
+        _ => match right_literal {
+            Some(kind) => add_path(root, scope, &predicate.left, kind, Requirement::Optional),
+            None => {
                 add_path(
                     root,
                     scope,
@@ -370,7 +362,6 @@ fn add_predicate_paths(root: &mut Node, scope: &Rc<Scope>, predicate: &webui_pro
                     Requirement::Optional,
                 );
             }
-            (Some(_), Some(_)) => {}
         },
     }
 }
@@ -397,7 +388,7 @@ fn add_path(
     kind: InferredKind,
     requirement: Requirement,
 ) {
-    if path.is_empty() || literal_kind(path).is_some() {
+    if path.is_empty() {
         return;
     }
     if let BindingOrigin::RootPath {

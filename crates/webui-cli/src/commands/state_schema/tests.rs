@@ -94,6 +94,33 @@ fn route_definition_keys_are_injective_for_common_collisions() {
 }
 
 #[test]
+fn encoded_route_references_resolve_to_definition_keys() {
+    let paths = ["/docs/v1.0", "/café", "/a b", "/100%"];
+    let routes = paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| WebUIFragmentRoute {
+            path: (*path).to_string(),
+            fragment_id: format!("page-{index}"),
+            exact: true,
+            ..WebUIFragmentRoute::default()
+        })
+        .collect();
+    let protocol = protocol_with_entry_routes(routes);
+    let schema = generate_schema(&protocol, "index.html", "EncodedRoutesState").unwrap();
+    let definitions = schema["$defs"].as_object().unwrap();
+
+    for path in paths {
+        let schema_ref = schema["x-webui-routes"][path].as_str().unwrap();
+        let key = decode_definition_ref(schema_ref);
+        assert!(
+            definitions.contains_key(&key),
+            "missing definition for {path}"
+        );
+    }
+}
+
+#[test]
 fn optional_child_replaces_parent_only_route_chain() {
     let route = WebUIFragmentRoute {
         path: "/".to_string(),
@@ -180,6 +207,56 @@ fn routes_inside_control_flow_fragments_are_discovered() {
     let paths: Vec<&str> = routes.iter().map(|route| route.path.as_str()).collect();
 
     assert_eq!(paths, ["/conditional", "/repeated"]);
+}
+
+#[test]
+fn literal_looking_binding_names_remain_state_paths() {
+    let protocol = WebUIProtocol::new(std::collections::HashMap::from([
+        (
+            "index.html".to_string(),
+            webui_protocol::FragmentList {
+                fragments: vec![
+                    webui_protocol::WebUIFragment::signal("true", false),
+                    webui_protocol::WebUIFragment::signal("42", false),
+                    webui_protocol::WebUIFragment::if_cond(
+                        webui_protocol::ConditionExpr::predicate(
+                            "false",
+                            webui_protocol::ComparisonOperator::Equal,
+                            "true",
+                        ),
+                        "bool-condition",
+                    ),
+                    webui_protocol::WebUIFragment::if_cond(
+                        webui_protocol::ConditionExpr::predicate(
+                            "123",
+                            webui_protocol::ComparisonOperator::GreaterThan,
+                            "0",
+                        ),
+                        "number-condition",
+                    ),
+                ],
+            },
+        ),
+        (
+            "bool-condition".to_string(),
+            webui_protocol::FragmentList {
+                fragments: Vec::new(),
+            },
+        ),
+        (
+            "number-condition".to_string(),
+            webui_protocol::FragmentList {
+                fragments: Vec::new(),
+            },
+        ),
+    ]));
+
+    let schema = generate_schema(&protocol, "index.html", "LiteralKeysState").unwrap();
+    assert!(schema["properties"]["true"]["type"].is_array());
+    assert!(schema["properties"]["42"]["type"].is_array());
+    assert_eq!(schema["properties"]["false"]["type"], "boolean");
+    assert_eq!(schema["properties"]["123"]["type"], "number");
+    assert_eq!(schema["required"], serde_json::json!(["42", "true"]));
 }
 
 #[test]
@@ -391,4 +468,35 @@ fn protocol_with_entry_routes(routes: Vec<WebUIFragmentRoute>) -> WebUIProtocol 
         );
     }
     WebUIProtocol::new(records)
+}
+
+fn decode_definition_ref(schema_ref: &str) -> String {
+    let token = schema_ref.strip_prefix("#/$defs/").unwrap();
+    let bytes = token.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = hex_value(bytes[index + 1]);
+            let low = hex_value(bytes[index + 2]);
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded)
+        .unwrap()
+        .replace("~1", "/")
+        .replace("~0", "~")
+}
+
+fn hex_value(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        b'A'..=b'F' => byte - b'A' + 10,
+        _ => panic!("invalid hex digit in generated schema reference"),
+    }
 }

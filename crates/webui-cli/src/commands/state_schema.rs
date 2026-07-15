@@ -325,9 +325,16 @@ fn route_definition_key(path: &str) -> String {
 }
 
 fn definition_ref(key: &str) -> String {
-    let mut schema_ref = String::with_capacity("#/$defs/".len() + key.len());
+    let mut schema_ref = String::with_capacity("#/$defs/".len() + key.len() + 4);
     schema_ref.push_str("#/$defs/");
-    schema_ref.push_str(key);
+    for character in key.chars() {
+        match character {
+            '~' => schema_ref.push_str("~0"),
+            '/' => schema_ref.push_str("~1"),
+            '%' => schema_ref.push_str("%25"),
+            _ => schema_ref.push(character),
+        }
+    }
     schema_ref
 }
 
