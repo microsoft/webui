@@ -85,6 +85,10 @@ pub struct ComponentRegistry {
 
 #[cfg(feature = "fs")]
 /// Return whether a component has an authored sibling module.
+///
+/// Use `try_exists()` rather than `exists()`: `exists()` converts metadata
+/// errors into `false`, which could silently classify an inaccessible authored
+/// component as scriptless and bypass projection-manifest coverage.
 fn has_component_script(html_path: &Path) -> Result<bool> {
     for ext in ["ts", "js"] {
         let candidate = html_path.with_extension(ext);
