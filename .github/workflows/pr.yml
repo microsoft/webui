@@ -47,11 +47,14 @@ jobs:
         with:
           skip-build: 'true'
 
-      - name: Build example projections
-        # Workspace members (e.g. examples/app/commerce/server) load the
-        # projection manifest that the example client build emits, so generate
-        # the example artifacts before running the workspace test suite.
-        run: cargo xtask build-examples
+      - name: Build commerce example
+        # examples/app/commerce/server (a workspace member) loads the projection
+        # manifest emitted by this example's client build, so `cargo test` fails
+        # with PROJ-M001 without it. Build only commerce here — it is the sole
+        # workspace member whose tests need a manifest, and building every
+        # example would pull in unrelated (e.g. wasm) app builds.
+        working-directory: examples/app/commerce
+        run: pnpm run build
 
       - name: Test
         run: cargo test --workspace
