@@ -40,7 +40,7 @@ internal static class NativeBindings
     }
 
     /// <summary>
-    /// SafeHandle wrapper for a prepared native WebUI protocol.
+    /// SafeHandle wrapper for a loaded native WebUI protocol.
     /// </summary>
     internal sealed class WebUIProtocolSafeHandle : SafeHandle
     {
@@ -125,17 +125,22 @@ internal static class NativeBindings
         [MarshalAs(UnmanagedType.LPUTF8Str)] string requestPath);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr webui_render(
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string html,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string dataJson);
-
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr webui_render_partial(
+    internal static extern IntPtr webui_protocol_render_partial(
         WebUIProtocolSafeHandle protocolPtr,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string stateJson,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string entryId,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string requestPath,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string inventoryHex);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr webui_protocol_render_component_templates(
+        WebUIProtocolSafeHandle protocolPtr,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string componentTagsJson,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string inventoryHex);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr webui_protocol_tokens(
+        WebUIProtocolSafeHandle protocolPtr);
 
     internal static WebUIHandlerSafeHandle CreateHandler(string? pluginId)
     {

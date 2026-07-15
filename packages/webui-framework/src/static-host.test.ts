@@ -144,4 +144,19 @@ describe('dormant template host runtime', () => {
 
     assert.ok(customElements.get(tag));
   });
+
+  test('does not claim tags reserved for authored lazy loaders', () => {
+    const tag = `loader-unit-${Date.now()}`;
+    const meta = registerTemplate(tag, { h: '<p></p>', th: 1 });
+    window.__webui!.templateHostExclusions = new Set([tag]);
+
+    window.dispatchEvent(new CustomEvent('webui:templates-registered', {
+      detail: { templates: { [tag]: meta } },
+    }));
+
+    assert.equal(customElements.get(tag), undefined);
+    const authored = class AuthoredLazyElement extends HTMLElement {};
+    customElements.define(tag, authored);
+    assert.equal(customElements.get(tag), authored);
+  });
 });

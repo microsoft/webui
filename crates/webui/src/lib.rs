@@ -30,15 +30,10 @@ pub use component_assets::{render_component_assets, ComponentAssetFile};
 pub use error::WebUIError;
 
 // Re-export core types from downstream crates
-pub use webui_handler::route_handler::{
-    encode_inventory, get_needed_components, get_needed_components_for_request, parse_inventory,
-    ProtocolIndex,
-};
-pub use webui_handler::route_matcher::CompiledRouteCache;
+pub use webui_handler::route_handler::{encode_inventory, get_needed_components, parse_inventory};
 pub use webui_handler::Result as HandlerResult;
 pub use webui_handler::{
-    plugin::HandlerPlugin, HandlerError, PreparedProtocol, RenderOptions, ResponseWriter,
-    WebUIHandler,
+    plugin::HandlerPlugin, HandlerError, Protocol, RenderOptions, ResponseWriter, WebUIHandler,
 };
 pub use webui_parser::plugin::{ComponentTemplateArtifact, StateSurface};
 pub use webui_parser::CssStrategy;
@@ -70,7 +65,7 @@ use webui_parser::HtmlParser;
 /// Projection metadata validated once for reuse across many protocol builds.
 #[derive(Debug, Clone)]
 pub struct PreparedProjectionManifests {
-    components: std::sync::Arc<std::collections::BTreeMap<String, projection::ComponentEntry>>,
+    snapshot: std::sync::Arc<projection::ProjectionSnapshot>,
 }
 
 #[derive(Debug)]
@@ -130,10 +125,9 @@ impl From<std::path::PathBuf> for ProjectionManifestSource {
 pub fn prepare_projection_manifests(
     sources: &[ProjectionManifestSource],
 ) -> Result<PreparedProjectionManifests, WebUIError> {
-    let components = projection::load_and_merge(sources)?.unwrap_or_default();
-    Ok(PreparedProjectionManifests {
-        components: std::sync::Arc::new(components),
-    })
+    let snapshot = projection::load_and_merge(sources)?
+        .unwrap_or_else(|| std::sync::Arc::new(projection::ProjectionSnapshot::default()));
+    Ok(PreparedProjectionManifests { snapshot })
 }
 
 /// Create a pending projection source and its one-shot completer.
@@ -605,7 +599,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             })
             .map(|artifact| artifact.tag_name.as_str())
             .collect();
-        projection::validate_coverage(merged, &compiled_scripted_tags)?;
+        projection::validate_coverage(&merged.components, &compiled_scripted_tags)?;
     }
 
     // Record build-wide strategies so the handler can decide rendering behavior.
@@ -664,7 +658,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         let manifest_entry = if artifact.is_scripted {
             merged_manifest
                 .as_ref()
-                .and_then(|merged| merged.get(&artifact.tag_name))
+                .and_then(|merged| merged.components.get(&artifact.tag_name))
         } else {
             None
         };
@@ -918,10 +912,11 @@ mod tests {
 
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
         let state = serde_json::json!({ "name": "Server rendered" });
+        let protocol = Protocol::new(result.protocol.clone());
         let mut writer = StringWriter { buf: String::new() };
         handler
-            .handle(
-                &result.protocol,
+            .render(
+                &protocol,
                 &state,
                 &RenderOptions::new("index.html", "/"),
                 &mut writer,
@@ -1057,10 +1052,11 @@ mod tests {
 
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
         let state = serde_json::json!({ "name": "Visible" });
+        let protocol = Protocol::new(result.protocol.clone());
         let mut writer = StringWriter { buf: String::new() };
         handler
-            .handle(
-                &result.protocol,
+            .render(
+                &protocol,
                 &state,
                 &RenderOptions::new("index.html", "/"),
                 &mut writer,
@@ -1323,10 +1319,11 @@ mod tests {
         );
 
         let handler = WebUIHandler::new();
+        let protocol = Protocol::new(result.protocol.clone());
         let mut writer = StringWriter { buf: String::new() };
         handler
-            .handle(
-                &result.protocol,
+            .render(
+                &protocol,
                 &serde_json::json!({}),
                 &RenderOptions::new("index.html", "/"),
                 &mut writer,
@@ -1708,9 +1705,9 @@ mod tests {
     }
 
     #[test]
-    fn prepared_protocol_is_available_from_facade() {
-        let prepared = PreparedProtocol::new(WebUIProtocol::new(HashMap::new()));
-        assert!(prepared.protocol().fragments.is_empty());
+    fn protocol_is_available_from_facade() {
+        let protocol = Protocol::new(WebUIProtocol::new(HashMap::new()));
+        assert!(protocol.tokens().is_empty());
     }
 
     #[test]

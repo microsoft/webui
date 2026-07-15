@@ -1201,18 +1201,18 @@ rebuilds when the adapter atomically replaces the manifest.
 
 ## Language Integration (Server Side)
 
-WebUI renders from **any** backend. The server loads and prepares
-`protocol.bin` once, then renders with JSON state per request. Projection
+WebUI renders from **any** backend. The server loads `protocol.bin` into one
+`Protocol`, then renders with JSON state per request. Projection
 manifests are consumed only while producing `protocol.bin`; runtime rendering
 APIs are unchanged.
 
 ### Rust
 
 ```rust
-let protocol = PreparedProtocol::from_protobuf(&fs::read("dist/protocol.bin")?)?;
+let protocol = Protocol::from_protobuf(&fs::read("dist/protocol.bin")?)?;
 let state = json!({ "title": "Home", "items": items_vec });
 let handler = WebUIHandler::new();
-handler.handle(protocol.protocol(), &state, &options, &mut writer)?;
+handler.render(&protocol, &state, &options, &mut writer)?;
 ```
 
 **Streaming SSR (production).** Use `webui::streaming::StreamingWriter::new_pooled(tx, chunk_pool)` with a process-wide `ChunkPool` for bounded backpressure + zero per-flush allocation. Configure `.with_flush_timeout(Duration::from_secs(30))` to bound slow-loris DoS. Use `RenderOptions::with_head_inject(html)` / `with_body_inject(html)` for per-request HTML splicing at parser-synthesized `head_end` / `body_end` boundaries (no byte-scanner, cannot mis-fire on literals in comments / srcdoc). `HandlerError::ClientDisconnected` and `StreamTimeout` are returned from both `write()` and `end()` for telemetry. Pre-escape untrusted inject content with `webui_handler::encode_safe`.
@@ -1220,7 +1220,7 @@ handler.handle(protocol.protocol(), &state, &options, &mut writer)?;
 ### Node.js
 
 ```javascript
-import { build, render } from '@microsoft/webui';
+import { build, Protocol } from '@microsoft/webui';
 
 const result = build({
   appDir: './src',
@@ -1228,13 +1228,10 @@ const result = build({
   projectionManifests: ['./dist/webui-projection.json'],
 });
 
-// Keep this Buffer for the server lifetime. Reusing its identity reuses the
-// native prepared protocol.
-const protocol = result.protocol;
-const html = render(protocol, state, {
+const protocol = new Protocol(result.protocol, { plugin: 'webui' });
+const html = protocol.render(state, {
   entry: 'index.html',
   requestPath: req.url,
-  plugin: 'webui',
 });
 ```
 
@@ -1243,13 +1240,13 @@ const html = render(protocol, state, {
 Use the split WASM bundles when rendering or parsing in the browser:
 
 ```javascript
-import initHandler, { PreparedProtocol } from './wasm/handler/webui_wasm_handler.js';
+import initHandler, { Protocol } from './wasm/handler/webui_wasm_handler.js';
 await initHandler();
 const protocolBytes = new Uint8Array(await (await fetch('/protocol.bin')).arrayBuffer());
-const protocol = new PreparedProtocol(protocolBytes);
-const html = protocol.renderJson(
+const protocol = new Protocol(protocolBytes, 'webui');
+const html = protocol.render(
   JSON.stringify(state),
-  { entry: 'index.html', requestPath: '/', plugin: 'webui' },
+  { entry: 'index.html', requestPath: '/' },
 );
 ```
 
@@ -1268,18 +1265,31 @@ Use `wasm/all/webui_wasm_all.js` when both parser and handler exports are needed
 ### Python (FFI)
 
 ```python
-ptr = lib.webui_render(html_bytes, json_bytes)
+protocol_bytes = Path("dist/protocol.bin").read_bytes()
+buffer = (ctypes.c_uint8 * len(protocol_bytes)).from_buffer_copy(protocol_bytes)
+protocol = lib.webui_protocol_create(buffer, len(protocol_bytes))
+handler = lib.webui_handler_create()
+ptr = lib.webui_handler_render(
+    handler, protocol, data_json, b"index.html", request_path
+)
 result = ctypes.cast(ptr, c_char_p).value.decode("utf-8")
 lib.webui_free(ptr)
+lib.webui_protocol_destroy(protocol)
+lib.webui_handler_destroy(handler)
 ```
 
-For repeated FFI rendering, use `webui_protocol_create` once and pass that
-handle to `webui_handler_render` on every request.
+Create the protocol and handler once at startup, then pass both handles to
+`webui_handler_render` on every request.
 
 ### Go (cgo)
 
 ```go
-ptr := C.webui_render(cHTML, cJSON)
+protocol := C.webui_protocol_create(
+    (*C.uint8_t)(unsafe.Pointer(&protocolBytes[0])),
+    C.uintptr_t(len(protocolBytes)),
+)
+handler := C.webui_handler_create()
+ptr := C.webui_handler_render(handler, protocol, cJSON, cEntry, cPath)
 defer C.webui_free(ptr)
 result := C.GoString(ptr)
 ```
@@ -1287,9 +1297,12 @@ result := C.GoString(ptr)
 ### C# (.NET package)
 
 ```csharp
-using var protocol = new PreparedProtocol(File.ReadAllBytes("dist/protocol.bin"));
+using var protocol = new Protocol(File.ReadAllBytes("dist/protocol.bin"));
 using var handler = new WebUIHandler("webui");
 string result = handler.Render(protocol, dataJson, "index.html", requestPath);
+string partial = protocol.RenderPartial(dataJson, "index.html", requestPath, invHex);
+string templates = protocol.RenderComponentTemplates(["settings-dialog"], invHex);
+string[] tokens = protocol.Tokens();
 ```
 
 ### Server Template Endpoint
@@ -1297,16 +1310,16 @@ string result = handler.Render(protocol, dataJson, "index.html", requestPath);
 For `Router.ensureLoaded()`, expose `GET /_webui/templates?t=tag1,tag2`:
 
 ```rust
-let result = route_handler::render_component_templates(&protocol, &tags, &inv);
+let result = protocol.render_component_templates(&tags, &inv);
 ```
 
 ```javascript
-// Node native addon
-const result = renderComponentTemplates(protocolBuf, JSON.stringify(tags), invHex);
-
 // @microsoft/webui npm package
-import { renderComponentTemplates } from '@microsoft/webui';
-const result = renderComponentTemplates(protocolBuf, ['settings-dialog'], invHex);
+const result = protocol.renderComponentTemplates(['settings-dialog'], invHex);
+```
+
+```csharp
+string result = protocol.RenderComponentTemplates(["settings-dialog"], invHex);
 ```
 
 The JSON response contains component-tag-keyed `templates`, matching

@@ -11,9 +11,9 @@ use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{
-    HandlerError, PreparedProtocol as HandlerPreparedProtocol, RenderOptions, ResponseWriter,
-    WebUIHandler,
+    HandlerError, Protocol as HandlerProtocol, RenderOptions, ResponseWriter, WebUIHandler,
 };
+#[cfg(test)]
 use webui_protocol::WebUIProtocol;
 
 const STREAM_CHUNK_SIZE: usize = 16 * 1024;
@@ -104,7 +104,6 @@ impl HandlerPluginKind {
 struct WasmRenderOptions {
     entry: String,
     request_path: String,
-    plugin: Option<HandlerPluginKind>,
 }
 
 impl Default for WasmRenderOptions {
@@ -112,45 +111,46 @@ impl Default for WasmRenderOptions {
         Self {
             entry: "index.html".to_string(),
             request_path: "/".to_string(),
-            plugin: None,
         }
     }
 }
 
 /// A decoded protocol with reusable indices for repeated WASM renders.
 #[wasm_bindgen]
-pub struct PreparedProtocol {
-    inner: HandlerPreparedProtocol,
+pub struct Protocol {
+    inner: HandlerProtocol,
+    handler: WebUIHandler,
 }
 
 #[wasm_bindgen]
-impl PreparedProtocol {
+impl Protocol {
     /// Decode protobuf bytes once for repeated rendering.
     #[wasm_bindgen(constructor)]
-    pub fn new(protocol_bytes: &[u8]) -> Result<PreparedProtocol, JsValue> {
-        HandlerPreparedProtocol::from_protobuf(protocol_bytes)
-            .map(|inner| Self { inner })
-            .map_err(|error| JsValue::from_str(&format!("Protocol error: {error}")))
+    pub fn new(protocol_bytes: &[u8], plugin: Option<String>) -> Result<Protocol, JsValue> {
+        let plugin = parse_optional_plugin(plugin.as_deref())
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        let inner = HandlerProtocol::from_protobuf(protocol_bytes)
+            .map_err(|error| JsValue::from_str(&format!("Protocol error: {error}")))?;
+        Ok(Self {
+            inner,
+            handler: create_handler(plugin),
+        })
     }
 
     /// Render from an existing JSON string.
-    #[wasm_bindgen(js_name = renderJson)]
-    pub fn render_json(
-        &self,
-        state_json: &str,
-        options: Option<Object>,
-    ) -> Result<String, JsValue> {
+    #[wasm_bindgen(js_name = render)]
+    pub fn render(&self, state_json: &str, options: Option<Object>) -> Result<String, JsValue> {
         let options =
             parse_render_options(options).map_err(|error| JsValue::from_str(&error.to_string()))?;
         let state =
             parse_state_json(state_json).map_err(|error| JsValue::from_str(&error.to_string()))?;
-        render_protocol_to_string_value(self.inner.protocol(), &state, &options)
+        render_protocol_to_string_value(&self.handler, &self.inner, &state, &options)
             .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
     /// Stream from an existing JSON string in bounded chunks.
-    #[wasm_bindgen(js_name = renderStreamJson)]
-    pub fn render_stream_json(
+    #[wasm_bindgen(js_name = renderStream)]
+    pub fn render_stream(
         &self,
         state_json: &str,
         on_chunk: &Function,
@@ -160,7 +160,7 @@ impl PreparedProtocol {
             parse_render_options(options).map_err(|error| JsValue::from_str(&error.to_string()))?;
         let state =
             parse_state_json(state_json).map_err(|error| JsValue::from_str(&error.to_string()))?;
-        render_protocol_to_callback_value(self.inner.protocol(), &state, &options, on_chunk)
+        render_protocol_to_callback_value(&self.handler, &self.inner, &state, &options, on_chunk)
             .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
@@ -173,13 +173,9 @@ impl PreparedProtocol {
         request_path: &str,
         inventory_hex: &str,
     ) -> Result<String, JsValue> {
-        render_partial_prepared(
-            &self.inner,
-            state_json,
-            entry_id,
-            request_path,
-            inventory_hex,
-        )
+        self.inner
+            .render_partial(state_json, entry_id, request_path, inventory_hex)
+            .map_err(|error| JsValue::from_str(&format!("render_partial failed: {error}")))
     }
 
     /// Return component template payloads for requested component tags.
@@ -191,97 +187,23 @@ impl PreparedProtocol {
     ) -> Result<String, JsValue> {
         let tags: Vec<String> = serde_wasm_bindgen::from_value(component_tags)
             .map_err(|error| JsValue::from_str(&format!("invalid component tags: {error}")))?;
-        render_component_templates_prepared(&self.inner, &tags, inventory_hex)
+        let tag_refs: Vec<&str> = tags.iter().map(String::as_str).collect();
+        let result = self
+            .inner
+            .render_component_templates(&tag_refs, inventory_hex)
+            .map_err(|error| {
+                JsValue::from_str(&format!("render_component_templates failed: {error}"))
+            })?;
+        serde_json::to_string(&result)
+            .map_err(|error| JsValue::from_str(&format!("JSON serialize error: {error}")))
     }
 
     /// Return CSS token names in build order.
-    #[wasm_bindgen(js_name = protocolTokens)]
-    pub fn protocol_tokens(&self) -> Result<JsValue, JsValue> {
+    #[wasm_bindgen(js_name = tokens)]
+    pub fn tokens(&self) -> Result<JsValue, JsValue> {
         serde_wasm_bindgen::to_value(self.inner.tokens())
             .map_err(|error| JsValue::from_str(&format!("Serialization error: {error}")))
     }
-}
-
-/// Render a pre-built WebUI protocol with state data, streaming chunks to a callback.
-///
-/// # Arguments
-///
-/// * `protocol_bytes` - Protobuf bytes of the serialized `WebUIProtocol`.
-/// * `state_json` - JSON string of the state data.
-/// * `on_chunk` - Callback invoked with output coalesced around a 16 KiB target.
-/// * `options` - Optional object with `entry`, `requestPath`, and `plugin` fields.
-///
-/// # Returns
-///
-/// Nothing on success, or throws a JS error on failure.
-#[wasm_bindgen]
-pub fn render(
-    protocol_bytes: &[u8],
-    state_json: &str,
-    on_chunk: &Function,
-    options: Option<Object>,
-) -> Result<(), JsValue> {
-    let options = parse_render_options(options).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    render_stream_inner(protocol_bytes, state_json, on_chunk, &options)
-        .map_err(|e| JsValue::from_str(&e.to_string()))
-}
-
-/// Produce a complete JSON partial response for client-side navigation.
-///
-/// Combines active-route projected state, route templates, inventory, request
-/// path, and matched route chain into a single JSON string:
-/// `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
-///
-/// Host servers return this directly - no assembly required.
-#[wasm_bindgen]
-pub fn render_partial(
-    protocol_bytes: &[u8],
-    state_json: &str,
-    entry_id: &str,
-    request_path: &str,
-    inventory_hex: &str,
-) -> Result<String, JsValue> {
-    let prepared = HandlerPreparedProtocol::from_protobuf(protocol_bytes)
-        .map_err(|e| JsValue::from_str(&format!("Protocol error: {e}")))?;
-    render_partial_prepared(&prepared, state_json, entry_id, request_path, inventory_hex)
-}
-
-/// Extract the CSS token name list from protocol protobuf bytes.
-///
-/// Returns a JavaScript array of token name strings, preserving the original
-/// order from the build step.
-#[wasm_bindgen]
-pub fn protocol_tokens(protocol_bytes: &[u8]) -> Result<JsValue, JsValue> {
-    let prepared = HandlerPreparedProtocol::from_protobuf(protocol_bytes)
-        .map_err(|e| JsValue::from_str(&format!("Protocol error: {e}")))?;
-
-    serde_wasm_bindgen::to_value(prepared.tokens())
-        .map_err(|e| JsValue::from_str(&format!("Serialization error: {e}")))
-}
-
-/// Return component template payloads for requested component tags.
-#[wasm_bindgen]
-pub fn render_component_templates(
-    protocol_bytes: &[u8],
-    component_tags_json: &str,
-    inventory_hex: &str,
-) -> Result<String, JsValue> {
-    let prepared = HandlerPreparedProtocol::from_protobuf(protocol_bytes)
-        .map_err(|e| JsValue::from_str(&format!("Protocol error: {e}")))?;
-    let tags: Vec<String> = serde_json::from_str(component_tags_json)
-        .map_err(|e| JsValue::from_str(&format!("invalid tags JSON: {e}")))?;
-    render_component_templates_prepared(&prepared, &tags, inventory_hex)
-}
-
-fn render_stream_inner(
-    protocol_bytes: &[u8],
-    state_json: &str,
-    on_chunk: &Function,
-    options: &WasmRenderOptions,
-) -> Result<(), WasmError> {
-    let protocol = WebUIProtocol::from_protobuf(protocol_bytes)?;
-    let state = parse_state_json(state_json)?;
-    render_protocol_to_callback_value(&protocol, &state, options, on_chunk)
 }
 
 #[cfg(test)]
@@ -296,9 +218,10 @@ pub(crate) fn render_protocol_to_string(
     let options = WasmRenderOptions {
         entry: entry.to_string(),
         request_path: request_path.to_string(),
-        plugin,
     };
-    render_protocol_to_string_value(protocol, &state, &options)
+    let protocol = HandlerProtocol::new(protocol.clone());
+    let handler = create_handler(plugin);
+    render_protocol_to_string_value(&handler, &protocol, &state, &options)
 }
 
 fn parse_state_json(state_json: &str) -> Result<Value, WasmError> {
@@ -306,12 +229,12 @@ fn parse_state_json(state_json: &str) -> Result<Value, WasmError> {
 }
 
 fn render_protocol_to_string_value(
-    protocol: &WebUIProtocol,
+    handler: &WebUIHandler,
+    protocol: &HandlerProtocol,
     state: &Value,
     options: &WasmRenderOptions,
 ) -> Result<String, WasmError> {
     let mut writer = StringWriter::with_capacity(4096);
-    let handler = create_handler(options.plugin);
     handler.render(
         protocol,
         state,
@@ -322,13 +245,13 @@ fn render_protocol_to_string_value(
 }
 
 fn render_protocol_to_callback_value(
-    protocol: &WebUIProtocol,
+    handler: &WebUIHandler,
+    protocol: &HandlerProtocol,
     state: &Value,
     options: &WasmRenderOptions,
     on_chunk: &Function,
 ) -> Result<(), WasmError> {
     let mut writer = CallbackWriter::new(on_chunk);
-    let handler = create_handler(options.plugin);
     handler.render(
         protocol,
         state,
@@ -337,40 +260,6 @@ fn render_protocol_to_callback_value(
     )?;
     writer.flush()?;
     Ok(())
-}
-
-fn render_partial_prepared(
-    prepared: &HandlerPreparedProtocol,
-    state_json: &str,
-    entry_id: &str,
-    request_path: &str,
-    inventory_hex: &str,
-) -> Result<String, JsValue> {
-    webui_handler::route_handler::render_partial_prepared(
-        prepared,
-        state_json,
-        entry_id,
-        request_path,
-        inventory_hex,
-    )
-    .map_err(|error| JsValue::from_str(&format!("render_partial failed: {error}")))
-}
-
-fn render_component_templates_prepared(
-    prepared: &HandlerPreparedProtocol,
-    tags: &[String],
-    inventory_hex: &str,
-) -> Result<String, JsValue> {
-    let tag_refs: Vec<&str> = tags.iter().map(String::as_str).collect();
-    let result = webui_handler::route_handler::render_component_templates_prepared(
-        prepared,
-        &tag_refs,
-        inventory_hex,
-    )
-    .map_err(|error| JsValue::from_str(&format!("render_component_templates failed: {error}")))?;
-
-    serde_json::to_string(&result)
-        .map_err(|error| JsValue::from_str(&format!("JSON serialize error: {error}")))
 }
 
 pub(crate) fn parse_optional_plugin(
@@ -391,9 +280,6 @@ fn parse_render_options(options: Option<Object>) -> Result<WasmRenderOptions, Wa
     if let Some(request_path) = optional_string_field(options.as_ref(), "requestPath")? {
         parsed.request_path = request_path;
     }
-    let plugin = optional_string_field(options.as_ref(), "plugin")?;
-    parsed.plugin = parse_optional_plugin(plugin.as_deref())?;
-
     Ok(parsed)
 }
 
@@ -458,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn prepared_protocol_reuses_decoded_protocol() {
+    fn protocol_reuses_decoded_protocol() {
         use std::collections::HashMap;
         use webui_protocol::{FragmentList, WebUIFragment};
 
@@ -472,13 +358,13 @@ mod tests {
         let bytes = WebUIProtocol::new(fragments)
             .to_protobuf()
             .expect("protocol should serialize");
-        let prepared = PreparedProtocol::new(&bytes).expect("protocol should prepare");
+        let protocol = Protocol::new(&bytes, None).expect("protocol should load");
 
-        let first = prepared
-            .render_json(r#"{"name":"first"}"#, None)
+        let first = protocol
+            .render(r#"{"name":"first"}"#, None)
             .expect("first render should succeed");
-        let second = prepared
-            .render_json(r#"{"name":"second"}"#, None)
+        let second = protocol
+            .render(r#"{"name":"second"}"#, None)
             .expect("second render should succeed");
 
         assert_eq!(first, "first");

@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use webui_parser::Diagnostic;
 use webui_protocol::projection_manifest::{self, ProjectionComponent, ProjectionManifest};
 
@@ -61,42 +62,30 @@ struct ValidatedFiles {
     identities: BTreeMap<ArtifactIdentity, String>,
 }
 
-struct LoadedFragment {
-    components: BTreeMap<String, ComponentEntry>,
+#[derive(Debug, Default)]
+pub(crate) struct ProjectionSnapshot {
+    pub(crate) components: BTreeMap<String, ComponentEntry>,
     artifacts: BTreeMap<ArtifactIdentity, String>,
 }
 
 /// Load, validate, and merge all disk manifest fragments.
 pub(crate) fn load_and_merge(
     sources: &[ProjectionManifestSource],
-) -> Result<Option<BTreeMap<String, ComponentEntry>>, WebUIError> {
+) -> Result<Option<Arc<ProjectionSnapshot>>, WebUIError> {
     if sources.is_empty() {
         return Ok(None);
+    }
+
+    if sources.len() == 1 {
+        return load_source(&sources[0]).map(Some);
     }
 
     let mut components = BTreeMap::new();
     let mut artifacts = BTreeMap::new();
     for source in sources {
-        let fragment = match source {
-            ProjectionManifestSource::Path(path) => load_fragment_path(path)?,
-            ProjectionManifestSource::Inline {
-                manifest_path,
-                json,
-            } => load_fragment_bytes(manifest_path, json.as_bytes())?,
-            ProjectionManifestSource::Prepared(prepared) => LoadedFragment {
-                components: prepared.components.as_ref().clone(),
-                artifacts: BTreeMap::new(),
-            },
-            ProjectionManifestSource::Pending(pending) => {
-                let prepared = pending.wait()?;
-                LoadedFragment {
-                    components: prepared.components.as_ref().clone(),
-                    artifacts: BTreeMap::new(),
-                }
-            }
-        };
-        for (tag, entry) in fragment.components {
-            if components.insert(tag.clone(), entry).is_some() {
+        let fragment = load_source(source)?;
+        for (tag, entry) in &fragment.components {
+            if components.insert(tag.clone(), entry.clone()).is_some() {
                 return Err(projection_error(
                     codes::DUPLICATE_COMPONENT_OWNERSHIP,
                     format!("component <{tag}> is declared by more than one projection manifest"),
@@ -104,12 +93,29 @@ pub(crate) fn load_and_merge(
                 ));
             }
         }
-        merge_artifacts(&mut artifacts, fragment.artifacts)?;
+        merge_artifact_refs(&mut artifacts, &fragment.artifacts)?;
     }
-    Ok(Some(components))
+    Ok(Some(Arc::new(ProjectionSnapshot {
+        components,
+        artifacts,
+    })))
 }
 
-fn load_fragment_path(path: &Path) -> Result<LoadedFragment, WebUIError> {
+fn load_source(source: &ProjectionManifestSource) -> Result<Arc<ProjectionSnapshot>, WebUIError> {
+    match source {
+        ProjectionManifestSource::Path(path) => load_fragment_path(path).map(Arc::new),
+        ProjectionManifestSource::Inline {
+            manifest_path,
+            json,
+        } => load_fragment_bytes(manifest_path, json.as_bytes()).map(Arc::new),
+        ProjectionManifestSource::Prepared(prepared) => Ok(Arc::clone(&prepared.snapshot)),
+        ProjectionManifestSource::Pending(pending) => {
+            pending.wait().map(|prepared| prepared.snapshot)
+        }
+    }
+}
+
+fn load_fragment_path(path: &Path) -> Result<ProjectionSnapshot, WebUIError> {
     let metadata = std::fs::metadata(path).map_err(|_| manifest_unreadable(path))?;
     if metadata.len() > MAX_MANIFEST_BYTES {
         return Err(projection_error(
@@ -127,7 +133,7 @@ fn load_fragment_path(path: &Path) -> Result<LoadedFragment, WebUIError> {
     load_fragment_bytes(path, &bytes)
 }
 
-fn load_fragment_bytes(path: &Path, bytes: &[u8]) -> Result<LoadedFragment, WebUIError> {
+fn load_fragment_bytes(path: &Path, bytes: &[u8]) -> Result<ProjectionSnapshot, WebUIError> {
     if bytes.len() > MAX_MANIFEST_BYTES_USIZE {
         return Err(projection_error(
             codes::MANIFEST_TOO_LARGE,
@@ -167,7 +173,7 @@ fn load_fragment_bytes(path: &Path, bytes: &[u8]) -> Result<LoadedFragment, WebU
             )
         })
         .collect();
-    Ok(LoadedFragment {
+    Ok(ProjectionSnapshot {
         components: runtime_components,
         artifacts,
     })
@@ -358,17 +364,39 @@ fn merge_artifacts(
     for (identity, hash) in source {
         if let Some(existing) = target.get(&identity) {
             if existing != &hash {
-                return Err(projection_error(
-                    codes::CONFLICTING_HASH,
-                    "projection manifest fragments observed one canonical artifact with conflicting hashes",
-                    "Rebuild all fragments from one consistent source/output snapshot.",
-                ));
+                return Err(conflicting_artifact_hash());
             }
         } else {
             target.insert(identity, hash);
         }
     }
     Ok(())
+}
+
+fn merge_artifact_refs(
+    target: &mut BTreeMap<ArtifactIdentity, String>,
+    source: &BTreeMap<ArtifactIdentity, String>,
+) -> Result<(), WebUIError> {
+    for (identity, hash) in source {
+        if let Some(existing) = target.get(identity) {
+            if existing != hash {
+                return Err(conflicting_artifact_hash());
+            }
+        } else {
+            target.insert(identity.clone(), hash.clone());
+        }
+    }
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn conflicting_artifact_hash() -> WebUIError {
+    projection_error(
+        codes::CONFLICTING_HASH,
+        "projection manifest fragments observed one canonical artifact with conflicting hashes",
+        "Rebuild all fragments from one consistent source/output snapshot.",
+    )
 }
 
 /// Require exact metadata for every compiled scripted component.
@@ -664,10 +692,16 @@ mod tests {
         );
         let manifest = write_manifest(dir.path(), "projection.json", &json);
         let merged = load_and_merge(&[manifest.into()]).unwrap().unwrap();
-        assert_eq!(merged["demo-card"].hydration_keys, ["count", "name"]);
-        assert_eq!(merged["demo-card"].navigation_keys, ["count", "name"]);
-        assert!(merged["static-card"].hydration_keys.is_empty());
-        assert!(merged["static-card"].navigation_keys.is_empty());
+        assert_eq!(
+            merged.components["demo-card"].hydration_keys,
+            ["count", "name"]
+        );
+        assert_eq!(
+            merged.components["demo-card"].navigation_keys,
+            ["count", "name"]
+        );
+        assert!(merged.components["static-card"].hydration_keys.is_empty());
+        assert!(merged.components["static-card"].navigation_keys.is_empty());
     }
 
     #[test]
@@ -690,7 +724,7 @@ mod tests {
             json,
         };
         let merged = load_and_merge(&[source]).unwrap().unwrap();
-        assert_eq!(merged["demo-card"].hydration_keys, ["name"]);
+        assert_eq!(merged.components["demo-card"].hydration_keys, ["name"]);
     }
 
     #[test]
@@ -883,8 +917,42 @@ mod tests {
         let merged = load_and_merge(&[first.into(), second.into()])
             .unwrap()
             .unwrap();
-        assert!(merged.contains_key("first-card"));
-        assert!(merged.contains_key("second-card"));
+        assert!(merged.components.contains_key("first-card"));
+        assert!(merged.components.contains_key("second-card"));
+    }
+
+    #[test]
+    fn prepared_snapshot_is_shared_and_preserves_artifact_conflicts() {
+        let dir = TempDir::new().unwrap();
+        let first_json = build_valid_manifest_json(
+            dir.path(),
+            &[("src/shared.ts", "first-source")],
+            &[("dist/shared.js", "first-output")],
+            &[],
+        );
+        let first = write_manifest(dir.path(), "first.json", &first_json);
+        let prepared = crate::prepare_projection_manifests(&[first.into()]).unwrap();
+
+        let loaded = load_and_merge(&[ProjectionManifestSource::Prepared(prepared.clone())])
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(&loaded, &prepared.snapshot));
+
+        fs::write(dir.path().join("src/shared.ts"), "second-source").unwrap();
+        fs::write(dir.path().join("dist/shared.js"), "second-output").unwrap();
+        let second_json = build_valid_manifest_json(
+            dir.path(),
+            &[("src/shared.ts", "second-source")],
+            &[("dist/shared.js", "second-output")],
+            &[],
+        );
+        let second = write_manifest(dir.path(), "second.json", &second_json);
+
+        assert_error_code(
+            &load_and_merge(&[ProjectionManifestSource::Prepared(prepared), second.into()])
+                .unwrap_err(),
+            codes::CONFLICTING_HASH,
+        );
     }
 
     #[test]

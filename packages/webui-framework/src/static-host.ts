@@ -48,7 +48,13 @@ function defineTemplateHost(tag: string, meta: TemplateMeta): void {
 
 /** Define a dormant host for one compiler-owned template tag when safe. */
 function defineMissingTemplateHost(tag: string, meta: TemplateMeta): void {
-  if (!templateNeedsStaticHost(meta) || customElements.get(tag)) return;
+  if (
+    !templateNeedsStaticHost(meta) ||
+    window.__webui?.templateHostExclusions?.has(tag) ||
+    customElements.get(tag)
+  ) {
+    return;
+  }
   defineTemplateHost(tag, meta);
 }
 

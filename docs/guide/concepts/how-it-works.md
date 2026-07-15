@@ -32,11 +32,10 @@ The binary protocol is the key to WebUI's performance. By moving parsing, expres
 
 ## Server Render Phase
 
-At runtime, the server handler loads and prepares the compiled protocol
-**once** at startup and reuses it for every request. The Rust, C, WASM, and
-.NET handlers expose a `PreparedProtocol` API. The Node package performs the
-same preparation transparently when callers reuse the same protocol `Buffer`
-and plugin selection.
+At runtime, the server constructs one loaded `Protocol` from the compiled bytes
+at startup and reuses it for every request. Rust, Node, WASM, C, and .NET all
+follow this explicit lifecycle. Protocol decoding and deterministic index
+construction never occur on the request path.
 
 For each incoming request, the handler:
 
@@ -156,7 +155,7 @@ WebUI's architecture is designed so that the most common operation - rendering a
 |-----------|--------|
 | **Pre-serialized static fragments** | Copied byte-for-byte to the output buffer - no processing |
 | **Key-based dynamic resolution** | Simple hash map lookup against JSON state - no expression parsing |
-| **Prepared protocol reuse** | Decode protobuf and build deterministic indices once at startup |
+| **Loaded protocol reuse** | Decode protobuf and build deterministic indices once at startup |
 | **No JavaScript on the server** | Native code (Rust/C) handles rendering - no VM startup, no GC pauses |
 | **Declarative Shadow DOM** | Browser renders content before JS loads - no white flash |
 | **Islands Architecture** | Only interactive components ship JS - static content has zero client cost |

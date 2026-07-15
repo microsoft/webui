@@ -23,7 +23,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { build, render } from '@microsoft/webui';
+import { build, Protocol } from '@microsoft/webui';
 
 export interface RenderedFixture {
   /** Fixture directory name (e.g. "counter"). */
@@ -103,7 +103,8 @@ function renderOne(
   }
 
   const renderEntry = hasAuthoredEntry ? 'src/index.html' : 'index.html';
-  let html = render(result.protocol, state, { entry: renderEntry, plugin: 'webui' });
+  const protocol = new Protocol(result.protocol, { plugin: 'webui' });
+  let html = protocol.render(state, { entry: renderEntry });
 
   {
     const scriptPath = hasAuthoredEntry

@@ -9,7 +9,7 @@ There are two ways to install the WebUI build toolchain: as an **npm package** f
 The `@microsoft/webui` npm package gives you:
 
 - **`npx webui build`** - the CLI for building templates into protocols
-- **`import { build, render } from '@microsoft/webui'`** - a programmatic API for Node.js
+- **`import { build, Protocol } from '@microsoft/webui'`** - a programmatic API for Node.js
 - **Native performance** via platform-specific binaries (no compilation required)
 
 <webui-press-tabs>
@@ -93,7 +93,7 @@ Prepare `protocol.bin` once for repeated rendering:
 ```csharp
 using Microsoft.WebUI;
 
-using var protocol = new PreparedProtocol(
+using var protocol = new Protocol(
     File.ReadAllBytes("dist/protocol.bin"));
 using var handler = new WebUIHandler("webui");
 
@@ -104,8 +104,8 @@ string html = handler.Render(
     "/");
 ```
 
-`PreparedProtocol` is thread-safe and owns the decoded protocol plus reusable
-indices. Keep it alive for the server lifetime and dispose it during shutdown.
+`Protocol` is thread-safe and owns the decoded protocol plus reusable indices.
+Keep it alive for the server lifetime and dispose it during shutdown.
 
 ---
 

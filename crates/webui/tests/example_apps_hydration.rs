@@ -11,8 +11,8 @@
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use webui::{
-    build, BuildOptions, CssStrategy, Plugin, RenderOptions, ResponseWriter, WebUIHandler,
-    WebUIProtocol,
+    build, BuildOptions, CssStrategy, Plugin, Protocol, RenderOptions, ResponseWriter,
+    WebUIHandler, WebUIProtocol,
 };
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 
@@ -66,11 +66,12 @@ impl ResponseWriter for CaptureWriter {
 /// handler only emits the `#webui-data` bootstrap block when a plugin is
 /// present, matching the production Node/FFI/WASM hosts.
 fn render(protocol: &WebUIProtocol, state: &Value, path: &str) -> String {
+    let protocol = Protocol::new(protocol.clone());
     let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
     let mut writer = CaptureWriter::default();
     handler
-        .handle(
-            protocol,
+        .render(
+            &protocol,
             state,
             &RenderOptions::new("index.html", path),
             &mut writer,
@@ -176,9 +177,17 @@ fn routes_example_without_manifest_preserves_full_state() {
     let full_data = webui_data(&render(&protocol, &state, "/"));
     assert_eq!(full_data["state"], state);
 
-    let partial =
-        webui_handler::route_handler::render_partial(&protocol, state, "index.html", "/", "")
-            .unwrap_or_else(|error| panic!("routes partial should render: {error}"));
+    let runtime_protocol = Protocol::new(protocol);
+    let partial_json = runtime_protocol
+        .render_partial(
+            &serde_json::to_string(&state).expect("state should serialize"),
+            "index.html",
+            "/",
+            "",
+        )
+        .unwrap_or_else(|error| panic!("routes partial should render: {error}"));
+    let partial: Value =
+        serde_json::from_str(&partial_json).expect("partial response should be valid JSON");
     assert_eq!(partial["state"]["appTitle"], "Learning Platform");
     assert_eq!(
         partial["state"]["sections"].as_array().map_or(0, Vec::len),

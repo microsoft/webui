@@ -672,7 +672,9 @@ takes precedence and the projected value is skipped. Template-only values
 remain represented by the SSR DOM until browser state explicitly changes them.
 Later `setState()` calls, including router partials, accept both decorated
 properties and compiled template roots; undecorated roots are stored in hidden
-framework state.
+framework state. The first write to a dormant HTML-only host replays only the
+roots present in that write, preserving omitted SSR text, attributes,
+conditions, and repeats.
 
 ---
 

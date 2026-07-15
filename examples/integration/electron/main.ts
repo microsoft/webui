@@ -18,7 +18,7 @@
 import { app, BrowserWindow, Menu, net, protocol } from 'electron';
 import { existsSync, readFileSync } from 'fs';
 import { resolve, join, basename } from 'path';
-import { renderStream } from '@microsoft/webui';
+import { Protocol } from '@microsoft/webui';
 
 // ---------------------------------------------------------------------------
 // CLI arguments
@@ -70,12 +70,13 @@ app.whenReady().then(() => {
 
   const protocolBin = readFileSync(join(distDir, 'protocol.bin'));
   const stateJson = existsSync(statePath) ? readFileSync(statePath, 'utf-8') : '{}';
+  const runtimeProtocol = new Protocol(protocolBin, { plugin: pluginName });
 
   // Render SSR HTML
   const chunks: string[] = [];
-  renderStream(protocolBin, stateJson, (chunk: string) => {
+  runtimeProtocol.renderStream(stateJson, (chunk: string) => {
     chunks.push(chunk);
-  }, { plugin: pluginName });
+  });
   const html = chunks.join('');
 
   // Protocol handler — serves rendered HTML + static assets

@@ -314,9 +314,11 @@ export class TemplateElement extends HTMLElement {
 
   /** Internal single-key state hook used by compiled parent-to-child bindings. */
   [WEBUI_SET_STATE_KEY](key: string, value: unknown): boolean {
+    const wasDeferred = this.$deferredSSR;
     this.$beforeExternalStateWrite();
     const owned = this.$setStateKey(key, value);
     this.$afterExternalStateWrite(owned);
+    if (owned && wasDeferred && !this.$deferredSSR) this.$update(key);
     return owned;
   }
 
@@ -520,6 +522,7 @@ export class TemplateElement extends HTMLElement {
     newValue: string | null,
   ): void {
     if (Object.is(oldValue, newValue)) return;
+    const wasDeferred = this.$deferredSSR;
     this.$beforeExternalStateWrite();
     const property = this.$templateRootForAttribute(name);
     let changed = false;
@@ -527,6 +530,7 @@ export class TemplateElement extends HTMLElement {
       changed = this.$setTemplateState(property, newValue);
     }
     this.$afterExternalStateWrite(changed);
+    if (changed && property && wasDeferred && !this.$deferredSSR) this.$update(property);
   }
 
   /** Populate component state from server or router state.
@@ -536,6 +540,7 @@ export class TemplateElement extends HTMLElement {
    * `@observable` fields just to receive server state.
    */
   setState(state: Record<string, unknown>): void {
+    const wasDeferred = this.$deferredSSR;
     this.$beforeExternalStateWrite();
     const keys = Object.keys(state);
     let owned = false;
@@ -544,6 +549,9 @@ export class TemplateElement extends HTMLElement {
       owned = this.$setStateKey(key, state[key]) || owned;
     }
     this.$afterExternalStateWrite(owned);
+    if (owned && wasDeferred && !this.$deferredSSR) {
+      for (let i = 0; i < keys.length; i++) this.$update(keys[i]);
+    }
     this.$flushUpdates();
   }
 
@@ -581,7 +589,6 @@ export class TemplateElement extends HTMLElement {
     } finally {
       this.$activatingDeferredSSR = false;
     }
-    if (this.$root) this.$updateInstance(this.$root);
   }
 
   /** Decide whether this component consumes the global SSR bootstrap state. */

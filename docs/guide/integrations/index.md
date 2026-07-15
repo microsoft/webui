@@ -15,21 +15,21 @@ Pick the handler that matches your stack:
 
 All WebUI handlers follow the same pattern:
 
-1. They accept a WebUI protocol object, preferably decoded and prepared once at startup
+1. They accept a loaded WebUI `Protocol`, decoded and indexed once at startup
 2. They process the protocol with the provided state data
 3. They render the final HTML output by evaluating directives and inserting dynamic content
 
 This consistent approach ensures that the same template produces identical results across different programming languages and platforms.
 
-For repeated requests, use the integration's prepared-protocol path. It avoids
-protobuf decoding and deterministic index construction on every render.
+Share the loaded `Protocol` across repeated requests. It avoids protobuf
+decoding and deterministic index construction on every render.
 
 ## Common Handler Interface
 
 While the specific implementation details vary between languages, all handlers provide a similar API:
 
 ```
-handle(protocol, state, options, writer)
+render(protocol, state, options, writer)
 ```
 
 Where:
@@ -44,7 +44,7 @@ Handlers support an optional **plugin system** for injecting framework-specific 
 
 ```
 handler = Handler::with_plugin(plugin)
-handler.handle(protocol, state, options, writer)
+handler.render(protocol, state, options, writer)
 ```
 
 When no plugin is configured, the handler renders plain HTML. When a plugin is loaded (e.g., `FastV3HydrationPlugin`), it injects markers that enable client-side hydration.

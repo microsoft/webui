@@ -240,9 +240,8 @@ The router provides four mechanisms for controlling how state flows to your comp
 // Express example - the npm helper returns a complete JSON partial.
 app.get('*', async (req, res) => {
   const state = await db.getPageState(req.path);
-  const partialJson = renderPartial(
-    protocol,
-    JSON.stringify(state),
+  const partialJson = protocol.renderPartial(
+    state,
     'index.html',
     req.path,
     invHex,
@@ -628,15 +627,13 @@ Router.start({
 });
 ```
 
-On the server, handle the template endpoint with `renderComponentTemplates`:
+On the server, use the loaded protocol's `renderComponentTemplates` method:
 
 ```javascript
-import { renderComponentTemplates } from '@microsoft/webui';
-
 app.get('/_webui/templates', (req, res) => {
   const tags = (req.query.t ?? '').split(',').filter(Boolean);
   const inv = req.get('X-WebUI-Inventory') ?? '';
-  res.type('json').send(renderComponentTemplates(protocol, tags, inv));
+  res.type('json').send(protocol.renderComponentTemplates(tags, inv));
 });
 ```
 
@@ -689,7 +686,7 @@ When `Accept: application/json` or `application/x-ndjson`:
 
 | Field | Description |
 |-------|-------------|
-| `state` | Active-route navigation state for reachable authored and scriptless components. `render_partial` and all host bindings include it; Rust NDJSON hosts use `render_partial_metadata` when scheduling state separately |
+| `state` | Active-route navigation state for reachable authored and scriptless components. `Protocol::render_partial` and all host bindings include it |
 | `templateStyles` | Module CSS definition tags (empty for Link/Style modes) |
 | `templates` | Client template payloads filtered by inventory bitmask |
 | `inventory` | Updated hex bitmask of loaded templates |
@@ -718,18 +715,16 @@ bootstrap.
 
 ### Partial Navigation
 
-Rust `render_partial()` and every host binding return the complete response,
-including the state needed by active-route components. An NDJSON host can call
-`render_partial_metadata()` for state-free chunk 1 and send state later. Raw
-state input is validated in full while unneeded values are skipped without
+Rust `Protocol::render_partial()` and every host binding return the complete
+response, including the state needed by active-route components. Raw state
+input is validated in full while unneeded values are skipped without
 constructing a duplicate JSON tree.
 
-For repeated Rust requests, use `PreparedProtocol`:
+For repeated Rust requests, load one `Protocol`:
 
 ```rust
-let prepared = PreparedProtocol::from_protobuf(&protocol_bytes)?;
-let json = route_handler::render_partial_prepared(
-    &prepared,
+let protocol = Protocol::from_protobuf(&protocol_bytes)?;
+let json = protocol.render_partial(
     state_json,
     "index.html",
     request_path,
@@ -739,8 +734,7 @@ let json = route_handler::render_partial_prepared(
 
 ```csharp
 // C#
-string partialJson = handler.RenderPartial(
-    protocol,
+string partialJson = protocol.RenderPartial(
     stateJson,
     entryId,
     requestPath,
@@ -749,9 +743,8 @@ string partialJson = handler.RenderPartial(
 
 ```javascript
 // Node.js
-const partialJson = renderPartial(
-  protocol,
-  JSON.stringify(state),
+const partialJson = protocol.renderPartial(
+  state,
   entryId,
   requestPath,
   inventoryHex,
@@ -761,24 +754,28 @@ const partialJson = renderPartial(
 ### Express Example
 
 ```javascript
-// Load once. Reusing Buffer identity and plugin reuses the prepared protocol.
-const protocol = readFileSync('./dist/protocol.bin');
+import { Protocol } from '@microsoft/webui';
+import { readFileSync } from 'node:fs';
+
+const protocol = new Protocol(
+  readFileSync('./dist/protocol.bin'),
+  { plugin: 'webui' },
+);
 
 app.get('/users/:id', (req, res) => {
   const state = { name: getUser(req.params.id).name };
 
   if (req.accepts('json')) {
     const inv = req.get('X-WebUI-Inventory') ?? '';
-    const partialJson = webui.renderPartial(
-      protocol,
-      JSON.stringify(state),
+    const partialJson = protocol.renderPartial(
+      state,
       'index.html',
       req.path,
       inv,
     );
     res.type('json').send(partialJson);
   } else {
-    const html = webui.render(protocol, state, {
+    const html = protocol.render(state, {
       entry: 'index.html',
       requestPath: req.path,
     });

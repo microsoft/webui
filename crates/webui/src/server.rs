@@ -27,11 +27,9 @@
 //! }
 //! ```
 
-use crate::{ResponseWriter, WebUIHandler};
+use crate::{Protocol, ResponseWriter, WebUIHandler};
 use webui_handler::route_handler;
-use webui_handler::route_matcher::CompiledRouteCache;
 use webui_handler::RenderOptions;
-use webui_protocol::WebUIProtocol;
 
 /// A server request to be handled by [`serve_request`].
 pub struct ServeRequest<'a> {
@@ -50,7 +48,7 @@ pub enum ServeResponse {
     /// Full HTML page for initial load or browser refresh.
     Html(String),
     /// JSON partial for client-side navigation via `webui-router`.
-    Json(serde_json::Value),
+    Json(String),
 }
 
 /// Handle a server request with automatic route handling.
@@ -74,16 +72,14 @@ pub enum ServeResponse {
 /// Route parameters (`:param` in route paths) are automatically extracted
 /// and injected into the state object.
 pub fn serve_request(
-    protocol: &WebUIProtocol,
+    protocol: &Protocol,
     handler: &WebUIHandler,
     state: serde_json::Value,
     entry: &str,
     request: &ServeRequest<'_>,
 ) -> Result<ServeResponse, String> {
     // Extract route params and inject into state
-    let mut cache = CompiledRouteCache::new();
-    let params =
-        route_handler::collect_nested_route_params(protocol, entry, request.path, &mut cache);
+    let params = route_handler::collect_nested_route_params(protocol, entry, request.path);
     let mut data = state;
     if let Some(map) = data.as_object_mut() {
         for (k, v) in &params {
@@ -93,14 +89,11 @@ pub fn serve_request(
 
     if request.accept_json {
         // JSON partial response for client-side navigation.
-        let partial = route_handler::render_partial(
-            protocol,
-            data,
-            entry,
-            request.path,
-            request.inventory_hex,
-        )
-        .map_err(|e| format!("render_partial failed: {e}"))?;
+        let state_json =
+            serde_json::to_string(&data).map_err(|e| format!("state serialization failed: {e}"))?;
+        let partial = protocol
+            .render_partial(&state_json, entry, request.path, request.inventory_hex)
+            .map_err(|e| format!("render_partial failed: {e}"))?;
         Ok(ServeResponse::Json(partial))
     } else {
         // Full HTML SSR — handler emits the consolidated window.__webui
@@ -108,7 +101,7 @@ pub fn serve_request(
         let mut writer = MemWriter::with_capacity(131_072);
         let opts = RenderOptions::new(entry, request.path);
         handler
-            .handle(protocol, &data, &opts, &mut writer)
+            .render(protocol, &data, &opts, &mut writer)
             .map_err(|e| format!("render failed: {e}"))?;
 
         Ok(ServeResponse::Html(writer.buf))
@@ -143,7 +136,16 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::HashMap;
-    use webui_protocol::{FragmentList, WebUIFragment};
+    use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol};
+
+    fn response_json(response: ServeResponse) -> serde_json::Value {
+        match response {
+            ServeResponse::Json(json) => {
+                serde_json::from_str(&json).expect("partial response should be valid JSON")
+            }
+            ServeResponse::Html(_) => panic!("expected JSON partial response"),
+        }
+    }
 
     #[test]
     fn serve_request_json_partial_preserves_template_styles() {
@@ -168,6 +170,7 @@ mod tests {
             .or_default();
         component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         component.css = ".page{color:red}".to_string();
+        let protocol = Protocol::new(protocol);
 
         let handler = WebUIHandler::new();
         let request = ServeRequest {
@@ -179,10 +182,7 @@ mod tests {
         let response = serve_request(&protocol, &handler, json!({}), "index.html", &request)
             .expect("partial response should succeed");
 
-        let json = match response {
-            ServeResponse::Json(value) => value,
-            ServeResponse::Html(_) => panic!("expected JSON partial response"),
-        };
+        let json = response_json(response);
 
         // templateStyles must be present and non-empty for module-mode components
         assert_eq!(
@@ -224,6 +224,7 @@ mod tests {
         comp.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         comp.css_href = "my-page.css".to_string();
         // No css content — Link strategy
+        let protocol = Protocol::new(protocol);
 
         let handler = WebUIHandler::new();
         let request = ServeRequest {
@@ -235,10 +236,7 @@ mod tests {
         let response = serve_request(&protocol, &handler, json!({}), "index.html", &request)
             .expect("partial response should succeed");
 
-        let json = match response {
-            ServeResponse::Json(value) => value,
-            ServeResponse::Html(_) => panic!("expected JSON partial response"),
-        };
+        let json = response_json(response);
 
         assert!(
             json["templateStyles"]
@@ -275,6 +273,7 @@ mod tests {
             .or_default();
         // Style strategy: CSS is inlined in the template metadata
         comp.template_json = r#"{"h":"<style>.p{color:red}</style><p/>"}"#.to_string();
+        let protocol = Protocol::new(protocol);
 
         let handler = WebUIHandler::new();
         let request = ServeRequest {
@@ -286,10 +285,7 @@ mod tests {
         let response = serve_request(&protocol, &handler, json!({}), "index.html", &request)
             .expect("partial response should succeed");
 
-        let json = match response {
-            ServeResponse::Json(value) => value,
-            ServeResponse::Html(_) => panic!("expected JSON partial response"),
-        };
+        let json = response_json(response);
 
         assert!(
             json["templateStyles"]

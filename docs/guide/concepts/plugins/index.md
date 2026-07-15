@@ -45,16 +45,17 @@ implementations are loaded.
 use webui::WebUIHandler;
 
 let handler = WebUIHandler::with_plugin(|| Box::new(MyHydrationPlugin::new()));
-handler.handle(&protocol, &state, &options, &mut writer)?;
+handler.render(&protocol, &state, &options, &mut writer)?;
 ```
 
 </webui-press-tab-panel>
 <webui-press-tab-panel>
 
 ```js
-import { renderStream } from '@microsoft/webui';
+import { Protocol } from '@microsoft/webui';
 
-renderStream(protocolData, state, (chunk) => res.write(chunk), { plugin: '<name>' });
+const protocol = new Protocol(protocolData, { plugin: '<name>' });
+protocol.renderStream(state, (chunk) => res.write(chunk));
 ```
 
 </webui-press-tab-panel>
@@ -62,7 +63,7 @@ renderStream(protocolData, state, (chunk) => res.write(chunk), { plugin: '<name>
 
 ```c
 void *handler = webui_handler_create_with_plugin("<name>");
-void *protocol = webui_protocol_create(protocol_data, protocol_len);
+webui_protocol_t *protocol = webui_protocol_create(protocol_data, protocol_len);
 char *html = webui_handler_render(handler, protocol, state_json, "index.html", "/");
 ```
 

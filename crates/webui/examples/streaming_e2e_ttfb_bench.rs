@@ -63,9 +63,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use webui::streaming::StreamingWriter;
-use webui::{build, BuildOptions, CssStrategy, ResponseWriter, WebUIHandler};
+use webui::{build, BuildOptions, CssStrategy, Protocol, ResponseWriter, WebUIHandler};
 use webui_handler::RenderOptions;
-use webui_protocol::WebUIProtocol;
 
 // ── Shared protocol & state ────────────────────────────────────────────
 
@@ -124,7 +123,7 @@ fn build_state(count: usize) -> Value {
     })
 }
 
-fn build_protocol() -> WebUIProtocol {
+fn build_protocol() -> Protocol {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let app_dir = manifest
         .join("..")
@@ -133,20 +132,21 @@ fn build_protocol() -> WebUIProtocol {
         .join("app")
         .join("contact-book-manager")
         .join("src");
-    build(BuildOptions {
+    let document = build(BuildOptions {
         app_dir,
         entry: "index.html".to_string(),
         css: CssStrategy::Style,
         ..BuildOptions::default()
     })
     .expect("failed to build contact-book-manager protocol")
-    .protocol
+    .protocol;
+    Protocol::new(document)
 }
 
 // ── Server state shared across handlers ────────────────────────────────
 
 struct ServerState {
-    protocol: WebUIProtocol,
+    protocol: Protocol,
     state: Value,
 }
 
@@ -198,7 +198,7 @@ async fn handle_buf(
     let html = actix_web::rt::task::spawn_blocking(move || {
         let h = WebUIHandler::new();
         let mut w = DelayingStringWriter::new(64 * 1024, delay);
-        h.handle(
+        h.render(
             &st.protocol,
             &st.state,
             &RenderOptions::new("index.html", "/"),
@@ -251,8 +251,7 @@ async fn handle_stream(
         let opts = RenderOptions::new("index.html", "/")
             .with_head_inject("<link rel=preload>")
             .with_body_inject("<script>/* lr */</script>");
-        let _ = h.handle(&st.protocol, &st.state, &opts, &mut writer);
-        let _ = ResponseWriter::end(&mut writer);
+        let _ = h.render(&st.protocol, &st.state, &opts, &mut writer);
     });
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok::<Bytes, actix_web::Error>);
     HttpResponse::Ok()

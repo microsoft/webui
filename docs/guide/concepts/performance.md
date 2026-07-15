@@ -72,8 +72,8 @@ Representative final release-mode Criterion results on a 1 MiB state object:
 | Partial route, borrowed full JSON vs borrowed projection | 1.0191 ms | 658.17 us | 35.4% less CPU |
 
 The initial-state benchmark starts from an already parsed Rust value. Hosts
-that accept JSON strings still pay JSON parsing cost. Preparing
-`protocol.bin` avoids repeated protocol decoding, not state parsing.
+that accept JSON strings still pay JSON parsing cost. Loading `protocol.bin`
+into a `Protocol` once avoids repeated protocol decoding, not state parsing.
 
 The same current Contact Book protocol and state isolate payload impact:
 
@@ -101,14 +101,14 @@ These numbers are hardware-specific, but they bound the tradeoff: tens of
 milliseconds during client builds in exchange for removing large-state
 serialization from every request.
 
-Native hosts should also prepare `protocol.bin` once at startup:
+Every host should load `protocol.bin` once at startup:
 
-- Rust: construct `PreparedProtocol`
+- Rust: construct `Protocol`
 - C: use `webui_protocol_create` and pass the handle to every protocol operation
-- .NET: construct `PreparedProtocol` and reuse it with the handler
-- WASM: construct the exported `PreparedProtocol`
-- Node: reuse the same protocol `Buffer` and plugin; `@microsoft/webui` caches
-  its plugin-bound native representation by buffer identity
+- .NET: construct `Protocol` and reuse it with the handler
+- WASM: construct the exported `Protocol`
+- Node: construct `Protocol` with the bytes and plugin, then release or reuse
+  the source `Buffer`
 
 The dedicated FFI startup benchmark isolates protobuf decoding and index
 construction from application rendering:
@@ -118,13 +118,13 @@ construction from application rendering:
 | 100 components | 77.390 us | 0.522 us | 72.673 us | 1.214 us |
 | 1,000 components | 716.67 us | 1.023 us | 790.70 us | 1.310 us |
 
-Prepared reuse removes 98.3% to 99.86% of the isolated protocol startup cost.
+Protocol reuse removes 98.3% to 99.86% of the isolated protocol startup cost.
 The relative impact on a real request is smaller when template rendering or
 state serialization dominates, but repeatedly decoding immutable protocol
 bytes remains avoidable work.
 
-Do not read `protocol.bin` into a new Node `Buffer` for every request. A stable
-buffer lets the package reuse protobuf decoding and deterministic indices.
+Do not construct a new Node `Protocol` for every request. Keep one loaded
+instance for the server lifetime.
 
 ::: warning Browser state is client-facing
 Never put credentials, private tokens, or other secrets in state rendered to
@@ -147,9 +147,9 @@ Each layer of the architecture contributes to the overall performance profile:
   state without running TypeScript analysis in Rust.
 
 - **Protocol Buffers.** The handler consumes a compact binary payload instead
-  of parsing template syntax. Prepared host APIs decode the protocol and build
-  deterministic indices once at startup rather than repeating that work per
-  request.
+  of parsing template syntax. Host `Protocol` APIs decode the protocol and
+  build deterministic indices once at startup rather than repeating that work
+  per request.
 
 - **Streaming output with backpressure.** The `webui::streaming::StreamingWriter`
   coalesces handler writes into ~4 KB chunks and pushes them through a
@@ -227,8 +227,8 @@ consistent performance:
   character.
 - **No per-request template re-parsing** - load the compiled protocol once at
   startup and reuse it for every request.
-- **No per-request protocol decoding** - use `PreparedProtocol` or keep the same
-  Node protocol `Buffer` alive across requests.
+- **No per-request protocol decoding** - construct one `Protocol` and share it
+  across renders.
 
 ## Running Benchmarks
 
@@ -248,8 +248,8 @@ cargo xtask bench state
 # Hydration-state projection and partial-state serialization
 cargo bench -p microsoft-webui-handler --bench bootstrap_state_bench
 
-# Prepared versus one-shot FFI startup cost
-cargo bench -p microsoft-webui-ffi --bench prepared_protocol_bench
+# Loaded versus per-request FFI protocol startup cost
+cargo bench -p microsoft-webui-ffi --bench protocol_bench
 
 # Contact book end-to-end benchmark
 cargo bench -p microsoft-webui --bench contact_book_bench

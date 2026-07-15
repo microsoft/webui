@@ -129,13 +129,17 @@ describe('WebUIRouter', () => {
 
       try {
         const router = new WebUIRouter();
-        router.start();
+        router.start({ loaders: { 'lazy-card': async () => {} } });
 
         assert.equal(globals().__webui!.inventory, '0c');
         assert.equal(globals().__webui!.nonce, 'n');
         assert.deepEqual(globals().__webui!.state, { title: 'Hello' });
         assert.ok(globals().__webui!.templates?.greeting, 'template metadata should be loaded');
         assert.ok(globals().__webui!.templateFns?.greeting, 'existing templateFns should be preserved');
+        assert.equal(
+          (globals().__webui!.templateHostExclusions as Set<string>).has('lazy-card'),
+          true,
+        );
         assert.equal(removed, true);
         router.destroy();
       } finally {

@@ -15,13 +15,14 @@ The package automatically installs the correct platform-specific native binary f
 ## Quick start
 
 ```js
-import { build, render } from "@microsoft/webui";
+import { build, Protocol } from "@microsoft/webui";
 
 // Build templates into a protocol
 const result = build({ appDir: "./src" });
 
-// Render with state data
-const html = render(result.protocol, { name: "World", items: ["a", "b"] });
+// Decode and index once, then render repeatedly
+const protocol = new Protocol(result.protocol, { plugin: "webui" });
+const html = protocol.render({ name: "World", items: ["a", "b"] });
 console.log(html);
 ```
 
@@ -110,39 +111,36 @@ Manifest keys are exact JavaScript `@observable` and `@attr` property names.
 During hydration, an existing SSR host attribute wins over projected `@attr`
 state. Runtime hosts never load TypeScript, esbuild, or the manifest.
 
-### `render(protocol: Buffer, state: object | string): string`
+### `new Protocol(protocol: Buffer, options?: ProtocolOptions)`
 
-Renders a compiled protocol with state data and returns the full HTML string.
+Decodes and indexes a compiled protocol once. Keep this object for the server
+lifetime and use it for all runtime operations.
 
 ```js
-const html = render(protocol, { title: "Hello", show: true });
+const protocol = new Protocol(protocolBytes, { plugin: "webui" });
 ```
 
-Keep the same protocol `Buffer` and plugin selection across requests. The
-package caches a plugin-bound native prepared protocol by buffer identity,
-avoiding protobuf decoding and deterministic index construction after the
-first call. A byte snapshot detects buffer mutation and rebuilds the prepared
-entry so cached rendering cannot return stale protocol content. All render APIs
-use this prepared path; incompatible older addons fail instead of silently
-falling back to per-request decoding.
+`Protocol` owns its decoded native state. The package does not keep a hidden
+`WeakMap`, copy the source `Buffer`, or expose byte-per-request render
+functions.
 
-### `renderStream(protocol: Buffer, state: object | string, onChunk: (html: string) => void): void`
+### `protocol.render(state: object | string, options?: RenderOptions): string`
+
+Renders state and returns the full HTML string.
+
+```js
+const html = protocol.render({ title: "Hello", show: true });
+```
+
+### `protocol.renderStream(state, onChunk, options?): void`
 
 Renders with streaming output. Internal handler writes are coalesced around a
 16 KiB target before the callback crosses into JavaScript.
 
 ```js
-renderStream(protocol, state, (chunk) => {
+protocol.renderStream(state, (chunk) => {
   response.write(chunk);
 });
-```
-
-### `buildAndRender(options: BuildOptions, state: object | string): string`
-
-Convenience function that builds and renders in a single call.
-
-```js
-const html = buildAndRender({ appDir: "./src" }, { name: "WebUI" });
 ```
 
 ### `inspect(protocol: Buffer): string`
@@ -154,16 +152,16 @@ const json = inspect(protocol);
 console.log(JSON.parse(json));
 ```
 
-### `renderPartial(protocol: Buffer, stateJson: string, entryId: string, requestPath: string, inventoryHex: string): string`
+### `protocol.renderPartial(state, entryId, requestPath, inventoryHex): string`
 
 Produces a JSON partial response for client-side navigation, including state, template metadata, condition closures, and route chain.
 
-### `renderComponentTemplates(protocol: Buffer, componentTags: string[], inventoryHex: string): string`
+### `protocol.renderComponentTemplates(componentTags, inventoryHex): string`
 
 Renders templates and styles for on-demand component loading (used by `Router.ensureLoaded()`). Returns a JSON string with `templateStyles`, `templates`, `templateFunctions`, and `inventory`. Uses the same inventory bitfield as partial navigation to avoid sending duplicates.
 
 ```js
-const json = renderComponentTemplates(protocol, ["settings-dialog"], inventoryHex);
+const json = protocol.renderComponentTemplates(["settings-dialog"], inventoryHex);
 const { templates, templateFunctions, templateStyles, inventory } = JSON.parse(json);
 ```
 

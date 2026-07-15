@@ -157,6 +157,11 @@ export class WebUIRouter {
     if (!meta.css) meta.css = [];
     if (!meta.styles) meta.styles = [];
     if (!meta.templates) meta.templates = {};
+    if (!meta.templateHostExclusions) meta.templateHostExclusions = new Set();
+    const loaderTags = Object.keys(this.loaders);
+    for (let i = 0; i < loaderTags.length; i++) {
+      meta.templateHostExclusions.add(loaderTags[i]);
+    }
 
     this.installDocumentTransitionOverride();
 

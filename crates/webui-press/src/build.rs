@@ -13,7 +13,7 @@ use console::style;
 use rayon::prelude::*;
 use serde_json::{Map, Value};
 use webui::BuildOptions;
-use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
 use webui_tokens::TokenFile;
 
 use crate::bundler::{
@@ -662,10 +662,11 @@ pub fn build_docs_with_cache(
             &page.state
         };
 
+        let protocol = Protocol::new(build_result.protocol);
         let mut writer = StringWriter::with_capacity(8192);
         handler
             .render(
-                &build_result.protocol,
+                &protocol,
                 render_state,
                 &RenderOptions::new("index.html", &page.path),
                 &mut writer,
@@ -787,10 +788,11 @@ pub fn build_docs_with_cache(
         }
     }
 
+    let nf_protocol = Protocol::new(nf_build.protocol);
     let mut writer_404 = StringWriter::with_capacity(4096);
     handler
         .render(
-            &nf_build.protocol,
+            &nf_protocol,
             &not_found_state,
             &RenderOptions::new("index.html", &format!("{base_path}404/")),
             &mut writer_404,
@@ -1560,8 +1562,9 @@ mod tests {
         let handler = WebUIHandler::with_plugin(|| {
             Box::new(webui_handler::plugin::webui::WebUIHydrationPlugin::new())
         });
+        let protocol = Protocol::new(build_result.protocol);
         handler.render(
-            &build_result.protocol,
+            &protocol,
             &Value::Object(Map::new()),
             &RenderOptions::new("index.html", "/"),
             &mut writer,

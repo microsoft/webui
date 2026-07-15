@@ -35,7 +35,7 @@ public class WebUIHandlerTests
     {
         byte[] protocolBytes = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "fixtures", "projection-app", "protocol.bin"));
-        using var protocol = new PreparedProtocol(protocolBytes);
+        using var protocol = new Protocol(protocolBytes);
         var handler = new WebUIHandler();
         handler.Dispose();
 
@@ -49,7 +49,7 @@ public class WebUIHandlerTests
         byte[] protocolBytes = File.ReadAllBytes(
             Path.Join(AppContext.BaseDirectory, "fixtures", "projection-app", "protocol.bin"));
 
-        using var protocol = new PreparedProtocol(protocolBytes);
+        using var protocol = new Protocol(protocolBytes);
         using var handler = new WebUIHandler("webui");
         string html = handler.Render(
             protocol,
@@ -67,7 +67,7 @@ public class WebUIHandlerTests
         byte[] protocolBytes = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "fixtures", "projection-app", "protocol.bin"));
 
-        using var protocol = new PreparedProtocol(protocolBytes);
+        using var protocol = new Protocol(protocolBytes);
         using var handler = new WebUIHandler("webui");
 
         string first = handler.Render(
@@ -88,11 +88,11 @@ public class WebUIHandlerTests
     }
 
     [Fact]
-    public void Handler_RenderWithDisposedPreparedProtocol_ThrowsObjectDisposedException()
+    public void Handler_RenderWithDisposedProtocol_ThrowsObjectDisposedException()
     {
         byte[] protocolBytes = File.ReadAllBytes(
             Path.Combine(AppContext.BaseDirectory, "fixtures", "projection-app", "protocol.bin"));
-        var protocol = new PreparedProtocol(protocolBytes);
+        var protocol = new Protocol(protocolBytes);
         protocol.Dispose();
 
         using var handler = new WebUIHandler();

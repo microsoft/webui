@@ -22,7 +22,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| Error::new(e.kind(), format!("Failed to create directory: {}", e)))?;
 
         // C header
-        let config = cbindgen::Config::default();
+        let config = cbindgen::Config {
+            language: cbindgen::Language::C,
+            cpp_compat: true,
+            ..cbindgen::Config::default()
+        };
         let bindings = cbindgen::Builder::new()
             .with_crate(crate_dir)
             .with_config(config)

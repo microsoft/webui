@@ -22,14 +22,16 @@ npm install @microsoft/webui
 ```js
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
-import { renderStream } from '@microsoft/webui';
+import { Protocol } from '@microsoft/webui';
 
-const protocol = readFileSync('./dist/protocol.bin');
+const protocol = new Protocol(
+  readFileSync('./dist/protocol.bin'),
+  { plugin: 'webui' },
+);
 
 const server = createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/html' });
-  renderStream(
-    protocol,
+  protocol.renderStream(
     { title: 'Home' },
     (chunk) => res.write(chunk),
     { entry: 'index.html', requestPath: req.url },
@@ -44,16 +46,17 @@ server.listen(3000);
 <webui-press-tab-panel>
 
 ```ts
-import { render } from '@microsoft/webui';
+import { Protocol } from '@microsoft/webui';
 
 const protocol = Bun.file('./dist/protocol.bin');
 const protocolData = Buffer.from(await protocol.arrayBuffer());
+const runtimeProtocol = new Protocol(protocolData);
 
 Bun.serve({
   port: 3000,
   fetch(req) {
     const url = new URL(req.url);
-    const html = render(protocolData, { title: 'Home' }, {
+    const html = runtimeProtocol.render({ title: 'Home' }, {
       entry: 'index.html',
       requestPath: url.pathname,
     });
@@ -68,14 +71,15 @@ Bun.serve({
 <webui-press-tab-panel>
 
 ```ts
-import { render } from '@microsoft/webui';
+import { Protocol } from '@microsoft/webui';
 
 const protocol = Deno.readFileSync('./dist/protocol.bin');
 const protocolData = Buffer.from(protocol);
+const runtimeProtocol = new Protocol(protocolData);
 
 Deno.serve({ port: 3000 }, (req) => {
   const url = new URL(req.url);
-  const html = render(protocolData, { title: 'Home' }, {
+  const html = runtimeProtocol.render({ title: 'Home' }, {
     entry: 'index.html',
     requestPath: url.pathname,
   });
@@ -90,11 +94,15 @@ Deno.serve({ port: 3000 }, (req) => {
 
 ## API Reference
 
-| Function | Description |
+| API | Description |
 |----------|-------------|
 | `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, componentAssetFiles, warnings, stats }` |
-| `render(protocol, state, options?)` | Render protocol with route matching through the native buffered-string path |
-| `renderStream(protocol, state, onChunk, options?)` | Render with callbacks coalesced around a 16 KiB target before crossing into JavaScript |
+| `new Protocol(protocol, options?)` | Decode and index protocol bytes once and bind the selected plugin |
+| `protocol.render(state, options?)` | Render with route matching through the native buffered-string path |
+| `protocol.renderStream(state, onChunk, options?)` | Render with callbacks coalesced around a 16 KiB target before crossing into JavaScript |
+| `protocol.renderPartial(state, entry, requestPath, inventory)` | Produce a complete partial-navigation JSON response |
+| `protocol.renderComponentTemplates(tags, inventory)` | Return on-demand template payloads |
+| `protocol.tokens()` | Return CSS token names in build order |
 | `inspect(protocol)` | Convert protocol to JSON for debugging |
 
 ### RenderOptions
@@ -103,40 +111,43 @@ Deno.serve({ port: 3000 }, (req) => {
 |-------|------|---------|-------------|
 | `entry` | `string` | `"index.html"` | Fragment ID to start rendering from |
 | `requestPath` | `string` | `"/"` | URL path to match routes against |
-| `plugin` | `string` | - | Handler plugin name (see [Plugins](/guide/concepts/plugins/)) |
-
 `state` accepts either an object (auto-serialized) or a pre-stringified JSON string.
 
-## Reusing the Prepared Protocol
+### ProtocolOptions
 
-Load `protocol.bin` once and keep the same `Buffer` object and plugin selection
-for the lifetime of the server:
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `plugin` | `string` | - | Handler plugin bound for the lifetime of the protocol |
+
+## Reusing Protocol
+
+Load `protocol.bin` once and construct one `Protocol` for the lifetime of the
+server:
 
 ```js
-const protocol = readFileSync('./dist/protocol.bin');
+const protocol = new Protocol(
+  readFileSync('./dist/protocol.bin'),
+  { plugin: 'webui' },
+);
 
 const server = createServer((req, res) => {
-  const html = render(protocol, getState(req), {
+  const html = protocol.render(getState(req), {
     entry: 'index.html',
     requestPath: req.url,
-    plugin: 'webui',
   });
   res.end(html);
 });
 ```
 
-The package stores plugin-bound native prepared protocols in a `WeakMap` keyed
-by `Buffer` identity. Reusing the same buffer and plugin avoids protobuf
-decoding and deterministic index construction on later full, partial, and
-component-template requests. The package compares a retained byte snapshot and
-invalidates the prepared entry if the buffer is mutated. Reading the file into
-a new buffer per request defeats this optimization. All render APIs require
-the prepared native path rather than silently falling back to per-request
-protocol decoding.
+`Protocol` owns the decoded native state, deterministic index, and template
+metadata cache. The source `Buffer` can be released or reused after
+construction. The package has no hidden `WeakMap`, protocol-sized mutation
+snapshot, or byte-per-request render path.
 
-Use `render()` when the complete HTML string is needed. Use `renderStream()`
-when the HTTP integration can make progress from callbacks; callbacks are
-batched rather than invoked for every internal handler write.
+Use `protocol.render()` when the complete HTML string is needed. Use
+`protocol.renderStream()` when the HTTP integration can make progress from
+callbacks; callbacks are batched rather than invoked for every internal
+handler write.
 
 ### BuildOptions
 

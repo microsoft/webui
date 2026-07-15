@@ -64,6 +64,7 @@ declare global {
       state?: Record<string, unknown>;
       templates?: Record<string, TemplateMeta>;
       templateFns?: Record<string, CompiledConditionFn[]>;
+      templateHostExclusions?: Set<string>;
       [key: string]: unknown;
     };
   }

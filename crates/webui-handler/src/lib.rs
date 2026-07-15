@@ -13,7 +13,7 @@ pub mod route_handler;
 pub mod route_matcher;
 pub(crate) mod route_renderer;
 
-pub use route_handler::PreparedProtocol;
+pub use route_handler::Protocol;
 
 /// Minimal HTML escaper for the 6 XSS-critical characters
 /// (`& < > " ' /`). Returns `Cow::Borrowed` when no escaping is
@@ -29,7 +29,7 @@ pub use html_encode::encode_safe;
 use plugin::BootstrapExtensionContext;
 use plugin::HandlerPlugin;
 use plugin::WebUiTemplatePayload;
-use route_matcher::CompiledRouteCache;
+use route_matcher::CompiledRouteIndex;
 use serde::ser::SerializeMap;
 use serde::Serialize;
 use serde_json::Value;
@@ -231,11 +231,9 @@ struct WebUIProcessContext<'a> {
     /// CSP nonce for inline `<script>` tags (None = no nonce attribute).
     /// Borrowed from `RenderOptions<'a>::nonce` — zero-copy.
     nonce: Option<&'a str>,
-    /// Lazily-built component-name → bit-position map. Built on first
-    /// access at `head_end` (CSS preload emission) or `body_end`
-    /// (inventory hex), then reused — avoids the second protocol walk
-    /// when both signals fire (the typical case for full-page renders).
-    component_index_cache: Option<HashMap<String, u32>>,
+    /// Component-name → bit-position map built once when the runtime
+    /// [`Protocol`] is created and shared by every render.
+    component_index: &'a HashMap<String, u32>,
     /// HTML emitted at the structural `head_end` boundary (before
     /// `</head>`), after the built-in nonce/CSS-preload emissions.
     /// Zero-copy borrow of the caller's `RenderOptions<'a>::head_inject`
@@ -258,8 +256,8 @@ struct WebUIProcessContext<'a> {
     /// signal twice — without this, hydration `<script>` blocks and
     /// host-supplied `body_inject` would be duplicated.
     body_end_emitted: bool,
-    /// Per-render compiled route cache (avoids re-parsing route patterns within a single render).
-    route_cache: CompiledRouteCache,
+    /// Immutable authored route patterns compiled when [`Protocol`] is loaded.
+    route_index: &'a CompiledRouteIndex,
     /// Counter for `data-ri` attributes on matched route elements.
     /// Incremented each time a matched route is rendered, allowing O(1) element
     /// binding on the client side instead of DOM-walking.
@@ -651,108 +649,16 @@ impl WebUIHandler {
         }
     }
 
-    /// Process a WebUI protocol with the provided state and write the output to the given writer.
-    ///
-    /// `options.entry_id` selects the fragment to start rendering from.
-    /// `options.request_path` controls server-side route matching.
-    pub fn handle<'a>(
+    #[cfg(test)]
+    fn handle(
         &self,
-        protocol: &'a WebUIProtocol,
-        state: &'a Value,
-        options: &RenderOptions<'a>,
-        writer: &'a mut dyn ResponseWriter,
+        document: &WebUIProtocol,
+        state: &Value,
+        options: &RenderOptions<'_>,
+        writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        if !protocol.fragments.contains_key(options.entry_id) {
-            return Err(HandlerError::MissingFragment(options.entry_id.to_string()));
-        }
-
-        let mut context = WebUIProcessContext {
-            protocol,
-            state,
-            writer,
-            local_vars: HashMap::new(),
-            component_attrs: HashMap::new(),
-            request_path: options.request_path,
-            route_base: Cow::Borrowed("/"),
-            rendered_components: HashSet::new(),
-            plugin: self.plugin_factory.map(|f| f()),
-            route_children: Vec::new(),
-            entry_id: options.entry_id,
-            // Defensive normalisation: empty strings become `None`
-            // even when the caller bypassed the `with_*` builders by
-            // writing directly to the `pub` field. An empty nonce
-            // would emit `<script nonce="">`, which under a strict
-            // `Content-Security-Policy: script-src 'nonce-...'` is a
-            // hard CSP failure that blocks every inline script. The
-            // same uniform treatment for inject fields keeps the API
-            // contract consistent regardless of how the option was
-            // populated.
-            nonce: options.nonce.filter(|s| !s.is_empty()),
-            head_inject: options.head_inject.filter(|s| !s.is_empty()),
-            body_inject: options.body_inject.filter(|s| !s.is_empty()),
-            head_end_emitted: false,
-            component_index_cache: None,
-            body_end_emitted: false,
-            route_cache: CompiledRouteCache::new(),
-            route_chain_index: 0,
-        };
-        self.process_fragment_id(options.entry_id, &mut context)?;
-
-        writer.end()?;
-
-        Ok(())
-    }
-
-    /// Like `handle()`, but pushes a component scope so the plugin emits
-    /// binding markers. Use this when rendering a component outside the
-    /// normal page render flow (e.g., re-rendering a route component with
-    /// modified state).
-    pub fn handle_as_component<'a>(
-        &self,
-        protocol: &'a WebUIProtocol,
-        state: &'a Value,
-        entry_id: &'a str,
-        writer: &'a mut dyn ResponseWriter,
-    ) -> Result<()> {
-        if !protocol.fragments.contains_key(entry_id) {
-            return Err(HandlerError::MissingFragment(entry_id.to_string()));
-        }
-
-        let mut context = WebUIProcessContext {
-            protocol,
-            state,
-            writer,
-            local_vars: HashMap::new(),
-            component_attrs: HashMap::new(),
-            request_path: "",
-            route_base: Cow::Borrowed("/"),
-            rendered_components: HashSet::new(),
-            plugin: self.plugin_factory.map(|f| f()),
-            route_children: Vec::new(),
-            entry_id,
-            nonce: None,
-            head_inject: None,
-            body_inject: None,
-            head_end_emitted: false,
-            component_index_cache: None,
-            body_end_emitted: false,
-            route_cache: CompiledRouteCache::new(),
-            route_chain_index: 0,
-        };
-
-        if let Some(p) = &mut context.plugin {
-            p.push_scope();
-        }
-
-        self.process_fragment_id(entry_id, &mut context)?;
-
-        if let Some(p) = &mut context.plugin {
-            p.pop_scope();
-        }
-
-        writer.end()?;
-
-        Ok(())
+        let protocol = Protocol::new(document.clone());
+        self.render(&protocol, state, options, writer)
     }
 
     /// Process a fragment by its ID.
@@ -787,7 +693,7 @@ impl WebUIHandler {
             fragments,
             context.request_path,
             &context.route_base,
-            &mut context.route_cache,
+            context.route_index,
         );
 
         for item in fragments {
@@ -842,10 +748,10 @@ impl WebUIHandler {
         let request_segments = route_matcher::split_request_path(context.request_path);
         let mut best: Option<(usize, route_matcher::RouteMatch)> = None;
         for (idx, child) in children.iter().enumerate() {
-            let resolved = route_matcher::resolve_route_path_cow(&child.path, &context.route_base);
-            if let Some(m) = route_matcher::match_route_cached_with_segments(
-                &mut context.route_cache,
-                resolved.as_ref(),
+            if let Some(m) = route_matcher::match_route_indexed_with_segments(
+                context.route_index,
+                &child.path,
+                &context.route_base,
                 &request_segments,
                 child.exact,
             ) {
@@ -1262,16 +1168,13 @@ impl WebUIHandler {
             let is_shadow = context.protocol.dom_strategy() == webui_protocol::DomStrategy::Shadow;
 
             if is_link {
-                let comp_index = context.component_index_cache.get_or_insert_with(|| {
-                    crate::route_handler::build_component_index(context.protocol)
-                });
                 let (needed_components, _) =
                     crate::route_handler::get_needed_components_for_request(
                         context.protocol,
                         context.entry_id,
                         context.request_path,
                         "",
-                        comp_index,
+                        (context.component_index, context.route_index),
                     )?;
 
                 for name in &needed_components {
@@ -1325,7 +1228,7 @@ impl WebUIHandler {
                     context.protocol,
                     context.entry_id,
                     context.request_path,
-                    &mut context.route_cache,
+                    context.route_index,
                 );
                 let state_selection =
                     collect_hydration_state(context.protocol, reachable.iter().map(String::as_str));
@@ -1367,15 +1270,10 @@ impl WebUIHandler {
                     }
                 }
 
-                // Build (or reuse cached) component → index map.
-                let comp_index = context.component_index_cache.get_or_insert_with(|| {
-                    crate::route_handler::build_component_index(context.protocol)
-                });
-
                 // Compute the inventory hex from actually rendered components.
                 let inventory_hex = crate::route_handler::encode_component_inventory(
                     &context.rendered_components,
-                    comp_index,
+                    context.component_index,
                 );
 
                 // Chain
@@ -1383,7 +1281,7 @@ impl WebUIHandler {
                     context.protocol,
                     context.entry_id,
                     context.request_path,
-                    &mut context.route_cache,
+                    context.route_index,
                 );
                 let chain_json: Vec<Value> = chain
                     .iter()
@@ -1669,17 +1567,19 @@ impl WebUIHandler {
     }
 
     /// Render the UI based on the protocol and state.
-    ///
-    /// Like `handle()` but does not call `writer.end()`.
     pub fn render<'a>(
         &self,
-        protocol: &'a WebUIProtocol,
+        protocol: &'a Protocol,
         state: &'a Value,
         options: &RenderOptions<'a>,
         writer: &'a mut dyn ResponseWriter,
     ) -> Result<()> {
+        let document = protocol.protocol();
+        if !document.fragments.contains_key(options.entry_id) {
+            return Err(HandlerError::MissingFragment(options.entry_id.to_string()));
+        }
         let mut context = WebUIProcessContext {
-            protocol,
+            protocol: document,
             state,
             writer,
             local_vars: HashMap::new(),
@@ -1696,13 +1596,14 @@ impl WebUIHandler {
             head_inject: options.head_inject.filter(|s| !s.is_empty()),
             body_inject: options.body_inject.filter(|s| !s.is_empty()),
             head_end_emitted: false,
-            component_index_cache: None,
+            component_index: protocol.component_index(),
             body_end_emitted: false,
-            route_cache: CompiledRouteCache::new(),
+            route_index: protocol.route_index(),
             route_chain_index: 0,
         };
 
         self.process_fragment_id(options.entry_id, &mut context)?;
+        writer.end()?;
 
         Ok(())
     }
@@ -1723,9 +1624,8 @@ fn write_attr(writer: &mut dyn ResponseWriter, name: &str, value: &str) -> Resul
     writer.write("\"")
 }
 
-/// Process a WebUI protocol with the provided state and write the output to the given writer.
-/// This is the main entry point for the WebUI handler.
-pub fn handle(
+#[cfg(test)]
+fn handle(
     protocol: &WebUIProtocol,
     state: &Value,
     options: &RenderOptions<'_>,

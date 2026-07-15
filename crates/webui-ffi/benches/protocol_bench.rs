@@ -9,7 +9,7 @@ use std::ffi::CString;
 use std::hint::black_box;
 use webui_ffi::{
     webui_free, webui_handler_create, webui_handler_destroy, webui_handler_render,
-    webui_protocol_create, webui_protocol_destroy, webui_render_partial,
+    webui_protocol_create, webui_protocol_destroy, webui_protocol_render_partial,
 };
 use webui_protocol::{
     ComponentData, FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment,
@@ -59,8 +59,8 @@ fn c_string(value: &str) -> CString {
         .unwrap_or_else(|error| panic!("benchmark string contains an interior NUL: {error}"))
 }
 
-fn prepared_protocol_bench(c: &mut Criterion) {
-    let state = c_string(r#"{"title":"Prepared protocol benchmark","items":[]}"#);
+fn protocol_bench(c: &mut Criterion) {
+    let state = c_string(r#"{"title":"Protocol benchmark","items":[]}"#);
     let entry = c_string("index.html");
     let path = c_string("/");
     let inventory = c_string("");
@@ -130,7 +130,7 @@ fn prepared_protocol_bench(c: &mut Criterion) {
                     assert!(!request_protocol.is_null(), "protocol preparation failed");
                     // SAFETY: All opaque and string pointers remain valid for the call.
                     let output = unsafe {
-                        webui_render_partial(
+                        webui_protocol_render_partial(
                             request_protocol,
                             state.as_ptr(),
                             entry.as_ptr(),
@@ -140,7 +140,7 @@ fn prepared_protocol_bench(c: &mut Criterion) {
                     };
                     assert!(!output.is_null(), "partial render failed");
                     black_box(output);
-                    // SAFETY: output was allocated by webui_render_partial.
+                    // SAFETY: output was allocated by webui_protocol_render_partial.
                     unsafe { webui_free(output) };
                     // SAFETY: request_protocol is live and no longer borrowed.
                     unsafe { webui_protocol_destroy(request_protocol) };
@@ -153,7 +153,7 @@ fn prepared_protocol_bench(c: &mut Criterion) {
                 b.iter(|| {
                     // SAFETY: All opaque and string pointers remain valid for the call.
                     let output = unsafe {
-                        webui_render_partial(
+                        webui_protocol_render_partial(
                             prepared,
                             state.as_ptr(),
                             entry.as_ptr(),
@@ -163,7 +163,7 @@ fn prepared_protocol_bench(c: &mut Criterion) {
                     };
                     assert!(!output.is_null(), "prepared partial render failed");
                     black_box(output);
-                    // SAFETY: output was allocated by webui_render_partial.
+                    // SAFETY: output was allocated by webui_protocol_render_partial.
                     unsafe { webui_free(output) };
                 });
             },
@@ -180,5 +180,5 @@ fn prepared_protocol_bench(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, prepared_protocol_bench);
+criterion_group!(benches, protocol_bench);
 criterion_main!(benches);

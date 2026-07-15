@@ -19,9 +19,7 @@ mod handler;
 mod parser;
 
 #[cfg(feature = "handler")]
-pub use handler::{
-    protocol_tokens, render, render_component_templates, render_partial, PreparedProtocol,
-};
+pub use handler::Protocol;
 #[cfg(feature = "parser")]
 pub use parser::build_protocol;
 

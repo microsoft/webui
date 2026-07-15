@@ -6,9 +6,8 @@
 //! Provides high-performance server-side rendering by compiling the Rust
 //! WebUI handler directly into a `.node` native addon — no C ABI intermediary.
 //!
-//! The `render` function accepts pre-compiled protobuf protocol data (from
-//! `webui build`) and streams rendered HTML fragments via a callback, enabling
-//! true streaming SSR without buffering the entire response.
+//! The `Protocol` class decodes pre-compiled protobuf data from `webui build`
+//! once and provides buffered and streaming render methods.
 //!
 //! ## Usage (from Node.js)
 //!
@@ -18,14 +17,14 @@
 //! // Load the native addon
 //! const mod = { exports: {} };
 //! process.dlopen(mod, './target/release/libwebui_node.dylib');
-//! const { render } = mod.exports;
+//! const { Protocol } = mod.exports;
 //!
 //! // Read pre-compiled protocol (from `webui build`)
-//! const protocol = fs.readFileSync('./dist/protocol.bin');
+//! const protocol = new Protocol(fs.readFileSync('./dist/protocol.bin'), 'webui');
 //! const state = '{"name": "WebUI"}';
 //!
 //! // Stream rendered fragments
-//! render(protocol, state, (chunk) => process.stdout.write(chunk));
+//! protocol.renderStream(state, 'index.html', '/', (chunk) => process.stdout.write(chunk));
 //! ```
 
 use napi::bindgen_prelude::{Buffer, Function};
@@ -35,9 +34,8 @@ use serde_json::Value;
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
-use webui_handler::{
-    PreparedProtocol as HandlerPreparedProtocol, RenderOptions, ResponseWriter, WebUIHandler,
-};
+use webui_handler::{Protocol as HandlerProtocol, RenderOptions, ResponseWriter, WebUIHandler};
+#[cfg(test)]
 use webui_protocol::WebUIProtocol;
 
 const STREAM_CHUNK_SIZE: usize = 16 * 1024;
@@ -242,24 +240,24 @@ pub fn inspect(protocol_data: Buffer) -> napi::Result<String> {
 /// full renders, partial navigation, component loading, and token queries. The
 /// selected hydration plugin is bound once at construction.
 #[napi]
-pub struct PreparedProtocol {
-    inner: HandlerPreparedProtocol,
+pub struct Protocol {
+    inner: HandlerProtocol,
     handler: WebUIHandler,
 }
 
 #[napi]
-impl PreparedProtocol {
+impl Protocol {
     /// Decode a protocol and bind its render plugin for repeated rendering.
     #[napi(constructor)]
     pub fn new(protocol_data: Buffer, plugin: Option<String>) -> napi::Result<Self> {
-        let inner = decode_prepared_protocol(&protocol_data)?;
+        let inner = decode_protocol(&protocol_data)?;
         let handler = create_handler(plugin)?;
         Ok(Self { inner, handler })
     }
 
     /// Render from an existing JSON string.
     #[napi]
-    pub fn render_json(
+    pub fn render(
         &self,
         state_json: String,
         entry: String,
@@ -267,12 +265,12 @@ impl PreparedProtocol {
     ) -> napi::Result<String> {
         let state = parse_state_json(&state_json)?;
         let options = RenderOptions::new(&entry, &request_path);
-        render_to_string(&self.handler, self.inner.protocol(), &state, &options)
+        render_to_string(&self.handler, &self.inner, &state, &options)
     }
 
     /// Stream an existing JSON string in bounded chunks.
     #[napi]
-    pub fn render_stream_json(
+    pub fn render_stream(
         &self,
         state_json: String,
         entry: String,
@@ -281,13 +279,7 @@ impl PreparedProtocol {
     ) -> napi::Result<()> {
         let state = parse_state_json(&state_json)?;
         let options = RenderOptions::new(&entry, &request_path);
-        render_to_callback(
-            &self.handler,
-            self.inner.protocol(),
-            &state,
-            &options,
-            &on_chunk,
-        )
+        render_to_callback(&self.handler, &self.inner, &state, &options, &on_chunk)
     }
 
     /// Produce a complete partial-navigation response.
@@ -299,13 +291,9 @@ impl PreparedProtocol {
         request_path: String,
         inventory_hex: String,
     ) -> napi::Result<String> {
-        render_partial_with_prepared(
-            &self.inner,
-            &state_json,
-            &entry_id,
-            &request_path,
-            &inventory_hex,
-        )
+        self.inner
+            .render_partial(&state_json, &entry_id, &request_path, &inventory_hex)
+            .map_err(|e| NapiError::from_reason(format!("render_partial failed: {e}")))
     }
 
     /// Render component templates and styles for on-demand loading.
@@ -315,105 +303,32 @@ impl PreparedProtocol {
         component_tags: Vec<String>,
         inventory_hex: String,
     ) -> napi::Result<String> {
-        render_component_templates_with_prepared(&self.inner, &component_tags, &inventory_hex)
+        let tag_refs: Vec<&str> = component_tags.iter().map(String::as_str).collect();
+        let result = self
+            .inner
+            .render_component_templates(&tag_refs, &inventory_hex)
+            .map_err(|e| {
+                NapiError::from_reason(format!("render_component_templates failed: {e}"))
+            })?;
+        serde_json::to_string(&result)
+            .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
     }
 
     /// Return CSS token names in build order.
     #[napi]
-    pub fn protocol_tokens(&self) -> Vec<String> {
+    pub fn tokens(&self) -> Vec<String> {
         self.inner.tokens().to_vec()
     }
 }
 
-/// Produce a complete JSON partial response for client-side navigation.
-///
-/// Combines active-route projected state, route templates, inventory, request
-/// path, and matched route chain into a single JSON string:
-/// `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
-///
-/// Host servers return this directly — no assembly required.
-#[napi]
-pub fn render_partial(
-    protocol_data: Buffer,
-    state_json: String,
-    entry_id: String,
-    request_path: String,
-    inventory_hex: String,
-) -> napi::Result<String> {
-    let prepared = decode_prepared_protocol(&protocol_data)?;
-    render_partial_with_prepared(
-        &prepared,
-        &state_json,
-        &entry_id,
-        &request_path,
-        &inventory_hex,
-    )
-}
-
-#[napi]
-pub fn render_component_templates(
-    protocol_data: Buffer,
-    component_tags_json: String,
-    inventory_hex: String,
-) -> napi::Result<String> {
-    let tags: Vec<String> = serde_json::from_str(&component_tags_json)
-        .map_err(|e| NapiError::from_reason(format!("invalid tags JSON: {e}")))?;
-    let prepared = decode_prepared_protocol(&protocol_data)?;
-    render_component_templates_with_prepared(&prepared, &tags, &inventory_hex)
-}
-
-/// Extract the CSS token name list from a compiled protocol.
-///
-/// Returns the tokens as a JavaScript string array, preserving the original
-/// order from the build step.
-#[napi]
-pub fn protocol_tokens(protocol_data: Buffer) -> napi::Result<Vec<String>> {
-    let prepared = decode_prepared_protocol(&protocol_data)?;
-    Ok(prepared.tokens().to_vec())
-}
-
-fn decode_prepared_protocol(protocol_data: &[u8]) -> napi::Result<HandlerPreparedProtocol> {
-    HandlerPreparedProtocol::from_protobuf(protocol_data)
+fn decode_protocol(protocol_data: &[u8]) -> napi::Result<HandlerProtocol> {
+    HandlerProtocol::from_protobuf(protocol_data)
         .map_err(|e| NapiError::from_reason(format!("Protocol decode error: {e}")))
 }
 
 fn parse_state_json(state_json: &str) -> napi::Result<Value> {
     serde_json::from_str(state_json)
         .map_err(|e| NapiError::from_reason(format!("State JSON error: {e}")))
-}
-
-fn render_partial_with_prepared(
-    prepared: &HandlerPreparedProtocol,
-    state_json: &str,
-    entry_id: &str,
-    request_path: &str,
-    inventory_hex: &str,
-) -> napi::Result<String> {
-    webui_handler::route_handler::render_partial_prepared(
-        prepared,
-        state_json,
-        entry_id,
-        request_path,
-        inventory_hex,
-    )
-    .map_err(|e| NapiError::from_reason(format!("render_partial failed: {e}")))
-}
-
-fn render_component_templates_with_prepared(
-    prepared: &HandlerPreparedProtocol,
-    component_tags: &[String],
-    inventory_hex: &str,
-) -> napi::Result<String> {
-    let tag_refs: Vec<&str> = component_tags.iter().map(String::as_str).collect();
-    let result = webui_handler::route_handler::render_component_templates_prepared(
-        prepared,
-        &tag_refs,
-        inventory_hex,
-    )
-    .map_err(|e| NapiError::from_reason(format!("render_component_templates failed: {e}")))?;
-
-    serde_json::to_string(&result)
-        .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
 }
 
 fn create_handler(plugin: Option<String>) -> napi::Result<WebUIHandler> {
@@ -460,7 +375,7 @@ impl ResponseWriter for BufferedWriter {
 
 fn render_to_string(
     handler: &WebUIHandler,
-    protocol: &WebUIProtocol,
+    protocol: &HandlerProtocol,
     state: &Value,
     options: &RenderOptions<'_>,
 ) -> napi::Result<String> {
@@ -524,7 +439,7 @@ impl ResponseWriter for CallbackWriter<'_, '_> {
 
 fn render_to_callback(
     handler: &WebUIHandler,
-    protocol: &WebUIProtocol,
+    protocol: &HandlerProtocol,
     state: &Value,
     options: &RenderOptions<'_>,
     on_chunk: &Function<String, ()>,
@@ -539,35 +454,6 @@ fn render_to_callback(
         return Err(NapiError::from_reason(format!("Callback error: {error}")));
     }
     Ok(())
-}
-
-/// Render a pre-compiled WebUI protocol with JSON state, streaming each
-/// fragment to the provided callback.
-///
-/// # Arguments
-///
-/// * `protocol_data` — Protobuf binary from `webui build` (zero-copy Buffer).
-/// * `state_json` — JSON string with the render state.
-/// * `entry` — Entry fragment identifier.
-/// * `request_path` — Request path used for route matching.
-/// * `on_chunk` - Called with output coalesced around a 16 KiB target.
-/// * `plugin` — Optional hydration plugin identifier.
-#[napi]
-#[allow(clippy::too_many_arguments)] // Stable native addon ABI uses six positional arguments.
-pub fn render(
-    protocol_data: Buffer,
-    state_json: String,
-    entry: String,
-    request_path: String,
-    on_chunk: Function<String, ()>,
-    plugin: Option<String>,
-) -> napi::Result<()> {
-    let protocol = WebUIProtocol::from_protobuf(&protocol_data)
-        .map_err(|e| NapiError::from_reason(format!("Protocol decode error: {e}")))?;
-    let state = parse_state_json(&state_json)?;
-    let handler = create_handler(plugin)?;
-    let render_options = RenderOptions::new(&entry, &request_path);
-    render_to_callback(&handler, &protocol, &state, &render_options, &on_chunk)
 }
 
 #[cfg(test)]
@@ -591,7 +477,7 @@ mod tests {
 
     /// Helper: render protocol bytes + state, collecting output into a String.
     fn render_to_string(protocol_bytes: &[u8], state_json: &str) -> Result<String, String> {
-        let protocol = WebUIProtocol::from_protobuf(protocol_bytes).map_err(|e| e.to_string())?;
+        let protocol = HandlerProtocol::from_protobuf(protocol_bytes).map_err(|e| e.to_string())?;
         let state: Value = serde_json::from_str(state_json).map_err(|e| e.to_string())?;
 
         let mut output = String::with_capacity(1024);
@@ -639,20 +525,19 @@ mod tests {
     }
 
     #[test]
-    fn prepared_protocol_reuses_decoded_protocol_for_json_state() {
+    fn protocol_reuses_decoded_protocol_for_json_state() {
         let proto = build_protocol("Hello, {{name}}!");
-        let prepared =
-            PreparedProtocol::new(Buffer::from(proto), None).expect("protocol should prepare");
+        let protocol = Protocol::new(Buffer::from(proto), None).expect("protocol should load");
 
-        let first = prepared
-            .render_json(
+        let first = protocol
+            .render(
                 r#"{"name":"First"}"#.to_string(),
                 "index.html".to_string(),
                 "/".to_string(),
             )
             .expect("first render should succeed");
-        let second = prepared
-            .render_json(
+        let second = protocol
+            .render(
                 r#"{"name":"Second"}"#.to_string(),
                 "index.html".to_string(),
                 "/".to_string(),
@@ -764,7 +649,7 @@ mod tests {
     /// bootstrap block (and its projected state) is emitted — this mirrors the
     /// production `render(..., plugin = "webui")` path.
     fn render_with_webui_plugin(protocol_bytes: &[u8], state_json: &str) -> Result<String, String> {
-        let protocol = WebUIProtocol::from_protobuf(protocol_bytes).map_err(|e| e.to_string())?;
+        let protocol = HandlerProtocol::from_protobuf(protocol_bytes).map_err(|e| e.to_string())?;
         let state: Value = serde_json::from_str(state_json).map_err(|e| e.to_string())?;
 
         let mut output = String::with_capacity(1024);
@@ -1262,12 +1147,11 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── Tests for protocol_tokens napi export ────────────────────────
-
     #[test]
     fn test_protocol_tokens_empty() {
         let proto = build_protocol("<p>Hello</p>");
-        let tokens = protocol_tokens(napi::bindgen_prelude::Buffer::from(proto)).unwrap();
+        let protocol = Protocol::new(Buffer::from(proto), None).unwrap();
+        let tokens = protocol.tokens();
         assert!(tokens.is_empty());
     }
 
@@ -1284,13 +1168,14 @@ mod tests {
             ],
         );
         let proto = protocol.to_protobuf().expect("encode");
-        let tokens = protocol_tokens(napi::bindgen_prelude::Buffer::from(proto)).unwrap();
+        let protocol = Protocol::new(Buffer::from(proto), None).unwrap();
+        let tokens = protocol.tokens();
         assert_eq!(tokens, vec!["colorBrandBackground", "fontSizeBase300"]);
     }
 
     #[test]
     fn test_protocol_tokens_invalid_protobuf() {
-        let result = protocol_tokens(napi::bindgen_prelude::Buffer::from(vec![0xFF, 0xFF]));
+        let result = Protocol::new(Buffer::from(vec![0xFF, 0xFF]), None);
         assert!(result.is_err());
     }
 }

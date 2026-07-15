@@ -1880,7 +1880,6 @@ dependencies = [
  "cbindgen",
  "criterion",
  "microsoft-webui-handler",
- "microsoft-webui-parser",
  "microsoft-webui-protocol",
  "serde_json",
 ]

@@ -38,23 +38,23 @@ public sealed class WebUIHandler : IDisposable
     }
 
     /// <summary>
-    /// Renders a prepared protocol with the specified state, entry, and request path.
+    /// Renders a loaded protocol with the specified state, entry, and request path.
     /// <para>When the handler was created with the <c>webui</c> plugin, the state seeded
     /// into the emitted <c>#webui-data</c> bootstrap block is projected down to the
     /// hydration keys for components reachable on the active request route. Projection
     /// reduces response work and bytes; it is not a secrecy boundary.</para>
     /// </summary>
-    /// <param name="protocol">Prepared protocol shared across requests.</param>
+    /// <param name="protocol">Loaded protocol shared across requests.</param>
     /// <param name="stateJson">JSON-encoded state for the render.</param>
     /// <param name="entryId">The entry identifier to render.</param>
     /// <param name="requestPath">The HTTP request path.</param>
     /// <returns>The rendered HTML string.</returns>
     /// <exception cref="ObjectDisposedException">
-    /// Thrown when the handler or prepared protocol has been disposed.
+    /// Thrown when the handler or protocol has been disposed.
     /// </exception>
     /// <exception cref="WebUIException">Thrown when rendering fails.</exception>
     public string Render(
-        PreparedProtocol protocol,
+        Protocol protocol,
         string stateJson,
         string entryId,
         string requestPath)
@@ -75,54 +75,6 @@ public sealed class WebUIHandler : IDisposable
         if (resultPtr == IntPtr.Zero)
         {
             string error = NativeBindings.GetLastError() ?? "Render failed.";
-            throw new WebUIException(error);
-        }
-
-        return NativeBindings.ReadAndFreeString(resultPtr)!;
-    }
-
-    /// <summary>
-    /// Produces a complete JSON partial response for client-side navigation.
-    /// Combines active-route client state, route templates, inventory, request
-    /// path, and matched route chain in a single call. State fields not consumed
-    /// by reachable authored client components are excluded from the response.
-    /// State fields not consumed by reachable authored client components are
-    /// excluded from the response.
-    /// </summary>
-    /// <param name="protocol">Prepared protocol shared across requests.</param>
-    /// <param name="stateJson">JSON-encoded application state.</param>
-    /// <param name="entryId">The persistent entry identifier.</param>
-    /// <param name="requestPath">The current route path.</param>
-    /// <param name="inventoryHex">Hex-encoded inventory string.</param>
-    /// <returns>A JSON string containing state, templates, inventory, path, and chain.</returns>
-    /// <exception cref="ObjectDisposedException">
-    /// Thrown when the handler or prepared protocol has been disposed.
-    /// </exception>
-    /// <exception cref="WebUIException">Thrown when the operation fails.</exception>
-    public string RenderPartial(
-        PreparedProtocol protocol,
-        string stateJson,
-        string entryId,
-        string requestPath,
-        string inventoryHex)
-    {
-        ThrowIfDisposed();
-        ArgumentNullException.ThrowIfNull(protocol);
-        ArgumentNullException.ThrowIfNull(stateJson);
-        ArgumentNullException.ThrowIfNull(entryId);
-        ArgumentNullException.ThrowIfNull(requestPath);
-        ArgumentNullException.ThrowIfNull(inventoryHex);
-
-        IntPtr resultPtr = NativeBindings.webui_render_partial(
-            protocol.Handle,
-            stateJson,
-            entryId,
-            requestPath,
-            inventoryHex);
-
-        if (resultPtr == IntPtr.Zero)
-        {
-            string error = NativeBindings.GetLastError() ?? "RenderPartial failed.";
             throw new WebUIException(error);
         }
 

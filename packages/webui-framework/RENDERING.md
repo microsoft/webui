@@ -226,6 +226,11 @@ After this step, `this.count === 42` matches the rendered DOM, and the subsequen
 
 Properties not present in state, or not on the observable list, are left at their class defaults.
 
+Compiler-owned dormant hosts follow a stricter first-write rule: activation
+wires the SSR DOM, then updates only roots explicitly supplied by that write.
+Omitted text, attribute, conditional, and repeat roots retain their trusted SSR
+output until state supplies those roots.
+
 ---
 
 ## Reactive update model

@@ -19,7 +19,7 @@ use std::ffi::{c_void, CStr, CString};
 use webui_ffi::{
     webui_free, webui_handler_create, webui_handler_create_with_plugin, webui_handler_destroy,
     webui_handler_render, webui_handler_set_nonce, webui_last_error, webui_protocol_create,
-    webui_protocol_destroy, webui_protocol_tokens, webui_render, webui_render_partial,
+    webui_protocol_destroy, webui_protocol_render_partial, webui_protocol_tokens,
 };
 use webui_protocol::{
     FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment, WebUIProtocol,
@@ -29,23 +29,6 @@ use webui_protocol::{
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Call `webui_render` and return a Rust `String`, freeing the C
-/// string afterwards. Panics if the function returns `NULL`.
-#[cfg(feature = "parser")]
-unsafe fn render(html: &str, json: &str) -> String {
-    let c_html = CString::new(html).expect("test html should not contain NUL");
-    let c_json = CString::new(json).expect("test json should not contain NUL");
-    let ptr = webui_render(c_html.as_ptr(), c_json.as_ptr());
-    assert!(
-        !ptr.is_null(),
-        "webui_render returned NULL; error: {}",
-        last_error_string().unwrap_or_else(|| "<none>".to_string())
-    );
-    let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-    webui_free(ptr);
-    result
-}
 
 /// Retrieve the last error as a Rust String, or `None`.
 unsafe fn last_error_string() -> Option<String> {
@@ -75,174 +58,6 @@ unsafe fn read_protocol_tokens(bytes: &[u8]) -> String {
     webui_free(ptr);
     webui_protocol_destroy(prepared);
     tokens
-}
-
-// ---------------------------------------------------------------------------
-// Tests: webui_render (happy paths) — requires `parser` feature
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "parser")]
-#[test]
-fn simple_html_passthrough() {
-    unsafe {
-        let result = render("<p>Hello</p>", "{}");
-        assert_eq!(result, "<p>Hello</p>");
-    }
-}
-
-#[cfg(feature = "parser")]
-#[test]
-fn signal_substitution() {
-    unsafe {
-        let result = render("Hello, {{name}}!", r#"{"name":"WebUI"}"#);
-        assert_eq!(result, "Hello, WebUI!");
-    }
-}
-
-#[cfg(feature = "parser")]
-#[test]
-fn for_loop() {
-    unsafe {
-        let html = r#"<ul><for each="item in items"><li>{{item}}</li></for></ul>"#;
-        let json = r#"{"items":["a","b","c"]}"#;
-        let result = render(html, json);
-        assert_eq!(result, "<ul><li>a</li><li>b</li><li>c</li></ul>");
-    }
-}
-
-#[cfg(feature = "parser")]
-#[test]
-fn if_condition_true() {
-    unsafe {
-        let html = r#"<if condition="show"><p>Visible</p></if>"#;
-        let json = r#"{"show":true}"#;
-        let result = render(html, json);
-        assert_eq!(result, "<p>Visible</p>");
-    }
-}
-
-#[cfg(feature = "parser")]
-#[test]
-fn if_condition_false() {
-    unsafe {
-        let html = r#"<if condition="show"><p>Hidden</p></if>"#;
-        let json = r#"{"show":false}"#;
-        let result = render(html, json);
-        assert_eq!(result, "");
-    }
-}
-
-#[cfg(feature = "parser")]
-#[test]
-fn html_escaping() {
-    unsafe {
-        let html = "<div>{{content}}</div>";
-        let json = r#"{"content":"<script>alert('xss')</script>"}"#;
-        let result = render(html, json);
-        assert!(
-            !result.contains("<script>"),
-            "signal output must be HTML-escaped, got: {result}"
-        );
-        assert!(result.contains("&lt;script&gt;"));
-    }
-}
-
-#[cfg(feature = "parser")]
-#[test]
-fn raw_signal_unescaped() {
-    unsafe {
-        let html = "<div>{{{content}}}</div>";
-        let json = r#"{"content":"<b>bold</b>"}"#;
-        let result = render(html, json);
-        assert_eq!(result, "<div><b>bold</b></div>");
-    }
-}
-
-#[cfg(feature = "parser")]
-#[test]
-fn empty_data_object() {
-    unsafe {
-        let result = render("<p>static</p>", "{}");
-        assert_eq!(result, "<p>static</p>");
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Tests: error cases — webui_render (requires `parser` feature)
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "parser")]
-#[test]
-fn null_html_returns_null_and_sets_error() {
-    unsafe {
-        let c_json = CString::new("{}").expect("static string");
-        let ptr = webui_render(std::ptr::null(), c_json.as_ptr());
-        assert!(ptr.is_null());
-
-        let err = last_error_string();
-        assert!(
-            err.is_some(),
-            "expected an error message after NULL html input"
-        );
-        let msg = err.unwrap_or_default();
-        assert!(
-            msg.contains("null"),
-            "error should mention null, got: {msg}"
-        );
-    }
-}
-
-#[cfg(feature = "parser")]
-#[test]
-fn null_json_returns_null_and_sets_error() {
-    unsafe {
-        let c_html = CString::new("<p>hi</p>").expect("static string");
-        let ptr = webui_render(c_html.as_ptr(), std::ptr::null());
-        assert!(ptr.is_null());
-
-        let err = last_error_string();
-        assert!(err.is_some());
-    }
-}
-
-#[cfg(feature = "parser")]
-#[test]
-fn invalid_json_returns_null_and_sets_error() {
-    unsafe {
-        let c_html = CString::new("<p>hi</p>").expect("static string");
-        let c_json = CString::new("NOT JSON").expect("static string");
-        let ptr = webui_render(c_html.as_ptr(), c_json.as_ptr());
-        assert!(ptr.is_null());
-
-        let err = last_error_string().expect("should have error for bad JSON");
-        assert!(
-            err.contains("JSON"),
-            "error should mention JSON, got: {err}"
-        );
-    }
-}
-
-#[cfg(feature = "parser")]
-#[test]
-fn successful_call_clears_previous_error() {
-    unsafe {
-        // First, trigger an error
-        let c_html = CString::new("<p>hi</p>").expect("static string");
-        let c_json = CString::new("NOT JSON").expect("static string");
-        let ptr = webui_render(c_html.as_ptr(), c_json.as_ptr());
-        assert!(ptr.is_null());
-        assert!(last_error_string().is_some(), "error should be set");
-
-        // Now make a successful call
-        let result = render("<p>ok</p>", "{}");
-        assert_eq!(result, "<p>ok</p>");
-
-        // Error should be cleared
-        assert!(
-            last_error_string().is_none(),
-            "error should be cleared after successful call"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -392,7 +207,7 @@ fn render_partial_returns_templates_inventory_and_chain() {
         let c_inventory = CString::new("").expect("static string");
         let prepared = prepare_protocol(&protocol_bytes);
 
-        let ptr = webui_render_partial(
+        let ptr = webui_protocol_render_partial(
             prepared,
             c_state.as_ptr(),
             c_entry.as_ptr(),
@@ -401,7 +216,7 @@ fn render_partial_returns_templates_inventory_and_chain() {
         );
         assert!(
             !ptr.is_null(),
-            "webui_render_partial returned NULL: {}",
+            "webui_protocol_render_partial returned NULL: {}",
             last_error_string().unwrap_or_else(|| "<none>".to_string())
         );
 
@@ -481,23 +296,6 @@ fn render_partial_returns_templates_inventory_and_chain() {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: fixture file (requires `parser` feature)
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "parser")]
-#[test]
-fn fixture_file_renders_correctly() {
-    let html = include_str!("fixtures/simple.html");
-    let json = include_str!("fixtures/state.json");
-    let expected = include_str!("fixtures/expected_output.html");
-
-    unsafe {
-        let result = render(html, json);
-        assert_eq!(result, expected);
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests: webui_free
 // ---------------------------------------------------------------------------
 
@@ -505,31 +303,6 @@ fn fixture_file_renders_correctly() {
 fn free_string_null_is_safe() {
     unsafe {
         webui_free(std::ptr::null_mut()); // should not crash
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Tests: webui_render without `parser` feature returns error stub
-// ---------------------------------------------------------------------------
-
-#[cfg(not(feature = "parser"))]
-#[test]
-fn webui_render_without_parser_returns_null_with_error() {
-    unsafe {
-        let c_html = CString::new("<p>hi</p>").expect("static string");
-        let c_json = CString::new("{}").expect("static string");
-
-        let ptr = webui_render(c_html.as_ptr(), c_json.as_ptr());
-        assert!(
-            ptr.is_null(),
-            "webui_render should return NULL without parser feature"
-        );
-
-        let err = last_error_string().expect("error should be set without parser feature");
-        assert!(
-            err.contains("parser"),
-            "error should mention parser feature, got: {err}"
-        );
     }
 }
 
@@ -942,7 +715,7 @@ fn handler_render_projects_state_to_component_hydration_keys() {
 }
 
 #[test]
-fn prepared_protocol_supports_repeated_full_renders() {
+fn protocol_supports_repeated_full_renders() {
     let proto_bytes = build_protocol_with_hydration_keys(&["kept"]);
 
     unsafe {
@@ -957,7 +730,7 @@ fn prepared_protocol_supports_repeated_full_renders() {
 
         let c_entry = CString::new("index.html").expect("static string");
         let c_path = CString::new("/").expect("static string");
-        for expected in ["FIRST_PREPARED", "SECOND_PREPARED"] {
+        for expected in ["FIRST_LOADED", "SECOND_LOADED"] {
             let state = CString::new(format!(r#"{{"kept":"{expected}","dropped":"SECRET"}}"#))
                 .expect("state should not contain NUL");
             let ptr = webui_handler_render(
@@ -984,7 +757,7 @@ fn prepared_protocol_supports_repeated_full_renders() {
 }
 
 #[test]
-fn prepared_protocol_exposes_tokens() {
+fn protocol_exposes_tokens() {
     let protocol = WebUIProtocol::with_tokens(
         HashMap::new(),
         vec!["alpha".to_string(), "beta".to_string()],

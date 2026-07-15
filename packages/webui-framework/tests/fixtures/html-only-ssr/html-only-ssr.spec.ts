@@ -68,7 +68,7 @@ test.describe('HTML-only dormant host fixture', () => {
     )).toBe(1);
   });
 
-  test('preserves SSR repeats when the first write omits their state root', async ({ page }) => {
+  test('preserves untouched SSR bindings when the first write omits their roots', async ({ page }) => {
     await page.evaluate(() => {
       const host = document.querySelector('test-html-only') as {
         setState(state: Record<string, unknown>): void;
@@ -77,7 +77,11 @@ test.describe('HTML-only dormant host fixture', () => {
     });
 
     await expect(page.locator('test-html-only .status')).toHaveText('Partially updated');
+    await expect(page.locator('test-html-only .heading')).toHaveText('Contacts');
+    await expect(page.locator('test-html-only .filter')).toHaveText('all');
+    await expect(page.locator('test-html-only .detail-link')).toHaveAttribute('href', '/items/42');
     await expect(page.locator('test-html-only .item')).toHaveText(['Ada', 'Grace']);
+    await expect(page.locator('test-html-only .details')).toHaveCount(0);
     expect(warnings.filter((warning) => warning.includes('repeat marker count'))).toHaveLength(0);
   });
 

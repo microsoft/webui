@@ -315,6 +315,10 @@ Start the router. Call after hydration completes.
 | `ssrFresh` | `boolean` | Skip initial loader replay on SSR bootstrap (default: `true`). Components with `static ssrLoader = true` still run their loader. |
 | `cache` | `CacheConfig` | Tagged navigation cache: `{ staleTime, gcTime, maxEntries }` |
 
+Loader-owned tags are reserved before the framework claims compiler-owned
+HTML-only templates. This guarantees the dynamic module retains ownership of
+`customElements.define()` even when template metadata is already available.
+
 ### `Router.navigate(path)`
 
 Programmatic navigation:
@@ -512,7 +516,7 @@ X-WebUI-Inventory: <hex bitmask>
 The server should return:
 
 - **`Accept: application/x-ndjson`** → NDJSON streaming: Chunk 1 `{ templateStyles, templates, inventory, path, chain, cacheTags }`, Chunk 2 `{ states: [...] }` — or fall back to single JSON
-- **`Accept: application/json`** → JSON partial: `{ state, templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }`; `render_partial()` returns this complete response and `render_partial_metadata()` is reserved for state-free NDJSON chunk 1
+- **`Accept: application/json`** → JSON partial: `{ state, templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }`; `Protocol::render_partial()` returns this complete response
 - **Otherwise** → Full SSR'd HTML page
 
 The `chain` field contains the matched route chain with `component`, `path`,

@@ -279,7 +279,7 @@ impl Drop for PooledChunk {
 /// actix_web::rt::task::spawn_blocking(move || {
 ///     let mut writer = StreamingWriter::new(tx)
 ///         .with_flush_timeout(Duration::from_secs(30));
-///     handler.handle(&protocol, &state, &opts, &mut writer);
+///     handler.render(&protocol, &state, &opts, &mut writer);
 ///     let _ = ResponseWriter::end(&mut writer);
 /// });
 /// // … wrap rx in a Stream and pass to HttpResponse::streaming …

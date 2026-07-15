@@ -78,6 +78,10 @@ export interface RenderOptions {
   entry?: string;
   /** URL path to match routes against (default: "/"). */
   requestPath?: string;
+}
+
+/** Options fixed for the lifetime of a loaded protocol. */
+export interface ProtocolOptions {
   /** Handler plugin name. */
   plugin?: string;
 }
@@ -118,7 +122,7 @@ export interface PartialResponse {
 // ── Internal: native addon loading ───────────────────────────────────
 
 interface NativeAddon {
-  PreparedProtocol?: new (protocol: Buffer, plugin?: string) => NativePreparedProtocol;
+  Protocol?: new (protocol: Buffer, plugin?: string) => NativeProtocol;
   build(options: {
     appDir: string;
     entry?: string;
@@ -137,9 +141,9 @@ interface NativeAddon {
   inspect(protocolData: Buffer): string;
 }
 
-interface NativePreparedProtocol {
-  renderJson(stateJson: string, entry: string, requestPath: string): string;
-  renderStreamJson(
+interface NativeProtocol {
+  render(stateJson: string, entry: string, requestPath: string): string;
+  renderStream(
     stateJson: string,
     entry: string,
     requestPath: string,
@@ -147,17 +151,11 @@ interface NativePreparedProtocol {
   ): void;
   renderPartial(stateJson: string, entryId: string, requestPath: string, inventoryHex: string): string;
   renderComponentTemplates(componentTags: string[], inventoryHex: string): string;
-  protocolTokens(): string[];
+  tokens(): string[];
 }
 
 let addon: NativeAddon | null = null;
 let fallbackWarned = false;
-interface PreparedProtocolCache {
-  snapshot: Buffer;
-  byPlugin: Map<string | undefined, NativePreparedProtocol>;
-}
-
-const preparedProtocols = new WeakMap<Buffer, PreparedProtocolCache>();
 
 function loadAddon(): NativeAddon | null {
   if (addon) return addon;
@@ -189,48 +187,6 @@ function warnFallback(): void {
       `Using WASM fallback — performance may be degraded.\n` +
       `Install the platform-specific package for optimal performance.`,
   );
-}
-
-function getPreparedProtocol(
-  native: NativeAddon,
-  protocol: Buffer,
-  plugin?: string,
-): NativePreparedProtocol {
-  const PreparedProtocol = native.PreparedProtocol;
-  if (!PreparedProtocol) {
-    throw new Error(
-      "[webui] Native addon is incompatible: PreparedProtocol is required.",
-    );
-  }
-
-  const cache = getPreparedProtocolCache(protocol);
-  let prepared = cache.byPlugin.get(plugin);
-  if (!prepared) {
-    prepared = new PreparedProtocol(protocol, plugin);
-    cache.byPlugin.set(plugin, prepared);
-  }
-  return prepared;
-}
-
-function getPreparedProtocolCache(protocol: Buffer): PreparedProtocolCache {
-  let cache = preparedProtocols.get(protocol);
-  if (!cache || !cache.snapshot.equals(protocol)) {
-    cache = {
-      snapshot: Buffer.from(protocol),
-      byPlugin: new Map<string | undefined, NativePreparedProtocol>(),
-    };
-    preparedProtocols.set(protocol, cache);
-  }
-  return cache;
-}
-
-function getAnyPreparedProtocol(
-  native: NativeAddon,
-  protocol: Buffer,
-): NativePreparedProtocol {
-  const first = getPreparedProtocolCache(protocol).byPlugin.values().next();
-  if (first && !first.done) return first.value;
-  return getPreparedProtocol(native, protocol);
 }
 
 // ── Build API ────────────────────────────────────────────────────────
@@ -331,71 +287,77 @@ function readComponentAssetFiles(outDir: string): string[] {
   return files;
 }
 
-// ── Render API ───────────────────────────────────────────────────────
+// ── Runtime protocol API ─────────────────────────────────────────────
 
 /**
- * Render a pre-compiled protocol with state data.
- * Uses native addon when available, WASM fallback otherwise.
+ * A decoded protocol with reusable indices for all runtime operations.
+ *
+ * Create one instance when the server loads `protocol.bin` and share it
+ * across requests. Construction decodes and indexes the protocol once.
  */
-export function render(
-  protocol: Buffer,
-  state: object | string,
-  options?: RenderOptions,
-): string {
-  const native = loadAddon();
-  if (native) {
-    const entry = options?.entry ?? "index.html";
-    const requestPath = options?.requestPath ?? "/";
-    const prepared = getPreparedProtocol(native, protocol, options?.plugin);
-    const stateStr = typeof state === "string" ? state : JSON.stringify(state);
-    return prepared.renderJson(stateStr, entry, requestPath);
+export class Protocol {
+  readonly #native: NativeProtocol;
+
+  constructor(protocolData: Buffer, options?: ProtocolOptions) {
+    const native = loadAddon();
+    const NativeProtocol = native?.Protocol;
+    if (!NativeProtocol) {
+      warnFallback();
+      throw new Error(
+        "[webui] Native addon is incompatible: Protocol is required.",
+      );
+    }
+    this.#native = new NativeProtocol(protocolData, options?.plugin);
   }
 
-  warnFallback();
-  throw new Error(
-    "[webui] render() requires the native addon. WASM render fallback not yet wired.",
-  );
-}
-
-/**
- * Render a protocol with streaming output.
- * Internal handler writes are coalesced around a 16 KiB target before onChunk.
- */
-export function renderStream(
-  protocol: Buffer,
-  state: object | string,
-  onChunk: (html: string) => void,
-  options?: RenderOptions,
-): void {
-  const native = loadAddon();
-  if (native) {
-    const entry = options?.entry ?? "index.html";
-    const requestPath = options?.requestPath ?? "/";
-    const prepared = getPreparedProtocol(native, protocol, options?.plugin);
-    const stateStr = typeof state === "string" ? state : JSON.stringify(state);
-    prepared.renderStreamJson(stateStr, entry, requestPath, onChunk);
-    return;
+  /** Render a complete HTML response. */
+  render(state: object | string, options?: RenderOptions): string {
+    const stateJson = typeof state === "string" ? state : JSON.stringify(state);
+    return this.#native.render(
+      stateJson,
+      options?.entry ?? "index.html",
+      options?.requestPath ?? "/",
+    );
   }
 
-  warnFallback();
-  throw new Error(
-    "[webui] renderStream() requires the native addon. WASM render fallback not yet wired.",
-  );
-}
-
-// ── Convenience ──────────────────────────────────────────────────────
-
-/** Build and render in a single call. */
-export function buildAndRender(
-  options: BuildOptions,
-  state: object | string,
-  renderOpts?: RenderOptions,
-): string {
-  const result = build(options);
-  if (!result.protocol || result.protocol.length === 0) {
-    throw new Error("[webui] Build did not return protocol data.");
+  /** Stream a complete HTML response in chunks around 16 KiB. */
+  renderStream(
+    state: object | string,
+    onChunk: (html: string) => void,
+    options?: RenderOptions,
+  ): void {
+    const stateJson = typeof state === "string" ? state : JSON.stringify(state);
+    this.#native.renderStream(
+      stateJson,
+      options?.entry ?? "index.html",
+      options?.requestPath ?? "/",
+      onChunk,
+    );
   }
-  return render(result.protocol, state, renderOpts);
+
+  /** Produce a complete JSON partial-navigation response. */
+  renderPartial(
+    state: object | string,
+    entryId: string,
+    requestPath: string,
+    inventoryHex: string,
+  ): string {
+    const stateJson = typeof state === "string" ? state : JSON.stringify(state);
+    return this.#native.renderPartial(stateJson, entryId, requestPath, inventoryHex);
+  }
+
+  /** Render component templates and styles for on-demand loading. */
+  renderComponentTemplates(
+    componentTags: string[],
+    inventoryHex: string,
+  ): string {
+    return this.#native.renderComponentTemplates(componentTags, inventoryHex);
+  }
+
+  /** Return CSS token names in build order. */
+  tokens(): string[] {
+    return this.#native.tokens();
+  }
 }
 
 /** Inspect protocol bytes and return JSON representation. */
@@ -405,64 +367,6 @@ export function inspect(protocolData: Buffer): string {
     return native.inspect(protocolData);
   }
   throw new Error("[webui] inspect() requires the native addon.");
-}
-
-/**
- * Produce a complete JSON partial response for client-side navigation.
- *
- * Returns a JSON string with active-route projected `state`, `templates`,
- * `inventory`, `path`, and `chain`. Pipe directly to the HTTP response - no
- * post-processing needed.
- *
- * If you need to inspect the response, parse it with the exported `PartialResponse` type:
- * ```ts
- * const partial: PartialResponse = JSON.parse(renderPartial(...));
- * ```
- */
-export function renderPartial(
-  protocolData: Buffer,
-  stateJson: string,
-  entryId: string,
-  requestPath: string,
-  inventoryHex: string,
-): string {
-  const native = loadAddon();
-  if (native) {
-    return getAnyPreparedProtocol(native, protocolData).renderPartial(
-      stateJson,
-      entryId,
-      requestPath,
-      inventoryHex,
-    );
-  }
-  throw new Error("[webui] renderPartial() requires the native addon.");
-}
-
-/**
- * Render component templates and styles for on-demand loading.
- *
- * Used by `Router.ensureLoaded()` to fetch templates for components that
- * are not part of the route tree (e.g., dialogs, popovers). Uses the same
- * inventory bitfield as partial navigation to avoid sending duplicates.
- *
- * Returns a JSON string. Parse with the exported `ComponentTemplatesResponse` type:
- * ```ts
- * const resp: ComponentTemplatesResponse = JSON.parse(renderComponentTemplates(...));
- * ```
- */
-export function renderComponentTemplates(
-  protocolData: Buffer,
-  componentTags: string[],
-  inventoryHex: string,
-): string {
-  const native = loadAddon();
-  if (native) {
-    return getAnyPreparedProtocol(native, protocolData).renderComponentTemplates(
-      componentTags,
-      inventoryHex,
-    );
-  }
-  throw new Error("[webui] renderComponentTemplates() requires the native addon.");
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

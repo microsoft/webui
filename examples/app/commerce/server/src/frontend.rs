@@ -11,7 +11,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use webui::{build, BuildOptions, CssStrategy, Plugin, WebUIHandler, WebUIProtocol};
+use std::sync::Arc;
+use webui::{build, BuildOptions, CssStrategy, Plugin, Protocol, WebUIHandler};
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::route_handler;
 use webui_handler::{RenderOptions, ResponseWriter};
@@ -21,7 +22,7 @@ pub struct FrontendRuntime {
     css_files: HashMap<String, Bytes>,
     asset_files: HashMap<String, CachedAsset>,
     entry: String,
-    protocol: WebUIProtocol,
+    protocol: Arc<Protocol>,
 }
 
 #[derive(Clone)]
@@ -32,14 +33,26 @@ struct CachedAsset {
 
 impl FrontendRuntime {
     pub fn load(app_root: &Path, css: CssStrategy) -> Result<Self> {
+        Self::load_with_projection(app_root, css, true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn load_for_tests(app_root: &Path, css: CssStrategy) -> Result<Self> {
+        Self::load_with_projection(app_root, css, false)
+    }
+
+    fn load_with_projection(
+        app_root: &Path,
+        css: CssStrategy,
+        use_projection_manifest: bool,
+    ) -> Result<Self> {
         let app_dir = app_root.join("src");
         let assets_dir = canonicalize_dir(&app_root.join("dist"));
-        // The projection manifest is emitted by the client build. Use it when
-        // present (production) so state and styles project to each component's
-        // hydration surface; when it is absent (e.g. tests, or before the
-        // client is built) fall back to an unprojected build instead of failing.
+        // Production consumes the client build's manifest when present. Unit
+        // tests deliberately build from source without generated client
+        // artifacts, so their result cannot depend on stale local dist files.
         let manifest_path = app_root.join("dist").join("webui-projection.json");
-        let projection_manifests = if manifest_path.is_file() {
+        let projection_manifests = if use_projection_manifest && manifest_path.is_file() {
             vec![webui::ProjectionManifestSource::Path(manifest_path)]
         } else {
             Vec::new()
@@ -62,18 +75,13 @@ impl FrontendRuntime {
                 .collect(),
             asset_files: load_cached_assets(&assets_dir)?,
             entry: "index.html".to_string(),
-            protocol: build_result.protocol,
+            protocol: Arc::new(Protocol::new(build_result.protocol)),
         })
     }
 
     /// Collect route params from the nested route tree for a given path.
     pub fn collect_route_params(&self, route_path: &str) -> HashMap<String, String> {
-        route_handler::collect_nested_route_params(
-            &self.protocol,
-            &self.entry,
-            route_path,
-            &mut webui_handler::route_matcher::CompiledRouteCache::new(),
-        )
+        route_handler::collect_nested_route_params(&self.protocol, &self.entry, route_path)
     }
 
     /// Stream the SSR HTML for `route_path` into `writer`. Used by the
@@ -100,7 +108,7 @@ impl FrontendRuntime {
             .with_nonce(nonce)
             .with_head_inject(head_inject);
         handler
-            .handle(&self.protocol, state, &opts, writer)
+            .render(&self.protocol, state, &opts, writer)
             .with_context(|| format!("Failed to render HTML for {route_path}"))?;
         Ok(())
     }
@@ -113,14 +121,27 @@ impl FrontendRuntime {
         inventory_hex: &str,
         state: Value,
     ) -> Value {
-        route_handler::render_partial(
-            &self.protocol,
-            state,
-            &self.entry,
-            route_path,
-            inventory_hex,
-        )
-        .unwrap_or_else(|e| serde_json::json!({"error": format!("render_partial failed: {e}")}))
+        let state_json = match serde_json::to_string(&state) {
+            Ok(value) => value,
+            Err(error) => {
+                return serde_json::json!({
+                    "error": format!("state serialization failed: {error}")
+                });
+            }
+        };
+        match self
+            .protocol
+            .render_partial(&state_json, &self.entry, route_path, inventory_hex)
+        {
+            Ok(json) => serde_json::from_str(&json).unwrap_or_else(|error| {
+                serde_json::json!({
+                    "error": format!("partial response decoding failed: {error}")
+                })
+            }),
+            Err(error) => {
+                serde_json::json!({"error": format!("render_partial failed: {error}")})
+            }
+        }
     }
 
     #[must_use]

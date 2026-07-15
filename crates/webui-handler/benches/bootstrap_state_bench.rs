@@ -50,7 +50,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::hint::black_box;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
-use webui_handler::{PreparedProtocol, RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::{
     ComponentData, FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment,
     WebUIFragmentRoute, WebUIProtocol,
@@ -180,7 +180,7 @@ fn build_partial_protocol(
     navigation_keys: &[&str],
     compiler_owned: bool,
     navigation_mode: Option<StateProjectionMode>,
-) -> PreparedProtocol {
+) -> Protocol {
     let mut fragments = HashMap::new();
     fragments.insert(
         "index.html".to_string(),
@@ -222,7 +222,7 @@ fn build_partial_protocol(
             ..Default::default()
         },
     );
-    PreparedProtocol::new(protocol)
+    Protocol::new(protocol)
 }
 
 fn build_routed_protocol() -> WebUIProtocol {
@@ -368,7 +368,11 @@ fn bootstrap_state_bench(c: &mut Criterion) {
     // Protocols differ only by the projection keys; state is shared per size.
     let full_keys = full_hydration_keys();
     let metadata_keys = server_only_hydration_keys();
-    let full_protocol = build_bootstrap_protocol(full_keys.clone(), full_keys.clone(), false);
+    let full_protocol = Protocol::new(build_bootstrap_protocol(
+        full_keys.clone(),
+        full_keys.clone(),
+        false,
+    ));
     let mut full_fallback_protocol = build_bootstrap_protocol(Vec::new(), Vec::new(), false);
     let fallback_component = full_fallback_protocol
         .components
@@ -376,12 +380,19 @@ fn bootstrap_state_bench(c: &mut Criterion) {
         .unwrap_or_else(|| panic!("benchmark component missing"));
     fallback_component.hydration_mode = StateProjectionMode::All as i32;
     fallback_component.navigation_mode = StateProjectionMode::All as i32;
-    let server_only_protocol =
-        build_bootstrap_protocol(metadata_keys.clone(), metadata_keys, false);
-    let authored_navigation_only_protocol =
-        build_bootstrap_protocol(Vec::new(), full_keys.clone(), false);
-    let dormant_protocol = build_bootstrap_protocol(Vec::new(), full_keys, true);
-    let missing_metadata_protocol = build_missing_metadata_bootstrap_protocol();
+    let full_fallback_protocol = Protocol::new(full_fallback_protocol);
+    let server_only_protocol = Protocol::new(build_bootstrap_protocol(
+        metadata_keys.clone(),
+        metadata_keys,
+        false,
+    ));
+    let authored_navigation_only_protocol = Protocol::new(build_bootstrap_protocol(
+        Vec::new(),
+        full_keys.clone(),
+        false,
+    ));
+    let dormant_protocol = Protocol::new(build_bootstrap_protocol(Vec::new(), full_keys, true));
+    let missing_metadata_protocol = Protocol::new(build_missing_metadata_bootstrap_protocol());
 
     for &target in &[64 * 1024usize, 256 * 1024, 1024 * 1024] {
         let state = build_large_state(target);
@@ -404,7 +415,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
                 b.iter(|| {
                     writer.clear();
                     handler
-                        .handle(
+                        .render(
                             black_box(&full_protocol),
                             black_box(st),
                             &options,
@@ -429,7 +440,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
                 b.iter(|| {
                     writer.clear();
                     handler
-                        .handle(
+                        .render(
                             black_box(&full_fallback_protocol),
                             black_box(st),
                             &options,
@@ -455,7 +466,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
                 b.iter(|| {
                     writer.clear();
                     handler
-                        .handle(
+                        .render(
                             black_box(&server_only_protocol),
                             black_box(st),
                             &options,
@@ -481,7 +492,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
                 b.iter(|| {
                     writer.clear();
                     handler
-                        .handle(
+                        .render(
                             black_box(&authored_navigation_only_protocol),
                             black_box(st),
                             &options,
@@ -506,7 +517,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
                 b.iter(|| {
                     writer.clear();
                     handler
-                        .handle(
+                        .render(
                             black_box(&dormant_protocol),
                             black_box(st),
                             &options,
@@ -531,7 +542,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
                 b.iter(|| {
                     writer.clear();
                     handler
-                        .handle(
+                        .render(
                             black_box(&missing_metadata_protocol),
                             black_box(st),
                             &options,
@@ -558,7 +569,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
                 b.iter(|| {
                     writer.clear();
                     handler
-                        .handle(
+                        .render(
                             black_box(&dormant_protocol),
                             black_box(st),
                             &options,
@@ -576,7 +587,11 @@ fn bootstrap_state_bench(c: &mut Criterion) {
     let wide_state = build_wide_state(30_000);
     let wide_state_bytes = serialized_len(&wide_state);
     let wide_keys = vec!["keptA".to_string(), "keptB".to_string()];
-    let wide_protocol = build_bootstrap_protocol(wide_keys.clone(), wide_keys, false);
+    let wide_protocol = Protocol::new(build_bootstrap_protocol(
+        wide_keys.clone(),
+        wide_keys,
+        false,
+    ));
     let mut wide_group = c.benchmark_group("bootstrap_state_wide");
     wide_group.throughput(Throughput::Bytes(wide_state_bytes as u64));
     wide_group.bench_function("sparse_keys_30000", |b| {
@@ -585,7 +600,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
         b.iter(|| {
             writer.clear();
             handler
-                .handle(
+                .render(
                     black_box(&wide_protocol),
                     black_box(&wide_state),
                     &options,
@@ -610,6 +625,9 @@ fn bootstrap_state_bench(c: &mut Criterion) {
     }
     let mut missing_metadata_routed_protocol = dormant_routed_protocol.clone();
     missing_metadata_routed_protocol.components.clear();
+    let routed_protocol = Protocol::new(routed_protocol);
+    let dormant_routed_protocol = Protocol::new(dormant_routed_protocol);
+    let missing_metadata_routed_protocol = Protocol::new(missing_metadata_routed_protocol);
     let mut route_group = c.benchmark_group("bootstrap_state_route");
     route_group.throughput(Throughput::Bytes(routed_state_bytes as u64));
     for &(name, path, protocol) in &[
@@ -633,7 +651,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
             b.iter(|| {
                 writer.clear();
                 handler
-                    .handle(
+                    .render(
                         black_box(protocol),
                         black_box(&routed_state),
                         &render_options,
@@ -700,16 +718,11 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
             &state_json,
             |b, input| {
                 b.iter(|| {
-                    let output = webui_handler::route_handler::render_partial_prepared(
-                        &full_protocol,
-                        black_box(input),
-                        "index.html",
-                        "/",
-                        "",
-                    )
-                    .unwrap_or_else(|error| {
-                        panic!("full partial response serialization failed: {error}")
-                    });
+                    let output = full_protocol
+                        .render_partial(black_box(input), "index.html", "/", "")
+                        .unwrap_or_else(|error| {
+                            panic!("full partial response serialization failed: {error}")
+                        });
                     black_box(output.len());
                 });
             },
@@ -720,16 +733,11 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
             &state_json,
             |b, input| {
                 b.iter(|| {
-                    let output = webui_handler::route_handler::render_partial_prepared(
-                        &projected_protocol,
-                        black_box(input),
-                        "index.html",
-                        "/",
-                        "",
-                    )
-                    .unwrap_or_else(|error| {
-                        panic!("projected partial response serialization failed: {error}")
-                    });
+                    let output = projected_protocol
+                        .render_partial(black_box(input), "index.html", "/", "")
+                        .unwrap_or_else(|error| {
+                            panic!("projected partial response serialization failed: {error}")
+                        });
                     black_box(output.len());
                 });
             },
@@ -740,16 +748,11 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
             &state_json,
             |b, input| {
                 b.iter(|| {
-                    let output = webui_handler::route_handler::render_partial_prepared(
-                        &scriptless_protocol,
-                        black_box(input),
-                        "index.html",
-                        "/",
-                        "",
-                    )
-                    .unwrap_or_else(|error| {
-                        panic!("scriptless partial response serialization failed: {error}")
-                    });
+                    let output = scriptless_protocol
+                        .render_partial(black_box(input), "index.html", "/", "")
+                        .unwrap_or_else(|error| {
+                            panic!("scriptless partial response serialization failed: {error}")
+                        });
                     black_box(output.len());
                 });
             },
@@ -760,16 +763,11 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
             &state_json,
             |b, input| {
                 b.iter(|| {
-                    let output = webui_handler::route_handler::render_partial_prepared(
-                        &static_protocol,
-                        black_box(input),
-                        "index.html",
-                        "/",
-                        "",
-                    )
-                    .unwrap_or_else(|error| {
-                        panic!("static partial response serialization failed: {error}")
-                    });
+                    let output = static_protocol
+                        .render_partial(black_box(input), "index.html", "/", "")
+                        .unwrap_or_else(|error| {
+                            panic!("static partial response serialization failed: {error}")
+                        });
                     black_box(output.len());
                 });
             },
