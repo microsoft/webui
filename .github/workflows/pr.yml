@@ -47,6 +47,12 @@ jobs:
         with:
           skip-build: 'true'
 
+      - name: Build example projections
+        # Workspace members (e.g. examples/app/commerce/server) load the
+        # projection manifest that the example client build emits, so generate
+        # the example artifacts before running the workspace test suite.
+        run: cargo xtask build-examples
+
       - name: Test
         run: cargo test --workspace
 

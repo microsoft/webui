@@ -426,19 +426,20 @@ fn check() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Phase 2: Parallel — deny + test
-    if run_parallel(&[Step::DENY, Step::TEST]) != ExitCode::SUCCESS {
+    // Phase 2: Parallel — deny + example builds. Workspace tests load the
+    // projection manifests that build-examples emits, so examples must build
+    // before the test phase runs.
+    if run_parallel(&[Step::DENY, Step::BUILD_EXAMPLES]) != ExitCode::SUCCESS {
         return ExitCode::FAILURE;
     }
 
-    // Phase 3: Parallel — build + build-wasm
-    if run_parallel(&[Step::BUILD, Step::BUILD_WASM]) != ExitCode::SUCCESS {
+    // Phase 3: Parallel — test + build + build-wasm
+    if run_parallel(&[Step::TEST, Step::BUILD, Step::BUILD_WASM]) != ExitCode::SUCCESS {
         return ExitCode::FAILURE;
     }
 
-    // Phase 4: Parallel — examples (each independent) + bench + docs
-    if run_parallel(&[Step::BUILD_EXAMPLES, Step::BENCH_VALIDATE, Step::DOCS]) != ExitCode::SUCCESS
-    {
+    // Phase 4: Parallel — bench + docs
+    if run_parallel(&[Step::BENCH_VALIDATE, Step::DOCS]) != ExitCode::SUCCESS {
         return ExitCode::FAILURE;
     }
 
