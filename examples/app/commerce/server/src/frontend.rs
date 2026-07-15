@@ -34,14 +34,22 @@ impl FrontendRuntime {
     pub fn load(app_root: &Path, css: CssStrategy) -> Result<Self> {
         let app_dir = app_root.join("src");
         let assets_dir = canonicalize_dir(&app_root.join("dist"));
+        // The projection manifest is emitted by the client build. Use it when
+        // present (production) so state and styles project to each component's
+        // hydration surface; when it is absent (e.g. tests, or before the
+        // client is built) fall back to an unprojected build instead of failing.
+        let manifest_path = app_root.join("dist").join("webui-projection.json");
+        let projection_manifests = if manifest_path.is_file() {
+            vec![webui::ProjectionManifestSource::Path(manifest_path)]
+        } else {
+            Vec::new()
+        };
         let build_result = build(BuildOptions {
             app_dir,
             entry: "index.html".to_string(),
             css,
             plugin: Some(Plugin::WebUI),
-            projection_manifests: vec![webui::ProjectionManifestSource::Path(
-                app_root.join("dist").join("webui-projection.json"),
-            )],
+            projection_manifests,
             ..BuildOptions::default()
         })
         .with_context(|| "Failed to build the commerce WebUI protocol")?;
