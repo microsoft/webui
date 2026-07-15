@@ -1,0 +1,114 @@
+---
+source: crates/webui-cli/src/commands/state_schema/tests.rs
+expression: "SchemaDocument::new(&schema)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "route": {
+      "properties": {
+        "homeTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "shellTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "required": [
+        "homeTitle",
+        "shellTitle"
+      ],
+      "title": "RoutedShellState (/)",
+      "type": "object"
+    },
+    "route.details.:id": {
+      "properties": {
+        "detailTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "homeTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "shellTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "required": [
+        "detailTitle",
+        "homeTitle",
+        "shellTitle"
+      ],
+      "title": "RoutedShellState (/details/:id)",
+      "type": "object"
+    },
+    "route.settings": {
+      "properties": {
+        "homeTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "settingsTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "shellTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "required": [
+        "homeTitle",
+        "settingsTitle",
+        "shellTitle"
+      ],
+      "title": "RoutedShellState (/settings)",
+      "type": "object"
+    }
+  },
+  "anyOf": [
+    {
+      "$ref": "#/$defs/route"
+    },
+    {
+      "$ref": "#/$defs/route.details.:id"
+    },
+    {
+      "$ref": "#/$defs/route.settings"
+    }
+  ],
+  "title": "RoutedShellState",
+  "x-webui-routes": {
+    "/": "#/$defs/route",
+    "/details/:id": "#/$defs/route.details.:id",
+    "/settings": "#/$defs/route.settings"
+  }
+}

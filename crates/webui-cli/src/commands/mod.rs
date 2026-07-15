@@ -5,6 +5,7 @@ pub mod build;
 pub mod common;
 pub mod inspect;
 pub mod serve;
+pub mod state_schema;
 
 use clap::Subcommand;
 
@@ -16,4 +17,6 @@ pub enum Commands {
     Inspect(inspect::InspectArgs),
     /// Start a development server with live reload
     Serve(serve::ServeArgs),
+    /// Generate a JSON Schema for a compiled protocol's render state
+    Schema(state_schema::SchemaArgs),
 }

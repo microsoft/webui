@@ -1,0 +1,105 @@
+---
+source: crates/webui-cli/src/commands/state_schema/tests.rs
+expression: schema
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "flexible": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {},
+          "type": "array"
+        },
+        {
+          "properties": {
+            "length": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          },
+          "required": [
+            "length"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "groups": {
+      "items": {
+        "properties": {
+          "items": {
+            "items": {
+              "properties": {
+                "count": {
+                  "type": "number"
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean"
+                  ]
+                }
+              },
+              "required": [
+                "count",
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "name"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "label": {
+      "type": "string"
+    },
+    "matrix": {
+      "items": {
+        "items": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "type": "array"
+      },
+      "type": "array"
+    },
+    "unobserved": {
+      "items": {},
+      "type": "array"
+    }
+  },
+  "required": [
+    "flexible",
+    "groups",
+    "label",
+    "matrix",
+    "unobserved"
+  ],
+  "title": "NestedCollectionsState",
+  "type": "object"
+}

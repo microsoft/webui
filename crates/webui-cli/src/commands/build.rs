@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 use expand_tilde::expand_tilde;
 use std::collections::HashSet;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -27,6 +27,10 @@ pub struct BuildArgs {
     /// Comma-separated root component tags to emit as static CDN-loadable assets
     #[arg(long, value_delimiter = ',', value_name = "TAGS")]
     pub emit_component_assets: Vec<String>,
+
+    /// Emit a render-state JSON Schema beside the compiled protocol
+    #[arg(long)]
+    pub emit_schema: bool,
 
     /// Design token theme to validate against: a JSON file path or npm package name.
     /// Missing unresolved CSS tokens fail the build.
@@ -58,32 +62,48 @@ fn resolve_out(out: &Path) -> (PathBuf, OsString) {
     }
 }
 
+fn schema_file_name(protocol_name: &OsStr) -> OsString {
+    let stem = Path::new(protocol_name)
+        .file_stem()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(protocol_name);
+    let mut name = stem.to_os_string();
+    name.push(".state.schema.json");
+    name
+}
+
 fn validate_output_file_names(
-    protocol_name: &std::ffi::OsStr,
+    protocol_name: &OsStr,
+    schema_name: Option<&OsStr>,
     result: &webui::BuildResult,
 ) -> Result<()> {
-    let mut names =
-        HashSet::with_capacity(1 + result.css_files.len() + result.component_asset_files.len());
-    names.insert(protocol_name.to_os_string());
+    let mut names = HashSet::with_capacity(
+        1 + usize::from(schema_name.is_some())
+            + result.css_files.len()
+            + result.component_asset_files.len(),
+    );
+    insert_output_file_name(&mut names, protocol_name)?;
+    if let Some(schema_name) = schema_name {
+        insert_output_file_name(&mut names, schema_name)?;
+    }
     for (name, _) in &result.css_files {
-        let name = OsString::from(name);
-        if !names.insert(name.clone()) {
-            anyhow::bail!(
-                "output filename collision for '{}'. Adjust --asset-file-name-template to include [ext] or another unique asset-type segment.",
-                name.to_string_lossy()
-            );
-        }
+        insert_output_file_name(&mut names, OsStr::new(name))?;
     }
     for file in &result.component_asset_files {
-        let name = OsString::from(&file.name);
-        if !names.insert(name.clone()) {
-            anyhow::bail!(
-                "output filename collision for '{}'. Adjust --asset-file-name-template to include [ext] or another unique asset-type segment.",
-                name.to_string_lossy()
-            );
-        }
+        insert_output_file_name(&mut names, OsStr::new(&file.name))?;
     }
     Ok(())
+}
+
+fn insert_output_file_name(names: &mut HashSet<String>, name: &OsStr) -> Result<()> {
+    let key = name.to_string_lossy().to_lowercase();
+    if names.insert(key) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "output filename collision for '{}'. Choose a different --out filename or adjust --asset-file-name-template.",
+        name.to_string_lossy()
+    );
 }
 
 pub fn execute(args: &BuildArgs) -> Result<()> {
@@ -120,6 +140,8 @@ fn run(args: &BuildArgs) -> Result<()> {
 
     let (out_dir, protocol_name) = resolve_out(&out);
     let protocol_path = out_dir.join(&protocol_name);
+    let schema_name = args.emit_schema.then(|| schema_file_name(&protocol_name));
+    let schema_path = schema_name.as_ref().map(|name| out_dir.join(name));
 
     output::header("WebUI Build");
     output::field("App", &app.display());
@@ -135,6 +157,9 @@ fn run(args: &BuildArgs) -> Result<()> {
     if !args.emit_component_assets.is_empty() {
         output::field("Component assets", &args.emit_component_assets.join(", "));
     }
+    if let Some(schema_path) = &schema_path {
+        output::field("Schema", &schema_path.display());
+    }
     if let Some(ref theme) = args.theme {
         output::field("Theme", theme);
     }
@@ -148,7 +173,20 @@ fn run(args: &BuildArgs) -> Result<()> {
         .map(|theme| load_theme(theme, &app))
         .transpose()?;
     let result = webui::build(build_options).with_context(|| "Build failed")?;
-    validate_output_file_names(&protocol_name, &result)?;
+    validate_output_file_names(&protocol_name, schema_name.as_deref(), &result)?;
+    let schema_output = schema_path
+        .as_ref()
+        .map(|path| -> Result<(PathBuf, Vec<u8>)> {
+            let schema = super::state_schema::generate_schema(
+                &result.protocol,
+                &args.app_args.entry,
+                super::state_schema::DEFAULT_SCHEMA_TITLE,
+            )?;
+            let output = super::state_schema::schema_to_pretty_json(&schema)
+                .with_context(|| "Failed to serialize render-state schema")?;
+            Ok((path.clone(), output.into_bytes()))
+        })
+        .transpose()?;
 
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("Failed to create {}", out_dir.display()))?;
@@ -166,6 +204,10 @@ fn run(args: &BuildArgs) -> Result<()> {
                 out_dir.display()
             )
         })?;
+    }
+    if let Some((schema_path, schema_bytes)) = &schema_output {
+        fs::write(schema_path, schema_bytes)
+            .with_context(|| format!("Failed to write {}", schema_path.display()))?;
     }
     let stats = result.stats;
 
@@ -202,11 +244,20 @@ fn run(args: &BuildArgs) -> Result<()> {
         ));
     }
 
-    let files_written = 1 + stats.css_file_count + result.component_asset_files.len();
+    let files_written = 1
+        + stats.css_file_count
+        + result.component_asset_files.len()
+        + usize::from(schema_output.is_some());
     output::success(&format!(
         "Wrote {}",
         console::style(Path::new(&protocol_name).display()).bold()
     ));
+    if let Some(schema_name) = schema_name {
+        output::success(&format!(
+            "Wrote {}",
+            console::style(Path::new(&schema_name).display()).bold()
+        ));
+    }
 
     for advisory in &result.warnings {
         output::warning_diagnostic(advisory);
@@ -239,6 +290,7 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
         },
         out: out.to_path_buf(),
         emit_component_assets: Vec::new(),
+        emit_schema: false,
         theme: None,
     })
 }
@@ -347,6 +399,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            emit_schema: false,
             theme: None,
         })
         .unwrap();
@@ -383,6 +436,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string()],
+            emit_schema: false,
             theme: None,
         })
         .unwrap();
@@ -436,6 +490,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string(), "mail-thread".to_string()],
+            emit_schema: false,
             theme: None,
         });
 
@@ -466,6 +521,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["fast-card".to_string()],
+            emit_schema: false,
             theme: None,
         })
         .unwrap();
@@ -504,6 +560,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string()],
+            emit_schema: false,
             theme: None,
         })
         .unwrap();
@@ -640,6 +697,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            emit_schema: false,
             theme: None,
         })
         .unwrap();
@@ -725,6 +783,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            emit_schema: false,
             theme: None,
         })
         .unwrap();
@@ -807,6 +866,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            emit_schema: false,
             theme: None,
         })
         .unwrap();
@@ -860,6 +920,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            emit_schema: false,
             theme: Some(
                 app_dir
                     .path()
@@ -900,6 +961,7 @@ mod tests {
             },
             out: custom_path.clone(),
             emit_component_assets: Vec::new(),
+            emit_schema: false,
             theme: None,
         })
         .unwrap();
@@ -915,6 +977,45 @@ mod tests {
 
         // CSS files are emitted next to the renamed protocol.
         assert!(out_dir.path().join("my-card.css").exists());
+        assert!(!out_dir.path().join("app1.state.schema.json").exists());
+    }
+
+    #[test]
+    fn test_build_emits_schema_beside_custom_protocol() {
+        let app_dir = create_app_dir(&[(
+            "index.html",
+            "<h1>{{title}}</h1><for each=\"item in items\">{{item.name}}</for>",
+        )]);
+        let out_dir = TempDir::new().unwrap();
+        let protocol_path = out_dir.path().join("catalog.bin");
+
+        run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: None,
+                components: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: protocol_path.clone(),
+            emit_component_assets: Vec::new(),
+            emit_schema: true,
+            theme: None,
+        })
+        .unwrap();
+
+        let schema_path = out_dir.path().join("catalog.state.schema.json");
+        assert!(protocol_path.exists());
+        assert!(schema_path.exists());
+        let schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(schema_path).unwrap()).unwrap();
+        assert_eq!(schema["title"], "WebUIState");
+        assert_eq!(schema["properties"]["items"]["type"], "array");
+        assert!(schema["properties"]["title"]["type"].is_array());
     }
 
     #[test]
@@ -937,6 +1038,7 @@ mod tests {
             },
             out: nested.clone(),
             emit_component_assets: Vec::new(),
+            emit_schema: false,
             theme: None,
         })
         .unwrap();
@@ -950,6 +1052,41 @@ mod tests {
         let (dir, name) = resolve_out(Path::new("./dist"));
         assert_eq!(dir, PathBuf::from("./dist"));
         assert_eq!(name, "protocol.bin");
+    }
+
+    #[test]
+    fn test_schema_file_name_tracks_protocol_stem() {
+        assert_eq!(
+            schema_file_name(std::ffi::OsStr::new("protocol.bin")),
+            "protocol.state.schema.json"
+        );
+        assert_eq!(
+            schema_file_name(std::ffi::OsStr::new("app1.bin")),
+            "app1.state.schema.json"
+        );
+    }
+
+    #[test]
+    fn test_schema_collision_check_is_case_insensitive() {
+        let app_dir = create_app_dir(&[("index.html", "<h1>Hello</h1>")]);
+        let mut result = webui::build(webui::BuildOptions {
+            app_dir: app_dir.path().to_path_buf(),
+            ..webui::BuildOptions::default()
+        })
+        .unwrap();
+        result.css_files.push((
+            "catalog.state.schema.json".to_string(),
+            "collision".to_string(),
+        ));
+
+        let error = validate_output_file_names(
+            std::ffi::OsStr::new("Catalog.bin"),
+            Some(std::ffi::OsStr::new("Catalog.state.schema.json")),
+            &result,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("filename collision"));
     }
 
     #[test]

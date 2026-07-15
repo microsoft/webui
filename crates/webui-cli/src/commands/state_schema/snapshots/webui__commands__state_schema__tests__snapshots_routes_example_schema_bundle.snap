@@ -1,0 +1,645 @@
+---
+source: crates/webui-cli/src/commands/state_schema/tests.rs
+expression: "SchemaDocument::new(&schema)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "route": {
+      "properties": {
+        "appTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "basePath": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "language": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "sectionId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "sections": {
+          "items": {
+            "properties": {
+              "icon": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "required": [
+              "icon",
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "textdirection": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      },
+      "required": [
+        "appTitle",
+        "basePath",
+        "language",
+        "sections",
+        "textdirection",
+        "title"
+      ],
+      "title": "RoutesState (/)",
+      "type": "object"
+    },
+    "route.sections.:sectionId": {
+      "properties": {
+        "appTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "basePath": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "language": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "sectionIcon": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "sectionId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "sectionName": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "sections": {
+          "items": {
+            "properties": {
+              "icon": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "required": [
+              "icon",
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "textdirection": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "topicId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "topics": {
+          "items": {
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "appTitle",
+        "basePath",
+        "language",
+        "sectionIcon",
+        "sectionId",
+        "sectionName",
+        "sections",
+        "textdirection",
+        "title",
+        "topics"
+      ],
+      "title": "RoutesState (/sections/:sectionId)",
+      "type": "object"
+    },
+    "route.sections.:sectionId.topics.:topicId": {
+      "properties": {
+        "appTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "basePath": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "language": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "lessonId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "lessons": {
+          "items": {
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "sectionIcon": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "sectionId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "sectionName": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "sections": {
+          "items": {
+            "properties": {
+              "icon": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "required": [
+              "icon",
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "textdirection": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "topicId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "topicName": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "topics": {
+          "items": {
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "appTitle",
+        "basePath",
+        "language",
+        "lessons",
+        "sectionIcon",
+        "sectionId",
+        "sectionName",
+        "sections",
+        "textdirection",
+        "title",
+        "topicId",
+        "topicName",
+        "topics"
+      ],
+      "title": "RoutesState (/sections/:sectionId/topics/:topicId)",
+      "type": "object"
+    },
+    "route.sections.:sectionId.topics.:topicId.lessons.:lessonId": {
+      "properties": {
+        "appTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "basePath": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "language": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "lessonContent": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "lessonId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "lessonName": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "lessons": {
+          "items": {
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "sectionIcon": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "sectionId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "sectionName": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "sections": {
+          "items": {
+            "properties": {
+              "icon": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "required": [
+              "icon",
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "textdirection": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "topicId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "topicName": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "topics": {
+          "items": {
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "appTitle",
+        "basePath",
+        "language",
+        "lessonContent",
+        "lessonName",
+        "lessons",
+        "sectionIcon",
+        "sectionId",
+        "sectionName",
+        "sections",
+        "textdirection",
+        "title",
+        "topicId",
+        "topicName",
+        "topics"
+      ],
+      "title": "RoutesState (/sections/:sectionId/topics/:topicId/lessons/:lessonId)",
+      "type": "object"
+    }
+  },
+  "anyOf": [
+    {
+      "$ref": "#/$defs/route"
+    },
+    {
+      "$ref": "#/$defs/route.sections.:sectionId"
+    },
+    {
+      "$ref": "#/$defs/route.sections.:sectionId.topics.:topicId"
+    },
+    {
+      "$ref": "#/$defs/route.sections.:sectionId.topics.:topicId.lessons.:lessonId"
+    }
+  ],
+  "title": "RoutesState",
+  "x-webui-routes": {
+    "/": "#/$defs/route",
+    "/sections/:sectionId": "#/$defs/route.sections.:sectionId",
+    "/sections/:sectionId/topics/:topicId": "#/$defs/route.sections.:sectionId.topics.:topicId",
+    "/sections/:sectionId/topics/:topicId/lessons/:lessonId": "#/$defs/route.sections.:sectionId.topics.:topicId.lessons.:lessonId"
+  }
+}

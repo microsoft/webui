@@ -1,6 +1,6 @@
 # microsoft-webui-cli
 
-Command-line tool for the [WebUI](https://github.com/microsoft/webui) framework — build, serve, and inspect WebUI applications.
+Command-line tool for the [WebUI](https://github.com/microsoft/webui) framework - build, serve, inspect, and generate render-state schemas for WebUI applications.
 
 ## Install
 
@@ -17,7 +17,7 @@ This installs the `webui` binary.
 Build a WebUI application into a compiled protocol and CSS files.
 
 ```bash
-webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>]
+webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--emit-schema] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>]
 ```
 
 | Option | Default | Description |
@@ -27,6 +27,7 @@ webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--entry` | `index.html` | Entry HTML file |
 | `--css` | `link` | CSS mode: `link` (external files) or `style` (inline) |
 | `--plugin` | *(none)* | Plugin identifier (see [Plugins](https://microsoft.github.io/webui/guide/concepts/plugins/) for available identifiers) |
+| `--emit-schema` | off | Emit `<protocol-stem>.state.schema.json` beside the protocol |
 | `--asset-file-name-template` | `[name].[ext]` | Emitted asset filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `--css-public-base` | *(none)* | Optional base URL/path prepended to Link-mode stylesheet hrefs |
 
@@ -34,6 +35,7 @@ webui build [APP] --out <DIR> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 webui build ./src --out ./dist
 webui build ./src --out ./dist --plugin webui --css style
 webui build ./src --out ./dist/app1.bin
+webui build ./src --out ./dist/app1.bin --emit-schema
 webui build ./src --out ./dist --asset-file-name-template "[name]-[hash].[ext]"
 webui build ./src --out ./dist --asset-file-name-template "[name]-[hash].[ext]" --css-public-base "https://cdn.example.com/assets"
 ```
@@ -81,6 +83,20 @@ webui inspect <FILE>
 ```bash
 webui inspect ./dist/protocol.bin
 ```
+
+### `webui schema`
+
+Generate a JSON Schema for the render state referenced by a compiled protocol.
+
+```bash
+webui schema ./dist/protocol.bin \
+  --entry index.html \
+  --title MyAppState > ./dist/state.schema.json
+```
+
+Plain bindings accept string, number, or boolean values. Loops and dotted paths
+produce array and object schemas. Routed entries produce separate definitions
+for each route chain plus an `x-webui-routes` path-to-schema mapping.
 
 ## App Layout
 

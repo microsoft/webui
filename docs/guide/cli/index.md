@@ -33,7 +33,7 @@ Use `--format json` in editors, CI, or AI/agent tooling that needs to parse buil
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--emit-component-assets <TAGS>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--emit-component-assets <TAGS>] [--emit-schema] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -48,6 +48,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to emit as static WebUI component assets in `--out` | *(none)* |
+| `--emit-schema` | Emit `<protocol-stem>.state.schema.json` beside the compiled protocol | off |
 | `--theme <VALUE>` | Design token theme to validate against: a JSON file path or npm package name. Missing required tokens fail the build. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files and static component assets. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
 | `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
@@ -180,6 +181,9 @@ webui build ./my-app --out ./dist --components ./shared/components
 # Customize the protocol filename (useful when building multiple apps to one folder)
 webui build ./src/apps/app1 --out ./dist/app1.bin
 webui build ./src/apps/app2 --out ./dist/app2.bin
+
+# Emit a paired state schema without a second protocol read
+webui build ./src/apps/app1 --out ./dist/app1.bin --emit-schema
 ```
 
 ### `webui inspect`
@@ -208,6 +212,67 @@ webui inspect dist/protocol.bin | jq '.fragments["index.html"]'
 # Count total fragments
 webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 ```
+
+### `webui schema`
+
+Generate a JSON Schema draft 2020-12 document describing the render state used
+by a compiled protocol.
+
+```bash
+webui schema <FILE> [--entry <FILE>] [--title <TITLE>]
+```
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `FILE` | Path to a compiled `protocol.bin` file | *(required)* |
+| `--entry <FILE>` | Entry fragment to analyze | `index.html` |
+| `--title <TITLE>` | Schema title | `WebUIState` |
+
+The schema is written to stdout:
+
+```bash
+webui schema ./dist/protocol.bin \
+  --title ContactBookState > ./dist/state.schema.json
+```
+
+Plain rendered bindings and normal attributes accept JSON strings, numbers, or
+booleans. Complex `:property` bindings remain unconstrained until their child
+template usage provides stronger evidence. Structural usage narrows the schema:
+dotted paths create objects, `<for>` collections create arrays, raw bindings
+are strings, and typed comparisons infer their operand type. Condition-only
+paths remain optional because missing condition values evaluate false.
+Terminal `.length` access accepts strings, arrays, or objects with a `length`
+property, matching runtime state lookup.
+
+Component-local attributes are resolved back to the parent state paths that
+populate them. Static attributes do not become root state properties. The
+parser's internal `head_end`, `body_start`, and `body_end` signals are excluded.
+
+For an entry containing routes, each complete route chain gets an independent
+schema under `$defs`. `x-webui-routes` maps route patterns to those definitions:
+
+```json
+{
+  "$defs": {
+    "route": { "type": "object" },
+    "route.contacts.:id": { "type": "object" }
+  },
+  "x-webui-routes": {
+    "/": "#/$defs/route",
+    "/contacts/:id": "#/$defs/route.contacts.:id"
+  }
+}
+```
+
+The route metadata is intended for build-time tooling and future typed route
+APIs. Tooling should resolve definition references through `x-webui-routes`
+rather than constructing keys. WebUI does not perform runtime JSON Schema
+validation.
+
+Use `webui build --emit-schema` when building the protocol and schema together.
+For `--out ./dist/catalog.bin`, the paired schema is written to
+`./dist/catalog.state.schema.json`. The standalone `webui schema` command
+remains useful for existing protocol artifacts.
 
 ### `webui serve`
 

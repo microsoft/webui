@@ -590,6 +590,7 @@ webui build ./src --out ./dist --plugin=webui
 | `--plugin <NAME>` | none | Plugin identifier (e.g. `webui`) |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
 | `--emit-component-assets <TAGS>` | none | Comma-separated root component tags emitted as static `.webui.js` ESM assets in `--out` |
+| `--emit-schema` | false | Emit `<protocol-stem>.state.schema.json` beside the protocol |
 | `--theme <PACKAGE>` | none | Design token theme to validate against (see below) |
 | `--asset-file-name-template <TEMPLATE>` | `[name].[ext]` | Emitted asset filename template for Link-mode CSS files and static component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
@@ -672,6 +673,22 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 webui inspect ./dist/protocol.bin
 webui inspect ./dist/protocol.bin | jq '.fragments | keys'
 ```
+
+### Generate render-state schema
+
+```bash
+webui schema ./dist/protocol.bin \
+  --entry index.html \
+  --title MyAppState > ./dist/state.schema.json
+```
+
+For non-routed entries this emits one object schema. Plain rendered bindings
+accept `string`, `number`, or `boolean`; loops and dotted paths infer arrays and
+objects. For routed entries, every complete route chain gets its own `$defs`
+schema, and `x-webui-routes` maps route patterns to those definitions. The
+schemas are build-time contracts; WebUI does not validate them during rendering.
+Use `webui build --emit-schema` to create the protocol and its paired schema in
+one build.
 
 ## Build Diagnostics & Error Output
 

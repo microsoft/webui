@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <title>{{pageTitle}}</title>
+</head>
+<body>
+  <profile-card
+    display-name="{{user.name}}"
+    ?active="{{user.active}}"
+    label="Profile"
+    :payload="{{payload}}"
+  ></profile-card>
+  <p>{{remainingCount}}</p>
+  <div>{{{trustedHtml}}}</div>
+  <if condition="alignment == 'right'">
+    <span>Right aligned</span>
+  </if>
+</body>
+</html>

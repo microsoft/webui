@@ -1793,6 +1793,69 @@ function returns `NULL`, call `webui_last_error()` for a human-readable diagnost
 
 The CLI specification and usage details are maintained in [crates/webui-cli/README.md](crates/webui-cli/README.md).
 
+### Render State JSON Schema
+
+`webui schema <protocol.bin>` analyzes the compiled entry and writes a
+JSON Schema draft 2020-12 document to stdout. `--entry` selects the entry
+fragment and `--title` sets the schema title.
+
+`webui build --emit-schema` runs the same analysis directly against the
+in-memory protocol and writes `<protocol-stem>.state.schema.json` beside the
+protocol. Schema generation and serialization complete before build outputs are
+written. Emission is opt-in because schemas are build-time tooling artifacts,
+not render-time requirements.
+
+For entries without routes, the output is a normal object schema. Inference
+uses the following rules:
+
+- Plain text and normal attribute values accept JSON scalars: `string`,
+  `number`, or `boolean`. Complex `:property` bindings remain unconstrained
+  until child-template usage provides stronger structural evidence.
+- Raw signals are strings.
+- Dotted paths create nested objects.
+- A terminal `.length` accepts the runtime's three valid forms: a string, an
+  array, or an object with a `length` property.
+- `<for>` collections create arrays; loop-item paths define the item schema.
+- Ordered predicates infer numbers. Equality predicates infer the type of a
+  literal operand.
+- Condition-only paths are optional because a missing condition value evaluates
+  false. A path referenced by rendered output or a collection remains required.
+- Normal component-attribute source paths are recorded as scalars, but
+  child-local comparisons do not re-type the parent path. Complex bindings
+  preserve structural origin through the child template. Static and computed
+  component-local values do not become root state properties.
+- Parser-synthesized `head_end`, `body_start`, and `body_end` signals are not
+  state.
+
+For routed entries, the output is a schema bundle. Each complete matched route
+chain receives a distinct schema under `$defs`. Top-level `anyOf` references
+those definitions, while `x-webui-routes` maps each route pattern to its
+definition:
+
+```json
+{
+  "$defs": {
+    "route": {},
+    "route.contacts.:id": {}
+  },
+  "anyOf": [
+    { "$ref": "#/$defs/route" },
+    { "$ref": "#/$defs/route.contacts.:id" }
+  ],
+  "x-webui-routes": {
+    "/": "#/$defs/route",
+    "/contacts/:id": "#/$defs/route.contacts.:id"
+  }
+}
+```
+
+Route definitions are not structurally deduplicated. Even routes with identical
+current shapes retain independent contracts so future changes do not
+unexpectedly couple them. Definition keys are readable route encodings, but
+consumers should still use `x-webui-routes` rather than constructing `$defs`
+keys. Host-language DTO generation and runtime schema validation are separate
+concerns and are not part of `schema`.
+
 ## Example Workflow
 
 Examples and end-to-end walkthroughs are maintained in [examples/README.md](examples/README.md)
