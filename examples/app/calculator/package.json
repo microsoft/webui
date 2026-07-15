@@ -6,9 +6,9 @@
   "scripts": {
     "build": "pnpm run build:deps && pnpm run build:client && pnpm run build:server",
     "build:deps": "pnpm --filter @microsoft/webui --filter @microsoft/webui-framework run build",
-    "build:client": "node build-client.mjs",
+    "build:client": "node ../../build-client.mjs",
     "build:server": "cargo run -p microsoft-webui-cli -- build ./src --plugin=webui --projection-manifest ./dist/webui-projection.json --out ./dist",
-    "start:client": "pnpm run build:deps && node build-client.mjs --watch",
+    "start:client": "pnpm run build:deps && node ../../build-client.mjs --watch",
     "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --projection-manifest ./dist/webui-projection.json --servedir ./dist --port 3002 --watch",
     "start": "cargo xtask dev calculator",
     "test": "playwright test",

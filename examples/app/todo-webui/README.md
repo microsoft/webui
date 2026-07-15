@@ -10,7 +10,7 @@ pnpm build
 
 # Or use the dev server with live rendering
 cd examples/app/todo-webui
-node build-client.mjs --watch
+node ../../build-client.mjs --watch
 cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --projection-manifest ./dist/webui-projection.json --servedir ./dist --port 3006 --watch
 ```
 
