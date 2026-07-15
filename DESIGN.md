@@ -667,6 +667,22 @@ index, and a lazily populated template-metadata cache. Construct it once when
 the server loads `protocol.bin`, then share it across repeated full renders,
 partial navigation, component-template requests, and token queries:
 
+The two types represent separate lifecycle phases and cannot be collapsed
+without losing one of their required properties:
+
+- `WebUIProtocol` is the mutable protobuf wire/build model. Builders populate
+  it, `prost` serializes it, tests compare it, and callers may construct one
+  directly before encoding `protocol.bin`.
+- `PreparedProtocol` is the immutable runtime wrapper. Its component index,
+  locks, and lazy JSON caches are process-local implementation details that must
+  never be serialized into the protobuf or rebuilt for every request.
+
+Putting runtime caches on `WebUIProtocol` would make the generated wire type
+non-serializable and introduce locks into build-time mutation. Removing the
+wrapper would force byte-oriented hosts to decode the protobuf and rebuild
+indices on each request. `PreparedProtocol` therefore contains, rather than
+replaces, `WebUIProtocol`.
+
 ```rust
 pub struct PreparedProtocol {
     /* decoded protocol + component index + RwLock<template metadata> */
@@ -1000,8 +1016,6 @@ pub struct Component {
     /// Whether authored browser code owns this custom element. This can be true
     /// for external packages whose source is not available to the parser.
     pub is_client_owned: bool,
-    /// Raw local client-module source when available.
-    pub script_source: Option<String>,
 }
 ```
 
@@ -1048,8 +1062,6 @@ pub struct DiscoveredComponent {
     pub css_content: Option<String>,
     /// Whether authored browser code owns this custom element.
     pub is_client_owned: bool,
-    /// Raw sibling `.ts` / `.js` source for local components.
-    pub script_content: Option<String>,
     pub source: String,
 }
 ```

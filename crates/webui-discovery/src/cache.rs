@@ -113,7 +113,6 @@ impl DiscoveryCache {
                 html_content: c.html_content,
                 css_content: c.css_content,
                 is_client_owned: c.is_client_owned,
-                script_content: None,
                 source: entry.source.clone(),
             })
             .collect();
@@ -178,7 +177,6 @@ mod tests {
             html_content: "<div>test</div>".to_string(),
             css_content: Some(".test { color: red; }".to_string()),
             is_client_owned: false,
-            script_content: None,
             source: "test-pkg".to_string(),
         }];
 
@@ -212,7 +210,6 @@ mod tests {
             html_content: "<div>v1</div>".to_string(),
             css_content: None,
             is_client_owned: false,
-            script_content: None,
             source: "test-pkg".to_string(),
         }];
 

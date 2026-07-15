@@ -36,23 +36,12 @@ pub struct Component {
 
     /// Whether authored browser code owns this custom element tag.
     pub is_client_owned: bool,
-
-    /// Raw authored client-module source (`.ts`/`.js`), when available. This is
-    /// convention-agnostic build metadata — the registry never interprets it.
-    /// Parser plugins read it to derive their own hydration surface: the WebUI
-    /// plugin scans it for `@observable`/`@attr` decorators, while other plugins
-    /// may apply a different strategy or ignore it entirely. `None` when the
-    /// component ships no scannable local script (e.g. npm-provided components).
-    pub script_source: Option<String>,
 }
 
 /// Inputs for registering a component from content strings.
 ///
 /// Grouping the fields keeps [`ComponentRegistry::register_component`] a
-/// single-argument call and lets it grow new build-time metadata (such as the
-/// component's client-module source) without changing its arity. Callers with
-/// no client script use [`ComponentRegistration::new`], which defaults it to
-/// `None`.
+/// single-argument call without growing its arity.
 #[derive(Debug, Clone)]
 pub struct ComponentRegistration<'a> {
     /// The custom element tag name (must contain a hyphen).
@@ -63,20 +52,10 @@ pub struct ComponentRegistration<'a> {
     pub css_content: Option<&'a str>,
     /// Whether authored browser code owns this custom element tag.
     pub is_client_owned: bool,
-    /// Raw authored client-module source, when available. Parser plugins derive
-    /// their own hydration surface from it (the WebUI plugin scans
-    /// `@observable`/`@attr` decorators). `None` when there is no scannable
-    /// client script.
-    pub script_source: Option<&'a str>,
 }
 
 impl<'a> ComponentRegistration<'a> {
-    /// Create a registration with no client-module source.
-    ///
-    /// Convenience for callers with no scannable client script (tests,
-    /// npm-provided components, and hosts that hydrate purely from template
-    /// roots). Set [`Self::script_source`] directly to let parser plugins derive
-    /// a hydration surface from the component's authored module.
+    /// Create a component registration.
     #[must_use]
     pub fn new(
         tag_name: &'a str,
@@ -89,7 +68,6 @@ impl<'a> ComponentRegistration<'a> {
             html_content,
             css_content,
             is_client_owned,
-            script_source: None,
         }
     }
 }
@@ -106,31 +84,21 @@ pub struct ComponentRegistry {
 }
 
 #[cfg(feature = "fs")]
-/// Read a component's authored browser module source, if present.
-///
-/// Prefers `.ts` over `.js`. Returns `Ok(None)` only when neither sibling
-/// exists. A sibling that exists but cannot be read (I/O error, or non-UTF-8
-/// source, which [`fs::read_to_string`] rejects) is a hard error rather than a
-/// silent `None`: swallowing it would misclassify the component as scriptless
-/// and drop its authored hydration surface without warning — precisely the
-/// under-inclusion failure this feature is designed to prevent. This matches
-/// how the sibling HTML and CSS reads treat an unreadable-but-present file.
-///
-/// The raw source is stored on the [`Component`] and handed to parser plugins so
-/// each can derive its own hydration surface; its presence is the authored
-/// client-component signal.
-fn read_component_script(html_path: &Path) -> Result<Option<String>> {
+/// Return whether a component has an authored sibling module.
+fn has_component_script(html_path: &Path) -> Result<bool> {
     for ext in ["ts", "js"] {
         let candidate = html_path.with_extension(ext);
-        if candidate.exists() {
-            let source = fs::read_to_string(&candidate).map_err(|source| ParserError::IO {
-                context: format!("Failed to read component script: {}", candidate.display()),
-                source,
-            })?;
-            return Ok(Some(source));
+        if candidate.try_exists().map_err(|source| ParserError::IO {
+            context: format!(
+                "Failed to inspect component script: {}",
+                candidate.display()
+            ),
+            source,
+        })? {
+            return Ok(true);
         }
     }
-    Ok(None)
+    Ok(false)
 }
 
 impl Default for ComponentRegistry {
@@ -243,12 +211,7 @@ impl ComponentRegistry {
             (None, Vec::new(), Vec::new())
         };
 
-        // Read the sibling client module once: its presence marks the component
-        // as client-authored, and its raw source is handed to parser plugins so each can
-        // derive its own hydration surface (the registry stays convention-agnostic).
-        // A present-but-unreadable sibling is a hard error, never a silent skip.
-        let script_source = read_component_script(html_path)?;
-        let is_client_owned = script_source.is_some();
+        let is_client_owned = has_component_script(html_path)?;
 
         // Create and register the component
         let component = Component {
@@ -258,7 +221,6 @@ impl ComponentRegistry {
             css_definitions,
             css_fallback_chains,
             is_client_owned,
-            script_source,
         };
 
         self.components.insert(tag_name.to_string(), component);
@@ -267,18 +229,14 @@ impl ComponentRegistry {
 
     /// Register a component directly from provided content strings.
     ///
-    /// The [`ComponentRegistration::script_source`] field carries the component's
-    /// raw authored client module (when available). The registry stores it
-    /// verbatim; parser plugins later derive their own hydration surface from it
-    /// (the WebUI plugin scans `@observable`/`@attr` decorators). Use
-    /// [`ComponentRegistration::new`] when there is no client script to supply.
+    /// Exact JavaScript state ownership is supplied later by a bundler projection
+    /// manifest; the parser stores only whether this tag is client-owned.
     pub fn register_component(&mut self, registration: ComponentRegistration<'_>) -> Result<()> {
         let ComponentRegistration {
             tag_name,
             html_content,
             css_content,
             is_client_owned,
-            script_source,
         } = registration;
 
         // Validate component name (must contain a hyphen)
@@ -313,7 +271,6 @@ impl ComponentRegistry {
             css_definitions,
             css_fallback_chains,
             is_client_owned,
-            script_source: script_source.map(str::to_string),
         };
 
         // Register the component
@@ -436,26 +393,21 @@ mod tests {
     }
 
     #[test]
-    fn test_register_component_errors_on_unreadable_sibling_script() {
-        // A sibling `.ts` that exists but is not valid UTF-8 must be a hard
-        // error, never a silent downgrade to `is_client_owned = false` — that would
-        // drop the component's entire hydration surface without warning, the
-        // exact under-inclusion this feature is built to prevent.
+    fn test_register_component_detects_non_utf8_sibling_without_reading_it() {
         let mut fs = TestFileSystem::new();
         let html_path = fs.add_file("components/scripted-card.html", "<p>Scripted</p>");
-        // 0xFF is never a valid UTF-8 start byte, so read_to_string rejects it.
         std::fs::write(html_path.with_extension("ts"), [0xFF, 0xFE, 0x00])
             .expect("Failed to write invalid sibling script");
 
         let mut registry = ComponentRegistry::new();
-        let result = registry.register_component_from_paths(&html_path, None::<&str>);
+        registry
+            .register_component_from_paths(&html_path, None::<&str>)
+            .expect("registration should inspect presence without decoding source");
 
-        assert!(
-            result.is_err(),
-            "a present-but-unreadable sibling script must fail the build, not be silently skipped"
-        );
-        // A failed read must not leave the component registered as scriptless.
-        assert!(!registry.contains("scripted-card"));
+        let component = registry
+            .get("scripted-card")
+            .expect("Failed to retrieve registered component");
+        assert!(component.is_client_owned);
     }
 
     #[test]

@@ -58,14 +58,12 @@ fn register_components(
                 // A sibling module marks an authored client component. Rust
                 // never analyzes its source; optional projection manifests
                 // provide exact client state surfaces.
-                let script = component_script(files, tag_name);
                 parser.component_registry_mut().register_component(
                     webui_parser::ComponentRegistration {
                         tag_name,
                         html_content: content,
                         css_content: css,
-                        is_client_owned: script.is_some(),
-                        script_source: script,
+                        is_client_owned: has_component_script(files, tag_name),
                     },
                 )?;
             }
@@ -74,15 +72,9 @@ fn register_components(
     Ok(())
 }
 
-/// Return the authored browser module source for a component, if present.
-///
-/// Prefers `.ts` over `.js`. Its presence is the client-component signal; the
-/// source text is not analyzed by Rust.
-fn component_script<'a>(files: &'a HashMap<String, String>, tag_name: &str) -> Option<&'a str> {
-    files
-        .get(&format!("{tag_name}.ts"))
-        .or_else(|| files.get(&format!("{tag_name}.js")))
-        .map(String::as_str)
+/// Return whether the virtual file map contains an authored component module.
+fn has_component_script(files: &HashMap<String, String>, tag_name: &str) -> bool {
+    files.contains_key(&format!("{tag_name}.ts")) || files.contains_key(&format!("{tag_name}.js"))
 }
 
 /// Parse virtual files into a `WebUIProtocol` using the real `webui-parser`

@@ -504,7 +504,6 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
                     html_content: &comp.html_content,
                     css_content: comp.css_content.as_deref(),
                     is_client_owned: comp.is_client_owned,
-                    script_source: comp.script_content.as_deref(),
                 })
                 .map_err(|e| {
                     WebUIError::ComponentRegistration(format!(

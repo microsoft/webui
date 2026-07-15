@@ -28,13 +28,6 @@ pub struct DiscoveredComponent {
     pub css_content: Option<String>,
     /// Whether authored browser code owns this custom element tag.
     pub is_client_owned: bool,
-    /// The authored client script source for local components, when present.
-    ///
-    /// Carried verbatim (this crate does not depend on `webui-parser`) so the
-    /// caller can scan it for `@observable`/`@attr` decorators to derive the
-    /// component's hydration surface. `None` for npm components, which ship no
-    /// scannable sibling source.
-    pub script_content: Option<String>,
     /// The original source identifier (for display/diagnostics)
     pub source: String,
 }
@@ -142,13 +135,12 @@ fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
                     } else {
                         None
                     };
-                    let script_content = read_sibling_script(path)?;
+                    let is_client_owned = has_sibling_script(path)?;
                     components.push(DiscoveredComponent {
                         tag_name: filename.to_string(),
                         html_content,
                         css_content,
-                        is_client_owned: script_content.is_some(),
-                        script_content,
+                        is_client_owned,
                         source: source.clone(),
                     });
                 }
@@ -159,25 +151,20 @@ fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
     Ok(components)
 }
 
-/// Read a component's sibling client module source, preferring `.ts` over `.js`.
-///
-/// Returns `Ok(None)` only when neither sibling exists. A sibling that exists
-/// but cannot be read (I/O error, or non-UTF-8 source, which
-/// [`std::fs::read_to_string`] rejects) is a hard error rather than a silent
-/// `None`: swallowing it would misclassify the component as scriptless and drop
-/// its authored hydration surface without warning. This mirrors the
-/// sibling HTML and CSS reads above.
-fn read_sibling_script(html_path: &Path) -> Result<Option<String>> {
+/// Return whether a component has an authored sibling module.
+fn has_sibling_script(html_path: &Path) -> Result<bool> {
     for ext in ["ts", "js"] {
         let candidate = html_path.with_extension(ext);
-        if candidate.exists() {
-            let source = std::fs::read_to_string(&candidate).with_context(|| {
-                format!("Failed to read component script: {}", candidate.display())
-            })?;
-            return Ok(Some(source));
+        if candidate.try_exists().with_context(|| {
+            format!(
+                "Failed to inspect component script: {}",
+                candidate.display()
+            )
+        })? {
+            return Ok(true);
         }
     }
-    Ok(None)
+    Ok(false)
 }
 
 /// Collect the resolved local paths from source strings for file watching.

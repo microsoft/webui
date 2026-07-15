@@ -14,7 +14,6 @@ mod diagnostic;
 mod error;
 mod handlebars_parser;
 mod html_parser;
-mod hydration;
 pub mod plugin;
 mod route_parser;
 mod suggest;
@@ -29,7 +28,6 @@ pub use css_parser::CssParser;
 pub use diagnostic::{codes, Diagnostic, Severity};
 pub use error::{ParserError, Result};
 pub use handlebars_parser::HandlebarsParser;
-pub use hydration::scan_hydration_attributes;
 pub use webui_tokens::CssFallbackChain;
 
 use crate::html_parser::{self as html, Attrs, Element, Event, Walker};

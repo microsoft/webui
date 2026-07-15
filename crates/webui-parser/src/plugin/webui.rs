@@ -96,7 +96,7 @@ enum ClientModule {
 
 impl ClientModule {
     fn from_component(component: &Component) -> Self {
-        if component.script_source.is_some() || component.is_client_owned {
+        if component.is_client_owned {
             Self::Authored
         } else {
             Self::None
@@ -3062,7 +3062,6 @@ mod tests {
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
             is_client_owned,
-            script_source: None,
         }
     }
 
@@ -3503,12 +3502,7 @@ mod tests {
         // `webui::build`, can narrow this to exact keys. Template roots are
         // still recorded so the manifest consumer can union them in later.
         let mut plugin = WebUIParserPlugin::new();
-        let mut comp = test_component("test-el", "<p>{{serverTitle}}</p>", None, true);
-        comp.script_source = Some(
-            "@observable count = 0;\n\
-             @attr label = '';"
-                .to_string(),
-        );
+        let comp = test_component("test-el", "<p>{{serverTitle}}</p>", None, true);
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();

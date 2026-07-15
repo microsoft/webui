@@ -176,12 +176,9 @@ pub trait ParserPlugin {
     /// strategies. Authored root `<template>` attributes are preserved here;
     /// the SSR/internal parse view may strip runtime-only attributes.
     ///
-    /// `component` carries the build-time metadata a plugin needs to author its
-    /// own hydration strategy — notably [`Component::script_source`], the raw
-    /// authored client module. The registry never interprets that source, so a
-    /// plugin is free to scan it (as the WebUI plugin does for `@observable`/`@attr`),
-    /// parse it differently, or ignore it, and populate
-    /// [`ComponentTemplateArtifact::hydration_keys`] accordingly.
+    /// `component` identifies whether browser code owns the tag. Exact
+    /// JavaScript state surfaces come from bundler projection metadata rather
+    /// than parser-side source analysis.
     fn register_component_template(
         &mut self,
         tag_name: &str,

@@ -256,7 +256,6 @@ fn resolve_single(
             html_content: html_content.clone(),
             css_content: css_content.clone(),
             is_client_owned,
-            script_content: None,
             source: name.to_string(),
         })
         .collect();

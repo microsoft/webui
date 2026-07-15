@@ -677,7 +677,6 @@ mod tests {
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
             is_client_owned: false,
-            script_source: None,
         }
     }
 

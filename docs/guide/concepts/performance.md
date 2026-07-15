@@ -110,6 +110,19 @@ Native hosts should also prepare `protocol.bin` once at startup:
 - Node: reuse the same protocol `Buffer` and plugin; `@microsoft/webui` caches
   its plugin-bound native representation by buffer identity
 
+The dedicated FFI startup benchmark isolates protobuf decoding and index
+construction from application rendering:
+
+| Protocol size | Full one-shot | Full prepared | Partial one-shot | Partial prepared |
+|---------------|--------------:|--------------:|-----------------:|-----------------:|
+| 100 components | 63.893 us | 0.510 us | 66.972 us | 1.138 us |
+| 1,000 components | 532.96 us | 0.329 us | 649.44 us | 0.778 us |
+
+Prepared reuse removes 98.3% to 99.94% of the isolated protocol startup cost.
+The relative impact on a real request is smaller when template rendering or
+state serialization dominates, but repeatedly decoding immutable protocol
+bytes remains avoidable work.
+
 Do not read `protocol.bin` into a new Node `Buffer` for every request. A stable
 buffer lets the package reuse protobuf decoding and deterministic indices.
 
