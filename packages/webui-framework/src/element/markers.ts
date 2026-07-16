@@ -56,7 +56,7 @@ export function nextElement(marker: Comment): Element | null {
     if (node.nodeType === 1 /* ELEMENT_NODE */) return node as Element;
     if (node.nodeType === 8 /* COMMENT_NODE */) {
       const data = (node as Comment).data;
-      if (data === MARKER_REPEAT_END || data === MARKER_REPEAT_ITEM) return null;
+      if (data === MARKER_REPEAT_END || data === MARKER_REPEAT_ITEM || data === MARKER_COND_END) return null;
     }
     node = node.nextSibling;
   }

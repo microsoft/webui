@@ -1154,7 +1154,6 @@ export class TemplateElement extends HTMLElement {
         const [parentPath] = slotMeta;
         const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart) ?? ssrRoot;
         const blockMeta = this.$block(blockIndex);
-        const shown = (condition as CompiledCondition)[0](this.$resolver, scope);
         let condInstance: TemplateInstance | null = null;
 
         // Reset cursor when parent changes between iterations
@@ -1177,18 +1176,12 @@ export class TemplateElement extends HTMLElement {
         }
         if (marker) lastCondMarker = marker;
 
-        // SSR hydration: if the marker exists, the server rendered this
-        // conditional — hydrate its content regardless of the current
-        // condition value.  Complex properties from parent bindings may
-        // not have arrived yet (the parent hydrates after children), so
-        // the condition could evaluate to false even though the server
-        // rendered it as true.  Trust the SSR DOM and wire it up; the
-        // condition will re-evaluate correctly once all data is set.
-        const ssrContentPresent = marker && blockMeta && this.$hasContentAfterMarker(condAnchor, MARKER_COND_END);
-        if (blockMeta && (shown || ssrContentPresent)) {
-          if (marker) {
-            condInstance = this.$hydrateCondContent(condAnchor, blockMeta, scope);
-          }
+        // Trust the SSR marker range regardless of the current condition.
+        // Parent bindings may not have arrived yet, so the client value can
+        // temporarily disagree with SSR. An empty range must stay empty rather
+        // than claiming the first static sibling after <!--/wc-->.
+        if (marker && blockMeta) {
+          condInstance = this.$hydrateCondContent(condAnchor, blockMeta, scope);
         }
 
         // Collect <!--/wc--> end marker for deferred removal.
@@ -1353,16 +1346,40 @@ export class TemplateElement extends HTMLElement {
 
   // ── SSR helpers ───────────────────────────────────────────────
 
-  /** Collect sibling nodes between a start marker and an end marker comment. */
-  private $collectBetween(start: Comment, endData: string): Node[] {
+  /** Collect a conditional range through its matching closing marker. */
+  private $collectConditionalRange(start: Comment): Node[] {
     const nodes: Node[] = [];
+    let depth = 0;
     let node: Node | null = start.nextSibling;
     while (node) {
-      if (node.nodeType === 8 && (node as Comment).data === endData) break;
+      if (node.nodeType === 8) {
+        const data = (node as Comment).data;
+        if (data === MARKER_COND_START) {
+          depth++;
+        } else if (data === MARKER_COND_END) {
+          if (depth === 0) break;
+          depth--;
+        }
+      }
       nodes.push(node);
       node = node.nextSibling;
     }
     return nodes;
+  }
+
+  /** Return whether a compiled block has structural slots beside its root element. */
+  private $hasRootStructuralSlot(meta: TemplateBlockMeta): boolean {
+    if (meta.c) {
+      for (let i = 0; i < meta.c.length; i++) {
+        if (meta.c[i][2][0].length === 0) return true;
+      }
+    }
+    if (meta.r) {
+      for (let i = 0; i < meta.r.length; i++) {
+        if (meta.r[i][3][0].length === 0) return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -1376,7 +1393,7 @@ export class TemplateElement extends HTMLElement {
   ): TemplateInstance | null {
     const rootTag = this.$rootTag(blockMeta);
     const tplDom = getTemplateDom(blockMeta);
-    if (rootTag && tplDom.children.length === 1) {
+    if (rootTag && tplDom.children.length === 1 && !this.$hasRootStructuralSlot(blockMeta)) {
       // Single-root optimisation: hydrate the element in-place (pathStart=1).
       const el = nextElement(condAnchor);
       if (el) {
@@ -1389,8 +1406,8 @@ export class TemplateElement extends HTMLElement {
       }
       return null;
     }
-    // Multi-root or text-only conditional: collect nodes between <!--wc--> and <!--/wc-->
-    const condNodes = this.$collectBetween(condAnchor, MARKER_COND_END);
+    // Multi-root, text-only, or root-level structural content needs the full range.
+    const condNodes = this.$collectConditionalRange(condAnchor);
     if (condNodes.length === 0) return null;
     const wrapper = document.createElement('div');
     for (let cn = 0; cn < condNodes.length; cn++) wrapper.appendChild(condNodes[cn]);
@@ -1418,24 +1435,6 @@ export class TemplateElement extends HTMLElement {
       child = child.nextSibling;
     }
     return null;
-  }
-
-  /**
-   * Check whether there is non-marker content between a conditional
-   * start anchor and its closing marker.  Used during SSR hydration to
-   * detect server-rendered conditional content even when the runtime
-   * condition value has not been set yet (e.g. complex property from a
-   * parent repeat binding that hydrates after its children).
-   */
-  private $hasContentAfterMarker(anchor: Comment, endData: string): boolean {
-    let sibling = anchor.nextSibling;
-    while (sibling) {
-      if (sibling.nodeType === 8 && (sibling as Comment).data === endData) {
-        return false; // reached end marker with no content in between
-      }
-      return true; // any non-end-marker node = content present
-    }
-    return false;
   }
 
   /**

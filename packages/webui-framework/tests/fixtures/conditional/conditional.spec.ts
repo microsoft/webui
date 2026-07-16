@@ -8,8 +8,10 @@ test.describe('conditional fixture', () => {
     await page.goto('/conditional/fixture.html');
     await page.waitForSelector('test-conditional');
     await page.waitForFunction(() => {
-      const el = document.querySelector('test-conditional');
-      return el && (el as any).$ready === true;
+      const conditional = document.querySelector('test-conditional');
+      const ranges = document.querySelector('test-conditional-hydration-ranges');
+      return conditional && (conditional as any).$ready === true
+        && ranges && (ranges as any).$ready === true;
     });
   });
 
@@ -33,6 +35,34 @@ test.describe('conditional fixture', () => {
 
     await page.locator('test-conditional-client .toggle').click();
     await expect(page.locator('test-conditional-client .details')).toHaveText('Details');
+  });
+
+  test('keeps a static sibling outside an empty SSR conditional', async ({ page }) => {
+    const host = page.locator('test-conditional-hydration-ranges');
+    await expect(host.locator('.mismatch-details')).toHaveCount(0);
+    await expect(host.locator('.static-sibling')).toHaveText('Static sibling');
+
+    await host.locator('.mismatch-toggle').click();
+    await expect(host.locator('.mismatch-details')).toHaveCount(0);
+    await expect(host.locator('.static-sibling')).toHaveText('Static sibling');
+
+    await host.locator('.mismatch-toggle').click();
+    await expect(host.locator('.mismatch-details')).toHaveText('Client-only details');
+    await expect(host.locator('.static-sibling')).toHaveText('Static sibling');
+  });
+
+  test('hydrates nested marker ranges without stale or duplicated roots', async ({ page }) => {
+    const host = page.locator('test-conditional-hydration-ranges');
+    await expect(host.locator('.nested-details')).toHaveCount(0);
+    await expect(host.locator('.outer-details')).toHaveText('Outer details');
+
+    await host.locator('.outer-toggle').click();
+    await expect(host.locator('.outer-details')).toHaveCount(0);
+    await expect(host.locator('.static-sibling')).toHaveText('Static sibling');
+
+    await host.locator('.outer-toggle').click();
+    await expect(host.locator('.outer-details')).toHaveCount(1);
+    await expect(host.locator('.nested-details')).toHaveCount(0);
   });
 
   test('toggles boolean attributes reactively', async ({ page }) => {
