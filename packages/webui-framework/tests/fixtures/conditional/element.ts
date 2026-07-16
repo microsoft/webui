@@ -28,3 +28,22 @@ export class TestConditionalClient extends WebUIElement {
 
 TestConditionalClient.define('test-conditional-client');
 
+export class TestConditionalHydrationRanges extends WebUIElement {
+  @observable clientOnlyOpen = true;
+  @observable outerOpen = true;
+  @observable innerOpen = false;
+
+  protected $shouldApplySSRBootstrapState(): boolean {
+    return false;
+  }
+
+  toggleClientOnlyOpen(): void {
+    this.clientOnlyOpen = !this.clientOnlyOpen;
+  }
+
+  toggleOuterOpen(): void {
+    this.outerOpen = !this.outerOpen;
+  }
+}
+
+TestConditionalHydrationRanges.define('test-conditional-hydration-ranges');
