@@ -6,13 +6,13 @@
  *
  * Returns the serialized `WebUIProtocol` as protobuf bytes.
  */
-export function build_protocol(files: any, entry: string): Uint8Array;
+export function build_protocol(files: any, entry: string, projection_manifests?: any | null): Uint8Array;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
-    readonly build_protocol: (a: number, b: number, c: number, d: number) => void;
+    readonly build_protocol: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;

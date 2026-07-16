@@ -2,61 +2,56 @@
 /* eslint-disable */
 
 /**
+ * A decoded protocol with reusable indices for repeated WASM renders.
+ */
+export class Protocol {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Decode protobuf bytes once for repeated rendering.
+     */
+    constructor(protocol_bytes: Uint8Array, plugin?: string | null);
+    /**
+     * Render from an existing JSON string.
+     */
+    render(state_json: string, options?: object | null): string;
+    /**
+     * Return component template payloads for requested component tags.
+     */
+    renderComponentTemplates(component_tags: any, inventory_hex: string): string;
+    /**
+     * Produce a complete partial-navigation response.
+     */
+    renderPartial(state_json: string, entry_id: string, request_path: string, inventory_hex: string): string;
+    /**
+     * Stream from an existing JSON string in bounded chunks.
+     */
+    renderStream(state_json: string, on_chunk: Function, options?: object | null): void;
+    /**
+     * Return CSS token names in build order.
+     */
+    tokens(): any;
+}
+
+/**
  * Build protocol protobuf bytes from virtual files without rendering.
  *
  * Returns the serialized `WebUIProtocol` as protobuf bytes.
  */
-export function build_protocol(files: any, entry: string): Uint8Array;
-
-/**
- * Extract the CSS token name list from protocol protobuf bytes.
- *
- * Returns a JavaScript array of token name strings, preserving the original
- * order from the build step.
- */
-export function protocol_tokens(protocol_bytes: Uint8Array): any;
-
-/**
- * Render a pre-built WebUI protocol with state data, streaming chunks to a callback.
- *
- * # Arguments
- *
- * * `protocol_bytes` - Protobuf bytes of the serialized `WebUIProtocol`.
- * * `state_json` - JSON string of the state data.
- * * `on_chunk` - Callback invoked with each rendered HTML fragment.
- * * `options` - Optional object with `entry`, `requestPath`, and `plugin` fields.
- *
- * # Returns
- *
- * Nothing on success, or throws a JS error on failure.
- */
-export function render(protocol_bytes: Uint8Array, state_json: string, on_chunk: Function, options?: object | null): void;
-
-/**
- * Return component template payloads for requested component tags.
- */
-export function render_component_templates(protocol_bytes: Uint8Array, component_tags_json: string, inventory_hex: string): string;
-
-/**
- * Produce a complete JSON partial response for client-side navigation.
- *
- * Combines application state, route templates, inventory, request path, and
- * matched route chain into a single JSON string:
- * `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
- *
- * Host servers return this directly - no assembly required.
- */
-export function render_partial(protocol_bytes: Uint8Array, state_json: string, entry_id: string, request_path: string, inventory_hex: string): string;
+export function build_protocol(files: any, entry: string, projection_manifests?: any | null): Uint8Array;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
-    readonly build_protocol: (a: number, b: number, c: number, d: number) => void;
-    readonly protocol_tokens: (a: number, b: number, c: number) => void;
-    readonly render: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
-    readonly render_component_templates: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
-    readonly render_partial: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
+    readonly __wbg_protocol_free: (a: number, b: number) => void;
+    readonly build_protocol: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly protocol_new: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly protocol_render: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly protocol_renderComponentTemplates: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly protocol_renderPartial: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
+    readonly protocol_renderStream: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly protocol_tokens: (a: number, b: number) => void;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;

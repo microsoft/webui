@@ -1,19 +1,208 @@
 /* @ts-self-types="./webui_wasm_all.d.ts" */
 
 /**
+ * A decoded protocol with reusable indices for repeated WASM renders.
+ */
+export class Protocol {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        ProtocolFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_protocol_free(ptr, 0);
+    }
+    /**
+     * Decode protobuf bytes once for repeated rendering.
+     * @param {Uint8Array} protocol_bytes
+     * @param {string | null} [plugin]
+     */
+    constructor(protocol_bytes, plugin) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passArray8ToWasm0(protocol_bytes, wasm.__wbindgen_export);
+            const len0 = WASM_VECTOR_LEN;
+            var ptr1 = isLikeNone(plugin) ? 0 : passStringToWasm0(plugin, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            var len1 = WASM_VECTOR_LEN;
+            wasm.protocol_new(retptr, ptr0, len0, ptr1, len1);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            this.__wbg_ptr = r0;
+            ProtocolFinalization.register(this, this.__wbg_ptr, this);
+            return this;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Render from an existing JSON string.
+     * @param {string} state_json
+     * @param {object | null} [options]
+     * @returns {string}
+     */
+    render(state_json, options) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(state_json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.protocol_render(retptr, this.__wbg_ptr, ptr0, len0, isLikeNone(options) ? 0 : addHeapObject(options));
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+            var ptr2 = r0;
+            var len2 = r1;
+            if (r3) {
+                ptr2 = 0; len2 = 0;
+                throw takeObject(r2);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Return component template payloads for requested component tags.
+     * @param {any} component_tags
+     * @param {string} inventory_hex
+     * @returns {string}
+     */
+    renderComponentTemplates(component_tags, inventory_hex) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(inventory_hex, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.protocol_renderComponentTemplates(retptr, this.__wbg_ptr, addHeapObject(component_tags), ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+            var ptr2 = r0;
+            var len2 = r1;
+            if (r3) {
+                ptr2 = 0; len2 = 0;
+                throw takeObject(r2);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Produce a complete partial-navigation response.
+     * @param {string} state_json
+     * @param {string} entry_id
+     * @param {string} request_path
+     * @param {string} inventory_hex
+     * @returns {string}
+     */
+    renderPartial(state_json, entry_id, request_path, inventory_hex) {
+        let deferred6_0;
+        let deferred6_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(state_json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(entry_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(request_path, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(inventory_hex, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len3 = WASM_VECTOR_LEN;
+            wasm.protocol_renderPartial(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+            var ptr5 = r0;
+            var len5 = r1;
+            if (r3) {
+                ptr5 = 0; len5 = 0;
+                throw takeObject(r2);
+            }
+            deferred6_0 = ptr5;
+            deferred6_1 = len5;
+            return getStringFromWasm0(ptr5, len5);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred6_0, deferred6_1, 1);
+        }
+    }
+    /**
+     * Stream from an existing JSON string in bounded chunks.
+     * @param {string} state_json
+     * @param {Function} on_chunk
+     * @param {object | null} [options]
+     */
+    renderStream(state_json, on_chunk, options) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(state_json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.protocol_renderStream(retptr, this.__wbg_ptr, ptr0, len0, addBorrowedObject(on_chunk), isLikeNone(options) ? 0 : addHeapObject(options));
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            if (r1) {
+                throw takeObject(r0);
+            }
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            heap[stack_pointer++] = undefined;
+        }
+    }
+    /**
+     * Return CSS token names in build order.
+     * @returns {any}
+     */
+    tokens() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.protocol_tokens(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return takeObject(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+}
+if (Symbol.dispose) Protocol.prototype[Symbol.dispose] = Protocol.prototype.free;
+
+/**
  * Build protocol protobuf bytes from virtual files without rendering.
  *
  * Returns the serialized `WebUIProtocol` as protobuf bytes.
  * @param {any} files
  * @param {string} entry
+ * @param {any | null} [projection_manifests]
  * @returns {Uint8Array}
  */
-export function build_protocol(files, entry) {
+export function build_protocol(files, entry, projection_manifests) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
         const ptr0 = passStringToWasm0(entry, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
-        wasm.build_protocol(retptr, addHeapObject(files), ptr0, len0);
+        wasm.build_protocol(retptr, addHeapObject(files), ptr0, len0, isLikeNone(projection_manifests) ? 0 : addHeapObject(projection_manifests));
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
@@ -26,157 +215,6 @@ export function build_protocol(files, entry) {
         return v2;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
-    }
-}
-
-/**
- * Extract the CSS token name list from protocol protobuf bytes.
- *
- * Returns a JavaScript array of token name strings, preserving the original
- * order from the build step.
- * @param {Uint8Array} protocol_bytes
- * @returns {any}
- */
-export function protocol_tokens(protocol_bytes) {
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passArray8ToWasm0(protocol_bytes, wasm.__wbindgen_export);
-        const len0 = WASM_VECTOR_LEN;
-        wasm.protocol_tokens(retptr, ptr0, len0);
-        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
-        if (r2) {
-            throw takeObject(r1);
-        }
-        return takeObject(r0);
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-    }
-}
-
-/**
- * Render a pre-built WebUI protocol with state data, streaming chunks to a callback.
- *
- * # Arguments
- *
- * * `protocol_bytes` - Protobuf bytes of the serialized `WebUIProtocol`.
- * * `state_json` - JSON string of the state data.
- * * `on_chunk` - Callback invoked with each rendered HTML fragment.
- * * `options` - Optional object with `entry`, `requestPath`, and `plugin` fields.
- *
- * # Returns
- *
- * Nothing on success, or throws a JS error on failure.
- * @param {Uint8Array} protocol_bytes
- * @param {string} state_json
- * @param {Function} on_chunk
- * @param {object | null} [options]
- */
-export function render(protocol_bytes, state_json, on_chunk, options) {
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passArray8ToWasm0(protocol_bytes, wasm.__wbindgen_export);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(state_json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
-        const len1 = WASM_VECTOR_LEN;
-        wasm.render(retptr, ptr0, len0, ptr1, len1, addBorrowedObject(on_chunk), isLikeNone(options) ? 0 : addHeapObject(options));
-        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-        if (r1) {
-            throw takeObject(r0);
-        }
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-        heap[stack_pointer++] = undefined;
-    }
-}
-
-/**
- * Return component template payloads for requested component tags.
- * @param {Uint8Array} protocol_bytes
- * @param {string} component_tags_json
- * @param {string} inventory_hex
- * @returns {string}
- */
-export function render_component_templates(protocol_bytes, component_tags_json, inventory_hex) {
-    let deferred5_0;
-    let deferred5_1;
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passArray8ToWasm0(protocol_bytes, wasm.__wbindgen_export);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(component_tags_json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(inventory_hex, wasm.__wbindgen_export, wasm.__wbindgen_export2);
-        const len2 = WASM_VECTOR_LEN;
-        wasm.render_component_templates(retptr, ptr0, len0, ptr1, len1, ptr2, len2);
-        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
-        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
-        var ptr4 = r0;
-        var len4 = r1;
-        if (r3) {
-            ptr4 = 0; len4 = 0;
-            throw takeObject(r2);
-        }
-        deferred5_0 = ptr4;
-        deferred5_1 = len4;
-        return getStringFromWasm0(ptr4, len4);
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_export4(deferred5_0, deferred5_1, 1);
-    }
-}
-
-/**
- * Produce a complete JSON partial response for client-side navigation.
- *
- * Combines application state, route templates, inventory, request path, and
- * matched route chain into a single JSON string:
- * `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
- *
- * Host servers return this directly - no assembly required.
- * @param {Uint8Array} protocol_bytes
- * @param {string} state_json
- * @param {string} entry_id
- * @param {string} request_path
- * @param {string} inventory_hex
- * @returns {string}
- */
-export function render_partial(protocol_bytes, state_json, entry_id, request_path, inventory_hex) {
-    let deferred7_0;
-    let deferred7_1;
-    try {
-        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        const ptr0 = passArray8ToWasm0(protocol_bytes, wasm.__wbindgen_export);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(state_json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(entry_id, wasm.__wbindgen_export, wasm.__wbindgen_export2);
-        const len2 = WASM_VECTOR_LEN;
-        const ptr3 = passStringToWasm0(request_path, wasm.__wbindgen_export, wasm.__wbindgen_export2);
-        const len3 = WASM_VECTOR_LEN;
-        const ptr4 = passStringToWasm0(inventory_hex, wasm.__wbindgen_export, wasm.__wbindgen_export2);
-        const len4 = WASM_VECTOR_LEN;
-        wasm.render_partial(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4);
-        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
-        var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
-        var ptr6 = r0;
-        var len6 = r1;
-        if (r3) {
-            ptr6 = 0; len6 = 0;
-            throw takeObject(r2);
-        }
-        deferred7_0 = ptr6;
-        deferred7_1 = len6;
-        return getStringFromWasm0(ptr6, len6);
-    } finally {
-        wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_export4(deferred7_0, deferred7_1, 1);
     }
 }
 function __wbg_get_imports() {
@@ -204,6 +242,10 @@ function __wbg_get_imports() {
             const len1 = WASM_VECTOR_LEN;
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+        },
+        __wbg___wbindgen_in_aca499c5de7ff5e5: function(arg0, arg1) {
+            const ret = getObject(arg0) in getObject(arg1);
+            return ret;
         },
         __wbg___wbindgen_is_function_1ff95bcc5517c252: function(arg0) {
             const ret = typeof(getObject(arg0)) === 'function';
@@ -275,6 +317,10 @@ function __wbg_get_imports() {
             const ret = getObject(arg0)[arg1 >>> 0];
             return addHeapObject(ret);
         },
+        __wbg_get_with_ref_key_6412cf3094599694: function(arg0, arg1) {
+            const ret = getObject(arg0)[getObject(arg1)];
+            return addHeapObject(ret);
+        },
         __wbg_instanceof_ArrayBuffer_4480b9e0068a8adb: function(arg0) {
             let result;
             try {
@@ -293,6 +339,10 @@ function __wbg_get_imports() {
                 result = false;
             }
             const ret = result;
+            return ret;
+        },
+        __wbg_isArray_0677c962b281d01a: function(arg0) {
+            const ret = Array.isArray(getObject(arg0));
             return ret;
         },
         __wbg_iterator_6f722e4a93058b71: function() {
@@ -338,6 +388,10 @@ function __wbg_get_imports() {
             const ret = getStringFromWasm0(arg0, arg1);
             return addHeapObject(ret);
         },
+        __wbindgen_object_clone_ref: function(arg0) {
+            const ret = getObject(arg0);
+            return addHeapObject(ret);
+        },
         __wbindgen_object_drop_ref: function(arg0) {
             takeObject(arg0);
         },
@@ -347,6 +401,10 @@ function __wbg_get_imports() {
         "./webui_wasm_all_bg.js": import0,
     };
 }
+
+const ProtocolFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_protocol_free(ptr, 1));
 
 function addHeapObject(obj) {
     if (heap_next === heap.length) heap.push(heap.length + 1);

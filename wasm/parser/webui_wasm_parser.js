@@ -6,14 +6,15 @@
  * Returns the serialized `WebUIProtocol` as protobuf bytes.
  * @param {any} files
  * @param {string} entry
+ * @param {any | null} [projection_manifests]
  * @returns {Uint8Array}
  */
-export function build_protocol(files, entry) {
+export function build_protocol(files, entry, projection_manifests) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
         const ptr0 = passStringToWasm0(entry, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
-        wasm.build_protocol(retptr, addHeapObject(files), ptr0, len0);
+        wasm.build_protocol(retptr, addHeapObject(files), ptr0, len0, isLikeNone(projection_manifests) ? 0 : addHeapObject(projection_manifests));
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
@@ -54,6 +55,10 @@ function __wbg_get_imports() {
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
         },
+        __wbg___wbindgen_in_aca499c5de7ff5e5: function(arg0, arg1) {
+            const ret = getObject(arg0) in getObject(arg1);
+            return ret;
+        },
         __wbg___wbindgen_is_function_1ff95bcc5517c252: function(arg0) {
             const ret = typeof(getObject(arg0)) === 'function';
             return ret;
@@ -61,6 +66,10 @@ function __wbg_get_imports() {
         __wbg___wbindgen_is_object_a27215656b807791: function(arg0) {
             const val = getObject(arg0);
             const ret = typeof(val) === 'object' && val !== null;
+            return ret;
+        },
+        __wbg___wbindgen_is_undefined_c05833b95a3cf397: function(arg0) {
+            const ret = getObject(arg0) === undefined;
             return ret;
         },
         __wbg___wbindgen_jsval_loose_eq_db4c3b15f63fc170: function(arg0, arg1) {
@@ -108,6 +117,10 @@ function __wbg_get_imports() {
             const ret = getObject(arg0)[arg1 >>> 0];
             return addHeapObject(ret);
         },
+        __wbg_get_with_ref_key_6412cf3094599694: function(arg0, arg1) {
+            const ret = getObject(arg0)[getObject(arg1)];
+            return addHeapObject(ret);
+        },
         __wbg_instanceof_ArrayBuffer_4480b9e0068a8adb: function(arg0) {
             let result;
             try {
@@ -126,6 +139,10 @@ function __wbg_get_imports() {
                 result = false;
             }
             const ret = result;
+            return ret;
+        },
+        __wbg_isArray_0677c962b281d01a: function(arg0) {
+            const ret = Array.isArray(getObject(arg0));
             return ret;
         },
         __wbg_iterator_6f722e4a93058b71: function() {
@@ -162,6 +179,10 @@ function __wbg_get_imports() {
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
+            return addHeapObject(ret);
+        },
+        __wbindgen_object_clone_ref: function(arg0) {
+            const ret = getObject(arg0);
             return addHeapObject(ret);
         },
         __wbindgen_object_drop_ref: function(arg0) {
