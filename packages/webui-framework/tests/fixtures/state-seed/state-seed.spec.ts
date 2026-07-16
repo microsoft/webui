@@ -59,4 +59,34 @@ test.describe('state-seed fixture', () => {
 
     await expect(page.locator('test-state-seed-shell .category-link').first()).toHaveClass(/active/);
   });
+
+  test('preserves template-only SSR repeats until explicit navigation state arrives', async ({ page }) => {
+    const bootstrapState = await page.evaluate(() => window.__webui?.state ?? {});
+    expect(Object.hasOwn(bootstrapState, 'serverItems')).toBe(false);
+    await expect(page.locator('test-state-seed .server-items li')).toHaveText([
+      'server one',
+      'server two',
+    ]);
+
+    await page.locator('test-state-seed .rename-title').click();
+    await expect(page.locator('test-state-seed .title')).toHaveText('Client Title');
+    await expect(page.locator('test-state-seed .server-items li')).toHaveText([
+      'server one',
+      'server two',
+    ]);
+
+    await page.locator('test-state-seed').evaluate((element) => {
+      (element as HTMLElement & {
+        setState(state: Record<string, unknown>): void;
+      }).setState({ serverItems: ['client only'] });
+    });
+    await expect(page.locator('test-state-seed .server-items li')).toHaveText(['client only']);
+
+    await page.locator('test-state-seed').evaluate((element) => {
+      (element as HTMLElement & {
+        setState(state: Record<string, unknown>): void;
+      }).setState({ serverItems: [] });
+    });
+    await expect(page.locator('test-state-seed .server-items li')).toHaveCount(0);
+  });
 });

@@ -8,7 +8,11 @@
 
 import { describe, test, before, after } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { build, render, renderStream, inspect, renderComponentTemplates } from '@microsoft/webui';
+import {
+  build,
+  inspect,
+  Protocol,
+} from '@microsoft/webui';
 import type { ComponentTemplatesResponse } from '@microsoft/webui';
 import { existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -47,8 +51,10 @@ before(() => {
   writeFileSync(join(appDir, 'my-card.html'), '<div class="card"><slot></slot></div>');
   writeFileSync(join(appDir, 'my-card.css'), '.card { border: 1px solid #ccc; }');
   writeFileSync(join(appDir, 'index2.html'), '<my-card>Hello</my-card>');
-  writeFileSync(join(appDir, 'app-shell.html'), '<div></div>');
+  writeFileSync(join(appDir, 'app-shell.html'), '<div>{{name}}</div>');
+  writeFileSync(join(appDir, 'app-shell.ts'), 'export {};');
   writeFileSync(join(appDir, 'lazy-panel.html'), '<p>{{title}}</p>');
+  writeFileSync(join(appDir, 'lazy-panel.ts'), 'export {};');
   writeFileSync(join(appDir, 'index3.html'), '<app-shell></app-shell>');
 });
 
@@ -108,35 +114,77 @@ describe('inspect', () => {
 describe('render', () => {
   test('substitutes signals', () => {
     const result = build({ appDir });
-    const html = render(result.protocol, { name: 'WebUI', items: ['a', 'b'], show: true });
+    const protocol = new Protocol(result.protocol);
+    const html = protocol.render({ name: 'WebUI', items: ['a', 'b'], show: true });
     assert.ok(html.includes('Hello, WebUI!'));
   });
 
   test('expands for-loop', () => {
     const result = build({ appDir });
-    const html = render(result.protocol, { name: 'X', items: ['a', 'b'], show: false });
+    const protocol = new Protocol(result.protocol);
+    const html = protocol.render({ name: 'X', items: ['a', 'b'], show: false });
     assert.ok(html.includes('<p>a</p>'));
     assert.ok(html.includes('<p>b</p>'));
   });
 
   test('includes if-true block', () => {
     const result = build({ appDir });
-    const html = render(result.protocol, { name: 'X', items: [], show: true });
+    const protocol = new Protocol(result.protocol);
+    const html = protocol.render({ name: 'X', items: [], show: true });
     assert.ok(html.includes('<footer>Visible</footer>'));
   });
 
   test('excludes if-false block', () => {
     const result = build({ appDir });
-    const html = render(result.protocol, { name: 'X', items: [], show: false });
+    const protocol = new Protocol(result.protocol);
+    const html = protocol.render({ name: 'X', items: [], show: false });
     assert.ok(!html.includes('<footer>'));
+  });
+
+  test('reuses one protocol for object and JSON string state', () => {
+    const result = build({ appDir });
+    const protocol = new Protocol(result.protocol);
+    const objectHtml = protocol.render({ name: 'Object', items: [], show: false });
+    const jsonHtml = protocol.render(
+      JSON.stringify({ name: 'JSON', items: [], show: false }),
+    );
+    assert.ok(objectHtml.includes('Hello, Object!'));
+    assert.ok(jsonHtml.includes('Hello, JSON!'));
+  });
+
+  test('owns decoded state independently of source buffer mutations', () => {
+    const result = build({ appDir });
+    const protocol = new Protocol(result.protocol);
+    const state = { name: 'Cache', items: [], show: true };
+    const initialHtml = protocol.render(state);
+    assert.ok(initialHtml.includes('<footer>Visible</footer>'));
+
+    const offset = result.protocol.indexOf('Visible');
+    assert.ok(offset >= 0);
+    result.protocol.write('Altered', offset, 'utf8');
+
+    const existingHtml = protocol.render(state);
+    assert.ok(existingHtml.includes('<footer>Visible</footer>'));
+
+    const updatedHtml = new Protocol(result.protocol).render(state);
+    assert.ok(updatedHtml.includes('<footer>Altered</footer>'));
+  });
+
+  test('rejects an unknown protocol plugin at construction', () => {
+    const result = build({ appDir });
+    assert.throws(
+      () => new Protocol(result.protocol, { plugin: '' }),
+      /Unknown plugin/,
+    );
   });
 });
 
 describe('renderStream', () => {
   test('streams chunks via callback', () => {
     const result = build({ appDir });
+    const protocol = new Protocol(result.protocol);
     const chunks: string[] = [];
-    renderStream(result.protocol, { name: 'Stream', items: ['x'], show: false }, (chunk) => {
+    protocol.renderStream({ name: 'Stream', items: ['x'], show: false }, (chunk) => {
       chunks.push(chunk);
     });
     assert.ok(chunks.length > 0);
@@ -147,7 +195,8 @@ describe('renderStream', () => {
 describe('renderComponentTemplates', () => {
   test('returns valid response shape', () => {
     const result = build({ appDir, entry: 'index2.html' });
-    const json = renderComponentTemplates(result.protocol, ['my-card'], '');
+    const protocol = new Protocol(result.protocol);
+    const json = protocol.renderComponentTemplates(['my-card'], '');
     const parsed: ComponentTemplatesResponse = JSON.parse(json);
     assert.equal(typeof parsed.templates, 'object');
     assert.ok(Array.isArray(parsed.templateStyles));
@@ -157,10 +206,27 @@ describe('renderComponentTemplates', () => {
 
   test('returns empty template maps for unknown component', () => {
     const result = build({ appDir });
-    const json = renderComponentTemplates(result.protocol, ['nonexistent-widget'], '');
+    const protocol = new Protocol(result.protocol);
+    const json = protocol.renderComponentTemplates(['nonexistent-widget'], '');
     const parsed: ComponentTemplatesResponse = JSON.parse(json);
     assert.deepEqual(parsed.templates, {});
     assert.deepEqual(parsed.templateFunctions, {});
     assert.deepEqual(parsed.templateStyles, []);
+  });
+});
+
+describe('renderPartial', () => {
+  test('preserves full state when projection metadata is absent', () => {
+    const result = build({ appDir, entry: 'index3.html', plugin: 'webui' });
+    const protocol = new Protocol(result.protocol, { plugin: 'webui' });
+    const json = protocol.renderPartial(
+      '{"name":"Partial","serverOnly":"drop"}',
+      'index3.html',
+      '/',
+      '',
+    );
+    const parsed = JSON.parse(json);
+    assert.equal(parsed.state.name, 'Partial');
+    assert.equal(parsed.state.serverOnly, 'drop');
   });
 });

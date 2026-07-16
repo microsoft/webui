@@ -29,6 +29,9 @@ jobs:
       - name: Build microsoft-webui-ffi
         run: cargo build -p microsoft-webui-ffi
 
+      - name: Build FFI protocol fixture
+        run: cargo run -p microsoft-webui-cli -- build crates/webui-ffi/tests/fixtures/app --out crates/webui-ffi/tests/fixtures/protocol.bin
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:

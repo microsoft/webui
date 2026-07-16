@@ -5,6 +5,7 @@ import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
 import {
+  attributeNameForProperty,
   attr,
   getObservableNames,
   isAttributeProperty,
@@ -143,6 +144,24 @@ describe('observable decorators', () => {
     attr(TestElement.prototype, 'label');
 
     assert.equal(getObservableNames(TestElement).has('label'), true);
+    assert.equal(attributeNameForProperty(TestElement, 'label'), 'label');
+  });
+
+  test('@attr exposes custom reflected attribute names', () => {
+    class TestElement {}
+    attr({ attribute: 'display-value' })(
+      TestElement.prototype,
+      'displayValue',
+    );
+
+    assert.equal(
+      attributeNameForProperty(TestElement, 'displayValue'),
+      'display-value',
+    );
+    assert.equal(
+      attributeNameForProperty(TestElement, 'missing'),
+      undefined,
+    );
   });
 
   test('@attr reflects property values without stringifying backing state', () => {

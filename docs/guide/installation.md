@@ -9,7 +9,7 @@ There are two ways to install the WebUI build toolchain: as an **npm package** f
 The `@microsoft/webui` npm package gives you:
 
 - **`npx webui build`** - the CLI for building templates into protocols
-- **`import { build, render } from '@microsoft/webui'`** - a programmatic API for Node.js
+- **`import { build, Protocol } from '@microsoft/webui'`** - a programmatic API for Node.js
 - **Native performance** via platform-specific binaries (no compilation required)
 
 <webui-press-tabs>
@@ -88,6 +88,25 @@ dotnet add package Microsoft.WebUI
 
 It targets .NET 8 and .NET 9. The package restores platform-specific `Microsoft.WebUI.Runtime.*` packages transitively, and .NET selects the matching native asset. Release builds stage `.nupkg` and `.snupkg` artifacts with Source Link and repository metadata; nuget.org publishing is manual until ESRP automation supports this project.
 
+Prepare `protocol.bin` once for repeated rendering:
+
+```csharp
+using Microsoft.WebUI;
+
+using var protocol = new Protocol(
+    File.ReadAllBytes("dist/protocol.bin"));
+using var handler = new WebUIHandler("webui");
+
+string html = handler.Render(
+    protocol,
+    """{"title":"Home"}""",
+    "index.html",
+    "/");
+```
+
+`Protocol` is thread-safe and owns the decoded protocol plus reusable indices.
+Keep it alive for the server lifetime and dispose it during shutdown.
+
 ---
 
 The packages below are client-side runtime libraries. They are installed from npm regardless of whether your build toolchain is npm or Rust, since they ship as JavaScript that runs in the browser.
@@ -131,7 +150,7 @@ This gives you:
 
 <webui-blockquote appearance="tip" title="Not every app needs this" icon="💡">
 
-If your pages are purely informational and never receive client-side state updates, you only need `@microsoft/webui` for building and rendering. Add the framework runtime when components have event handlers, user input, or HTML-only templates that should react to host attributes, server state, or route state.
+If your pages are purely informational and never receive client-side state updates, you only need `@microsoft/webui` for building and rendering. Load the framework when components need browser-applied state or soft navigation. Add a same-named component module only for events, lifecycle code, decorators, or imperative APIs.
 
 </webui-blockquote>
 

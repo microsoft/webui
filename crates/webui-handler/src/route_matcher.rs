@@ -8,6 +8,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use webui_protocol::{web_ui_fragment::Fragment, WebUIProtocol};
 
 /// Result of matching a request path against a route path template.
 #[derive(Debug, Clone)]
@@ -34,67 +35,76 @@ enum SegmentPattern {
     Splat(String),
 }
 
-/// Cache of pre-compiled route template patterns.
+/// Immutable index of pre-compiled authored route patterns.
 ///
-/// Route templates are static strings from the protocol. By parsing them once
-/// into `Vec<SegmentPattern>` and caching the result, we avoid per-request
-/// allocations in the route-matching hot path.
-#[derive(Debug, Default)]
-pub struct CompiledRouteCache {
-    cache: HashMap<String, Vec<SegmentPattern>>,
+/// Absolute paths are matched from the request root. Relative paths reuse the
+/// same compiled suffix and begin matching after the already-consumed parent
+/// route segments, so request values never become cache keys.
+#[derive(Debug)]
+pub(crate) struct CompiledRouteIndex {
+    patterns: HashMap<String, Vec<SegmentPattern>>,
 }
 
-impl CompiledRouteCache {
-    /// Create a new empty cache.
+impl CompiledRouteIndex {
+    /// Compile every authored route path in the protocol.
     #[must_use]
-    pub fn new() -> Self {
-        Self {
-            cache: HashMap::new(),
+    pub(crate) fn new(protocol: &WebUIProtocol) -> Self {
+        let mut patterns = HashMap::new();
+        let mut pending = Vec::new();
+
+        for fragment_list in protocol.fragments.values() {
+            for fragment in &fragment_list.fragments {
+                if let Some(Fragment::Route(route)) = fragment.fragment.as_ref() {
+                    pending.push(route);
+                }
+            }
         }
+
+        while let Some(route) = pending.pop() {
+            patterns
+                .entry(route.path.clone())
+                .or_insert_with(|| parse_template(&route.path));
+            pending.extend(route.children.iter());
+        }
+
+        Self { patterns }
     }
 
-    /// Get or compile a route template into segment patterns.
-    fn get_or_compile(&mut self, template: &str) -> &[SegmentPattern] {
-        // Entry API avoids double lookup
-        self.cache
-            .entry(template.to_string())
-            .or_insert_with(|| parse_template(template))
+    fn get(&self, template: &str) -> Option<&[SegmentPattern]> {
+        self.patterns.get(template).map(Vec::as_slice)
     }
-}
-
-/// Match a route template against a request path using a compiled cache.
-///
-/// Reuses cached segment patterns to avoid per-request parsing allocations.
-pub fn match_route_cached(
-    cache: &mut CompiledRouteCache,
-    template: &str,
-    request_path: &str,
-    exact: bool,
-) -> Option<RouteMatch> {
-    let request_segments = split_path(request_path);
-    match_route_cached_with_segments(cache, template, &request_segments, exact)
 }
 
 /// Match a route template against pre-split request path segments.
 ///
-/// Use this variant in loops that match multiple templates against the same
-/// request path — split the path once with [`split_request_path`] and reuse
-/// the segments across all calls.
-pub fn match_route_cached_with_segments(
-    cache: &mut CompiledRouteCache,
+/// Relative templates are matched as precompiled suffixes after the parent
+/// route base. This avoids constructing and compiling request-specific paths.
+pub(crate) fn match_route_indexed_with_segments(
+    index: &CompiledRouteIndex,
     template: &str,
+    route_base: &str,
     request_segments: &[&str],
     exact: bool,
 ) -> Option<RouteMatch> {
-    let patterns = cache.get_or_compile(template);
-    try_match(patterns, request_segments, exact)
+    let patterns = index.get(template)?;
+    let base_segments = if template.is_empty() || is_relative_path(template) {
+        route_base
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .count()
+    } else {
+        0
+    };
+    let remaining = request_segments.get(base_segments..)?;
+    let mut route_match = try_match(patterns, remaining, exact)?;
+    route_match.specificity += base_segments;
+    route_match.consumed_segments += base_segments;
+    Some(route_match)
 }
 
 /// Split a request path into segments, filtering empty parts.
 ///
-/// Intended to be called once before a loop of
-/// [`match_route_cached_with_segments`] calls to avoid per-iteration
-/// allocation.
+/// Intended to be called once before matching sibling routes.
 pub fn split_request_path(path: &str) -> Vec<&str> {
     split_path(path)
 }
@@ -102,6 +112,7 @@ pub fn split_request_path(path: &str) -> Vec<&str> {
 /// Parse a path template string into segment patterns.
 fn parse_template(template: &str) -> Vec<SegmentPattern> {
     let mut segments = Vec::new();
+    let template = template.strip_prefix("./").unwrap_or(template);
 
     for part in template.split('/') {
         if part.is_empty() {
@@ -345,6 +356,7 @@ pub fn compute_route_base(request_path: &str, consumed_segments: usize) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use webui_protocol::{FragmentList, WebUIFragment, WebUiFragmentRoute};
 
     #[test]
     fn test_match_single_route_exact() {
@@ -733,6 +745,44 @@ mod tests {
         let child = match_single_route(&child_path, "/sections/1/topics/react", true).unwrap();
         assert_eq!(child.params["topicId"], "react");
         assert_eq!(child.consumed_segments, 4);
+    }
+
+    #[test]
+    fn compiled_index_matches_relative_suffix_without_request_key() {
+        let child = WebUiFragmentRoute {
+            path: "topics/:topicId".to_string(),
+            fragment_id: "topic-page".to_string(),
+            exact: true,
+            ..Default::default()
+        };
+        let parent = WebUiFragmentRoute {
+            path: "/sections/:sectionId".to_string(),
+            fragment_id: "section-page".to_string(),
+            children: vec![child],
+            ..Default::default()
+        };
+        let protocol = WebUIProtocol::new(HashMap::from([(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(parent)],
+            },
+        )]));
+        let index = CompiledRouteIndex::new(&protocol);
+        let request_segments = split_request_path("/sections/1/topics/react");
+
+        let route_match = match_route_indexed_with_segments(
+            &index,
+            "topics/:topicId",
+            "/sections/1",
+            &request_segments,
+            true,
+        )
+        .expect("relative child route should match");
+
+        assert_eq!(route_match.params["topicId"], "react");
+        assert_eq!(route_match.consumed_segments, 4);
+        assert_eq!(route_match.specificity, 3);
+        assert_eq!(index.patterns.len(), 2);
     }
 
     #[test]

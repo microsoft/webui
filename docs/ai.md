@@ -49,11 +49,16 @@ webui build         + JSON state          hydrate as islands
 3. **The server is the source of truth for the initial render.** The client
    takes over after hydration for user interactions.
 
-4. **Fully static content never ships JavaScript.** HTML-only components with
-   server or route state use the static host runtime installed by
-   `@microsoft/webui-framework`; the runtime only claims compiler-owned
-   stateful templates. Components with event handlers, client-mutated state, or
-   user input need authored client-side code.
+4. **Scriptless components are dormant, not dead.** Their bindings render on the
+   server and contribute no initial bootstrap state. When the framework is
+   loaded, compiler-owned hosts can activate for browser-applied state, parent
+   property writes, or soft navigation. Events, lifecycle code, decorators, and
+   imperative APIs need a same-named `.ts` or `.js` module.
+
+5. **Hydration state is client-facing.** Initial `#webui-data.state` is
+   projected to hydration keys for components reachable on the active route.
+   This reduces CPU and bytes, but it is not a secrecy boundary. Never put
+   credentials or private tokens in browser render state.
 
 ## Project Structure
 
@@ -70,15 +75,25 @@ my-app/
 │       ├── other-widget.html
 │       ├── other-widget.css
 │       └── other-widget.ts
+├── build-client.mjs           ← Application-owned browser bundle + manifest
 ├── data/
 │   └── state.json              ← Server state for dev
+├── dist/
+│   ├── index.js                ← Browser entry/chunks
+│   └── webui-projection.json   ← Build-time state projection sidecar
 └── package.json
 ```
 
 **Component discovery rules:**
 - HTML files with a hyphen in the name are components (`my-card.html` → `<my-card>`)
 - CSS files with the same name are auto-paired (`my-card.css`)
-- TypeScript files provide client-side behavior (`my-card.ts`)
+- A same-named TypeScript or JavaScript file opts the component into authored
+  behavior (`my-card.ts`)
+- With a validated projection manifest, only exact `@observable` / `@attr`
+  fields opt into initial state hydration; without a manifest, state remains
+  full
+- Scriptless components retain compiler-owned browser templates but contribute
+  no keys to initial bootstrap state
 - Discovery is recursive through subdirectories
 
 ## The `<template>` Tag
@@ -245,6 +260,8 @@ In the TypeScript class: `searchInput!: HTMLInputElement;`
 All attributes are validated at build time. Referencing a non-existent `pending` or `error` component is a compile error.
 
 **State flow:**
+- Scriptless route components use compiler-owned hosts when the framework is
+  loaded, so partial navigation applies only their template-root state
 - `keep-alive` preserves DOM and local state. On reactivation, only param/query attrs are updated
 - Route loaders: `static loader({ params, query, signal })` on component class - fetches custom data instead of server state. Runs pre-commit. Falls back to server state on failure
 - Keep-alive + loader: DOM preserved, loader refreshes data on reactivation
@@ -321,13 +338,11 @@ export class MyComponent extends WebUIElement {
 MyComponent.define('my-component');
 ```
 
-HTML-only components can omit the `.ts` file when they have no event handlers or
-custom client logic. Create a custom element only for an Interactive Island:
-events, custom lifecycle code, imperative methods, or JavaScript-owned state.
-Import `@microsoft/webui-framework` from the browser entry to install the
-minimal static host runtime. The runtime only claims compiler-owned HTML-only
-components whose templates need server or route state; fully static HTML-only
-components stay as plain SSR DOM.
+Components can omit the `.ts` file when server-rendered output is final. The
+sibling module is the authored behavior boundary: without it, WebUI emits no
+bootstrap state for that component, but retains its compiled template for later
+browser rendering. Create a custom element for events, custom lifecycle code,
+imperative methods, or JavaScript-owned state.
 
 `@observable` and `@attr` are optional. Use them when TypeScript code reads or
 mutates the value directly, or when the value is part of the component's public
@@ -337,8 +352,8 @@ API.
 
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |-----------|---------|------|---------------------|
-| `@attr` | HTML attribute reflection | Yes (from JSON state) | Yes |
-| `@attr({ mode: 'boolean' })` | Boolean attribute (present/absent) | Yes | Yes |
+| `@attr` | HTML attribute reflection | Yes; an existing SSR host attribute wins | Yes |
+| `@attr({ mode: 'boolean' })` | Boolean attribute (present/absent) | Yes; host presence wins | Yes |
 | `@observable` | Reactive state used by TypeScript code | Yes (from JSON state) | Yes |
 
 
@@ -411,6 +426,12 @@ Router.start({
   loaders: { ... },
 });
 ```
+
+Every route intended for partial navigation must register a custom element.
+Authored routes register eagerly or through `loaders`. Scriptless templates are
+registered by the framework's compiler-owned host runtime. If a route remains
+unregistered after template publication and loader resolution, the router
+navigates the document to let the server render the component.
 
 Without `@microsoft/webui-router`, prebuild static assets and load them from a
 CDN or the app's static folder:
@@ -535,6 +556,56 @@ window.addEventListener('webui:hydration-complete', () => {
 });
 ```
 
+## Build-Time State Projection
+
+Rust never analyzes JavaScript or TypeScript. Bundle browser code first and emit
+projection metadata from the same resolved graph:
+
+```bash
+npm install -D esbuild typescript
+```
+
+```javascript
+// build-client.mjs
+import * as esbuild from 'esbuild';
+import { esbuildProjection } from '@microsoft/webui/projection.js';
+
+await esbuild.build({
+  entryPoints: ['src/index.ts'],
+  outdir: 'dist',
+  bundle: true,
+  splitting: true,
+  format: 'esm',
+  plugins: [esbuildProjection()],
+});
+```
+
+```bash
+node build-client.mjs
+webui build ./src --out ./dist --plugin=webui \
+  --projection-manifest ./dist/webui-projection.json
+```
+
+Rules:
+
+- `@microsoft/webui/projection.js` is build-only. `esbuild` and `typescript` are
+  optional peers and are not imported by the root `@microsoft/webui` runtime.
+- The compiler contract is bundler-neutral; the package currently includes the
+  supported esbuild adapter.
+- esbuild runs once. The adapter observes that run and writes
+  `webui-projection.json` atomically after successful output.
+- No manifest means full state and no JavaScript inference.
+- Any supplied manifest enables strict coverage. Every scripted component in
+  the protocol, including components discovered through `--components`, must
+  have exactly one entry or the build fails with `PROJ-B001`.
+- Code-split and external bundles remain application-owned. Build external
+  shared controls separately and repeat `--projection-manifest` for each
+  fragment.
+- The manifest uses JavaScript property names for `@observable` and `@attr`.
+  Existing SSR host attributes take precedence over projected `@attr` values.
+- WebUI validates input/output hashes and embeds compact metadata in
+  `protocol.bin`. Runtime handlers never open the manifest.
+
 ## Hydration with Router
 
 ```typescript
@@ -558,6 +629,12 @@ Router.start({
 The router wraps every client-side navigation in `document.startViewTransition()`
 automatically. **Do not** wrap `Router.navigate()` in your own `startViewTransition()`
 — that would double-transition.
+
+While active, the router installs a nonce-bearing
+`@view-transition { navigation: none; }` override. Automatic cross-document
+transitions would conflict with intercepted routes that fall back to SSR
+document requests. Explicit client-side transitions still use
+`document.startViewTransition()`, and `Router.destroy()` removes the override.
 
 To customize the animation, assign `view-transition-name` to elements in your CSS
 and target them with `::view-transition-old()` / `::view-transition-new()`:
@@ -589,6 +666,7 @@ webui build ./src --out ./dist --plugin=webui
 | `--dom <MODE>` | `shadow` | `shadow` or `light` |
 | `--plugin <NAME>` | none | Plugin identifier (e.g. `webui`) |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
+| `--projection-manifest <PATH>` | none | Bundler projection fragment (repeatable); requires `--plugin=webui` |
 | `--emit-component-assets <TAGS>` | none | Comma-separated root component tags emitted as static `.webui.js` ESM assets in `--out` |
 | `--theme <PACKAGE>` | none | Design token theme to validate against (see below) |
 | `--asset-file-name-template <TEMPLATE>` | `[name].[ext]` | Emitted asset filename template for Link-mode CSS files and static component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
@@ -602,8 +680,14 @@ wrappers when needed. If you author the wrapper yourself for root events, keep
 your attributes there; WebUI preserves them for client/plugin templates.
 
 For framework apps that bundle browser code, bundle your source browser entry
-directly. Import `@microsoft/webui-framework` once so authored elements and
-compiler-owned static hosts share the same runtime.
+directly. Import `@microsoft/webui-framework` from authored component modules.
+An app that stays static after SSR needs no framework browser runtime. Import
+the framework once when scriptless components need browser state or soft
+navigation.
+
+For exact state projection, run the browser bundler first and pass its completed
+manifest to `webui build`. Repeat `--projection-manifest` for separately built
+external component bundles. Omitting the flag preserves full state.
 
 For CDN/browser caching in `link` mode, prefer:
 
@@ -659,6 +743,7 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 | `--dom <MODE>` | `shadow` | `shadow` or `light` |
 | `--plugin <NAME>` | none | Plugin identifier (e.g. `webui`) |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
+| `--projection-manifest <PATH>` | none | Bundler projection fragment (repeatable); watched explicitly with `--watch` |
 | `--api-port <PORT>` | none | Proxy route requests to API server |
 | `--theme <PACKAGE>` | none | Design token theme; missing unresolved tokens fail the build (see below) |
 | `--asset-file-name-template <TEMPLATE>` | `[name].[ext]` | Emitted asset filename template |
@@ -727,7 +812,9 @@ apply to a given error are `null`.
 `unclosed-html-tag`,
 `malformed-html-tag`, `unexpected-closing-tag`, `unterminated-html-comment`,
 `unterminated-html-declaration`, `excessive-nesting`, `recursive-template`,
-`invalid-css`.
+`invalid-css`, `PROJ-P001`, `PROJ-P002`, `PROJ-B001`, `PROJ-B002`,
+`PROJ-M001`, `PROJ-M003`, `PROJ-M004`, `PROJ-M006`, `PROJ-M007`,
+`PROJ-M009`, `PROJ-S001`, `PROJ-S003`, `PROJ-S004`.
 
 ### Exit codes
 
@@ -773,8 +860,9 @@ The package's `package.json` must have:
 
 Packages with a root JavaScript entry (`exports["."]`, `main`, `module`, or
 `browser`) are authored custom-element packages. Packages with only WebUI
-template/style exports are HTML-only libraries; dynamic templates can use
-compiler-owned static hosts.
+template/style exports are compiler-owned template libraries. Their dynamic
+templates render on the server and can activate in the browser when the
+framework runtime is loaded.
 
 **Local path scanning** works like app directory scanning: HTML files with
 hyphenated names are registered as components, matching CSS files are
@@ -1095,8 +1183,10 @@ Each route handler should return only the state that route's component needs:
 ```json
 {
   "scripts": {
-    "build": "webui build ./src --out ./dist --plugin=webui",
-    "dev": "webui serve ./src --state ./data/state.json --plugin=webui --watch"
+    "build:client": "node build-client.mjs",
+    "build:protocol": "webui build ./src --out ./dist --plugin=webui --projection-manifest ./dist/webui-projection.json",
+    "build": "npm run build:client && npm run build:protocol",
+    "dev:server": "webui serve ./src --state ./data/state.json --plugin=webui --projection-manifest ./dist/webui-projection.json --watch"
   },
   "dependencies": {
     "@microsoft/webui": "latest",
@@ -1106,19 +1196,23 @@ Each route handler should return only the state that route's component needs:
 ```
 
 Add `@microsoft/webui-router` if using client-side navigation.
+Run the client bundler in watch mode alongside `dev:server`; the dev server
+rebuilds when the adapter atomically replaces the manifest.
 
 ## Language Integration (Server Side)
 
-WebUI renders from **any** backend. The server loads `protocol.bin` once
-and renders with JSON state per request.
+WebUI renders from **any** backend. The server loads `protocol.bin` into one
+`Protocol`, then renders with JSON state per request. Projection
+manifests are consumed only while producing `protocol.bin`; runtime rendering
+APIs are unchanged.
 
 ### Rust
 
 ```rust
-let protocol = WebUIProtocol::from_protobuf(&fs::read("dist/protocol.bin")?)?;
+let protocol = Protocol::from_protobuf(&fs::read("dist/protocol.bin")?)?;
 let state = json!({ "title": "Home", "items": items_vec });
-let mut handler = WebUIHandler::new();
-handler.handle(&protocol, &state, &options, &mut writer)?;
+let handler = WebUIHandler::new();
+handler.render(&protocol, &state, &options, &mut writer)?;
 ```
 
 **Streaming SSR (production).** Use `webui::streaming::StreamingWriter::new_pooled(tx, chunk_pool)` with a process-wide `ChunkPool` for bounded backpressure + zero per-flush allocation. Configure `.with_flush_timeout(Duration::from_secs(30))` to bound slow-loris DoS. Use `RenderOptions::with_head_inject(html)` / `with_body_inject(html)` for per-request HTML splicing at parser-synthesized `head_end` / `body_end` boundaries (no byte-scanner, cannot mis-fire on literals in comments / srcdoc). `HandlerError::ClientDisconnected` and `StreamTimeout` are returned from both `write()` and `end()` for telemetry. Pre-escape untrusted inject content with `webui_handler::encode_safe`.
@@ -1126,9 +1220,19 @@ handler.handle(&protocol, &state, &options, &mut writer)?;
 ### Node.js
 
 ```javascript
-import { render } from '@microsoft/webui';
-const protocol = readFileSync('./dist/protocol.bin');
-const html = render(protocol, JSON.stringify(state), 'index.html', req.url);
+import { build, Protocol } from '@microsoft/webui';
+
+const result = build({
+  appDir: './src',
+  plugin: 'webui',
+  projectionManifests: ['./dist/webui-projection.json'],
+});
+
+const protocol = new Protocol(result.protocol, { plugin: 'webui' });
+const html = protocol.render(state, {
+  entry: 'index.html',
+  requestPath: req.url,
+});
 ```
 
 ### WebAssembly
@@ -1136,19 +1240,24 @@ const html = render(protocol, JSON.stringify(state), 'index.html', req.url);
 Use the split WASM bundles when rendering or parsing in the browser:
 
 ```javascript
-import initHandler, { render } from './wasm/handler/webui_wasm_handler.js';
+import initHandler, { Protocol } from './wasm/handler/webui_wasm_handler.js';
 await initHandler();
 const protocolBytes = new Uint8Array(await (await fetch('/protocol.bin')).arrayBuffer());
-let html = '';
-render(protocolBytes, JSON.stringify(state), (chunk) => {
-  html += chunk;
-}, { entry: 'index.html', requestPath: '/', plugin: 'webui' });
+const protocol = new Protocol(protocolBytes, 'webui');
+const html = protocol.render(
+  JSON.stringify(state),
+  { entry: 'index.html', requestPath: '/' },
+);
 ```
 
 ```javascript
 import initParser, { build_protocol } from './wasm/parser/webui_wasm_parser.js';
 await initParser();
-const protocolBytes = build_protocol({ 'index.html': '<h1>{{title}}</h1>' }, 'index.html');
+const protocolBytes = build_protocol(
+  { 'index.html': '<h1>{{title}}</h1>' },
+  'index.html',
+  [projectionManifest],
+);
 ```
 
 Use `wasm/all/webui_wasm_all.js` when both parser and handler exports are needed in one module, such as a playground.
@@ -1156,25 +1265,44 @@ Use `wasm/all/webui_wasm_all.js` when both parser and handler exports are needed
 ### Python (FFI)
 
 ```python
-ptr = lib.webui_render(html_bytes, json_bytes)
+protocol_bytes = Path("dist/protocol.bin").read_bytes()
+buffer = (ctypes.c_uint8 * len(protocol_bytes)).from_buffer_copy(protocol_bytes)
+protocol = lib.webui_protocol_create(buffer, len(protocol_bytes))
+handler = lib.webui_handler_create()
+ptr = lib.webui_handler_render(
+    handler, protocol, data_json, b"index.html", request_path
+)
 result = ctypes.cast(ptr, c_char_p).value.decode("utf-8")
 lib.webui_free(ptr)
+lib.webui_protocol_destroy(protocol)
+lib.webui_handler_destroy(handler)
 ```
+
+Create the protocol and handler once at startup, then pass both handles to
+`webui_handler_render` on every request.
 
 ### Go (cgo)
 
 ```go
-ptr := C.webui_render(cHTML, cJSON)
+protocol := C.webui_protocol_create(
+    (*C.uint8_t)(unsafe.Pointer(&protocolBytes[0])),
+    C.uintptr_t(len(protocolBytes)),
+)
+handler := C.webui_handler_create()
+ptr := C.webui_handler_render(handler, protocol, cJSON, cEntry, cPath)
 defer C.webui_free(ptr)
 result := C.GoString(ptr)
 ```
 
-### C# (P/Invoke)
+### C# (.NET package)
 
 ```csharp
-IntPtr ptr = webui_render(html, dataJson);
-string result = Marshal.PtrToStringUTF8(ptr);
-webui_free(ptr);
+using var protocol = new Protocol(File.ReadAllBytes("dist/protocol.bin"));
+using var handler = new WebUIHandler("webui");
+string result = handler.Render(protocol, dataJson, "index.html", requestPath);
+string partial = protocol.RenderPartial(dataJson, "index.html", requestPath, invHex);
+string templates = protocol.RenderComponentTemplates(["settings-dialog"], invHex);
+string[] tokens = protocol.Tokens();
 ```
 
 ### Server Template Endpoint
@@ -1182,16 +1310,16 @@ webui_free(ptr);
 For `Router.ensureLoaded()`, expose `GET /_webui/templates?t=tag1,tag2`:
 
 ```rust
-let result = route_handler::render_component_templates(&protocol, &tags, &inv);
+let result = protocol.render_component_templates(&tags, &inv);
 ```
 
 ```javascript
-// Node native addon
-const result = renderComponentTemplates(protocolBuf, JSON.stringify(tags), invHex);
-
 // @microsoft/webui npm package
-import { renderComponentTemplates } from '@microsoft/webui';
-const result = renderComponentTemplates(protocolBuf, ['settings-dialog'], invHex);
+const result = protocol.renderComponentTemplates(['settings-dialog'], invHex);
+```
+
+```csharp
+string result = protocol.RenderComponentTemplates(["settings-dialog"], invHex);
 ```
 
 The JSON response contains component-tag-keyed `templates`, matching

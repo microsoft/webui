@@ -44,7 +44,7 @@ function itemKey(item: unknown, keyPath: string | undefined): string | null {
 
 /** Build a scope frame for a repeat item. */
 function itemScope(rep: RepeatBinding, item: unknown): ScopeFrame {
-  return { name: rep.itemVar, value: item, parent: rep.scope };
+  return { name: rep.itemVar, value: item, parent: rep.scope, known: true };
 }
 
 // ── Reconciliation ──────────────────────────────────────────────────
@@ -69,9 +69,14 @@ export function syncRepeat(
   if (!container) return;
   rep.container = container;
 
-  // Before the first client-side sync, bail if the collection hasn't
-  // been explicitly set but SSR children already exist.
-  if (!rep.synced && items.length === 0 && rep.instances.length > 0) return;
+  // Preserve SSR children until the collection root is explicitly supplied.
+  // An explicit [] must still remove them, so root presence - not length -
+  // distinguishes missing state from an empty collection.
+  if (
+    !rep.synced
+    && rep.instances.length > 0
+    && !host.$hasStateRoot(rep.collection, rep.scope)
+  ) return;
   rep.synced = true;
 
   // If there are no items, just tear down everything.
@@ -97,7 +102,10 @@ export function syncRepeat(
     for (let i = 0; i < reuseCount; i += 1) {
       const entry = oldInstances[i];
       entry.value = items[i];
-      if (entry.instance.scope) entry.instance.scope.value = items[i];
+      if (entry.instance.scope) {
+        entry.instance.scope.value = items[i];
+        entry.instance.scope.known = true;
+      }
     }
 
     // Create new instances for items beyond old length
@@ -148,7 +156,10 @@ export function syncRepeat(
       oldByKey.set(key!, undefined);
       existing.value = item;
       existing.key = key;
-      if (existing.instance.scope) existing.instance.scope.value = item;
+      if (existing.instance.scope) {
+        existing.instance.scope.value = item;
+        existing.instance.scope.known = true;
+      }
       oldInstances[nextCount] = existing;
       nextCount += 1;
     } else {

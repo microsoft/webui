@@ -11,7 +11,7 @@
  *   cd examples/app/commerce && cargo run -p marketplace-api --release -- --port 3004
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 // 1×1 grey PNG placeholder — intercepts all remote image requests for
 // deterministic screenshots without network dependency.
@@ -26,6 +26,21 @@ test.beforeEach(async ({ page }) => {
     route.fulfill({ contentType: 'image/png', body: PLACEHOLDER_PNG }),
   );
 });
+
+async function expectSoftNavigation(
+  page: Page,
+  action: () => Promise<unknown>,
+): Promise<void> {
+  await page.evaluate(() => {
+    (window as Window & { webuiSoftNavigationSentinel?: boolean })
+      .webuiSoftNavigationSentinel = true;
+  });
+  await action();
+  await expect.poll(() => page.evaluate(
+    () => (window as Window & { webuiSoftNavigationSentinel?: boolean })
+      .webuiSoftNavigationSentinel,
+  )).toBe(true);
+}
 
 // ── SSR Tests (direct page loads) ────────────────────────────────
 
@@ -49,7 +64,7 @@ test.describe('SSR pages', () => {
     expect(count).toBeGreaterThanOrEqual(10);
   });
 
-  test('declarative-only components auto-upgrade without authored stubs', async ({ page }) => {
+  test('scriptless containers use dormant hosts while authored children hydrate', async ({ page }) => {
     await page.goto('/search/shirts');
     await expect(page.locator('mp-product-grid mp-product-card')).toHaveCount(3);
 
@@ -65,14 +80,16 @@ test.describe('SSR pages', () => {
 
     await expect(componentState('mp-page-search')).resolves.toEqual({ ready: true, setState: true });
     await expect(componentState('mp-product-grid')).resolves.toEqual({ ready: true, setState: true });
+    await expect(componentState('mp-product-card')).resolves.toEqual({ ready: true, setState: true });
     await expect(componentState('mp-price')).resolves.toEqual({ ready: true, setState: true });
 
-    const grid = page.locator('mp-product-grid').first();
-    await grid.evaluate((el) => {
+    const price = page.locator('mp-price').first();
+    await price.evaluate((el) => {
       const component = el as HTMLElement & { setState(state: unknown): void };
-      component.setState({ products: [], query: 'fallback update' });
+      component.setState({ value: '$99.00', currencyCode: 'TEST' });
     });
-    await expect(grid).toContainText('fallback update');
+    await expect(price.locator('.amount')).toHaveText('$99.00');
+    await expect(price.locator('.currency')).toHaveText('TEST');
   });
 
   test('category page renders filtered products', async ({ page }) => {
@@ -218,19 +235,22 @@ test.describe('client-side navigation', () => {
     await page.locator('mp-cart-panel .close-btn').click();
     await expect(logo).toHaveAttribute('href', './');
 
-    await logo.click();
+    await expectSoftNavigation(page, () => logo.click());
     await expect(page).toHaveURL('/');
   });
 
-  test('no full page reload during client navigation', async ({ page }) => {
+  test('scriptless search route uses soft navigation', async ({ page }) => {
     await page.goto('/');
     await page.evaluate(() => { (window as any).__navTestMarker = Date.now(); });
 
-    await page.locator('mp-navbar').getByRole('link', { name: 'Shirts' }).click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-navbar').getByRole('link', { name: 'Shirts' }).click(),
+    );
     await expect(page.getByRole('heading', { name: 'Collections' })).toBeVisible();
 
     const marker = await page.evaluate(() => (window as any).__navTestMarker);
-    expect(marker).toBeGreaterThan(0);
+    expect(typeof marker).toBe('number');
   });
 });
 
@@ -242,7 +262,10 @@ test.describe('category switching', () => {
     await expect(page.locator('mp-product-card')).toHaveCount(3);
 
     // Switch to Stickers
-    await page.locator('mp-category-nav').getByRole('link', { name: 'Stickers' }).click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-category-nav').getByRole('link', { name: 'Stickers' }).click(),
+    );
     await expect(page).toHaveURL('/search/stickers');
     await expect(page.locator('mp-product-card')).toHaveCount(2);
     await expect(page.getByRole('heading', { name: 'Acme Sticker' })).toBeVisible();
@@ -255,7 +278,10 @@ test.describe('category switching', () => {
     await expect(sortLink).toHaveAttribute('href', /\/search\/stickers\?sort=/);
 
     // Switch to Shirts via sidebar
-    await page.locator('mp-category-nav').getByRole('link', { name: 'Shirts' }).click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-category-nav').getByRole('link', { name: 'Shirts' }).click(),
+    );
     await expect(page).toHaveURL('/search/shirts');
 
     // Sort links should now point to /search/shirts
@@ -271,7 +297,10 @@ test.describe('sort filtering', () => {
     await page.goto('/search/shirts');
     await expect(page.locator('mp-product-card')).toHaveCount(3);
 
-    await page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).click(),
+    );
     await expect(page).toHaveURL('/search/shirts?sort=price-desc');
 
     // Prism ($25) should be first
@@ -282,7 +311,10 @@ test.describe('sort filtering', () => {
 
   test('sort by price low to high', async ({ page }) => {
     await page.goto('/search/shirts');
-    await page.locator('mp-filter-list').getByRole('link', { name: 'Price: Low to high' }).click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-filter-list').getByRole('link', { name: 'Price: Low to high' }).click(),
+    );
     await expect(page).toHaveURL('/search/shirts?sort=price-asc');
 
     // $20 shirts should come before $25
@@ -292,7 +324,10 @@ test.describe('sort filtering', () => {
 
   test('sort preserves category in URL', async ({ page }) => {
     await page.goto('/search/headwear');
-    await page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).click(),
+    );
     await expect(page).toHaveURL('/search/headwear?sort=price-desc');
 
     // Cowboy Hat ($160) should be first
@@ -301,37 +336,32 @@ test.describe('sort filtering', () => {
     await expect(firstCard).toContainText('$160.00');
   });
 
-  test('sort after category switch via client nav', async ({ page }) => {
+  test('sort after category soft navigation', async ({ page }) => {
     await page.goto('/');
 
     // Navigate to Stickers
-    await page.locator('mp-navbar').getByRole('link', { name: 'Stickers' }).click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-navbar').getByRole('link', { name: 'Stickers' }).click(),
+    );
     await expect(page).toHaveURL('/search/stickers');
     await expect(page.locator('mp-product-grid mp-product-card')).toHaveCount(2);
 
     // Switch to Shirts via sidebar
-    await page.locator('mp-category-nav').getByRole('link', { name: 'Shirts' }).first().click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-category-nav').getByRole('link', { name: 'Shirts' }).first().click(),
+    );
     await expect(page).toHaveURL('/search/shirts');
-    // Wait for the filter-list DOM to reflect the new category before
-    // clicking. `toHaveURL` only verifies the URL bar (set by the
-    // router on partial-nav response), but the filter-list components
-    // re-render asynchronously from the same response. Without this
-    // wait, a fast clicker (or a slow CI) can hit a stale filter-list
-    // link whose `href` still encodes the previous category, sending
-    // the click to `/search/stickers?sort=...` instead of shirts.
-    // The streaming SSR pipeline widened this race window on slower
-    // CI runners where chunk delivery + DOM patch can interleave with
-    // the URL update; this assertion makes the test deterministic.
-    // Count-based wait (not visibility) because mp-filter-list emits
-    // both a desktop and a mobile-only variant of the link; the
-    // mobile variant is `display:none` in the chromium project but
-    // both share the same updated href once the DOM patch lands.
     await expect(
       page.locator('mp-filter-list a[href*="/search/shirts?sort=price-desc"]'),
     ).not.toHaveCount(0);
 
     // Sort by price high to low
-    await page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).first().click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).first().click(),
+    );
     await expect(page).toHaveURL('/search/shirts?sort=price-desc');
 
     // Prism ($25) should be first
@@ -345,7 +375,10 @@ test.describe('sort filtering', () => {
     const sortNav = page.locator('mp-filter-list');
     await expect(sortNav.getByRole('link', { name: 'Price: High to low' }).first()).toBeVisible();
 
-    await sortNav.getByRole('link', { name: 'Price: High to low' }).first().click();
+    await expectSoftNavigation(
+      page,
+      () => sortNav.getByRole('link', { name: 'Price: High to low' }).first().click(),
+    );
     await expect(page).toHaveURL(/sort=price-desc/);
 
     // Now "Relevance" should be a link
@@ -363,18 +396,27 @@ test.describe('category navigation flows', () => {
     await expect(page.locator('mp-product-grid mp-product-card')).toHaveCount(3);
 
     // Shirts → Headwear
-    await page.locator('mp-category-nav').getByRole('link', { name: 'Headwear' }).first().click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-category-nav').getByRole('link', { name: 'Headwear' }).first().click(),
+    );
     await expect(page).toHaveURL('/search/headwear');
     await expect(page.locator('mp-product-grid mp-product-card')).toHaveCount(3);
     await expect(page.locator('mp-product-grid')).toContainText('Acme Cowboy Hat');
 
     // Headwear → Stickers
-    await page.locator('mp-category-nav').getByRole('link', { name: 'Stickers' }).first().click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-category-nav').getByRole('link', { name: 'Stickers' }).first().click(),
+    );
     await expect(page).toHaveURL('/search/stickers');
     await expect(page.locator('mp-product-grid mp-product-card')).toHaveCount(2);
 
     // Stickers → All
-    await page.locator('mp-category-nav').getByRole('link', { name: 'All' }).first().click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-category-nav').getByRole('link', { name: 'All' }).first().click(),
+    );
     await expect(page).toHaveURL('/search');
     await expect.poll(() => page.locator('mp-product-grid mp-product-card').count()).toBeGreaterThanOrEqual(2);
   });
@@ -385,7 +427,10 @@ test.describe('category navigation flows', () => {
     await expect(page.locator('mp-category-nav').getByRole('link', { name: 'Shirts' })).toHaveCount(0);
 
     // Click Stickers
-    await page.locator('mp-category-nav').getByRole('link', { name: 'Stickers' }).first().click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-category-nav').getByRole('link', { name: 'Stickers' }).first().click(),
+    );
     await expect(page).toHaveURL('/search/stickers');
     // Now "Stickers" should not be a link, and "Shirts" should be
     await expect(page.locator('mp-category-nav').getByRole('link', { name: 'Stickers' })).toHaveCount(0);
@@ -403,7 +448,10 @@ test.describe('category navigation flows', () => {
     await expect(nav.getByRole('link', { name: 'All', exact: true })).toHaveCount(0);
 
     // Navigate to Shirts via sidebar
-    await nav.getByRole('link', { name: 'Shirts' }).first().click();
+    await expectSoftNavigation(
+      page,
+      () => nav.getByRole('link', { name: 'Shirts' }).first().click(),
+    );
     await expect(page).toHaveURL('/search/shirts');
 
     // "All" must become a link (no longer active) — no duplicate "All" text
@@ -418,7 +466,10 @@ test.describe('category navigation flows', () => {
     await page.goto('/search');
 
     // Go to Headwear
-    await page.locator('mp-category-nav').getByRole('link', { name: 'Headwear' }).first().click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-category-nav').getByRole('link', { name: 'Headwear' }).first().click(),
+    );
     await expect(page).toHaveURL('/search/headwear');
     await expect(page.locator('mp-product-grid')).toContainText('Acme Cowboy Hat');
 
@@ -428,7 +479,10 @@ test.describe('category navigation flows', () => {
     await expect(page.getByRole('heading', { name: 'Acme Cowboy Hat', level: 1 })).toBeVisible();
 
     // Go to Shirts from navbar
-    await page.locator('mp-navbar').getByRole('link', { name: 'Shirts' }).click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-navbar').getByRole('link', { name: 'Shirts' }).click(),
+    );
     await expect(page).toHaveURL('/search/shirts');
     await expect(page.locator('mp-product-grid mp-product-card')).toHaveCount(3);
   });
@@ -439,12 +493,18 @@ test.describe('sort and category combined', () => {
     await page.goto('/search/shirts');
 
     // Sort by price desc
-    await page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).first().click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).first().click(),
+    );
     await expect(page).toHaveURL('/search/shirts?sort=price-desc');
     await expect(page.locator('mp-product-grid mp-product-card').first()).toContainText('Acme Prism T-Shirt');
 
     // Switch to Headwear — sort should reset (no ?sort= in URL)
-    await page.locator('mp-category-nav').getByRole('link', { name: 'Headwear' }).first().click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-category-nav').getByRole('link', { name: 'Headwear' }).first().click(),
+    );
     await expect(page).toHaveURL('/search/headwear');
     // Sort links should point to /search/headwear
     await expect(page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).first())
@@ -455,19 +515,28 @@ test.describe('sort and category combined', () => {
     await page.goto('/search/headwear');
 
     // Sort price high → low
-    await page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).first().click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).first().click(),
+    );
     await expect(page).toHaveURL('/search/headwear?sort=price-desc');
     await expect(page.locator('mp-product-grid mp-product-card').first()).toContainText('Acme Cowboy Hat');
     await expect(page.locator('mp-product-grid mp-product-card').first()).toContainText('$160.00');
 
     // Sort price low → high
-    await page.locator('mp-filter-list').getByRole('link', { name: 'Price: Low to high' }).first().click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-filter-list').getByRole('link', { name: 'Price: Low to high' }).first().click(),
+    );
     await expect(page).toHaveURL('/search/headwear?sort=price-asc');
     await expect(page.locator('mp-product-grid mp-product-card').first()).toContainText('Acme Baby Cap');
     await expect(page.locator('mp-product-grid mp-product-card').first()).toContainText('$10.00');
 
     // Sort by relevance
-    await page.locator('mp-filter-list').getByRole('link', { name: 'Relevance' }).first().click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-filter-list').getByRole('link', { name: 'Relevance' }).first().click(),
+    );
     await expect(page).toHaveURL('/search/headwear?sort=relevance');
   });
 
@@ -486,7 +555,7 @@ test.describe('search', () => {
     await page.goto('/');
     const searchInput = page.locator('mp-search-bar input[name="q"]').first();
     await searchInput.fill('mug');
-    await searchInput.press('Enter');
+    await expectSoftNavigation(page, () => searchInput.press('Enter'));
     await expect(page).toHaveURL(/\/search\?q=mug/);
   });
 
@@ -494,7 +563,7 @@ test.describe('search', () => {
     await page.goto('/');
     const searchInput = page.locator('mp-search-bar input[name="q"]').first();
     await searchInput.fill('testsdsd');
-    await searchInput.press('Enter');
+    await expectSoftNavigation(page, () => searchInput.press('Enter'));
     await expect(page).toHaveURL(/\/search\?q=testsdsd/);
     await expect(page.locator('mp-product-grid mp-product-card')).toHaveCount(0);
     await expect(page.locator('mp-product-grid')).toContainText('There are no products that match');
@@ -514,7 +583,7 @@ test.describe('search', () => {
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
     const searchInput = page.locator('mp-search-bar input[name="q"]').first();
     await searchInput.fill('hoodie');
-    await searchInput.press('Enter');
+    await expectSoftNavigation(page, () => searchInput.press('Enter'));
     await expect(page).toHaveURL(/\/search\?q=hoodie/);
   });
 
@@ -626,7 +695,10 @@ test.describe('visual regression', () => {
 
   test('search shirts sorted screenshot', async ({ page }) => {
     await page.goto('/search/shirts');
-    await page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-filter-list').getByRole('link', { name: 'Price: High to low' }).click(),
+    );
     await expect(page).toHaveURL(/sort=price-desc/);
     await expect(page.locator('mp-product-card').first()).toContainText('Acme Prism T-Shirt');
     await expect(page).toHaveScreenshot('search-shirts-sorted.png', { maxDiffPixelRatio: 0.01 });
@@ -673,7 +745,10 @@ test.describe('mobile layout', () => {
     await expect(page.locator('mp-product-card').first()).toBeVisible();
     // On mobile the category nav is a <details> dropdown — open it first
     await page.locator('mp-category-nav').locator('summary').click();
-    await page.locator('mp-category-nav').getByRole('link', { name: 'Shirts' }).click();
+    await expectSoftNavigation(
+      page,
+      () => page.locator('mp-category-nav').getByRole('link', { name: 'Shirts' }).click(),
+    );
     await expect(page).toHaveURL(/\/search\/shirts/);
     await expect(page.locator('mp-product-card')).toHaveCount(3);
     await expect(page).toHaveScreenshot('mobile-category-switch.png', { maxDiffPixelRatio: 0.01 });

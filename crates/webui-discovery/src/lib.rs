@@ -27,7 +27,7 @@ pub struct DiscoveredComponent {
     /// The CSS content, if any
     pub css_content: Option<String>,
     /// Whether authored browser code owns this custom element tag.
-    pub has_script: bool,
+    pub is_client_owned: bool,
     /// The original source identifier (for display/diagnostics)
     pub source: String,
 }
@@ -135,11 +135,12 @@ fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
                     } else {
                         None
                     };
+                    let is_client_owned = has_sibling_script(path)?;
                     components.push(DiscoveredComponent {
                         tag_name: filename.to_string(),
                         html_content,
                         css_content,
-                        has_script: has_sibling_script(path),
+                        is_client_owned,
                         source: source.clone(),
                     });
                 }
@@ -150,8 +151,24 @@ fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
     Ok(components)
 }
 
-fn has_sibling_script(html_path: &Path) -> bool {
-    html_path.with_extension("ts").exists() || html_path.with_extension("js").exists()
+/// Return whether a component has an authored sibling module.
+///
+/// Use `try_exists()` rather than `exists()`: `exists()` converts metadata
+/// errors into `false`, which could silently classify an inaccessible authored
+/// component as scriptless and bypass projection-manifest coverage.
+fn has_sibling_script(html_path: &Path) -> Result<bool> {
+    for ext in ["ts", "js"] {
+        let candidate = html_path.with_extension(ext);
+        if candidate.try_exists().with_context(|| {
+            format!(
+                "Failed to inspect component script: {}",
+                candidate.display()
+            )
+        })? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Collect the resolved local paths from source strings for file watching.
@@ -260,7 +277,7 @@ mod tests {
             .find(|component| component.tag_name == "interactive-card")
             .unwrap();
 
-        assert!(!plain.has_script);
-        assert!(interactive.has_script);
+        assert!(!plain.is_client_owned);
+        assert!(interactive.is_client_owned);
     }
 }

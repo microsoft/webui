@@ -6,9 +6,8 @@
  * `ensureLoaded()`.
  *
  * This module stores templates and announces that new WebUI template data
- * exists. The router stays platform-independent and never imports framework
- * code; framework runtimes decide whether registered templates need static
- * hosts.
+ * exists. The router stays framework-independent; optional runtimes decide
+ * whether a registered template needs a compiler-owned host.
  */
 
 /** Shared event name understood by optional framework runtimes. */
@@ -19,9 +18,7 @@ const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
  * Shared by fetchPartial and fetchComponentTemplates.
  *
  * WebUI JSON template payloads are stored directly. FAST string templates are
- * materialized as DOM. After JSON templates are registered, a DOM event lets
- * framework runtimes can define compiler-owned static hosts before navigation
- * state is applied.
+ * materialized as DOM.
  */
 export function registerTemplatesAndStyles(
   data: {
@@ -83,7 +80,6 @@ export function registerTemplatesAndStyles(
 
   let executableTemplateBody = '';
   let registeredTemplates: Record<string, unknown> | undefined;
-
   // 2. Template closures: execute only the component-local condition arrays.
   //    TRUST BOUNDARY: closure scripts come from the same-origin server
   //    that compiled the protocol. The CSP nonce gates script execution.
@@ -200,12 +196,7 @@ export function notifyTemplatesRegistered(
   ) {
     return;
   }
-  dispatchTemplatesRegistered(templates);
-}
 
-function dispatchTemplatesRegistered(
-  templates: Record<string, unknown>,
-): void {
   window.dispatchEvent(new CustomEvent(TEMPLATES_REGISTERED_EVENT, {
     detail: { templates },
   }));

@@ -13,12 +13,8 @@ const outDir = resolve(fixturesRoot, 'dist');
 const tsconfig = resolve(here, '..', 'tsconfig.test.json');
 const port = Number(process.env.PORT ?? 39101);
 
-// Build and render fixtures that have real WebUI templates (src/index.html).
-// The rendered HTML includes template metadata, condition closures, hydration markers, and inventory.
-const rendered = renderFixtures({ fixturesRoot });
-
 // Bundle element.ts entrypoints (component class definitions) for client-side.
-await buildFixtureEntries({
+const projectionManifest = await buildFixtureEntries({
   fixturesRoot,
   entryFileName: 'element.ts',
   outDir,
@@ -34,6 +30,12 @@ await buildFixtureEntries({
     supported: { 'import-attributes': true },
     tsconfig,
   }],
+});
+
+// Render only after the client bundle has produced exact projection metadata.
+const rendered = renderFixtures({
+  fixturesRoot,
+  projectionManifest,
 });
 
 startFixtureServer({

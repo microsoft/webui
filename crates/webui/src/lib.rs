@@ -22,6 +22,7 @@
 
 mod component_assets;
 mod error;
+mod projection;
 pub mod server;
 pub mod streaming;
 
@@ -29,16 +30,12 @@ pub use component_assets::{render_component_assets, ComponentAssetFile};
 pub use error::WebUIError;
 
 // Re-export core types from downstream crates
-pub use webui_handler::route_handler::{
-    encode_inventory, get_needed_components, get_needed_components_for_request, parse_inventory,
-    ProtocolIndex,
-};
-pub use webui_handler::route_matcher::CompiledRouteCache;
+pub use webui_handler::route_handler::{encode_inventory, get_needed_components, parse_inventory};
 pub use webui_handler::Result as HandlerResult;
 pub use webui_handler::{
-    plugin::HandlerPlugin, HandlerError, RenderOptions, ResponseWriter, WebUIHandler,
+    plugin::HandlerPlugin, HandlerError, Protocol, RenderOptions, ResponseWriter, WebUIHandler,
 };
-pub use webui_parser::plugin::ComponentTemplateArtifact;
+pub use webui_parser::plugin::{ComponentTemplateArtifact, StateSurface};
 pub use webui_parser::CssStrategy;
 pub use webui_parser::DomStrategy;
 pub use webui_parser::LegalComments;
@@ -64,6 +61,149 @@ use webui_parser::plugin::fast_v3::FastV3ParserPlugin;
 use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::plugin::ParserPluginArtifacts;
 use webui_parser::HtmlParser;
+
+/// Projection metadata validated once for reuse across many protocol builds.
+#[derive(Debug, Clone)]
+pub struct PreparedProjectionManifests {
+    snapshot: std::sync::Arc<projection::ProjectionSnapshot>,
+}
+
+#[derive(Debug)]
+enum ProjectionBarrierState {
+    Waiting,
+    Ready(PreparedProjectionManifests),
+    Failed(String),
+}
+
+/// A reusable projection source that waits for an orchestrated client build.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct PendingProjectionManifests {
+    state: std::sync::Arc<(std::sync::Mutex<ProjectionBarrierState>, std::sync::Condvar)>,
+}
+
+/// Completes a pending projection source exactly once.
+#[doc(hidden)]
+pub struct ProjectionManifestCompleter {
+    state: std::sync::Arc<(std::sync::Mutex<ProjectionBarrierState>, std::sync::Condvar)>,
+    completed: bool,
+}
+
+/// One projection manifest supplied to a build.
+#[derive(Debug, Clone)]
+pub enum ProjectionManifestSource {
+    /// Read and validate a manifest from disk.
+    Path(std::path::PathBuf),
+    /// Validate an already parsed/transported manifest JSON object.
+    ///
+    /// `manifest_path` is its logical disk location and anchors the manifest's
+    /// relative `root` plus stale input/output checks.
+    Inline {
+        /// Logical path the manifest would occupy on disk.
+        manifest_path: std::path::PathBuf,
+        /// Canonical manifest JSON.
+        json: String,
+    },
+    /// Reuse metadata that has already passed schema, hash, merge, and stale
+    /// validation.
+    Prepared(PreparedProjectionManifests),
+    /// Wait for an orchestrator to validate the completed client bundle.
+    #[doc(hidden)]
+    Pending(PendingProjectionManifests),
+}
+
+impl From<std::path::PathBuf> for ProjectionManifestSource {
+    fn from(path: std::path::PathBuf) -> Self {
+        Self::Path(path)
+    }
+}
+
+/// Validate and merge projection sources once for repeated builds.
+///
+/// This is intended for orchestrators such as `webui-press` that build many
+/// page protocols against one completed client bundle.
+pub fn prepare_projection_manifests(
+    sources: &[ProjectionManifestSource],
+) -> Result<PreparedProjectionManifests, WebUIError> {
+    let snapshot = projection::load_and_merge(sources)?
+        .unwrap_or_else(|| std::sync::Arc::new(projection::ProjectionSnapshot::default()));
+    Ok(PreparedProjectionManifests { snapshot })
+}
+
+/// Create a pending projection source and its one-shot completer.
+#[doc(hidden)]
+#[must_use]
+pub fn projection_manifest_barrier() -> (ProjectionManifestSource, ProjectionManifestCompleter) {
+    let state = std::sync::Arc::new((
+        std::sync::Mutex::new(ProjectionBarrierState::Waiting),
+        std::sync::Condvar::new(),
+    ));
+    (
+        ProjectionManifestSource::Pending(PendingProjectionManifests {
+            state: std::sync::Arc::clone(&state),
+        }),
+        ProjectionManifestCompleter {
+            state,
+            completed: false,
+        },
+    )
+}
+
+impl PendingProjectionManifests {
+    fn wait(&self) -> Result<PreparedProjectionManifests, WebUIError> {
+        let (lock, ready) = self.state.as_ref();
+        let mut state = lock.lock().map_err(|_| {
+            WebUIError::InvalidBuildOptions("projection synchronization lock poisoned".to_string())
+        })?;
+        loop {
+            match &*state {
+                ProjectionBarrierState::Waiting => {
+                    state = ready.wait(state).map_err(|_| {
+                        WebUIError::InvalidBuildOptions(
+                            "projection synchronization lock poisoned".to_string(),
+                        )
+                    })?;
+                }
+                ProjectionBarrierState::Ready(projection) => {
+                    return Ok(projection.clone());
+                }
+                ProjectionBarrierState::Failed(message) => {
+                    return Err(WebUIError::InvalidBuildOptions(message.clone()));
+                }
+            }
+        }
+    }
+}
+
+impl ProjectionManifestCompleter {
+    /// Wake waiting builds with validated metadata or a producer failure.
+    pub fn complete(mut self, result: std::result::Result<PreparedProjectionManifests, String>) {
+        let (lock, ready) = self.state.as_ref();
+        if let Ok(mut state) = lock.lock() {
+            *state = match result {
+                Ok(projection) => ProjectionBarrierState::Ready(projection),
+                Err(message) => ProjectionBarrierState::Failed(message),
+            };
+            self.completed = true;
+            ready.notify_all();
+        }
+    }
+}
+
+impl Drop for ProjectionManifestCompleter {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        let (lock, ready) = self.state.as_ref();
+        if let Ok(mut state) = lock.lock() {
+            *state = ProjectionBarrierState::Failed(
+                "projection producer terminated before completing metadata".to_string(),
+            );
+            ready.notify_all();
+        }
+    }
+}
 
 /// Options for building a WebUI application.
 #[derive(Debug, Clone)]
@@ -103,6 +243,27 @@ pub struct BuildOptions {
     /// `var(--x, 16px)`), which provides its own value. Missing required tokens
     /// fail the build as parser diagnostics.
     pub theme: Option<TokenFile>,
+    /// Bundler-neutral state projection manifest fragments supplied as disk
+    /// paths or inline JSON with a logical manifest path.
+    ///
+    /// Empty (the default) means projection is disabled: the build emits
+    /// [`webui_protocol::InitialStateStrategy::Full`] and every scripted
+    /// component keeps a full-state (`All`) partial-navigation surface. No
+    /// JavaScript/TypeScript analysis ever runs in Rust.
+    ///
+    /// When non-empty, every manifest is loaded, hash-validated against the
+    /// files it declares, merged by component tag, and used to narrow each
+    /// scripted component that is actually compiled into the protocol down to
+    /// an exact hydration/navigation key surface. Every such scripted
+    /// component must have exactly one manifest entry, or the build fails
+    /// with [`WebUIError::Projection`] (`PROJ-B001`). Supplying manifests with
+    /// a `plugin` other than [`Plugin::WebUI`] fails the build immediately
+    /// (`PROJ-B002`): only the WebUI plugin produces protocol fields
+    /// compatible with per-component key encoding.
+    ///
+    /// Manifests are read only at build time. The runtime handler never
+    /// opens a manifest file; the compiled protocol is fully self-contained.
+    pub projection_manifests: Vec<ProjectionManifestSource>,
 }
 
 impl Default for BuildOptions {
@@ -119,6 +280,7 @@ impl Default for BuildOptions {
             css_public_base: None,
             legal_comments: LegalComments::default(),
             theme: None,
+            projection_manifests: Vec::new(),
         }
     }
 }
@@ -281,6 +443,10 @@ struct RawBuildOutput {
 
 /// Internal build logic shared by `build()` and `build_to_disk()`.
 fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIError> {
+    let projection_enabled = !options.projection_manifests.is_empty();
+    if projection_enabled && options.plugin != Some(Plugin::WebUI) {
+        return Err(projection::incompatible_plugin_error());
+    }
     let parser_options = ParserOptions::try_new(
         options.css,
         options.dom,
@@ -323,14 +489,16 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             ))
         })?;
         for comp in &result.components {
+            // Script presence marks client ownership. Rust never analyzes the
+            // source; exact state surfaces come from projection manifests.
             parser
                 .component_registry_mut()
-                .register_component(
-                    &comp.tag_name,
-                    &comp.html_content,
-                    comp.css_content.as_deref(),
-                    comp.has_script,
-                )
+                .register_component(webui_parser::ComponentRegistration {
+                    tag_name: &comp.tag_name,
+                    html_content: &comp.html_content,
+                    css_content: comp.css_content.as_deref(),
+                    is_client_owned: comp.is_client_owned,
+                })
                 .map_err(|e| {
                     WebUIError::ComponentRegistration(format!(
                         "Failed to register component '{}' from {}: {e}",
@@ -408,7 +576,31 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     }
     let fragment_count: usize = fragment_records.values().map(|v| v.fragments.len()).sum();
 
+    // Resolve projection only after template compilation. Ordinary path/inline
+    // builds pay the same validation cost, while orchestrators can overlap
+    // parser work with an in-flight client bundle through a pending source.
+    let merged_manifest = projection::load_and_merge(&options.projection_manifests)?;
     let mut protocol = WebUIProtocol::with_tokens(fragment_records, token_analysis.protocol_tokens);
+    protocol.initial_state_strategy = if merged_manifest.is_some() {
+        webui_protocol::InitialStateStrategy::Components as i32
+    } else {
+        webui_protocol::InitialStateStrategy::Full as i32
+    };
+
+    // Strict coverage applies only to scripted components that actually made
+    // it into the compiled protocol/route closure (i.e. their fragment was
+    // emitted). Scripted components discovered but never compiled into a
+    // route/fragment do not require manifest coverage.
+    if let Some(merged) = &merged_manifest {
+        let compiled_scripted_tags: Vec<&str> = component_templates
+            .iter()
+            .filter(|artifact| {
+                artifact.is_scripted && protocol.fragments.contains_key(&artifact.tag_name)
+            })
+            .map(|artifact| artifact.tag_name.as_str())
+            .collect();
+        projection::validate_coverage(&merged.components, &compiled_scripted_tags)?;
+    }
 
     // Record build-wide strategies so the handler can decide rendering behavior.
     protocol.set_css_strategy(match options.css {
@@ -448,7 +640,9 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         // parser — nothing to store in the protocol or emit as files.
     }
 
-    // Store client templates in the protocol so any host server can query them.
+    // Store compiled client templates in the protocol so any host server can
+    // query them. Scriptless templates retain navigation metadata but contribute
+    // no initial hydration state.
     for artifact in &component_templates {
         let component = protocol
             .components
@@ -457,6 +651,33 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         component.template = artifact.template.clone();
         component.template_json = artifact.template_json.clone();
         component.template_functions = artifact.template_functions.clone();
+        // Manifest keys are the initial hydration surface. Navigation is the
+        // union of manifest client keys and Rust-compiled template roots.
+        // Scriptless components are never governed by a manifest: they keep
+        // their Rust-derived surface regardless of projection.
+        let manifest_entry = if artifact.is_scripted {
+            merged_manifest
+                .as_ref()
+                .and_then(|merged| merged.components.get(&artifact.tag_name))
+        } else {
+            None
+        };
+        let (hydration_mode, hydration_keys) = match manifest_entry {
+            Some(entry) => encode_state_surface(&StateSurface::Keys(entry.hydration_keys.clone())),
+            None => encode_state_surface(&artifact.hydration),
+        };
+        component.hydration_mode = hydration_mode;
+        component.hydration_keys = hydration_keys;
+        let (navigation_mode, navigation_keys) = match manifest_entry {
+            Some(entry) => {
+                let union =
+                    projection::union_keys(&entry.navigation_keys, &artifact.template_roots);
+                encode_state_surface(&StateSurface::Keys(union))
+            }
+            None => encode_state_surface(&artifact.navigation),
+        };
+        component.navigation_mode = navigation_mode;
+        component.navigation_keys = navigation_keys;
     }
 
     let component_asset_files = component_assets::render_component_assets(
@@ -476,6 +697,17 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         component_count,
         token_count,
     })
+}
+
+fn encode_state_surface(surface: &StateSurface) -> (i32, Vec<String>) {
+    match surface {
+        StateSurface::None => (webui_protocol::StateProjectionMode::None as i32, Vec::new()),
+        StateSurface::Keys(keys) => (
+            webui_protocol::StateProjectionMode::Keys as i32,
+            keys.clone(),
+        ),
+        StateSurface::All => (webui_protocol::StateProjectionMode::All as i32, Vec::new()),
+    }
 }
 
 fn parse_component_asset_roots(
@@ -564,6 +796,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use tempfile::TempDir;
+    use webui_handler::plugin::webui::WebUIHydrationPlugin;
     use webui_protocol::web_ui_fragment::Fragment;
 
     struct StringWriter {
@@ -609,24 +842,89 @@ mod tests {
         assert!(result.stats.fragment_count > 0);
         assert!(result.stats.protocol_size_bytes > 0);
         assert!(!result.stats.duration.is_zero());
+        assert_eq!(
+            result.protocol.initial_state_strategy,
+            webui_protocol::InitialStateStrategy::Full as i32
+        );
     }
 
     #[test]
-    fn test_build_marks_stateful_html_only_component_as_template_host() {
+    fn pending_projection_unblocks_after_template_compilation() {
+        let app = create_app_dir(&[("index.html", "<h1>Hello</h1>")]);
+        let (source, completer) = projection_manifest_barrier();
+        let options = BuildOptions {
+            app_dir: app.path().to_path_buf(),
+            plugin: Some(Plugin::WebUI),
+            projection_manifests: vec![source],
+            ..BuildOptions::default()
+        };
+        let handle = std::thread::spawn(move || build(options));
+        let prepared = prepare_projection_manifests(&[]).unwrap();
+        completer.complete(Ok(prepared));
+        let result = handle.join().unwrap().unwrap();
+        assert_eq!(
+            result.protocol.initial_state_strategy,
+            webui_protocol::InitialStateStrategy::Components as i32
+        );
+    }
+
+    #[test]
+    fn test_build_keeps_scriptless_component_dormant_until_client_use() {
         let app = create_app_dir(&[
-            ("index.html", "<demo-card></demo-card>"),
-            ("demo-card.html", "<p>{{name}}</p>"),
+            (
+                "index.html",
+                "<html><body><demo-card></demo-card></body></html>",
+            ),
+            ("demo-card.html", "<p>{{name}} {{serverTitle}}</p>"),
         ]);
+        // An empty manifest fragment (no scripted components exist in this
+        // app, so strict coverage trivially passes) still turns on
+        // `InitialStateStrategy::Components`, letting scriptless components'
+        // Rust-derived dormant surface (`None` hydration) take effect.
+        let manifest_json =
+            projection::test_support::build_valid_manifest_json(app.path(), &[], &[], &[]);
+        let manifest = projection::test_support::write_manifest(
+            app.path(),
+            "webui-projection.json",
+            &manifest_json,
+        );
         let mut options = default_options(app.path());
         options.plugin = Some(Plugin::WebUI);
+        options.projection_manifests = vec![manifest.into()];
         let result = build(options).unwrap();
+        assert_eq!(
+            result.protocol.initial_state_strategy,
+            webui_protocol::InitialStateStrategy::Components as i32
+        );
 
         assert!(result
             .component_templates
             .iter()
-            .any(|template| template.tag_name == "demo-card"
-                && template.template_json.contains(r#""th":1"#)));
-        assert!(result.protocol.components.contains_key("demo-card"));
+            .any(|template| template.tag_name == "demo-card"));
+        let component = result
+            .protocol
+            .components
+            .get("demo-card")
+            .expect("scriptless component metadata should be retained");
+        assert!(component.hydration_keys.is_empty());
+        assert_eq!(component.navigation_keys, ["name", "serverTitle"]);
+        assert!(component.template_json.contains(r#""th":1"#));
+
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        let state = serde_json::json!({ "name": "Server rendered" });
+        let protocol = Protocol::new(result.protocol.clone());
+        let mut writer = StringWriter { buf: String::new() };
+        handler
+            .render(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        assert!(writer.buf.contains("Server rendered"));
+        assert!(writer.buf.contains(r#""state":{}"#));
+        assert!(writer.buf.contains(r#""templates":{"demo-card":"#));
     }
 
     #[test]
@@ -653,8 +951,121 @@ mod tests {
             .iter()
             .find(|template| template.tag_name == "demo-card")
             .unwrap();
-        assert!(!template.template_json.contains(r#""th":1"#));
         assert!(template.template_json.contains(r#""eg":[["click""#));
+    }
+
+    #[test]
+    fn test_build_populates_component_hydration_keys_from_script() {
+        let app = create_app_dir(&[
+            ("index.html", "<demo-card></demo-card>"),
+            ("demo-card.html", "<p>{{name}}</p>"),
+            (
+                "demo-card.ts",
+                "import { WebUIElement, attr, observable } from '@microsoft/webui-framework';\n\
+                 class DemoCard extends WebUIElement {\n\
+                 @observable name = '';\n\
+                 @attr({ attribute: 'cta-href' }) ctaHref = '/x';\n\
+                 @observable count = 0;\n\
+                 }\n\
+                 DemoCard.define('demo-card');",
+            ),
+        ]);
+        // Rust performs no JavaScript/TypeScript analysis: the exact keys
+        // come from a bundler-produced projection manifest, not from
+        // scanning `demo-card.ts`.
+        let manifest_json = projection::test_support::build_valid_manifest_json(
+            app.path(),
+            &[("demo-card.ts", "source")],
+            &[("demo-card.js", "output")],
+            &[(
+                "demo-card",
+                "demo-card.ts",
+                &["demo-card.js"],
+                &["count", "ctaHref", "name"],
+                &["count", "ctaHref", "name"],
+            )],
+        );
+        let manifest = projection::test_support::write_manifest(
+            app.path(),
+            "webui-projection.json",
+            &manifest_json,
+        );
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.projection_manifests = vec![manifest.into()];
+        let result = build(options).unwrap();
+
+        assert_eq!(
+            result.protocol.initial_state_strategy,
+            webui_protocol::InitialStateStrategy::Components as i32
+        );
+        let component = result.protocol.components.get("demo-card").unwrap();
+        assert_eq!(
+            component.hydration_mode,
+            webui_protocol::StateProjectionMode::Keys as i32
+        );
+        assert_eq!(component.hydration_keys, vec!["count", "ctaHref", "name"]);
+        assert_eq!(
+            component.navigation_mode,
+            webui_protocol::StateProjectionMode::Keys as i32
+        );
+        assert_eq!(component.navigation_keys, vec!["count", "ctaHref", "name"]);
+    }
+
+    #[test]
+    fn test_build_scripted_component_without_manifest_falls_back_to_full_state() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<html><body><demo-card></demo-card></body></html>",
+            ),
+            ("demo-card.html", "<p>{{name}}</p>"),
+            (
+                "demo-card.ts",
+                "import { WebUIElement, observable } from '@microsoft/webui-framework';\n\
+                 class DemoCard extends WebUIElement {\n\
+                 @observable name = '';\n\
+                 }\n\
+                 DemoCard.define('demo-card');",
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        // No `projection_manifests` supplied: without a manifest, Rust never
+        // analyzes `demo-card.ts` and must assume the full, unproven surface.
+        let result = build(options).unwrap();
+
+        assert_eq!(
+            result.protocol.initial_state_strategy,
+            webui_protocol::InitialStateStrategy::Full as i32
+        );
+        let component = result.protocol.components.get("demo-card").unwrap();
+        assert_eq!(
+            component.hydration_mode,
+            webui_protocol::StateProjectionMode::All as i32
+        );
+        assert!(component.hydration_keys.is_empty());
+        assert_eq!(
+            component.navigation_mode,
+            webui_protocol::StateProjectionMode::All as i32
+        );
+
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        let state = serde_json::json!({ "name": "Visible" });
+        let protocol = Protocol::new(result.protocol.clone());
+        let mut writer = StringWriter { buf: String::new() };
+        handler
+            .render(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        assert!(writer.buf.contains("Visible"));
+        // Full-state fallback serializes the entire supplied state object,
+        // not a narrowed key subset.
+        assert!(writer.buf.contains(r#""state":{"name":"Visible"}"#));
     }
 
     #[test]
@@ -766,6 +1177,7 @@ mod tests {
             ("index.html", "<my-card>Hello</my-card>"),
             ("my-card.html", "<div><slot></slot></div>"),
             ("my-card.css", ".card { color: red; }"),
+            ("my-card.ts", "export {};"),
         ]);
         let result = build(default_options(app.path())).unwrap();
 
@@ -907,10 +1319,11 @@ mod tests {
         );
 
         let handler = WebUIHandler::new();
+        let protocol = Protocol::new(result.protocol.clone());
         let mut writer = StringWriter { buf: String::new() };
         handler
-            .handle(
-                &result.protocol,
+            .render(
+                &protocol,
                 &serde_json::json!({}),
                 &RenderOptions::new("index.html", "/"),
                 &mut writer,
@@ -931,6 +1344,7 @@ mod tests {
             ("index.html", "<my-card>Hello</my-card>"),
             ("my-card.html", "<div><slot></slot></div>"),
             ("my-card.css", ".card { color: red; }"),
+            ("my-card.ts", "export {};"),
         ]);
         let mut options = default_options(app.path());
         options.plugin = Some(Plugin::WebUI);
@@ -1008,6 +1422,7 @@ mod tests {
                 "lazy-panel.html",
                 r#"<if condition="ready"><p>{{title}}</p></if>"#,
             ),
+            ("lazy-panel.ts", "export {};"),
         ]);
         let mut options = default_options(app.path());
         options.plugin = Some(Plugin::WebUI);
@@ -1192,6 +1607,7 @@ mod tests {
             ("index.html", "<my-card>Hello</my-card>"),
             ("my-card.html", "<div><slot></slot></div>"),
             ("my-card.css", ".card { color: red; }"),
+            ("my-card.ts", "export {};"),
         ]);
         let out = TempDir::new().unwrap();
 
@@ -1289,6 +1705,12 @@ mod tests {
     }
 
     #[test]
+    fn protocol_is_available_from_facade() {
+        let protocol = Protocol::new(WebUIProtocol::new(HashMap::new()));
+        assert!(protocol.tokens().is_empty());
+    }
+
+    #[test]
     fn test_inspect_bytes_valid() {
         let app = create_app_dir(&[("index.html", "<h1>Hello</h1>")]);
         let result = build(default_options(app.path())).unwrap();
@@ -1348,7 +1770,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_with_scriptless_component_path_emits_static_host() {
+    fn test_build_with_scriptless_component_path_emits_dormant_template() {
         let app = create_app_dir(&[("index.html", "<ext-card></ext-card>")]);
         let ext_dir = TempDir::new().unwrap();
         fs::write(ext_dir.path().join("ext-card.html"), "<p>{{title}}</p>").unwrap();
@@ -1358,12 +1780,22 @@ mod tests {
         options.components = vec![ext_dir.path().to_string_lossy().to_string()];
 
         let result = build(options).unwrap();
-        let template = &result.protocol.components["ext-card"].template_json;
-        assert!(template.contains(r#""th":1"#), "template: {template}");
+        assert!(result
+            .component_templates
+            .iter()
+            .any(|template| template.tag_name == "ext-card"));
+        let component = result
+            .protocol
+            .components
+            .get("ext-card")
+            .expect("external scriptless component metadata should be retained");
+        assert!(component.hydration_keys.is_empty());
+        assert_eq!(component.navigation_keys, ["title"]);
+        assert!(component.template_json.contains(r#""th":1"#));
     }
 
     #[test]
-    fn test_build_with_scripted_component_path_skips_static_host() {
+    fn test_build_with_scripted_component_path_emits_client_artifact() {
         let app = create_app_dir(&[("index.html", "<ext-card></ext-card>")]);
         let ext_dir = TempDir::new().unwrap();
         fs::write(ext_dir.path().join("ext-card.html"), "<p>{{title}}</p>").unwrap();
@@ -1375,7 +1807,157 @@ mod tests {
 
         let result = build(options).unwrap();
         let template = &result.protocol.components["ext-card"].template_json;
-        assert!(!template.contains(r#""th":1"#), "template: {template}");
+        assert!(!template.is_empty(), "template should be emitted");
+    }
+
+    #[test]
+    fn test_build_rejects_projection_manifest_with_non_webui_plugin() {
+        let app = create_app_dir(&[
+            ("index.html", "<demo-card></demo-card>"),
+            ("demo-card.html", "<p>{{name}}</p>"),
+            ("demo-card.ts", "export {};"),
+        ]);
+        let manifest_json = projection::test_support::build_valid_manifest_json(
+            app.path(),
+            &[("demo-card.ts", "export {};")],
+            &[("projection-bundle.js", "output")],
+            &[(
+                "demo-card",
+                "demo-card.ts",
+                &["projection-bundle.js"],
+                &["name"],
+                &["name"],
+            )],
+        );
+        let manifest = projection::test_support::write_manifest(
+            app.path(),
+            "webui-projection.json",
+            &manifest_json,
+        );
+        let mut options = default_options(app.path());
+        // No plugin selected: default/FAST builds are incompatible with
+        // projection manifests (`PROJ-B002`).
+        options.projection_manifests = vec![manifest.into()];
+        let err = build(options).expect_err("non-WebUI plugin + manifest should be rejected");
+        assert!(
+            err.chain_message().contains("PROJ-B002"),
+            "msg: {}",
+            err.chain_message()
+        );
+    }
+
+    #[test]
+    fn test_build_rejects_missing_scripted_component_coverage() {
+        let app = create_app_dir(&[
+            ("index.html", "<demo-card></demo-card>"),
+            ("demo-card.html", "<p>{{name}}</p>"),
+            ("demo-card.ts", "export {};"),
+        ]);
+        // Manifest is valid but never mentions `demo-card`, the only
+        // compiled scripted component in this build.
+        let manifest_json =
+            projection::test_support::build_valid_manifest_json(app.path(), &[], &[], &[]);
+        let manifest = projection::test_support::write_manifest(
+            app.path(),
+            "webui-projection.json",
+            &manifest_json,
+        );
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.projection_manifests = vec![manifest.into()];
+        let err = build(options).expect_err("missing coverage should fail the build");
+        let message = err.chain_message();
+        assert!(message.contains("PROJ-B001"), "msg: {message}");
+        assert!(message.contains("demo-card"), "msg: {message}");
+    }
+
+    #[test]
+    fn test_build_allows_unused_discovered_scripted_component_without_coverage() {
+        let app = create_app_dir(&[
+            ("index.html", "<demo-card></demo-card>"),
+            ("demo-card.html", "<p>{{name}}</p>"),
+            ("demo-card.ts", "export {};"),
+            // `unused-card` is a scripted component discovered on disk but
+            // never referenced from `index.html`, so it is not compiled
+            // into the protocol and does not require manifest coverage.
+            ("unused-card.html", "<p>{{title}}</p>"),
+            ("unused-card.ts", "export {};"),
+        ]);
+        let manifest_json = projection::test_support::build_valid_manifest_json(
+            app.path(),
+            &[("demo-card.ts", "export {};")],
+            &[("projection-bundle.js", "output")],
+            &[(
+                "demo-card",
+                "demo-card.ts",
+                &["projection-bundle.js"],
+                &["name"],
+                &["name"],
+            )],
+        );
+        let manifest = projection::test_support::write_manifest(
+            app.path(),
+            "webui-projection.json",
+            &manifest_json,
+        );
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.projection_manifests = vec![manifest.into()];
+        let result = build(options).unwrap();
+
+        assert!(!result.protocol.fragments.contains_key("unused-card"));
+        let component = result.protocol.components.get("demo-card").unwrap();
+        assert_eq!(component.hydration_keys, vec!["name"]);
+    }
+
+    #[test]
+    fn test_build_merges_multiple_projection_manifest_fragments() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<html><body><card-a></card-a><card-b></card-b></body></html>",
+            ),
+            ("card-a.html", "<p>{{alpha}}</p>"),
+            ("card-a.ts", "export {};"),
+            ("card-b.html", "<p>{{beta}}</p>"),
+            ("card-b.ts", "export {};"),
+        ]);
+        let json_a = projection::test_support::build_valid_manifest_json(
+            app.path(),
+            &[("card-a.ts", "export {};")],
+            &[("card-a.js", "output-a")],
+            &[(
+                "card-a",
+                "card-a.ts",
+                &["card-a.js"],
+                &["alpha"],
+                &["alpha"],
+            )],
+        );
+        let manifest_a =
+            projection::test_support::write_manifest(app.path(), "fragment-a.json", &json_a);
+        let json_b = projection::test_support::build_valid_manifest_json(
+            app.path(),
+            &[("card-b.ts", "export {};")],
+            &[("card-b.js", "output-b")],
+            &[("card-b", "card-b.ts", &["card-b.js"], &["beta"], &["beta"])],
+        );
+        let manifest_b =
+            projection::test_support::write_manifest(app.path(), "fragment-b.json", &json_b);
+
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.projection_manifests = vec![manifest_a.into(), manifest_b.into()];
+        let result = build(options).unwrap();
+
+        assert_eq!(
+            result.protocol.initial_state_strategy,
+            webui_protocol::InitialStateStrategy::Components as i32
+        );
+        let card_a = result.protocol.components.get("card-a").unwrap();
+        assert_eq!(card_a.hydration_keys, vec!["alpha"]);
+        let card_b = result.protocol.components.get("card-b").unwrap();
+        assert_eq!(card_b.hydration_keys, vec!["beta"]);
     }
 
     #[test]
@@ -1473,6 +2055,10 @@ mod tests {
 
         let result = build(options).unwrap();
         assert!(result.protocol.fragments.contains_key("index.html"));
+        assert_eq!(
+            result.protocol.initial_state_strategy,
+            webui_protocol::InitialStateStrategy::Full as i32
+        );
     }
 
     #[test]

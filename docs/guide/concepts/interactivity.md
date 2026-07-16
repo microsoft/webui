@@ -29,11 +29,17 @@ Create a custom element only for an Interactive Island: event handlers, custom
 lifecycle code, imperative methods, or state that TypeScript code reads or
 mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
 to access the value or when the value is part of the component's public API.
-When HTML-only components receive server or route state, make sure the browser
-entry imports `@microsoft/webui-framework` somewhere. The framework root
-installs the minimal static host runtime and only claims compiler-owned
-HTML-only components whose templates need hidden state or observed host
-attributes. Fully static HTML-only components stay as plain SSR DOM.
+
+The sibling `.ts` or `.js` file is the authored behavior boundary. With
+manifest-enabled projection, only `@observable` and `@attr` fields opt into
+initial state hydration; ordinary template roots remain in the trusted SSR DOM.
+Without a client module, bindings, conditionals, and loops still render on the
+server, but the component contributes no projected keys. If the framework is
+loaded, it can later activate the compiled template for browser-applied state or
+soft navigation. Without any projection manifest, the server preserves full
+state. Add a same-named client module only for events, lifecycle code,
+decorators, or imperative APIs. See
+[Hydration](/guide/concepts/hydration) for the full contract.
 
 ## The Component Class
 
@@ -136,6 +142,11 @@ Use `@attr` for values passed from a parent element via HTML attributes. These a
 <my-button></my-button>
 ```
 
+When build-time projection is enabled, `@attr` property names are included in
+initial state metadata. If SSR already emitted the corresponding host
+attribute, that attribute is authoritative during hydration. Projected state
+fills the property only when the host attribute is absent.
+
 ### `@observable` - Reactive State
 
 Use `@observable` for internal state that changes over time. When an observable value changes, the framework automatically updates any template bindings that reference it.
@@ -151,6 +162,17 @@ Observable changes are **synchronous and targeted** - only the specific DOM node
 You do not need `@observable` for values that are only read by the template.
 Add `@observable` when TypeScript code needs to read or mutate the value, for
 example in an event handler.
+
+### Initial Hydration State
+
+For the initial page, build-time projection can narrow state to top-level
+`@observable` and `@attr` values from authored components. Template bindings
+still render on the server, but they do not automatically become JavaScript
+state. Only components reachable on the active route contribute projected
+values. Without a projection manifest, WebUI intentionally sends full state.
+
+See [Hydration](/guide/concepts/hydration) for HTML-only components, soft
+navigation, and payload behavior.
 
 ### Derived State
 
@@ -203,7 +225,8 @@ Attach event handlers with `@event` syntax:
 ```
 
 Components that use `@event` must have authored `.ts` or `.js` code that
-defines a `WebUIElement` for the tag; HTML-only components are declarative only.
+defines a `WebUIElement` for the tag. HTML-only components do not provide
+application event handlers.
 
 Event handlers use method-call syntax only. Arguments can be:
 
@@ -513,6 +536,7 @@ The framework detects the existing Declarative Shadow DOM roots and upgrades ele
 - Bindings are wired to class properties
 - Event handlers are attached
 - `@observable` properties become reactive
+- Existing host attributes take precedence over projected `@attr` state
 - The component is now interactive
 
 ### 4. User interacts
@@ -553,28 +577,14 @@ export class MyCounter extends WebUIElement {
 
 If `count` should already read `3` in the server-rendered HTML, seed it in the SSR state instead of assigning it on the client at all.
 
-#### The warning is development-only
+#### Development warning
 
-This diagnostic is a **development aid** — its comparison code *and* its message strings are removed from production bundles, so it never costs your users anything. It is gated by a compile-time flag, **`__WEBUI_DEV__`**, and loaded through a dynamic `import()`, so when the flag is `false` a bundler dead-code-eliminates the entire diagnostic module.
-
-The flag is **on by default**. You never enable it — you only turn it *off* for production:
-
-- **Using `webui-press`?** Nothing to do. `webui-press build` sets `__WEBUI_DEV__` to `false` for you, and `webui-press serve` leaves it on.
-- **Bundling client JavaScript yourself?** Define the flag as `false` in your **production** build. Leave it out of development builds — when the flag is absent the framework defaults it to on, so you always get the warning while developing.
+The mismatch warning is removed from `webui-press` production builds. If you
+bundle the framework yourself, define `__WEBUI_DEV__` as `false` in production:
 
 ```bash
-# esbuild: production build only
 esbuild app.ts --bundle --minify --define:__WEBUI_DEV__=false
 ```
-
-| Bundler | Production setting |
-| --- | --- |
-| esbuild | `--define:__WEBUI_DEV__=false` |
-| Vite / Rollup / rolldown | `define: { __WEBUI_DEV__: 'false' }` |
-| webpack / Rspack | `new DefinePlugin({ __WEBUI_DEV__: 'false' })` |
-| swc | `jsc.transform.optimizer.globals.vars: { __WEBUI_DEV__: 'false' }` |
-
-Only the literal `false` turns the diagnostics off. Any other value — or leaving the flag undefined — keeps them on, so a forgotten define can never silently hide a real mismatch during development.
 
 
 ## When NOT to Hydrate

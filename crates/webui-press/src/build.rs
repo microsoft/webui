@@ -13,7 +13,7 @@ use console::style;
 use rayon::prelude::*;
 use serde_json::{Map, Value};
 use webui::BuildOptions;
-use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
 use webui_tokens::TokenFile;
 
 use crate::bundler::{
@@ -174,6 +174,30 @@ fn print_success(cache: &BuildCache, message: &str) {
         return;
     }
     eprintln!("  {} {message}", style("✔").green());
+}
+
+fn print_bundle_summary(cache: &BuildCache, result: &BundleResult) {
+    print_success(
+        cache,
+        &format!(
+            "Bundled {} component script{} into {} root script{} and {} page script group{} in {:.0}ms",
+            result.component_count,
+            if result.component_count == 1 { "" } else { "s" },
+            usize::from(result.root_script.is_some()),
+            if result.root_script.is_some() {
+                ""
+            } else {
+                "s"
+            },
+            result.page_entry_count,
+            if result.page_entry_count == 1 {
+                ""
+            } else {
+                "s"
+            },
+            result.duration.as_secs_f64() * 1000.0
+        ),
+    );
 }
 
 fn print_finish(cache: &BuildCache, message: &str) {
@@ -511,34 +535,41 @@ pub fn build_docs_with_cache(
         }
     };
 
-    let root_bundle_clone = root_bundle.clone();
-
-    // Kick off TypeScript bundling on a background thread. esbuild is
-    // independent of the render pipeline, so we overlap it with the
-    // per-page protocol build + render.
-
-    let site_dir_clone = site_dir.clone();
-    let page_bundles_clone = page_bundles.clone();
-    let bundler_config = config.bundler.clone();
-    let dev_mode = cache.dev_mode;
-    let config_dir_owned = config_dir.to_path_buf();
-    let content_dir_owned = PathBuf::from(&config.content_dir);
-    let node_modules_owned = if root_bundle_clone.is_some() || !page_bundles_clone.is_empty() {
+    // Start the one client bundle in parallel with per-page template parsing.
+    // Each page blocks only when it reaches projection finalization.
+    let node_modules = if root_bundle.is_some() || !page_bundles.is_empty() {
         Some(resolve_node_modules(config_dir)?)
     } else {
         None
     };
-    let bundle_thread = BundleThread::spawn(move || -> Result<BundleResult> {
-        bundle_assets(&BundleOptions {
-            site_dir: &site_dir_clone,
-            node_modules: node_modules_owned.as_deref(),
-            root_bundle: root_bundle_clone.as_ref(),
-            page_bundles: &page_bundles_clone,
+    let (projection_source, projection_completer) = webui::projection_manifest_barrier();
+    let site_dir_for_bundle = site_dir.clone();
+    let root_bundle_for_bundle = root_bundle.clone();
+    let page_bundles_for_bundle = page_bundles.clone();
+    let bundler_config = config.bundler.clone();
+    let config_dir_for_bundle = config_dir.to_path_buf();
+    let content_dir_for_bundle = PathBuf::from(&config.content_dir);
+    let dev_mode = cache.dev_mode;
+    let bundle_thread = BundleThread::spawn(move || {
+        match bundle_assets(&BundleOptions {
+            site_dir: &site_dir_for_bundle,
+            node_modules: node_modules.as_deref(),
+            root_bundle: root_bundle_for_bundle.as_ref(),
+            page_bundles: &page_bundles_for_bundle,
             bundler_config: bundler_config.as_ref(),
             dev_mode,
-            config_dir: &config_dir_owned,
-            content_dir: &content_dir_owned,
-        })
+            config_dir: &config_dir_for_bundle,
+            content_dir: &content_dir_for_bundle,
+        }) {
+            Ok(result) => {
+                projection_completer.complete(Ok(result.projection.clone()));
+                Ok(result)
+            }
+            Err(error) => {
+                projection_completer.complete(Err(error.to_string()));
+                Err(error)
+            }
+        }
     });
 
     // Per-page build + render + write in parallel.
@@ -554,6 +585,7 @@ pub fn build_docs_with_cache(
     let component_css: std::sync::Mutex<HashMap<String, String>> =
         std::sync::Mutex::new(HashMap::new());
 
+    let page_start = Instant::now();
     pages.par_iter().try_for_each(|page| -> Result<()> {
         let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
         let target = page_dir.join("index.html");
@@ -598,6 +630,7 @@ pub fn build_docs_with_cache(
             plugin: Some(webui::Plugin::WebUI),
             components: component_sources.clone(),
             theme: token_file.clone(),
+            projection_manifests: vec![projection_source.clone()],
             ..BuildOptions::default()
         })
         .map_err(|e| Error::Build(format!("{}: {e}", page.path)))?;
@@ -629,10 +662,11 @@ pub fn build_docs_with_cache(
             &page.state
         };
 
+        let protocol = Protocol::new(build_result.protocol);
         let mut writer = StringWriter::with_capacity(8192);
         handler
             .render(
-                &build_result.protocol,
+                &protocol,
                 render_state,
                 &RenderOptions::new("index.html", &page.path),
                 &mut writer,
@@ -650,7 +684,16 @@ pub fn build_docs_with_cache(
         Ok(())
     })?;
 
-    print_success(cache, &format!("Rendered {} pages", pages.len()));
+    print_success(
+        cache,
+        &format!(
+            "Rendered {} pages in {:.0}ms",
+            pages.len(),
+            page_start.elapsed().as_secs_f64() * 1000.0
+        ),
+    );
+    let bundle_result = bundle_thread.join()?;
+    print_bundle_summary(cache, &bundle_result);
 
     // Step 4: Search index. Strip rendered HTML to plain text and emit
     // an entry per non-home page. Done from-scratch every build.
@@ -721,6 +764,7 @@ pub fn build_docs_with_cache(
         plugin: Some(webui::Plugin::WebUI),
         components: component_sources.clone(),
         theme: token_file.clone(),
+        projection_manifests: vec![projection_source],
         ..BuildOptions::default()
     })
     .map_err(|e| Error::Build(format!("404 build failed: {e}")))?;
@@ -744,10 +788,11 @@ pub fn build_docs_with_cache(
         }
     }
 
+    let nf_protocol = Protocol::new(nf_build.protocol);
     let mut writer_404 = StringWriter::with_capacity(4096);
     handler
         .render(
-            &nf_build.protocol,
+            &nf_protocol,
             &not_found_state,
             &RenderOptions::new("index.html", &format!("{base_path}404/")),
             &mut writer_404,
@@ -775,34 +820,7 @@ pub fn build_docs_with_cache(
         print_success(cache, &format!("Wrote {css_count} component stylesheets"));
     }
 
-    // Step 8: Wait for the background bundling thread.
-    let bundle_result = bundle_thread.join()?;
-    print_success(
-        cache,
-        &format!(
-            "Bundled {} component script{} into {} root script{} and {} page script group{}",
-            bundle_result.component_count,
-            if bundle_result.component_count == 1 {
-                ""
-            } else {
-                "s"
-            },
-            usize::from(bundle_result.root_script.is_some()),
-            if bundle_result.root_script.is_some() {
-                ""
-            } else {
-                "s"
-            },
-            bundle_result.page_entry_count,
-            if bundle_result.page_entry_count == 1 {
-                ""
-            } else {
-                "s"
-            }
-        ),
-    );
-
-    // Step 8b: Inject page script <script> tags into rendered pages.
+    // Step 8: Inject page script <script> tags into rendered pages.
     if bundle_result.root_script.is_some() || !bundle_result.script_map.is_empty() {
         let mut linked_count = 0usize;
         for page in &pages {
@@ -1544,8 +1562,9 @@ mod tests {
         let handler = WebUIHandler::with_plugin(|| {
             Box::new(webui_handler::plugin::webui::WebUIHydrationPlugin::new())
         });
+        let protocol = Protocol::new(build_result.protocol);
         handler.render(
-            &build_result.protocol,
+            &protocol,
             &Value::Object(Map::new()),
             &RenderOptions::new("index.html", "/"),
             &mut writer,

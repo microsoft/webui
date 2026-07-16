@@ -226,6 +226,11 @@ After this step, `this.count === 42` matches the rendered DOM, and the subsequen
 
 Properties not present in state, or not on the observable list, are left at their class defaults.
 
+Compiler-owned dormant hosts follow a stricter first-write rule: activation
+wires the SSR DOM, then updates only roots explicitly supplied by that write.
+Omitted text, attribute, conditional, and repeat roots retain their trusted SSR
+output until state supplies those roots.
+
 ---
 
 ## Reactive update model
@@ -293,7 +298,15 @@ When the repeat root has no attribute bindings, items are matched by index. Exce
 
 ### SSR repeat reading
 
-On initial hydration, `$hydrate`'s repeat phase walks `<!--wi-->` markers to discover the rendered items, then runs `$hydrate` recursively on each item with a scope frame that introduces the item variable. State is already seeded from `window.__webui.state`, so item observables match the server-rendered DOM. The `<!--wi-->` markers are then collected for deletion.
+On initial hydration, `$hydrate`'s repeat phase walks `<!--wi-->` markers to
+discover the rendered items, then runs `$hydrate` recursively on each item with
+a scope frame that introduces the item variable. When the repeat collection is
+present in client state, that frame is synchronized immediately. When the
+collection is template-only and intentionally absent from bootstrap state, the
+frame remains unknown and its SSR bindings are preserved during unrelated
+updates. A later explicit collection reconciles the repeat normally; an
+explicit empty collection removes the SSR items. The `<!--wi-->` markers are
+then collected for deletion.
 
 ---
 

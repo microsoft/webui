@@ -5,9 +5,8 @@
  * Calculator hydration entry point.
  *
  * The server pre-renders HTML with hydration markers via `webui build --plugin=webui`.
- * Registered custom elements hydrate through WebUI Framework. Importing the
- * framework through those components also installs static hosts for HTML-only
- * components without custom element stubs.
+ * Registered custom elements hydrate through WebUI Framework. Scriptless
+ * components remain SSR-only.
  */
 
 window.addEventListener('webui:hydration-complete', logHydrationTiming);

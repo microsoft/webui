@@ -676,7 +676,7 @@ mod tests {
             css_content: css.map(ToString::to_string),
             css_definitions: Vec::new(),
             css_fallback_chains: Vec::new(),
-            has_script: false,
+            is_client_owned: false,
         }
     }
 

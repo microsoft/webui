@@ -8,24 +8,148 @@
 //! current request path, while conservatively traversing `if`, `for`, and
 //! attribute-template edges without evaluating runtime state.
 
-use crate::{route_matcher, route_renderer, HandlerError};
-use route_matcher::CompiledRouteCache;
-use serde_json::Value;
+use crate::{route_matcher, route_renderer, HandlerError, StateSelection};
+use route_matcher::CompiledRouteIndex;
+use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::ser::SerializeMap;
+use serde::Serialize;
+use serde_json::{value::RawValue, Map, Value};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::sync::RwLock;
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragmentRoute, WebUIProtocol};
 
 // ── Protocol Index ──────────────────────────────────────────────────────
 
+/// A decoded protocol with reusable deterministic indices.
+///
+/// Construct this once when a server loads `protocol.bin`, then reuse it for
+/// full renders, partial navigation, component-template requests, and token
+/// queries. Full renders borrow the immutable protocol without locking.
+/// Authored route patterns are precompiled once and matched as immutable
+/// absolute patterns or relative suffixes. Parsed template metadata is
+/// populated lazily behind a read-write lock whose scope is limited to
+/// individual metadata lookups.
+pub struct Protocol {
+    protocol: WebUIProtocol,
+    component_index: HashMap<String, u32>,
+    route_index: CompiledRouteIndex,
+    template_metadata_cache: RwLock<HashMap<String, Value>>,
+}
+
+impl Protocol {
+    /// Decode protobuf bytes and build the reusable protocol index.
+    ///
+    /// # Errors
+    ///
+    /// Returns a protocol error when `bytes` is not a valid WebUI protobuf.
+    pub fn from_protobuf(bytes: &[u8]) -> std::result::Result<Self, webui_protocol::ProtocolError> {
+        WebUIProtocol::from_protobuf(bytes).map(Self::new)
+    }
+
+    /// Create a reusable runtime protocol from an already decoded document.
+    #[must_use]
+    pub fn new(protocol: WebUIProtocol) -> Self {
+        let component_index = build_component_index(&protocol);
+        let route_index = CompiledRouteIndex::new(&protocol);
+        Self {
+            protocol,
+            component_index,
+            route_index,
+            template_metadata_cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn protocol(&self) -> &WebUIProtocol {
+        &self.protocol
+    }
+
+    pub(crate) fn component_index(&self) -> &HashMap<String, u32> {
+        &self.component_index
+    }
+
+    pub(crate) fn route_index(&self) -> &CompiledRouteIndex {
+        &self.route_index
+    }
+
+    /// Borrow the build-time CSS token list.
+    #[must_use]
+    pub fn tokens(&self) -> &[String] {
+        &self.protocol.tokens
+    }
+
+    /// Produce a complete partial-navigation response.
+    pub fn render_partial(
+        &self,
+        state_json: &str,
+        entry_id: &str,
+        request_path: &str,
+        inventory_hex: &str,
+    ) -> Result<String, HandlerError> {
+        let mut index = self.request_index();
+        let (response, state_selection) = render_partial_indexed_with_state(
+            self.protocol(),
+            entry_id,
+            request_path,
+            inventory_hex,
+            &mut index,
+        )?;
+        serialize_partial_response(&response, state_json, &state_selection)
+    }
+
+    /// Render component template payloads for requested component tags.
+    pub fn render_component_templates(
+        &self,
+        component_tags: &[&str],
+        inventory_hex: &str,
+    ) -> Result<Value, HandlerError> {
+        let mut index = self.request_index();
+        render_component_templates_indexed(
+            self.protocol(),
+            component_tags,
+            inventory_hex,
+            &mut index,
+        )
+    }
+
+    #[cfg(test)]
+    fn render_partial_metadata(
+        &self,
+        entry_id: &str,
+        request_path: &str,
+        inventory_hex: &str,
+    ) -> Result<Value, HandlerError> {
+        let mut index = self.request_index();
+        render_partial_indexed(
+            self.protocol(),
+            entry_id,
+            request_path,
+            inventory_hex,
+            &mut index,
+        )
+    }
+
+    fn request_index(&self) -> RequestProtocolIndex<'_> {
+        RequestProtocolIndex {
+            component_index: &self.component_index,
+            route_index: &self.route_index,
+            template_metadata_cache: TemplateMetadataCache::Shared(&self.template_metadata_cache),
+        }
+    }
+}
+
 /// Pre-computed index for a protocol, caching expensive lookups.
 ///
-/// Both the component bit-index map and the compiled route template cache
-/// are deterministic for a given protocol. Building them once avoids
-/// redundant work on every request.
-pub struct ProtocolIndex {
+/// The component bit-index map is deterministic for a given protocol. The
+/// route index and template metadata cache support test callers that create and
+/// reuse a standalone index directly.
+#[cfg(test)]
+struct ProtocolIndex {
     /// Component name → bit index for inventory tracking.
     pub component_index: HashMap<String, u32>,
-    /// Compiled route template patterns (lazily populated on first match).
-    pub route_cache: CompiledRouteCache,
+    /// Authored route template patterns compiled once.
+    pub route_index: CompiledRouteIndex,
     /// Parsed WebUI template metadata keyed by component tag.
     template_metadata_cache: HashMap<String, Value>,
 }
@@ -36,16 +160,39 @@ struct ComponentAssets {
     functions: serde_json::Map<String, Value>,
 }
 
+#[cfg(test)]
 impl ProtocolIndex {
     /// Build a protocol index from a compiled protocol.
     #[must_use]
-    pub fn new(protocol: &WebUIProtocol) -> Self {
+    pub(crate) fn new(protocol: &WebUIProtocol) -> Self {
         Self {
             component_index: build_component_index(protocol),
-            route_cache: CompiledRouteCache::new(),
+            route_index: CompiledRouteIndex::new(protocol),
             template_metadata_cache: HashMap::new(),
         }
     }
+
+    fn request_index(&mut self) -> RequestProtocolIndex<'_> {
+        RequestProtocolIndex {
+            component_index: &self.component_index,
+            route_index: &self.route_index,
+            template_metadata_cache: TemplateMetadataCache::Exclusive(
+                &mut self.template_metadata_cache,
+            ),
+        }
+    }
+}
+
+enum TemplateMetadataCache<'a> {
+    #[cfg(test)]
+    Exclusive(&'a mut HashMap<String, Value>),
+    Shared(&'a RwLock<HashMap<String, Value>>),
+}
+
+struct RequestProtocolIndex<'a> {
+    component_index: &'a HashMap<String, u32>,
+    route_index: &'a CompiledRouteIndex,
+    template_metadata_cache: TemplateMetadataCache<'a>,
 }
 
 // ── Component Inventory ─────────────────────────────────────────────────
@@ -56,7 +203,7 @@ impl ProtocolIndex {
 /// is the source of truth regardless of whether a plugin populated
 /// `protocol.components`. Components are sorted alphabetically; index =
 /// position in that order.
-pub fn build_component_index(protocol: &WebUIProtocol) -> HashMap<String, u32> {
+pub(crate) fn build_component_index(protocol: &WebUIProtocol) -> HashMap<String, u32> {
     let mut sorted: Vec<&String> = protocol
         .fragments
         .keys()
@@ -160,13 +307,9 @@ pub fn get_needed_components(
     inventory_hex: &str,
     component_index: &HashMap<String, u32>,
 ) -> Result<(Vec<String>, String), HandlerError> {
-    let component_names = collect_inventoryable_components(
-        protocol,
-        entry_id,
-        None,
-        true,
-        &mut CompiledRouteCache::new(),
-    );
+    let route_index = CompiledRouteIndex::new(protocol);
+    let component_names =
+        collect_inventoryable_components(protocol, entry_id, None, true, &route_index);
     filter_needed_components(&component_names, inventory_hex, component_index)
 }
 
@@ -174,21 +317,342 @@ pub fn get_needed_components(
 /// templates needed for the current `request_path`.
 ///
 /// Returns `(needed_names, updated_inventory_hex)`.
-pub fn get_needed_components_for_request(
+pub(crate) fn get_needed_components_for_request(
     protocol: &WebUIProtocol,
     entry_id: &str,
     request_path: &str,
     inventory_hex: &str,
-    component_index: &HashMap<String, u32>,
+    indexes: (&HashMap<String, u32>, &CompiledRouteIndex),
 ) -> Result<(Vec<String>, String), HandlerError> {
+    let (component_index, route_index) = indexes;
     let component_names = collect_inventoryable_components(
         protocol,
         entry_id,
         Some(request_path),
         false,
-        &mut CompiledRouteCache::new(),
+        route_index,
     );
     filter_needed_components(&component_names, inventory_hex, component_index)
+}
+
+fn serialize_partial_response(
+    response: &Value,
+    state_json: &str,
+    state_selection: &StateSelection<'_>,
+) -> Result<String, HandlerError> {
+    let response = response
+        .as_object()
+        .ok_or_else(partial_response_not_object)?;
+    let state = select_raw_state(state_json, state_selection)?;
+    serde_json::to_string(&PartialResponseWithState { response, state })
+        .map_err(|error| partial_serialize_error(&error.to_string()))
+}
+
+fn validate_json(json: &str) -> Result<(), HandlerError> {
+    validate_json_inner(json).map_err(|error| invalid_state_json(&error.to_string()))
+}
+
+fn validate_json_inner(json: &str) -> serde_json::Result<()> {
+    let mut deserializer = serde_json::Deserializer::from_str(json);
+    ValidJson
+        .deserialize(&mut deserializer)
+        .and_then(|_| deserializer.end())
+}
+
+struct ValidJson;
+
+impl<'de> DeserializeSeed<'de> for ValidJson {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<(), D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(ValidJsonVisitor)
+    }
+}
+
+struct ValidJsonVisitor;
+
+impl<'de> Visitor<'de> for ValidJsonVisitor {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("valid JSON")
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, value: f64) -> std::result::Result<(), E>
+    where
+        E: serde::de::Error,
+    {
+        if value.is_finite() {
+            Ok(())
+        } else {
+            Err(E::custom("number out of range"))
+        }
+    }
+
+    fn visit_str<E>(self, _value: &str) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_borrowed_str<E>(self, _value: &'de str) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_string<E>(self, _value: String) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_unit<E>(self) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_none<E>(self) -> std::result::Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> std::result::Result<(), D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        ValidJson.deserialize(deserializer)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<(), A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while sequence.next_element_seed(ValidJson)?.is_some() {}
+        Ok(())
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<(), A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        while map.next_key::<IgnoredAny>()?.is_some() {
+            map.next_value_seed(ValidJson)?;
+        }
+        Ok(())
+    }
+}
+
+struct PartialResponseWithState<'a, 'state> {
+    response: &'a Map<String, Value>,
+    state: SelectedRawState<'state>,
+}
+
+impl Serialize for PartialResponseWithState<'_, '_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.response.len().saturating_add(1)))?;
+        for (key, value) in self.response {
+            map.serialize_entry(key, value)?;
+        }
+        map.serialize_entry("state", &self.state)?;
+        map.end()
+    }
+}
+
+struct ProjectedRawState<'de> {
+    entries: Vec<(Cow<'de, str>, &'de RawValue)>,
+}
+
+enum SelectedRawState<'de> {
+    Full(&'de RawValue),
+    Keys(ProjectedRawState<'de>),
+}
+
+impl Serialize for SelectedRawState<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Full(state) => state.serialize(serializer),
+            Self::Keys(state) => state.serialize(serializer),
+        }
+    }
+}
+
+impl Serialize for ProjectedRawState<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.entries.len()))?;
+        for (key, value) in &self.entries {
+            map.serialize_entry(key.as_ref(), value)?;
+        }
+        map.end()
+    }
+}
+
+fn project_raw_state<'de>(
+    state_json: &'de str,
+    state_keys: &[&str],
+) -> Result<ProjectedRawState<'de>, HandlerError> {
+    let is_object = state_json
+        .as_bytes()
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| *byte == b'{');
+    if !is_object {
+        validate_json(state_json)?;
+        return Ok(ProjectedRawState {
+            entries: Vec::new(),
+        });
+    }
+
+    let mut deserializer = serde_json::Deserializer::from_str(state_json);
+    let mut state = ProjectedRawStateSeed { state_keys }
+        .deserialize(&mut deserializer)
+        .and_then(|state| {
+            deserializer.end()?;
+            Ok(state)
+        })
+        .map_err(|error| invalid_state_json(&error.to_string()))?;
+    state.entries.sort_unstable_by(|left, right| {
+        left.0.as_ref().as_bytes().cmp(right.0.as_ref().as_bytes())
+    });
+    Ok(state)
+}
+
+fn select_raw_state<'de>(
+    state_json: &'de str,
+    selection: &StateSelection<'_>,
+) -> Result<SelectedRawState<'de>, HandlerError> {
+    match selection {
+        StateSelection::Full => serde_json::from_str::<&RawValue>(state_json)
+            .map(SelectedRawState::Full)
+            .map_err(|error| invalid_state_json(&error.to_string())),
+        StateSelection::Keys(keys) => {
+            project_raw_state(state_json, keys).map(SelectedRawState::Keys)
+        }
+    }
+}
+
+struct ProjectedRawStateSeed<'a> {
+    state_keys: &'a [&'a str],
+}
+
+impl<'de> DeserializeSeed<'de> for ProjectedRawStateSeed<'_> {
+    type Value = ProjectedRawState<'de>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(ProjectedRawStateVisitor {
+            state_keys: self.state_keys,
+        })
+    }
+}
+
+struct ProjectedRawStateVisitor<'a> {
+    state_keys: &'a [&'a str],
+}
+
+impl<'de> Visitor<'de> for ProjectedRawStateVisitor<'_> {
+    type Value = ProjectedRawState<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut entries: Vec<(Cow<'de, str>, &'de RawValue)> =
+            Vec::with_capacity(self.state_keys.len());
+        while let Some(key) = map.next_key_seed(BorrowedString)? {
+            if self.state_keys.binary_search(&key.as_ref()).is_err() {
+                map.next_value_seed(ValidJson)?;
+                continue;
+            }
+
+            let value: &'de RawValue = map.next_value()?;
+            validate_json_inner(value.get()).map_err(serde::de::Error::custom)?;
+            if let Some(entry) = entries
+                .iter_mut()
+                .find(|(existing, _)| existing.as_ref() == key.as_ref())
+            {
+                *entry = (key, value);
+            } else {
+                entries.push((key, value));
+            }
+        }
+        Ok(ProjectedRawState { entries })
+    }
+}
+
+struct BorrowedString;
+
+impl<'de> DeserializeSeed<'de> for BorrowedString {
+    type Value = Cow<'de, str>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(BorrowedStringVisitor)
+    }
+}
+
+struct BorrowedStringVisitor;
+
+impl<'de> Visitor<'de> for BorrowedStringVisitor {
+    type Value = Cow<'de, str>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a string")
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> std::result::Result<Self::Value, E> {
+        Ok(Cow::Borrowed(value))
+    }
+
+    fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E> {
+        Ok(Cow::Owned(value.to_owned()))
+    }
+
+    fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E> {
+        Ok(Cow::Owned(value))
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_state_json(message: &str) -> HandlerError {
+    HandlerError::Rendering(format!("invalid state JSON: {message}"))
+}
+
+#[cold]
+#[inline(never)]
+fn partial_serialize_error(message: &str) -> HandlerError {
+    HandlerError::Rendering(format!("failed to serialize partial response: {message}"))
+}
+
+#[cold]
+#[inline(never)]
+fn partial_response_not_object() -> HandlerError {
+    HandlerError::Invariant("partial response must serialize as a JSON object".to_string())
 }
 
 /// Collect all route-reachable inventoryable components for the request path.
@@ -196,11 +660,11 @@ pub(crate) fn collect_reachable_components_for_request(
     protocol: &WebUIProtocol,
     entry_id: &str,
     request_path: &str,
-    cache: &mut CompiledRouteCache,
+    route_index: &CompiledRouteIndex,
 ) -> HashSet<String> {
     // Callers here need set semantics (`.contains`, plugin `&HashSet` API);
     // discovery order is irrelevant for reachable-template emission.
-    collect_inventoryable_components(protocol, entry_id, Some(request_path), false, cache)
+    collect_inventoryable_components(protocol, entry_id, Some(request_path), false, route_index)
         .into_iter()
         .collect()
 }
@@ -257,7 +721,7 @@ struct QueuedFragment {
 struct ChildWalkCtx<'a> {
     request_path: &'a str,
     protocol: &'a WebUIProtocol,
-    cache: &'a mut CompiledRouteCache,
+    route_index: &'a CompiledRouteIndex,
 }
 
 /// Walk the fragment graph from `entry_id` and collect all inventoryable
@@ -275,7 +739,7 @@ fn collect_inventoryable_components(
     entry_id: &str,
     request_path: Option<&str>,
     root_inventoryable: bool,
-    cache: &mut CompiledRouteCache,
+    route_index: &CompiledRouteIndex,
 ) -> Vec<String> {
     let mut visited_fragments = HashSet::new();
     // Preserve first-discovery (document/traversal) order so Link-strategy
@@ -312,7 +776,7 @@ fn collect_inventoryable_components(
                 &frag_list.fragments,
                 path,
                 &queued.route_base,
-                cache,
+                route_index,
             )
         });
 
@@ -399,7 +863,7 @@ fn collect_inventoryable_components(
                                     &mut ChildWalkCtx {
                                         request_path: path,
                                         protocol,
-                                        cache,
+                                        route_index,
                                     },
                                 );
                             }
@@ -422,15 +886,15 @@ fn select_best_child_route(
     children: &[WebUIFragmentRoute],
     request_path: &str,
     route_base: &str,
-    cache: &mut CompiledRouteCache,
+    route_index: &CompiledRouteIndex,
 ) -> Option<(usize, route_matcher::RouteMatch)> {
     let request_segments = route_matcher::split_request_path(request_path);
     let mut best: Option<(usize, route_matcher::RouteMatch)> = None;
     for (idx, child) in children.iter().enumerate() {
-        let resolved = route_matcher::resolve_route_path_cow(&child.path, route_base);
-        if let Some(m) = route_matcher::match_route_cached_with_segments(
-            cache,
-            resolved.as_ref(),
+        if let Some(m) = route_matcher::match_route_indexed_with_segments(
+            route_index,
+            &child.path,
+            route_base,
             &request_segments,
             child.exact,
         ) {
@@ -458,7 +922,7 @@ fn walk_route_children(
 
     loop {
         let Some((idx, ref rm)) =
-            select_best_child_route(current, ctx.request_path, &base, ctx.cache)
+            select_best_child_route(current, ctx.request_path, &base, ctx.route_index)
         else {
             break;
         };
@@ -548,11 +1012,12 @@ fn collect_route_boundary_components(
 ///
 /// This is used by the dev server to inject nested route params into state.
 pub fn collect_nested_route_params(
-    protocol: &WebUIProtocol,
+    protocol: &Protocol,
     entry_id: &str,
     request_path: &str,
-    cache: &mut CompiledRouteCache,
 ) -> HashMap<String, String> {
+    let route_index = protocol.route_index();
+    let protocol = protocol.protocol();
     let mut all_params = HashMap::new();
     let mut visited_fragments = HashSet::new();
     let mut stack = vec![QueuedFragment {
@@ -574,7 +1039,7 @@ pub fn collect_nested_route_params(
             &frag_list.fragments,
             request_path,
             &queued.route_base,
-            cache,
+            route_index,
         );
 
         for frag in &frag_list.fragments {
@@ -612,7 +1077,7 @@ pub fn collect_nested_route_params(
                                 request_path,
                                 &child_route_base,
                                 &mut all_params,
-                                cache,
+                                route_index,
                             );
                         }
                     }
@@ -631,13 +1096,14 @@ fn collect_params_from_children(
     request_path: &str,
     route_base: &str,
     all_params: &mut HashMap<String, String>,
-    cache: &mut CompiledRouteCache,
+    route_index: &CompiledRouteIndex,
 ) {
     let mut current = children;
     let mut base = route_base.to_string();
 
     loop {
-        let Some((idx, rm)) = select_best_child_route(current, request_path, &base, cache) else {
+        let Some((idx, rm)) = select_best_child_route(current, request_path, &base, route_index)
+        else {
             break;
         };
         all_params.extend(rm.params);
@@ -697,7 +1163,7 @@ fn collect_inventory_and_chain(
     protocol: &WebUIProtocol,
     entry_id: &str,
     request_path: &str,
-    index: &mut ProtocolIndex,
+    index: &mut RequestProtocolIndex<'_>,
 ) -> (Vec<String>, Vec<RouteChainEntry>) {
     let mut visited_fragments = HashSet::new();
     // Deduped ordered collection: `filter_needed_components` now takes a
@@ -734,7 +1200,7 @@ fn collect_inventory_and_chain(
             &frag_list.fragments,
             request_path,
             &queued.route_base,
-            &mut index.route_cache,
+            index.route_index,
         );
 
         for frag in &frag_list.fragments {
@@ -822,7 +1288,7 @@ fn collect_inventory_and_chain(
                                     &mut ChildWalkCtx {
                                         request_path,
                                         protocol,
-                                        cache: &mut index.route_cache,
+                                        route_index: index.route_index,
                                     },
                                 );
                             }
@@ -850,7 +1316,7 @@ fn walk_children_for_inventory_and_chain(
 
     loop {
         let Some((idx, ref rm)) =
-            select_best_child_route(current, ctx.request_path, &base, ctx.cache)
+            select_best_child_route(current, ctx.request_path, &base, ctx.route_index)
         else {
             break;
         };
@@ -892,12 +1358,11 @@ fn walk_children_for_inventory_and_chain(
     }
 }
 
-/// Produce a JSON partial response for client-side navigation.
+/// Produce state-free partial-navigation metadata for NDJSON chunk 1.
 ///
 /// Returns the matched route chain, templates, inventory, and cache tags.
-/// **State is not included** — the caller is responsible for adding
-/// application state to the response (e.g. as a top-level `"state"` field
-/// for non-streaming, or as NDJSON Chunk 2 for streaming).
+/// State is intentionally excluded so a streaming host can send it later.
+/// Use [`render_partial`] for a complete JSON response.
 ///
 /// Returns a `serde_json::Value` object with fields:
 /// - `templateStyles`: module CSS definition tags for inventory-new components (empty for Link/Style)
@@ -907,19 +1372,81 @@ fn walk_children_for_inventory_and_chain(
 /// - `path`: the request path
 /// - `chain`: matched route chain array
 /// - `cacheTags`: resolved cache tags from the full route chain (union of all levels)
-pub fn render_partial(
+#[cfg(test)]
+fn render_partial_metadata(
     protocol: &WebUIProtocol,
     entry_id: &str,
     request_path: &str,
     inventory_hex: &str,
     index: &mut ProtocolIndex,
 ) -> Result<Value, HandlerError> {
+    let mut request_index = index.request_index();
+    render_partial_indexed(
+        protocol,
+        entry_id,
+        request_path,
+        inventory_hex,
+        &mut request_index,
+    )
+}
+
+/// Produce a complete partial-navigation response with projected parsed state.
+///
+/// Only keys required to create or update client components reachable on the
+/// active route are retained. Authored components use their explicit
+/// navigation surface (`@observable + @attr + template roots`); scriptless
+/// templates use compiled template roots.
+#[cfg(test)]
+fn render_partial(
+    protocol: &WebUIProtocol,
+    state: Value,
+    entry_id: &str,
+    request_path: &str,
+    inventory_hex: &str,
+) -> Result<Value, HandlerError> {
+    let mut index = ProtocolIndex::new(protocol);
+    let mut request_index = index.request_index();
+    let (mut response, state_selection) = render_partial_indexed_with_state(
+        protocol,
+        entry_id,
+        request_path,
+        inventory_hex,
+        &mut request_index,
+    )?;
+    let response = response
+        .as_object_mut()
+        .ok_or_else(partial_response_not_object)?;
+    response.insert("state".into(), select_owned_state(state, &state_selection));
+    Ok(Value::Object(std::mem::take(response)))
+}
+
+#[cfg(test)]
+fn render_partial_indexed(
+    protocol: &WebUIProtocol,
+    entry_id: &str,
+    request_path: &str,
+    inventory_hex: &str,
+    index: &mut RequestProtocolIndex<'_>,
+) -> Result<Value, HandlerError> {
+    render_partial_indexed_with_state(protocol, entry_id, request_path, inventory_hex, index)
+        .map(|(response, _)| response)
+}
+
+fn render_partial_indexed_with_state<'a>(
+    protocol: &'a WebUIProtocol,
+    entry_id: &str,
+    request_path: &str,
+    inventory_hex: &str,
+    index: &mut RequestProtocolIndex<'_>,
+) -> Result<(Value, StateSelection<'a>), HandlerError> {
     // Single-pass walk: collect both inventory components and route chain.
     let (component_ids, mut chain) =
         collect_inventory_and_chain(protocol, entry_id, request_path, index);
+    let state_selection =
+        crate::collect_navigation_state(protocol, component_ids.iter().map(String::as_str));
 
     let (needed_names, updated_inv) =
-        filter_needed_components(&component_ids, inventory_hex, &index.component_index)?;
+        filter_needed_components(&component_ids, inventory_hex, index.component_index)?;
 
     // Resolve cache tags and invalidation templates with accumulated params.
     let mut accumulated_params: HashMap<String, String> = HashMap::new();
@@ -955,7 +1482,24 @@ pub fn render_partial(
             .collect();
         result.insert("cacheTags".into(), Value::Array(deduped));
     }
-    Ok(Value::Object(result))
+    Ok((Value::Object(result), state_selection))
+}
+
+#[cfg(test)]
+fn select_owned_state(state: Value, selection: &StateSelection<'_>) -> Value {
+    let StateSelection::Keys(state_keys) = selection else {
+        return state;
+    };
+    let Value::Object(mut source) = state else {
+        return Value::Object(Map::new());
+    };
+    let mut projected = Map::with_capacity(state_keys.len().min(source.len()));
+    for &key in state_keys {
+        if let Some(value) = source.remove(key) {
+            projected.insert(key.to_owned(), value);
+        }
+    }
+    Value::Object(projected)
 }
 
 /// Produce a JSON response for a POST mutation action.
@@ -968,14 +1512,27 @@ pub fn render_partial(
 /// - `state`: the application state passed through
 /// - `invalidateTags`: resolved invalidation tags from the matched leaf route
 /// - `path`: the request path
-pub fn render_action_response(
+#[cfg(test)]
+fn render_action_response(
     protocol: &WebUIProtocol,
     state: Value,
     entry_id: &str,
     request_path: &str,
     index: &mut ProtocolIndex,
 ) -> Value {
-    let chain = collect_route_chain(protocol, entry_id, request_path, &mut index.route_cache);
+    let mut request_index = index.request_index();
+    render_action_response_indexed(protocol, state, entry_id, request_path, &mut request_index)
+}
+
+#[cfg(test)]
+fn render_action_response_indexed(
+    protocol: &WebUIProtocol,
+    state: Value,
+    entry_id: &str,
+    request_path: &str,
+    index: &mut RequestProtocolIndex<'_>,
+) -> Value {
+    let chain = collect_route_chain(protocol, entry_id, request_path, index.route_index);
 
     // Accumulate params across the chain for tag resolution
     let mut accumulated_params: HashMap<String, String> = HashMap::new();
@@ -1012,11 +1569,22 @@ pub fn render_action_response(
 ///
 /// Uses the same inventory bitfield as partial navigation to avoid sending
 /// templates the client already has.
-pub fn render_component_templates(
+#[cfg(test)]
+fn render_component_templates(
     protocol: &WebUIProtocol,
     component_tags: &[&str],
     inventory_hex: &str,
     index: &mut ProtocolIndex,
+) -> Result<Value, HandlerError> {
+    let mut request_index = index.request_index();
+    render_component_templates_indexed(protocol, component_tags, inventory_hex, &mut request_index)
+}
+
+fn render_component_templates_indexed(
+    protocol: &WebUIProtocol,
+    component_tags: &[&str],
+    inventory_hex: &str,
+    index: &mut RequestProtocolIndex<'_>,
 ) -> Result<Value, HandlerError> {
     // Deduplicate preserving caller order; filter expects unique names.
     let mut seen: HashSet<&str> = HashSet::new();
@@ -1026,7 +1594,7 @@ pub fn render_component_templates(
         .map(|s| (*s).to_string())
         .collect();
     let (needed, updated_inv) =
-        filter_needed_components(&requested, inventory_hex, &index.component_index)?;
+        filter_needed_components(&requested, inventory_hex, index.component_index)?;
 
     let tag_refs: Vec<&str> = needed.iter().map(|s| s.as_str()).collect();
     let assets = collect_component_assets(protocol, &tag_refs, index)?;
@@ -1043,7 +1611,7 @@ pub fn render_component_templates(
 fn collect_component_assets(
     protocol: &WebUIProtocol,
     tags: &[&str],
-    index: &mut ProtocolIndex,
+    index: &mut RequestProtocolIndex<'_>,
 ) -> Result<ComponentAssets, HandlerError> {
     let mut style_array = Vec::new();
     let mut tmpl_map = serde_json::Map::new();
@@ -1068,7 +1636,11 @@ fn collect_component_assets(
             style_array.push(Value::String(tag_html));
         }
         if !component.template_json.is_empty() {
-            let template_value = cached_template_metadata(index, tag, &component.template_json)?;
+            let template_value = cached_template_metadata(
+                &mut index.template_metadata_cache,
+                tag,
+                &component.template_json,
+            )?;
             tmpl_map.insert(tag.to_string(), template_value);
             if !component.template_functions.is_empty() {
                 function_map.insert(
@@ -1089,23 +1661,63 @@ fn collect_component_assets(
 }
 
 fn cached_template_metadata(
-    index: &mut ProtocolIndex,
+    cache: &mut TemplateMetadataCache<'_>,
     tag: &str,
     template_json: &str,
 ) -> Result<Value, HandlerError> {
-    if let Some(value) = index.template_metadata_cache.get(tag) {
+    match cache {
+        #[cfg(test)]
+        TemplateMetadataCache::Exclusive(cache) => {
+            cached_template_metadata_exclusive(cache, tag, template_json)
+        }
+        TemplateMetadataCache::Shared(cache) => {
+            if let Some(value) = cache
+                .read()
+                .map_err(|_| protocol_metadata_cache_poisoned())?
+                .get(tag)
+                .cloned()
+            {
+                return Ok(value);
+            }
+
+            let value = parse_template_metadata(tag, template_json)?;
+            let mut cache = cache
+                .write()
+                .map_err(|_| protocol_metadata_cache_poisoned())?;
+            Ok(cache.entry(tag.to_string()).or_insert(value).clone())
+        }
+    }
+}
+
+#[cfg(test)]
+fn cached_template_metadata_exclusive(
+    cache: &mut HashMap<String, Value>,
+    tag: &str,
+    template_json: &str,
+) -> Result<Value, HandlerError> {
+    if let Some(value) = cache.get(tag) {
         return Ok(value.clone());
     }
 
-    let value: Value = serde_json::from_str(template_json).map_err(|error| {
+    let value = parse_template_metadata(tag, template_json)?;
+    cache.insert(tag.to_string(), value.clone());
+    Ok(value)
+}
+
+fn parse_template_metadata(tag: &str, template_json: &str) -> Result<Value, HandlerError> {
+    serde_json::from_str(template_json).map_err(|error| {
         HandlerError::Rendering(format!(
             "failed to parse template metadata for {tag}: {error}"
         ))
-    })?;
-    index
-        .template_metadata_cache
-        .insert(tag.to_string(), value.clone());
-    Ok(value)
+    })
+}
+
+#[cold]
+#[inline(never)]
+fn protocol_metadata_cache_poisoned() -> HandlerError {
+    HandlerError::Invariant(
+        "protocol metadata cache is unavailable after a previous panic".to_string(),
+    )
 }
 
 // ── Route Chain ─────────────────────────────────────────────────────
@@ -1193,11 +1805,11 @@ impl RouteChainEntry {
 ///
 /// Walks the fragment graph from `entry_id`, follows the matched route at
 /// each nesting level, and returns a chain entry per matched level.
-pub fn collect_route_chain(
+pub(crate) fn collect_route_chain(
     protocol: &WebUIProtocol,
     entry_id: &str,
     request_path: &str,
-    cache: &mut CompiledRouteCache,
+    route_index: &CompiledRouteIndex,
 ) -> Vec<RouteChainEntry> {
     let mut chain = Vec::new();
     let mut visited_fragments = HashSet::new();
@@ -1220,7 +1832,7 @@ pub fn collect_route_chain(
             &frag_list.fragments,
             request_path,
             &queued.route_base,
-            cache,
+            route_index,
         );
 
         for frag in &frag_list.fragments {
@@ -1265,10 +1877,13 @@ pub fn collect_route_chain(
                             // Walk nested children iteratively
                             collect_chain_from_children(
                                 &route_frag.children,
-                                request_path,
                                 &child_route_base,
                                 &mut chain,
-                                cache,
+                                &mut ChildWalkCtx {
+                                    request_path,
+                                    protocol,
+                                    route_index,
+                                },
                             );
                         }
                     }
@@ -1284,16 +1899,17 @@ pub fn collect_route_chain(
 /// Iteratively collect chain entries from nested route children.
 fn collect_chain_from_children(
     children: &[WebUIFragmentRoute],
-    request_path: &str,
     route_base: &str,
     chain: &mut Vec<RouteChainEntry>,
-    cache: &mut CompiledRouteCache,
+    ctx: &mut ChildWalkCtx<'_>,
 ) {
     let mut pending: Vec<(&[WebUIFragmentRoute], String)> =
         vec![(children, route_base.to_string())];
 
     while let Some((current, base)) = pending.pop() {
-        if let Some((idx, rm)) = select_best_child_route(current, request_path, &base, cache) {
+        if let Some((idx, rm)) =
+            select_best_child_route(current, ctx.request_path, &base, ctx.route_index)
+        {
             let matched = &current[idx];
             chain.push(RouteChainEntry {
                 component: matched.fragment_id.clone(),
@@ -1309,7 +1925,7 @@ fn collect_chain_from_children(
             });
             if !matched.children.is_empty() {
                 let child_base =
-                    route_matcher::compute_route_base(request_path, rm.consumed_segments);
+                    route_matcher::compute_route_base(ctx.request_path, rm.consumed_segments);
                 pending.push((&matched.children, child_base));
             }
         }
@@ -1320,7 +1936,257 @@ fn collect_chain_from_children(
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
     use webui_protocol::{FragmentList, WebUIFragment, WebUiFragmentRoute};
+
+    #[test]
+    fn protocol_decodes_once_and_exposes_tokens() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Prepared</p>")],
+            },
+        );
+        let protocol = WebUIProtocol::with_tokens(fragments, vec!["colorBrand".to_string()]);
+        let bytes = protocol.to_protobuf().unwrap();
+        let prepared = Protocol::from_protobuf(&bytes).unwrap();
+
+        assert!(prepared.protocol().fragments.contains_key("index.html"));
+        assert_eq!(prepared.tokens(), ["colorBrand"]);
+    }
+
+    #[test]
+    fn protocol_partial_matches_direct_index_path() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route("/", "home-page")],
+            },
+        );
+        fragments.insert(
+            "home-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Home</p>")],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let mut direct_index = ProtocolIndex::new(&protocol);
+        let direct =
+            render_partial_metadata(&protocol, "index.html", "/", "", &mut direct_index).unwrap();
+        let prepared = Protocol::new(protocol);
+        let cached = prepared
+            .render_partial_metadata("index.html", "/", "")
+            .unwrap();
+
+        assert_eq!(cached, direct);
+    }
+
+    #[test]
+    fn protocol_partial_supports_concurrent_metadata_reads() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route("/", "home-page")],
+            },
+        );
+        fragments.insert(
+            "home-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Home</p>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.components.insert(
+            "home-page".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<p>Home</p>"}"#.to_string(),
+                ..Default::default()
+            },
+        );
+
+        let prepared = Arc::new(Protocol::new(protocol));
+        let barrier = Arc::new(Barrier::new(4));
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let prepared = Arc::clone(&prepared);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    for _ in 0..50 {
+                        let response = prepared
+                            .render_partial_metadata("index.html", "/", "")
+                            .unwrap();
+                        assert_eq!(response["templates"]["home-page"]["h"], "<p>Home</p>");
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    fn prepared_partial_protocol(hydration_keys: &[&str]) -> Protocol {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route("/", "home-page")],
+            },
+        );
+        fragments.insert(
+            "home-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Home</p>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.components.insert(
+            "home-page".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<p>Home</p>"}"#.to_string(),
+                hydration_mode: webui_protocol::StateProjectionMode::Keys as i32,
+                hydration_keys: hydration_keys
+                    .iter()
+                    .map(|key| (*key).to_string())
+                    .collect(),
+                navigation_mode: webui_protocol::StateProjectionMode::Keys as i32,
+                navigation_keys: hydration_keys
+                    .iter()
+                    .map(|key| (*key).to_string())
+                    .collect(),
+                ..Default::default()
+            },
+        );
+        Protocol::new(protocol)
+    }
+
+    fn prepared_full_state_partial_protocol() -> Protocol {
+        let mut prepared = prepared_partial_protocol(&[]);
+        let protocol = &mut prepared.protocol;
+        if let Some(component) = protocol.components.get_mut("home-page") {
+            component.navigation_mode = webui_protocol::StateProjectionMode::All as i32;
+            component.navigation_keys.clear();
+        }
+        prepared
+    }
+
+    #[test]
+    fn partial_state_serialization_preserves_validated_raw_json() {
+        let prepared = prepared_partial_protocol(&["value"]);
+        let output = prepared
+            .render_partial(
+                r#"{"serverOnly":"drop","value":1e2}"#,
+                "index.html",
+                "/",
+                "",
+            )
+            .unwrap();
+        assert!(output.contains(r#""state":{"value":1e2}"#));
+        assert!(!output.contains("serverOnly"));
+
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["state"]["value"], 100.0);
+    }
+
+    #[test]
+    fn uncertain_partial_surface_preserves_complete_raw_state() {
+        let prepared = prepared_full_state_partial_protocol();
+        let output = prepared
+            .render_partial(
+                r#"{"serverOnly":"keep","value":1e2}"#,
+                "index.html",
+                "/",
+                "",
+            )
+            .unwrap();
+        assert!(output.contains(r#""state":{"serverOnly":"keep","value":1e2}"#));
+    }
+
+    #[test]
+    fn partial_state_serialization_rejects_invalid_json() {
+        let prepared = prepared_partial_protocol(&[]);
+        let error = prepared
+            .render_partial(r#"{"broken":"#, "index.html", "/", "")
+            .expect_err("invalid state JSON must fail");
+        assert!(error.to_string().contains("invalid state JSON"));
+    }
+
+    #[test]
+    fn partial_state_serialization_emits_empty_state_without_client_components() {
+        let prepared = Protocol::new(WebUIProtocol::default());
+        let output = prepared
+            .render_partial(r#"{"serverOnly":"drop"}"#, "index.html", "/", "")
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["state"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn partial_state_serialization_validates_selected_and_skipped_numbers() {
+        let prepared = prepared_partial_protocol(&["value"]);
+        for state in [r#"{"value":1e9999}"#, r#"{"serverOnly":1e9999,"value":1}"#] {
+            let error = prepared
+                .render_partial(state, "index.html", "/", "")
+                .expect_err("out-of-range state numbers must fail");
+            assert!(error.to_string().contains("invalid state JSON"));
+        }
+    }
+
+    #[test]
+    fn partial_state_serialization_uses_last_duplicate_and_decodes_keys() {
+        let prepared = prepared_partial_protocol(&["value"]);
+        let output = prepared
+            .render_partial(r#"{"value":1,"va\u006cue":2}"#, "index.html", "/", "")
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["state"], serde_json::json!({"value": 2}));
+    }
+
+    #[test]
+    fn parsed_partial_state_projects_without_cloning_server_only_values() {
+        let prepared = prepared_partial_protocol(&["value"]);
+        let response = render_partial(
+            prepared.protocol(),
+            serde_json::json!({"serverOnly": [1, 2, 3], "value": "kept"}),
+            "index.html",
+            "/",
+            "",
+        )
+        .unwrap();
+        assert_eq!(response["state"], serde_json::json!({"value": "kept"}));
+    }
+
+    #[test]
+    fn uncertain_partial_surface_preserves_complete_parsed_state() {
+        let prepared = prepared_full_state_partial_protocol();
+        let state = serde_json::json!({"serverOnly": [1, 2, 3], "value": "kept"});
+        let response =
+            render_partial(prepared.protocol(), state.clone(), "index.html", "/", "").unwrap();
+        assert_eq!(response["state"], state);
+    }
+
+    #[test]
+    fn partial_state_validation_matches_value_number_limits() {
+        for json in [
+            r#"{"value":1e9999}"#,
+            r#"{"value":-1e9999}"#,
+            r#"{"value":1e308}"#,
+            r#"{"value":18446744073709551615}"#,
+            r#"{"value":18446744073709551616}"#,
+        ] {
+            assert_eq!(
+                validate_json(json).is_ok(),
+                serde_json::from_str::<Value>(json).is_ok(),
+                "validation mismatch for {json}"
+            );
+        }
+    }
 
     #[test]
     fn test_parse_encode_inventory_roundtrip() {
@@ -1590,7 +2456,7 @@ mod tests {
             "index.html",
             "/search/shirts",
             "",
-            &comp_index,
+            (&comp_index, &CompiledRouteIndex::new(&protocol)),
         )
         .unwrap();
         let needed: HashSet<String> = needed.into_iter().collect();
@@ -1694,7 +2560,7 @@ mod tests {
             "index.html",
             "/account/orders/42",
             "",
-            &comp_index,
+            (&comp_index, &CompiledRouteIndex::new(&protocol)),
         )
         .unwrap();
         let needed: HashSet<String> = needed.into_iter().collect();
@@ -1773,9 +2639,14 @@ mod tests {
             .template = "<mp-search-page></mp-search-page>".to_string();
 
         let comp_index = build_component_index(&protocol);
-        let (needed, _inv) =
-            get_needed_components_for_request(&protocol, "index.html", "/search", "", &comp_index)
-                .unwrap();
+        let (needed, _inv) = get_needed_components_for_request(
+            &protocol,
+            "index.html",
+            "/search",
+            "",
+            (&comp_index, &CompiledRouteIndex::new(&protocol)),
+        )
+        .unwrap();
         let needed: HashSet<String> = needed.into_iter().collect();
 
         assert!(needed.contains("mp-app"));
@@ -1828,15 +2699,21 @@ mod tests {
         }
 
         let comp_index = build_component_index(&protocol);
-        let (_needed, inventory) =
-            get_needed_components_for_request(&protocol, "index.html", "/search", "", &comp_index)
-                .unwrap();
+        let route_index = CompiledRouteIndex::new(&protocol);
+        let (_needed, inventory) = get_needed_components_for_request(
+            &protocol,
+            "index.html",
+            "/search",
+            "",
+            (&comp_index, &route_index),
+        )
+        .unwrap();
         let (needed_again, _) = get_needed_components_for_request(
             &protocol,
             "index.html",
             "/search",
             &inventory,
-            &comp_index,
+            (&comp_index, &route_index),
         )
         .unwrap();
         assert!(needed_again.is_empty());
@@ -1911,7 +2788,7 @@ mod tests {
             &protocol,
             "index.html",
             "/",
-            &mut CompiledRouteCache::new(),
+            &CompiledRouteIndex::new(&protocol),
         );
         assert!(
             reachable.contains("loading-skeleton"),
@@ -1948,7 +2825,8 @@ mod tests {
         component.css = ".page{color:red}".to_string();
 
         let mut index = ProtocolIndex::new(&protocol);
-        let partial = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
+        let partial =
+            render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -2001,7 +2879,8 @@ mod tests {
         // css is empty — Link strategy stores href, not content
 
         let mut index = ProtocolIndex::new(&protocol);
-        let partial = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
+        let partial =
+            render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -2045,7 +2924,8 @@ mod tests {
         // css is empty for Style strategy
 
         let mut index = ProtocolIndex::new(&protocol);
-        let partial = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
+        let partial =
+            render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -2093,7 +2973,8 @@ mod tests {
         // No CSS — simulates Link or Style mode
 
         let mut index = ProtocolIndex::new(&protocol);
-        let partial = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
+        let partial =
+            render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
         let styles = partial["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -2129,7 +3010,8 @@ mod tests {
 
         let mut index = ProtocolIndex::new(&protocol);
         // First call to establish inventory
-        let partial1 = render_partial(&protocol, "index.html", "/", "", &mut index).unwrap();
+        let partial1 =
+            render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
         let inv = partial1["inventory"].as_str().unwrap_or_default();
         assert!(!inv.is_empty());
 
@@ -2137,7 +3019,8 @@ mod tests {
         // because the inventory covers this component.  The SSR handler emits all
         // module style definitions in <head> for inventoried components, so the
         // client already has the CSS definition.
-        let partial2 = render_partial(&protocol, "index.html", "/", inv, &mut index).unwrap();
+        let partial2 =
+            render_partial_metadata(&protocol, "index.html", "/", inv, &mut index).unwrap();
         let styles = partial2["templateStyles"]
             .as_array()
             .expect("templateStyles should be an array");
@@ -2217,9 +3100,14 @@ mod tests {
         }
 
         let comp_index = build_component_index(&protocol);
-        let (needed, _inv) =
-            get_needed_components_for_request(&protocol, "index.html", "/about", "", &comp_index)
-                .unwrap();
+        let (needed, _inv) = get_needed_components_for_request(
+            &protocol,
+            "index.html",
+            "/about",
+            "",
+            (&comp_index, &CompiledRouteIndex::new(&protocol)),
+        )
+        .unwrap();
 
         assert!(
             needed.contains(&"app-shell".to_string()),
@@ -2315,19 +3203,158 @@ mod tests {
                 fragments: vec![WebUIFragment::raw("<p>Compose</p>")],
             },
         );
-        let protocol = WebUIProtocol::new(fragments);
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol
+            .components
+            .entry("app-shell".into())
+            .or_default()
+            .css_href = "/app-shell.css".into();
+        protocol
+            .components
+            .entry("compose-page".into())
+            .or_default()
+            .template_json = r#"{"h":"<p>Compose</p>"}"#.into();
 
         let chain = collect_route_chain(
             &protocol,
             "index.html",
             "/compose",
-            &mut CompiledRouteCache::new(),
+            &CompiledRouteIndex::new(&protocol),
         );
         assert_eq!(chain.len(), 2);
         assert_eq!(chain[0].component, "app-shell");
         assert!(chain[0].allowed_query.is_empty());
         assert_eq!(chain[1].component, "compose-page");
         assert_eq!(chain[1].allowed_query, "action,to");
+    }
+
+    #[test]
+    fn scriptless_partial_uses_navigation_keys_without_bootstrap_keys() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/items".into(),
+                    fragment_id: "items-page".into(),
+                    exact: true,
+                    ..Default::default()
+                })],
+            },
+        );
+        fragments.insert(
+            "items-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Items</p>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.components.insert(
+            "items-page".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<p>Items</p>","th":1}"#.into(),
+                navigation_mode: webui_protocol::StateProjectionMode::Keys as i32,
+                navigation_keys: vec!["items".into(), "title".into()],
+                ..Default::default()
+            },
+        );
+
+        let partial = render_partial(
+            &protocol,
+            serde_json::json!({
+                "items": [1, 2],
+                "serverOnly": "secret",
+                "title": "Catalog",
+            }),
+            "index.html",
+            "/items",
+            "",
+        )
+        .unwrap();
+
+        assert_eq!(
+            partial["state"],
+            serde_json::json!({
+                "items": [1, 2],
+                "title": "Catalog",
+            })
+        );
+    }
+
+    #[test]
+    fn partial_requires_explicit_navigation_keys() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("authored-card")],
+            },
+        );
+        fragments.insert(
+            "authored-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Card</p>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.components.insert(
+            "authored-card".to_string(),
+            webui_protocol::ComponentData {
+                hydration_mode: webui_protocol::StateProjectionMode::Keys as i32,
+                hydration_keys: vec!["title".into()],
+                ..Default::default()
+            },
+        );
+
+        let partial = render_partial(
+            &protocol,
+            serde_json::json!({
+                "serverOnly": "secret",
+                "title": "Authored",
+            }),
+            "index.html",
+            "/",
+            "",
+        )
+        .unwrap();
+
+        assert_eq!(partial["state"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn fully_static_scriptless_partial_emits_empty_state() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("static-card")],
+            },
+        );
+        fragments.insert(
+            "static-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Static</p>")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.components.insert(
+            "static-card".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<p>Static</p>","th":1}"#.into(),
+                ..Default::default()
+            },
+        );
+
+        let partial = render_partial(
+            &protocol,
+            serde_json::json!({ "serverOnly": "secret" }),
+            "index.html",
+            "/",
+            "",
+        )
+        .unwrap();
+
+        assert_eq!(partial["state"], serde_json::json!({}));
     }
 
     #[test]
@@ -2484,7 +3511,8 @@ mod tests {
         }
 
         let mut index = ProtocolIndex::new(&protocol);
-        let partial = render_partial(&protocol, "index.html", "/inbox", "", &mut index).unwrap();
+        let partial =
+            render_partial_metadata(&protocol, "index.html", "/inbox", "", &mut index).unwrap();
         let templates = partial["templates"].as_object().unwrap();
 
         assert!(
@@ -2626,7 +3654,8 @@ mod tests {
         let protocol = WebUIProtocol::new(fragments);
 
         let mut index = ProtocolIndex::new(&protocol);
-        let partial = render_partial(&protocol, "index.html", "/email/42", "", &mut index).unwrap();
+        let partial =
+            render_partial_metadata(&protocol, "index.html", "/email/42", "", &mut index).unwrap();
         let tags = partial["cacheTags"].as_array().unwrap();
         let tag_strings: Vec<&str> = tags.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(

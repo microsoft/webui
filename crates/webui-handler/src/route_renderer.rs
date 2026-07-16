@@ -7,7 +7,7 @@
 //! matching route among sibling route fragments.
 
 use crate::route_matcher;
-use crate::route_matcher::CompiledRouteCache;
+use crate::route_matcher::CompiledRouteIndex;
 use crate::{ResponseWriter, Result};
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUiFragmentRoute};
 
@@ -76,7 +76,7 @@ pub(crate) fn find_best_route_match(
     fragments: &[WebUIFragment],
     request_path: &str,
     route_base: &str,
-    cache: &mut CompiledRouteCache,
+    route_index: &CompiledRouteIndex,
 ) -> Option<(String, route_matcher::RouteMatch)> {
     let mut best: Option<(String, route_matcher::RouteMatch)> = None;
 
@@ -84,10 +84,10 @@ pub(crate) fn find_best_route_match(
 
     for item in fragments {
         if let Some(Fragment::Route(route_frag)) = item.fragment.as_ref() {
-            let resolved_path = route_matcher::resolve_route_path_cow(&route_frag.path, route_base);
-            if let Some(m) = route_matcher::match_route_cached_with_segments(
-                cache,
-                resolved_path.as_ref(),
+            if let Some(m) = route_matcher::match_route_indexed_with_segments(
+                route_index,
+                &route_frag.path,
+                route_base,
                 &request_segments,
                 route_frag.exact,
             ) {

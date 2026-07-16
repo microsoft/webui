@@ -34,8 +34,42 @@ pub struct Component {
     /// CSS `var()` fallback chains from this component's CSS.
     pub css_fallback_chains: Vec<CssFallbackChain>,
 
-    /// Whether this component has an authored client script.
-    pub has_script: bool,
+    /// Whether authored browser code owns this custom element tag.
+    pub is_client_owned: bool,
+}
+
+/// Inputs for registering a component from content strings.
+///
+/// Grouping the fields keeps [`ComponentRegistry::register_component`] a
+/// single-argument call without growing its arity.
+#[derive(Debug, Clone)]
+pub struct ComponentRegistration<'a> {
+    /// The custom element tag name (must contain a hyphen).
+    pub tag_name: &'a str,
+    /// The component's HTML template content.
+    pub html_content: &'a str,
+    /// The component's CSS content, if any.
+    pub css_content: Option<&'a str>,
+    /// Whether authored browser code owns this custom element tag.
+    pub is_client_owned: bool,
+}
+
+impl<'a> ComponentRegistration<'a> {
+    /// Create a component registration.
+    #[must_use]
+    pub fn new(
+        tag_name: &'a str,
+        html_content: &'a str,
+        css_content: Option<&'a str>,
+        is_client_owned: bool,
+    ) -> Self {
+        Self {
+            tag_name,
+            html_content,
+            css_content,
+            is_client_owned,
+        }
+    }
 }
 
 /// Registry of web components.
@@ -50,13 +84,25 @@ pub struct ComponentRegistry {
 }
 
 #[cfg(feature = "fs")]
-/// Return true when a component has an authored browser module next to its HTML.
+/// Return whether a component has an authored sibling module.
 ///
-/// Only `.ts` and `.js` are recognized component implementations. Other
-/// extensions are intentionally ignored so static-host eligibility is
-/// deterministic and matches the documented authoring model.
-fn component_has_script(html_path: &Path) -> bool {
-    html_path.with_extension("ts").exists() || html_path.with_extension("js").exists()
+/// Use `try_exists()` rather than `exists()`: `exists()` converts metadata
+/// errors into `false`, which could silently classify an inaccessible authored
+/// component as scriptless and bypass projection-manifest coverage.
+fn has_component_script(html_path: &Path) -> Result<bool> {
+    for ext in ["ts", "js"] {
+        let candidate = html_path.with_extension(ext);
+        if candidate.try_exists().map_err(|source| ParserError::IO {
+            context: format!(
+                "Failed to inspect component script: {}",
+                candidate.display()
+            ),
+            source,
+        })? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 impl Default for ComponentRegistry {
@@ -169,6 +215,8 @@ impl ComponentRegistry {
             (None, Vec::new(), Vec::new())
         };
 
+        let is_client_owned = has_component_script(html_path)?;
+
         // Create and register the component
         let component = Component {
             tag_name: tag_name.to_string(),
@@ -176,7 +224,7 @@ impl ComponentRegistry {
             css_content,
             css_definitions,
             css_fallback_chains,
-            has_script: component_has_script(html_path),
+            is_client_owned,
         };
 
         self.components.insert(tag_name.to_string(), component);
@@ -184,13 +232,17 @@ impl ComponentRegistry {
     }
 
     /// Register a component directly from provided content strings.
-    pub fn register_component(
-        &mut self,
-        tag_name: &str,
-        html_content: &str,
-        css_content: Option<&str>,
-        has_script: bool,
-    ) -> Result<()> {
+    ///
+    /// Exact JavaScript state ownership is supplied later by a bundler projection
+    /// manifest; the parser stores only whether this tag is client-owned.
+    pub fn register_component(&mut self, registration: ComponentRegistration<'_>) -> Result<()> {
+        let ComponentRegistration {
+            tag_name,
+            html_content,
+            css_content,
+            is_client_owned,
+        } = registration;
+
         // Validate component name (must contain a hyphen)
         if !tag_name.contains('-') {
             return Err(ParserError::Component(format!(
@@ -222,7 +274,7 @@ impl ComponentRegistry {
             css_content,
             css_definitions,
             css_fallback_chains,
-            has_script,
+            is_client_owned,
         };
 
         // Register the component
@@ -305,7 +357,7 @@ mod tests {
             .expect("Failed to retrieve registered component");
         assert_eq!(component.html_content, html_content);
         assert_eq!(component.css_content.as_deref(), Some(css_content));
-        assert!(!component.has_script);
+        assert!(!component.is_client_owned);
     }
 
     #[test]
@@ -323,7 +375,7 @@ mod tests {
         let component = registry
             .get("scripted-card")
             .expect("Failed to retrieve registered component");
-        assert!(component.has_script);
+        assert!(component.is_client_owned);
     }
 
     #[test]
@@ -341,7 +393,25 @@ mod tests {
         let component = registry
             .get("scripted-card")
             .expect("Failed to retrieve registered component");
-        assert!(component.has_script);
+        assert!(component.is_client_owned);
+    }
+
+    #[test]
+    fn test_register_component_detects_non_utf8_sibling_without_reading_it() {
+        let mut fs = TestFileSystem::new();
+        let html_path = fs.add_file("components/scripted-card.html", "<p>Scripted</p>");
+        std::fs::write(html_path.with_extension("ts"), [0xFF, 0xFE, 0x00])
+            .expect("Failed to write invalid sibling script");
+
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_component_from_paths(&html_path, None::<&str>)
+            .expect("registration should inspect presence without decoding source");
+
+        let component = registry
+            .get("scripted-card")
+            .expect("Failed to retrieve registered component");
+        assert!(component.is_client_owned);
     }
 
     #[test]
@@ -359,7 +429,7 @@ mod tests {
         let component = registry
             .get("scripted-card")
             .expect("Failed to retrieve registered component");
-        assert!(!component.has_script);
+        assert!(!component.is_client_owned);
     }
 
     #[test]
@@ -405,8 +475,12 @@ mod tests {
 
         // Register component directly from strings
         let mut registry = ComponentRegistry::new();
-        let result =
-            registry.register_component("string-component", html_content, Some(css_content), true);
+        let result = registry.register_component(ComponentRegistration::new(
+            "string-component",
+            html_content,
+            Some(css_content),
+            true,
+        ));
 
         assert!(result.is_ok());
         assert!(registry.contains("string-component"));
@@ -416,19 +490,19 @@ mod tests {
             .expect("Failed to retrieve registered component");
         assert_eq!(component.html_content, html_content);
         assert_eq!(component.css_content.as_deref(), Some(css_content));
-        assert!(component.has_script);
+        assert!(component.is_client_owned);
     }
 
     #[test]
     fn test_register_component_strips_css_comments() {
         let mut registry = ComponentRegistry::new();
         registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "style-component",
                 "<p>Styled</p>",
                 Some("/* var(--ignored) */ p { color: var(--textColor); } /* remove */"),
                 true,
-            )
+            ))
             .expect("register failed");
 
         let component = registry
@@ -445,12 +519,12 @@ mod tests {
     fn test_register_component_preserves_legal_css_comments_by_default() {
         let mut registry = ComponentRegistry::new();
         registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "legal-component",
                 "<p>Styled</p>",
                 Some("/*! @license MIT */ p { color: red; } /* remove */"),
                 true,
-            )
+            ))
             .expect("register failed");
 
         let component = registry
@@ -466,12 +540,12 @@ mod tests {
     fn test_register_component_strips_legal_css_comments_when_disabled() {
         let mut registry = ComponentRegistry::with_legal_comments(LegalComments::None);
         registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "legal-component",
                 "<p>Styled</p>",
                 Some("/*! @license MIT */ p { color: red; }"),
                 true,
-            )
+            ))
             .expect("register failed");
 
         let component = registry
@@ -486,7 +560,12 @@ mod tests {
 
         // Try registering with invalid name (no hyphen)
         let mut registry = ComponentRegistry::new();
-        let result = registry.register_component("invalid", html_content, None, true);
+        let result = registry.register_component(ComponentRegistration::new(
+            "invalid",
+            html_content,
+            None,
+            true,
+        ));
 
         // More idiomatic approach using assert!() with message
         assert!(result.is_err(), "Expected error for invalid component name");
@@ -506,11 +585,21 @@ mod tests {
 
         // Register the first component
         let mut registry = ComponentRegistry::new();
-        let result1 = registry.register_component("dupe-component", html_content, None, true);
+        let result1 = registry.register_component(ComponentRegistration::new(
+            "dupe-component",
+            html_content,
+            None,
+            true,
+        ));
         assert!(result1.is_ok());
 
         // Try to register a second component with the same name
-        let result2 = registry.register_component("dupe-component", html_content2, None, true);
+        let result2 = registry.register_component(ComponentRegistration::new(
+            "dupe-component",
+            html_content2,
+            None,
+            true,
+        ));
         assert!(result2.is_err());
 
         // Verify the error message
@@ -563,7 +652,12 @@ mod tests {
     #[test]
     fn test_exclude_dot_in_component_name() {
         let mut registry = ComponentRegistry::new();
-        let result = registry.register_component("fluent.button", "<p>Dot name</p>", None, true);
+        let result = registry.register_component(ComponentRegistration::new(
+            "fluent.button",
+            "<p>Dot name</p>",
+            None,
+            true,
+        ));
 
         assert!(
             result.is_err(),
@@ -580,7 +674,12 @@ mod tests {
     #[test]
     fn test_exclude_no_hyphen_html() {
         let mut registry = ComponentRegistry::new();
-        let result = registry.register_component("foobar", "<p>No hyphen</p>", None, true);
+        let result = registry.register_component(ComponentRegistration::new(
+            "foobar",
+            "<p>No hyphen</p>",
+            None,
+            true,
+        ));
 
         assert!(
             result.is_err(),
@@ -597,8 +696,12 @@ mod tests {
     #[test]
     fn test_valid_component_with_hyphen() {
         let mut registry = ComponentRegistry::new();
-        let result =
-            registry.register_component("fluent-button", "<button>Click me</button>", None, true);
+        let result = registry.register_component(ComponentRegistration::new(
+            "fluent-button",
+            "<button>Click me</button>",
+            None,
+            true,
+        ));
 
         assert!(
             result.is_ok(),
@@ -611,12 +714,12 @@ mod tests {
     #[test]
     fn test_valid_component_css_only() {
         let mut registry = ComponentRegistry::new();
-        let result = registry.register_component(
+        let result = registry.register_component(ComponentRegistration::new(
             "styled-widget",
             "",
             Some(".widget { color: blue; }"),
             true,
-        );
+        ));
 
         assert!(
             result.is_ok(),
@@ -637,7 +740,12 @@ mod tests {
     #[test]
     fn test_component_name_requires_hyphen() {
         let mut registry = ComponentRegistry::new();
-        let result = registry.register_component("single", "<p>Single word</p>", None, true);
+        let result = registry.register_component(ComponentRegistration::new(
+            "single",
+            "<p>Single word</p>",
+            None,
+            true,
+        ));
 
         assert!(
             result.is_err(),
@@ -654,12 +762,12 @@ mod tests {
     #[test]
     fn test_multiple_hyphens_valid() {
         let mut registry = ComponentRegistry::new();
-        let result = registry.register_component(
+        let result = registry.register_component(ComponentRegistration::new(
             "my-custom-element",
             "<div>Custom element</div>",
             None,
             true,
-        );
+        ));
 
         assert!(
             result.is_ok(),
@@ -672,7 +780,12 @@ mod tests {
     #[test]
     fn test_empty_component_name_rejected() {
         let mut registry = ComponentRegistry::new();
-        let result = registry.register_component("", "<p>Empty name</p>", None, true);
+        let result = registry.register_component(ComponentRegistration::new(
+            "",
+            "<p>Empty name</p>",
+            None,
+            true,
+        ));
 
         assert!(result.is_err(), "Empty component name should be rejected");
         assert!(
@@ -687,12 +800,12 @@ mod tests {
     fn test_register_component_extracts_css_fallback_requirements() {
         let mut registry = ComponentRegistry::new();
         registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-btn",
                 "<button>Click</button>",
                 Some(":host { color: var(--text-color); padding: var(--spacing-m); }"),
                 true,
-            )
+            ))
             .expect("register failed");
 
         let component = registry.get("my-btn").expect("component not found");
@@ -703,7 +816,12 @@ mod tests {
     fn test_register_component_no_css_no_requirements() {
         let mut registry = ComponentRegistry::new();
         registry
-            .register_component("my-card", "<div>Card</div>", None, true)
+            .register_component(ComponentRegistration::new(
+                "my-card",
+                "<div>Card</div>",
+                None,
+                true,
+            ))
             .expect("register failed");
 
         let component = registry.get("my-card").expect("component not found");
@@ -714,12 +832,12 @@ mod tests {
     fn test_register_component_tracks_css_fallback_requirements() {
         let mut registry = ComponentRegistry::new();
         registry
-            .register_component(
+            .register_component(ComponentRegistration::new(
                 "my-widget",
                 "<div>W</div>",
                 Some(":host { --local: 5px; margin: var(--external); width: var(--local); }"),
                 true,
-            )
+            ))
             .expect("register failed");
 
         let component = registry.get("my-widget").expect("component not found");

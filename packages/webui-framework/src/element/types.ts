@@ -60,6 +60,8 @@ export interface ScopeFrame {
   name: string;
   value: unknown;
   parent?: ScopeFrame;
+  /** False while an SSR repeat item is preserved without its collection state. */
+  known?: boolean;
 }
 
 export interface TemplateInstance {
@@ -121,6 +123,7 @@ export interface RepeatItemInstance {
  */
 export interface RepeatHost {
   $resolveValue(path: string, scope?: ScopeFrame): unknown;
+  $hasStateRoot(path: string, scope?: ScopeFrame): boolean;
   /** Create, wire, and perform the first binding pass while detached. */
   $createBlockInstance(blockIndex: number, scope?: ScopeFrame): TemplateInstance | null;
   $updateInstance(instance: TemplateInstance): void;

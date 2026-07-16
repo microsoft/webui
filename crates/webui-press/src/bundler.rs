@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
+use std::time::Instant;
 
 use crate::error::{Error, Result};
 use crate::types::BundlerConfig;
@@ -14,6 +15,32 @@ use crate::types::BundlerConfig;
 static BUNDLE_REBUILD_NONCE: AtomicU64 = AtomicU64::new(0);
 const WEBUI_TSCONFIG_RAW: &str =
     r#"{"compilerOptions":{"experimentalDecorators":true,"useDefineForClassFields":false}}"#;
+const ESBUILD_RUNNER: &str = r#"
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+const config = JSON.parse(await readFile(process.argv[2], "utf8"));
+const started = performance.now();
+const require = createRequire(pathToFileURL(path.join(config.resolveDir, "__webui_press__.cjs")));
+const esbuild = require(require.resolve("esbuild"));
+const projectionUrl = pathToFileURL(config.projectionEntry).href;
+const { esbuildProjection } = await import(projectionUrl);
+await esbuild.build({
+  ...config.build,
+  plugins: [esbuildProjection({ manifest: config.manifest })],
+});
+if (process.env.WEBUI_PROJECTION_PROFILE === "1") {
+  console.error(`[webui-press] esbuild-total=${(performance.now() - started).toFixed(1)}ms`);
+}
+"#;
+
+#[cfg(test)]
+struct EsbuildCommand {
+    program: PathBuf,
+    prefix_args: Vec<String>,
+}
 
 /// Resolve a configured component source for the per-page builds.
 ///
@@ -63,17 +90,21 @@ pub(crate) struct ComponentScript {
     script_path: PathBuf,
 }
 
+struct TempDirGuard {
+    path: PathBuf,
+}
+
 pub(crate) struct BundleThread {
     handle: Option<std::thread::JoinHandle<Result<BundleResult>>>,
 }
 
 impl BundleThread {
-    pub(crate) fn spawn<F>(f: F) -> Self
+    pub(crate) fn spawn<F>(build: F) -> Self
     where
         F: FnOnce() -> Result<BundleResult> + Send + 'static,
     {
         Self {
-            handle: Some(std::thread::spawn(f)),
+            handle: Some(std::thread::spawn(build)),
         }
     }
 
@@ -93,10 +124,6 @@ impl Drop for BundleThread {
             let _ = handle.join();
         }
     }
-}
-
-struct TempDirGuard {
-    path: PathBuf,
 }
 
 impl TempDirGuard {
@@ -349,6 +376,10 @@ pub(crate) struct BundleResult {
     /// import so pages do not pay a request for a `page-N.js` file that only
     /// forwards to shared chunks.
     pub(crate) script_map: HashMap<usize, Vec<String>>,
+    /// Projection metadata validated once against the completed bundle.
+    pub(crate) projection: webui::PreparedProjectionManifests,
+    /// Wall time spent producing and validating the client bundle.
+    pub(crate) duration: std::time::Duration,
 }
 
 /// Configuration for the [`bundle_assets`] function.
@@ -361,6 +392,39 @@ pub(crate) struct BundleOptions<'a> {
     pub(crate) dev_mode: bool,
     pub(crate) config_dir: &'a Path,
     pub(crate) content_dir: &'a Path,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EsbuildRunnerConfig {
+    resolve_dir: String,
+    projection_entry: String,
+    manifest: String,
+    build: EsbuildJsOptions,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EsbuildJsOptions {
+    abs_working_dir: String,
+    entry_points: Vec<String>,
+    bundle: bool,
+    platform: &'static str,
+    format: &'static str,
+    splitting: bool,
+    target: String,
+    outdir: String,
+    outbase: String,
+    entry_names: &'static str,
+    chunk_names: &'static str,
+    loader: BTreeMap<String, String>,
+    tsconfig_raw: serde_json::Value,
+    log_level: &'static str,
+    minify: bool,
+    external: Vec<String>,
+    define: BTreeMap<String, String>,
+    alias: BTreeMap<String, String>,
+    write: bool,
 }
 
 /// Convert a filesystem path to a forward-slash string for use as an ES module
@@ -395,6 +459,7 @@ fn push_import_once(entry: &mut String, imports: &mut HashSet<String>, specifier
     }
 }
 
+#[cfg(test)]
 fn push_external_args(
     args: &mut Vec<String>,
     external: &[String],
@@ -1042,18 +1107,21 @@ fn build_aliases(opts: &BundleOptions<'_>) -> BTreeMap<String, String> {
     aliases
 }
 
+#[cfg(test)]
 fn push_alias_args(args: &mut Vec<String>, aliases: &BTreeMap<String, String>) {
     for (from, to) in aliases {
         args.push(format!("--alias:{from}={to}"));
     }
 }
 
+#[cfg(test)]
 fn push_define_args(args: &mut Vec<String>, cfg: &BundlerConfig) {
     for (key, value) in &cfg.define {
         args.push(format!("--define:{key}={value}"));
     }
 }
 
+#[cfg(test)]
 fn esbuild_args(
     opts: &BundleOptions<'_>,
     entry_files: &[(String, PathBuf)],
@@ -1098,6 +1166,157 @@ fn esbuild_args(
     args
 }
 
+fn esbuild_build_config(
+    opts: &BundleOptions<'_>,
+    node_modules: &Path,
+    entry_files: &[(String, PathBuf)],
+    bundle_tmp: &Path,
+    manifest_path: &Path,
+) -> Result<serde_json::Value> {
+    let working_dir = absolute_path(opts.config_dir)?;
+    let site_dir = absolute_path(opts.site_dir)?;
+    let manifest_path = absolute_path(manifest_path)?;
+    let aliases = build_aliases(opts);
+    let target = opts
+        .bundler_config
+        .and_then(|cfg| cfg.target.as_deref())
+        .unwrap_or("es2022");
+    let external: Vec<String> = opts
+        .bundler_config
+        .map(|cfg| {
+            cfg.external
+                .iter()
+                .filter(|value| !aliases.contains_key(value.as_str()))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut define = BTreeMap::new();
+    if !opts.dev_mode {
+        define.insert("__WEBUI_DEV__".to_string(), "false".to_string());
+    }
+    if let Some(cfg) = opts.bundler_config {
+        for (key, value) in &cfg.define {
+            define.insert(key.clone(), value.clone());
+        }
+    }
+    let tsconfig_raw: serde_json::Value = serde_json::from_str(WEBUI_TSCONFIG_RAW)
+        .map_err(|error| Error::Build(format!("Invalid WebUI tsconfig: {error}")))?;
+    let projection_entry = projection_package_entry(node_modules)?;
+    let loader = BTreeMap::from([
+        (".css".to_string(), "text".to_string()),
+        (".html".to_string(), "text".to_string()),
+    ]);
+    serde_json::to_value(EsbuildRunnerConfig {
+        resolve_dir: path_for_js(&working_dir),
+        projection_entry,
+        manifest: path_for_js(&manifest_path),
+        build: EsbuildJsOptions {
+            abs_working_dir: path_for_js(&working_dir),
+            entry_points: entry_files
+                .iter()
+                .map(|(_, path)| path_for_js(path))
+                .collect(),
+            bundle: true,
+            platform: "browser",
+            format: "esm",
+            splitting: true,
+            target: target.to_string(),
+            outdir: path_for_js(&site_dir),
+            outbase: path_for_js(bundle_tmp),
+            entry_names: "[dir]/[name]",
+            chunk_names: "assets/[name]-[hash]",
+            loader,
+            tsconfig_raw,
+            log_level: "warning",
+            minify: !opts.dev_mode,
+            external,
+            define,
+            alias: aliases,
+            write: true,
+        },
+    })
+    .map_err(|error| Error::Build(format!("Cannot serialize esbuild config: {error}")))
+}
+
+fn absolute_path(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .map_err(|error| Error::Io(format!("Cannot resolve current directory: {error}")))
+}
+
+fn projection_package_entry(node_modules: &Path) -> Result<String> {
+    let package_dir = node_modules.join("@microsoft").join("webui");
+    let package_json_path = package_dir.join("package.json");
+    let package_json = fs::read_to_string(&package_json_path).map_err(|error| {
+        Error::Build(format!(
+            "Cannot read {}. Install @microsoft/webui in the docs project: {error}",
+            package_json_path.display()
+        ))
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&package_json)
+        .map_err(|error| Error::Build(format!("Invalid @microsoft/webui package.json: {error}")))?;
+    let export = value
+        .pointer("/exports/.~1projection.js/import/default")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            Error::Build(
+                "@microsoft/webui does not export ./projection.js for ESM imports".to_string(),
+            )
+        })?;
+    let entry = package_dir.join(export);
+    if !entry.exists() {
+        return Err(Error::Build(format!(
+            "@microsoft/webui projection entry is missing: {}. Build the package first.",
+            entry.display()
+        )));
+    }
+    Ok(entry.to_string_lossy().into_owned())
+}
+
+fn run_esbuild_with_projection(
+    opts: &BundleOptions<'_>,
+    node_modules: &Path,
+    entry_files: &[(String, PathBuf)],
+    bundle_tmp: &Path,
+    manifest_path: &Path,
+) -> Result<()> {
+    let runner_path = bundle_tmp.join("webui-press-esbuild.mjs");
+    let config_path = bundle_tmp.join("webui-press-esbuild.json");
+    fs::write(&runner_path, ESBUILD_RUNNER)
+        .map_err(|error| Error::Build(format!("Cannot write esbuild runner: {error}")))?;
+    let config = esbuild_build_config(opts, node_modules, entry_files, bundle_tmp, manifest_path)?;
+    fs::write(
+        &config_path,
+        serde_json::to_vec(&config)
+            .map_err(|error| Error::Build(format!("Cannot serialize esbuild config: {error}")))?,
+    )
+    .map_err(|error| Error::Build(format!("Cannot write esbuild config: {error}")))?;
+
+    let output = std::process::Command::new("node")
+        .arg(&runner_path)
+        .arg(&config_path)
+        .current_dir(absolute_path(opts.config_dir)?)
+        .env("NODE_PATH", node_modules)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|error| Error::Build(format!("esbuild failed to start: {error}")))?;
+    if !output.status.success() {
+        return Err(Error::Build(format!(
+            "esbuild projection error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    if std::env::var_os("WEBUI_PROJECTION_PROFILE").is_some() && !output.stderr.is_empty() {
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    }
+    Ok(())
+}
+
 /// Bundle page-scoped scripts via esbuild.
 ///
 /// Uses a single esbuild invocation with one virtual entry per page for
@@ -1108,12 +1327,17 @@ fn esbuild_args(
 /// Returns a [`BundleResult`] with the component script count and a mapping
 /// from page-bundle IDs to their output file paths.
 pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
+    let started = Instant::now();
     if opts.root_bundle.is_none() && opts.page_bundles.is_empty() {
+        let projection = webui::prepare_projection_manifests(&[])
+            .map_err(|error| Error::Build(error.chain_message()))?;
         return Ok(BundleResult {
             root_script: None,
             component_count: 0,
             page_entry_count: 0,
             script_map: HashMap::new(),
+            projection,
+            duration: started.elapsed(),
         });
     }
     let Some(node_modules) = opts.node_modules else {
@@ -1227,21 +1451,31 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         entry_files.push((entry_name, entry_path));
     }
 
-    let args = esbuild_args(opts, &entry_files, bundle_tmp.path());
-    let esbuild_bin = esbuild_command(node_modules);
-
-    let output = std::process::Command::new(&esbuild_bin)
-        .args(&args)
-        .env("NODE_PATH", node_modules)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| Error::Build(format!("esbuild failed to start: {e}")))?;
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() {
-        return Err(Error::Build(format!("esbuild error: {stderr}")));
+    let manifest_path = opts.site_dir.join("webui-projection.json");
+    run_esbuild_with_projection(
+        opts,
+        node_modules,
+        &entry_files,
+        bundle_tmp.path(),
+        &manifest_path,
+    )?;
+    let mut projection_sources = Vec::with_capacity(
+        1 + opts
+            .bundler_config
+            .map_or(0, |cfg| cfg.projection_manifests.len()),
+    );
+    projection_sources.push(webui::ProjectionManifestSource::Path(manifest_path.clone()));
+    if let Some(cfg) = opts.bundler_config {
+        projection_sources.extend(
+            cfg.projection_manifests.iter().map(|manifest| {
+                webui::ProjectionManifestSource::Path(opts.config_dir.join(manifest))
+            }),
+        );
     }
+    let projection_result = webui::prepare_projection_manifests(&projection_sources)
+        .map_err(|error| Error::Build(error.chain_message()));
+    fs::remove_file(&manifest_path).ok();
+    let projection = projection_result?;
 
     let mut root_imports = HashSet::new();
     let root_script = if opts.root_bundle.is_some() {
@@ -1287,25 +1521,52 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
         component_count: component_imports.len(),
         page_entry_count: opts.page_bundles.len(),
         script_map,
+        projection,
+        duration: started.elapsed(),
     })
 }
 
-/// Resolve the esbuild binary path from node_modules.
-fn esbuild_command(node_modules: &Path) -> std::path::PathBuf {
-    let binary = if cfg!(windows) {
-        "esbuild.cmd"
-    } else {
-        "esbuild"
-    };
+/// Resolve the esbuild invocation from node_modules.
+///
+/// Windows invokes the package's JavaScript entry through `node` directly.
+/// Going through pnpm's `.cmd` shim strips quotes from `--tsconfig-raw`.
+#[cfg(test)]
+fn esbuild_command(node_modules: &Path) -> EsbuildCommand {
     if let Some(project_dir) = node_modules.parent() {
         for dir in project_dir.ancestors() {
-            let candidate = dir.join("node_modules").join(".bin").join(binary);
+            if cfg!(windows) {
+                let candidate = dir
+                    .join("node_modules")
+                    .join("esbuild")
+                    .join("bin")
+                    .join("esbuild");
+                if candidate.exists() {
+                    return EsbuildCommand {
+                        program: PathBuf::from("node"),
+                        prefix_args: vec![path_for_js(&candidate)],
+                    };
+                }
+                continue;
+            }
+
+            let candidate = dir.join("node_modules").join(".bin").join("esbuild");
             if candidate.exists() {
-                return candidate;
+                return EsbuildCommand {
+                    program: candidate,
+                    prefix_args: Vec::new(),
+                };
             }
         }
     }
-    std::path::PathBuf::from(binary)
+
+    EsbuildCommand {
+        program: PathBuf::from(if cfg!(windows) {
+            "esbuild.cmd"
+        } else {
+            "esbuild"
+        }),
+        prefix_args: Vec::new(),
+    }
 }
 
 /// Extract `<script type="module" bundle>` and `<script type="module" bundle src="...">` tags
@@ -1574,17 +1835,46 @@ mod tests {
     #[test]
     fn esbuild_command_resolves_from_node_modules() {
         let tmp = std::env::temp_dir().join("webui-press-esbuild-test");
-        let bin_dir = tmp.join("node_modules/.bin");
-        fs::create_dir_all(&bin_dir).unwrap();
         let bin_path = if cfg!(windows) {
-            bin_dir.join("esbuild.cmd")
+            tmp.join("node_modules/esbuild/bin/esbuild")
         } else {
-            bin_dir.join("esbuild")
+            tmp.join("node_modules/.bin/esbuild")
         };
+        fs::remove_dir_all(&tmp).ok();
+        fs::create_dir_all(bin_path.parent().unwrap()).unwrap();
         fs::write(&bin_path, "").unwrap();
         let resolved = esbuild_command(&tmp.join("node_modules"));
-        assert_eq!(resolved, bin_path);
+        if cfg!(windows) {
+            assert_eq!(resolved.program, PathBuf::from("node"));
+            assert_eq!(resolved.prefix_args, [path_for_js(&bin_path)]);
+        } else {
+            assert_eq!(resolved.program, bin_path);
+            assert!(resolved.prefix_args.is_empty());
+        }
         fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn projection_package_entry_reads_export_target() -> TestResult {
+        let root = std::env::temp_dir().join(format!(
+            "webui-press-projection-package-test-{}",
+            std::process::id()
+        ));
+        fs::remove_dir_all(&root).ok();
+        let package = root.join("node_modules/@microsoft/webui");
+        let entry = package.join("dist/projection/index.js");
+        fs::create_dir_all(entry.parent().ok_or("entry parent missing")?)?;
+        fs::write(&entry, "export {};")?;
+        fs::write(
+            package.join("package.json"),
+            r#"{"exports":{"./projection.js":{"import":{"default":"./dist/projection/index.js"}}}}"#,
+        )?;
+
+        let resolved = projection_package_entry(&root.join("node_modules"))?;
+        fs::remove_dir_all(&root)?;
+
+        assert_eq!(PathBuf::from(resolved), entry);
+        Ok(())
     }
 
     #[test]

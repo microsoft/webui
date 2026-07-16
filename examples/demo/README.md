@@ -46,7 +46,8 @@ examples/demo/
 ├── data/
 │   └── state.json          ← Sample state for solo dev (`webui serve`)
 ├── dist/
-│   └── index.js            ← Bundled client (produced by `pnpm build`)
+│   ├── index.js            ← Bundled client (produced by `pnpm build`)
+│   └── webui-projection.json ← Build-time state projection manifest
 ├── server/                 ← Rust reverse-proxy + SSR host (binary: demo-shell)
 └── README.md
 ```

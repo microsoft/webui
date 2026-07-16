@@ -18,8 +18,7 @@ use anyhow::{Context, Result};
 use std::env;
 use std::fs;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
-use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
-use webui_protocol::WebUIProtocol;
+use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
 
 struct StdoutWriter;
 
@@ -51,8 +50,10 @@ fn main() -> Result<()> {
     // Check for --plugin=<name> flag.
     let plugin_name = args.iter().find_map(|a| a.strip_prefix("--plugin="));
 
-    let protocol = WebUIProtocol::from_protobuf_file(protocol_path)
+    let protocol_bytes = fs::read(protocol_path)
         .with_context(|| format!("Failed to load protocol: {protocol_path}"))?;
+    let protocol = Protocol::from_protobuf(&protocol_bytes)
+        .with_context(|| format!("Failed to decode protocol: {protocol_path}"))?;
 
     let state_json = fs::read_to_string(state_path)
         .with_context(|| format!("Failed to read state: {state_path}"))?;
@@ -68,7 +69,7 @@ fn main() -> Result<()> {
     };
     let mut writer = StdoutWriter;
     handler
-        .handle(
+        .render(
             &protocol,
             &state,
             &RenderOptions::new("index.html", "/"),

@@ -6,8 +6,7 @@
  *
  * The server pre-renders all HTML via WebUI's binary protocol (--plugin=webui).
  * This script registers interactive custom elements and activates the WebUI
- * Router. Importing the framework through those components also installs static
- * hosts for declarative HTML-only components without custom element stubs.
+ * Router. Scriptless components remain SSR-only and use document navigation.
  *
  * Navigation flow:
  *  1. Initial page load → full SSR + WebUI Framework hydration
@@ -32,8 +31,8 @@ function onHydrationComplete(): void {
   const total = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];
   console.log(`WebUI Store hydration complete in ${total?.duration.toFixed(1)}ms`);
 
-  // Start client-side router after hydration. HTML-only routes use static hosts;
-  // the product page keeps its authored interactive class.
+  // Start client-side router after hydration. Scriptless routes use document
+  // navigation; the product page keeps its authored interactive class.
   Router.start({
     preload: true,
     loaders: {

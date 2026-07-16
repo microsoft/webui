@@ -60,7 +60,9 @@
 //! 4. **`take_component_templates`** — called after parsing is complete;
 //!    compiles each tracked component into JSON metadata plus condition closures.
 
-use super::{AttributeAction, ComponentTemplateArtifact, ParserPlugin, ParserPluginArtifacts};
+use super::{
+    AttributeAction, ComponentTemplateArtifact, ParserPlugin, ParserPluginArtifacts, StateSurface,
+};
 use crate::comment_policy;
 use crate::component_registry::Component;
 use crate::diagnostic::{codes, Diagnostic};
@@ -77,9 +79,33 @@ struct TrackedComponent {
     tag_name: String,
     template_html: String,
     root_event_source: String,
-    /// Source fact from the component registry. Static-host metadata is derived
-    /// as `!has_script` only when the final template payload is emitted.
-    has_script: bool,
+    client_module: ClientModule,
+}
+
+/// Authored client-module ownership.
+///
+/// The parser never analyzes JavaScript/TypeScript, so it only needs to know
+/// *whether* a component has a client module — a sibling script or an
+/// externally client-owned package without scannable source — not its
+/// content. Exact reactive keys for an authored component come solely from a
+/// validated bundler projection manifest, consumed later by `webui::build`.
+enum ClientModule {
+    None,
+    Authored,
+}
+
+impl ClientModule {
+    fn from_component(component: &Component) -> Self {
+        if component.is_client_owned {
+            Self::Authored
+        } else {
+            Self::None
+        }
+    }
+
+    fn is_authored(&self) -> bool {
+        matches!(self, Self::Authored)
+    }
 }
 
 /// WebUI Framework parser plugin.
@@ -115,31 +141,61 @@ impl WebUIParserPlugin {
         }
     }
 
-    /// Compile all tracked components and return split template payloads.
+    /// Compile component templates and return split browser payloads.
     ///
-    /// Each payload contains JSON-safe metadata plus a component-local closure
-    /// array for condition evaluation. Call this after all HTML parsing is complete.
+    /// Authored (scripted) components default to an unknown (`All`) hydration
+    /// and navigation surface, since this plugin never analyzes JavaScript or
+    /// TypeScript. `webui::build` narrows a scripted component to an exact
+    /// `Keys` surface only after validating a bundler projection manifest for
+    /// its tag. Scriptless components keep an empty hydration surface, but
+    /// retain template roots for client-created soft-navigation rendering
+    /// through a compiler-owned dormant host. Each returned payload contains
+    /// JSON-safe metadata plus a component-local closure array for condition
+    /// evaluation. Call this after all HTML parsing is complete.
     ///
     /// # Errors
     ///
     /// Returns [`crate::ParserError::Template`] if any tracked component
     /// contains an invalid `@event` handler or a non-braced `w-ref` binding.
-    pub fn take_component_templates(&self) -> Result<Vec<ComponentTemplateArtifact>> {
+    fn take_component_templates(&self) -> Result<Vec<ComponentTemplateArtifact>> {
         let use_shadow = matches!(self.dom_strategy, DomStrategy::Shadow);
         let mut out = Vec::with_capacity(self.components.len());
         for c in &self.components {
+            let is_authored = c.client_module.is_authored();
             let payload = generate_compiled_template_with_root_source(
                 &c.tag_name,
                 &c.template_html,
                 &c.root_event_source,
                 use_shadow,
-                !c.has_script,
+                !is_authored,
             )?;
-            out.push(ComponentTemplateArtifact::webui(
-                c.tag_name.clone(),
-                payload.template_json,
-                payload.template_functions,
-            ));
+            // The parser plugin performs no JavaScript/TypeScript analysis: it
+            // cannot prove an authored component's exact reactive key set.
+            // Scripted components default to `All` (unknown surface, full
+            // state preserved) for both hydration and partial navigation.
+            // Only a validated bundler projection manifest — consumed later by
+            // `webui::build` — can narrow a scripted component down to an
+            // exact `Keys` surface. Scriptless components have no script to
+            // analyze at all: their template roots already prove the complete
+            // safe surface, so they always get an exact (possibly empty) key
+            // set derived purely from the template.
+            let hydration = if is_authored {
+                StateSurface::All
+            } else {
+                StateSurface::None
+            };
+            let navigation = navigation_surface(&payload.hydration_roots, &hydration);
+            out.push(
+                ComponentTemplateArtifact::webui(
+                    c.tag_name.clone(),
+                    payload.template_json,
+                    payload.template_functions,
+                )
+                .with_hydration(hydration)
+                .with_navigation(navigation)
+                .with_template_roots(payload.hydration_roots.clone())
+                .scripted(is_authored),
+            );
         }
         Ok(out)
     }
@@ -149,21 +205,21 @@ impl WebUIParserPlugin {
         tag_name: &str,
         template_html: &str,
         root_event_source: &str,
-        has_script: bool,
+        client_module: ClientModule,
     ) {
         if let Some(component) = self.components.iter_mut().find(|c| c.tag_name == tag_name) {
             component.template_html.clear();
             component.template_html.push_str(template_html);
             component.root_event_source.clear();
             component.root_event_source.push_str(root_event_source);
-            component.has_script = has_script;
+            component.client_module = client_module;
             return;
         }
         self.components.push(TrackedComponent {
             tag_name: tag_name.to_string(),
             template_html: template_html.to_string(),
             root_event_source: root_event_source.to_string(),
-            has_script,
+            client_module,
         });
     }
 }
@@ -202,7 +258,7 @@ impl ParserPlugin for WebUIParserPlugin {
             tag_name,
             processed_template,
             &component.html_content,
-            component.has_script,
+            ClientModule::from_component(component),
         );
         Ok(())
     }
@@ -348,6 +404,30 @@ enum CompiledAttrPart {
 struct CompiledTemplatePayload {
     template_json: String,
     template_functions: String,
+    /// Template reactive roots used when client navigation creates or updates
+    /// a component whose initial DOM was not server rendered.
+    hydration_roots: Vec<String>,
+}
+
+fn navigation_surface(roots: &[String], hydration: &StateSurface) -> StateSurface {
+    match hydration {
+        StateSurface::All => StateSurface::All,
+        StateSurface::Keys(keys) => StateSurface::keys(union_state_keys(roots, keys)),
+        StateSurface::None => StateSurface::keys(roots.to_vec()),
+    }
+}
+
+/// Union two sorted-or-unsorted key sets into a sorted, deduplicated allowlist.
+///
+/// Called once per component at build time (a cold path), so clarity wins over
+/// micro-optimization; the result feeds the runtime projection allowlist.
+fn union_state_keys(roots: &[String], attrs: &[String]) -> Vec<String> {
+    let mut keys = Vec::with_capacity(roots.len() + attrs.len());
+    keys.extend_from_slice(roots);
+    keys.extend_from_slice(attrs);
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 struct TemplateBuildMetadata {
@@ -454,7 +534,7 @@ fn generate_compiled_template_with_root_source(
     html_content: &str,
     root_event_source: &str,
     shadow_dom: bool,
-    emit_static_host: bool,
+    scriptless: bool,
 ) -> Result<CompiledTemplatePayload> {
     let trimmed = html_content.trim();
     let root_events = extract_root_events(tag_name, root_event_source.trim())?;
@@ -462,7 +542,7 @@ fn generate_compiled_template_with_root_source(
     let body = strip_template_wrapper(trimmed);
     let meta = compile_to_metadata(tag_name, body, root_events)?;
     let build_meta = collect_template_build_metadata(&meta);
-    if emit_static_host && build_meta.has_events {
+    if scriptless && build_meta.has_events {
         return Err(scriptless_component_events(tag_name).into());
     }
     Ok(emit_compiled_template_payload(
@@ -472,7 +552,7 @@ fn generate_compiled_template_with_root_source(
         TemplatePayloadOptions {
             adopted_stylesheet: adopted_stylesheet.as_deref(),
             shadow_dom,
-            emit_static_host,
+            emit_static_host: scriptless,
         },
     ))
 }
@@ -499,7 +579,7 @@ fn emit_compiled_template_payload(
         out.push_str(",\"sd\":1");
     }
 
-    if options.emit_static_host && !build_meta.roots.is_empty() {
+    if options.emit_static_host {
         out.push_str(",\"th\":1");
     }
 
@@ -558,6 +638,7 @@ fn emit_compiled_template_payload(
     CompiledTemplatePayload {
         template_json: out,
         template_functions: conditions.finish(),
+        hydration_roots: build_meta.roots.clone(),
     }
 }
 
@@ -2967,6 +3048,23 @@ mod tests {
         .expect("valid template compiles")
     }
 
+    /// Test helper: build a `Component` with no client-module source.
+    fn test_component(
+        tag_name: &str,
+        html_content: &str,
+        css_content: Option<&str>,
+        is_client_owned: bool,
+    ) -> Component {
+        Component {
+            tag_name: tag_name.to_string(),
+            html_content: html_content.to_string(),
+            css_content: css_content.map(str::to_string),
+            css_definitions: Vec::new(),
+            css_fallback_chains: Vec::new(),
+            is_client_owned,
+        }
+    }
+
     fn assert_no_client_markers(result: &str) {
         assert!(!result.contains("<!--t:"), "text markers should be removed");
         assert!(
@@ -3396,16 +3494,48 @@ mod tests {
     }
 
     #[test]
+    fn test_authored_component_defaults_to_unknown_surface_and_records_template_roots() {
+        // The parser plugin never analyzes JavaScript/TypeScript, so an
+        // authored (scripted) component's exact surface is unknown here — it
+        // defaults to `All` (full-state safety) regardless of script content.
+        // Only a validated bundler projection manifest, consumed later by
+        // `webui::build`, can narrow this to exact keys. Template roots are
+        // still recorded so the manifest consumer can union them in later.
+        let mut plugin = WebUIParserPlugin::new();
+        let comp = test_component("test-el", "<p>{{serverTitle}}</p>", None, true);
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        assert_eq!(templates[0].hydration, StateSurface::All);
+        assert_eq!(templates[0].navigation, StateSurface::All);
+        assert_eq!(templates[0].template_roots, vec!["serverTitle".to_string()]);
+        assert!(templates[0].is_scripted);
+    }
+
+    #[test]
+    fn test_opaque_authored_component_defaults_to_unknown_surface() {
+        let mut plugin = WebUIParserPlugin::new();
+        let comp = test_component("test-el", "<p>{{serverTitle}}</p>", None, true);
+
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        // Client-owned components without scannable source are still
+        // authored; their surface defaults to `All` (unknown) rather than
+        // silently downgrading to an empty allowlist.
+        assert_eq!(templates[0].hydration, StateSurface::All);
+        assert_eq!(templates[0].navigation, StateSurface::All);
+        assert_eq!(templates[0].template_roots, vec!["serverTitle".to_string()]);
+        assert!(templates[0].is_scripted);
+        assert!(!templates[0].template_json.contains(r#","th":1"#));
+    }
+
+    #[test]
     fn test_deduplicates_components() {
         let mut plugin = WebUIParserPlugin::new();
-        let comp = Component {
-            tag_name: "test-el".to_string(),
-            html_content: "<p>hi</p>".to_string(),
-            css_content: None,
-            css_definitions: Vec::new(),
-            css_fallback_chains: Vec::new(),
-            has_script: false,
-        };
+        let comp = test_component("test-el", "<p>hi</p>", None, true);
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();
@@ -3416,62 +3546,63 @@ mod tests {
     }
 
     #[test]
-    fn test_scriptless_stateful_component_template_is_static_host_marked() {
+    fn test_scriptless_component_emits_dormant_navigation_template() {
         let mut plugin = WebUIParserPlugin::new();
-        let mut comp = Component {
-            tag_name: "test-el".to_string(),
-            html_content: "<p>{{name}}</p>".to_string(),
-            css_content: None,
-            css_definitions: Vec::new(),
-            css_fallback_chains: Vec::new(),
-            has_script: false,
-        };
+        let comp = test_component("test-el", "<p>{{name}}</p>", None, false);
 
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();
         let templates = plugin.take_component_templates().unwrap();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].hydration, StateSurface::None);
+        assert_eq!(
+            templates[0].navigation,
+            StateSurface::Keys(vec!["name".into()])
+        );
         assert!(templates[0].template_json.contains(r#","th":1"#));
-
-        comp.has_script = true;
-        let mut plugin = WebUIParserPlugin::new();
-        plugin
-            .register_component_template("test-el", &comp, &comp.html_content)
-            .unwrap();
-        let templates = plugin.take_component_templates().unwrap();
-        assert!(!templates[0].template_json.contains(r#","th":1"#));
     }
 
     #[test]
-    fn test_scriptless_static_component_template_is_not_static_host_marked() {
+    fn test_fully_static_scriptless_component_still_emits_host_metadata() {
         let mut plugin = WebUIParserPlugin::new();
-        let comp = Component {
-            tag_name: "test-el".to_string(),
-            html_content: "<p>hi</p>".to_string(),
-            css_content: None,
-            css_definitions: Vec::new(),
-            css_fallback_chains: Vec::new(),
-            has_script: false,
-        };
+        let comp = test_component("test-el", "<p>Static</p>", None, false);
 
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
             .unwrap();
         let templates = plugin.take_component_templates().unwrap();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].hydration, StateSurface::None);
+        assert_eq!(templates[0].navigation, StateSurface::None);
+        assert!(templates[0].template_json.contains(r#","th":1"#));
+    }
+
+    #[test]
+    fn test_scripted_component_emits_client_template_without_static_host_marker() {
+        let mut plugin = WebUIParserPlugin::new();
+        let comp = test_component("test-el", "<p>{{name}}</p>", None, true);
+
+        plugin
+            .register_component_template("test-el", &comp, &comp.html_content)
+            .unwrap();
+        let templates = plugin.take_component_templates().unwrap();
+        assert_eq!(templates.len(), 1);
+        // Client-owned (authored) component: surface defaults to unknown.
+        assert_eq!(templates[0].hydration, StateSurface::All);
+        assert_eq!(templates[0].navigation, StateSurface::All);
         assert!(!templates[0].template_json.contains(r#","th":1"#));
     }
 
     #[test]
     fn test_scriptless_event_component_template_fails() {
         let mut plugin = WebUIParserPlugin::new();
-        let comp = Component {
-            tag_name: "test-el".to_string(),
-            html_content: r#"<button @click="{onClick()}">{{name}}</button>"#.to_string(),
-            css_content: None,
-            css_definitions: Vec::new(),
-            css_fallback_chains: Vec::new(),
-            has_script: false,
-        };
+        let comp = test_component(
+            "test-el",
+            r#"<button @click="{onClick()}">{{name}}</button>"#,
+            None,
+            false,
+        );
 
         plugin
             .register_component_template("test-el", &comp, &comp.html_content)
@@ -3520,14 +3651,7 @@ mod tests {
     fn test_plugin_uses_processed_link_template_html() {
         let mut plugin = WebUIParserPlugin::new();
 
-        let comp = Component {
-            tag_name: "test-el".to_string(),
-            html_content: "<p>hi</p>".to_string(),
-            css_content: Some(".root { color: red; }".to_string()),
-            css_definitions: Vec::new(),
-            css_fallback_chains: Vec::new(),
-            has_script: true,
-        };
+        let comp = test_component("test-el", "<p>hi</p>", Some(".root { color: red; }"), true);
 
         plugin
             .register_component_template(
@@ -3549,16 +3673,12 @@ mod tests {
     fn test_plugin_preserves_root_events_from_raw_template_source() {
         let mut plugin = WebUIParserPlugin::new();
 
-        let comp = Component {
-            tag_name: "test-el".to_string(),
-            html_content:
-                r#"<template shadowrootmode="open" @click="{onClick(e)}"><p>hi</p></template>"#
-                    .to_string(),
-            css_content: Some(".root { color: red; }".to_string()),
-            css_definitions: Vec::new(),
-            css_fallback_chains: Vec::new(),
-            has_script: true,
-        };
+        let comp = test_component(
+            "test-el",
+            r#"<template shadowrootmode="open" @click="{onClick(e)}"><p>hi</p></template>"#,
+            Some(".root { color: red; }"),
+            true,
+        );
 
         plugin
             .register_component_template(
@@ -3578,14 +3698,7 @@ mod tests {
     fn test_plugin_uses_processed_module_template_html() {
         let mut plugin = WebUIParserPlugin::new();
 
-        let comp = Component {
-            tag_name: "test-el".to_string(),
-            html_content: "<p>hi</p>".to_string(),
-            css_content: Some(".root { color: red; }".to_string()),
-            css_definitions: Vec::new(),
-            css_fallback_chains: Vec::new(),
-            has_script: false,
-        };
+        let comp = test_component("test-el", "<p>hi</p>", Some(".root { color: red; }"), true);
 
         plugin
             .register_component_template(

@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::hint::black_box;
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
-use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
 use webui_protocol::{
     ComparisonOperator, ConditionExpr, FragmentList, LogicalOperator, WebUIFragment, WebUIProtocol,
 };
@@ -64,7 +64,7 @@ fn build_state(item_count: usize) -> Value {
     })
 }
 
-fn build_mixed_protocol() -> WebUIProtocol {
+fn build_mixed_protocol() -> Protocol {
     let mut fragments = HashMap::new();
 
     fragments.insert(
@@ -139,7 +139,7 @@ fn build_mixed_protocol() -> WebUIProtocol {
         },
     );
 
-    WebUIProtocol::new(fragments)
+    Protocol::new(WebUIProtocol::new(fragments))
 }
 
 fn handler_plugin_fast_bench(c: &mut Criterion) {
@@ -150,7 +150,7 @@ fn handler_plugin_fast_bench(c: &mut Criterion) {
     let baseline_handler = WebUIHandler::new();
     let mut baseline_writer = BenchWriter::new(16 * 1024);
     baseline_handler
-        .handle(
+        .render(
             &protocol,
             &state,
             &RenderOptions::new("index.html", "/"),
@@ -166,7 +166,7 @@ fn handler_plugin_fast_bench(c: &mut Criterion) {
         b.iter(|| {
             writer.clear();
             handler
-                .handle(
+                .render(
                     black_box(&protocol),
                     black_box(&state),
                     &RenderOptions::new("index.html", "/"),
@@ -183,7 +183,7 @@ fn handler_plugin_fast_bench(c: &mut Criterion) {
         b.iter(|| {
             writer.clear();
             handler
-                .handle(
+                .render(
                     black_box(&protocol),
                     black_box(&state),
                     &RenderOptions::new("index.html", "/"),
@@ -207,7 +207,7 @@ fn handler_loop_scaling_bench(c: &mut Criterion) {
         let handler = WebUIHandler::new();
         let mut writer = BenchWriter::new(count * 80 + 1024);
         handler
-            .handle(
+            .render(
                 &protocol,
                 &state,
                 &RenderOptions::new("index.html", "/"),
@@ -222,7 +222,7 @@ fn handler_loop_scaling_bench(c: &mut Criterion) {
 
             b.iter(|| {
                 w.clear();
-                h.handle(
+                h.render(
                     black_box(&protocol),
                     black_box(st),
                     &RenderOptions::new("index.html", "/"),
@@ -236,7 +236,7 @@ fn handler_loop_scaling_bench(c: &mut Criterion) {
     group.finish();
 }
 
-fn build_condition_protocol() -> WebUIProtocol {
+fn build_condition_protocol() -> Protocol {
     let mut fragments = HashMap::new();
 
     fragments.insert(
@@ -294,7 +294,7 @@ fn build_condition_protocol() -> WebUIProtocol {
         );
     }
 
-    WebUIProtocol::new(fragments)
+    Protocol::new(WebUIProtocol::new(fragments))
 }
 
 fn build_condition_state() -> Value {
@@ -316,7 +316,7 @@ fn handler_condition_variety_bench(c: &mut Criterion) {
     let handler = WebUIHandler::new();
     let mut writer = BenchWriter::new(1024);
     handler
-        .handle(
+        .render(
             &protocol,
             &state_true,
             &RenderOptions::new("index.html", "/"),
@@ -330,7 +330,7 @@ fn handler_condition_variety_bench(c: &mut Criterion) {
         let mut w = BenchWriter::new(1024);
         b.iter(|| {
             w.clear();
-            h.handle(
+            h.render(
                 black_box(&protocol),
                 black_box(&state_true),
                 &RenderOptions::new("index.html", "/"),
@@ -354,7 +354,7 @@ fn handler_condition_variety_bench(c: &mut Criterion) {
         let mut w = BenchWriter::new(1024);
         b.iter(|| {
             w.clear();
-            h.handle(
+            h.render(
                 black_box(&protocol),
                 black_box(&state_mixed),
                 &RenderOptions::new("index.html", "/"),
@@ -367,7 +367,7 @@ fn handler_condition_variety_bench(c: &mut Criterion) {
     group.finish();
 }
 
-fn build_nested_component_protocol() -> WebUIProtocol {
+fn build_nested_component_protocol() -> Protocol {
     let mut fragments = HashMap::new();
 
     fragments.insert(
@@ -418,7 +418,7 @@ fn build_nested_component_protocol() -> WebUIProtocol {
         },
     );
 
-    WebUIProtocol::new(fragments)
+    Protocol::new(WebUIProtocol::new(fragments))
 }
 
 fn handler_nested_components_bench(c: &mut Criterion) {
@@ -429,7 +429,7 @@ fn handler_nested_components_bench(c: &mut Criterion) {
     let handler = WebUIHandler::new();
     let mut writer = BenchWriter::new(8 * 1024);
     handler
-        .handle(
+        .render(
             &protocol,
             &state,
             &RenderOptions::new("index.html", "/"),
@@ -443,7 +443,7 @@ fn handler_nested_components_bench(c: &mut Criterion) {
         let mut w = BenchWriter::new(8 * 1024);
         b.iter(|| {
             w.clear();
-            h.handle(
+            h.render(
                 black_box(&protocol),
                 black_box(&state),
                 &RenderOptions::new("index.html", "/"),
@@ -456,7 +456,7 @@ fn handler_nested_components_bench(c: &mut Criterion) {
     group.finish();
 }
 
-fn build_signal_protocol(signal_path: &str) -> WebUIProtocol {
+fn build_signal_protocol(signal_path: &str) -> Protocol {
     let mut fragments = HashMap::new();
     fragments.insert(
         "index.html".to_string(),
@@ -468,7 +468,7 @@ fn build_signal_protocol(signal_path: &str) -> WebUIProtocol {
             ],
         },
     );
-    WebUIProtocol::new(fragments)
+    Protocol::new(WebUIProtocol::new(fragments))
 }
 
 fn handler_state_depth_bench(c: &mut Criterion) {
@@ -497,7 +497,7 @@ fn handler_state_depth_bench(c: &mut Criterion) {
             let mut w = BenchWriter::new(256);
             b.iter(|| {
                 w.clear();
-                h.handle(
+                h.render(
                     black_box(&protocol),
                     black_box(state),
                     &RenderOptions::new("index.html", "/"),

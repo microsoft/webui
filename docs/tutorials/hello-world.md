@@ -100,8 +100,7 @@ Here's how to render a pre-built protocol programmatically with Rust:
 ```rust
 use std::fs;
 use serde_json::Value;
-use webui_protocol::WebUIProtocol;
-use webui_handler::{WebUIHandler, ResponseWriter};
+use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
 
 struct StdoutWriter;
 
@@ -117,12 +116,17 @@ impl ResponseWriter for StdoutWriter {
 }
 
 fn main() -> anyhow::Result<()> {
-    let protocol = WebUIProtocol::from_protobuf_file("dist/protocol.bin")?;
+    let protocol = Protocol::from_protobuf(&fs::read("dist/protocol.bin")?)?;
     let state: Value = serde_json::from_str(&fs::read_to_string("data/state.json")?)?;
     
-    let mut handler = WebUIHandler::new();
+    let handler = WebUIHandler::new();
     let mut writer = StdoutWriter;
-    handler.handle(&protocol, &state, &mut writer)?;
+    handler.render(
+        &protocol,
+        &state,
+        &RenderOptions::new("index.html", "/"),
+        &mut writer,
+    )?;
     
     Ok(())
 }
