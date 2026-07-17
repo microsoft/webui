@@ -2941,7 +2941,7 @@ Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each s
 
 `dotnet/Directory.Build.props` applies NuGet metadata to packable .NET projects: `Authors=Microsoft`, `PackageOwners=Microsoft`, a package license URL with `PackageRequireLicenseAcceptance=true`, project and repository URLs, Source Link, release notes links, discoverability tags, the required `© Microsoft Corporation. All rights reserved.` copyright notice, and `.snupkg` symbol package generation. `cargo xtask publish` runs `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
 
-NuGet publishing is not automated by ESRP today. Release workflows attach staged NuGet artifacts to GitHub Releases for manual/externally tracked nuget.org publishing. Before nuget.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process.
+Release workflows attach staged NuGet artifacts to GitHub Releases, and the Azure CD pipeline copies both `.nupkg` and `.snupkg` artifacts into `publish_artifacts_nuget` for downstream signing and publishing. NuGet.org publishing is not automatic until an approved Microsoft-certificate signing path is available for `.nupkg` packages. Before nuget.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process.
 
 ### Documentation Guidelines
 - Using `vitepress` in `docs/`
