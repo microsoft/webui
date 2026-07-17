@@ -86,7 +86,7 @@ The managed .NET binding is packaged as `Microsoft.WebUI`:
 dotnet add package Microsoft.WebUI
 ```
 
-It targets .NET 8 and .NET 9. The package restores platform-specific `Microsoft.WebUI.Runtime.*` packages transitively, and .NET selects the matching native asset. Release builds stage `.nupkg` and `.snupkg` artifacts with Source Link and repository metadata; nuget.org publishing is manual until ESRP automation supports this project.
+It targets .NET 8 and .NET 9. The package restores platform-specific `Microsoft.WebUI.Runtime.*` packages transitively, and .NET selects the matching native asset. Release builds stage `.nupkg` and `.snupkg` artifacts with Source Link and repository metadata for downstream signing and publishing. NuGet.org publishing is not automatic until an approved Microsoft-certificate signing path is available for `.nupkg` packages.
 
 ---
 
