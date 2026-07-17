@@ -135,6 +135,7 @@ extends:
               ls publish_artifacts_nuget/
             displayName: Separate release artifacts
 
+          - template: WebUI.Sign.PipelineTemplate.yml@webuiPipelines  # Template reference
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
 
           # Mark this version as deployed so future pipeline runs skip it.
