@@ -140,15 +140,15 @@ extends:
             displayName: Separate release artifacts
 
           - template: WebUI.Sign.PipelineTemplate.yml@webuiPipelines  # Template reference
-          - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
+          # - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
 
           # Mark this version as deployed so future pipeline runs skip it.
           # Uses the releaseTag stage variable (e.g. "v0.0.8") to create
           # a "deployed/v0.0.8" tag and push it back to the repo.
-          - script: |
-              set -euo pipefail
-              DEPLOY_TAG="deployed/$(releaseTag)"
-              echo "Tagging successful deployment: ${DEPLOY_TAG}"
-              git tag "${DEPLOY_TAG}"
-              git push origin "${DEPLOY_TAG}"
-            displayName: Tag successful deployment
+          # - script: |
+          #     set -euo pipefail
+          #     DEPLOY_TAG="deployed/$(releaseTag)"
+          #     echo "Tagging successful deployment: ${DEPLOY_TAG}"
+          #     git tag "${DEPLOY_TAG}"
+          #     git push origin "${DEPLOY_TAG}"
+          #   displayName: Tag successful deployment
