@@ -1,6 +1,8 @@
 trigger: none
 pr: none
 
+# Set targetReleaseTag to a v-prefixed GitHub tag in the pipeline variables before running.
+
 schedules:
   - cron: '0 * * * *'
     displayName: Hourly deployment check
@@ -54,11 +56,12 @@ extends:
             persistCredentials: "true"
 
           - task: DownloadGitHubRelease@0
-            displayName: Download latest GitHub release
+            displayName: Download target GitHub release
             inputs:
               connection: fast
               userRepository: microsoft/webui
               defaultVersionType: 'latest'
+              version: '$(targetReleaseTag)'
               downloadPath: '$(System.ArtifactsDirectory)'
 
           # Extract the version number from the downloaded .crate filename,
@@ -110,11 +113,12 @@ extends:
             persistCredentials: "true"
 
           - task: DownloadGitHubRelease@0
-            displayName: Download GitHub release artifacts
+            displayName: Download target GitHub release artifacts
             inputs:
               connection: fast
               userRepository: microsoft/webui
               defaultVersionType: 'latest'
+              version: '$(targetReleaseTag)'
               downloadPath: '$(System.ArtifactsDirectory)'
 
           # Separate the downloaded files into the directories expected by the
