@@ -108,6 +108,12 @@ extends:
         releaseTag: $[ stageDependencies.Check.CheckVersion.outputs['resolveTag.releaseTag'] ]
       jobs:
       - job: Deploy
+        templateContext:
+          outputs:
+            - output: pipelineArtifact
+              targetPath: '$(Build.ArtifactStagingDirectory)'
+              artifactName: nuget_packages
+              displayName: Publish signed NuGet packages
         steps:
           - checkout: self
             persistCredentials: "true"
