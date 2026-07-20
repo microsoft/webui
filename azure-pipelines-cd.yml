@@ -44,10 +44,7 @@ extends:
     stages:
 
     # ── Stage 1: Lightweight version check (runs every hour, ~1-2 min) ──
-    # This stage is separate so that when no deployment is needed, the
-    # heavyweight Package stage (with all its 1ES SDL tasks) is skipped
-    # entirely — avoiding ~30 min of unnecessary agent provisioning and
-    # compliance scans on every hourly no-op run.
+    # This stage resolves the release and reports whether its deployed tag already exists.
     - stage: Check
       jobs:
       - job: CheckVersion
@@ -100,10 +97,10 @@ extends:
             displayName: Check if already deployed
             name: deploymentCheck
 
-    # ── Stage 2: Download artifacts and deploy (entirely skipped if already deployed) ──
+    # ── Stage 2: Download artifacts and deploy after a successful version check, even if already deployed ──
     - stage: Package
       dependsOn: Check
-      condition: eq(dependencies.Check.outputs['CheckVersion.deploymentCheck.needsDeployment'], 'true')
+      condition: succeeded()
       variables:
         releaseTag: $[ stageDependencies.Check.CheckVersion.outputs['resolveTag.releaseTag'] ]
       jobs:
