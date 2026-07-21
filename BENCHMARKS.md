@@ -142,7 +142,7 @@ V8/N-API string and callback crossings:
 
 - **Protocol construction** — Node `Buffer` to protobuf decode/index after the addon is loaded
 - **JSON-string render** — N-API conversion, JSON parse, Rust render,
-  and the returned JavaScript string
+  and the returned UTF-8 Node `Buffer`
 - **Object render** — the same path plus public-wrapper
   `JSON.stringify`
 - **Streaming first callback** — state conversion and JSON parse,
@@ -152,8 +152,8 @@ V8/N-API string and callback crossings:
 It uses the same Contact Book fixture and 10/100/1000 scales as the
 Rust end-to-end benchmark, rendering `/contacts` so output grows with
 the workload. The first-callback metric is in-process; it is not HTTP
-TTFB. The runner verifies buffered, object-state, and
-streamed output are byte-identical before collecting samples.
+TTFB. The runner verifies JSON-string, object-state, and streamed output are
+byte-identical before collecting samples.
 
 ## Recommended PR workflow
 

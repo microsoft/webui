@@ -115,14 +115,17 @@ describe('render', () => {
   test('substitutes signals', () => {
     const result = build({ appDir });
     const protocol = new Protocol(result.protocol);
-    const html = protocol.render({ name: 'WebUI', items: ['a', 'b'], show: true });
-    assert.ok(html.includes('Hello, WebUI!'));
+    const buffer = protocol.render({ name: 'WebUI', items: ['a', 'b'], show: true });
+    assert.ok(Buffer.isBuffer(buffer));
+    assert.ok(buffer.toString('utf8').includes('Hello, WebUI!'));
   });
 
   test('expands for-loop', () => {
     const result = build({ appDir });
     const protocol = new Protocol(result.protocol);
-    const html = protocol.render({ name: 'X', items: ['a', 'b'], show: false });
+    const html = protocol
+      .render({ name: 'X', items: ['a', 'b'], show: false })
+      .toString('utf8');
     assert.ok(html.includes('<p>a</p>'));
     assert.ok(html.includes('<p>b</p>'));
   });
@@ -130,24 +133,26 @@ describe('render', () => {
   test('includes if-true block', () => {
     const result = build({ appDir });
     const protocol = new Protocol(result.protocol);
-    const html = protocol.render({ name: 'X', items: [], show: true });
+    const html = protocol.render({ name: 'X', items: [], show: true }).toString('utf8');
     assert.ok(html.includes('<footer>Visible</footer>'));
   });
 
   test('excludes if-false block', () => {
     const result = build({ appDir });
     const protocol = new Protocol(result.protocol);
-    const html = protocol.render({ name: 'X', items: [], show: false });
+    const html = protocol.render({ name: 'X', items: [], show: false }).toString('utf8');
     assert.ok(!html.includes('<footer>'));
   });
 
   test('reuses one protocol for object and JSON string state', () => {
     const result = build({ appDir });
     const protocol = new Protocol(result.protocol);
-    const objectHtml = protocol.render({ name: 'Object', items: [], show: false });
-    const jsonHtml = protocol.render(
-      JSON.stringify({ name: 'JSON', items: [], show: false }),
-    );
+    const objectHtml = protocol
+      .render({ name: 'Object', items: [], show: false })
+      .toString('utf8');
+    const jsonHtml = protocol
+      .render(JSON.stringify({ name: 'JSON', items: [], show: false }))
+      .toString('utf8');
     assert.ok(objectHtml.includes('Hello, Object!'));
     assert.ok(jsonHtml.includes('Hello, JSON!'));
   });
@@ -156,17 +161,17 @@ describe('render', () => {
     const result = build({ appDir });
     const protocol = new Protocol(result.protocol);
     const state = { name: 'Cache', items: [], show: true };
-    const initialHtml = protocol.render(state);
+    const initialHtml = protocol.render(state).toString('utf8');
     assert.ok(initialHtml.includes('<footer>Visible</footer>'));
 
     const offset = result.protocol.indexOf('Visible');
     assert.ok(offset >= 0);
     result.protocol.write('Altered', offset, 'utf8');
 
-    const existingHtml = protocol.render(state);
+    const existingHtml = protocol.render(state).toString('utf8');
     assert.ok(existingHtml.includes('<footer>Visible</footer>'));
 
-    const updatedHtml = new Protocol(result.protocol).render(state);
+    const updatedHtml = new Protocol(result.protocol).render(state).toString('utf8');
     assert.ok(updatedHtml.includes('<footer>Altered</footer>'));
   });
 

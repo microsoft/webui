@@ -61,7 +61,7 @@ directly.
 | Case | Boundary included | What it tells you |
 |---|---|---|
 | `protocol/new` | Node `Buffer` -> N-API -> protobuf decode/index | `Protocol` construction after the addon is loaded |
-| `render/json-string/N` | JS string -> N-API -> JSON parse -> Rust render -> JS string | native request cost when state is already serialized |
+| `render/json-string/N` | JS string -> N-API -> JSON parse -> Rust render -> external Node `Buffer` | canonical buffered response when state is already serialized |
 | `render/object/N` | `JSON.stringify` plus the JSON-string path | public-package cost for the common object-state API |
 | `render-stream/...`, `first-callback` | JS string -> N-API -> JSON parse -> render to first 16 KiB -> JS callback | latency until JavaScript receives the first chunk |
 | `render-stream/...`, `total` | the same input path plus all chunks and callbacks | complete streaming callback-path cost |
@@ -95,7 +95,7 @@ runner.
 - Collects at least 20 samples per row and targets 750 ms of measurement time.
 - Reports workload sizes/chunk counts plus min, P50, P95, P99, and
   mean-derived ops/s.
-- Verifies object-state and JSON-string renders are byte-identical.
+- Verifies object and JSON-string inputs produce byte-identical buffers.
 - Verifies concatenated streaming chunks exactly equal buffered output.
 - Rejects empty protocols, missing chunks, malformed baselines, unsafe baseline
   names, and accidental debug measurements.
@@ -109,7 +109,7 @@ pnpm --filter node-addon-bench bench:json
 ## Why a separate integration package?
 
 This benchmark cannot be a Criterion target: calling the Rust functions from a
-Rust harness would bypass V8, JavaScript string conversion, N-API, and callback
+Rust harness would bypass V8, Buffer ownership transfer, N-API, and callback
 crossings. Keeping it next to `streaming-browser-bench` makes the external
 runtime requirement explicit while letting pnpm manage the public package
 under test.

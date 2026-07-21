@@ -255,17 +255,19 @@ impl Protocol {
         Ok(Self { inner, handler })
     }
 
-    /// Render from an existing JSON string.
+    /// Render from an existing JSON string into a UTF-8 Node.js buffer.
     #[napi]
     pub fn render(
         &self,
         state_json: String,
         entry: String,
         request_path: String,
-    ) -> napi::Result<String> {
+    ) -> napi::Result<Buffer> {
         let state = parse_state_json(&state_json)?;
         let options = RenderOptions::new(&entry, &request_path);
-        render_to_string(&self.handler, &self.inner, &state, &options)
+        let html = render_to_string(&self.handler, &self.inner, &state, &options)?;
+        // napi-rs can expose the existing Vec as an external Buffer on Node.
+        Ok(Buffer::from(html.into_bytes()))
     }
 
     /// Stream an existing JSON string in bounded chunks.
@@ -538,14 +540,14 @@ mod tests {
             .expect("first render should succeed");
         let second = protocol
             .render(
-                r#"{"name":"Second"}"#.to_string(),
+                r#"{"name":"世界"}"#.to_string(),
                 "index.html".to_string(),
                 "/".to_string(),
             )
             .expect("second render should succeed");
 
-        assert_eq!(first, "Hello, First!");
-        assert_eq!(second, "Hello, Second!");
+        assert_eq!(first.as_ref(), b"Hello, First!");
+        assert_eq!(second.as_ref(), "Hello, 世界!".as_bytes());
     }
 
     #[test]

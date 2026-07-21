@@ -1204,7 +1204,8 @@ rebuilds when the adapter atomically replaces the manifest.
 WebUI renders from **any** backend. The server loads `protocol.bin` into one
 `Protocol`, then renders with JSON state per request. Projection
 manifests are consumed only while producing `protocol.bin`; runtime rendering
-APIs are unchanged.
+does not load projection tooling. In Node, `Protocol.render()` returns a UTF-8
+`Buffer`; call `.toString('utf8')` only when string operations are required.
 
 ### Rust
 

@@ -142,7 +142,7 @@ interface NativeAddon {
 }
 
 interface NativeProtocol {
-  render(stateJson: string, entry: string, requestPath: string): string;
+  render(stateJson: string, entry: string, requestPath: string): Buffer;
   renderStream(
     stateJson: string,
     entry: string,
@@ -310,8 +310,8 @@ export class Protocol {
     this.#native = new NativeProtocol(protocolData, options?.plugin);
   }
 
-  /** Render a complete HTML response. */
-  render(state: object | string, options?: RenderOptions): string {
+  /** Render a complete HTML response as a UTF-8 Node.js buffer. */
+  render(state: object | string, options?: RenderOptions): Buffer {
     const stateJson = typeof state === "string" ? state : JSON.stringify(state);
     return this.#native.render(
       stateJson,

@@ -1,9 +1,8 @@
 # WebUI Native Node Module Handler
 
 The `@microsoft/webui` npm package provides high-performance server-side
-rendering for Node.js, Bun, and Deno. It uses a native addon with direct
-`Buffer` access, a buffered string path for normal rendering, and batched
-callbacks for streaming responses.
+rendering for Node.js, Bun, and Deno. It uses a native addon with a canonical
+UTF-8 `Buffer` path plus batched callbacks for streaming responses.
 
 ## Installation
 
@@ -98,7 +97,7 @@ Deno.serve({ port: 3000 }, (req) => {
 |----------|-------------|
 | `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, componentAssetFiles, warnings, stats }` |
 | `new Protocol(protocol, options?)` | Decode and index protocol bytes once and bind the selected plugin |
-| `protocol.render(state, options?)` | Render with route matching through the native buffered-string path |
+| `protocol.render(state, options?)` | Render into a UTF-8 `Buffer` for direct HTTP writes |
 | `protocol.renderStream(state, onChunk, options?)` | Render with callbacks coalesced around a 16 KiB target before crossing into JavaScript |
 | `protocol.renderPartial(state, entry, requestPath, inventory)` | Produce a complete partial-navigation JSON response |
 | `protocol.renderComponentTemplates(tags, inventory)` | Return on-demand template payloads |
@@ -142,12 +141,13 @@ const server = createServer((req, res) => {
 `Protocol` owns the decoded native state, deterministic index, and template
 metadata cache. The source `Buffer` can be released or reused after
 construction. The package has no hidden `WeakMap`, protocol-sized mutation
-snapshot, or byte-per-request render path.
+snapshot, or render path that accepts protocol bytes on every request.
 
-Use `protocol.render()` when the complete HTML string is needed. Use
-`protocol.renderStream()` when the HTTP integration can make progress from
-callbacks; callbacks are batched rather than invoked for every internal
-handler write.
+`protocol.render()` returns a UTF-8 `Buffer` so the native allocation can be
+passed directly to `response.end()`. Call `.toString('utf8')` only when
+JavaScript string operations are required. Use `protocol.renderStream()` when
+the HTTP integration can make progress from callbacks; callbacks are batched
+rather than invoked for every internal handler write.
 
 ### BuildOptions
 

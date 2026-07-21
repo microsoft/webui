@@ -23,7 +23,7 @@ const result = build({ appDir: "./src" });
 // Decode and index once, then render repeatedly
 const protocol = new Protocol(result.protocol, { plugin: "webui" });
 const html = protocol.render({ name: "World", items: ["a", "b"] });
-console.log(html);
+console.log(html.toString("utf8"));
 ```
 
 ## API
@@ -121,16 +121,20 @@ const protocol = new Protocol(protocolBytes, { plugin: "webui" });
 ```
 
 `Protocol` owns its decoded native state. The package does not keep a hidden
-`WeakMap`, copy the source `Buffer`, or expose byte-per-request render
-functions.
+`WeakMap`, copy the source `Buffer`, or expose render functions that accept
+protocol bytes on every request.
 
-### `protocol.render(state: object | string, options?: RenderOptions): string`
+### `protocol.render(state: object | string, options?: RenderOptions): Buffer`
 
-Renders state and returns the full HTML string.
+Renders state into a UTF-8 Node.js `Buffer`, the canonical buffered result for
+direct HTTP, file, or socket writes:
 
 ```js
-const html = protocol.render({ title: "Hello", show: true });
+response.end(protocol.render({ title: "Hello" }));
 ```
+
+Call `.toString("utf8")` explicitly when JavaScript string operations are
+required.
 
 ### `protocol.renderStream(state, onChunk, options?): void`
 

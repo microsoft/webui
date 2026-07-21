@@ -570,12 +570,14 @@ async function main() {
   const fixtures = CONTACT_COUNTS.map((contactCount) => {
     const state = buildState(seedState, contactCount);
     const stateJson = JSON.stringify(state);
-    const expected = protocol.render(stateJson, RENDER_OPTIONS);
-    assert.equal(
-      protocol.render(state, RENDER_OPTIONS),
-      expected,
+    const expectedBuffer = protocol.render(stateJson, RENDER_OPTIONS);
+    assert.ok(Buffer.isBuffer(expectedBuffer), "render did not return a Node.js buffer");
+    const objectBuffer = protocol.render(state, RENDER_OPTIONS);
+    assert.ok(
+      objectBuffer.equals(expectedBuffer),
       `object and JSON-string render differ at ${contactCount} contacts`,
     );
+    const expected = expectedBuffer.toString("utf8");
     const chunks = [];
     protocol.renderStream(
       stateJson,
@@ -595,7 +597,7 @@ async function main() {
       stateJson,
       expected,
       inputBytes: Buffer.byteLength(stateJson),
-      outputBytes: Buffer.byteLength(expected),
+      outputBytes: expectedBuffer.length,
       chunkCount: chunks.length,
     };
   });

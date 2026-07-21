@@ -2919,11 +2919,12 @@ The `@microsoft/webui` npm package follows the esbuild single-package model:
 - `Protocol` is the only runtime rendering API; construction decodes and
   indexes a protocol `Buffer` once and binds the selected plugin
 - callers own the lifecycle explicitly, so the package has no hidden
-  `WeakMap`, no protocol-sized mutation snapshot, and no byte-per-call render
-  functions
-- `Protocol.render()` returns the buffered-string result;
-  `Protocol.renderStream()` batches callbacks with a 16 KiB target instead of
-  crossing into JavaScript for every internal handler fragment
+  `WeakMap`, no protocol-sized mutation snapshot, and no render functions that
+  accept protocol bytes on every call
+- `Protocol.render()` returns the rendered UTF-8 bytes as the canonical Node
+  `Buffer` result; callers explicitly decode it when they need a JavaScript
+  string; `Protocol.renderStream()` batches callbacks with a 16 KiB target
+  instead of crossing into JavaScript for every internal handler fragment
 - render currently requires the native addon; no WASM render fallback is wired
 
 ### .NET / NuGet Distribution
