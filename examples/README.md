@@ -21,6 +21,7 @@ Current entries:
 | `app/routes` | Nested declarative routing demo showing 4-level deep routes, full server side and client handoff |
 | `app/service-worker` | Static/CDN service worker app using `webui_wasm_handler` to stream WASM-rendered chunks from public API state |
 | `integration/node` | Node.js integration via native addon |
+| `integration/node-addon-bench` | Node/V8/N-API runtime benchmark for the native addon |
 | `integration/rust` | Rust integration via `webui-handler` |
 
 ## Quick Start
@@ -49,5 +50,6 @@ Each app's `package.json` also exposes `pnpm start`, which delegates to the same
 See integration-specific READMEs:
 
 - [integration/node/README.md](integration/node/README.md)
+- [integration/node-addon-bench/README.md](integration/node-addon-bench/README.md)
 - [integration/rust/README.md](integration/rust/README.md)
 - [app/service-worker/README.md](app/service-worker/README.md)
