@@ -143,6 +143,7 @@ interface NativeAddon {
 
 interface NativeProtocol {
   render(stateJson: string, entry: string, requestPath: string): string;
+  renderBuffer?(stateJson: string, entry: string, requestPath: string): Buffer;
   renderStream(
     stateJson: string,
     entry: string,
@@ -312,8 +313,23 @@ export class Protocol {
 
   /** Render a complete HTML response. */
   render(state: object | string, options?: RenderOptions): string {
-    const stateJson = typeof state === "string" ? state : JSON.stringify(state);
+    const stateJson = serializeState(state);
     return this.#native.render(
+      stateJson,
+      options?.entry ?? "index.html",
+      options?.requestPath ?? "/",
+    );
+  }
+
+  /** Render a complete HTML response as a UTF-8 Node.js buffer. */
+  renderBuffer(state: object | string, options?: RenderOptions): Buffer {
+    if (!this.#native.renderBuffer) {
+      throw new Error(
+        "[webui] Native addon is incompatible: Protocol.renderBuffer is required.",
+      );
+    }
+    const stateJson = serializeState(state);
+    return this.#native.renderBuffer(
       stateJson,
       options?.entry ?? "index.html",
       options?.requestPath ?? "/",
@@ -326,7 +342,7 @@ export class Protocol {
     onChunk: (html: string) => void,
     options?: RenderOptions,
   ): void {
-    const stateJson = typeof state === "string" ? state : JSON.stringify(state);
+    const stateJson = serializeState(state);
     this.#native.renderStream(
       stateJson,
       options?.entry ?? "index.html",
@@ -342,7 +358,7 @@ export class Protocol {
     requestPath: string,
     inventoryHex: string,
   ): string {
-    const stateJson = typeof state === "string" ? state : JSON.stringify(state);
+    const stateJson = serializeState(state);
     return this.#native.renderPartial(stateJson, entryId, requestPath, inventoryHex);
   }
 
@@ -370,6 +386,10 @@ export function inspect(protocolData: Buffer): string {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+function serializeState(state: object | string): string {
+  return typeof state === "string" ? state : JSON.stringify(state);
+}
 
 function emptyStats(): BuildStats {
   return {

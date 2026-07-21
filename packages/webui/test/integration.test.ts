@@ -179,6 +179,19 @@ describe('render', () => {
   });
 });
 
+describe('renderBuffer', () => {
+  test('returns UTF-8 bytes equivalent to render', () => {
+    const result = build({ appDir });
+    const protocol = new Protocol(result.protocol);
+    const state = { name: '世界', items: ['a', 'b'], show: true };
+    const html = protocol.render(state);
+    const buffer = protocol.renderBuffer(state);
+
+    assert.ok(Buffer.isBuffer(buffer));
+    assert.equal(buffer.toString('utf8'), html);
+  });
+});
+
 describe('renderStream', () => {
   test('streams chunks via callback', () => {
     const result = build({ appDir });

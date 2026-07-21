@@ -42,7 +42,7 @@ if (process.argv[2] && process.argv[3]) {
   );
 
   const protocol = new Protocol(result.protocol);
-  const html = protocol.render(state);
+  const html = protocol.renderBuffer(state);
   process.stdout.write(html);
   process.stdout.write("\n");
 }
