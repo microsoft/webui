@@ -1,1 +1,0 @@
-import{b as r,c as t}from"./chunk-IMSSZREP.js";import{a as n}from"./chunk-DFXI7S6H.js";var i=class extends t{constructor(){super(...arguments);this.appearance="info";this.title="";this.icon="\u2139\uFE0F"}};n([r],i.prototype,"appearance",2),n([r],i.prototype,"title",2),n([r],i.prototype,"icon",2);i.define("webui-blockquote");
