@@ -1187,11 +1187,14 @@ fails before the initial build if that port is already in use, returning an
 actionable message so stale dev processes can be stopped explicitly.
 
 With `webui serve --api-port`, route state requests and `/api/*` forwarding
-preserve the incoming URI's encoded path and query exactly. The development
-server does not decode or re-encode percent escapes before sending the request
-to the backend. Encoded slashes such as `%2F` therefore remain inside one route
-segment, and encoded spaces, percent signs, and UTF-8 bytes reach development
-backends with the same representation used by production clients.
+preserve the incoming URI's encoded path and query exactly except for the entry
+route alias. The development server does not decode or re-encode percent escapes
+before sending non-entry request paths to the backend. `/` and `/index.html`
+both resolve backend state at `/` (the entry path is normalized), while still
+preserving the query string. All other request paths forward their encoded path
+and query unchanged. Encoded slashes such as `%2F` therefore remain inside one
+route segment, and encoded spaces, percent signs, and UTF-8 bytes reach
+development backends with the same representation used by production clients.
 
 In `webui serve --watch`, the file watcher is **content-aware**: it hashes each
 changed file and drops events whose bytes are unchanged, so a no-op save

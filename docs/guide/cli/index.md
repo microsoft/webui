@@ -266,7 +266,10 @@ The `APP` directory should contain your entry HTML and component files.
 6. If `--watch` is enabled, connected browsers reload automatically via the polling HMR backend
 
 When `--api-port` is set, backend state requests and `/api/*` forwarding use
-the encoded path and query exactly as received. Do not double-encode route
+the encoded path and query exactly as received except for the entry route alias.
+`/` and `/index.html` both resolve backend state at `/` (the entry path is
+normalized), while still preserving the query string. All other request paths
+forward their encoded path and query unchanged. Do not double-encode route
 parameters for development. For example, `%2F` remains part of one parameter
 instead of becoming a path separator.
 

@@ -752,7 +752,10 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 | `--format <FORMAT>` | `human` | `human` (colorized) or `json` (machine-readable diagnostics on stdout) |
 
 With `--api-port`, backend state requests and `/api/*` forwarding preserve the
-incoming encoded path and query. Applications must not double-encode route
+incoming encoded path and query except for the entry route alias. `/` and
+`/index.html` both resolve backend state at `/` (the entry path is normalized),
+while still preserving the query string. All other request paths forward their
+encoded path and query unchanged. Applications must not double-encode route
 parameters for development; `%2F` remains within one route segment.
 
 ### Inspect

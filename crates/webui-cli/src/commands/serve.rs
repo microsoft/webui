@@ -932,7 +932,7 @@ async fn handle_asset(
 
     let Some(assets_dir) = &context.assets_dir else {
         // No assets dir — try SPA fallback for paths without file extensions
-        return spa_fallback(&req, &context, &relative).await;
+        return spa_fallback(&req, &context).await;
     };
 
     let asset_path = assets_dir.join(&relative);
@@ -941,7 +941,7 @@ async fn handle_asset(
         Ok(p) => p,
         Err(_) => {
             // File not found — SPA fallback for paths without file extensions
-            return spa_fallback(&req, &context, &relative).await;
+            return spa_fallback(&req, &context).await;
         }
     };
 
@@ -951,7 +951,7 @@ async fn handle_asset(
 
     let body = match fs::read(&canonical) {
         Ok(bytes) => bytes,
-        Err(_) => return spa_fallback(&req, &context, &relative).await,
+        Err(_) => return spa_fallback(&req, &context).await,
     };
 
     let content_type = from_path(&canonical).first_or_octet_stream();
@@ -971,19 +971,17 @@ fn wants_json(req: &HttpRequest) -> bool {
 
 /// SPA fallback: serve HTML or JSON partial depending on Accept header.
 /// Activates for paths that look like route paths (no file extension).
-async fn spa_fallback(
-    req: &HttpRequest,
-    context: &web::Data<ServerContext>,
-    decoded_relative: &str,
-) -> HttpResponse {
-    // Only serve fallback for paths without file extensions (likely route paths)
-    if decoded_relative.contains('.') {
-        return HttpResponse::NotFound().body("Not Found");
-    }
-
+async fn spa_fallback(req: &HttpRequest, context: &web::Data<ServerContext>) -> HttpResponse {
     // Actix decodes `web::Path` values. Route matching and backend state
     // requests must instead receive the original encoded request target.
     let paths = request_paths(req);
+
+    // Only serve fallback for paths without a file extension (likely route
+    // paths). Test the *encoded* path so an encoded dot (`%2E`) inside a
+    // route parameter is not misread as a literal extension separator.
+    if paths.route_path.contains('.') {
+        return HttpResponse::NotFound().body("Not Found");
+    }
 
     // JSON partial render: return { state, templates } for client-side navigation
     if wants_json(req) {
@@ -1807,6 +1805,45 @@ mod tests {
             .map(|target| (*target).to_string())
             .collect();
         assert_eq!(*captured_targets.lock().unwrap(), expected);
+        handle.stop(true).await;
+    }
+
+    #[actix_web::test]
+    async fn test_spa_fallback_allows_encoded_dot_route_parameter() {
+        let request_target = "/discount/100%2E5?filter=x";
+        let (port, handle, captured_targets) = start_request_target_server();
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_server_context(port))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri(request_target)
+                .insert_header(("accept", "application/json"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/missing.css")
+                .insert_header(("accept", "application/json"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let captured = match captured_targets.lock() {
+            Ok(targets) => targets.clone(),
+            Err(error) => panic!("captured targets mutex poisoned: {error}"),
+        };
+        assert_eq!(captured, vec![request_target.to_string()]);
         handle.stop(true).await;
     }
 
